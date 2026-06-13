@@ -3,7 +3,7 @@
  * Component tests for FactDetailPage — the fact's editorial detail page
  * (bu-2ix8d.7).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/06-detail-pages.md):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/06-detail-pages.md):
  *   - Shared skeleton: eyebrow (FACT · <short id>), heading = content, state
  *     line, KV band — no "Details" chrome, exactly one <h1>.
  *   - The decay-arithmetic line renders in the mono `confidence … effective`

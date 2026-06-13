@@ -76,4 +76,4 @@ The dashboard SHALL expose `WS /api/settings/stream` emitting incremental update
 ## Source References
 - Non-Negotiable Rule 1 (Composure is the brand) and Rule 4 (every element earns its place against state) from `about/heart-and-soul/design-language.md`.
 - PLAN.md §4 routes contract and §5 Settings Console API surface.
-- `pr/overview/settings-refactor/settings-redesign.jsx :: SettingsConsole` is the visual reference.
+- Visual reference: the `SettingsConsole` redesign prototype (graduated; now shipped in `frontend/`).

@@ -16,7 +16,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline"
- * Reference: pr/overview/ingestion-redesign/ingestion-filters.jsx §PipelineDiagram
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §PipelineDiagram
  */
 
 import type { GateCount, GateDefinition } from './gate-state'

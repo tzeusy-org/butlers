@@ -16,8 +16,8 @@
 // band does not shift as stats load.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/01-overture.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §2, §6, §7, §8
+// - (memory house-ledger redesign, graduated) prompts/01-overture.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §6, §7, §8
 // ---------------------------------------------------------------------------
 
 import { Display } from "@/components/ui/Display";

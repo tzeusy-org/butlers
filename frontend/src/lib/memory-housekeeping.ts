@@ -8,8 +8,8 @@
 // directly.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/07-housekeeping.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §2, §4, §6
+// - (memory house-ledger redesign, graduated) prompts/07-housekeeping.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §4, §6
 // ---------------------------------------------------------------------------
 
 /**

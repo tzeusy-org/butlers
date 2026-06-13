@@ -11,7 +11,7 @@
  * Per-minute counts are computed externally via deriveMinuteCounts (see
  * ./deriveMinuteCounts.ts) so this component stays pure.
  *
- * Spec: pr/overview/ingestion-redesign/INGESTION_HANDOFF.md §"Ledger" (inline flame strip)
+ * Spec: docs/redesigns/ingestion-handoff.md §"Ledger" (inline flame strip)
  * Design: hairline bar fill, foreground at 40% opacity, border-color for zero bars.
  */
 

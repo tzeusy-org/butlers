@@ -12,7 +12,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector with auth issue"
- * Reference: pr/overview/ingestion-redesign/ingestion-connectors-a.jsx §"Attention strip"
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §"Attention strip"
  */
 
 import { Link } from 'react-router'

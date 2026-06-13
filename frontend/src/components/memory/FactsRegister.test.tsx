@@ -2,7 +2,7 @@
 /**
  * Component tests for FactsRegister — the ledger (bu-2ix8d.3).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/02-register-facts.md):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/02-register-facts.md):
  *   - Fading rows render every cell at --dim; active rows render at --fg. The
  *     ONLY difference is foreground color (no color/italic/opacity), so a
  *     grayscale screenshot makes the distinction obvious.

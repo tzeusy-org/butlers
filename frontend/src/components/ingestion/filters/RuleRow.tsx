@@ -8,7 +8,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline" rule rows
- * Reference: pr/overview/ingestion-redesign/ingestion-filters.jsx §RuleRow
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §RuleRow
  */
 
 import type { IngestionRule } from '@/api/types'

@@ -2,7 +2,7 @@
 /**
  * Component tests for MemoryOverture (bu-2ix8d.2).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/01-overture.md):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/01-overture.md):
  *   - dead_letter == 0 renders zero red pixels (the dead-letter fragment is
  *     muted, not --red).
  *   - dead_letter > 0 turns ONLY the `dead letters N` fragment --red.

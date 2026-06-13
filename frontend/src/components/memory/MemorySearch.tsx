@@ -21,8 +21,8 @@
 // area (browse vs. results) lives in MemoryBrowser, reading `q`/`kind` from URL.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/05-search-and-rail.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §2, §3d, §9 (no second box)
+// - (memory house-ledger redesign, graduated) prompts/05-search-and-rail.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §3d, §9 (no second box)
 // ---------------------------------------------------------------------------
 
 import { useEffect, useRef, useState } from "react";

@@ -14,7 +14,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Reauth callout follows connector auth state"
- * Reference: pr/overview/ingestion-redesign/ingestion-connector-detail.jsx §"reauth call-to-action"
+ * Reference: docs/redesigns/ingestion-connector-detail.jsx §"reauth call-to-action"
  */
 
 import type { DerivedAuthStatus } from './connector-auth'

@@ -318,7 +318,7 @@ The connector-detail API response SHALL include an `auth` block and a `scopes` b
   }
   ```
 - **AND** the `note` field SHALL be the same shape as the bundle fixture
-  (`pr/overview/ingestion-redesign/ingestion-connectors-data.jsx:102,128`)
+  (`docs/redesigns/ingestion-connectors-data.jsx:102,128`)
 - **AND** the `expires_at` field SHALL be the access token expiry timestamp
   when known, or `null` for refresh tokens with no expiry
 
@@ -770,13 +770,13 @@ SHALL be uniform regardless of provider.
 - Credential masking constraint —
   `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:103-109`
 - UI ground truth — `ReauthCallout` —
-  `pr/overview/ingestion-redesign/ingestion-connector-detail.jsx:70-101`
+  `docs/redesigns/ingestion-connector-detail.jsx:70-101`
 - UI ground truth — `ScopeList` —
-  `pr/overview/ingestion-redesign/ingestion-connector-detail.jsx:216-245`
+  `docs/redesigns/ingestion-connector-detail.jsx:216-245`
 - Spotify fixture (auth.status, scopes shape) —
-  `pr/overview/ingestion-redesign/ingestion-connectors-data.jsx:97-121`
+  `docs/redesigns/ingestion-connectors-data.jsx:97-121`
 - Design language for serif italic notes / mono labels / state colors —
-  `pr/overview/ingestion-redesign/DESIGN_LANGUAGE.md:30,108-140,217-232`
+  `docs/redesigns/ingestion-design-language.md:30,108-140,217-232`
 - Existing Google scope-set registry pattern this spec generalizes —
   `openspec/specs/google-multi-account-oauth/spec.md:84-145`
 - Existing `granted_scopes` precedent on `public.google_accounts` —

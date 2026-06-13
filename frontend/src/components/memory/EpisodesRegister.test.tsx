@@ -2,7 +2,7 @@
 /**
  * Component tests for EpisodesRegister — the daybook (bu-2ix8d.5).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/04-register-episodes.md):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/04-register-episodes.md):
  *   - Day headers render TODAY / YESTERDAY / dated correctly across a multi-day
  *     dataset, in reverse-chronological group order.
  *   - `✕` rows are the only red in the register; pending/consolidated rows are

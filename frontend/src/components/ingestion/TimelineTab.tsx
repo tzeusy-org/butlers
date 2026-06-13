@@ -25,7 +25,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline Ledger"
- * Reference: pr/overview/ingestion-redesign/INGESTION_HANDOFF.md §1a
+ * Reference: docs/redesigns/ingestion-handoff.md §1a
  *
  * §2.8 Saved Views: built-in presets + custom views persisted via backend API.
  *   Built-in active selection persisted to localStorage key `ingestion-saved-views`.

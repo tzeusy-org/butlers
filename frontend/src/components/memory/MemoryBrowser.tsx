@@ -17,8 +17,8 @@
 // one search affordance, no card chrome on the register area.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/05-search-and-rail.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §2, §3, §3d
+// - (memory house-ledger redesign, graduated) prompts/05-search-and-rail.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §3, §3d
 // ---------------------------------------------------------------------------
 
 import EpisodesRegister from "@/components/memory/EpisodesRegister";

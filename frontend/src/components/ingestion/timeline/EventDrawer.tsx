@@ -20,7 +20,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline URL opens an event drawer"
- * Reference: pr/overview/ingestion-redesign/INGESTION_HANDOFF.md §"The drawer"
+ * Reference: docs/redesigns/ingestion-handoff.md §"The drawer"
  */
 
 import { useEffect, useRef, useState } from 'react'

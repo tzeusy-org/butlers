@@ -70,7 +70,7 @@ External users / operators are explicitly **not** in scope.
 
 ## 1. Scope
 
-This redesign replaces the entire `/secrets` surface in `frontend/` — `SecretsPage.tsx` (3-tab shell), `SecretsTable.tsx`, the six bespoke provider Setup cards in `frontend/src/components/settings/`, `CLIAuthCard.tsx`, and the embedded `EntityPicker` — with a single passport-book route (spine + page + tweaks). No storage migration; system secrets remain in `butler_secrets`, user secrets remain on `entity_info`. The binding design language is `pr/overview/secrets-redesign/DESIGN_LANGUAGE.md` (Dispatch). Integration target is the existing Vite/React 18.3.1/React Router 7.13/TailwindCSS 4.1.18/shadcn dashboard.
+This redesign replaces the entire `/secrets` surface in `frontend/` — `SecretsPage.tsx` (3-tab shell), `SecretsTable.tsx`, the six bespoke provider Setup cards in `frontend/src/components/settings/`, `CLIAuthCard.tsx`, and the embedded `EntityPicker` — with a single passport-book route (spine + page + tweaks). No storage migration; system secrets remain in `butler_secrets`, user secrets remain on `entity_info`. The binding design language is `docs/redesigns/secrets-design-language.md` (Dispatch). Integration target is the existing Vite/React 18.3.1/React Router 7.13/TailwindCSS 4.1.18/shadcn dashboard.
 
 ### Sub-pages
 
@@ -422,14 +422,14 @@ Concrete invocation:
 /project-direction --focus=feature \
   --brief=docs/redesigns/2026-05-25-secrets-brief.md \
   --bundle=pr/overview/secrets-redesign/ \
-  --binding-design-language=pr/overview/secrets-redesign/DESIGN_LANGUAGE.md \
+  --binding-design-language=docs/redesigns/secrets-design-language.md \
   --binding-design-intent=docs/redesigns/2026-05-25-secrets-brief.md#0-design-intent \
   --red-flag-policy=descope-or-escalate
 ```
 
 Carry-forward instructions:
 
-- `pr/overview/secrets-redesign/DESIGN_LANGUAGE.md` is **binding**. Every spec section must preserve it.
+- `docs/redesigns/secrets-design-language.md` is **binding**. Every spec section must preserve it.
 - Section 0 of this brief is **binding**. Spec drift away from intent fails reconciliation.
 - The "no LLM narration on `/secrets`" guardrail is part of intent and must be encoded as a spec invariant.
 - The projection-lens semantics for the identity switcher are **binding** for v1; backend must not enforce identity-scoped access (no auth boundary).

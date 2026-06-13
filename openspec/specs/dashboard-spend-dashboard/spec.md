@@ -73,5 +73,5 @@ The system SHALL compute `spend_rules.saved_7d` daily by comparing the cost of e
 
 ## Source References
 - PLAN.md §5 `/settings/spend` API surface and §6 Phase 3 implementation order.
-- `pr/overview/settings-refactor/settings-expanded.jsx :: SpendDashboard` is the visual reference.
+- Visual reference: the `SpendDashboard` redesign prototype (graduated; now shipped in `frontend/`).
 - Reuses `audit.append()` from dashboard-audit-log.

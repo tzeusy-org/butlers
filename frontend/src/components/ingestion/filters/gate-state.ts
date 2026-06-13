@@ -4,7 +4,7 @@
  * The backend exposes a flat list of IngestionRule objects.  This module
  * derives which pipeline gate each rule fires at based on its `action`
  * field, following the same bucketing used by the prototype
- * pr/overview/ingestion-redesign/ingestion-filters.jsx.
+ * (ingestion dispatch redesign, graduated) ingestion-filters.jsx.
  *
  * Gate order: accept → dedupe → tier → route → execute
  *

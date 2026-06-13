@@ -23,9 +23,9 @@ See:
   Scenario "Reauth is blocked".
 - `openspec/changes/redesign-ingestion-dispatch-console/tasks.md:45` — Phase 4.6
   reauth bead (tracked in beads as `bu-1f91v.11`) is BLOCKED on this spec.
-- `pr/overview/ingestion-redesign/ingestion-connector-detail.jsx:70-101,216-245` —
+- `docs/redesigns/ingestion-connector-detail.jsx:70-101,216-245` —
   binding UI ground truth for `ReauthCallout` and `ScopeList`.
-- `pr/overview/ingestion-redesign/ingestion-connectors-data.jsx:97-121` — Spotify
+- `docs/redesigns/ingestion-connectors-data.jsx:97-121` — Spotify
   fixture demonstrating `auth.status: "needs_reauth"`, `scope drift` notes, and
   `scopes` array shape that the `GET /api/ingestion/connectors/{type}/{identity}`
   response must populate.
@@ -228,13 +228,13 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 - Tracked implementation bead — `bu-1f91v.11`
   (`openspec/changes/redesign-ingestion-dispatch-console/tasks.md:45`)
 - UI ground truth: `ReauthCallout` —
-  `pr/overview/ingestion-redesign/ingestion-connector-detail.jsx:70-101`
+  `docs/redesigns/ingestion-connector-detail.jsx:70-101`
 - UI ground truth: `ScopeList` —
-  `pr/overview/ingestion-redesign/ingestion-connector-detail.jsx:216-245`
+  `docs/redesigns/ingestion-connector-detail.jsx:216-245`
 - Spotify fixture (auth.status, scopes shape) —
-  `pr/overview/ingestion-redesign/ingestion-connectors-data.jsx:97-121`
+  `docs/redesigns/ingestion-connectors-data.jsx:97-121`
 - Design language: serif italic note / mono scope label / state colors —
-  `pr/overview/ingestion-redesign/DESIGN_LANGUAGE.md:30,108-140,217-232`
+  `docs/redesigns/ingestion-design-language.md:30,108-140,217-232`
 - Existing Google OAuth scope plumbing being extended —
   `openspec/specs/google-multi-account-oauth/spec.md:84-145`
 - Existing `granted_scopes` precedent on `public.google_accounts` —

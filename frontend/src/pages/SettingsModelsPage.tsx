@@ -11,7 +11,7 @@
  *   - Dev-mode ApiWireFooter showing endpoints this page hits (§4.5)
  *
  * Design refs:
- *   pr/overview/settings-refactor/settings-redesign.jsx :: ModelCatalogExpanded
+ *   (settings dispatch redesign, graduated) settings-redesign.jsx :: ModelCatalogExpanded
  *
  * bu-q2nz3 — Phase 2: /settings/models page
  */

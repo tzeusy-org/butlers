@@ -21,7 +21,7 @@
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Visual and Route Verification"
  *
- * Reference: pr/overview/ingestion-redesign/ (READ-ONLY — prototype)
+ * Reference: (ingestion dispatch redesign, graduated)  (READ-ONLY — prototype)
  */
 
 import * as path from "path";

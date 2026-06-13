@@ -15,7 +15,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Priority senders"
- * Reference: pr/overview/ingestion-redesign/ingestion-filters.jsx §PrioritySendersBlock
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §PrioritySendersBlock
  */
 
 import type { IngestionRule } from '@/api/types'

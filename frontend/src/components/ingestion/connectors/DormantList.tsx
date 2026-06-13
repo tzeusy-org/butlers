@@ -11,7 +11,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Dormant connectors"
- * Reference: pr/overview/ingestion-redesign/ingestion-connectors-a.jsx §"Dormant section"
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §"Dormant section"
  */
 
 import { useState } from 'react'

@@ -1,7 +1,7 @@
 /**
  * Component tests for the shared detail-page skeleton primitives (bu-2ix8d.7).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/06-detail-pages.md):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/06-detail-pages.md):
  *   - DetailEyebrow renders `KIND · <short id>` (8 chars, hyphens stripped).
  *   - DetailHeading is the single H1 and dims to --dim when fading.
  *   - StateLine joins non-empty fragments with ` · ` and drops empties.

@@ -7,7 +7,7 @@
  *
  * No card chrome. One elevation. No color fills beyond foreground treatment.
  *
- * Spec: pr/overview/ingestion-redesign/ingestion-connector-detail.jsx §ConnectorHistogram
+ * Spec: docs/redesigns/ingestion-connector-detail.jsx §ConnectorHistogram
  */
 
 interface ConnectorHistogramProps {

@@ -2,7 +2,7 @@
  * Component tests for EpisodeDetailPage — the episode's editorial detail page
  * (bu-2ix8d.7).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/06-detail-pages.md "Episode"
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/06-detail-pages.md "Episode"
  * + "Provenance"):
  *   - Shared skeleton: eyebrow (EPISODE · <short id>), heading = first content
  *     line, state line, KV band — exactly one <h1>, no "Details" chrome.

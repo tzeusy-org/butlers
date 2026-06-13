@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Mock inventory data for /secrets passport — used in tests + MSW handlers [bu-qu8v8]
 //
-// Mirrors the design-canvas sample data from pr/overview/secrets-redesign/secrets-data.jsx.
+// Mirrors the design-canvas sample data from (secrets passport redesign, graduated) secrets-data.jsx.
 // Production will replace with `GET /api/secrets/inventory`.
 // ---------------------------------------------------------------------------
 

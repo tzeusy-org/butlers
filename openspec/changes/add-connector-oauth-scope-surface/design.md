@@ -10,7 +10,8 @@ downstream symptom is a quiet 401 stream in the connector's logs and a stale
 dashboard. The operator finds out when QA opens an investigation or when a
 butler stops receiving the expected events.
 
-The redesign bundle in `pr/overview/ingestion-redesign/` proposes a first-class
+The ingestion redesign prototype (now graduated; reference files preserved under
+`docs/redesigns/`) proposes a first-class
 UI for this failure mode: a `ReauthCallout` band at the top of the
 connector-detail page (red, mono-uppercase "REAUTH REQUIRED" eyebrow, serif
 explanation, "re-authorize" pill button) and a `ScopeList` in the right column
@@ -30,7 +31,7 @@ The bundle's Spotify fixture shows exactly the data the API must serve:
 }
 ```
 
-— `pr/overview/ingestion-redesign/ingestion-connectors-data.jsx:97-121`
+— `docs/redesigns/ingestion-connectors-data.jsx:97-121`
 
 And the binding component contract (`ScopeList`):
 
@@ -46,7 +47,7 @@ And the binding component contract (`ScopeList`):
 //   — italic serif, fg-muted
 ```
 
-— `pr/overview/ingestion-redesign/ingestion-connector-detail.jsx:222-244`
+— `docs/redesigns/ingestion-connector-detail.jsx:222-244`
 
 The existing specs only cover this for Google specifically
 (`google-multi-account-oauth/spec.md:84-120`, `google-account-registry/spec.md:150-162`)
@@ -71,7 +72,7 @@ only be resolved by spec evolution. This change resolves it.
 
 Stakeholders: the operator (Tze), QA staffer (which currently has to detect
 scope drift through a 401-on-API failure-streak heuristic — see
-`pr/overview/ingestion-redesign/ingestion-connectors-data.jsx:115-119`), and
+`docs/redesigns/ingestion-connectors-data.jsx:115-119`), and
 every OAuth-bound connector maintainer.
 
 ## Goals / Non-Goals
@@ -619,11 +620,11 @@ populated `auth.status` on first introspection after the deploy.
 - Blocking spec dependency declaration —
   `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40,91-101`
 - UI binding for `ReauthCallout` and `ScopeList` —
-  `pr/overview/ingestion-redesign/ingestion-connector-detail.jsx:70-101,216-245`
+  `docs/redesigns/ingestion-connector-detail.jsx:70-101,216-245`
 - Spotify fixture (auth.status, scopes) —
-  `pr/overview/ingestion-redesign/ingestion-connectors-data.jsx:97-121`
+  `docs/redesigns/ingestion-connectors-data.jsx:97-121`
 - Design language for serif italic notes —
-  `pr/overview/ingestion-redesign/DESIGN_LANGUAGE.md:30,108-140`
+  `docs/redesigns/ingestion-design-language.md:30,108-140`
 - Google scope-set registry precedent —
   `openspec/specs/google-multi-account-oauth/spec.md:84-145`
 - `granted_scopes` precedent on `public.google_accounts` —

@@ -15,8 +15,8 @@
 //     (bu-awo8k.3 / .4), so the footer ALWAYS renders here — never a dead button.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/06-detail-pages.md "Fact" + "Commit footer"
-// - pr/overview/memory-redesign/VISION.md (commit pills)
+// - (memory house-ledger redesign, graduated) prompts/06-detail-pages.md "Fact" + "Commit footer"
+// - (memory house-ledger redesign, graduated) VISION.md (commit pills)
 // ---------------------------------------------------------------------------
 
 import { type ReactElement, useState } from "react";

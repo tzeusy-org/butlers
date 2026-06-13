@@ -187,7 +187,7 @@ The consolidation executor SHALL apply parsed consolidation results to the datab
 ---
 
 ### Requirement: Memory Page — Dispatch Fold-In
-The existing `/memory` page SHALL fold in the `MemoryExpanded` design from `pr/overview/settings-refactor/settings-expanded.jsx`, with sections for the tier flow, retention policy, compaction log, and memory-inspect search.
+The existing `/memory` page SHALL fold in the `MemoryExpanded` design, with sections for the tier flow, retention policy, compaction log, and memory-inspect search.
 
 #### Scenario: Page structure post-fold-in
 - **WHEN** a user navigates to `/memory`
@@ -260,7 +260,7 @@ This requirement composes with the cross-cutting "MCP Tools Raise on Invalid Inp
 
 ## Source References
 - PLAN.md §6 Phase 8 — memory fold-in scope.
-- `pr/overview/settings-refactor/settings-expanded.jsx :: MemoryExpanded` is the visual reference.
+- Visual reference: the `MemoryExpanded` redesign prototype (graduated; now shipped in `frontend/`).
 - Reuses `audit.append()` from dashboard-audit-log on policy mutations.
 - Existing module-memory requirements (correction-driven retraction, etc.) are unchanged by this delta.
 

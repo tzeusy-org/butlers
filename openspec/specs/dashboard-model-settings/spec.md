@@ -187,5 +187,5 @@ The `/settings/models` page SHALL render the catalog in the Dispatch design lang
 
 ## Source References
 - PLAN.md §2 settled decisions (six-tier catalog, sort contract, routing contract) and §5 `/settings/models` API.
-- `pr/overview/settings-refactor/settings-redesign.jsx :: ModelCatalogExpanded` is the visual reference.
+- Visual reference: the `ModelCatalogExpanded` redesign prototype (graduated; now shipped in `frontend/`).
 - Reuses `audit.append()` from dashboard-audit-log on every mutation.

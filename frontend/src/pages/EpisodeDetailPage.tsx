@@ -15,8 +15,8 @@
 // No commit footer — mutations live only on the fact page.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/06-detail-pages.md "Episode" + "Provenance"
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §4, §6
+// - (memory house-ledger redesign, graduated) prompts/06-detail-pages.md "Episode" + "Provenance"
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §4, §6
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react";

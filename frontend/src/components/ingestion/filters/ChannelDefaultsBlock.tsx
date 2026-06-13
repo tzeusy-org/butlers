@@ -11,7 +11,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Channel defaults"
- * Reference: pr/overview/ingestion-redesign/ingestion-filters.jsx §ChannelDefaultsBlock
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §ChannelDefaultsBlock
  */
 
 import type { IngestionRule } from '@/api/types'

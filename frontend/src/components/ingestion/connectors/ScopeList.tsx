@@ -13,7 +13,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Scope list consumes the OAuth scope capability"
- * Reference: pr/overview/ingestion-redesign/ingestion-connector-detail.jsx §Scopes
+ * Reference: docs/redesigns/ingestion-connector-detail.jsx §Scopes
  */
 
 /** One OAuth scope entry from connector-oauth-scope-surface. */

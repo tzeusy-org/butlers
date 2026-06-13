@@ -16,7 +16,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connectors Roster"
- * Reference: pr/overview/ingestion-redesign/ingestion-connectors-a.jsx §ConnectorRow
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §ConnectorRow
  */
 
 import { Link } from 'react-router'

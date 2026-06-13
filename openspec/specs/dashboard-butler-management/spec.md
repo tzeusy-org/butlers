@@ -1581,7 +1581,7 @@ All butler management tabs SHALL follow consistent loading and error patterns.
 - **THEN** a centered, muted message describes the empty condition and, where applicable, guides the operator toward the creation action
 
 ### Requirement: Butler Detail Page — Dispatch Fold-In
-The existing `/butlers/{name}` detail page SHALL fold in the `ButlersExpanded` design from `pr/overview/settings-refactor/settings-expanded.jsx`, with sections for fallback chain, system prompt, tools, memory access, activity, and kill switch.
+The existing `/butlers/{name}` detail page SHALL fold in the `ButlersExpanded` design, with sections for fallback chain, system prompt, tools, memory access, activity, and kill switch.
 
 #### Scenario: Page structure post-fold-in
 - **WHEN** a user navigates to `/butlers/{name}`
@@ -1655,6 +1655,6 @@ The dashboard SHALL expose per-butler memory tier access.
   `container_name`, `port`, `registered_duration_seconds`, `config_path`;
   no `pid` field is permitted.
 - PLAN.md §6 Phase 7 — dispatch fold-in scope.
-- `pr/overview/settings-refactor/settings-expanded.jsx :: ButlersExpanded` is the
-  visual reference for the dispatch fold-in.
+- Visual reference: the `ButlersExpanded` redesign prototype (graduated; now
+  shipped in `frontend/`) for the dispatch fold-in.
 - Reuses `audit.append()` from dashboard-audit-log on every dispatch mutation.

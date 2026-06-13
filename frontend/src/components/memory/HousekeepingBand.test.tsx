@@ -2,7 +2,7 @@
 /**
  * Component tests for HousekeepingBand — Band 4 of /memory (bu-2ix8d.8).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/07-housekeeping.md):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/07-housekeeping.md):
  *   - One HOUSEKEEPING eyebrow + the #housekeeping anchor (rail deep-link).
  *   - Retention: a single Save commit pill appears only when a row is dirty,
  *     PUTs the dirty rows, and the kind column is mono text (no free-text kind

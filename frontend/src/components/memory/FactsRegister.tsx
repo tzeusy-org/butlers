@@ -20,8 +20,8 @@
 // any data. State color lives only in the attention rail.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/02-register-facts.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §3a, §4, §6
+// - (memory house-ledger redesign, graduated) prompts/02-register-facts.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §3a, §4, §6
 // ---------------------------------------------------------------------------
 
 import { Link, useNavigate } from "react-router";

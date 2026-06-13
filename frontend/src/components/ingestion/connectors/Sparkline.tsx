@@ -8,7 +8,7 @@
  * Design: no card chrome, foreground bars only (no colored fills except for
  * zero/empty state). Consistent with Dispatch visual language.
  *
- * Spec: pr/overview/ingestion-redesign/ingestion-connectors-a.jsx §Sparkline
+ * Spec: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §Sparkline
  */
 
 interface SparklineProps {

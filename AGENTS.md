@@ -9,8 +9,10 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
-bd sync               # Sync with git
 ```
+
+Mutations auto-commit to the shared Dolt server (`127.0.0.1:3307`, db `butlers`);
+there is no `bd sync` and no SQLite. See "Beads DB Mode" below.
 
 ## Landing the Plane (Session Completion)
 
@@ -24,10 +26,10 @@ bd sync               # Sync with git
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
+   (Bead mutations already auto-committed to Dolt — no `bd sync` step exists.)
 5. **Clean up** - Clear stashes, prune remote branches
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
@@ -53,27 +55,28 @@ bd sync               # Sync with git
 
 This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
 
-### Beads DB Mode (SQLite + beads-sync branch)
+### Beads DB Mode (Dolt server)
 
-This repo uses `no-db: false` (see `.beads/config.yaml`) with a `beads-sync` branch for protected-branch compatibility.
+This repo uses `bd` v1.0.x backed by the **shared Dolt server** on
+`127.0.0.1:3307` (database `butlers`), discovered via `.beads/metadata.json`
+(`dolt_mode: server`). There is no SQLite database and no `beads-sync` branch.
 
-**Data flow (mutations write to SQLite only, not JSONL):**
+**Data flow:**
 ```
-bd create/update/close  →  SQLite DB (.beads/beads.db)
-bd export -o .beads/issues.jsonl  →  Main JSONL (flushes DB to file)
-bd sync  →  Sync worktree JSONL (.git/beads-worktrees/beads-sync/.beads/issues.jsonl)
-bd sync --merge  →  Merges beads-sync branch into main
+bd create/update/close  →  write directly to Dolt; each write auto-commits to Dolt history
+bd export -o .beads/issues.export.jsonl  →  refresh the git-tracked JSONL mirror (optional)
 ```
 
-**Critical:** `bd sync` does NOT auto-export from DB to main JSONL. It only copies the main JSONL to the sync worktree. Without a prior `bd export`, `bd sync` propagates stale JSONL. Always run `bd export -o .beads/issues.jsonl` before `bd sync`.
-
-**Other notes:**
-- **`bd sync --import-only`** reimports JSONL into the DB (useful after pulling changes from others).
-- **If SQLite becomes corrupt**, delete `.beads/beads.db` and run `bd init` to reimport from JSONL, then repair (see below).
-- **`bd init` reimport bug:** leaves `dependencies.metadata` and `dependencies.thread_id` as empty strings, which breaks all mutations with `sqlite3: SQL logic error: malformed JSON` during blocked_issues_cache rebuild. Fix with: `python3 -c "import sqlite3; c=sqlite3.connect('.beads/beads.db'); c.execute(\"UPDATE dependencies SET metadata=NULL WHERE metadata=''\"); c.execute(\"UPDATE dependencies SET thread_id=NULL WHERE thread_id=''\"); c.commit()"`.
-- **`bd init` status import bug:** importing from JSONL may not faithfully restore `status`/`close_reason`. Verify with `bd doctor` and fix mismatches with direct SQL if needed.
-- **`skip-worktree` flags:** beads may set `skip-worktree` or `assume-unchanged` on `issues.jsonl`, hiding modifications from git. Clear with `git update-index --no-skip-worktree --no-assume-unchanged .beads/issues.jsonl`.
-- **v0.49.6 pinned:** v0.55.4 requires `libicui18n.so.74` (ICU 74), not available on Ubuntu 22.04 (has ICU 70).
+- **No `bd sync`.** That subcommand does not exist in this bd version. Dolt is the
+  source of truth and persists every mutation immediately — you do not need a flush
+  or sync step to make bead changes durable.
+- **Never create `.beads/issues.jsonl`.** On bd 1.0.4 server mode its presence
+  triggers a full-file re-import on every write that can wedge bd town-wide. The
+  git-tracked mirror lives at `.beads/issues.export.jsonl` (`export.path` in
+  `.beads/config.yaml`); `bd export` keeps it fresh.
+- **Repair:** if bd misbehaves (e.g. `database "..." not found`), run
+  `bd doctor --fix --yes` from the repo root. For Dolt server health/cleanup use
+  `gt dolt status` / `gt dolt cleanup`.
 
 ### Essential Commands
 
@@ -89,7 +92,6 @@ bd create --title="..." --type=task --priority=2
 bd update <id> --status=in_progress
 bd close <id> --reason="Completed"
 bd close <id1> <id2>  # Close multiple issues at once
-bd sync               # Commit and push changes
 ```
 
 ### Workflow Pattern
@@ -98,15 +100,13 @@ bd sync               # Commit and push changes
 2. **Claim**: Use `bd update <id> --status=in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `bd close <id>`
-5. **Export + Sync**: `bd export -o .beads/issues.jsonl && bd sync`
 
-### Worktree Hydration
+Mutations land in Dolt immediately — no export/sync step is required for durability.
 
-- In long-lived worktrees, hydrate before looking up freshly created issue IDs:
-  ```bash
-  bd sync --import-only
-  ```
-- This imports newer `.beads/issues.jsonl` state into the active worktree so `bd show <new-id>` resolves deterministically.
+### Worktrees
+
+- All worktrees talk to the same Dolt server, so a bead created in one worktree is
+  visible from any other immediately — no hydration/import step is needed.
 
 ### Worktree node_modules
 
@@ -134,9 +134,7 @@ The script symlinks `frontend/node_modules` and silently skips if the main repo 
 git status              # Check what changed
 git add <files>         # Stage code changes
 git commit -m "..."     # Commit code
-bd export -o .beads/issues.jsonl  # Flush DB → main JSONL
-bd sync                 # Commit JSONL → beads-sync branch
-git push                # Push to remote
+git push                # Push to remote (bead mutations already in Dolt)
 ```
 
 ### Best Practices
@@ -145,7 +143,6 @@ git push                # Push to remote
 - Update status as you work (in_progress → closed)
 - Create new issues with `bd create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
-- Always `bd export -o .beads/issues.jsonl && bd sync` before ending session
 
 <!-- end-bv-agent-instructions -->
 
@@ -213,9 +210,6 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 
 ### Finance overview N+1 query optimization pattern
 - The subscription_audit function in `roster/finance/tools/overview.py` implements batched query optimization for fetching subscription charge dates: use single LEFT JOIN with GROUP BY instead of per-subscription queries. This pattern should be replicated for any overview/analytics tool that needs to correlate multiple parent entities with their most recent related transactions or events. The key is `COALESCE(MAX(CASE WHEN condition THEN field END), fallback)` to handle entities with no related rows.
-
-### Beads sync command drift
-- The current `bd` CLI in this repo/worktree no longer exposes `bd sync`; session close flows should use `bd export -o .beads/issues.jsonl` and regular git push semantics (or the project-approved replacement command when available) instead of assuming `bd sync` exists.
 
 ### Compose base-image invalidation contract
 - `scripts/compose.sh` rebuilds `butlers-base:latest` when the `butlers.base.dockerfile_sha` image label differs from the current `Dockerfile.base` SHA; app-image rebuilds alone are not enough to pick up base-layer tool additions like `gh`.
@@ -677,23 +671,14 @@ make test-qg
 ### Beads coordinator handoff guardrail
 - Some worker runs can finish with branch pushed but bead still `in_progress` (no PR/bead transition). Coordinator should detect `agent/<id>` ahead of `main` with no PR and normalize by creating a PR and marking the bead `blocked` with `pr-review` + `external_ref`.
 
-### Beads push guardrail
-- Repo push checks enforce a clean beads state; `git push` can fail with "Uncommitted changes detected" even after commits if `.beads/issues.jsonl` was re-synced/staged during pre-push checks.
-- If this happens, run `bd sync --status`, inspect staged `.beads/issues.jsonl`, commit the sync normalization (or intentionally restore it), then re-run `git push`.
-
-### Beads worktree JSONL contract
-- `.beads/config.yaml` uses `no-db: false` with SQLite as the working database and `sync-branch: "beads-sync"` for protected-branch workflows.
-- Mutations (`bd create/update/close`) write only to SQLite. `bd export -o .beads/issues.jsonl` flushes DB to main JSONL. `bd sync` copies main JSONL to the beads-sync worktree and commits.
-- `bd sync` does NOT auto-export from DB. Without a prior `bd export`, it syncs stale JSONL.
-- If SQLite becomes corrupt, delete `.beads/beads.db`, run `bd init`, then fix empty-string `dependencies.metadata`/`thread_id` (see CLAUDE.md).
-- Regression coverage lives in `tests/tools/test_beads_worktree_sync.py` and must keep worktree `bd close`/`bd show`/`bd export`/`bd import` aligned with branch-local `.beads/issues.jsonl`.
+### Beads backend contract (Dolt server)
+- `bd` v1.0.x is backed by the shared Dolt server (`127.0.0.1:3307`, db `butlers`, `.beads/metadata.json` `dolt_mode: server`). No SQLite DB, no `.beads/beads.db`, no `beads-sync` branch, no `bd sync` subcommand.
+- Mutations (`bd create/update/close`) write directly to Dolt and auto-commit to its history immediately — durable without any export/sync step.
+- The git-tracked JSONL mirror is `.beads/issues.export.jsonl` (`export.path` in `.beads/config.yaml`); refresh it with `bd export -o .beads/issues.export.jsonl`. NEVER create `.beads/issues.jsonl` (it triggers a wedging full-reimport loop on writes — see the bd 1.0.4 note below).
+- All worktrees share the one Dolt server, so a bead created anywhere is visible everywhere immediately — no hydration/import step needed.
 
 ### Beads PR-review strip guardrail
-- Before a reviewer worker strips `.beads/` drift from a PR branch, persist any new coordinator-side bead mutations on main first; otherwise restoring `.beads/` from `origin/main` can resurrect stale issue snapshots and drop freshly created/updated beads (for example new `pr-review-task` IDs).
-
-### Beads worktree hydration contract
-- When a worker worktree may be stale relative to newly-created issues, run `bd sync --import-only` in that worktree before `bd show <id>` lookups.
-- Regression coverage lives in `tests/tools/test_beads_worktree_hydration.py` and verifies stale lookup failure followed by successful hydration.
+- Before a reviewer worker strips `.beads/` drift from a PR branch, persist any new coordinator-side bead mutations first; restoring `.beads/` from `origin/main` only affects the JSONL mirror (Dolt remains source of truth), but keep the mirror consistent to avoid confusing diffs.
 
 ### Pre-existing test failure (tests/daemon/test_module_state.py)
 - `tests/daemon/test_module_state.py::TestInitModuleRuntimeStates::test_failed_module_persists_disabled_to_store` is failing on main as of 2026-02-20. CI runs `mergeStateStatus: UNSTABLE` for PRs unrelated to daemon module state. This is a pre-existing failure not introduced by credential_store or butler_secrets PRs.
@@ -707,10 +692,9 @@ make test-qg
 - Gmail connector DB bootstrap must read OAuth keys via `CredentialStore`/`load_google_credentials` (`butler_secrets`), not legacy `google_oauth_credentials`; optional Pub/Sub token lookup failures must not null-out already resolved OAuth creds.
 
 ### Beads worktree write guardrail
-- In git worktrees, `bd` operations can target the primary repo DB/JSONL instead of the worktree copy; verify with `bd --no-db show <id>` before write operations.
-- For worker-branch bead metadata commits, run `bd --no-db` for create/update/dep commands in the worktree so `.beads/issues.jsonl` changes are tracked on that branch.
+- All `bd` writes go to the shared Dolt server regardless of which worktree you run them from, so bead state is consistent across worktrees without `--no-db` gymnastics.
 - `bd worktree create` may append per-worktree paths to repo `.gitignore`; strip those incidental lines before committing to avoid unrelated drift on `main`.
-- When integrating worker commits from `agent/*` branches, never carry `.beads/issues.jsonl` changes into `main`; restore/cherry-pick code-only to prevent reopened/rolled-back bead statuses.
+- The `.beads/issues.export.jsonl` mirror is git-tracked; avoid carrying its churn from `agent/*` branches into `main` — Dolt is source of truth, so cherry-pick code-only and let `bd export` regenerate the mirror.
 
 ### Beads dependency timestamp guardrail
 - In no-daemon worktree flows (`BEADS_NO_DAEMON=1`), `bd dep add` currently serializes new dependency records with `created_at="0001-01-01T00:00:00Z"` instead of wall-clock time; treat this as tooling debt (tracked in `butlers-865`) rather than a per-bead data-model change.
@@ -837,7 +821,7 @@ make test-qg
 - High-risk tiers (`high`, `critical`) enforce constrained standing rules in `src/butlers/modules/approvals/module.py`: at least one exact/pattern arg constraint and bounded scope (`expires_at` or `max_uses`); `create_rule_from_action` and approve+create-rule paths auto-bound high-risk rules with `max_uses=1`.
 
 ### Beads concurrent-state reconciliation guardrail
-- In multi-worker coordinator runs, stale worker commits of `.beads/issues.jsonl` can resurrect previously normalized bead state (for example, reintroducing `review-running` labels or flipping merged review beads back to `blocked`).
+- In multi-worker coordinator runs, stale worker commits of the `.beads/issues.export.jsonl` mirror can look like they resurrect previously normalized bead state in diffs; trust Dolt (the source of truth) over the mirror, and regenerate it with `bd export` rather than reverting bead status from a stale JSONL.
 - After each coordinator cycle, re-run a PR-state normalization pass (`blocked` + `pr-review` / `pr-review-task`) before dispatching more workers, rather than assuming prior status updates remained authoritative.
 
 ### Dev bootstrap connector env-file contract
@@ -889,7 +873,7 @@ make test-qg
 - `TelegramBotConnectorConfig` and `TelegramUserClientConnectorConfig` are Python **dataclasses** (not Pydantic models); use `dataclasses.replace(config, field=value)` for partial updates — `model_copy()` is Pydantic-only.
 - `GmailConnectorConfig` is a Pydantic `BaseModel` with `frozen=True`; use `config.model_copy(update={...})` for partial updates.
 - Pydantic v2 auto-coerces `str` to `pathlib.Path` for `Path`-typed fields, but prefer explicit `Path(cursor_path_str)` at construction sites to satisfy static type checkers and remove `type: ignore` suppressions.
-- `bd close` from worktrees silently fails to persist due to redirect/sharing issues; always re-close beads from the `beads-sync` branch after worktree operations.
+- `bd close` from any worktree persists directly to the shared Dolt server; verify with `bd show <id> --json` if in doubt (no `beads-sync` branch re-close step exists anymore).
 
 ### Secrets shared-target contract
 - `src/butlers/api/routers/secrets.py` treats `/api/butlers/shared/secrets` as a reserved target that resolves via `DatabaseManager.credential_shared_pool()` (not `db.pool("shared")`), returning 503 with `"Shared credential database is not available"` when unset.
@@ -1024,9 +1008,6 @@ make test-qg
 ### Health owner entity resolution contract
 - Post-`core_016`, owner-role resolution must not query `public.contacts.roles`; that column is gone. Health meal logging and other owner lookups should resolve the owner via `public.entities.roles` (or the shared owner-entity helper path) and degrade gracefully when no owner entity exists.
 
-### Beads CLI sync drift
-- In this environment (`bd` v0.58.0), the CLI no longer exposes `bd sync`; persistence/inspection flows live under `bd vc` / `bd dolt`, while `bd export -o .beads/issues.jsonl` still flushes SQLite state to JSONL. Any repo docs that prescribe `bd sync` are stale against the installed tool.
-
 ### Notifications API startup degradation contract
 - `src/butlers/api/routers/notifications.py` must treat a missing switchboard `notifications` table the same as an unavailable switchboard pool: `GET /api/notifications` and `GET /api/butlers/{name}/notifications` return an empty paginated payload, and `GET /api/notifications/stats` returns zeroed stats instead of bubbling a 500 before switchboard migrations have run.
 
@@ -1127,10 +1108,10 @@ For more details, see README.md and docs/QUICKSTART.md.
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
+   (Bead mutations already auto-committed to Dolt — no `bd sync` step exists.)
 5. **Clean up** - Clear stashes, prune remote branches
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
@@ -1200,7 +1181,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - Chronicler projection adapters whose evidence is mirrored across multiple butler schemas (e.g. `CalendarCompletedAdapter`) MUST derive `source_ref` from the upstream identifier (`calendar:{origin_instance_ref}`), not from the per-schema row id, so the persistent `(source_name, source_ref)` upsert dedups the cross-schema fan-out automatically. The in-run `seen_origin` set is just an efficiency hedge.
 - Chronicler `health.steps` and `health.heart_rate` are point-event-only sources: register them in source contracts and schedules, but do not add D1 lane-taxonomy mappings unless they start emitting episodes.
 - `Spawner.trigger(...)` propagates `ingestion_event_id` end-to-end to `session_create`; routing handlers in `src/butlers/core_tools/_routing.py` must pass `ingestion_event_id=route_request_id` because the switchboard ingest writes the same UUID7 as both `request_id` and `public.ingestion_events.id`. Without it, every route session stores `ingestion_event_id=NULL` and chronicler titles fall through to `Conversation via unknown channel`.
-- Ingestion redesign closure must include live visual parity evidence, not just spec/task completion: compare `/ingestion` routes against `pr/overview/ingestion-redesign`, verify the old `Ingestion Events` card/table and page-level tab shell are absent, and keep screenshot/report artifacts before archiving.
+- Ingestion redesign closure must include live visual parity evidence, not just spec/task completion: compare `/ingestion` routes against the design reference (`docs/redesigns/ingestion-design-language.md` + `ingestion-handoff.md`; the prototype bundle graduated out of `pr/`), verify the old `Ingestion Events` card/table and page-level tab shell are absent, and keep screenshot/report artifacts before archiving.
 - Telegram user-client conversation-history batches must preserve `sender.participants` / `owner_sender_id` through `message_inbox.raw_payload`; durable-buffer routing must derive the non-owner sender and pass `source_id` so identity resolution can anchor downstream memory facts to the contact instead of the owner.
 - `frontend/src/components/chronicles/MapWidgetInner.tsx` must guard `map.addSource(...)` / `map.addLayer(...)` behind `map.isStyleLoaded()` (or `map.once('load', ...)`); calling them synchronously after `new maplibreGl.Map(...)` throws `Style is not done loading` and renders the user-visible `Failed to load the map. Try again` fallback even when valid trail data exists.
 - Frontend links under the `/butlers-dev` mount must respect the routing surface: React Router `Link to` values should stay app-internal (for example `/butlers/lifestyle`) because `createBrowserRouter(..., { basename })` prefixes them; raw `<a href>` targets still need an explicit `import.meta.env.BASE_URL` prefix if they must leave React Router navigation.

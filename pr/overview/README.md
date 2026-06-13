@@ -8,18 +8,39 @@ Phase 0 of `butlers-redesign-prompt` reads this table first. The skill resolves 
 
 | Slug | Folder | Status | Scope |
 |------|--------|--------|-------|
-| `ingestion` | `ingestion-redesign/` | Ready | `/ingestion` page (timeline, connectors, filters tabs). |
-| `qa` | `qa-redesign/` | Ready | `/qa` page (dossier + patrol journal). |
-| `settings` | `settings-refactor/` | Ready (non-canonical) | `/settings` + `/approvals`. Uses `PLAN.md` instead of `IMPLEMENTATION.md` + `*_HANDOFF.md`. Skill must tolerate. |
-| `butler-detail` | `specific-butler-page-redesign/` | Draft | `/butlers/{name}` detail page. Missing `DESIGN_LANGUAGE.md`; intent capture sparse. Skill should warn before proceeding. |
 | `entity` | `entity-redesign/` | Ready (non-canonical) | `/entities` surface: Index + queue rail, `/hop`, `/columns`, `/concentration`, Editorial+Workbench detail, app-wide Cmd-K Finder. Folds `/contacts` into `/entities?has=contact`. Uses `README.md` instead of `IMPLEMENTATION.md`; per-page recipes under `prompts/00-07.md`; `DESIGN_LANGUAGE.md` lives under `reference/`. Skill must tolerate. |
-| `memory` | `memory-redesign/` | Ready (non-canonical) | `/memory` + detail pages (`/memory/facts/:id`, `/memory/rules/:id`, `/memory/episodes/:id`): house-ledger IA — pipeline band as the page's spine, three register shapes (ledger / standing orders / daybook), confidence-as-ink decay, attention rail owning all state color, demoted housekeeping band. Uses `README.md` + `VISION.md` + `MEMORY_LANGUAGE.md` (no `IMPLEMENTATION.md`, no JSX mocks — recipe-driven like `entity-redesign/`); per-surface recipes under `prompts/00-07.md`. Skill must tolerate. |
-| `secrets` | `secrets-redesign/` | Ready (non-canonical) | `/secrets` page: passport-book IA — left spine of all credentials (pinned `needs-hand`, CLI runtimes, System, User integrations); right editorial page with fingerprint + scopes + probe + *what breaks* evidence. Replaces today's 3-tab `SecretsPage`. Uses `README.md` + `HANDOFF.md` (no `IMPLEMENTATION.md`); per-surface recipes under `prompts/00-05.md`. Skill must tolerate. |
 | `overview` | `overview/` (top level) | Reference | Cross-cutting design assets shared across redesigns. **Not a redesign**; do not pass as slug. |
 | — | `dispatch-kit/` | **System (refuse)** | Design system / portable toolkit, not a redesign of a specific page. Skill refuses this slug. |
 | — | `design-canvas.jsx`, `data.jsx`, etc. (top level) | **System (refuse)** | Cross-cutting primitives and canvases. Not redesigns. |
 
 When adding a new bundle: add a row here in the same commit. The skill checks this file before falling back to fuzzy match.
+
+> **Graduated bundles (deleted 2026-06-13).** A redesign bundle is reference
+> material for implementation workers only; once it has fully shipped into
+> `frontend/` and its target state is captured in `openspec/specs/`, the bundle is
+> deleted (the spec becomes the long-lived source of truth). Docs that a *live*
+> spec or an *active* OpenSpec change still binds are not deleted — they are
+> relocated to `docs/redesigns/` (a durable home outside `pr/`) and the references
+> repointed. Removed this pass:
+>
+> - `ingestion-redesign/` → `dashboard-ingestion-dispatch-console`. Binding design
+>   language + handoff relocated to `docs/redesigns/ingestion-design-language.md` /
+>   `ingestion-handoff.md`; the two connector mocks the active
+>   `add-connector-oauth-scope-surface` change cites by line number relocated to
+>   `docs/redesigns/ingestion-connector-detail.jsx` / `ingestion-connectors-data.jsx`.
+> - `qa-redesign/` → `qa-dashboard`.
+> - `settings-refactor/` → `dashboard-settings-console` / `dashboard-model-settings` /
+>   `dashboard-permissions` / `dashboard-approvals`.
+> - `specific-butler-page-redesign/` (+ top-level butler-detail mocks) →
+>   `detail-page-archetype` / `dashboard-butler-management`.
+> - `memory-redesign/` → `dashboard-domain-pages` (house-ledger).
+> - `secrets-redesign/` → `butler-secrets`; binding design language relocated to
+>   `docs/redesigns/secrets-design-language.md`.
+> - The original `/` overview and `/butlers` index mocks, plus the
+>   `pr/dispatch-redesign-*` epic reports, graduated likewise.
+>
+> `entity-redesign/` remains because the `entity-v3-lifecycle-and-depth` OpenSpec
+> change is still in flight.
 
 ## Bundle contract
 

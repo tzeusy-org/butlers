@@ -7,7 +7,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline" gate sections
- * Reference: pr/overview/ingestion-redesign/ingestion-filters.jsx §GateSection
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §GateSection
  */
 
 import type { IngestionRule } from '@/api/types'

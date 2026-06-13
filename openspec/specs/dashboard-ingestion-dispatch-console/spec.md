@@ -8,9 +8,10 @@ visual language. It defines first-class ingestion routes — a Timeline ledger, 
 Connectors roster, a per-connector detail page, and a Filters pipeline view —
 rendered with bespoke hairline layouts rather than card/table/tab chrome.
 
-The prototype assets in `pr/overview/ingestion-redesign/` (handoff, design
-language, and React prototype files) are implementation inputs, not archival
-inspiration. The contract requires real data behind every surface (no stubbed,
+The redesign prototype has graduated into shipped `frontend/` code; this
+capability is now the long-lived contract (the binding design language and
+handoff are preserved at `docs/redesigns/ingestion-design-language.md` and
+`docs/redesigns/ingestion-handoff.md`). The contract requires real data behind every surface (no stubbed,
 synthetic, or forever-loading sections), audited raw-payload access, explicit
 data states (loading, empty, partial-error, unavailable), and committed visual
 and route verification evidence before closure.
@@ -61,8 +62,8 @@ a fourth redesigned tab.
 ### Requirement: Dispatch Visual Language
 
 The ingestion surface SHALL follow the Dispatch visual language from
-`pr/overview/ingestion-redesign/DESIGN_LANGUAGE.md` and
-`pr/overview/ingestion-redesign/INGESTION_HANDOFF.md`.
+`docs/redesigns/ingestion-design-language.md` and
+`docs/redesigns/ingestion-handoff.md`.
 
 The primary ingestion surfaces SHALL use hairline-divided, rhythm-based
 layouts rather than card chrome. shadcn primitives MAY be used for low-level
@@ -342,8 +343,8 @@ Verification SHALL include:
 - Non-Negotiable Rule 7 (transport and connectors are responsible for external APIs)
 - RFC 0003 (Switchboard routing and ingestion)
 - `about/heart-and-soul/design-language.md`
-- `pr/overview/ingestion-redesign/INGESTION_HANDOFF.md`
-- `pr/overview/ingestion-redesign/DESIGN_LANGUAGE.md`
+- `docs/redesigns/ingestion-handoff.md`
+- `docs/redesigns/ingestion-design-language.md`
 - `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/`
 - `openspec/changes/add-connector-oauth-scope-surface/`
 - `openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md` (generalised OAuth callback endpoint and `page_of_origin` routing table)

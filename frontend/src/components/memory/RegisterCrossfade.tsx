@@ -22,7 +22,7 @@
 // renders at full opacity immediately (instant swap), per the project's
 // usePrefersReducedMotion convention.
 //
-// Binding doc: pr/overview/memory-redesign/MEMORY_LANGUAGE.md §8
+// Binding doc: (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §8
 // ---------------------------------------------------------------------------
 
 import { useEffect, useRef, useState, type ReactNode } from "react";

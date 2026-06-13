@@ -2,7 +2,7 @@
  * Component tests for RuleDetailPage — the rule's editorial detail page
  * (bu-2ix8d.7).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/06-detail-pages.md "Rule"):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/06-detail-pages.md "Rule"):
  *   - Shared skeleton: eyebrow (RULE · <short id>), heading = directive text,
  *     state line, KV band — exactly one <h1>, no "Details" chrome.
  *   - Outcome record two-line format (applied/helpful/harmful/effectiveness).

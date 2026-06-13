@@ -13,7 +13,7 @@ This capability declares the `/secrets` page contract: passport-book IA, the evi
 ### Requirement: Passport-Book Information Architecture
 The dashboard SHALL replace the existing 3-tab `/secrets` shell with a single passport-book route at `/secrets` consisting of a left **spine** index and a right **page** editorial body. The page SHALL NOT render any of the deprecated patterns: tab strip, `SecretsTable` (`••••••••` row with eye-toggle as the primary affordance), six bespoke provider Setup cards, separate `CLIAuthCard`, embedded `EntityPicker` in the page header, or prototype tweaks chrome.
 
-The page is rendered in the binding **Dispatch** design language captured at `pr/overview/secrets-redesign/DESIGN_LANGUAGE.md`. Every visual decision in the spec MUST preserve that language — typography (Inter Tight 500 display, Source Serif 4 voice, JetBrains Mono code/eyebrow), spacing (4px multiples; 48px × 56px page padding; 56px section gutter; `1.4fr 1fr` two-column editorial grid), colour (oklch tokens; `--red/--amber/--green` only when state demands), motion (briefing cross-fade, sidebar chevron, theme fade, tooltip; nothing else).
+The page is rendered in the binding **Dispatch** design language captured at `docs/redesigns/secrets-design-language.md`. Every visual decision in the spec MUST preserve that language — typography (Inter Tight 500 display, Source Serif 4 voice, JetBrains Mono code/eyebrow), spacing (4px multiples; 48px × 56px page padding; 56px section gutter; `1.4fr 1fr` two-column editorial grid), colour (oklch tokens; `--red/--amber/--green` only when state demands), motion (briefing cross-fade, sidebar chevron, theme fade, tooltip; nothing else).
 
 #### Scenario: Single-route surface
 - **WHEN** a user navigates to `/secrets`
@@ -250,7 +250,7 @@ This requirement defines a scope boundary, not a UI contract; the UI contract fo
 - Security model — single-owner doctrine — `about/heart-and-soul/security.md:7-8, 18-20`
 - Read-mostly observability / design language tokens — `about/heart-and-soul/design-language.md:25-43`
 - Binding integration brief (§0 design intent, §3 backend contract, §4 LLM-cost de-scopes, §5 Q8/Q13) — `docs/redesigns/2026-05-25-secrets-brief.md`
-- Passport-book design language (Dispatch) — `pr/overview/secrets-redesign/DESIGN_LANGUAGE.md`
+- Passport-book design language (Dispatch) — `docs/redesigns/secrets-design-language.md`
 - `_fetch_user_secrets` owner-default join (current behavior being extended) — `src/butlers/api/routers/secrets_v2.py:701-721`
 - `{google_account}` companion entity model and exclusion from entity resolution — `openspec/specs/google-account-registry/spec.md:71-89`
 - Primary account is_primary constraint — `openspec/specs/google-account-registry/spec.md:32-33`

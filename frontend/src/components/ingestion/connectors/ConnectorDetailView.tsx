@@ -29,7 +29,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector Detail"
- * Reference: pr/overview/ingestion-redesign/ingestion-connector-detail.jsx
+ * Reference: docs/redesigns/ingestion-connector-detail.jsx
  */
 
 import { Link } from 'react-router'

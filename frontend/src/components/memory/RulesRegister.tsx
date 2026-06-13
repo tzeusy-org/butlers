@@ -26,8 +26,8 @@
 // across the filtered list and recomputes on filter change.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/03-register-rules.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §3b, §6
+// - (memory house-ledger redesign, graduated) prompts/03-register-rules.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §3b, §6
 // ---------------------------------------------------------------------------
 
 import { useNavigate } from "react-router";

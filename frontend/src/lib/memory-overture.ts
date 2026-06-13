@@ -7,8 +7,8 @@
  * write-up time formatting can be unit-tested exhaustively.
  *
  * Binding docs:
- * - pr/overview/memory-redesign/prompts/01-overture.md
- * - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §2 (page grammar), §7 (Voice)
+ * - (memory house-ledger redesign, graduated) prompts/01-overture.md
+ * - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2 (page grammar), §7 (Voice)
  *
  * The Voice line is TEMPLATED, never LLM-generated. Numbers under 100 spell out
  * as words *in the Voice line only*; numerals appear everywhere else (KPI strip,
@@ -111,7 +111,7 @@ export function formatWriteupTime(iso: string | null | undefined, tz: string): s
 /**
  * Compose the templated Voice sentence narrating the consolidation pipeline.
  *
- * Three exact templates (pr/overview/memory-redesign/prompts/01-overture.md §Voice):
+ * Three exact templates ((memory house-ledger redesign, graduated) prompts/01-overture.md §Voice):
  *
  *  1. never run (`last_consolidation_at` null):
  *     "The first write-up has not run yet."

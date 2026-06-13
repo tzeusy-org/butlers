@@ -2,7 +2,7 @@
 /**
  * Component tests for RulesRegister — standing orders (bu-2ix8d.4).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/03-register-rules.md):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/03-register-rules.md):
  *   - A dataset with zero anti_pattern, zero-harmful rules renders zero red
  *     pixels (no --red anywhere in the markup).
  *   - One rule with harmful > 0 reddens exactly the `harmful N` fragment; an

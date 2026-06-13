@@ -2,7 +2,7 @@
 /**
  * Component tests for AttentionRail (bu-2ix8d.6).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/05-search-and-rail.md Part 2):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/05-search-and-rail.md Part 2):
  *   - Five condition rows render only when their condition holds.
  *   - write-up overdue is ACTION-LESS (no link).
  *   - A fully healthy dataset shows the eyebrow + "Nothing waiting." and zero

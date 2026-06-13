@@ -23,8 +23,8 @@
 // `--red` harmful tally (> 0), rendered by the caller's kind section.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/06-detail-pages.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §4, §6
+// - (memory house-ledger redesign, graduated) prompts/06-detail-pages.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §4, §6
 // ---------------------------------------------------------------------------
 
 import { type ReactNode } from "react";

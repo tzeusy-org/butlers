@@ -2,7 +2,7 @@
 // ButlerOverviewTab
 //
 // Operational overview grid for /butlers/:name. This follows the
-// pr/overview/specific-butler-page-redesign target shape:
+// (butler-detail redesign, graduated) target shape:
 //   status | sessions | spend | awaiting
 //   activity | recent
 //   awaiting your action | config

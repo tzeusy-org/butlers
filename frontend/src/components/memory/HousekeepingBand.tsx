@@ -17,8 +17,8 @@
 //      (arm-then-commit, NO modal); mono status line; NO progress bar.
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/07-housekeeping.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §2, §4, §6, §8
+// - (memory house-ledger redesign, graduated) prompts/07-housekeeping.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §4, §6, §8
 // ---------------------------------------------------------------------------
 
 import { useEffect, useMemo, useRef, useState } from "react";

@@ -18,7 +18,7 @@
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline Ledger"
  *       §"Timeline URL opens an event drawer"
  *
- * Reference: pr/overview/ingestion-redesign/INGESTION_HANDOFF.md §1a
+ * Reference: docs/redesigns/ingestion-handoff.md §1a
  */
 
 import { test, expect } from "@playwright/test";

@@ -6,8 +6,8 @@
  * they can be unit-tested exhaustively and reused across bands.
  *
  * Binding docs:
- * - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §4 "Belief typography"
- * - pr/overview/memory-redesign/prompts/00-foundation.md §"Derived values"
+ * - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §4 "Belief typography"
+ * - (memory house-ledger redesign, graduated) prompts/00-foundation.md §"Derived values"
  *
  * Source of truth caveats:
  * - `effectiveConfidence` is the *display* value (belief column, detail-page

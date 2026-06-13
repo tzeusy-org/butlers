@@ -18,8 +18,8 @@
 // Empty result: one serif-italic line — "Nothing in the books." (§3d).
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/05-search-and-rail.md Part 1
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §3d
+// - (memory house-ledger redesign, graduated) prompts/05-search-and-rail.md Part 1
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §3d
 // ---------------------------------------------------------------------------
 
 import { Eyebrow } from "@/components/ui/Eyebrow";

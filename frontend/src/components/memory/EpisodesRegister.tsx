@@ -31,8 +31,8 @@
 // filter (bu-awo8k.5).
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/04-register-episodes.md
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §3c, §4, §6
+// - (memory house-ledger redesign, graduated) prompts/04-register-episodes.md
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §3c, §4, §6
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";

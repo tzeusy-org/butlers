@@ -6,7 +6,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline" archived rules
- * Reference: pr/overview/ingestion-redesign/ingestion-filters.jsx §archived section
+ * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §archived section
  */
 
 import { useState } from 'react'

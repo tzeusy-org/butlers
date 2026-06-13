@@ -15,7 +15,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline URL opens an event drawer"
- * Reference: pr/overview/ingestion-redesign/INGESTION_HANDOFF.md §4c "URL state"
+ * Reference: docs/redesigns/ingestion-handoff.md §4c "URL state"
  */
 
 import { useCallback } from 'react'

@@ -5,7 +5,7 @@
  * memory-page query parameters without coupling route components to raw
  * URLSearchParams manipulation. Backed by React Router's useSearchParams.
  *
- * Supported query parameters (pr/overview/memory-redesign/prompts/00-foundation.md):
+ * Supported query parameters ((memory house-ledger redesign, graduated) prompts/00-foundation.md):
  * - register: 'facts' | 'rules' | 'episodes' — focused register. Default 'facts'.
  * - q:        submitted search string (NOT keystroke). Absent by default.
  * - kind:     search scope when q is set: 'all' | 'fact' | 'rule' | 'episode'. Default 'all'.

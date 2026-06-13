@@ -2,7 +2,7 @@
 /**
  * Component tests for MemorySearch — the one search affordance (bu-2ix8d.6).
  *
- * Acceptance (pr/overview/memory-redesign/prompts/05-search-and-rail.md Part 1):
+ * Acceptance ((memory house-ledger redesign, graduated) prompts/05-search-and-rail.md Part 1):
  *   - Exactly one search input; `/` focuses it from anywhere on the page.
  *   - Enter submits → writes the `q` URL param (deep-linkable).
  *   - `×` / Esc clears `q`, restoring browse mode.

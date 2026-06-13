@@ -334,5 +334,5 @@ The approvals dashboard page at `/approvals` SHALL include a new "Autonomy Sugge
 ## Source References
 
 - PLAN.md §5 `/approvals` API surface and §6 Phase 6 implementation order.
-- `pr/overview/settings-refactor/settings-expanded.jsx :: ApprovalsPage` is the visual reference.
+- Visual reference: the `ApprovalsPage` redesign prototype (graduated; now shipped in `frontend/`).
 - Reuses `audit.append()` from dashboard-audit-log on every mutation.

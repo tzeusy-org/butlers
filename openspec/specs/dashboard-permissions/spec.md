@@ -99,6 +99,6 @@ The dashboard SHALL expose CRUD and a test action for webhooks.
 
 ## Source References
 - PLAN.md §5 `/settings/permissions` API surface and §6 Phase 4 implementation order.
-- `pr/overview/settings-refactor/settings-expanded.jsx :: DataExpanded` is the visual reference.
+- Visual reference: the `DataExpanded` redesign prototype (graduated; now shipped in `frontend/`).
 - Reuses `audit.append()` from dashboard-audit-log; every mutation in this capability is audited.
 - Doctrine: `about/heart-and-soul/security.md` — "no privileged mutation without a reason" reflected in the matrix endpoint's mandatory `reason` field.

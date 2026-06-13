@@ -23,8 +23,8 @@
 //   5. stale embeddings > 0               amber  → housekeeping anchor
 //
 // Binding docs:
-// - pr/overview/memory-redesign/prompts/05-search-and-rail.md Part 2
-// - pr/overview/memory-redesign/MEMORY_LANGUAGE.md §5, §6, §7
+// - (memory house-ledger redesign, graduated) prompts/05-search-and-rail.md Part 2
+// - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §5, §6, §7
 // ---------------------------------------------------------------------------
 
 import { Link } from "react-router";

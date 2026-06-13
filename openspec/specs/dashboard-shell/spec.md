@@ -744,7 +744,7 @@ Shared utilities SHALL underpin component styling and settings persistence.
 
 ## Source References
 
-- PLAN.md §4 routes contract (`pr/overview/settings-refactor/PLAN.md`).
+- Routes contract (settings refactor PLAN.md §4; prototype graduated).
 - `about/heart-and-soul/design-language.md` — Sidebar/composition: 56px icon rail, one elevation, no nested nav.
 - `about/heart-and-soul/v1.md` — Per-user OAuth (Google, Spotify, Telegram, Steam, etc.) is explicitly out of v1 system-settings scope; OAuth setup remains on `/secrets` to keep `/settings` system-side only.
 - `about/heart-and-soul/vision.md` Non-Negotiable Rule 1 (composure) and Rule 6 (governing-document-driven scope).

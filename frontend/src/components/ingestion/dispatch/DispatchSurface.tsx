@@ -10,7 +10,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Dispatch Visual Language"
- * Reference: pr/overview/ingestion-redesign/DESIGN_LANGUAGE.md §3 "Layout"
+ * Reference: docs/redesigns/ingestion-design-language.md §3 "Layout"
  */
 
 import type { ReactNode } from 'react'
