@@ -2507,7 +2507,7 @@ async def search_entities(
             -- Branch 1: prefix match on canonical_name or any alias (score=100)
             SELECT
                 e.id AS entity_id,
-                $2 AS score,
+                $2::int AS score,
                 'prefix'::text AS match_kind
             FROM public.entities e
             WHERE (e.metadata->>'merged_into') IS NULL
@@ -2525,7 +2525,7 @@ async def search_entities(
             -- Matches entities with a has-* fact whose object value contains q
             SELECT
                 f.subject AS entity_id,
-                $3 AS score,
+                $3::int AS score,
                 'contact_fact'::text AS match_kind
             FROM relationship.entity_facts f
             WHERE f.predicate LIKE 'has-%'
@@ -2538,7 +2538,7 @@ async def search_entities(
             -- Branch 3: substring match on canonical_name or any alias (score=50)
             SELECT
                 e.id AS entity_id,
-                $4 AS score,
+                $4::int AS score,
                 'substring'::text AS match_kind
             FROM public.entities e
             WHERE (e.metadata->>'merged_into') IS NULL
@@ -2557,7 +2557,7 @@ async def search_entities(
             -- label contains q (e.g. searching "vendor" matches "purchased-from")
             SELECT
                 f.subject AS entity_id,
-                $5 AS score,
+                $5::int AS score,
                 'predicate'::text AS match_kind
             FROM relationship.entity_facts f
             WHERE f.predicate ILIKE ('%' || $1 || '%')
