@@ -31,10 +31,10 @@ demands. See ADDED `Requirement: Memory overture band` and
 through one table shape with **per-tab search inputs**, **confidence progress
 bars**, colored permanence/validity/maturity **word badges**, and page size 20
 — every one of which the redesign retires (uniform-feed regression; one-search
-rule; belief-typography rules banning bars and word badges). The
-`butlerScope`-prop behaviour is preserved on the legacy component for
-`ButlerMemoryTab` only (see ADDED `Requirement: Legacy MemoryBrowser preserved
-for ButlerMemoryTab`).
+rule; belief-typography rules banning bars and word badges). `MemoryBrowser`
+is rewritten in place into the house-ledger registers host and keeps an optional
+`butlerScope` prop for a future butler-scoped mount (see ADDED `Requirement:
+MemoryBrowser is the /memory house-ledger registers host`).
 **Migration**: Replaced by ADDED `Requirement: Memory registers — three shapes`
 (ledger / standing orders / daybook), ADDED `Requirement: Belief typography`,
 and ADDED `Requirement: Memory unified search`. Page size becomes 50,
@@ -343,19 +343,38 @@ summary), with no color, no type badges, and no card chrome. It MUST default to
 
 ---
 
-### Requirement: Legacy MemoryBrowser preserved for ButlerMemoryTab
+### Requirement: MemoryBrowser is the /memory house-ledger registers host
 
-The legacy `MemoryBrowser` component (and its optional `butlerScope` prop that filters all queries to a specific butler) MUST be preserved for consumption by `ButlerMemoryTab` on butler detail pages, which is out of scope for this redesign. The new `/memory` page MUST NOT depend on `MemoryBrowser` or its `butlerScope` prop; the house-ledger registers replace it on `/memory` only.
+`MemoryBrowser` MUST be the Band-3 left-column registers host of the redesigned
+`/memory` page: it MUST compose the single unified-search affordance
+(`MemorySearch`), the Facts/Rules/Episodes register pills, and the focused
+register (`FactsRegister` / `RulesRegister` / `EpisodesRegister`) in browse
+mode, or the grouped `SearchResults` in results mode. The new `/memory` page
+MUST render `MemoryBrowser` as that column. (The old tabbed/card/badge browser
+chrome described by the MODIFIED `Requirement: Memory browser with tabbed tier
+navigation` is fully retired inside this rewritten component.)
 
-A future change MAY migrate `ButlerMemoryTab` onto the house-ledger registers;
-until then the legacy component MUST continue to function unchanged so the
-butler-scoped tab does not break silently.
+`MemoryBrowser` retains an optional `butlerScope` prop that filters all of its
+register queries to a single butler, so a future change MAY mount the
+house-ledger registers (via `MemoryBrowser` with `butlerScope`) on
+`ButlerMemoryTab`. That migration is out of scope for this redesign.
 
-#### Scenario: ButlerMemoryTab keeps the legacy browser
+`ButlerMemoryTab` on butler detail pages is self-contained: it does NOT depend
+on `MemoryBrowser` or any `components/memory/*` module, drawing instead from its
+own per-butler hooks (`useButlerMemoryStats`, `useMemoryRecentWrites`). This
+keeps the butler-scoped tab decoupled, so restyling or relocating
+`MemoryBrowser` cannot silently break it.
+
+#### Scenario: /memory renders MemoryBrowser as the registers host
+- **WHEN** the redesigned `/memory` page renders Band 3
+- **THEN** it MUST render `MemoryBrowser` as the left-column registers host
+  (single search affordance + register pills + focused register / results)
+
+#### Scenario: ButlerMemoryTab is decoupled from MemoryBrowser
 - **WHEN** a butler detail page renders its memory tab
-- **THEN** it MUST continue to use the legacy `MemoryBrowser` with
-  `butlerScope` set to that butler
-- **AND** the new `/memory` page MUST NOT render `MemoryBrowser`
+- **THEN** `ButlerMemoryTab` MUST source its data from its own per-butler hooks
+  and MUST NOT import `MemoryBrowser` or any `components/memory/*` module
+- **AND** restyling or moving `MemoryBrowser` MUST NOT break the butler tab
 
 ---
 

@@ -79,10 +79,11 @@ are explicitly the ones heart-and-soul doctrine bans.
   detail page states decay arithmetic in one mono line and carries
   Confirm/Retract commit pills **gated on backend endpoints** (absent endpoint
   means absent affordance, never a dead button).
-- **PRESERVED:** the `butlerScope` prop and `ButlerMemoryTab` consumption
-  (spec.md:443) are preserved via the legacy `MemoryBrowser` component until a
-  separate migration; this change scopes `butlerScope` to the legacy component
-  and out of the new `/memory` page.
+- **PRESERVED:** the `butlerScope` prop is retained on the rewritten
+  `MemoryBrowser` (now the `/memory` house-ledger registers host) for a future
+  butler-scoped mount. `ButlerMemoryTab` is reworked to be self-contained — it
+  no longer depends on `MemoryBrowser`, drawing from its own per-butler hooks —
+  so the butler-scoped tab cannot break when `MemoryBrowser` is restyled.
 - **MODIFIED `dashboard-api` (read-side deltas, already shipped / scoped):**
   `GET /api/memory/stats` gains `last_consolidation_at`,
   `last_consolidation_facts_produced`, `dead_letter_episodes` (additive,
@@ -110,10 +111,11 @@ are explicitly the ones heart-and-soul doctrine bans.
     audit table.
 - **Affected code:**
   - `frontend/src/pages/MemoryPage.tsx` — fully replaced by the band layout.
-  - `frontend/src/components/memory/` — `MemoryTierCards` (card grid), the
-    `MemoryBrowser` tab/table/badge chrome on `/memory`, the standalone
-    `InspectSection`, and per-tab searches are removed from `/memory`;
-    `MemoryBrowser` survives only as the legacy `ButlerMemoryTab` dependency.
+  - `frontend/src/components/memory/` — `MemoryTierCards` (card grid), the old
+    `MemoryBrowser` tab/table/badge chrome, the standalone `InspectSection`, and
+    per-tab searches are retired; `MemoryBrowser` is rewritten in place into the
+    `/memory` Band-3 registers host (search + register pills + focused register /
+    results). `ButlerMemoryTab` is decoupled and no longer imports it.
   - `frontend/src/pages/memory/*DetailPage.tsx` — restyled from card to band.
   - `src/butlers/api/routers/memory.py` — `/stats` extension; `status`,
     `source_episode_id`, `importance_min` filters; `superseded_by` reverse

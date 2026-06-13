@@ -58,8 +58,9 @@ rail; mutations gate the fact commit footer non-blockingly).
   Confirm/Retract commit footer gated on backend. (recipe 06)
 - [ ] B9 — Housekeeping band: retention policies (kept), compaction log (kept),
   embeddings surface; demoted to quiet bottom band. (recipe 07)
-- [ ] B10 — Preserve legacy `MemoryBrowser` + `butlerScope` for
-  `ButlerMemoryTab`; new `/memory` page MUST NOT depend on it. (Open question 12)
+- [ ] B10 — Rewrite `MemoryBrowser` in place as the `/memory` registers host
+  (keep `butlerScope` for a future mount); decouple `ButlerMemoryTab` so it no
+  longer imports `MemoryBrowser`. (Open question 12)
 - [ ] B11 — Test churn: rewrite `MemoryBrowser`/`/memory` tests; adapt detail-
   page tests; retention/compaction/reembed tests survive. (brief §2)
 - [ ] B12 — Frontend gates: `eslint .`, `tsc`, `vitest` all green (CI gates).

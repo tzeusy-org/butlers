@@ -42,13 +42,17 @@ successful run from counts the pipeline already returns. No existing memory
 table is altered. The spec states the additive-only constraint explicitly so the
 table cannot grow into a covert memory-data migration.
 
-### Decision: `butlerScope` / `ButlerMemoryTab` preserved via the legacy component
-The current spec's `butlerScope` prop (spec.md:443) is consumed by
-`ButlerMemoryTab` on butler detail pages, which is out of scope for this
-redesign (brief §1, Open question 12). Rather than break it silently, we keep
-the legacy `MemoryBrowser` (with `butlerScope`) alive for that tab and forbid
-the new `/memory` page from depending on it. A future change may migrate
-`ButlerMemoryTab` onto the house-ledger registers.
+### Decision: `MemoryBrowser` rewritten in place as the registers host; `ButlerMemoryTab` decoupled
+`ButlerMemoryTab` on butler detail pages is out of scope for this redesign
+(brief §1, Open question 12). Rather than maintain two browser components, we
+rewrite `MemoryBrowser` in place into the `/memory` Band-3 registers host
+(search + register pills + focused register / results) and keep an optional
+`butlerScope` prop for a future butler-scoped mount. `ButlerMemoryTab` is
+reworked to be self-contained — it no longer imports `MemoryBrowser` or any
+`components/memory/*` module and draws from its own per-butler hooks — so
+restyling `MemoryBrowser` cannot silently break the tab. A future change may
+mount the house-ledger registers (via `MemoryBrowser` with `butlerScope`) on
+`ButlerMemoryTab`.
 
 ### Decision: confidence is effective (decayed), rendered as ink
 The fading threshold and the ledger belief numeral both use **effective**
@@ -66,8 +70,9 @@ endpoint means an absent affordance, never a non-functional button.
 ## Risks / trade-offs
 
 - **Hard UI cut.** The card-grid `/memory` and the unified table are removed;
-  `MemoryBrowser` survives only as the `ButlerMemoryTab` dependency. Test churn
-  is real (MemoryBrowser/`/memory` tests rewrite) but bounded.
+  `MemoryBrowser` is rewritten in place into the `/memory` registers host and
+  `ButlerMemoryTab` is decoupled from it. Test churn is real (MemoryBrowser/
+  `/memory` tests rewrite) but bounded.
 - **One-offset search.** Mixed-kind search results paginate as a union, which
   can interleave kinds across page boundaries. Accepted for v1 (brief Q7).
 - **Additive table latency.** `/stats` now aggregates `consolidation_runs`
