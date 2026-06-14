@@ -5,7 +5,11 @@ trigger cache invalidation:
 
   (a) PATCH /api/notifications/{id}/read  — notification mark-as-read
   (b) DashboardAuditMiddleware            — audit_log writes with result='error'
-  (c) PATCH /api/butlers/{name}/eligibility — butler_registry status transitions
+
+Category (c) — butler_registry eligibility transitions — was consolidated onto
+the canonical switchboard route POST /api/switchboard/registry/{name}/eligibility
+(bu-bmw1m). Its cache-invalidation coverage now lives in
+tests/api/test_switchboard.py (test_set_eligibility_*).
 
 Also tests the new BriefingCache.invalidate_all() method directly.
 """
@@ -22,7 +26,6 @@ import pytest
 from butlers.api.app import create_app
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.butlers import _get_db_manager as _butlers_get_db
 from butlers.api.routers.notifications import _get_db_manager as _notif_get_db
 from butlers.api.routers.notifications import get_cache
 
@@ -246,151 +249,3 @@ class TestAuditMiddlewareInvalidatesOnError:
         assert resp.status_code == 200
         # Cache must NOT be cleared for a successful response.
         assert cache.get(owner_id) is not None
-
-
-# ---------------------------------------------------------------------------
-# (c) Butler eligibility update — PATCH /api/butlers/{name}/eligibility
-# ---------------------------------------------------------------------------
-
-
-def _make_registry_row(name: str, eligibility_state: str) -> MagicMock:
-    """Return an asyncpg-like record for a butler_registry row."""
-    row = MagicMock()
-    fields = {
-        "name": name,
-        "eligibility_state": eligibility_state,
-        "quarantine_reason": None,
-    }
-    row.__getitem__ = MagicMock(side_effect=lambda k: fields[k])
-    return row
-
-
-class TestButlerEligibilityUpdateInvalidatesCache:
-    def _make_app(self, pool: AsyncMock, cache: BriefingCache) -> object:
-        app = create_app(api_key="")
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.pool.return_value = pool
-        app.dependency_overrides[_butlers_get_db] = lambda: mock_db
-        app.dependency_overrides[get_cache] = lambda: cache
-        return app
-
-    async def test_eligibility_update_to_active_invalidates_cache(self):
-        """PATCH eligibility to 'active' (healthy) invalidates the briefing cache."""
-        owner_id = "owner-eligibility-001"
-
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                _make_registry_row("calendar", "active"),  # UPDATE RETURNING
-                _make_owner_row(owner_id),  # owner lookup
-            ]
-        )
-        pool.execute = AsyncMock()
-
-        cache = BriefingCache(ttl_seconds=300)
-        cache.set(owner_id, {"state_class": "degraded-quiet"})
-
-        app = self._make_app(pool, cache)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                "/api/butlers/calendar/eligibility",
-                json={"eligibility_state": "active"},
-            )
-
-        assert resp.status_code == 200
-        assert cache.get(owner_id) is None
-
-    async def test_eligibility_update_to_quarantined_invalidates_cache(self):
-        """PATCH eligibility to 'quarantined' (unhealthy) invalidates the cache."""
-        owner_id = "owner-eligibility-002"
-
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                _make_registry_row("health", "quarantined"),  # UPDATE RETURNING
-                _make_owner_row(owner_id),  # owner lookup
-            ]
-        )
-        pool.execute = AsyncMock()
-
-        cache = BriefingCache(ttl_seconds=300)
-        cache.set(owner_id, {"state_class": "quiet"})
-
-        app = self._make_app(pool, cache)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                "/api/butlers/health/eligibility",
-                json={"eligibility_state": "quarantined", "quarantine_reason": "Repeated errors"},
-            )
-
-        assert resp.status_code == 200
-        assert cache.get(owner_id) is None
-
-    async def test_eligibility_update_returns_400_for_invalid_state(self):
-        """PATCH with an unrecognised eligibility_state returns 400."""
-        pool = AsyncMock()
-        cache = BriefingCache(ttl_seconds=300)
-        app = self._make_app(pool, cache)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                "/api/butlers/calendar/eligibility",
-                json={"eligibility_state": "unknown_state"},
-            )
-
-        assert resp.status_code == 400
-
-    async def test_eligibility_update_returns_404_when_butler_not_registered(self):
-        """PATCH eligibility returns 404 when butler is not in registry."""
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        cache = BriefingCache(ttl_seconds=300)
-        app = self._make_app(pool, cache)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                "/api/butlers/nonexistent/eligibility",
-                json={"eligibility_state": "active"},
-            )
-
-        assert resp.status_code == 404
-
-    async def test_eligibility_update_falls_back_to_invalidate_all_on_owner_error(self):
-        """When owner lookup raises, invalidate_all() is called instead."""
-        other_owner = "other-owner-eligibility"
-
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                _make_registry_row("health", "active"),  # UPDATE RETURNING
-                RuntimeError("contacts table unavailable"),  # owner lookup error
-            ]
-        )
-        pool.execute = AsyncMock()
-
-        cache = BriefingCache(ttl_seconds=300)
-        cache.set(other_owner, {"state_class": "quiet"})
-
-        app = self._make_app(pool, cache)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                "/api/butlers/health/eligibility",
-                json={"eligibility_state": "active"},
-            )
-
-        assert resp.status_code == 200
-        # invalidate_all() was called due to owner lookup error.
-        assert cache.get(other_owner) is None
