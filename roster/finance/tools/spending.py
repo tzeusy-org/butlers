@@ -110,9 +110,17 @@ async def spending_summary(
     # Check whether the deleted_at column exists (added in finance_002 migration).
     has_deleted_at = await _has_column(pool, "transactions", "deleted_at")
 
-    # Build WHERE clauses
+    # Build WHERE clauses.
+    #
+    # Parity with the dashboard API `get_spending_summary` (roster/finance/api/router.py):
+    # 'transfer' and 'uncategorized' are NOT real spend — transfers move money between
+    # the owner's own accounts and uncategorized is an unclassified bucket. Excluding both
+    # — keyed off the effective category (overlay inferred_category preferred, else the raw
+    # category column) — and excluding soft-deleted rows keeps the spoken total equal to the
+    # dashboard total. The exclusion applies to every group_by dimension, not just category.
     conditions: list[str] = [
         "direction = 'debit'",
+        "COALESCE(metadata->>'inferred_category', category) NOT IN ('transfer', 'uncategorized')",
         "posted_at::date >= $1",
         "posted_at::date <= $2",
     ]
@@ -173,14 +181,16 @@ async def spending_summary(
         )
 
     elif group_by == "category":
+        # Overlay-aware category, matching the dashboard API group expression.
+        group_expr = "COALESCE(metadata->>'inferred_category', category)"
         rows = await pool.fetch(
             f"""
-            SELECT category AS key,
+            SELECT {group_expr} AS key,
                    SUM(amount) AS amount,
                    COUNT(*) AS count
             FROM transactions
             WHERE {where_clause}
-            GROUP BY category
+            GROUP BY {group_expr}
             ORDER BY amount DESC
             """,
             *params,
@@ -188,14 +198,16 @@ async def spending_summary(
         groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
 
     elif group_by == "merchant":
+        # Overlay-aware merchant, matching the dashboard API group expression.
+        group_expr = "COALESCE(metadata->>'normalized_merchant', merchant)"
         rows = await pool.fetch(
             f"""
-            SELECT merchant AS key,
+            SELECT {group_expr} AS key,
                    SUM(amount) AS amount,
                    COUNT(*) AS count
             FROM transactions
             WHERE {where_clause}
-            GROUP BY merchant
+            GROUP BY {group_expr}
             ORDER BY amount DESC
             """,
             *params,

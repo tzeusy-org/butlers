@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     receipt_url       TEXT,
     external_ref      TEXT,
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    deleted_at        TIMESTAMPTZ,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 )
@@ -67,15 +68,21 @@ async def _insert_tx(
     posted_at: datetime | None = None,
     account_id: str | None = None,
     source_message_id: str | None = None,
+    metadata: dict | None = None,
+    deleted_at: datetime | None = None,
 ) -> None:
     if posted_at is None:
         posted_at = datetime.now(UTC)
+    # metadata is passed as a Python dict — the pool's JSONB codec
+    # (src/butlers/db.py:register_jsonb_codec) encodes it to JSONB. Passing a
+    # JSON *string* would be double-encoded into a JSON scalar string and break
+    # metadata->>'...' overlay lookups.
     await pool.execute(
         """
         INSERT INTO transactions
             (merchant, amount, currency, direction, category, posted_at, account_id,
-             source_message_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, $8)
+             source_message_id, metadata, deleted_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, $8, $9, $10)
         """,
         merchant,
         Decimal(amount),
@@ -85,6 +92,8 @@ async def _insert_tx(
         posted_at,
         account_id,
         source_message_id,
+        metadata if metadata is not None else {},
+        deleted_at,
     )
 
 
@@ -362,6 +371,80 @@ async def test_spending_summary_return_shape(pool):
         assert "key" in g
         assert "amount" in g
         assert "count" in g
+
+
+# ---------------------------------------------------------------------------
+# Parity with dashboard API: exclude transfer/uncategorized + soft-deleted
+# ---------------------------------------------------------------------------
+
+
+async def test_spending_summary_excludes_transfer_and_uncategorized(pool):
+    """transfer and uncategorized categories must NOT count toward the spend total.
+
+    Parity with the dashboard `get_spending_summary`: these are not real spend
+    (transfers move money between the owner's own accounts; uncategorized is an
+    unclassified bucket), so the butler's spoken totals must match the dashboard.
+    """
+    from butlers.tools.finance.spending import spending_summary
+
+    posted = _this_month_mid()
+    await _insert_tx(pool, amount="100.00", category="groceries", posted_at=posted)
+    await _insert_tx(pool, amount="500.00", category="transfer", posted_at=posted)
+    await _insert_tx(pool, amount="42.00", category="uncategorized", posted_at=posted)
+
+    result = await spending_summary(pool, group_by="category")
+
+    assert Decimal(result["total_spend"]) == Decimal("100.00")
+    keys = [g["key"] for g in result["groups"]]
+    assert "transfer" not in keys
+    assert "uncategorized" not in keys
+    assert "groceries" in keys
+
+
+async def test_spending_summary_excludes_inferred_transfer_overlay(pool):
+    """Exclusion is keyed off the effective (overlay-aware) category.
+
+    A row whose raw category is benign but whose ``inferred_category`` overlay is
+    'transfer' must still be excluded, matching the dashboard's
+    COALESCE(metadata->>'inferred_category', category) expression.
+    """
+    from butlers.tools.finance.spending import spending_summary
+
+    posted = _this_month_mid()
+    await _insert_tx(pool, amount="100.00", category="groceries", posted_at=posted)
+    await _insert_tx(
+        pool,
+        amount="300.00",
+        category="general",
+        metadata={"inferred_category": "transfer"},
+        posted_at=posted,
+    )
+
+    result = await spending_summary(pool)
+
+    assert Decimal(result["total_spend"]) == Decimal("100.00")
+
+
+async def test_spending_summary_excludes_soft_deleted(pool):
+    """Soft-deleted transactions (deleted_at IS NOT NULL) must not inflate totals/groups."""
+    from butlers.tools.finance.spending import spending_summary
+
+    posted = _this_month_mid()
+    await _insert_tx(pool, amount="100.00", category="groceries", posted_at=posted)
+    await _insert_tx(
+        pool,
+        amount="250.00",
+        category="groceries",
+        posted_at=posted,
+        deleted_at=posted,
+    )
+
+    result = await spending_summary(pool, group_by="category")
+
+    assert Decimal(result["total_spend"]) == Decimal("100.00")
+    grocery_group = next(g for g in result["groups"] if g["key"] == "groceries")
+    assert Decimal(grocery_group["amount"]) == Decimal("100.00")
+    assert grocery_group["count"] == 1
 
 
 # ---------------------------------------------------------------------------
