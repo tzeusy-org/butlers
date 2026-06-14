@@ -27,6 +27,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/hooks/use-entities", () => ({
   useRelationshipEntities: vi.fn(),
+  useRelationshipEntitiesByIds: vi.fn(),
   useRelationshipEntityQueue: vi.fn(),
   usePromoteRelationshipEntity: vi.fn(),
   useArchiveRelationshipEntity: vi.fn(),
@@ -56,6 +57,7 @@ import {
   useMergeRelationshipEntities,
   usePromoteRelationshipEntity,
   useRelationshipEntities,
+  useRelationshipEntitiesByIds,
   useRelationshipEntityQueue,
 } from "@/hooks/use-entities";
 import type {
@@ -158,6 +160,13 @@ beforeEach(() => {
     isError: false,
     error: null,
   } as unknown as ReturnType<typeof useRelationshipEntities>);
+
+  // Default: no active search → hydration hook returns nothing.
+  vi.mocked(useRelationshipEntitiesByIds).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useRelationshipEntitiesByIds>);
 
   vi.mocked(useRelationshipEntityQueue).mockReturnValue({
     data: makeQueueResponse([]),
@@ -1273,6 +1282,13 @@ describe("EntitiesIndexPage — toolbar search", () => {
       error: null,
     } as unknown as ReturnType<typeof useRelationshipEntities>);
 
+    // Hydration fetches full summaries for the ranked id set — here, just Bob.
+    vi.mocked(useRelationshipEntitiesByIds).mockReturnValue({
+      data: makeListResponse([BOB]),
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useRelationshipEntitiesByIds>);
+
     // The search endpoint matches only Bob (e.g. by contact-fact value).
     vi.mocked(useEntityFinderSearch).mockReturnValue({
       data: {
@@ -1311,6 +1327,86 @@ describe("EntitiesIndexPage — toolbar search", () => {
     const table = container.querySelector("[data-testid='entity-table']");
     expect(table?.textContent).toContain("Bob Hatch");
     expect(table?.textContent).not.toContain("Alice Fogg");
+  });
+
+  it("shows search hits that are NOT on the current page (hydrates the ranked id set)", () => {
+    // Regression: the search endpoint ranks across the WHOLE entity set, so a hit
+    // can live on a later page than the one currently loaded. The page must hydrate
+    // the matched id set rather than intersecting with the loaded page (which used
+    // to drop every off-page match → "typed 'S', saw one result").
+    const CAROL: RelationshipEntitySummary = {
+      id: "ent-carol-003",
+      canonical_name: "Carol Stone",
+      entity_type: "person",
+      aliases: [],
+      roles: [],
+      metadata: {},
+      tier: null,
+      last_seen: null,
+      contact_fact_count: 0,
+      created_at: "2025-03-01T00:00:00Z",
+      updated_at: "2025-03-01T00:00:00Z",
+    };
+
+    // The loaded page holds only ALICE…
+    vi.mocked(useRelationshipEntities).mockReturnValue({
+      data: makeListResponse([ALICE]),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRelationshipEntities>);
+
+    // …while hydration returns CAROL, who is NOT on the loaded page.
+    vi.mocked(useRelationshipEntitiesByIds).mockReturnValue({
+      data: makeListResponse([CAROL]),
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useRelationshipEntitiesByIds>);
+
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: {
+        results: [
+          {
+            entity_id: CAROL.id,
+            canonical_name: CAROL.canonical_name,
+            entity_type: CAROL.entity_type,
+            score: 100,
+            match_kind: "prefix",
+          },
+        ],
+        total: 1,
+        q: "stone",
+        limit: 50,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntityFinderSearch>);
+
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+
+    renderPage();
+
+    const input = container.querySelector(
+      "[data-testid='entities-toolbar-search']",
+    ) as HTMLInputElement;
+    act(() => {
+      setter?.call(input, "stone");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // The off-page match renders…
+    const table = container.querySelector("[data-testid='entity-table']");
+    expect(table?.textContent).toContain("Carol Stone");
+    expect(table?.textContent).not.toContain("Alice Fogg");
+
+    // …and the hydration hook was called with exactly the ranked id set.
+    const hydrateCall = vi
+      .mocked(useRelationshipEntitiesByIds)
+      .mock.calls.find((c) => Array.isArray(c[0]) && c[0].length > 0);
+    expect(hydrateCall?.[0]).toEqual([CAROL.id]);
   });
 
   it("passes the search query through to useEntityFinderSearch", () => {

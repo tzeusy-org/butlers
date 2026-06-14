@@ -284,6 +284,30 @@ class TestListEntities:
         fetch_call = pool.fetch.call_args[0]
         assert ["person", "organization"] in fetch_call
 
+    async def test_ids_filter_passes_to_query(self):
+        """ids= filter forwards a uuid[] condition and the id list to the DB query."""
+        app, pool = self._make_app(total=0, fetch_rows=[])
+        id_a = str(uuid4())
+        id_b = str(uuid4())
+        resp = await _get(app, _LIST_PATH, ids=[id_a, id_b])
+        assert resp.status_code == 200
+        data_sql = pool.fetch.call_args[0][0]
+        assert "e.id = ANY(" in data_sql
+        assert "::uuid[]" in data_sql
+        # The id list is forwarded as a positional arg (order preserved).
+        assert [id_a, id_b] in pool.fetch.call_args[0]
+
+    async def test_ids_filter_present_but_empty_yields_empty_set(self):
+        """ids= present with no values applies an empty-set filter (matches nothing)."""
+        app, pool = self._make_app(total=0, fetch_rows=[])
+        # httpx omits empty-list params, so exercise the empty case via a single
+        # blank value which the endpoint strips to an empty id list.
+        resp = await _get(app, _LIST_PATH, ids=[""])
+        assert resp.status_code == 200
+        data_sql = pool.fetch.call_args[0][0]
+        assert "e.id = ANY(" in data_sql
+        assert [] in pool.fetch.call_args[0]
+
     async def test_entity_list_sorts_people_by_tier_then_last_seen(self):
         """List ordering keeps people first by tier ASC, then last_seen ASC."""
         app, pool = self._make_app(total=0, fetch_rows=[])

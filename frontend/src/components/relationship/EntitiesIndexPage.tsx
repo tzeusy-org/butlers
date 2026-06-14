@@ -17,7 +17,13 @@
  *       §Requirement: Entity index page
  */
 
-import { useCallback, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import {
   ArchiveIcon,
@@ -58,6 +64,7 @@ import {
   useForgetRelationshipEntity,
   usePromoteRelationshipEntity,
   useRelationshipEntities,
+  useRelationshipEntitiesByIds,
   useRelationshipEntityQueue,
 } from "@/hooks/use-entities";
 import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
@@ -69,6 +76,11 @@ import { getBulkConfirmGloss, type BulkConfirmAction } from "@/lib/entity-glosse
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 50;
+
+// Toolbar search ranks across the WHOLE entity set (not the current page). The
+// search endpoint caps at 50 hits; we hydrate full summaries for exactly that
+// id set, so the hydrate limit matches the search cap.
+const SEARCH_RESULT_LIMIT = 50;
 
 const ENTITY_TYPES = [
   "person",
@@ -1109,20 +1121,31 @@ export function EntitiesIndexPage() {
   const allEntities = data?.items ?? [];
 
   // Toolbar search: the search endpoint is authoritative for WHICH entities
-  // match (same ranking as the Finder); we filter the loaded rows in place to
-  // that ranked id set so the table keeps its rich relationship columns.
+  // match (same ranking as the Finder). It ranks across the WHOLE entity set,
+  // so its hits are NOT confined to the current paginated page — we must hydrate
+  // full summaries for the matched id set rather than intersecting with the
+  // loaded page (which would silently drop every match not on that page).
   const { data: searchData, isError: isSearchError } = useEntityFinderSearch(searchQuery, {
-    limit: 50,
+    limit: SEARCH_RESULT_LIMIT,
   });
   const isSearching = searchQuery.trim().length > 0;
+  const searchIds = useMemo(
+    () => (searchData?.results ?? []).map((r) => r.entity_id),
+    [searchData],
+  );
+  // Hydrate full relationship summaries (tier, last_seen, contact counts, …) for
+  // exactly the search-matched ids, so the table keeps its rich columns for EVERY
+  // match. The hook self-disables when there are no ids (i.e. no active search).
+  const { data: searchHydrated, isError: isHydrateError } =
+    useRelationshipEntitiesByIds(searchIds, SEARCH_RESULT_LIMIT);
   // A failed search must not masquerade as "no entities" — surface the error
   // distinctly instead of collapsing to the empty state.
-  const searchFailed = isSearching && isSearchError;
+  const searchFailed = isSearching && (isSearchError || isHydrateError);
   const entities = isSearching
     ? (() => {
-        const byId = new Map(allEntities.map((e) => [e.id, e]));
-        // Preserve the search endpoint's score ordering; drop hits not present
-        // in the current page of loaded rows.
+        const byId = new Map((searchHydrated?.items ?? []).map((e) => [e.id, e]));
+        // Preserve the search endpoint's score ordering; drop any hit that the
+        // hydrate filtered out (e.g. archived/tombstoned entities).
         return (searchData?.results ?? [])
           .map((r) => byId.get(r.entity_id))
           .filter((e): e is RelationshipEntitySummary => e !== undefined);

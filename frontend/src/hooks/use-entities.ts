@@ -303,6 +303,25 @@ export function useRelationshipEntities(params?: RelationshipEntityListParams) {
 }
 
 /**
+ * Hydrate full entity summaries for an explicit, externally-ranked id set.
+ *
+ * Used by the entities index toolbar search: the search endpoint ranks across
+ * the WHOLE entity set and returns only ids, so we fetch the rich list columns
+ * (tier, last_seen, contact counts, …) for exactly those ids — independent of
+ * which paginated page is currently loaded. Disabled when ``ids`` is empty.
+ *
+ * Distinct hook (not a flag on ``useRelationshipEntities``) so the primary list
+ * query and this hydration query never share a cache key or call site.
+ */
+export function useRelationshipEntitiesByIds(ids: string[], limit: number) {
+  return useQuery({
+    queryKey: ["relationship-entities", "by-ids", ids, limit],
+    queryFn: () => listRelationshipEntities({ ids, limit }),
+    enabled: ids.length > 0,
+  });
+}
+
+/**
  * Fetch the entity curation queue from the relationship butler (§9.5).
  *
  * Hits GET /api/butlers/relationship/entities/queue.
