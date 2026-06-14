@@ -155,8 +155,8 @@ async def test_audit_log_returns_paginated_structure(app):
     pool.execute = AsyncMock()
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    # Merged read path also queries the legacy dashboard_audit_log via the
-    # switchboard pool (bu-isi4i); reuse the empty pool.
+    # The read path reads public.audit_log only (bu-j26e8 removed the legacy
+    # UNION arm); a spare switchboard-pool stub is kept for any non-read code.
     db.pool.return_value = pool
     app.dependency_overrides[_audit_get_db] = lambda: db
     async with httpx.AsyncClient(

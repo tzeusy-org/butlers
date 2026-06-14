@@ -49,16 +49,13 @@ def _make_row(data: dict) -> MagicMock:
 
 
 class TestBuildAuditGroupQuery:
-    def test_contains_dashboard_audit_log(self):
-        sql = build_audit_group_query()
-        assert "dashboard_audit_log" in sql
-
-    def test_unions_public_audit_log(self):
-        """During the writer transition (bu-fyal7) the grouping must read from
-        BOTH the legacy table and the canonical primitive."""
+    def test_reads_canonical_only(self):
+        """Post audit-unify (bu-j26e8) the grouping reads public.audit_log ALONE;
+        the legacy dashboard_audit_log UNION arm was removed."""
         sql = build_audit_group_query()
         assert "public.audit_log" in sql
-        assert "UNION ALL" in sql
+        assert "dashboard_audit_log" not in sql
+        assert "UNION ALL" not in sql
         # Canonical column mapping must be present (actor->butler, ts->created_at,
         # action->operation, metadata->request_summary).
         assert "actor AS butler" in sql
@@ -66,9 +63,9 @@ class TestBuildAuditGroupQuery:
         assert "action AS operation" in sql
         assert "metadata" in sql
 
-    def test_unified_source_feeds_grouping(self):
-        """The trigger-source / result filters operate on the unified source, so
-        the legacy column names survive the UNION (no SQL reference breaks)."""
+    def test_canonical_source_feeds_grouping(self):
+        """The trigger-source / result filters operate on the canonical source via
+        the legacy column aliases (no SQL reference breaks)."""
         sql = build_audit_group_query()
         # The inner filter still keys on result='error' over the unified rows.
         assert "WHERE result = 'error'" in sql

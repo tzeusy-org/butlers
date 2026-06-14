@@ -356,8 +356,9 @@ class TestAC4DashboardAudit:
         """emit_dashboard_audit for a contact_info DELETE appends to public.audit_log.
 
         As of bu-h47nm the writer routes through audit.append() into the
-        canonical ``public.audit_log`` table (the read surface UNIONs the legacy
-        ``dashboard_audit_log`` so readers still see legacy rows).
+        canonical ``public.audit_log`` table.  Reads come solely from
+        ``public.audit_log`` (bu-j26e8 removed the legacy UNION arm after
+        core_124 backfilled the historical ``dashboard_audit_log`` rows).
         """
         from butlers.api.audit_emit import emit_dashboard_audit
 
