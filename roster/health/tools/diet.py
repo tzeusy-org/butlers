@@ -260,6 +260,131 @@ async def meal_log(
     }
 
 
+async def meal_update(
+    pool: asyncpg.Pool,
+    meal_id: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Update a logged meal. Allowed fields: type, description, eaten_at,
+    nutrition, notes.
+
+    Meals are TEMPORAL facts (``valid_at`` is the eating time and supersession
+    is skipped for temporal facts), so — like symptoms — there is no superseding
+    ``store_fact`` path keyed on (subject, predicate). Re-storing would create a
+    *second* coexisting meal rather than replacing the first. Instead this
+    performs an in-place UPDATE of the existing meal fact row so the edit
+    preserves the same identity and the temporal log keeps exactly one entry per
+    logged meal.
+
+    Changing ``type`` rewrites the predicate to ``meal_{type}`` (the meal type is
+    encoded in the predicate, not in metadata). ``nutrition`` is a dict shaped
+    like the ``meal_log`` argument (``calories``/``protein_g``/``carbs_g``/
+    ``fat_g``); it is translated into the ``estimated_calories`` + ``macros``
+    metadata fields. The ``facts`` table has no ``updated_at`` column, so only
+    ``content``, ``predicate``, ``metadata``, and ``valid_at`` are touched.
+    """
+    meal_uuid = uuid.UUID(meal_id) if isinstance(meal_id, str) else meal_id
+    allowed = {"type", "description", "eaten_at", "nutrition", "notes"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+
+    if not updates:
+        raise ValueError("No valid fields to update")
+
+    if "type" in updates and updates["type"] not in VALID_MEAL_TYPES:
+        raise ValueError(
+            f"Invalid meal type: {updates['type']!r}. "
+            f"Must be one of: {', '.join(sorted(VALID_MEAL_TYPES))}"
+        )
+
+    row = await pool.fetchrow(
+        "SELECT id, predicate, content, valid_at, created_at, metadata FROM facts"
+        " WHERE id = $1 AND predicate = ANY($2) AND scope = 'health'"
+        " AND validity = 'active'",
+        meal_uuid,
+        _MEAL_PREDICATES,
+    )
+    if row is None:
+        raise ValueError(f"Meal {meal_id} not found")
+
+    existing_meta = row["metadata"] or {}
+    if isinstance(existing_meta, str):
+        existing_meta = json.loads(existing_meta)
+    new_meta = dict(existing_meta)
+
+    if "nutrition" in updates:
+        nutrition = updates["nutrition"]
+        if nutrition is None:
+            new_meta.pop("estimated_calories", None)
+            new_meta.pop("macros", None)
+        else:
+            new_meta["estimated_calories"] = nutrition.get("calories")
+            new_meta["macros"] = {
+                "protein_g": nutrition.get("protein_g"),
+                "carbs_g": nutrition.get("carbs_g"),
+                "fat_g": nutrition.get("fat_g"),
+            }
+
+    if "notes" in updates:
+        if updates["notes"] is None:
+            new_meta.pop("notes", None)
+        else:
+            new_meta["notes"] = updates["notes"]
+
+    predicate = f"meal_{updates['type']}" if "type" in updates else row["predicate"]
+    description = updates.get("description", row["content"])
+    eaten_at = updates.get("eaten_at", row["valid_at"])
+
+    await pool.execute(
+        "UPDATE facts SET predicate = $2, content = $3, metadata = $4, valid_at = $5 WHERE id = $1",
+        meal_uuid,
+        predicate,
+        description,
+        new_meta,
+        eaten_at,
+    )
+
+    return _fact_to_meal(
+        {
+            "id": meal_uuid,
+            "predicate": predicate,
+            "content": description,
+            "valid_at": eaten_at,
+            "created_at": row["created_at"],
+            "metadata": new_meta,
+        }
+    )
+
+
+async def meal_delete(
+    pool: asyncpg.Pool,
+    meal_id: str,
+) -> bool:
+    """Soft-delete a logged meal by retracting its fact.
+
+    Delegates to ``forget_memory(pool, "fact", id)``, which sets the fact's
+    ``validity`` to ``'retracted'`` — the canonical soft-delete path used across
+    the memory subsystem. The fact remains in the database for audit but is
+    excluded from all ``validity = 'active'`` read surfaces (including the
+    dashboard GET endpoint and ``meal_history``). Raises ``ValueError`` if no
+    active meal fact with this id exists.
+    """
+    from butlers.modules.memory.storage import forget_memory
+
+    meal_uuid = uuid.UUID(meal_id) if isinstance(meal_id, str) else meal_id
+
+    row = await pool.fetchrow(
+        "SELECT id FROM facts"
+        " WHERE id = $1 AND predicate = ANY($2) AND scope = 'health'"
+        " AND validity = 'active'",
+        meal_uuid,
+        _MEAL_PREDICATES,
+    )
+    if row is None:
+        raise ValueError(f"Meal {meal_id} not found")
+
+    return await forget_memory(pool, "fact", meal_uuid)
+
+
 async def meal_history(
     pool: asyncpg.Pool,
     type: str | None = None,

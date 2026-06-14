@@ -295,6 +295,40 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     @_tool("nutrition")
+    async def meal_update(
+        meal_id: str,
+        type: str | None = None,
+        description: str | None = None,
+        eaten_at: datetime | None = None,
+        nutrition: dict[str, Any] | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Update a logged meal. Allowed fields: type, description, eaten_at,
+        nutrition, notes.
+
+        Meals are temporal facts, so the edit updates the existing entry in
+        place rather than superseding it. If type is provided it must be one of:
+        breakfast, lunch, dinner, snack.
+        """
+        fields = {
+            k: v
+            for k, v in {
+                "type": type,
+                "description": description,
+                "eaten_at": eaten_at,
+                "nutrition": nutrition,
+                "notes": notes,
+            }.items()
+            if v is not None
+        }
+        return await _diet.meal_update(module._get_pool(), meal_id, **fields)
+
+    @_tool("nutrition")
+    async def meal_delete(meal_id: str) -> bool:
+        """Soft-delete a logged meal (retracts the fact, audit-preserving)."""
+        return await _diet.meal_delete(module._get_pool(), meal_id)
+
+    @_tool("nutrition")
     async def nutrition_summary(
         start_date: datetime,
         end_date: datetime,

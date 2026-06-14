@@ -912,6 +912,208 @@ async def test_delete_symptom_missing_is_404():
 
 
 # ---------------------------------------------------------------------------
+# POST / PUT / DELETE /meals — direct dashboard CRUD (bu-5oeoq)
+#
+# Each mutation delegates to the Health butler's own fact-store tool
+# (meal_log / meal_update / meal_delete) so dashboard writes and butler writes
+# share the same predicate set ('meal_{type}') and code path.  Meals are
+# TEMPORAL facts — eaten_at -> valid_at, no supersession; the update path edits
+# the existing fact row in place.  The facts table has no updated_at column.
+# ---------------------------------------------------------------------------
+
+
+def _meal_tool_result(
+    *,
+    meal_id,
+    type="lunch",
+    description="Grilled chicken salad",
+    estimated_calories=420,
+    macros=None,
+    notes=None,
+) -> dict:
+    """A meal_log/meal_update tool result dict (estimated_calories + macros)."""
+    return {
+        "id": meal_id,
+        "type": type,
+        "description": description,
+        "estimated_calories": estimated_calories,
+        "macros": macros or {"protein_g": 35, "carbs_g": 12, "fat_g": 18},
+        "eaten_at": _NOW,
+        "notes": notes,
+        "created_at": _NOW,
+    }
+
+
+async def test_create_meal_delegates_to_meal_log():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_log = AsyncMock(return_value=_meal_tool_result(meal_id=new_id, notes="post-workout"))
+    with patch(f"{_HEALTH_TOOLS}.meal_log", fake_log):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/meals",
+            json={
+                "type": "lunch",
+                "description": "Grilled chicken salad",
+                "eaten_at": "2024-01-01T12:00:00+00:00",
+                "nutrition": {"calories": 420, "protein_g": 35, "carbs_g": 12, "fat_g": 18},
+                "notes": "post-workout",
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["id"] == str(new_id)
+    assert body["type"] == "lunch"
+    assert body["description"] == "Grilled chicken salad"
+    # Tool result's estimated_calories/macros reshape into the nutrition envelope.
+    assert body["nutrition"]["calories"] == 420
+    assert body["nutrition"]["protein_g"] == 35
+    fake_log.assert_awaited_once()
+    kwargs = fake_log.await_args.kwargs
+    assert kwargs["type"] == "lunch"
+    assert kwargs["description"] == "Grilled chicken salad"
+    assert kwargs["eaten_at"] == datetime(2024, 1, 1, 12, tzinfo=UTC)
+    assert kwargs["nutrition"] == {
+        "calories": 420,
+        "protein_g": 35,
+        "carbs_g": 12,
+        "fat_g": 18,
+    }
+    assert kwargs["notes"] == "post-workout"
+
+
+async def test_create_meal_rejects_blank_description():
+    app, _ = _make_app()
+    resp = await _request(
+        app,
+        "POST",
+        "/api/health/meals",
+        json={"type": "lunch", "description": "", "eaten_at": "2024-01-01T12:00:00+00:00"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_create_meal_rejects_invalid_type():
+    app, _ = _make_app()
+    resp = await _request(
+        app,
+        "POST",
+        "/api/health/meals",
+        json={"type": "brunch", "description": "Eggs", "eaten_at": "2024-01-01T12:00:00+00:00"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_create_meal_requires_eaten_at():
+    app, _ = _make_app()
+    resp = await _request(
+        app,
+        "POST",
+        "/api/health/meals",
+        json={"type": "lunch", "description": "Salad"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_created_meal_is_read_back_by_get():
+    """A dashboard-logged meal is read back by the existing GET (same fact path)."""
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_log = AsyncMock(return_value=_meal_tool_result(meal_id=new_id, type="snack"))
+    with patch(f"{_HEALTH_TOOLS}.meal_log", fake_log):
+        create_resp = await _request(
+            app,
+            "POST",
+            "/api/health/meals",
+            json={
+                "type": "snack",
+                "description": "Apple",
+                "eaten_at": "2024-01-01T12:00:00+00:00",
+            },
+        )
+    assert create_resp.status_code == 201
+
+    # Now simulate the GET surface returning the same fact (predicate 'meal_snack').
+    read_row = _row(
+        {
+            "id": new_id,
+            "predicate": "meal_snack",
+            "content": "Apple",
+            "valid_at": _NOW,
+            "created_at": _NOW,
+            "metadata": {"estimated_calories": 95},
+        }
+    )
+    app2, _ = _make_app(fetch_rows=[read_row], fetchval_result=1)
+    get_resp = await _get(app2, "/api/health/meals")
+    assert get_resp.status_code == 200
+    data = get_resp.json()["data"]
+    assert any(m["id"] == str(new_id) and m["type"] == "snack" for m in data)
+
+
+async def test_update_meal_delegates_to_meal_update():
+    app, _ = _make_app()
+    meal_id = uuid.uuid4()
+    fake_update = AsyncMock(return_value=_meal_tool_result(meal_id=meal_id, type="dinner"))
+    with patch(f"{_HEALTH_TOOLS}.meal_update", fake_update):
+        resp = await _request(app, "PUT", f"/api/health/meals/{meal_id}", json={"type": "dinner"})
+    assert resp.status_code == 200
+    assert resp.json()["type"] == "dinner"
+    fake_update.assert_awaited_once()
+    # Only the supplied field is forwarded (exclude_none).
+    assert fake_update.await_args.kwargs == {"type": "dinner"}
+
+
+async def test_update_meal_empty_body_is_422():
+    app, _ = _make_app()
+    meal_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.meal_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/meals/{meal_id}", json={})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_meal_invalid_type_is_422():
+    app, _ = _make_app()
+    meal_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.meal_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/meals/{meal_id}", json={"type": "brunch"})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_meal_missing_is_404():
+    app, _ = _make_app()
+    meal_id = uuid.uuid4()
+    fake_update = AsyncMock(side_effect=ValueError(f"Meal {meal_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.meal_update", fake_update):
+        resp = await _request(app, "PUT", f"/api/health/meals/{meal_id}", json={"description": "x"})
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"]
+
+
+async def test_delete_meal_delegates_to_meal_delete():
+    app, _ = _make_app()
+    meal_id = uuid.uuid4()
+    fake_delete = AsyncMock(return_value=True)
+    with patch(f"{_HEALTH_TOOLS}.meal_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/meals/{meal_id}")
+    assert resp.status_code == 204
+    fake_delete.assert_awaited_once()
+    assert str(meal_id) in fake_delete.await_args.args
+
+
+async def test_delete_meal_missing_is_404():
+    app, _ = _make_app()
+    meal_id = uuid.uuid4()
+    fake_delete = AsyncMock(side_effect=ValueError(f"Meal {meal_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.meal_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/meals/{meal_id}")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /research
 # ---------------------------------------------------------------------------
 

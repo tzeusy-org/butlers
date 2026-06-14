@@ -184,6 +184,45 @@ class Meal(BaseModel):
     created_at: str
 
 
+_MEAL_TYPE = Literal["breakfast", "lunch", "dinner", "snack"]
+
+
+class MealCreateRequest(BaseModel):
+    """Request body for POST /meals.
+
+    Persisted through the same ``meal_log`` fact-store path the Health butler's
+    own MCP tool uses (predicate ``meal_{type}``, scope ``health``), so a
+    dashboard-logged meal is indistinguishable from a butler-logged one and is
+    read back by GET /meals.  Meals are TEMPORAL facts: ``eaten_at`` becomes the
+    fact's ``valid_at`` and multiple entries coexist by design (no
+    supersession).  ``nutrition`` is an optional dict shaped like
+    ``{"calories": N, "protein_g": N, "carbs_g": N, "fat_g": N}``.
+    """
+
+    type: _MEAL_TYPE
+    description: str = Field(..., min_length=1)
+    eaten_at: datetime
+    nutrition: dict | None = None
+    notes: str | None = None
+
+
+class MealUpdateRequest(BaseModel):
+    """Request body for PUT /meals/{id}.
+
+    All fields are optional; only the supplied (non-null) fields are applied to
+    the existing meal fact via the in-place ``meal_update`` path (temporal facts
+    are edited in place rather than superseded).  At least one field must be
+    provided.  Changing ``type`` rewrites the underlying ``meal_{type}``
+    predicate.
+    """
+
+    type: _MEAL_TYPE | None = None
+    description: str | None = Field(default=None, min_length=1)
+    eaten_at: datetime | None = None
+    nutrition: dict | None = None
+    notes: str | None = None
+
+
 class Research(BaseModel):
     """A health research entry or reference."""
 

@@ -4,7 +4,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// bu-7oyhi.2 / bu-aisjm / bu-a7vw9 / bu-gk38e — health-page write surfaces.
+// bu-7oyhi.2 / bu-aisjm / bu-a7vw9 / bu-gk38e / bu-5oeoq — health-page write
+// surfaces.
 //
 // As of bu-aisjm the Medications page has direct dashboard CRUD (add/edit/
 // delete wired to /api/health/medications), so it is NO LONGER view-only.
@@ -12,16 +13,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // /api/health/conditions, so it is NO LONGER view-only either.
 // As of bu-gk38e the Symptoms page also has direct dashboard CRUD wired to
 // /api/health/symptoms, so it is NO LONGER view-only either.
+// As of bu-5oeoq the Meals page also has direct dashboard CRUD wired to
+// /api/health/meals, so it is NO LONGER view-only either.
 //
-// The remaining THREE pages (Research, Meals, Measurements) are still an
-// observability surface: the Health butler owns all writes via its own MCP
-// tools/conversation, and the dashboard must NOT present any affordance
-// implying the user can add/edit/delete records here.
+// The remaining TWO pages (Research, Measurements) are still an observability
+// surface: the Health butler owns all writes via its own MCP tools/
+// conversation, and the dashboard must NOT present any affordance implying the
+// user can add/edit/delete records here.
 //
 // These tests assert:
-//   - For the 3 not-yet-converted pages: the "Managed by the Health butler"
+//   - For the 2 not-yet-converted pages: the "Managed by the Health butler"
 //     view-only note renders AND no add/edit/delete affordance is present.
-//   - For Medications, Conditions, and Symptoms: NO view-only note AND
+//   - For Medications, Conditions, Symptoms, and Meals: NO view-only note AND
 //     add/edit/delete affordances exist.
 // ---------------------------------------------------------------------------
 
@@ -104,7 +107,26 @@ vi.mock("@/hooks/use-health", () => {
     useCreateSymptom: noopMutation,
     useUpdateSymptom: noopMutation,
     useDeleteSymptom: noopMutation,
-    useMeals: () => empty,
+    useMeals: () => ({
+      data: {
+        data: [
+          {
+            id: "meal-1",
+            type: "lunch",
+            description: "Grilled chicken salad",
+            nutrition: null,
+            eaten_at: "2026-01-01T12:00:00Z",
+            notes: null,
+            created_at: "2026-01-01T12:00:00Z",
+          },
+        ],
+        meta: { total: 1, has_more: false },
+      },
+      isLoading: false,
+    }),
+    useCreateMeal: noopMutation,
+    useUpdateMeal: noopMutation,
+    useDeleteMeal: noopMutation,
     useResearch: () => empty,
   };
 });
@@ -118,12 +140,11 @@ import SymptomsPage from "./SymptomsPage";
 
 afterEach(cleanup);
 
-// Only the 3 not-yet-converted pages remain view-only. Medications,
-// Conditions, and Symptoms are asserted separately below to have CRUD
+// Only the 2 not-yet-converted pages remain view-only. Medications,
+// Conditions, Symptoms, and Meals are asserted separately below to have CRUD
 // affordances.
 const PAGES: Array<{ name: string; Component: () => React.ReactElement }> = [
   { name: "Research", Component: ResearchPage },
-  { name: "Meals", Component: MealsPage },
   { name: "Measurements", Component: MeasurementsPage },
 ];
 
@@ -212,9 +233,26 @@ describe("Symptoms health page — direct CRUD (bu-gk38e)", () => {
   });
 });
 
+describe("Meals health page — direct CRUD (bu-5oeoq)", () => {
+  it("does NOT render the butler-managed view-only note", () => {
+    const { container } = render(<MealsPage />);
+    const notes = container.querySelectorAll('[data-testid="butler-managed-note"]');
+    expect(notes.length).toBe(0);
+  });
+
+  it("exposes add, edit, and delete affordances", () => {
+    render(<MealsPage />);
+    // Add affordance in the tracker toolbar.
+    expect(screen.getByRole("button", { name: /log meal/i })).toBeTruthy();
+    // Per-row edit + delete affordances (one meal row is mocked).
+    expect(screen.getByRole("button", { name: /edit grilled chicken salad/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /delete grilled chicken salad/i })).toBeTruthy();
+  });
+});
+
 describe("Health page descriptions — honest framing", () => {
-  it("Meals/Measurements pages drop imperative 'Track ...' lead copy", () => {
-    for (const Component of [MealsPage, MeasurementsPage]) {
+  it("Measurements page drops imperative 'Track ...' lead copy", () => {
+    for (const Component of [MeasurementsPage]) {
       const { container } = render(<Component />);
       const heading = container.querySelector("h1");
       // The H1 description paragraph is the sibling <p> directly under the

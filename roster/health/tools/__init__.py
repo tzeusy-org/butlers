@@ -19,8 +19,10 @@ from butlers.tools.health.conditions import (
 )
 from butlers.tools.health.diet import (
     VALID_MEAL_TYPES,
+    meal_delete,
     meal_history,
     meal_log,
+    meal_update,
     nutrition_summary,
 )
 from butlers.tools.health.measurements import (
@@ -59,8 +61,10 @@ __all__ = [
     "condition_list",
     "condition_update",
     "health_summary",
+    "meal_delete",
     "meal_history",
     "meal_log",
+    "meal_update",
     "measurement_history",
     "measurement_latest",
     "measurement_log",
