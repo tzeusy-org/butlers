@@ -445,6 +445,162 @@ describe("ButlerFinanceFinancesTab — KPI strip", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: KPI strip honesty — bu-t5w6w
+//   Next bill must skip $0 / amount_known:false placeholders.
+//   Active subscriptions must exclude $0 and dummy test subs.
+// ---------------------------------------------------------------------------
+
+// A $0 / amount-unknown placeholder bill that sorts FIRST by due_date, plus a
+// real bill behind it. The KPI must skip the placeholder and surface the real one.
+const NEXT_BILL_PLACEHOLDER = {
+  bill: {
+    id: "bill-zero",
+    payee: "Arta Finance",
+    amount: "0.00",
+    currency: "USD",
+    due_date: "2026-05-09",
+    frequency: "monthly",
+    status: "pending",
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    statement_period_start: null,
+    statement_period_end: null,
+    paid_at: null,
+    metadata: { amount_known: false },
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  urgency: "due_soon",
+  days_until_due: 1,
+};
+
+const NEXT_BILL_REAL = {
+  bill: {
+    id: "bill-real",
+    payee: "Electric Company",
+    amount: "84.00",
+    currency: "USD",
+    due_date: "2026-05-12",
+    frequency: "monthly",
+    status: "pending",
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    statement_period_start: null,
+    statement_period_end: null,
+    paid_at: null,
+    metadata: {},
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  urgency: "due_soon",
+  days_until_due: 4,
+};
+
+// Active subs including a $0 placeholder and a literal dummy test record. Only
+// the two real active subs (Netflix, Spotify) should be counted.
+const SUBS_WITH_NOISE = [
+  ...SUBSCRIPTIONS, // Netflix (active), Spotify (active), Adobe (cancelled)
+  {
+    id: "sub-dummy",
+    service: "dummy",
+    amount: "0.00",
+    currency: "USD",
+    frequency: "monthly",
+    next_renewal: "2026-06-30",
+    status: "active",
+    auto_renew: true,
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  {
+    id: "sub-zero",
+    service: "Mystery $0 Sub",
+    amount: "0.00",
+    currency: "USD",
+    frequency: "monthly",
+    next_renewal: "2026-06-25",
+    status: "active",
+    auto_renew: true,
+    payment_method: null,
+    account_id: null,
+    source_message_id: null,
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+];
+
+function setupKpiNoise() {
+  vi.mocked(useFinanceTransactions).mockReturnValue({
+    data: { data: TRANSACTIONS, meta: { total: 2, offset: 0, limit: 15 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceTransactions>);
+
+  vi.mocked(useFinanceSubscriptions).mockReturnValue({
+    data: { data: SUBS_WITH_NOISE, meta: { total: 5, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceSubscriptions>);
+
+  vi.mocked(useFinanceUpcomingBills).mockReturnValue({
+    data: {
+      items: [NEXT_BILL_PLACEHOLDER, NEXT_BILL_REAL],
+      total_amount: "84.00",
+      count: 2,
+      days_ahead: 30,
+      include_overdue: true,
+    },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceUpcomingBills>);
+
+  let spendingSummaryCall = 0;
+  vi.mocked(useFinanceSpendingSummary).mockImplementation(() => {
+    const data = spendingSummaryCall % 2 === 0 ? MONTHLY_SUMMARY : CATEGORY_SUMMARY;
+    spendingSummaryCall += 1;
+    return {
+      data,
+      isLoading: false,
+    } as ReturnType<typeof useFinanceSpendingSummary>;
+  });
+}
+
+describe("ButlerFinanceFinancesTab — KPI strip honesty (bu-t5w6w)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupKpiNoise();
+  });
+
+  afterEach(() => cleanup());
+
+  it("Next bill skips the $0 / amount_known:false placeholder and shows the real bill", () => {
+    renderTab();
+    const kpiStrip = screen.getByTestId("finance-kpi-strip");
+    // Must NOT surface the $0 Arta Finance placeholder as the next bill.
+    expect(kpiStrip.textContent).not.toContain("$0.00");
+    expect(kpiStrip.textContent).not.toContain("Arta Finance");
+    // Must surface the real $84.00 Electric Company bill instead.
+    expect(kpiStrip.textContent).toContain("$84.00");
+    expect(kpiStrip.textContent).toContain("Electric Company");
+  });
+
+  it("Active subscriptions counts only real billable active subs (excludes $0 + dummy)", () => {
+    renderTab();
+    const cells = screen.getAllByTestId("kpi-value");
+    const activeCell = cells.find((c) => c.textContent?.includes("Active subscriptions"));
+    expect(activeCell).toBeDefined();
+    // Netflix + Spotify are active & non-zero & non-dummy → count = 2.
+    // Adobe is cancelled; sub-dummy is service:'dummy'; sub-zero is $0 → all excluded.
+    expect(activeCell?.textContent).toContain("2");
+    expect(activeCell?.textContent).not.toContain("4");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: Transaction rows
 // ---------------------------------------------------------------------------
 

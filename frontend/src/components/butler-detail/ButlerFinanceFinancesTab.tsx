@@ -416,8 +416,24 @@ export default function ButlerFinanceFinancesTab() {
   const subscriptions = subResp?.data ?? [];
   const upcomingBills = upcomingResp?.items ?? [];
 
-  const activeSubCount = subscriptions.filter((s) => s.status === "active").length;
-  const nextBill = upcomingBills[0] ?? null;
+  // Active subscriptions KPI: count only real, billable active subs. Drop the
+  // literal service:'dummy' test record and any $0 placeholder — neither
+  // represents a genuine recurring charge, so counting them overstates the KPI.
+  const activeSubCount = subscriptions.filter(
+    (s) => s.status === "active" && s.service !== "dummy" && parseFloat(s.amount) > 0,
+  ).length;
+
+  // Next bill KPI: pick the soonest upcoming bill with a real, known amount.
+  // Bills can carry a $0 / amount_known:false placeholder (e.g. a "statement is
+  // ready" signal with no extracted balance); surfacing those as "$0.00" is
+  // misleading. upcomingBills is already ordered by due_date ASC, so the first
+  // bill that clears both checks is the next actionable one.
+  const nextBill =
+    upcomingBills.find((item) => {
+      const known = item.bill.metadata?.amount_known;
+      if (known === false) return false;
+      return parseFloat(item.bill.amount) > 0;
+    }) ?? null;
   const totalSpend = monthlySummary?.total_spend ?? "0";
   const currency = monthlySummary?.currency ?? "USD";
   // Sort once at the parent so children receive a stable, ordered reference.

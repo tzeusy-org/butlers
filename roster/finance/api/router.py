@@ -415,9 +415,17 @@ async def get_spending_summary(
     # Spec: finance-crud-operations §"Spending aggregation" — aggregate from
     # transactions WHERE direction = 'debit' AND deleted_at IS NULL. Soft-deleted
     # transactions must not inflate spending totals.
+    #
+    # 'transfer' and 'uncategorized' are NOT real spend: transfers move money
+    # between the owner's own accounts (~$11k in the live data) and uncategorized
+    # is an unclassified bucket. Excluding both — keyed off the effective category
+    # (overlay inferred_category preferred, else the raw category column) — keeps
+    # the 'Top category' KPI and the spend total honest. Exclusion applies to
+    # every group_by dimension, not just category.
     conditions: list[str] = [
         "direction = 'debit'",
         "deleted_at IS NULL",
+        "COALESCE(metadata->>'inferred_category', category) NOT IN ('transfer', 'uncategorized')",
         "posted_at::date >= $1",
         "posted_at::date <= $2",
     ]

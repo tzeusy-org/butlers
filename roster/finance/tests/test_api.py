@@ -755,6 +755,37 @@ async def test_spending_summary_excludes_soft_deleted():
 
 
 @pytest.mark.asyncio
+async def test_spending_summary_excludes_transfer_and_uncategorized():
+    """GET /api/finance/spending-summary excludes transfer + uncategorized (bu-t5w6w).
+
+    'transfer' moves money between the owner's own accounts and 'uncategorized'
+    is an unclassified bucket — neither is real spend. Both the total fetchrow
+    and the grouped fetch must carry a NOT IN ('transfer', 'uncategorized')
+    guard keyed off the effective category so the 'Top category' KPI and the
+    spend total reflect genuine spending only.
+    """
+    app, mock_pool = _make_app(fetchrow_return=_spending_fetchrow())
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/spending-summary")
+
+    assert response.status_code == 200
+    total_sql = mock_pool.fetchrow.call_args[0][0]
+    group_sql = mock_pool.fetch.call_args[0][0]
+
+    for sql in (total_sql, group_sql):
+        # Exclusion keyed off the effective (overlay-aware) category.
+        assert "COALESCE(metadata->>'inferred_category', category)" in sql
+        assert "NOT IN ('transfer', 'uncategorized')" in sql
+        # Prior guards must remain intact.
+        assert "direction = 'debit'" in sql
+        assert "deleted_at IS NULL" in sql
+
+
+@pytest.mark.asyncio
 async def test_spending_summary_group_by_category():
     """GET /api/finance/spending-summary?group_by=category uses category grouping."""
     group_rows = [{"key": "groceries", "amount": Decimal("80.00"), "count": 3}]
