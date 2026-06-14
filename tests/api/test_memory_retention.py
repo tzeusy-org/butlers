@@ -226,9 +226,20 @@ async def test_put_retention_policies_calls_audit_per_entry(app):
             )
 
     assert resp.status_code == 200
-    assert mock_append.call_count == 2
-    call_actions = [c.args[2] for c in mock_append.call_args_list]
-    assert all(a == "memory.retention_policy" for a in call_actions)
+    # The route emits one audit entry per policy entry with action
+    # "memory.retention_policy".  The dashboard_audit_middleware ALSO routes
+    # through the same canonical audit.append() as a fire-and-forget task (with
+    # a different action), so the TOTAL count races between 2 and 3.  Assert on
+    # the route's specific calls rather than the total count.
+    route_calls = [
+        c
+        for c in mock_append.call_args_list
+        if len(c.args) >= 3 and c.args[2] == "memory.retention_policy"
+    ]
+    assert len(route_calls) == 2, (
+        f"expected exactly two route audit.append calls with action "
+        f"'memory.retention_policy', got call list: {mock_append.call_args_list}"
+    )
 
 
 async def test_put_retention_policies_invalid_kind_returns_400(app):
