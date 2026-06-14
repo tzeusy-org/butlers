@@ -33,12 +33,12 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Depends, HTTPException, Query
-from prometheus_client import Counter
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.audit import AuditEntry, AuditLogEntry
 from butlers.core.credential_keys import normalize_key_param
+from butlers.metrics_registry import get_or_create_counter
 
 if TYPE_CHECKING:
     import asyncpg
@@ -64,7 +64,7 @@ class AuditTableNotAvailableError(Exception):
 # Prometheus counter — incremented per successful append to public.audit_log
 # ---------------------------------------------------------------------------
 
-audit_log_appended_total = Counter(
+audit_log_appended_total = get_or_create_counter(
     "audit_log_appended_total",
     "Number of rows appended to public.audit_log, partitioned by action.",
     labelnames=["action"],

@@ -61,7 +61,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
-from prometheus_client import Counter
 
 from butlers.api.models.google_health import (
     AccountStatus,
@@ -70,6 +69,7 @@ from butlers.api.models.google_health import (
     GoogleHealthStatusResponse,
 )
 from butlers.google_account_registry import list_health_scoped_accounts
+from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ _LIVENESS_THRESHOLD_SECONDS = 300
 # consistent across hot-reloads in dev.
 # ---------------------------------------------------------------------------
 
-dashboard_connector_status_requests_total = Counter(
+dashboard_connector_status_requests_total = get_or_create_counter(
     "dashboard_connector_status_requests_total",
     "Number of dashboard connector-status GETs, labelled by connector.",
     labelnames=["connector"],
