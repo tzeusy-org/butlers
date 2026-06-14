@@ -94,6 +94,7 @@ export {
   getHealth,
   getIssues,
   dismissIssue,
+  undismissIssue,
   getMemoryActivity,
   getMemoryCompactionLog,
   getMemoryRetentionPolicies,

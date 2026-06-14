@@ -78,4 +78,31 @@ describe("IssuesPanel", () => {
     const button = screen.getByRole("button", { name: "Dismiss" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
   });
+
+  it("renders a Restore button (not Dismiss) in the dismissed view", () => {
+    const onRestore = vi.fn();
+    const issue = makeIssue({ dismissed: true });
+    renderPanel({ issues: [issue], dismissedView: true, onRestore });
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect(onRestore).toHaveBeenCalledTimes(1);
+    expect(onRestore).toHaveBeenCalledWith("audit_error_group:boom::general");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
+  it("disables Restore while a restore is in flight", () => {
+    const issue = makeIssue({ dismissed: true });
+    renderPanel({ issues: [issue], dismissedView: true, onRestore: vi.fn(), isRestoring: true });
+
+    const button = screen.getByRole("button", { name: "Restore" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
+  it("shows a dismissed-specific empty state in the dismissed view", () => {
+    renderPanel({ issues: [], dismissedView: true });
+
+    expect(screen.getByText("No dismissed issues.")).toBeTruthy();
+    expect(screen.queryByText("No issues recorded.")).toBeNull();
+  });
 });

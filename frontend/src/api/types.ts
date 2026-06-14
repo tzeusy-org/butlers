@@ -256,6 +256,12 @@ export interface DismissIssueResult {
   dismissed: boolean;
 }
 
+/** Result of undismissing (restoring) a previously-dismissed issue group. */
+export interface UndismissIssueResult {
+  issue_key: string;
+  deleted: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Activity / Timeline
 // ---------------------------------------------------------------------------

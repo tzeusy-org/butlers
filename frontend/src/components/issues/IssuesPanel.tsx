@@ -14,6 +14,16 @@ interface IssuesPanelProps {
   onDismiss?: (issueKey: string) => void
   /** Disables the Dismiss control while a dismissal is in flight. */
   isDismissing?: boolean
+  /** Called with an issue's stable key when the user restores (undismisses) it. */
+  onRestore?: (issueKey: string) => void
+  /** Disables the Restore control while a restore is in flight. */
+  isRestoring?: boolean
+  /**
+   * When true, this panel is showing dismissed issues: it renders a "Restore"
+   * affordance (via {@link onRestore}) instead of "Dismiss", and uses copy
+   * tuned for the dismissed view.
+   */
+  dismissedView?: boolean
 }
 
 export default function IssuesPanel({
@@ -22,6 +32,9 @@ export default function IssuesPanel({
   isError,
   onDismiss,
   isDismissing,
+  onRestore,
+  isRestoring,
+  dismissedView = false,
 }: IssuesPanelProps) {
   if (isLoading) {
     return (
@@ -64,8 +77,12 @@ export default function IssuesPanel({
         </CardHeader>
         <CardContent>
           <EmptyState
-            title="No issues recorded."
-            description="Issues appear when butlers report errors or warnings."
+            title={dismissedView ? 'No dismissed issues.' : 'No issues recorded.'}
+            description={
+              dismissedView
+                ? 'Issues you dismiss appear here so you can restore them.'
+                : 'Issues appear when butlers report errors or warnings.'
+            }
           />
         </CardContent>
       </Card>
@@ -75,8 +92,8 @@ export default function IssuesPanel({
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Issues</CardTitle>
-        <Badge variant="destructive">{issues.length}</Badge>
+        <CardTitle>{dismissedView ? 'Dismissed issues' : 'Issues'}</CardTitle>
+        <Badge variant={dismissedView ? 'secondary' : 'destructive'}>{issues.length}</Badge>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
@@ -110,15 +127,27 @@ export default function IssuesPanel({
                     <Link to={issue.link}>View</Link>
                   </Button>
                 )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onDismiss?.(issue.issue_key)}
-                  disabled={isDismissing || !onDismiss}
-                  className="text-muted-foreground"
-                >
-                  Dismiss
-                </Button>
+                {dismissedView ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onRestore?.(issue.issue_key)}
+                    disabled={isRestoring || !onRestore}
+                    className="text-muted-foreground"
+                  >
+                    Restore
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onDismiss?.(issue.issue_key)}
+                    disabled={isDismissing || !onDismiss}
+                    className="text-muted-foreground"
+                  >
+                    Dismiss
+                  </Button>
+                )}
               </div>
             </div>
           ))}

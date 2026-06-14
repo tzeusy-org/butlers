@@ -11,7 +11,7 @@ import logging
 from datetime import UTC, datetime
 
 import anyio
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.audit_grouping import build_audit_group_query, issue_from_audit_group_row
 from butlers.api.db import DatabaseManager
@@ -149,12 +149,25 @@ async def list_issues(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     db: DatabaseManager | None = Depends(_get_db_manager),
+    include_dismissed: bool = Query(
+        False,
+        description=(
+            "When true, return only the issues that have been dismissed (acked) "
+            "server-side instead of the active feed. Each returned issue carries "
+            "``dismissed=True`` so the UI can offer a restore affordance."
+        ),
+    ),
 ) -> ApiResponse[list[Issue]]:
     """Return grouped issues across butler infrastructure.
 
     Checks all butlers in parallel for:
     - Unreachable services (critical, live)
     - Grouped audit failures (warning/critical with first/last seen + count)
+
+    By default, issues the user has dismissed (acked) server-side are filtered
+    out. Pass ``include_dismissed=true`` to instead return *only* the dismissed
+    issues (each flagged ``dismissed=True``) so a mistakenly-dismissed issue can
+    be restored from the UI.
 
     Results are sorted by recency (most recent ``last_seen_at`` first).
     """
@@ -179,10 +192,16 @@ async def list_issues(
 
     issues.extend(audit_issues)
 
-    # Drop any issue the user has dismissed (acked) server-side. The ack is keyed
-    # by the issue's stable ``issue_key`` so the dismissal persists across
-    # browsers and sessions.
-    issues = [issue for issue in issues if issue.issue_key not in dismissed_keys]
+    # Partition by dismissal state. The ack is keyed by the issue's stable
+    # ``issue_key`` so the dismissal persists across browsers and sessions.
+    if include_dismissed:
+        # Restore view: surface only the dismissed issues, flagged so the UI can
+        # render a "Restore" affordance for each.
+        issues = [issue for issue in issues if issue.issue_key in dismissed_keys]
+        for issue in issues:
+            issue.dismissed = True
+    else:
+        issues = [issue for issue in issues if issue.issue_key not in dismissed_keys]
 
     severity_order = {"critical": 0, "warning": 1}
     issues.sort(
