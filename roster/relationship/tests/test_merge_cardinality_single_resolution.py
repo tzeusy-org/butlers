@@ -99,12 +99,15 @@ async def pool(provisioned_postgres_pool):
             CREATE TABLE IF NOT EXISTS facts (
                 id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
                 entity_id     UUID,
+                object_entity_id UUID,
                 predicate     TEXT        NOT NULL,
                 content       TEXT,
                 source_butler TEXT,
                 confidence       FLOAT    NOT NULL DEFAULT 1.0,
                 observed_at      TIMESTAMPTZ,
                 last_confirmed_at TIMESTAMPTZ,
+                valid_at         TIMESTAMPTZ,
+                supersedes_id    UUID,
                 scope         TEXT        NOT NULL DEFAULT 'relationship',
                 validity      TEXT        NOT NULL DEFAULT 'active',
                 created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -120,6 +123,18 @@ async def pool(provisioned_postgres_pool):
                 outcome         TEXT        NOT NULL CHECK (outcome IN ('merged', 'dismissed')),
                 reviewed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
                 created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        # merge_entities re-points public.contacts.entity_id onto the survivor
+        # (bu-j820n.1), so the table must exist even when no contacts are linked.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.contacts (
+                id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                name        TEXT,
+                entity_id   UUID,
+                archived_at TIMESTAMPTZ,
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         yield p
