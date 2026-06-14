@@ -54,6 +54,7 @@ from butlers.core.qa.sources.log_scanner import (
     LogScannerSource,
 )
 from butlers.core.qa.sources.session_records import SessionRecordsSource
+from butlers.core.qa.sources.tool_call_failures import ToolCallFailuresSource
 from butlers.core.qa.triage import triage_findings
 from butlers.modules.base import Module, ToolMeta
 
@@ -224,7 +225,9 @@ _DEFAULT_MAX_REACTIVE_BUFFER = 50
 _DEFAULT_RETENTION_CLEANUP_HOUR = 4
 
 #: Known source names (for config validation).
-_KNOWN_SOURCES = frozenset({"log_scanner", "session_records", "butler_reports"})
+_KNOWN_SOURCES = frozenset(
+    {"log_scanner", "session_records", "butler_reports", "tool_call_failures"}
+)
 
 #: Maps caller-supplied integer severity (0–4) to the hint string accepted by
 #: ``compute_fingerprint_from_report``.  Used when canonicalizing report_finding
@@ -304,6 +307,7 @@ class QaConfig(BaseModel):
         "log_scanner",
         "session_records",
         "butler_reports",
+        "tool_call_failures",
     ]
     max_reactive_buffer: int = _DEFAULT_MAX_REACTIVE_BUFFER
     log_scanner_max_entries: int = 10_000
@@ -581,6 +585,13 @@ class QaModule(Module):
                 logger.info("QaModule: registered session_records source")
             else:
                 logger.info("QaModule: session_records source skipped (no DB pool at startup)")
+
+        if "tool_call_failures" in enabled:
+            if pool is not None:
+                self._sources.append(ToolCallFailuresSource(pool, repo_root=self._repo_root))
+                logger.info("QaModule: registered tool_call_failures source")
+            else:
+                logger.info("QaModule: tool_call_failures source skipped (no DB pool at startup)")
 
         disabled = _KNOWN_SOURCES - enabled
         for src_name in sorted(disabled):

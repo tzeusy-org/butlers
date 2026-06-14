@@ -54,7 +54,7 @@ patrol_interval_minutes = 10
 log_lookback_minutes = 15
 max_concurrent_investigations = 2
 severity_threshold = 2
-enabled_sources = ["log_scanner", "session_records", "butler_reports"]
+enabled_sources = ["log_scanner", "session_records", "butler_reports", "tool_call_failures"]
 max_reactive_buffer = 50
 # UTC hour for daily removal of raw investigation_notes.evidence_lines.
 retention_cleanup_hour = 4
