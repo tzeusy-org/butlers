@@ -2962,6 +2962,16 @@ async def create_ingestion_rule(
     """
     pool = _pool(db)
 
+    # Validate scope-action compatibility explicitly at the handler boundary,
+    # mirroring update_ingestion_rule (PATCH). IngestionRuleCreate already runs
+    # this in its model_validator, but asserting it here keeps create/patch in
+    # lock-step and guards against the inert FE vocabulary (drop/preserve/tier/
+    # route) ever being stored as a verdict the policy engine cannot honor.
+    try:
+        validate_ingestion_action(body.action, body.scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
     # For global scope route_to, validate target butler exists
     if body.scope == "global":
         await _assert_route_to_eligible(pool, body.action)

@@ -512,7 +512,9 @@ describe('FiltersPipeline: rule editor wiring', () => {
     expect(mockCreateMutateAsync).toHaveBeenCalledTimes(1)
     const body = (mockCreateMutateAsync.mock.calls[0] as unknown[])[0] as Record<string, unknown>
     expect(body.rule_type).toBe('sender_domain')
-    expect(body.action).toBe('drop')
+    // The editor now emits a runtime-valid action ('skip'), not the old inert
+    // 'drop' verdict the policy engine never matched (bu-4rt0h).
+    expect(body.action).toBe('skip')
     expect((body.condition as Record<string, unknown>).domain).toBe('spam.example.com')
   })
 
