@@ -166,6 +166,124 @@ class TestTelegramSendAuditEmit:
         assert mod._audit_pool is pool
 
 
+class TestTelegramSendPermissionEnforcement:
+    """The ``notify`` permission gates _send_message (the raw send/reply chokepoint).
+
+    Telegram is an owner-facing notify channel, so a butler with ``notify``
+    revoked must not be able to message the owner via the raw
+    ``telegram_send_message`` / ``telegram_reply_to_message`` tools either.
+    ``_send_message`` is the chokepoint both funnel through; gating it covers
+    both. The gate reuses ``notify`` (no new permission key / migration) and
+    consults public.permissions via butlers.modules.telegram.require_permission,
+    which fails open on DB error.
+
+    [bu-y0wcr]
+    """
+
+    async def test_send_blocked_when_notify_revoked(self) -> None:
+        """Revoked notify blocks the send before any Telegram HTTP traffic.
+
+        Pre-fix this fails: the raw send path ignored the matrix entirely.
+        """
+        from butlers.core.permissions import PermissionDenied
+
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+
+        with (
+            patch(
+                "butlers.modules.telegram.require_permission",
+                new_callable=AsyncMock,
+                side_effect=PermissionDenied("test-butler", "notify", "revoked by owner"),
+            ),
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock()
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(PermissionDenied):
+                await mod._send_message("123456", "Hello world")
+
+        mock_client.post.assert_not_called()
+
+    async def test_reply_blocked_when_notify_revoked(self) -> None:
+        """Reply funnels through _send_message, so it is gated too."""
+        from butlers.core.permissions import PermissionDenied
+
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+
+        with (
+            patch(
+                "butlers.modules.telegram.require_permission",
+                new_callable=AsyncMock,
+                side_effect=PermissionDenied("test-butler", "notify", "revoked by owner"),
+            ),
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock()
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(PermissionDenied):
+                await mod._reply_to_message("123456", 42, "Hi")
+
+        mock_client.post.assert_not_called()
+
+    async def test_send_allowed_when_notify_granted(self) -> None:
+        """Granted (require_permission returns None) lets the send proceed."""
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"ok": True}
+
+        with (
+            patch(
+                "butlers.modules.telegram.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_require,
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=fake_resp)
+            mock_get_client.return_value = mock_client
+
+            result = await mod._send_message("123456", "Hello world")
+
+        assert result == {"ok": True}
+        mock_client.post.assert_awaited_once()
+        # Gate consulted the matrix with the notify capability.
+        assert mock_require.await_args.args[2] == "notify"
+
+    def test_permission_pool_prefers_audit_then_db(self) -> None:
+        """_permission_pool prefers the switchboard audit pool, then the butler pool."""
+        mod = TelegramModule()
+        # No pools wired → None (fails open).
+        assert mod._permission_pool() is None
+
+        # Butler pool only.
+        db = MagicMock()
+        db.pool = MagicMock()
+        mod._db = db
+        assert mod._permission_pool() is db.pool
+
+        # Audit pool wins when both are present.
+        audit = MagicMock()
+        mod.wire_audit_pool(audit)
+        assert mod._permission_pool() is audit
+
+
 class TestMarkdownToTelegramHtml:
     @pytest.mark.parametrize(
         "md,expected_contains",

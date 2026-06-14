@@ -613,6 +613,43 @@ class TestCalendarWritePermissionEnforcement:
         assert len(provider.create_calls) == 1
         assert result["event"]["butler_generated"] is True
 
+    async def test_create_user_event_blocked_when_calendar_write_revoked(self):
+        """The sibling create_user_event path (not an MCP tool) is gated too.
+
+        Pre-fix this fails: create_user_event wrote to the provider with no
+        calendar.write check, bypassing the gate the 3 MCP tools enforce.
+        """
+        from butlers.core.permissions import PermissionDenied
+
+        mod, provider, _ = await self._make_module()
+        with patch(
+            "butlers.modules.calendar.require_permission",
+            new_callable=AsyncMock,
+            side_effect=PermissionDenied("test-butler", "calendar.write", "revoked by owner"),
+        ):
+            with pytest.raises(PermissionDenied):
+                await mod.create_user_event(
+                    title="Lunch",
+                    start_at=datetime(2026, 2, 20, 12, 0, tzinfo=UTC),
+                    end_at=datetime(2026, 2, 20, 13, 0, tzinfo=UTC),
+                )
+        assert provider.create_calls == []
+
+    async def test_create_user_event_allowed_when_calendar_write_granted(self):
+        """Granted (require_permission returns None) lets create_user_event proceed."""
+        mod, provider, _ = await self._make_module()
+        with patch(
+            "butlers.modules.calendar.require_permission",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            await mod.create_user_event(
+                title="Lunch",
+                start_at=datetime(2026, 2, 20, 12, 0, tzinfo=UTC),
+                end_at=datetime(2026, 2, 20, 13, 0, tzinfo=UTC),
+            )
+        assert len(provider.create_calls) == 1
+
 
 # ---------------------------------------------------------------------------
 # google_calendar_write egress audit emission
