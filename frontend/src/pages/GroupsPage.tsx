@@ -1,9 +1,7 @@
 import { useState } from "react";
-import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { Time } from "@/components/ui/time";
 
 import type { GroupParams } from "@/api/types";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -59,15 +57,6 @@ function EmptyState() {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function labelStyle(label: { color: string | null; name: string }): string {
-  if (label.color) return label.color;
-  return categoryHueVar(label.name);
-}
-
-// ---------------------------------------------------------------------------
 // GroupsPage
 // ---------------------------------------------------------------------------
 
@@ -116,7 +105,6 @@ export default function GroupsPage() {
                   <TableHead>Name</TableHead>
                   <TableHead>Description</TableHead>
                   <TableHead>Members</TableHead>
-                  <TableHead>Labels</TableHead>
                   <TableHead>Created</TableHead>
                 </TableRow>
               </TableHeader>
@@ -132,26 +120,6 @@ export default function GroupsPage() {
                       </TableCell>
                       <TableCell className="tabular-nums text-sm">
                         {group.member_count}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          {group.labels.map((label) => (
-                            <Badge
-                              key={label.id}
-                              variant="outline"
-                              style={{
-                                borderColor: labelStyle(label),
-                                color: labelStyle(label),
-                              }}
-                              className="text-xs"
-                            >
-                              {label.name}
-                            </Badge>
-                          ))}
-                          {group.labels.length === 0 && (
-                            <span className="text-muted-foreground text-xs">{"\u2014"}</span>
-                          )}
-                        </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
                         <Time value={group.created_at} mode="absolute" precision="day" />
