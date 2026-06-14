@@ -84,7 +84,12 @@ class TestModuleABCAndConfig:
     def test_config_defaults_and_validation(self):
         cfg = QaConfig()
         assert cfg.enabled is True and cfg.patrol_interval_minutes == 10
-        assert cfg.enabled_sources == ["log_scanner", "session_records", "butler_reports"]
+        assert cfg.enabled_sources == [
+            "log_scanner",
+            "session_records",
+            "butler_reports",
+            "tool_call_failures",
+        ]
 
         with pytest.raises(ValidationError):
             QaConfig(unknown_field=True)
