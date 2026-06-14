@@ -59,6 +59,30 @@ def _table_exists(conn, table: str) -> bool:
     return conn.execute(text(f"SELECT to_regclass('relationship.{table}')")).scalar() is not None
 
 
+def _public_contacts_has_preferred_channel(conn) -> bool:
+    """Return True if ``public.contacts.preferred_channel`` still exists.
+
+    The core chain's core_123 DROPs this write-orphaned column. alembic
+    version_locations have no guaranteed ordering, so on a fresh provision
+    core_123 may run before this rel_003 migration; both upgrade and downgrade
+    must stay order-independent and not reference a column that may be gone.
+    """
+    return (
+        conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name   = 'contacts'
+                  AND column_name  = 'preferred_channel'
+                """
+            )
+        ).scalar()
+        is not None
+    )
+
+
 def upgrade() -> None:
     conn = op.get_bind()
 
@@ -69,20 +93,50 @@ def upgrade() -> None:
 
     # Step 1: Copy contacts from relationship.contacts → public.contacts.
     # No ID overlap (verified), so INSERT without conflict handling.
+    #
+    # Cross-chain guard (cross-chain-migration-drop-hazard, bu-1yihq): the core
+    # chain's core_123 DROPs public.contacts.preferred_channel. alembic
+    # version_locations have no guaranteed ordering, so on a fresh provision
+    # core_123 may run BEFORE this rel_003. When the column is gone, omit it from
+    # the INSERT so this migration stays order-independent (the column was
+    # write-orphaned and superseded by the entity-keyed prefers-channel fact).
+    pref_present = _public_contacts_has_preferred_channel(conn)
+    pref_col = "preferred_channel," if pref_present else ""
+
+    # Data-preservation guard (bu-33077): when core_123 has already dropped
+    # public.contacts.preferred_channel, the copy above omits the column, so any
+    # non-null preference still living in relationship.contacts (rel_002 added the
+    # column) would be silently lost when Step 5 drops the table — and it cannot
+    # be backfilled into a prefers-channel fact here because relationship.entity_facts
+    # is not created until rel_013, which runs after this migration. Snapshot those
+    # values first so they remain recoverable (mirrors core_123's snapshot-before-drop).
+    if not pref_present:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS
+                    public.contacts_preferred_channel_dropbak_rel_003 AS
+                SELECT id, entity_id, preferred_channel
+                FROM relationship.contacts
+                WHERE preferred_channel IS NOT NULL
+                """
+            )
+        )
+
     conn.execute(
-        text("""
+        text(f"""
         INSERT INTO public.contacts (
             id, name, details, first_name, last_name, nickname,
             company, job_title, gender, pronouns, avatar_url,
             listed, archived_at, metadata, stay_in_touch_days,
-            entity_id, preferred_channel, created_at, updated_at
+            entity_id, {pref_col} created_at, updated_at
         )
         SELECT
             id, name, details, first_name, last_name, nickname,
             company, job_title, gender, pronouns, avatar_url,
             COALESCE(listed, true),
             archived_at, metadata, stay_in_touch_days,
-            entity_id, preferred_channel,
+            entity_id, {pref_col}
             COALESCE(created_at, now()),
             COALESCE(updated_at, now())
         FROM relationship.contacts
@@ -160,8 +214,15 @@ def downgrade() -> None:
     # Copy contacts back from public that originated from relationship.
     # (We can't perfectly identify which ones came from relationship,
     # so we copy all — the downgrade is best-effort.)
+    #
+    # Cross-chain guard (mirror of upgrade): core_123 may have already DROPped
+    # public.contacts.preferred_channel, in which case the source column is gone.
+    # Select NULL for the recreated relationship.contacts.preferred_channel so the
+    # downgrade stays order-independent (best-effort: the canonical store is the
+    # entity-keyed prefers-channel fact, not this restored column).
+    pref_select = "preferred_channel" if _public_contacts_has_preferred_channel(conn) else "NULL"
     conn.execute(
-        text("""
+        text(f"""
         INSERT INTO relationship.contacts (
             id, name, details, first_name, last_name, nickname,
             company, job_title, gender, pronouns, avatar_url,
@@ -172,7 +233,7 @@ def downgrade() -> None:
             id, name, details, first_name, last_name, nickname,
             company, job_title, gender, pronouns, avatar_url,
             listed, archived_at, metadata, stay_in_touch_days,
-            entity_id, preferred_channel, created_at, updated_at
+            entity_id, {pref_select}, created_at, updated_at
         FROM public.contacts
         ON CONFLICT (id) DO NOTHING
     """)

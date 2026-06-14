@@ -1449,7 +1449,6 @@ async def get_contact(
             c.updated_at,
             COALESCE(e.roles, '{}') AS roles,
             c.entity_id,
-            c.preferred_channel,
             (
                 SELECT MAX(f.valid_at) FROM facts f
                 WHERE f.entity_id = c.entity_id
@@ -1558,7 +1557,6 @@ async def get_contact(
         roles=roles,
         entity_id=entity_id,
         contact_info=contact_info_entries,
-        preferred_channel=row["preferred_channel"],
     )
 
 
@@ -1582,8 +1580,8 @@ async def patch_contact(
 
     Preferred channel is NOT writable here: it is an entity-level preference
     written via PUT/DELETE /entities/{id}/preferred-channel (the single-valued
-    ``prefers-channel`` fact), not the orphaned ``contacts.preferred_channel``
-    column.
+    ``prefers-channel`` fact). The legacy ``public.contacts.preferred_channel``
+    column was dropped in core_122 (bu-1yihq); the fact is the sole store.
 
     Supported fields: full_name, nickname, company, job_title, roles.
     This is the sole write path for role assignment.  Only provided
@@ -4502,7 +4500,9 @@ async def list_entity_linked_contacts(
       ``source="entity_facts"`` so the frontend routes reveal to the entity-keyed
       endpoint (GET /entities/{id}/secrets/{info_id}).
     - ``labels`` — full label objects assigned to the contact.
-    - ``preferred_channel`` — the contact's preferred outreach channel.
+    - ``preferred_channel`` — the entity's preferred outreach channel, sourced
+      from the entity-keyed ``prefers-channel`` fact (attached to the first
+      contact only).
 
     SECURITY: secured entity_info values are never included in this response.
     Only metadata (id, type, is_primary, secured=true, source) is surfaced so

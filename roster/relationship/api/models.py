@@ -104,7 +104,6 @@ class ContactDetail(ContactSummary):
     # ``entity_id`` is inherited from ContactSummary (bu-f0i4w).
     roles: list[str] = Field(default_factory=list)
     contact_info: list[ContactInfoEntry] = Field(default_factory=list)
-    preferred_channel: str | None = None
 
 
 class ContactPatchRequest(BaseModel):

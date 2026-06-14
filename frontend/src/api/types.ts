@@ -815,7 +815,6 @@ export interface ContactDetail extends ContactSummary {
   // Identity fields (entity_id is inherited from ContactSummary)
   roles: string[];
   contact_info: ContactInfoEntry[];
-  preferred_channel: string | null;
 }
 
 /** Request body for PATCH /contacts/{id}.
