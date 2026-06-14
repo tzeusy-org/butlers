@@ -57,7 +57,8 @@ The `finance.transactions` table SHALL include columns for intelligence features
 
 #### Scenario: Import provenance
 - **WHEN** a transaction is created via a bulk import
-- **THEN** `import_batch_id UUID` SHALL reference the `finance.import_batches` row for the import operation
+- **THEN** the row's `metadata` JSONB SHALL carry the import run's ephemeral `import_batch_id` correlator (there is no `finance.import_batches` table to reference; it was dropped by `finance_007`)
+- **AND** a legacy `import_batch_id UUID` column SHALL remain on the table (created by `finance_006`) but SHALL no longer be FK-linked or populated by the importer
 - **AND** `source TEXT` SHALL record the ingestion channel: `'manual'`, `'email'`, `'csv_import'`, `'api'`, `'bulk'`
 - **AND** `source` SHALL default to `'manual'`
 - **AND** `raw_data JSONB` SHALL preserve the original import row for audit purposes
@@ -111,7 +112,7 @@ The `finance.transactions` table SHALL have indexes covering the five primary qu
 #### Scenario: Auxiliary indexes
 - **WHEN** transactions are queried by recurring group, import batch, or tags
 - **THEN** `idx_txn_recurring_group` SHALL index `(recurring_group_id)` with partial condition `WHERE recurring_group_id IS NOT NULL`
-- **AND** `idx_txn_import_batch` SHALL index `(import_batch_id)` with partial condition `WHERE import_batch_id IS NOT NULL`
+- **AND** `idx_txn_import_batch` SHALL index the legacy `(import_batch_id)` column with partial condition `WHERE import_batch_id IS NOT NULL` (the column is no longer populated by the importer, which carries the correlator in `metadata` instead)
 - **AND** `idx_txn_tags_gin` SHALL use a GIN index on `(tags)` for array containment queries
 - **AND** `idx_txn_metadata_gin` SHALL use a GIN index on `(metadata)` for extensible JSONB queries
 

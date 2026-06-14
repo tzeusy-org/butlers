@@ -1,23 +1,28 @@
-# RFC 0019: Proactive Egress and Automation (Parked)
+# RFC 0019: Proactive Egress and Automation (Parked / Rejected)
 
-**Status:** Parked — doctrine decision required
+**Status:** Calendar-based auto-responses **Rejected** (owner, 2026-06-14); event-driven automation rule engine **Parked** — doctrine decision deferred
 **Date:** 2026-06-14
 
 ---
 
 ## Summary
 
-This RFC is a **parking lot**, not a design contract. It records two
-doctrine-gated egress capabilities and a set of open questions and future
-application ideas that originated in the planning document
-`docs/plans/egress-communications-enhancements.md`. Those ideas must **not** be
-silently specced or implemented, because they involve the daemon **acting or
-messaging on the owner's behalf without per-event review**. This RFC exists so
-that when the planning doc is deleted, the ideas — and the reasons they were
-held back — survive in the durable RFC record.
+This RFC records the disposition of two doctrine-gated egress capabilities and a
+set of open questions and future application ideas that originated in the planning
+document `docs/plans/egress-communications-enhancements.md`. Both capabilities
+involve the daemon **acting or messaging on the owner's behalf without per-event
+review**. This RFC exists so that when the planning doc is deleted, the ideas —
+and the reasons they were held back — survive in the durable RFC record.
 
-Nothing in this RFC is accepted. Each parked item is blocked on an explicit
-doctrine decision by the owner before any spec or implementation work begins.
+**Dispositions (2026-06-14):**
+
+- **Calendar-based auto-responses — REJECTED.** The owner explicitly declined this
+  idea; it is scrapped, not backlogged. Recorded below so it is not re-proposed.
+- **Event-driven automation rule engine — PARKED.** Considered over-engineered for
+  now; held pending an explicit doctrine decision before any spec or implementation.
+
+Nothing else in this RFC is accepted. The parked item is blocked on an explicit
+doctrine decision by the owner before any work begins.
 
 ### Why these items are parked
 
@@ -66,43 +71,27 @@ consequences:
 
 ---
 
-## Parked Capability A: Calendar-based Auto-Responses
+## Rejected: Calendar-based Auto-Responses
 
-**Origin:** plan §3.5 (Tier 2). **Owning butler:** undecided (candidate: General
-butler, or a `presence` module on the Switchboard).
+**Origin:** plan §3.5 (Tier 2). **Disposition:** **REJECTED by the owner, 2026-06-14
+— scrapped entirely, do not re-propose.**
 
-**Idea.** When the owner is marked busy on their calendar (in a meeting), the
-system auto-replies to inbound Telegram messages with a brief status — e.g.
-"In a meeting, will respond later" — without per-message owner review. Optionally,
-messages matching urgency patterns escalate instead of being auto-answered.
+**What it was.** When the owner was marked busy on their calendar, the system would
+auto-reply to inbound Telegram messages with a brief status (e.g. "In a meeting,
+will respond later") without per-message owner review, with template-only replies,
+an allowlist, no schedule-detail leakage, and urgency escalation.
 
-**Design sketch (recorded, not committed).**
-
-- **Template-only replies.** Auto-responses draw from a small set of fixed,
-  owner-reviewed templates. No LLM-personalized free text in the auto-path.
-- **Never leak schedule detail.** The reply states busyness only — never the
-  meeting title, attendees, location, or end time. (Even "until 3pm" is more than
-  the doctrine should auto-disclose to an arbitrary sender.)
-- **Allowlist / blocklist.** Auto-reply fires only for contacts on an explicit
-  allowlist. Never auto-reply to group chats, bots, unknown senders, or
-  blocklisted contacts.
-- **Approval-gated configuration.** Standing-up the feature (which templates,
-  which contacts, which calendars count as "busy") is itself a `medium`-tier
-  approval — the owner reviews the policy once, up front.
-- **Urgency escalation.** Messages matching urgency patterns bypass the
-  auto-reply and surface to the owner immediately (reuse pipeline classification).
-
-**Open doctrine question.** Does a template-only, allowlisted, schedule-detail-free
-auto-reply count as "sending a message on behalf of the owner" in the sense that
-security.md requires per-event approval — or is an up-front policy approval plus
-a fixed template surface enough to satisfy the doctrine? RFC 0011's answer for
-*owner-facing* delivery was "broker, budget, cooldown." There is no equivalent
-sanctioned mechanism for *third-party-facing* auto-replies today. Until the owner
-rules on this, the capability stays parked.
+**Why rejected.** The owner does not want automatic replies sent on their behalf.
+Beyond preference, the idea sits on the wrong side of the doctrine line: it sends
+messages to third parties without per-event review (`about/heart-and-soul/security.md`
+Approval Gates), and there is no sanctioned mechanism for third-party-facing
+auto-replies (RFC 0011's brokered model covers only *owner-facing* delivery). This
+is a closed decision, recorded here so the idea is not reintroduced as a backlog
+item.
 
 ---
 
-## Parked Capability B: Event-Driven Automation Rule Engine
+## Parked Capability: Event-Driven Automation Rule Engine
 
 **Origin:** plan §2.1 (Tier 3). **Owning component:** Switchboard (rule
 evaluation/dispatch) + domain butlers (action execution).
@@ -176,7 +165,7 @@ infrastructure questions that any future egress spec must answer.
 6. **Standing-rule guardrails.** How broad may standing approval rules get?
    "Auto-approve all Telegram sends" is convenient and dangerous. What scoping
    (per-contact, time-bounded, action-typed) prevents overly permissive rules?
-   This is the guardrail question underlying *both* parked capabilities.
+   This is the guardrail question underlying the parked rule engine.
 
 ---
 
@@ -230,5 +219,6 @@ parked here**:
    the notification message. This *strengthens* the per-event approval path; it
    does not bypass it.
 
-These live in the relevant specs and need no doctrine decision. Only the items in
-sections A, B, and the future-application list above remain parked.
+These live in the relevant specs and need no doctrine decision. Only the
+event-driven automation rule engine and the future-application list above remain
+parked; the calendar-based auto-response idea was rejected (see above).

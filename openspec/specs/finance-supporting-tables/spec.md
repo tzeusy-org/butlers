@@ -70,26 +70,24 @@ The `finance.recurring_groups` table SHALL track detected recurring charge patte
 - **AND** `is_subscription BOOLEAN` SHALL indicate whether the group is confirmed as a subscription
 - **AND** `subscription_id UUID` SHALL optionally reference `finance.subscriptions(id)` when linked to a tracked subscription
 
-### Requirement: Import batch audit trail
-The `finance.import_batches` table SHALL track each data import operation for provenance and auditability.
+### Requirement: Import batch correlation
+Each bulk import operation SHALL stamp an ephemeral `import_batch_id` correlator onto every transaction it inserts, so that rows ingested in the same import can be grouped after the fact. There is no persisted `finance.import_batches` audit-trail table; the correlator lives in the transaction's `metadata` JSONB.
 
-#### Scenario: Import batch structure
+#### Scenario: Import batch correlator generation
 - **WHEN** a bulk import is initiated
-- **THEN** an import batch row SHALL be created with `source TEXT` (e.g., `'chase_csv'`, `'amex_csv'`, `'generic_csv'`), `filename TEXT`, `account_id UUID`, and `status TEXT` set to `'pending'`
+- **THEN** the import operation SHALL generate a single in-memory `import_batch_id` (a UUIDv4 string) for that run
+- **AND** the same `import_batch_id` SHALL be used for every row inserted by that import
 
-#### Scenario: Import batch progress tracking
-- **WHEN** an import batch is processed
-- **THEN** `row_count`, `imported_count`, `skipped_count`, and `error_count` SHALL be updated as rows are processed
-- **AND** `date_range_start DATE` and `date_range_end DATE` SHALL reflect the earliest and latest transaction dates in the batch
-- **AND** `detected_format TEXT` and `column_mapping JSONB` SHALL record the auto-detected format and column mapping used
+#### Scenario: Import batch correlator stamping
+- **WHEN** a transaction row is inserted during a bulk import
+- **THEN** the row's `metadata` JSONB SHALL include `import_batch_id` (the run's correlator) alongside `raw_merchant`
+- **AND** transactions sharing an `import_batch_id` in their metadata SHALL be groupable as a single import
 
-#### Scenario: Import batch completion
-- **WHEN** an import batch finishes processing
-- **THEN** `status` SHALL be updated to `'completed'`, `'completed_with_errors'`, or `'failed'`
-- **AND** `completed_at TIMESTAMPTZ` SHALL be set
-- **AND** `error_details JSONB` SHALL contain an array of `{row, reason}` objects for failed rows
-- **AND** `baselines_computed BOOLEAN` SHALL indicate whether statistical baselines were recomputed after import
-- **AND** `categories_learned INTEGER` SHALL record how many new merchant-category mappings were learned
+#### Scenario: Import result reporting
+- **WHEN** a bulk import finishes processing
+- **THEN** the import result SHALL report `total`, `imported`, `skipped`, `errors`, `import_batch_id`, and `detected_format`
+- **AND** the result's `import_batch_id` SHALL be returned even when the import fails or encounters per-row errors
+- **AND** these counts SHALL NOT be persisted to a dedicated batch table — they exist only in the returned result
 
 ### Requirement: Balance snapshots for net worth tracking
 The `finance.balance_snapshots` table SHALL store periodic account balance records for net worth calculation.

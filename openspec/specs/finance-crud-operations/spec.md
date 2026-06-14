@@ -21,24 +21,27 @@ Creating a single transaction SHALL check for duplicates, apply merchant mapping
 - **THEN** a background task SHALL mirror the transaction to `public.facts` with the appropriate predicate (`'transaction_debit'` or `'transaction_credit'`)
 - **AND** the mirror write SHALL be fire-and-forget (failure does not roll back the primary insert)
 
-### Requirement: Bulk transaction import with batch tracking
-Bulk imports SHALL create an import batch record, process rows in batches, and trigger post-import analytics.
+### Requirement: Bulk transaction import with batch correlation
+Bulk imports SHALL generate an ephemeral `import_batch_id` correlator, process rows in batches, stamp the correlator onto each inserted transaction, and trigger post-import analytics. There is no persisted import-batch record; the correlator and result counts exist only in memory and in the returned result.
 
-#### Scenario: Batch creation and processing
+#### Scenario: Correlator generation and processing
 - **WHEN** `import_transactions` is called with a file path and account ID
-- **THEN** it SHALL create an `import_batches` row with `status = 'processing'`
+- **THEN** it SHALL generate a single in-memory `import_batch_id` (a UUIDv4 string) for the run
 - **AND** it SHALL detect the CSV format, parse rows, normalize dates/amounts/merchant names
 - **AND** it SHALL process rows in batches of 500
 - **AND** for each row, it SHALL run dedup check, apply merchant mapping, and INSERT
+- **AND** each inserted transaction's `metadata` JSONB SHALL carry the run's `import_batch_id`
 
 #### Scenario: Post-import analytics triggers
 - **WHEN** a bulk import completes with 50 or more imported transactions
 - **THEN** it SHALL trigger `compute_baselines()` to update statistical baselines
 - **AND** it SHALL trigger `REFRESH MATERIALIZED VIEW CONCURRENTLY finance.spending_summaries`
 
-#### Scenario: Batch status completion
+#### Scenario: Import result reporting
 - **WHEN** a bulk import finishes
-- **THEN** the `import_batches` row SHALL be updated with final counts (`imported_count`, `skipped_count`, `error_count`), `date_range_start`, `date_range_end`, and `status` (`'completed'`, `'completed_with_errors'`, or `'failed'`)
+- **THEN** it SHALL return a result reporting `total`, `imported`, `skipped`, `errors`, `import_batch_id`, and `detected_format`
+- **AND** the result SHALL include `import_batch_id` even when the import fails or encounters per-row errors
+- **AND** these counts SHALL NOT be persisted to a dedicated batch table
 
 ### Requirement: Transaction read with filters and aggregation
 Reading transactions SHALL support filtering by date range, category, merchant, account, amount bounds, and direction, with soft-delete exclusion.

@@ -8,7 +8,7 @@ The migration from SPO fact storage to dedicated table storage SHALL follow four
 #### Scenario: Phase 1 -- Schema enhancement (non-breaking)
 - **WHEN** the migration `finance_006` runs
 - **THEN** it SHALL add all new columns to `finance.transactions` via `ALTER TABLE ADD COLUMN IF NOT EXISTS`
-- **AND** it SHALL create all new tables (`categories`, `merchant_mappings`, `recurring_groups`, `import_batches`, `balance_snapshots`, `budgets`, `transaction_corrections`)
+- **AND** it SHALL create all new tables (`categories`, `merchant_mappings`, `recurring_groups`, `balance_snapshots`, `budgets`, `transaction_corrections`); note that `finance_006` also created an `import_batches` table which a later migration (`finance_007`) dropped as verified-dead, so it no longer exists in the present schema
 - **AND** it SHALL create the `spending_summaries` materialized view
 - **AND** it SHALL create all new indexes
 - **AND** it SHALL seed default categories idempotently
