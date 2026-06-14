@@ -190,8 +190,9 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 
 #### Scenario: Live badge indicators
 
-- **WHEN** a nav item has `badgeKey: 'qa-known-issues'` and the count is greater than 0
+- **WHEN** a nav item has `badgeKey: 'qa-escalations'` and the count is greater than 0
 - **THEN** a red circle badge (`bg-red-500 text-white`) renders at the top-right of the icon with the count (capped at "99+")
+- **AND** the count is the number of open QA escalations (`active_breakdown.escalated_open_cases` from `GET /api/qa/summary`), not the raw known-issue fingerprint count
 - **WHEN** a nav item has `badgeKey: 'approvals-pending'` and the count is greater than 0
 - **THEN** an amber circle badge (`bg-amber-500 text-white`) renders at the top-right of the icon
 - **AND** badge and status dot do not overlap (badge takes precedence over status dot when both would render)

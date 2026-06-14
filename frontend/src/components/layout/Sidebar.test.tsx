@@ -853,7 +853,7 @@ describe("Sidebar", () => {
     });
 
     it("renders bg-red-500 on QA badge when count > 0 (rail mode)", () => {
-      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-known-issues": 3 });
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 3 });
       render();
 
       const redBadge = container.querySelector(".bg-red-500");
@@ -861,15 +861,15 @@ describe("Sidebar", () => {
     });
 
     it("renders bg-red-500 on QA badge when count > 0 (mobile expanded mode)", () => {
-      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-known-issues": 5 });
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 5 });
       renderMobile();
 
       const redBadge = container.querySelector(".bg-red-500");
       expect(redBadge).toBeTruthy();
     });
 
-    it("does not render a badge when qa-known-issues count is zero", () => {
-      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-known-issues": 0 });
+    it("does not render a badge when qa-escalations count is zero", () => {
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 0 });
       render();
 
       const redBadge = container.querySelector(".bg-red-500");

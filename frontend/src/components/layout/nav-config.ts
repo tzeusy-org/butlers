@@ -60,7 +60,7 @@ export const navSections: NavSection[] = [
     items: [
       { path: '/', label: 'Overview', end: true, icon: 'overview' },
       { path: '/butlers', label: 'Butlers', icon: 'butlers' },
-      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-known-issues', badgeVariant: 'red', icon: 'qa' },
+      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-escalations', badgeVariant: 'red', icon: 'qa' },
       { path: '/ingestion', label: 'Ingestion', icon: 'ingestion' },
       { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber', icon: 'approvals' },
       { path: '/memory', label: 'Memory', icon: 'memory' },

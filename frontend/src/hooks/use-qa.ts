@@ -55,12 +55,13 @@ const STALE_TIME = 30_000;
 // ---------------------------------------------------------------------------
 
 /** Fetch QA staffer summary (last patrol, 24h stats, all-time stats). */
-export function useQaSummary() {
+export function useQaSummary(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["qa-summary"],
     queryFn: () => getQaSummary(),
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+    enabled: options?.enabled ?? true,
   });
 }
 

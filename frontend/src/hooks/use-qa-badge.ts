@@ -9,16 +9,25 @@
  * requests on instances that have no QA staffer deployed.
  */
 
-import { useQaKnownIssues } from './use-qa'
+import { useQaSummary } from './use-qa'
 import { useButlers } from './use-butlers'
 import { useApprovalMetrics } from './use-approvals'
 
-/** Returns the count of active (non-dismissed) QA known issues for the sidebar badge. */
-export function useQaActiveBadge(): number {
+/**
+ * Returns the count of open QA escalations for the sidebar badge.
+ *
+ * This counts investigations the QA staffer escalated for human attention —
+ * terminal cases (`unfixable`/`failed`) flagged as needing a human, still open
+ * or closed within the last 7 days. Unlike the raw known-issues fingerprint
+ * count, this is bounded and self-decaying: it only surfaces things a human can
+ * act on, and entries age out once resolved. See `escalated_open_cases_sql`
+ * (src/butlers/core/qa/severity.py).
+ */
+export function useQaEscalationsBadge(): number {
   const { data: butlersResponse } = useButlers()
   const hasQa = butlersResponse?.data.some((b) => b.name === 'qa') ?? false
-  const { data } = useQaKnownIssues({ dismissed: false, limit: 1 }, { enabled: hasQa })
-  return data?.meta.total ?? 0
+  const { data } = useQaSummary({ enabled: hasQa })
+  return data?.data.active_breakdown.escalated_open_cases ?? 0
 }
 
 /** Returns the count of pending approval actions for the sidebar badge. */
@@ -29,10 +38,10 @@ export function useApprovalsPendingBadge(): number {
 
 /** Badge registry — maps badgeKey to a hook that returns a count (or 0). */
 export function useBadgeCounts(): Record<string, number> {
-  const qaActive = useQaActiveBadge()
+  const qaEscalations = useQaEscalationsBadge()
   const approvalsPending = useApprovalsPendingBadge()
   return {
-    'qa-known-issues': qaActive,
+    'qa-escalations': qaEscalations,
     'approvals-pending': approvalsPending,
   }
 }

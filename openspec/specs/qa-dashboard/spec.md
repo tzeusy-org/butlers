@@ -157,7 +157,7 @@ The QA page SHALL be accessible from the dashboard's main navigation. The nav-co
 - **WHEN** the dashboard sidebar is rendered
 - **THEN** a "QA" navigation item links to `/qa`
 - **AND** it is grouped with other infrastructure items as configured in `frontend/src/components/layout/nav-config.ts`
-- **AND** it shows a badge with the count of active investigations when > 0 (red variant; existing `qa-known-issues` badge contract preserved)
+- **AND** it shows a badge with the count of open QA escalations when > 0 (red variant; `badgeKey: 'qa-escalations'`, sourced from `active_breakdown.escalated_open_cases` in `GET /api/qa/summary`)
 
 #### Scenario: Router registration
 - **WHEN** the frontend router is configured
