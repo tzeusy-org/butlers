@@ -25,6 +25,24 @@ function render(events: TimelineEvent[]): string {
   );
 }
 
+function renderWith(props: {
+  events: TimelineEvent[];
+  isLoading?: boolean;
+  isError?: boolean;
+  onRetry?: () => void;
+}): string {
+  return renderToStaticMarkup(
+    <MemoryRouter>
+      <UnifiedTimeline
+        events={props.events}
+        isLoading={props.isLoading ?? false}
+        isError={props.isError}
+        onRetry={props.onRetry}
+      />
+    </MemoryRouter>,
+  );
+}
+
 describe("UnifiedTimeline — session row links", () => {
   it("links a session event row to /sessions/:id scoped by butler", () => {
     const html = render([makeEvent()]);
@@ -55,5 +73,22 @@ describe("UnifiedTimeline — session row links", () => {
     ]);
     expect(html).not.toContain("/sessions/11111111-2222-3333-4444-555555555555");
     expect(html).toContain("Notified owner");
+  });
+});
+
+describe("UnifiedTimeline — error vs empty state", () => {
+  it("renders the error state (not the empty state) when isError is true", () => {
+    const html = renderWith({ events: [], isError: true, onRetry: () => {} });
+    expect(html).toContain("Could not load the timeline.");
+    expect(html).toContain('data-testid="timeline-error"');
+    expect(html).toContain("Retry");
+    // A failed fetch must NOT be presented as genuine no-activity.
+    expect(html).not.toContain("No events found.");
+  });
+
+  it("renders the empty state only on a successful fetch with zero events", () => {
+    const html = renderWith({ events: [], isError: false });
+    expect(html).toContain("No events found.");
+    expect(html).not.toContain("Could not load the timeline.");
   });
 });
