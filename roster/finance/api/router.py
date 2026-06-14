@@ -90,7 +90,9 @@ async def list_transactions(
     """List transactions with optional filters."""
     pool = _pool(db)
 
-    conditions: list[str] = []
+    # Soft-delete exclusion (spec: finance-crud-operations §"Filtered transaction
+    # listing"). Every transaction read SHALL exclude soft-deleted rows.
+    conditions: list[str] = ["deleted_at IS NULL"]
     args: list[object] = []
     idx = 1
 
@@ -336,7 +338,9 @@ async def list_accounts(
     """List accounts with optional type filter."""
     pool = _pool(db)
 
-    conditions: list[str] = []
+    # Only surface active accounts. accounts.is_active (migration finance_006)
+    # defaults to true; deactivated accounts are excluded from dashboard reads.
+    conditions: list[str] = ["is_active = true"]
     args: list[object] = []
     idx = 1
 
@@ -408,8 +412,12 @@ async def get_spending_summary(
     start = date.fromisoformat(start_date) if start_date else today.replace(day=1)
     end = date.fromisoformat(end_date) if end_date else today
 
+    # Spec: finance-crud-operations §"Spending aggregation" — aggregate from
+    # transactions WHERE direction = 'debit' AND deleted_at IS NULL. Soft-deleted
+    # transactions must not inflate spending totals.
     conditions: list[str] = [
         "direction = 'debit'",
+        "deleted_at IS NULL",
         "posted_at::date >= $1",
         "posted_at::date <= $2",
     ]

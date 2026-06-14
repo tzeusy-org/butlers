@@ -289,6 +289,28 @@ async def test_list_transactions_pagination_params():
 
 
 @pytest.mark.asyncio
+async def test_list_transactions_excludes_soft_deleted():
+    """GET /api/finance/transactions filters out soft-deleted rows (deleted_at IS NULL).
+
+    Spec finance-crud-operations §"Filtered transaction listing" requires every
+    transaction read to apply WHERE deleted_at IS NULL. Both the count and the
+    row-fetch queries must carry the clause.
+    """
+    app, mock_pool = _make_app(fetch_rows=[], fetchval_return=0)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/transactions")
+
+    assert response.status_code == 200
+    count_sql = mock_pool.fetchval.call_args[0][0]
+    fetch_sql = mock_pool.fetch.call_args[0][0]
+    assert "deleted_at IS NULL" in count_sql
+    assert "deleted_at IS NULL" in fetch_sql
+
+
+@pytest.mark.asyncio
 async def test_list_transactions_filter_by_category():
     """GET /api/finance/transactions filters by category."""
     rows = [_tx_row(category="groceries")]
@@ -604,6 +626,28 @@ async def test_list_accounts_with_results():
 
 
 @pytest.mark.asyncio
+async def test_list_accounts_excludes_inactive():
+    """GET /api/finance/accounts filters out inactive accounts (is_active = true).
+
+    accounts.is_active (migration finance_006) gates dashboard visibility;
+    deactivated accounts must not appear in reads. The clause must be present
+    even with no query filters supplied.
+    """
+    app, mock_pool = _make_app(fetch_rows=[], fetchval_return=0)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/accounts")
+
+    assert response.status_code == 200
+    count_sql = mock_pool.fetchval.call_args[0][0]
+    fetch_sql = mock_pool.fetch.call_args[0][0]
+    assert "is_active = true" in count_sql
+    assert "is_active = true" in fetch_sql
+
+
+@pytest.mark.asyncio
 async def test_list_accounts_filter_by_type():
     """GET /api/finance/accounts filters by account type."""
     rows = [_account_row(type="credit")]
@@ -683,6 +727,31 @@ async def test_spending_summary_basic_shape():
     assert "total_spend" in body
     assert "groups" in body
     assert isinstance(body["groups"], list)
+
+
+@pytest.mark.asyncio
+async def test_spending_summary_excludes_soft_deleted():
+    """GET /api/finance/spending-summary excludes soft-deleted debits from totals.
+
+    Spec finance-crud-operations §"Spending aggregation" requires aggregation
+    WHERE direction = 'debit' AND deleted_at IS NULL. Both the total fetchrow and
+    the grouped fetch query must carry the clause so soft-deleted transactions do
+    not inflate spending totals.
+    """
+    app, mock_pool = _make_app(fetchrow_return=_spending_fetchrow())
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/spending-summary")
+
+    assert response.status_code == 200
+    total_sql = mock_pool.fetchrow.call_args[0][0]
+    group_sql = mock_pool.fetch.call_args[0][0]
+    assert "deleted_at IS NULL" in total_sql
+    assert "direction = 'debit'" in total_sql
+    assert "deleted_at IS NULL" in group_sql
 
 
 @pytest.mark.asyncio
