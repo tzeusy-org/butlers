@@ -7,7 +7,9 @@
  *     payload (condition: {butler, complexity}, action: {model}) and refreshes
  *     the rules list
  *   - An empty condition (no butler / no tier) produces a catch-all rule
- *   - Submitting without a target model does not POST
+ *   - Submitting without any effect (no model, no cap) does not POST
+ *   - The trigger condition dim and max_cost_per_call effect are threaded into
+ *     the payload; a cap-only rule (no route-to model) is allowed  [bu-xclyn]
  */
 
 // @vitest-environment jsdom
@@ -198,6 +200,92 @@ describe("SettingsSpendPage create-rule UI", () => {
   })
 
   it("does not POST when no target model is chosen", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("add-rule-button"))
+    })
+
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId("create-rule-form"))
+    })
+
+    const postCall = apiFetchMock.mock.calls.find(
+      (c) => c[0] === "/spend/rules" && c[1]?.method === "POST",
+    )
+    expect(postCall).toBeUndefined()
+  })
+
+  it("includes the trigger condition dim and max_cost_per_call effect in the payload", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("add-rule-button"))
+    })
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Trigger condition"), {
+        target: { value: "healing" },
+      })
+      fireEvent.change(screen.getByLabelText("Target model"), {
+        target: { value: "claude-haiku" },
+      })
+      fireEvent.change(screen.getByLabelText("Max cost per call"), {
+        target: { value: "0.05" },
+      })
+    })
+
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId("create-rule-form"))
+    })
+
+    await waitFor(() => {
+      const postCall = apiFetchMock.mock.calls.find(
+        (c) => c[0] === "/spend/rules" && c[1]?.method === "POST",
+      )
+      expect(postCall).toBeTruthy()
+      const body = JSON.parse(postCall![1].body as string)
+      expect(body).toEqual({
+        condition: { trigger: "healing" },
+        action: { model: "claude-haiku", max_cost_per_call: 0.05 },
+      })
+    })
+  })
+
+  it("allows a cap-only rule (no route-to model) when a per-call cap is set", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("add-rule-button"))
+    })
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Max cost per call"), {
+        target: { value: "0.10" },
+      })
+    })
+
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId("create-rule-form"))
+    })
+
+    await waitFor(() => {
+      const postCall = apiFetchMock.mock.calls.find(
+        (c) => c[0] === "/spend/rules" && c[1]?.method === "POST",
+      )
+      expect(postCall).toBeTruthy()
+      const body = JSON.parse(postCall![1].body as string)
+      expect(body).toEqual({ condition: {}, action: { max_cost_per_call: 0.1 } })
+    })
+  })
+
+  it("does not POST when neither a model nor a cap is set", async () => {
     await act(async () => {
       renderPage()
     })

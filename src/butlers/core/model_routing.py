@@ -148,6 +148,27 @@ class QuotaStatus:
 
 
 @dataclasses.dataclass
+class SpendRoutingResult:
+    """Result of evaluating operator spend-routing rules against a dispatch.
+
+    Attributes
+    ----------
+    resolved:
+        The (possibly rule-overridden) model tuple
+        ``(runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s)``.
+        Equal to the input ``resolved`` when no rule re-routed the model.
+    max_cost_per_call:
+        The per-call USD cap from the first matching rule's ``action.max_cost_per_call``
+        effect, or ``None`` when the matching rule sets no cap (or no rule matched).
+        The cap is a hard per-dispatch budget the spawner enforces as a DENY gate —
+        distinct from the global monthly ceiling.
+    """
+
+    resolved: tuple[str, str, list[str], uuid.UUID, int]
+    max_cost_per_call: float | None = None
+
+
+@dataclasses.dataclass
 class CeilingStatus:
     """Result of a pre-spawn monthly spend-ceiling check.
 
@@ -427,6 +448,7 @@ def _rule_condition_matches(
     *,
     butler_name: str,
     complexity_tier: str,
+    trigger_source: str | None = None,
 ) -> bool:
     """Return True when a routing-rule condition matches the dispatch context.
 
@@ -436,18 +458,29 @@ def _rule_condition_matches(
 
     - ``butler`` — the butler identity name (e.g. ``"general"``).
     - ``complexity`` / ``tier`` — the canonical complexity tier (e.g. ``"workhorse"``).
+    - ``trigger`` — the dispatch trigger source available at the spawner call site
+      (e.g. ``"route"``, ``"qa"``, ``"healing"``, ``"schedule:<task>"``, ``"extraction"``).
+      Chosen because it is the richest dispatch-context dimension actually plumbed to
+      ``apply_spend_routing_rules`` — no synthetic "feature" tag exists at that call
+      site, so the rule never matches on data that isn't really present.  When the
+      caller does not supply a trigger source, a ``trigger`` constraint cannot be
+      evaluated and the rule does NOT match (fail-closed).
 
     Each constraint value may be a scalar (exact match) or a list (membership match).
     Matching is case-insensitive on string values.  Unknown constraint keys cause the
     rule NOT to match (fail-closed on unrecognized constraints), so a malformed or
     forward-dated rule never silently routes every dispatch.
     """
-    context = {
+    context: dict[str, str | None] = {
         "butler": butler_name,
         "complexity": complexity_tier,
         "tier": complexity_tier,
+        "trigger": trigger_source,
     }
     for key, expected in condition.items():
+        if key == "trigger" and trigger_source is None:
+            # Trigger constraint present but no trigger context to evaluate it against.
+            return False
         if key not in context:
             # Unknown constraint dimension — cannot evaluate; do not match.
             return False
@@ -680,12 +713,46 @@ async def next_same_tier_candidate(
     )
 
 
+def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
+    """Extract and validate the ``action.max_cost_per_call`` per-call USD cap.
+
+    Returns the cap as a positive float, or ``None`` when the action sets no cap or
+    the configured value is malformed (non-numeric or non-positive).  A malformed cap
+    is ignored with a warning rather than failing the dispatch — a routing rule must
+    never wedge a spawn because of bad effect data.
+    """
+    raw = action.get("max_cost_per_call")
+    if raw is None:
+        return None
+    try:
+        cap = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "apply_spend_routing_rules: rule %s has non-numeric action.max_cost_per_call=%r; "
+            "ignoring the cap",
+            rule_id,
+            raw,
+        )
+        return None
+    if cap <= 0:
+        logger.warning(
+            "apply_spend_routing_rules: rule %s has non-positive action.max_cost_per_call=%r; "
+            "ignoring the cap",
+            rule_id,
+            raw,
+        )
+        return None
+    return cap
+
+
 async def apply_spend_routing_rules(
     pool: asyncpg.Pool,
     butler_name: str,
     complexity_tier: Complexity | str,
     resolved: tuple[str, str, list[str], uuid.UUID, int],
-) -> tuple[str, str, list[str], uuid.UUID, int]:
+    *,
+    trigger_source: str | None = None,
+) -> SpendRoutingResult:
     """Apply operator-configured spend routing rules to a tier-resolved model.
 
     The Settings → Spend page stores ordered routing rules in ``public.spend_rules``
@@ -699,30 +766,39 @@ async def apply_spend_routing_rules(
     Rule semantics
     --------------
     - ``condition`` (JSONB object): constraints ANDed together; an empty ``{}`` is a
-      catch-all.  Supported keys: ``butler`` and ``complexity`` (alias ``tier``).
-      Values may be scalars (exact match) or lists (membership).  See
-      ``_rule_condition_matches``.
-    - ``action.model`` (str): the priced ``model_id`` to route TO.  The matched model
-      is re-resolved against ``public.model_catalog`` (honoring per-butler overrides)
-      to the highest-priority enabled, non-failed entry for that ``model_id`` — so the
-      override lands on a real dispatchable catalog row with its own ``runtime_type``,
-      ``extra_args``, ``catalog_entry_id``, and ``session_timeout_s``.  Downstream
-      quota / ledger / failover therefore operate on the rule-selected model.
+      catch-all.  Supported keys: ``butler``, ``complexity`` (alias ``tier``), and
+      ``trigger`` (the dispatch ``trigger_source``).  Values may be scalars (exact
+      match) or lists (membership).  See ``_rule_condition_matches``.
+    - ``action.model`` (str, optional): the priced ``model_id`` to route TO.  The
+      matched model is re-resolved against ``public.model_catalog`` (honoring per-butler
+      overrides) to the highest-priority enabled, non-failed entry for that ``model_id``
+      — so the override lands on a real dispatchable catalog row with its own
+      ``runtime_type``, ``extra_args``, ``catalog_entry_id``, and ``session_timeout_s``.
+      Downstream quota / ledger / failover therefore operate on the rule-selected model.
+    - ``action.max_cost_per_call`` (float, optional): a hard per-dispatch USD cap.  This
+      function does NOT enforce it — enforcement is a spawn-time DENY decision made by
+      the caller (the spawner), which knows the call's token budget and pricing.  The
+      cap is surfaced on ``SpendRoutingResult.max_cost_per_call`` so the spawner can
+      enforce/deny.  A rule may set the model effect, the cap effect, or both.
 
     First match wins: once a rule's condition matches, evaluation stops — later rules
-    are not considered, exactly as the UI copy states.
+    are not considered, exactly as the UI copy states.  The single matching rule
+    supplies BOTH effects (model re-route and/or per-call cap).
 
     Robustness
     ----------
-    - A matched rule with no ``action.model`` (or routing to a model that resolves to
-      no dispatchable catalog row — e.g. disabled for this butler, or failed
-      verification) leaves the originally-resolved model UNCHANGED and logs a warning.
-      The rule is "first match wins" by condition; an unroutable target must not fall
-      through to a lower-priority rule or silently drop the dispatch.
-    - This helper is purely a model-SELECTION step.  It never blocks a dispatch — the
-      authorization (permissions) and budget (quota / ceiling) DENY gates are separate.
-    - Fail-open: any DB error or malformed rule data leaves ``resolved`` unchanged and
-      logs a warning, so a routing-rules failure never wedges spawns.
+    - A matched rule whose ``action.model`` routes to a model that resolves to no
+      dispatchable catalog row (e.g. disabled for this butler, or failed verification)
+      leaves the originally-resolved model UNCHANGED and logs a warning — but any
+      ``max_cost_per_call`` from the SAME matching rule still applies.
+    - A matched rule with NO ``action.model`` is valid when it carries a cap (cap-only
+      rule); the tier-resolved model is kept and the cap is surfaced.  A matched rule
+      with neither effect keeps the model and logs a warning.
+    - This helper is purely a model-SELECTION + effect-surfacing step.  It never blocks
+      a dispatch — the authorization (permissions) and budget (quota / ceiling /
+      per-call cap) DENY gates are the caller's responsibility.
+    - Fail-open: any DB error or malformed rule data leaves ``resolved`` unchanged with
+      no cap and logs a warning, so a routing-rules failure never wedges spawns.
 
     Parameters
     ----------
@@ -737,12 +813,16 @@ async def apply_spend_routing_rules(
         The tier-resolved model tuple
         ``(runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s)``
         produced by ``resolve_model`` / ``resolve_model_with_effective_tier``.
+    trigger_source:
+        The dispatch trigger source (e.g. ``"route"``, ``"qa"``, ``"healing"``) used to
+        evaluate ``condition.trigger``.  ``None`` (the default) means a ``trigger``
+        constraint cannot match.
 
     Returns
     -------
-    tuple[str, str, list[str], uuid.UUID, int]
-        Either the rule-overridden model tuple (same shape as ``resolved``) when a
-        rule matched and routed to a dispatchable model, or ``resolved`` unchanged.
+    SpendRoutingResult
+        ``.resolved`` is the (possibly rule-overridden) model tuple; ``.max_cost_per_call``
+        is the per-call USD cap from the matching rule (or ``None``).
     """
     if isinstance(complexity_tier, Complexity):
         tier_value = complexity_tier.value
@@ -758,29 +838,45 @@ async def apply_spend_routing_rules(
             butler_name,
             exc_info=True,
         )
-        return resolved
+        return SpendRoutingResult(resolved=resolved)
 
     for rule_row in rule_rows:
         condition = _coerce_rule_dict(rule_row["condition"])
         if not _rule_condition_matches(
-            condition, butler_name=butler_name, complexity_tier=tier_value
+            condition,
+            butler_name=butler_name,
+            complexity_tier=tier_value,
+            trigger_source=trigger_source,
         ):
             continue
 
         # First match wins — stop evaluating further rules regardless of outcome.
         rule_id = rule_row["id"]
         action = _coerce_rule_dict(rule_row["action"])
+        max_cost_per_call = _parse_max_cost_per_call(action, rule_id)
         target_model = action.get("model")
+
         if not target_model or not isinstance(target_model, str):
-            logger.warning(
-                "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s) but has no "
-                "action.model; keeping tier-resolved model %s",
-                rule_id,
-                butler_name,
-                tier_value,
-                resolved[1],
-            )
-            return resolved
+            if max_cost_per_call is None:
+                logger.warning(
+                    "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s) but has no "
+                    "action.model or action.max_cost_per_call; keeping tier-resolved model %s",
+                    rule_id,
+                    butler_name,
+                    tier_value,
+                    resolved[1],
+                )
+            else:
+                logger.info(
+                    "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s); "
+                    "cap-only rule, per-call cap=$%.4f, model %s unchanged",
+                    rule_id,
+                    butler_name,
+                    tier_value,
+                    max_cost_per_call,
+                    resolved[1],
+                )
+            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
 
         try:
             row = await pool.fetchrow(_RESOLVE_BY_MODEL_ID_SQL, butler_name, target_model)
@@ -794,7 +890,7 @@ async def apply_spend_routing_rules(
                 resolved[1],
                 exc_info=True,
             )
-            return resolved
+            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
 
         if row is None:
             logger.warning(
@@ -807,26 +903,31 @@ async def apply_spend_routing_rules(
                 target_model,
                 resolved[1],
             )
-            return resolved
+            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
 
         logger.info(
-            "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s); routed model %s -> %s",
+            "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s); routed model %s -> %s"
+            "%s",
             rule_id,
             butler_name,
             tier_value,
             resolved[1],
             row["model_id"],
+            f" (per-call cap=${max_cost_per_call:.4f})" if max_cost_per_call is not None else "",
         )
-        return (
-            row["runtime_type"],
-            row["model_id"],
-            _parse_extra_args(row["extra_args"]),
-            row["id"],
-            row["session_timeout_s"],
+        return SpendRoutingResult(
+            resolved=(
+                row["runtime_type"],
+                row["model_id"],
+                _parse_extra_args(row["extra_args"]),
+                row["id"],
+                row["session_timeout_s"],
+            ),
+            max_cost_per_call=max_cost_per_call,
         )
 
     # No rule matched — tier-based resolution stands.
-    return resolved
+    return SpendRoutingResult(resolved=resolved)
 
 
 async def check_token_quota(

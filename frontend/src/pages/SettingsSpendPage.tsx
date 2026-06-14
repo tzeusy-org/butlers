@@ -118,10 +118,13 @@ function reorderRule(id: string, position: number): Promise<unknown> {
 }
 
 // Create a routing rule. The shape mirrors the dispatch-time evaluator in
-// src/butlers/core/model_routing.py:apply_spend_routing_rules — condition keys
-// are `butler` and/or `complexity` (alias `tier`), ANDed together; an empty
-// condition is a catch-all. action.model is a priced model_id the matched
-// dispatch routes TO. Omitting `position` appends the rule to the end.
+// src/butlers/core/model_routing.py:apply_spend_routing_rules and the enforced
+// pydantic schema in butlers.api.routers.spend (SpendRuleCondition / SpendRuleAction,
+// extra keys rejected with 422). Condition keys are `butler`, `complexity` (alias
+// `tier`), and/or `trigger` (the dispatch trigger_source), ANDed together; an empty
+// condition is a catch-all. Action effects: `model` (a priced model_id the matched
+// dispatch routes TO) and/or `max_cost_per_call` (a hard per-call USD cap the spawner
+// enforces). At least one effect is required. Omitting `position` appends to the end.
 function createRule(body: {
   condition: Record<string, unknown>
   action: Record<string, unknown>
@@ -472,6 +475,61 @@ function BreakdownSection() {
 // Routing rules table (drag-to-reorder)
 // ---------------------------------------------------------------------------
 
+// Render a condition/action JSONB object as labelled chips instead of raw JSON, so
+// the table reflects the same structured vocabulary the editor produces.
+function fmtConstraintValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map((v) => String(v)).join(" | ")
+  return String(value)
+}
+
+function conditionChips(condition: Record<string, unknown>): { label: string; value: string }[] {
+  const order = ["butler", "complexity", "tier", "trigger"]
+  const keys = Object.keys(condition).sort(
+    (a, b) => order.indexOf(a) - order.indexOf(b) || a.localeCompare(b),
+  )
+  return keys.map((k) => ({ label: k, value: fmtConstraintValue(condition[k]) }))
+}
+
+function actionChips(action: Record<string, unknown>): { label: string; value: string }[] {
+  const chips: { label: string; value: string }[] = []
+  if (action.model != null) chips.push({ label: "model", value: String(action.model) })
+  if (action.max_cost_per_call != null)
+    chips.push({ label: "cap", value: `$${Number(action.max_cost_per_call)}` })
+  // Surface any unrecognized keys verbatim so nothing is silently hidden.
+  for (const [k, v] of Object.entries(action)) {
+    if (k === "model" || k === "max_cost_per_call") continue
+    chips.push({ label: k, value: fmtConstraintValue(v) })
+  }
+  return chips
+}
+
+function RuleChips({
+  entries,
+  emptyLabel,
+}: {
+  entries: { label: string; value: string }[]
+  emptyLabel: string
+}) {
+  if (entries.length === 0) {
+    return <span className="text-xs italic text-muted-foreground">{emptyLabel}</span>
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {entries.map((e) => (
+        <span
+          key={e.label}
+          className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs"
+        >
+          <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+            {e.label}
+          </span>
+          <span className="font-mono">{e.value}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 interface RulesTableProps {
   rules: SpendRule[]
   onDelete: (id: string) => void
@@ -532,14 +590,10 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
             >
               <td className="py-2 px-2 text-muted-foreground tabular-nums">{rule.position}</td>
               <td className="py-2 px-2">
-                <code className="text-xs bg-muted rounded px-1 py-0.5">
-                  {JSON.stringify(rule.condition)}
-                </code>
+                <RuleChips entries={conditionChips(rule.condition)} emptyLabel="any dispatch" />
               </td>
               <td className="py-2 px-2">
-                <code className="text-xs bg-muted rounded px-1 py-0.5">
-                  {JSON.stringify(rule.action)}
-                </code>
+                <RuleChips entries={actionChips(rule.action)} emptyLabel="—" />
               </td>
               <td className="py-2 px-2 text-right tabular-nums text-xs">
                 {rule.saved_7d != null ? fmtUsdPrecise(rule.saved_7d) : "—"}
@@ -562,11 +616,27 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
   )
 }
 
+// Common dispatch trigger sources operators may want to gate on. These mirror the
+// trigger_source values passed at the spawner call site (src/butlers/core/spawner.py
+// and its callers). Free-form values are not offered — the evaluator fails closed on
+// trigger sources it cannot match, and these cover the meaningful dispatch classes.
+const TRIGGER_SOURCES: string[] = [
+  "route",
+  "tick",
+  "schedule",
+  "healing",
+  "retry",
+  "qa",
+  "extraction",
+  "external",
+]
+
 // ---------------------------------------------------------------------------
-// Create-rule form — collects a condition (butler + complexity, both optional,
-// ANDed) and an action (target model, required). Produces a rule whose shape
-// the dispatch-time evaluator actually matches and routes on. An empty
-// condition is a valid catch-all.
+// Create-rule form — collects a condition (butler + complexity + trigger, all
+// optional, ANDed) and an action (route-to model and/or per-call cost cap; at
+// least one effect required). Produces a rule whose shape the dispatch-time
+// evaluator and the enforced API schema both accept. An empty condition is a
+// valid catch-all.
 // ---------------------------------------------------------------------------
 
 interface CreateRuleFormProps {
@@ -580,7 +650,9 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
 
   const [butler, setButler] = useState("")
   const [complexity, setComplexity] = useState<"" | ComplexityTier>("")
+  const [trigger, setTrigger] = useState("")
   const [model, setModel] = useState("")
+  const [maxCostPerCall, setMaxCostPerCall] = useState("")
 
   const createMutation = useMutation({
     mutationFn: createRule,
@@ -595,16 +667,31 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const targetModel = model.trim()
-    if (!targetModel) {
-      toast.error("Choose a target model")
+    const capRaw = maxCostPerCall.trim()
+
+    // Build the action from the supplied effects; at least one is required.
+    const action: Record<string, unknown> = {}
+    if (targetModel) action.model = targetModel
+    if (capRaw) {
+      const cap = Number(capRaw)
+      if (!Number.isFinite(cap) || cap <= 0) {
+        toast.error("Per-call cap must be a positive number")
+        return
+      }
+      action.max_cost_per_call = cap
+    }
+    if (Object.keys(action).length === 0) {
+      toast.error("Set at least one effect: route-to model and/or per-call cap")
       return
     }
-    // Build the condition with only the constraints the user supplied; both keys
+
+    // Build the condition with only the constraints the user supplied; all keys
     // are optional and ANDed by the evaluator. An empty object is a catch-all.
     const condition: Record<string, unknown> = {}
     if (butler.trim()) condition.butler = butler.trim()
     if (complexity) condition.complexity = complexity
-    createMutation.mutate({ condition, action: { model: targetModel } })
+    if (trigger) condition.trigger = trigger
+    createMutation.mutate({ condition, action })
   }
 
   // Distinct, sorted target model_ids from the catalog (dedup across tiers).
@@ -613,15 +700,34 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
     return Array.from(new Set(models.map((m) => m.model_id))).sort()
   }, [catalogData])
 
+  const conditionSummary =
+    butler.trim() || complexity || trigger
+      ? [
+          butler.trim() ? `butler = ${butler.trim()}` : null,
+          complexity ? `complexity = ${complexity}` : null,
+          trigger ? `trigger = ${trigger}` : null,
+        ]
+          .filter(Boolean)
+          .join(" and ")
+      : "any dispatch (catch-all)"
+
+  const effectSummary = [
+    model.trim() ? `route to ${model.trim()}` : null,
+    maxCostPerCall.trim() ? `cap each call at $${maxCostPerCall.trim()}` : null,
+  ]
+    .filter(Boolean)
+    .join(" and ")
+
   return (
     <form
       onSubmit={handleSubmit}
       data-testid="create-rule-form"
       className="mb-4 flex flex-col gap-3 border border-border/60 p-3"
     >
+      <Eyebrow>Condition (all optional, ANDed)</Eyebrow>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <label className="flex flex-col gap-1">
-          <Eyebrow>Butler (optional)</Eyebrow>
+          <Eyebrow>Butler</Eyebrow>
           <input
             type="text"
             aria-label="Butler condition"
@@ -632,7 +738,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
           />
         </label>
         <label className="flex flex-col gap-1">
-          <Eyebrow>Complexity (optional)</Eyebrow>
+          <Eyebrow>Complexity</Eyebrow>
           <select
             aria-label="Complexity condition"
             className="text-xs border rounded px-2 py-1 bg-background"
@@ -648,6 +754,25 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
           </select>
         </label>
         <label className="flex flex-col gap-1">
+          <Eyebrow>Trigger</Eyebrow>
+          <select
+            aria-label="Trigger condition"
+            className="text-xs border rounded px-2 py-1 bg-background"
+            value={trigger}
+            onChange={(e) => setTrigger(e.target.value)}
+          >
+            <option value="">any trigger</option>
+            {TRIGGER_SOURCES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <Eyebrow>Action (set at least one effect)</Eyebrow>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1">
           <Eyebrow>Route to model</Eyebrow>
           <select
             aria-label="Target model"
@@ -655,7 +780,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
             value={model}
             onChange={(e) => setModel(e.target.value)}
           >
-            <option value="">select a model…</option>
+            <option value="">no re-route</option>
             {modelIds.map((id) => (
               <option key={id} value={id}>
                 {id}
@@ -663,21 +788,24 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
             ))}
           </select>
         </label>
+        <label className="flex flex-col gap-1">
+          <Eyebrow>Max cost per call (USD)</Eyebrow>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            inputMode="decimal"
+            aria-label="Max cost per call"
+            placeholder="no cap"
+            className="text-xs border rounded px-2 py-1 bg-background"
+            value={maxCostPerCall}
+            onChange={(e) => setMaxCostPerCall(e.target.value)}
+          />
+        </label>
       </div>
       <p className="text-xs text-muted-foreground">
-        Matches dispatches where{" "}
-        <span className="font-mono">
-          {butler.trim() || complexity
-            ? [
-                butler.trim() ? `butler = ${butler.trim()}` : null,
-                complexity ? `complexity = ${complexity}` : null,
-              ]
-                .filter(Boolean)
-                .join(" and ")
-            : "any dispatch (catch-all)"}
-        </span>{" "}
-        and routes them to{" "}
-        <span className="font-mono">{model.trim() || "…"}</span>.
+        Matches dispatches where <span className="font-mono">{conditionSummary}</span> and{" "}
+        <span className="font-mono">{effectSummary || "…"}</span>.
       </p>
       <div className="flex items-center gap-2">
         <Button type="submit" size="sm" className="text-xs h-7" disabled={createMutation.isPending}>

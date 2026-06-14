@@ -42,7 +42,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
@@ -1067,13 +1067,73 @@ async def get_spend_forecast(
 # ---------------------------------------------------------------------------
 
 
+# Canonical complexity tiers a rule condition may match (mirrors
+# butlers.core.model_routing.TIER_FALLTHROUGH_ORDER). Kept inline to avoid an
+# api → core import for a small literal set.
+_VALID_COMPLEXITY_TIERS = frozenset(
+    {"reasoning", "workhorse", "cheap", "specialty", "local", "legacy"}
+)
+
+
 class SpendRuleCondition(BaseModel):
-    butler: str | None = None
-    complexity: str | None = None
+    """Enforced schema for a spend-rule ``condition``.
+
+    Unknown keys are rejected (``extra="forbid"`` → 422), so a malformed rule can never
+    be persisted and then silently fail-closed at dispatch.  All keys are optional; an
+    empty condition ``{}`` is a valid catch-all.  Supported dimensions mirror exactly
+    what ``model_routing.apply_spend_routing_rules`` can evaluate at the dispatch call
+    site: ``butler``, ``complexity`` (alias ``tier``), and ``trigger`` (the dispatch
+    ``trigger_source``).  Each may be a scalar or a list (membership match).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    butler: str | list[str] | None = None
+    complexity: str | list[str] | None = None
+    tier: str | list[str] | None = None
+    trigger: str | list[str] | None = None
+
+    @model_validator(mode="after")
+    def _validate_tiers(self) -> SpendRuleCondition:
+        for field in ("complexity", "tier"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            candidates = value if isinstance(value, list) else [value]
+            for c in candidates:
+                if str(c).lower() not in _VALID_COMPLEXITY_TIERS:
+                    raise ValueError(
+                        f"condition.{field} '{c}' is not a valid complexity tier; "
+                        f"must be one of {sorted(_VALID_COMPLEXITY_TIERS)}"
+                    )
+        return self
 
 
 class SpendRuleAction(BaseModel):
-    model: str
+    """Enforced schema for a spend-rule ``action`` (its effects).
+
+    Unknown keys are rejected (``extra="forbid"`` → 422).  Supported effects:
+
+    - ``model`` — re-route the dispatch to this priced ``model_id``.
+    - ``max_cost_per_call`` — a hard per-dispatch USD cap (must be > 0) the spawner
+      enforces as a DENY gate.
+
+    At least one effect must be present — an empty action does nothing and is rejected.
+    A rule may set the model effect, the cap effect, or both.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = None
+    max_cost_per_call: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _require_effect(self) -> SpendRuleAction:
+        if self.model is None and self.max_cost_per_call is None:
+            raise ValueError(
+                "action must set at least one effect: 'model' and/or 'max_cost_per_call'"
+            )
+        return self
 
 
 class SpendRule(BaseModel):
@@ -1088,14 +1148,14 @@ class SpendRule(BaseModel):
 
 class SpendRuleCreate(BaseModel):
     position: int | None = None
-    condition: dict
-    action: dict
+    condition: SpendRuleCondition
+    action: SpendRuleAction
 
 
 class SpendRuleUpdate(BaseModel):
     position: int | None = None
-    condition: dict | None = None
-    action: dict | None = None
+    condition: SpendRuleCondition | None = None
+    action: SpendRuleAction | None = None
 
 
 @router.get("/rules", response_model=ApiResponse[list[SpendRule]])
@@ -1171,14 +1231,16 @@ async def create_spend_rule(
                         position,
                     )
 
+                condition_payload = body.condition.model_dump(exclude_none=True)
+                action_payload = body.action.model_dump(exclude_none=True)
                 row = await conn.fetchrow(
                     "INSERT INTO public.spend_rules "
                     "(position, condition, action, created_at, updated_at) "
                     "VALUES ($1, $2, $3, $4, $5) "
                     "RETURNING id, position, condition, action, saved_7d, created_at, updated_at",
                     position,
-                    json.dumps(body.condition),
-                    json.dumps(body.action),
+                    json.dumps(condition_payload),
+                    json.dumps(action_payload),
                     now,
                     now,
                 )
@@ -1205,7 +1267,7 @@ async def create_spend_rule(
             actor="owner",
             action="spend.rule.create",
             target=f"rule:{rule.id}",
-            note=f"position={position} condition={body.condition} action={body.action}",
+            note=f"position={position} condition={condition_payload} action={action_payload}",
         )
     except Exception:
         logger.warning("Audit append failed for spend.rule.create", exc_info=True)
@@ -1245,9 +1307,15 @@ async def update_spend_rule(
                     raise HTTPException(status_code=404, detail="Spend rule not found")
 
                 new_condition = (
-                    body.condition if body.condition is not None else _dec2(existing["condition"])
+                    body.condition.model_dump(exclude_none=True)
+                    if body.condition is not None
+                    else _dec2(existing["condition"])
                 )
-                new_action = body.action if body.action is not None else _dec2(existing["action"])
+                new_action = (
+                    body.action.model_dump(exclude_none=True)
+                    if body.action is not None
+                    else _dec2(existing["action"])
+                )
                 new_position = body.position if body.position is not None else existing["position"]
 
                 if body.position is not None and body.position != existing["position"]:

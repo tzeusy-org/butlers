@@ -573,6 +573,48 @@ def _check_token_budget(
     return None
 
 
+def _estimate_worst_case_call_cost(
+    model: str | None,
+    max_token_budget: int | None,
+) -> float | None:
+    """Estimate the worst-case USD cost of a single call for per-call cap enforcement.
+
+    The cap must be checked BEFORE the call runs, so no real token counts exist yet.
+    The tightest defensible pre-spawn bound is the resolved model's input price applied
+    to this dispatch's input-token budget (``max_token_budget``).  Output tokens are
+    unbounded and therefore not included — the estimate intentionally bounds only the
+    guaranteed-capped portion of the call, so a cap is enforced only when even the input
+    side alone would exceed it.
+
+    Returns
+    -------
+    float | None
+        The estimated worst-case input cost in USD, or ``None`` when it cannot be
+        computed (no token budget, no model, unpriced model, or any pricing error) —
+        in which case the caller must not enforce the cap (fail-open).
+    """
+    if not model or max_token_budget is None or max_token_budget <= 0:
+        return None
+    try:
+        from butlers.api.pricing import load_pricing
+
+        global _cached_pricing
+        if _cached_pricing is None:
+            _cached_pricing = load_pricing()
+        # estimate_cost returns None for unknown models; treat all budgeted tokens as
+        # input tokens to bound the input-side cost.
+        cost = _cached_pricing.estimate_cost(model, max_token_budget, 0)  # type: ignore[attr-defined]
+    except Exception:
+        logger.debug(
+            "Per-call cap cost estimate failed for model=%s budget=%s (non-fatal)",
+            model,
+            max_token_budget,
+            exc_info=True,
+        )
+        return None
+    return cost
+
+
 def _compose_system_prompt(
     base_system_prompt: str,
     memory_context: str | None,
@@ -1710,15 +1752,12 @@ class Spawner:
         # wedges spawns. Only runs on a real catalog resolution (static_fallback has no
         # catalog_entry_id to route from).
         # ---------------------------------------------------------------------------
+        # Per-call USD cap surfaced by a matching spend rule's action.max_cost_per_call
+        # effect (None when no rule sets a cap). Enforced as a DENY gate below.
+        _spend_rule_max_cost_per_call: float | None = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
-                (
-                    resolved_runtime_type,
-                    model,
-                    catalog_extra_args,
-                    catalog_entry_id,
-                    catalog_timeout_s,
-                ) = await apply_spend_routing_rules(
+                _routing_result = await apply_spend_routing_rules(
                     self._pool,
                     self._config.name,
                     _failover_effective_tier or complexity,
@@ -1729,7 +1768,16 @@ class Spawner:
                         catalog_entry_id,
                         catalog_timeout_s,
                     ),
+                    trigger_source=trigger_source,
                 )
+                (
+                    resolved_runtime_type,
+                    model,
+                    catalog_extra_args,
+                    catalog_entry_id,
+                    catalog_timeout_s,
+                ) = _routing_result.resolved
+                _spend_rule_max_cost_per_call = _routing_result.max_cost_per_call
             except Exception:
                 logger.warning(
                     "Spend routing-rule evaluation failed for butler=%s; "
@@ -1907,6 +1955,62 @@ class Spawner:
                     logical_session_id=effective_request_id,
                 )
                 return SpawnerResult(success=False, error=ceiling_msg, model=model)
+
+        # ---------------------------------------------------------------------------
+        # Per-call cost cap enforcement (spend rule action.max_cost_per_call)
+        #
+        # A matching spend rule may carry a hard per-dispatch USD cap. Unlike the
+        # monthly ceiling (a global running budget) this caps the cost of THIS single
+        # call. The call has not run yet, so we enforce on a worst-case pre-spawn
+        # estimate: the resolved model's input price times this dispatch's input-token
+        # budget (max_token_budget). If that worst-case exceeds the cap, the dispatch is
+        # DENIED here — switching models would not help (the cap is attached to the
+        # matched rule, which already chose the model), so this is a hard block mirroring
+        # the ceiling denial path (a quota_skip provenance row + a failed SpawnerResult).
+        #
+        # When the call has no input-token budget (max_token_budget is None) the per-call
+        # cost is unbounded and cannot be guaranteed under the cap pre-spawn; we cannot
+        # honestly enforce, so we log and allow rather than block arbitrarily. Operators
+        # who want the cap enforced should pair it with a token budget. Estimation fails
+        # open: any pricing/lookup error leaves the dispatch allowed.
+        # ---------------------------------------------------------------------------
+        if (
+            _spend_rule_max_cost_per_call is not None
+            and catalog_entry_id is not None
+            and self._pool is not None
+        ):
+            worst_case_usd = _estimate_worst_case_call_cost(model, max_token_budget)
+            if worst_case_usd is None:
+                logger.info(
+                    "Spend-rule per-call cap $%.4f set for butler=%s model=%s but call has no "
+                    "input-token budget (or model is unpriced); cap not enforceable pre-spawn, "
+                    "allowing dispatch",
+                    _spend_rule_max_cost_per_call,
+                    self._config.name,
+                    model,
+                )
+            elif worst_case_usd > _spend_rule_max_cost_per_call:
+                cap_msg = (
+                    "Per-call spend cap exceeded: estimated worst-case "
+                    f"${worst_case_usd:.4f} > cap ${_spend_rule_max_cost_per_call:.4f} "
+                    f"(model={model}, input_budget={max_token_budget:,} tokens)"
+                )
+                logger.warning(
+                    "Spawn blocked by per-call spend cap for butler=%s: %s",
+                    self._config.name,
+                    cap_msg,
+                )
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome="quota_skip",
+                    attempt_index=len(_attempted_ids),
+                    failure_reason=cap_msg,
+                    tool_call_count=0,
+                    logical_session_id=effective_request_id,
+                )
+                return SpawnerResult(success=False, error=cap_msg, model=model)
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         provider_config = await self._resolve_provider_config(model)

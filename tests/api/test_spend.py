@@ -1286,3 +1286,109 @@ async def test_emit_spend_event_updates_ring_buffer():
     assert len(_spend_recent) == _STREAM_RECENT_MAX
     # Newest events should be kept (last 50)
     assert _spend_recent[-1]["ts"] == float(_STREAM_RECENT_MAX + 4)
+
+
+# ---------------------------------------------------------------------------
+# §5.2 Spend rule — enforced create/validate schema [bu-xclyn]
+# ---------------------------------------------------------------------------
+
+
+def test_spend_rule_condition_rejects_unknown_key() -> None:
+    """An unknown condition key is rejected (extra='forbid' → ValidationError → 422)."""
+    from pydantic import ValidationError
+
+    from butlers.api.routers.spend import SpendRuleCondition
+
+    with pytest.raises(ValidationError):
+        SpendRuleCondition(weather="sunny")  # type: ignore[call-arg]
+
+
+def test_spend_rule_action_rejects_unknown_key() -> None:
+    """An unknown action key is rejected."""
+    from pydantic import ValidationError
+
+    from butlers.api.routers.spend import SpendRuleAction
+
+    with pytest.raises(ValidationError):
+        SpendRuleAction(model="m", reroute_to="x")  # type: ignore[call-arg]
+
+
+def test_spend_rule_action_requires_an_effect() -> None:
+    """An action with neither model nor max_cost_per_call is rejected."""
+    from pydantic import ValidationError
+
+    from butlers.api.routers.spend import SpendRuleAction
+
+    with pytest.raises(ValidationError):
+        SpendRuleAction()
+
+
+def test_spend_rule_action_max_cost_per_call_must_be_positive() -> None:
+    """max_cost_per_call must be > 0."""
+    from pydantic import ValidationError
+
+    from butlers.api.routers.spend import SpendRuleAction
+
+    with pytest.raises(ValidationError):
+        SpendRuleAction(max_cost_per_call=0)
+    with pytest.raises(ValidationError):
+        SpendRuleAction(max_cost_per_call=-1.0)
+    # Positive is accepted (cap-only rule).
+    a = SpendRuleAction(max_cost_per_call=0.05)
+    assert a.max_cost_per_call == pytest.approx(0.05)
+    assert a.model is None
+
+
+def test_spend_rule_condition_rejects_invalid_tier() -> None:
+    """complexity/tier must be a canonical tier name."""
+    from pydantic import ValidationError
+
+    from butlers.api.routers.spend import SpendRuleCondition
+
+    with pytest.raises(ValidationError):
+        SpendRuleCondition(complexity="superfast")
+    with pytest.raises(ValidationError):
+        SpendRuleCondition(tier=["workhorse", "nope"])
+    # Valid tiers (incl. case-insensitive) and list pass.
+    assert SpendRuleCondition(complexity="WORKHORSE").complexity == "WORKHORSE"
+    assert SpendRuleCondition(tier=["workhorse", "cheap"]).tier == ["workhorse", "cheap"]
+
+
+def test_spend_rule_create_accepts_new_dims() -> None:
+    """SpendRuleCreate accepts the new trigger condition dim and max_cost_per_call effect."""
+    from butlers.api.routers.spend import SpendRuleCreate
+
+    body = SpendRuleCreate.model_validate(
+        {
+            "condition": {"butler": "general", "trigger": "healing"},
+            "action": {"model": "cheap-model", "max_cost_per_call": 0.05},
+        }
+    )
+    assert body.condition.trigger == "healing"
+    assert body.action.max_cost_per_call == pytest.approx(0.05)
+    # Serialized payload (what gets persisted) drops None fields.
+    assert body.condition.model_dump(exclude_none=True) == {
+        "butler": "general",
+        "trigger": "healing",
+    }
+    assert body.action.model_dump(exclude_none=True) == {
+        "model": "cheap-model",
+        "max_cost_per_call": 0.05,
+    }
+
+
+def test_spend_rule_create_back_compat_existing_shape() -> None:
+    """Legacy rule shape (butler/complexity condition + model action) still validates."""
+    from butlers.api.routers.spend import SpendRuleCreate
+
+    body = SpendRuleCreate.model_validate(
+        {
+            "condition": {"butler": "general", "complexity": "workhorse"},
+            "action": {"model": "claude-haiku-cheap"},
+        }
+    )
+    assert body.condition.model_dump(exclude_none=True) == {
+        "butler": "general",
+        "complexity": "workhorse",
+    }
+    assert body.action.model_dump(exclude_none=True) == {"model": "claude-haiku-cheap"}

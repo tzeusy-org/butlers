@@ -25,6 +25,7 @@ from butlers.core.model_routing import (
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     _check_deprecated_tier,
+    _parse_max_cost_per_call,
     _rule_condition_matches,
     apply_spend_routing_rules,
     next_same_tier_candidate,
@@ -266,6 +267,67 @@ def test_rule_condition_matches_semantics() -> None:
     assert not _rule_condition_matches(
         {"weather": "sunny"}, butler_name="general", complexity_tier="workhorse"
     )
+
+
+@pytest.mark.unit
+def test_rule_condition_trigger_dim() -> None:
+    """The ``trigger`` condition dim matches the dispatch trigger_source."""
+    # Exact trigger match (case-insensitive).
+    assert _rule_condition_matches(
+        {"trigger": "healing"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="healing",
+    )
+    assert _rule_condition_matches(
+        {"trigger": "QA"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="qa",
+    )
+    # Non-matching trigger.
+    assert not _rule_condition_matches(
+        {"trigger": "healing"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="route",
+    )
+    # List membership on trigger.
+    assert _rule_condition_matches(
+        {"trigger": ["healing", "retry"]},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="retry",
+    )
+    # Trigger constraint present but no trigger context → fail closed.
+    assert not _rule_condition_matches(
+        {"trigger": "healing"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source=None,
+    )
+    # AND with other dims.
+    assert _rule_condition_matches(
+        {"butler": "general", "trigger": "healing"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="healing",
+    )
+
+
+@pytest.mark.unit
+def test_parse_max_cost_per_call() -> None:
+    """action.max_cost_per_call parsing: positive float kept, malformed/non-positive dropped."""
+    assert _parse_max_cost_per_call({"max_cost_per_call": 0.05}, "r1") == pytest.approx(0.05)
+    assert _parse_max_cost_per_call({"max_cost_per_call": "0.1"}, "r1") == pytest.approx(0.1)
+    # Absent cap → None.
+    assert _parse_max_cost_per_call({"model": "m"}, "r1") is None
+    # Non-positive → ignored (None).
+    assert _parse_max_cost_per_call({"max_cost_per_call": 0}, "r1") is None
+    assert _parse_max_cost_per_call({"max_cost_per_call": -1.0}, "r1") is None
+    # Non-numeric → ignored (None).
+    assert _parse_max_cost_per_call({"max_cost_per_call": "abc"}, "r1") is None
+    assert _parse_max_cost_per_call({"max_cost_per_call": None}, "r1") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1221,7 +1283,9 @@ async def test_spend_rule_overrides_resolved_model(pool: asyncpg.Pool) -> None:
         action={"model": "claude-haiku-cheap"},
     )
 
-    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    routed = (
+        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    ).resolved
     assert routed[1] == "claude-haiku-cheap"
     assert str(routed[3]) == cheap_id
 
@@ -1250,7 +1314,9 @@ async def test_spend_rule_first_match_wins(pool: asyncpg.Pool) -> None:
     await _insert_spend_rule(pool, position=0, condition={}, action={"model": "first-target"})
     await _insert_spend_rule(pool, position=1, condition={}, action={"model": "second-target"})
 
-    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    routed = (
+        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    ).resolved
     assert routed[1] == "first-target"
     assert str(routed[3]) == first_id
 
@@ -1277,7 +1343,9 @@ async def test_spend_rule_no_match_leaves_model_unchanged(pool: asyncpg.Pool) ->
         pool, position=0, condition={"butler": "health"}, action={"model": "other-model"}
     )
 
-    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    routed = (
+        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    ).resolved
     assert routed[1] == "base-model"
     assert str(routed[3]) == base_id
 
@@ -1309,7 +1377,100 @@ async def test_spend_rule_unroutable_target_keeps_original(pool: asyncpg.Pool) -
     await _insert_spend_rule(pool, position=0, condition={}, action={"model": "does-not-exist"})
     await _insert_spend_rule(pool, position=1, condition={}, action={"model": "fallthrough-model"})
 
-    routed = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    routed = (
+        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    ).resolved
     assert routed[1] == "base-model"
     assert str(routed[3]) == base_id
     assert str(fallthrough_id) != str(base_id)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_surfaces_max_cost_per_call(pool: asyncpg.Pool) -> None:
+    """A matching rule's action.max_cost_per_call is surfaced on the routing result."""
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    await _insert_catalog_entry(
+        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+    )
+    cheap_id = await _insert_catalog_entry(
+        pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+
+    # Rule re-routes the model AND attaches a per-call cap.
+    await _insert_spend_rule(
+        pool,
+        position=0,
+        condition={"butler": "general"},
+        action={"model": "cheap-model", "max_cost_per_call": 0.05},
+    )
+
+    result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    assert result.resolved[1] == "cheap-model"
+    assert str(result.resolved[3]) == cheap_id
+    assert result.max_cost_per_call == pytest.approx(0.05)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_cap_only_keeps_model(pool: asyncpg.Pool) -> None:
+    """A cap-only rule (no action.model) keeps the resolved model but surfaces the cap."""
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    base_id = await _insert_catalog_entry(
+        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+
+    await _insert_spend_rule(pool, position=0, condition={}, action={"max_cost_per_call": 0.10})
+
+    result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    # Model unchanged, cap surfaced.
+    assert result.resolved[1] == "base-model"
+    assert str(result.resolved[3]) == base_id
+    assert result.max_cost_per_call == pytest.approx(0.10)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_trigger_condition_at_dispatch(pool: asyncpg.Pool) -> None:
+    """The trigger_source dim gates a rule at dispatch via apply_spend_routing_rules."""
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    await _insert_catalog_entry(
+        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+    )
+    cheap_id = await _insert_catalog_entry(
+        pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+
+    # Rule matches only healing-triggered dispatches.
+    await _insert_spend_rule(
+        pool, position=0, condition={"trigger": "healing"}, action={"model": "cheap-model"}
+    )
+
+    # No trigger context → rule does not match.
+    no_trigger = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    assert no_trigger.resolved[1] == "base-model"
+
+    # Non-matching trigger → rule does not match.
+    routed_other = await apply_spend_routing_rules(
+        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="route"
+    )
+    assert routed_other.resolved[1] == "base-model"
+
+    # Matching trigger → rule re-routes.
+    routed_healing = await apply_spend_routing_rules(
+        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="healing"
+    )
+    assert routed_healing.resolved[1] == "cheap-model"
+    assert str(routed_healing.resolved[3]) == cheap_id
