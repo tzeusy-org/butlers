@@ -497,6 +497,62 @@ def test_stagger_determinism_cap_and_cadence() -> None:
     assert second_1 - first_1 == timedelta(minutes=1)
 
 
+@pytest.mark.unit
+def test_next_run_honors_schedule_timezone() -> None:
+    """An hour-pinned cron with tz=Asia/Singapore fires at local wall-clock, not UTC.
+
+    ``5 1 * * *`` means 01:05 local.  In Asia/Singapore (UTC+8, no DST) that is
+    17:05 UTC the *prior* day — exactly 8h earlier than the naive-UTC reading.
+    Uses a fixed reference instant so the result never depends on wall-clock now.
+    """
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from butlers.core.scheduler import _next_run
+
+    # Fixed reference: 2026-02-20 12:00 UTC == 2026-02-20 20:00 SGT.
+    reference = datetime(2026, 2, 20, 12, 0, tzinfo=UTC)
+    sgt = ZoneInfo("Asia/Singapore")
+
+    # Naive-UTC interpretation (legacy behaviour): next 01:05 UTC is the next day.
+    utc_next = _next_run("5 1 * * *", now=reference)
+    assert utc_next == datetime(2026, 2, 21, 1, 5, tzinfo=UTC)
+
+    # Timezone-aware: 01:05 SGT == 17:05 UTC on 2026-02-20.
+    sgt_next = _next_run("5 1 * * *", now=reference, tz=sgt)
+    assert sgt_next == datetime(2026, 2, 20, 17, 5, tzinfo=UTC)
+
+    # The SGT-anchored run is exactly 8h before the naive-UTC run.
+    assert utc_next - sgt_next == timedelta(hours=8)
+
+    # And it lands at 01:05 local wall-clock in Singapore.
+    assert sgt_next.astimezone(sgt) == datetime(2026, 2, 21, 1, 5, tzinfo=sgt)
+
+
+@pytest.mark.unit
+def test_resolve_effective_timezone_precedence() -> None:
+    """Per-row timezone wins; the 'UTC' sentinel defers to the owner default."""
+    from zoneinfo import ZoneInfo
+
+    from butlers.core.scheduler import _resolve_effective_timezone
+
+    # Explicit per-row timezone overrides the owner default.
+    assert _resolve_effective_timezone("America/New_York", "Asia/Singapore") == ZoneInfo(
+        "America/New_York"
+    )
+
+    # The 'UTC' default sentinel means "unset" -> follow the owner default.
+    assert _resolve_effective_timezone("UTC", "Asia/Singapore") == ZoneInfo("Asia/Singapore")
+    assert _resolve_effective_timezone(None, "Asia/Singapore") == ZoneInfo("Asia/Singapore")
+
+    # No row tz and no owner default -> UTC.
+    assert _resolve_effective_timezone(None, None) == ZoneInfo("UTC")
+    assert _resolve_effective_timezone("UTC", None) == ZoneInfo("UTC")
+
+    # Unknown timezone names fall back to UTC rather than raising.
+    assert _resolve_effective_timezone("Not/AZone", None) == ZoneInfo("UTC")
+
+
 # ---------------------------------------------------------------------------
 # notify() validation in _check_notify_reference and sync_schedules
 # ---------------------------------------------------------------------------

@@ -49,6 +49,33 @@ from butlers.storage import S3BlobStore
 logger = logging.getLogger(__name__)
 
 
+async def _resolve_owner_default_timezone(daemon: Any) -> str | None:
+    """Return the owner's general timezone (IANA name) from shared settings.
+
+    Reads ``settings.general`` from the shared credential pool, whose
+    ``search_path`` is ``public`` — the schema that holds ``public.state`` and
+    therefore the dashboard-level general settings.  Returns ``None`` when no
+    shared pool is available or the lookup fails, so scheduling falls back to
+    UTC cron anchoring (legacy behaviour) rather than aborting startup.
+    """
+    credential_store = getattr(daemon, "_credential_store", None)
+    shared_pool = getattr(credential_store, "shared_pool", None) if credential_store else None
+    if shared_pool is None:
+        return None
+    try:
+        from butlers.core.general_settings import load_general_settings
+
+        settings = await load_general_settings(shared_pool)
+        return settings["timezone"]
+    except Exception:
+        logger.warning(
+            "Failed to resolve owner default timezone for schedule sync; "
+            "falling back to UTC cron anchoring",
+            exc_info=True,
+        )
+        return None
+
+
 async def run_startup(daemon: Any) -> None:
     """Execute the full butler startup sequence.
 
@@ -391,11 +418,18 @@ async def run_startup(daemon: Any) -> None:
         for s in daemon.config.schedules
         if not (_is_staffer and s.job_name == "daily_briefing_contribution")
     ]
+    # Resolve the owner's general timezone so hour-pinned crons anchor at the
+    # owner's local wall-clock instead of UTC.  Read from the shared credential
+    # pool (search_path 'public'), which is where public.state — and thus the
+    # general settings — lives; the butler's own pool would resolve a private
+    # <schema>.state that does not hold these settings.
+    default_timezone = await _resolve_owner_default_timezone(daemon)
     await sync_schedules(
         pool,
         schedules,
         stagger_key=daemon.config.name,
         skills_dir=get_skills_dir(daemon.config_dir),
+        default_timezone=default_timezone,
     )
 
     # 11b. Open MCP client connection to Switchboard (non-switchboard butlers)

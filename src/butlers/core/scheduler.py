@@ -15,6 +15,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 from croniter import croniter
@@ -26,6 +27,11 @@ from butlers.core.model_routing import Complexity
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
+# The scheduled_tasks.timezone column is NOT NULL DEFAULT 'UTC'.  A row carrying
+# this sentinel is treated as "no explicit per-row timezone" and therefore
+# follows the owner's general timezone (the daemon-supplied default).  A row with
+# any other IANA timezone overrides the owner default.
+_DEFAULT_SCHEDULE_TIMEZONE = "UTC"
 _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
 _ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
@@ -321,16 +327,104 @@ def _stagger_offset_seconds(
     return bucket % (max_safe_offset + 1)
 
 
+async def _load_owner_default_timezone(pool: asyncpg.Pool) -> str | None:
+    """Read the owner's general timezone from ``public.state``, or None on failure.
+
+    Used by runtime schedule mutations (create/update) so a task with no
+    explicit per-row timezone anchors its cron at the owner's local wall-clock.
+
+    The owner's general settings live in ``public.state`` (the shared
+    dashboard-level KV table), so the key is read fully-qualified rather than
+    via the schema-relative ``state_get`` — a butler's own pool resolves an
+    unqualified ``state`` to its private ``<schema>.state``, which does not hold
+    these settings.  Butler roles have SELECT on ``public``.
+    """
+    try:
+        from butlers.core.general_settings import (
+            GENERAL_SETTINGS_STATE_KEY,
+            normalize_general_timezone,
+        )
+        from butlers.core.state import decode_jsonb
+
+        raw = await pool.fetchval(
+            "SELECT value FROM public.state WHERE key = $1",
+            GENERAL_SETTINGS_STATE_KEY,
+        )
+        if raw is None:
+            return None
+        stored = decode_jsonb(raw)
+        if not isinstance(stored, dict):
+            return None
+        tz = stored.get("timezone")
+        return normalize_general_timezone(tz if isinstance(tz, str) else None)
+    except Exception:
+        logger.warning(
+            "Failed to resolve owner default timezone; falling back to UTC anchoring",
+            exc_info=True,
+        )
+        return None
+
+
+def _resolve_effective_timezone(
+    row_timezone: str | None,
+    default_timezone: str | None,
+) -> ZoneInfo:
+    """Resolve the effective :class:`ZoneInfo` for a schedule.
+
+    Precedence:
+      1. An explicit per-row timezone (anything other than the ``'UTC'`` default
+         sentinel) wins.
+      2. Otherwise the owner's general/default timezone is used.
+      3. Otherwise UTC.
+
+    Unknown timezone names fall back to UTC with a warning so a malformed value
+    never aborts scheduling.
+    """
+    candidate: str | None = None
+    if row_timezone and row_timezone != _DEFAULT_SCHEDULE_TIMEZONE:
+        candidate = row_timezone
+    elif default_timezone:
+        candidate = default_timezone
+
+    if not candidate:
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(candidate)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning(
+            "Unknown schedule timezone %r; falling back to UTC for cron anchoring",
+            candidate,
+        )
+        return ZoneInfo("UTC")
+
+
 def _next_run(
     cron: str,
     *,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     now: datetime | None = None,
+    tz: ZoneInfo | None = None,
 ) -> datetime:
-    """Compute the next run time for a cron expression from now (UTC)."""
+    """Compute the next run time for a cron expression, returned in UTC.
+
+    When *tz* is provided, croniter is anchored in that timezone so hour-pinned
+    cron fields (e.g. ``5 1 * * *``) mean local wall-clock time in *tz*; the
+    result is converted back to UTC for storage and comparison.  When *tz* is
+    ``None`` (or UTC), the cron is interpreted in UTC, preserving legacy
+    behaviour.
+    """
     anchor = now or datetime.now(UTC)
-    next_run = croniter(cron, anchor).get_next(datetime).replace(tzinfo=UTC)
+    if tz is not None:
+        # Anchor croniter in the effective local timezone so hour-pinned fields
+        # resolve against local wall-clock, then normalize back to UTC.
+        local_anchor = anchor.astimezone(tz)
+        local_next = croniter(cron, local_anchor).get_next(datetime)
+        if local_next.tzinfo is None:
+            local_next = local_next.replace(tzinfo=tz)
+        next_run = local_next.astimezone(UTC)
+    else:
+        next_run = croniter(cron, anchor).get_next(datetime).replace(tzinfo=UTC)
     offset_seconds = _stagger_offset_seconds(
         cron,
         stagger_key=stagger_key,
@@ -408,6 +502,7 @@ async def sync_schedules(
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     skills_dir: Path | None = None,
+    default_timezone: str | None = None,
 ) -> None:
     """Sync TOML ``[[butler.schedule]]`` entries to the ``scheduled_tasks`` DB table.
 
@@ -428,6 +523,10 @@ async def sync_schedules(
         skills_dir: Optional path to the butler's skills directory for notify
             reference checking.  When provided, SKILL.md files for any
             kebab-case skill names found in the prompt are also inspected.
+        default_timezone: Owner's general timezone (IANA name).  Used to anchor
+            cron evaluation for ``next_run_at`` so hour-pinned crons fire at the
+            owner's local wall-clock time.  An explicit per-entry ``timezone``
+            overrides this; when neither is set, UTC is used.
     """
     # Determine whether the DB schema includes temporal intelligence columns.
     _has_task_type = await _has_column(pool, "scheduled_tasks", "task_type")
@@ -519,6 +618,11 @@ async def sync_schedules(
         if raw_budget is not None:
             max_token_budget = int(raw_budget) if isinstance(raw_budget, (int, float)) else None
 
+        # Optional per-entry timezone override.  When absent, the owner's
+        # default_timezone is applied when computing next_run_at.
+        raw_timezone = schedule.get("timezone")
+        entry_timezone = raw_timezone if isinstance(raw_timezone, str) and raw_timezone else None
+
         normalized_schedules.append(
             {
                 "name": name,
@@ -530,6 +634,7 @@ async def sync_schedules(
                 "job_args": job_args,
                 "complexity": complexity,
                 "max_token_budget": max_token_budget,
+                "timezone": entry_timezone,
                 # Deadline-specific fields — validated above for deadline tasks,
                 # None for cron tasks; always present so the needs_update check
                 # can compare them without KeyError.
@@ -591,10 +696,12 @@ async def sync_schedules(
         target_date = entry["target_date"]
         lead_time_days = entry["lead_time_days"]
         alert_thresholds = entry["alert_thresholds"]
+        effective_tz = _resolve_effective_timezone(entry["timezone"], default_timezone)
         next_run_at = _next_run(
             cron,
             stagger_key=stagger_key,
             max_stagger_seconds=max_stagger_seconds,
+            tz=effective_tz,
         )
 
         if name in db_by_name:
@@ -1531,6 +1638,7 @@ async def tick(
     notify_fn=None,
     completion_hooks: dict[str, Any] | None = None,
     eligibility_pool: asyncpg.Pool | None = None,
+    default_timezone: str | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -1599,6 +1707,12 @@ async def tick(
             schedule resumes naturally on the next eligible tick.  When ``None``
             (e.g. unit tests, or a context without a registry), no gating is
             applied and all passes run as before.
+        default_timezone: Owner's general timezone (IANA name) used to anchor
+            cron evaluation for any due task whose ``timezone`` column is unset
+            (the ``'UTC'`` default sentinel).  Hour-pinned crons therefore fire
+            at the owner's local wall-clock time.  When ``None``, the owner's
+            general settings are read from the DB; if that read fails, cron
+            anchoring falls back to UTC (legacy behaviour).
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
@@ -1608,6 +1722,15 @@ async def tick(
     tracer = trace.get_tracer("butlers")
     with tracer.start_as_current_span("butler.tick") as span:
         now = datetime.now(UTC)
+
+        # ``default_timezone`` is the owner's general timezone.  Hour-pinned crons
+        # follow this wall-clock unless a row carries an explicit per-row
+        # timezone.  The daemon scheduler loop may thread it in; otherwise it is
+        # read here from the shared ``public.state`` table (resolved per tick so a
+        # runtime timezone change takes effect without a restart).  If it cannot
+        # be resolved, cron anchoring falls back to UTC — legacy behaviour.
+        if default_timezone is None:
+            default_timezone = await _load_owner_default_timezone(pool)
 
         # Hoist schema probes: deadline and cron dispatch share these results.
         scheduled_task_columns = await _existing_columns(
@@ -1696,7 +1819,7 @@ async def tick(
             rows = await pool.fetch(
                 f"""
                 SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
-                       complexity{_until_at_select}{_budget_col_select}
+                       complexity, timezone{_until_at_select}{_budget_col_select}
                 FROM scheduled_tasks
                 WHERE enabled = true
                   {cron_filter}
@@ -1720,6 +1843,9 @@ async def tick(
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
             task_complexity = _parse_complexity_from_db_row(row, name)
             max_token_budget: int | None = row["max_token_budget"] if _has_budget_col else None
+            # Use .get() so a legacy/partial schema row that does not project a
+            # timezone column resolves to the owner default rather than KeyError.
+            effective_tz = _resolve_effective_timezone(row.get("timezone"), default_timezone)
 
             until_at = row["until_at"]
 
@@ -1789,6 +1915,7 @@ async def tick(
                 cron,
                 stagger_key=stagger_key,
                 max_stagger_seconds=max_stagger_seconds,
+                tz=effective_tz,
             )
             if until_at is not None and next_run_at > until_at:
                 logger.info(
@@ -1983,13 +2110,19 @@ async def schedule_create(
         calendar_event_id=calendar_event_id,
         context="schedule_create",
     )
+    # Capture whether the caller supplied an explicit timezone before defaulting
+    # to the 'UTC' sentinel, so next_run_at can be anchored correctly.
+    explicit_timezone = timezone
     if timezone is None:
         timezone = "UTC"
 
+    default_timezone = await _load_owner_default_timezone(pool)
+    effective_tz = _resolve_effective_timezone(explicit_timezone, default_timezone)
     next_run_at = _next_run(
         cron,
         stagger_key=stagger_key,
         max_stagger_seconds=max_stagger_seconds,
+        tz=effective_tz,
     )
     try:
         task_id: uuid.UUID = await pool.fetchval(
@@ -2197,8 +2330,19 @@ async def schedule_update(
         params.append(value)
         idx += 1
 
-    # Handle next_run_at based on enabled toggle or cron change
+    # Handle next_run_at based on enabled toggle or cron change.  Anchor the
+    # recomputed next run in the effective timezone: the (possibly updated)
+    # per-row timezone if explicitly set, else the owner default.
     cron = normalized_fields.get("cron", existing["cron"])
+    row_timezone = normalized_fields.get("timezone", existing["timezone"])
+    recompute_next_run = ("enabled" in normalized_fields and normalized_fields["enabled"]) or (
+        "enabled" not in normalized_fields and "cron" in normalized_fields
+    )
+    effective_tz: ZoneInfo | None = None
+    if recompute_next_run:
+        default_timezone = await _load_owner_default_timezone(pool)
+        effective_tz = _resolve_effective_timezone(row_timezone, default_timezone)
+
     if "enabled" in normalized_fields:
         if normalized_fields["enabled"]:
             # Enabling: recompute next_run_at from current cron
@@ -2206,6 +2350,7 @@ async def schedule_update(
                 cron,
                 stagger_key=stagger_key,
                 max_stagger_seconds=max_stagger_seconds,
+                tz=effective_tz,
             )
             set_clauses.append(f"next_run_at = ${idx}")
             params.append(next_run_at)
@@ -2221,6 +2366,7 @@ async def schedule_update(
             normalized_fields["cron"],
             stagger_key=stagger_key,
             max_stagger_seconds=max_stagger_seconds,
+            tz=effective_tz,
         )
         set_clauses.append(f"next_run_at = ${idx}")
         params.append(next_run_at)
