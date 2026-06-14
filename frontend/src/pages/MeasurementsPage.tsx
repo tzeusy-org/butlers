@@ -1,5 +1,5 @@
-import { ButlerManagedNote } from "@/components/health/ButlerManagedNote";
 import MeasurementChart from "@/components/health/MeasurementChart";
+import MeasurementTracker from "@/components/health/MeasurementTracker";
 import {
   Card,
   CardContent,
@@ -14,9 +14,9 @@ export default function MeasurementsPage() {
       <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Measurements</h1>
         <p className="text-muted-foreground mt-1">
-          Visualize your health measurements over time.
+          Log, edit, and review your health measurements. Changes here and
+          readings logged via your Health butler stay in sync.
         </p>
-        <ButlerManagedNote noun="Measurements" />
       </div>
 
       <Card>
@@ -28,6 +28,18 @@ export default function MeasurementsPage() {
         </CardHeader>
         <CardContent>
           <MeasurementChart />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>All Measurements</CardTitle>
+          <CardDescription>
+            Log a reading, or edit one to refine its value, date, or notes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <MeasurementTracker />
         </CardContent>
       </Card>
     </div>

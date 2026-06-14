@@ -7,11 +7,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createCondition,
   createMeal,
+  createMeasurement,
   createMedication,
   createResearch,
   createSymptom,
   deleteCondition,
   deleteMeal,
+  deleteMeasurement,
   deleteMedication,
   deleteResearch,
   deleteSymptom,
@@ -27,6 +29,7 @@ import {
   getSymptoms,
   updateCondition,
   updateMeal,
+  updateMeasurement,
   updateMedication,
   updateResearch,
   updateSymptom,
@@ -37,7 +40,9 @@ import type {
   MealCreateRequest,
   MealParams,
   MealUpdateRequest,
+  MeasurementCreateRequest,
   MeasurementParams,
+  MeasurementUpdateRequest,
   MedicationCreateRequest,
   MedicationParams,
   MedicationUpdateRequest,
@@ -55,6 +60,49 @@ export function useMeasurements(params?: MeasurementParams) {
     queryKey: ["health-measurements", params],
     queryFn: () => getMeasurements(params),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Invalidate every measurement-list query so freshly mutated readings appear.
+ *
+ * The measurement-list cache is keyed by the params object (type/since/until/...),
+ * so we invalidate on the `["health-measurements"]` prefix to cover all variants.
+ */
+function useInvalidateMeasurements() {
+  const queryClient = useQueryClient();
+  return () =>
+    queryClient.invalidateQueries({ queryKey: ["health-measurements"] });
+}
+
+/**
+ * Log a measurement. On success, invalidates the measurement list so the new
+ * reading appears without a manual refetch.
+ */
+export function useCreateMeasurement() {
+  const invalidate = useInvalidateMeasurements();
+  return useMutation({
+    mutationFn: (body: MeasurementCreateRequest) => createMeasurement(body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Update a measurement by id (only supplied fields are applied). */
+export function useUpdateMeasurement() {
+  const invalidate = useInvalidateMeasurements();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: MeasurementUpdateRequest }) =>
+      updateMeasurement(id, body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Soft-delete a measurement by id. */
+export function useDeleteMeasurement() {
+  const invalidate = useInvalidateMeasurements();
+  return useMutation({
+    mutationFn: (id: string) => deleteMeasurement(id),
+    onSuccess: invalidate,
   });
 }
 

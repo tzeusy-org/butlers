@@ -188,6 +188,87 @@ async def test_measurement_latest_no_data(pool):
     assert result is None
 
 
+async def test_measurement_update_edits_in_place(pool):
+    """measurement_update edits the existing temporal fact in place (same id)."""
+    from butlers.tools.health import measurement_history, measurement_log, measurement_update
+
+    m = await measurement_log(pool, "weight", 70, notes="morning")
+    updated = await measurement_update(pool, str(m["id"]), value=72, notes="evening")
+    # Same identity — temporal facts are not superseded.
+    assert updated["id"] == m["id"]
+    assert updated["value"] == 72
+    assert updated["notes"] == "evening"
+
+    # Exactly one active weight reading remains (no duplicate coexisting fact).
+    history = await measurement_history(pool, "weight")
+    assert len(history) == 1
+    assert history[0]["value"] == 72
+
+
+async def test_measurement_update_rewrites_type_predicate(pool):
+    """measurement_update changing type rewrites the measurement_{type} predicate."""
+    from butlers.tools.health import measurement_history, measurement_log, measurement_update
+
+    m = await measurement_log(pool, "heart_rate", 70)
+    updated = await measurement_update(pool, str(m["id"]), type="blood_sugar", value=95)
+    assert updated["type"] == "blood_sugar"
+    assert updated["value"] == 95
+
+    # The reading now lives under the new type and is gone from the old one.
+    assert [h["value"] for h in await measurement_history(pool, "blood_sugar")] == [95]
+    assert await measurement_history(pool, "heart_rate") == []
+
+
+async def test_measurement_update_rejects_invalid_type(pool):
+    """measurement_update rejects an unrecognized target type."""
+    from butlers.tools.health import measurement_log, measurement_update
+
+    m = await measurement_log(pool, "weight", 70)
+    with pytest.raises(ValueError, match="Unrecognized measurement type"):
+        await measurement_update(pool, str(m["id"]), type="cholesterol")
+
+
+async def test_measurement_update_not_found(pool):
+    """measurement_update raises ValueError for a non-existent measurement."""
+    from butlers.tools.health import measurement_update
+
+    with pytest.raises(ValueError, match="not found"):
+        await measurement_update(pool, str(uuid.uuid4()), value=1)
+
+
+async def test_measurement_update_no_valid_fields(pool):
+    """measurement_update raises ValueError when no allowed fields are given."""
+    from butlers.tools.health import measurement_log, measurement_update
+
+    m = await measurement_log(pool, "weight", 70)
+    with pytest.raises(ValueError, match="No valid fields"):
+        await measurement_update(pool, str(m["id"]), bogus_field="nope")
+
+
+async def test_measurement_delete_retracts(pool):
+    """measurement_delete soft-deletes so the reading disappears from history."""
+    from butlers.tools.health import measurement_delete, measurement_history, measurement_log
+
+    m = await measurement_log(pool, "weight", 70)
+    assert len(await measurement_history(pool, "weight")) == 1
+
+    ok = await measurement_delete(pool, str(m["id"]))
+    assert ok is True
+    assert await measurement_history(pool, "weight") == []
+
+    # The fact is retained but retracted (audit-preserving soft delete).
+    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", m["id"])
+    assert validity == "retracted"
+
+
+async def test_measurement_delete_not_found(pool):
+    """measurement_delete raises ValueError for a non-existent measurement."""
+    from butlers.tools.health import measurement_delete
+
+    with pytest.raises(ValueError, match="not found"):
+        await measurement_delete(pool, str(uuid.uuid4()))
+
+
 # ------------------------------------------------------------------
 # Medications
 # ------------------------------------------------------------------
