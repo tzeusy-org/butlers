@@ -2673,6 +2673,17 @@ async def list_entities(
             "in relationship.entity_facts.  Unknown values are rejected with HTTP 400."
         ),
     ),
+    ids: list[str] | None = Query(
+        None,
+        description=(
+            "Restrict results to this explicit set of entity UUIDs. Repeat the "
+            "parameter for multiple ids, e.g. ids=<uuid1>&ids=<uuid2>. Used to "
+            "hydrate full entity summaries for an externally-ranked id set (e.g. "
+            "the toolbar search endpoint) while keeping the rich list columns. "
+            "Combines with the other filter chips and the active-entity guard. "
+            "When present but empty, the result set is empty."
+        ),
+    ),
     limit: int = Query(_ENTITY_LIST_DEFAULT_LIMIT, ge=1, le=_ENTITY_LIST_MAX_LIMIT),
     offset: int = Query(0, ge=0),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -2727,6 +2738,16 @@ async def list_entities(
     if entity_types:
         conditions.append(f"e.entity_type = ANY(${arg_idx}::text[])")
         args.append(entity_types)
+        arg_idx += 1
+
+    # ids filter — restrict to an explicit UUID set. When the param is present
+    # (even as an empty list) we apply ``= ANY(...)`` so an empty set yields no
+    # rows; absence of the param leaves the list unrestricted. Used to hydrate
+    # full summaries for the toolbar search's externally-ranked id set.
+    if ids is not None:
+        clean_ids = [i for i in ids if i]
+        conditions.append(f"e.id = ANY(${arg_idx}::uuid[])")
+        args.append(clean_ids)
         arg_idx += 1
 
     # state filter

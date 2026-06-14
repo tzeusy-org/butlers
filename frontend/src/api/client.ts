@@ -2233,6 +2233,15 @@ export function listRelationshipEntities(
   }
   if (params?.state) sp.set("state", params.state);
   if (params?.has) sp.set("has", params.has);
+  if (params?.ids) {
+    // Always emit the param when ids is provided — an empty array must reach the
+    // backend as a present-but-empty filter (→ empty result set), not absence.
+    if (params.ids.length === 0) {
+      sp.append("ids", "");
+    } else {
+      params.ids.forEach((id) => sp.append("ids", id));
+    }
+  }
   if (params?.limit != null) sp.set("limit", String(params.limit));
   if (params?.offset != null) sp.set("offset", String(params.offset));
   const qs = sp.toString();

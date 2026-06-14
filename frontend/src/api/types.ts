@@ -4516,6 +4516,10 @@ export interface RelationshipEntityListParams {
   entity_type?: string[];
   state?: "unidentified" | "duplicate-candidate" | "stale";
   has?: "contact";
+  /** Restrict results to this explicit set of entity ids (e.g. to hydrate full
+   *  summaries for the toolbar search's ranked id set). An empty array yields
+   *  an empty result set. */
+  ids?: string[];
   limit?: number;
   offset?: number;
 }
