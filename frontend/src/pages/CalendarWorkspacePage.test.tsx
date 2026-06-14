@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { toast } from "sonner";
 
 import CalendarWorkspacePage from "@/pages/CalendarWorkspacePage";
 import {
@@ -814,6 +815,82 @@ describe("CalendarWorkspacePage", () => {
     );
   });
 
+  it("shows an error toast (not success) when create user event soft-fails", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({
+      data: {
+        action: "create",
+        tool_name: "calendar_create_event",
+        request_id: "req-create",
+        result: { status: "conflict", error: "overlapping event" },
+        projection_version: null,
+        staleness_ms: null,
+        projection_freshness: null,
+      },
+      meta: {},
+    });
+    setUserMutationState({ mutateAsync });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    const openCreateButton = document.querySelector(
+      'button[aria-label="Create user event"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(titleInput, "Team review");
+      await flush();
+    });
+
+    const form = titleInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(mutateAsync).toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("overlapping event"),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+    // Dialog stays open on soft failure so the user can retry.
+    expect(findDialogByTitle("Create user event")).toBeDefined();
+  });
+
+  it("shows a success toast when create user event genuinely succeeds", async () => {
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    const openCreateButton = document.querySelector(
+      'button[aria-label="Create user event"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(titleInput, "Team review");
+      await flush();
+    });
+
+    const form = titleInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    // Default user-mutation fixture returns result.status === "created".
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("created"));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it("renders butler lanes grouped with lane metadata", () => {
     setButlerWorkspaceFixtures();
     renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
@@ -908,6 +985,207 @@ describe("CalendarWorkspacePage", () => {
         }),
       }),
     );
+  });
+
+  it("shows an error toast (not success) when a butler delete soft-fails", async () => {
+    setButlerWorkspaceFixtures();
+    // Invoke onSuccess with a soft-failed envelope, as react-query would on HTTP 200.
+    mutateButlerEvent.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        data: {
+          action: "delete",
+          tool_name: "calendar_delete_butler_event",
+          request_id: "req-del",
+          result: { status: "not_found", error: "event no longer exists" },
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      });
+    });
+
+    renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
+
+    const deleteButton = findButton("Delete");
+    expect(deleteButton).toBeDefined();
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mutateButlerEvent).toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("event no longer exists"));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows a success toast when a butler delete genuinely succeeds", async () => {
+    setButlerWorkspaceFixtures();
+    mutateButlerEvent.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        data: {
+          action: "delete",
+          tool_name: "calendar_delete_butler_event",
+          request_id: "req-del",
+          result: { status: "deleted" },
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      });
+    });
+
+    renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
+
+    const deleteButton = findButton("Delete");
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(toast.success).toHaveBeenCalledWith("Event deleted");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("shows an error toast when set-primary returns persisted: false", async () => {
+    setButlerWorkspaceFixtures();
+    setWorkspaceMetaState({
+      data: {
+        data: {
+          capabilities: {
+            views: ["user", "butler"],
+            filters: { butlers: true, sources: true, timezone: true },
+            sync: { global: true, by_source: true },
+          },
+          connected_sources: [
+            {
+              source_id: "source-g1",
+              source_key: "google:work",
+              source_kind: "provider_event",
+              lane: "user",
+              provider: "google",
+              calendar_id: "work",
+              butler_name: "general",
+              display_name: "Work",
+              writable: true,
+              metadata: {},
+              cursor_name: "provider_sync",
+              last_synced_at: "2026-03-01T10:00:00Z",
+              last_success_at: "2026-03-01T10:00:00Z",
+              last_error_at: null,
+              last_error: null,
+              full_sync_required: false,
+              sync_state: "fresh",
+              staleness_ms: 900,
+            },
+          ],
+          writable_calendars: [],
+          lane_definitions: [],
+          default_timezone: "UTC",
+          primary_calendar_id: null,
+        },
+        meta: {},
+      },
+    } as Partial<UseWorkspaceMetaResult>);
+
+    const setPrimaryMutate = vi.fn((_body, options) => {
+      options?.onSuccess?.({
+        data: { old_calendar_id: null, new_calendar_id: "work", persisted: false },
+        meta: {},
+      });
+    });
+    setPrimaryCalendarState({ mutate: setPrimaryMutate });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    await act(async () => {
+      const configureButton = document.querySelector(
+        'button[aria-label="Configure sources"]',
+      ) as HTMLButtonElement;
+      configureButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const setPrimaryButton = findButton("Set as primary");
+    expect(setPrimaryButton).toBeDefined();
+    await act(async () => {
+      setPrimaryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(setPrimaryMutate).toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("not persisted"));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows a success toast when set-primary persists", async () => {
+    setButlerWorkspaceFixtures();
+    setWorkspaceMetaState({
+      data: {
+        data: {
+          capabilities: {
+            views: ["user", "butler"],
+            filters: { butlers: true, sources: true, timezone: true },
+            sync: { global: true, by_source: true },
+          },
+          connected_sources: [
+            {
+              source_id: "source-g1",
+              source_key: "google:work",
+              source_kind: "provider_event",
+              lane: "user",
+              provider: "google",
+              calendar_id: "work",
+              butler_name: "general",
+              display_name: "Work",
+              writable: true,
+              metadata: {},
+              cursor_name: "provider_sync",
+              last_synced_at: "2026-03-01T10:00:00Z",
+              last_success_at: "2026-03-01T10:00:00Z",
+              last_error_at: null,
+              last_error: null,
+              full_sync_required: false,
+              sync_state: "fresh",
+              staleness_ms: 900,
+            },
+          ],
+          writable_calendars: [],
+          lane_definitions: [],
+          default_timezone: "UTC",
+          primary_calendar_id: null,
+        },
+        meta: {},
+      },
+    } as Partial<UseWorkspaceMetaResult>);
+
+    const setPrimaryMutate = vi.fn((_body, options) => {
+      options?.onSuccess?.({
+        data: { old_calendar_id: null, new_calendar_id: "work", persisted: true },
+        meta: {},
+      });
+    });
+    setPrimaryCalendarState({ mutate: setPrimaryMutate });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    await act(async () => {
+      const configureButton = document.querySelector(
+        'button[aria-label="Configure sources"]',
+      ) as HTMLButtonElement;
+      configureButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const setPrimaryButton = findButton("Set as primary");
+    await act(async () => {
+      setPrimaryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(toast.success).toHaveBeenCalledWith("Primary calendar updated");
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   describe("recurring instance capping", () => {

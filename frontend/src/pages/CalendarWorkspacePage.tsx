@@ -394,6 +394,67 @@ function maybeText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * Soft-failure status values returned by the calendar MCP mutation tools inside
+ * an HTTP 200 response. The genuine-success statuses are open-ended
+ * (`created` / `updated` / `deleted` / `ok` / queued approvals, etc.), so the
+ * gate is a denylist of known failure states rather than an `ok`-only allowlist
+ * — that keeps every real success path intact while catching soft failures.
+ */
+const CALENDAR_MUTATION_FAILURE_STATUSES = new Set(["error", "conflict", "not_found", "failed"]);
+
+/**
+ * Inspect a calendar MCP mutation result envelope to distinguish genuine
+ * success from a soft failure.
+ *
+ * The calendar MCP tools fail SOFT: they return `status: 'error' | 'conflict' |
+ * 'not_found' | 'failed'` (and `set-primary` can return `status: 'ok',
+ * persisted: false`) inside an HTTP 200 response. Treating any 200 as success
+ * makes the UI claim a change happened when it did not. A mutation is only OK
+ * when its `status` is not a known failure value AND `persisted` is not `false`.
+ *
+ * `result` is the `data.result` payload from a calendar workspace mutation
+ * response (or any object exposing `status` / `persisted`).
+ */
+function isCalendarMutationOk(result: unknown): boolean {
+  if (typeof result !== "object" || result === null) {
+    return false;
+  }
+  const record = result as Record<string, unknown>;
+  if (record.persisted === false) {
+    return false;
+  }
+  const status = maybeText(record.status);
+  if (status && CALENDAR_MUTATION_FAILURE_STATUSES.has(status)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Build a human-readable failure message from a soft-failed mutation envelope,
+ * preferring an explicit `error`/`message`/`detail` field and falling back to
+ * the `status` string.
+ */
+function calendarMutationErrorMessage(result: unknown, fallback: string): string {
+  if (typeof result === "object" && result !== null) {
+    const record = result as Record<string, unknown>;
+    const explicit =
+      maybeText(record.error) || maybeText(record.message) || maybeText(record.detail);
+    if (explicit) {
+      return explicit;
+    }
+    if (record.persisted === false) {
+      return "no change was persisted";
+    }
+    const status = maybeText(record.status);
+    if (status) {
+      return status;
+    }
+  }
+  return fallback;
+}
+
 function buildRequestId(action: CalendarWorkspaceUserMutationAction): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `calendar-${action}-${crypto.randomUUID()}`;
@@ -1085,7 +1146,20 @@ export default function CalendarWorkspacePage() {
         request_id: buildRequestId(action),
         payload,
       });
-      const status = maybeText(result.data.result?.status);
+      const mutationResult = result.data.result;
+      if (!isCalendarMutationOk(mutationResult)) {
+        const detail = calendarMutationErrorMessage(
+          mutationResult,
+          action === "create" ? "Failed to create calendar event." : "Failed to update calendar event.",
+        );
+        toast.error(
+          action === "create"
+            ? `Failed to create event: ${detail}`
+            : `Failed to update event: ${detail}`,
+        );
+        return;
+      }
+      const status = maybeText(mutationResult?.status);
       toast.success(
         action === "create"
           ? status
@@ -1129,7 +1203,16 @@ export default function CalendarWorkspacePage() {
         request_id: buildRequestId("delete"),
         payload,
       });
-      const status = maybeText(result.data.result?.status);
+      const mutationResult = result.data.result;
+      if (!isCalendarMutationOk(mutationResult)) {
+        const detail = calendarMutationErrorMessage(
+          mutationResult,
+          "Failed to delete calendar event.",
+        );
+        toast.error(`Failed to delete event: ${detail}`);
+        return;
+      }
+      const status = maybeText(mutationResult?.status);
       toast.success(status ? `Deleted event (${status}).` : "Deleted calendar event.");
       setDeleteCandidate(null);
     } catch (error) {
@@ -1195,7 +1278,13 @@ export default function CalendarWorkspacePage() {
         },
       },
       {
-        onSuccess: () => {
+        onSuccess: (response) => {
+          const mutationResult = response.data.result;
+          if (!isCalendarMutationOk(mutationResult)) {
+            const detail = calendarMutationErrorMessage(mutationResult, "Toggle failed");
+            toast.error(`${enabled ? "Resume" : "Pause"} failed: ${detail}`);
+            return;
+          }
           toast.success(enabled ? "Event resumed" : "Event paused");
         },
         onError: (error) => {
@@ -1227,7 +1316,13 @@ export default function CalendarWorkspacePage() {
         },
       },
       {
-        onSuccess: () => {
+        onSuccess: (response) => {
+          const mutationResult = response.data.result;
+          if (!isCalendarMutationOk(mutationResult)) {
+            const detail = calendarMutationErrorMessage(mutationResult, "Delete failed");
+            toast.error(`Delete failed: ${detail}`);
+            return;
+          }
           toast.success("Event deleted");
         },
         onError: (error) => {
@@ -1324,7 +1419,17 @@ export default function CalendarWorkspacePage() {
         payload,
       },
       {
-        onSuccess: () => {
+        onSuccess: (response) => {
+          const mutationResult = response.data.result;
+          if (!isCalendarMutationOk(mutationResult)) {
+            const detail = calendarMutationErrorMessage(mutationResult, "Event mutation failed");
+            toast.error(
+              action === "create"
+                ? `Failed to create butler event: ${detail}`
+                : `Failed to update butler event: ${detail}`,
+            );
+            return;
+          }
           toast.success(action === "create" ? "Butler event created" : "Butler event updated");
           closeButlerEventDialog(false);
         },
@@ -1991,7 +2096,15 @@ export default function CalendarWorkspacePage() {
                                     calendar_id: source.calendar_id!,
                                   },
                                   {
-                                    onSuccess: () => toast.success("Primary calendar updated"),
+                                    onSuccess: (response) => {
+                                      if (response.data.persisted === false) {
+                                        toast.error(
+                                          "Failed to set primary: change was not persisted",
+                                        );
+                                        return;
+                                      }
+                                      toast.success("Primary calendar updated");
+                                    },
                                     onError: (err) =>
                                       toast.error(`Failed to set primary: ${err.message}`),
                                   },
