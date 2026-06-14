@@ -1022,6 +1022,17 @@ class ButlerDaemon:
 
             completion_hooks = build_day_close_completion_hooks(self.db.pool)
 
+        # Resolve the owner's general timezone so hour-pinned crons fire at the
+        # intended local time, failing open to UTC.  Resolved once at loop
+        # start; a timezone change takes effect after the next daemon restart,
+        # consistent with other cold scheduler config.
+        from butlers.core.general_settings import resolve_general_timezone
+
+        shared_pool = (
+            self._credential_store.shared_pool if self._credential_store is not None else None
+        )
+        default_timezone = await resolve_general_timezone(shared_pool)
+
         daemon = self
         await _background.scheduler_loop(
             pool=self.db.pool,
@@ -1033,6 +1044,7 @@ class ButlerDaemon:
             get_db=lambda: daemon.db,
             completion_hooks=completion_hooks,
             get_eligibility_pool=lambda: daemon._audit_pool,
+            default_timezone=default_timezone,
         )
 
     async def _liveness_reporter_loop(self) -> None:

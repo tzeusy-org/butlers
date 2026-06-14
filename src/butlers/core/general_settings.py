@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
@@ -10,6 +11,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import asyncpg
 
 from butlers.core.state import state_get, state_set
+
+logger = logging.getLogger(__name__)
 
 GENERAL_SETTINGS_STATE_KEY = "settings.general"
 DEFAULT_GENERAL_TIMEZONE = "UTC"
@@ -205,3 +208,21 @@ async def save_general_settings(
     }
     await state_set(pool, GENERAL_SETTINGS_STATE_KEY, normalized)
     return await load_general_settings(pool)
+
+
+async def resolve_general_timezone(pool: asyncpg.Pool | None) -> str:
+    """Best-effort load of the owner's configured general timezone.
+
+    Returns the IANA timezone name from the shared general settings, failing
+    open to :data:`DEFAULT_GENERAL_TIMEZONE` when the pool is unavailable or the
+    lookup raises.  Used by the scheduler to interpret cron fields in the
+    owner's local time rather than UTC.
+    """
+    if pool is None:
+        return DEFAULT_GENERAL_TIMEZONE
+    try:
+        settings = await load_general_settings(pool)
+        return settings["timezone"]
+    except Exception:
+        logger.warning("Failed to resolve general timezone; defaulting to UTC", exc_info=True)
+        return DEFAULT_GENERAL_TIMEZONE

@@ -131,6 +131,80 @@ async def test_sync_updates_changed_fields_and_disables_removed(pool):
     assert rows2["drop-me"]["enabled"] is True
 
 
+async def test_sync_default_timezone_pins_cron_to_local(pool):
+    """sync_schedules computes next_run_at by evaluating cron in default_timezone."""
+    from butlers.core.scheduler import sync_schedules
+
+    schedules = [{"name": "day-close", "cron": "5 1 * * *", "prompt": "summary; call notify()"}]
+    await sync_schedules(pool, schedules, default_timezone="Asia/Singapore")
+
+    next_run_at = await pool.fetchval(
+        "SELECT next_run_at FROM scheduled_tasks WHERE name = 'day-close'"
+    )
+    # 01:05 Asia/Singapore lands at 17:05 UTC. The minute is exact; the hour is
+    # 17 regardless of which calendar day croniter picks relative to "now".
+    assert next_run_at.astimezone(UTC).hour == 17
+    assert next_run_at.astimezone(UTC).minute == 5
+
+
+async def test_tick_advance_honors_row_timezone(pool):
+    """tick() advances next_run_at using the per-row timezone column."""
+    from butlers.core.scheduler import sync_schedules, tick
+
+    await sync_schedules(
+        pool,
+        [{"name": "tz-task", "cron": "5 1 * * *", "prompt": "do it; call notify()"}],
+    )
+    # Make it due now and pin an explicit timezone on the row.
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $1, timezone = 'Asia/Singapore' "
+        "WHERE name = 'tz-task'",
+        _past(),
+    )
+
+    dispatch = _Dispatch()
+    await tick(pool, dispatch)
+
+    next_run_at = await pool.fetchval(
+        "SELECT next_run_at FROM scheduled_tasks WHERE name = 'tz-task'"
+    )
+    # Advanced to the next 01:05 SGT == 17:05 UTC.
+    assert next_run_at.astimezone(UTC).hour == 17
+    assert next_run_at.astimezone(UTC).minute == 5
+
+
+async def test_tick_advance_follows_owner_default_for_utc_rows(pool):
+    """A default ('UTC') timezone column follows tick's default_timezone (the owner tz).
+
+    This is the chronicler day_close scenario: a TOML schedule (timezone='UTC')
+    must advance in the owner's local time, not UTC.
+    """
+    from butlers.core.scheduler import sync_schedules, tick
+
+    await sync_schedules(
+        pool,
+        [{"name": "owner-default", "cron": "5 1 * * *", "prompt": "summary; call notify()"}],
+    )
+    # TOML insert leaves the DEFAULT 'UTC' on the column; make it due now.
+    stored_tz = await pool.fetchval(
+        "SELECT timezone FROM scheduled_tasks WHERE name = 'owner-default'"
+    )
+    assert stored_tz == "UTC"  # confirms the sentinel we resolve against the default
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $1 WHERE name = 'owner-default'",
+        _past(),
+    )
+
+    await tick(pool, _Dispatch(), default_timezone="Asia/Singapore")
+
+    next_run_at = await pool.fetchval(
+        "SELECT next_run_at FROM scheduled_tasks WHERE name = 'owner-default'"
+    )
+    # 01:05 Asia/Singapore == 17:05 UTC despite the column being 'UTC'.
+    assert next_run_at.astimezone(UTC).hour == 17
+    assert next_run_at.astimezone(UTC).minute == 5
+
+
 # ---------------------------------------------------------------------------
 # tick — prompt and job dispatch
 # ---------------------------------------------------------------------------
@@ -495,6 +569,51 @@ def test_stagger_determinism_cap_and_cadence() -> None:
     first_1 = _next_run("* * * * *", stagger_key="messenger", now=now)
     second_1 = _next_run("* * * * *", stagger_key="messenger", now=first_1)
     assert second_1 - first_1 == timedelta(minutes=1)
+
+
+@pytest.mark.unit
+def test_next_run_interprets_cron_in_timezone() -> None:
+    """Hour-pinned crons are evaluated in the given IANA zone, returned in UTC."""
+    from datetime import UTC, datetime
+
+    from butlers.core.scheduler import _next_run
+
+    # 2026-06-14 02:00Z == 10:00 Asia/Singapore (UTC+8). The next "01:05" local
+    # is 2026-06-15 01:05 SGT == 2026-06-14 17:05 UTC.
+    now = datetime(2026, 6, 14, 2, 0, tzinfo=UTC)
+    sgt = _next_run("5 1 * * *", timezone="Asia/Singapore", now=now)
+    assert sgt == datetime(2026, 6, 14, 17, 5, tzinfo=UTC)
+
+    # Back-compat: no timezone (or UTC) evaluates in UTC.
+    utc = _next_run("5 1 * * *", now=now)
+    assert utc == datetime(2026, 6, 15, 1, 5, tzinfo=UTC)
+    assert _next_run("5 1 * * *", timezone="UTC", now=now) == utc
+
+
+@pytest.mark.unit
+def test_coerce_schedule_zone_fails_open_to_utc() -> None:
+    """Unknown/empty timezone strings degrade to UTC rather than raising."""
+    from zoneinfo import ZoneInfo
+
+    from butlers.core.scheduler import _coerce_schedule_zone
+
+    assert _coerce_schedule_zone("Not/AZone") == ZoneInfo("UTC")
+    assert _coerce_schedule_zone(None) == ZoneInfo("UTC")
+    assert _coerce_schedule_zone("") == ZoneInfo("UTC")
+    assert _coerce_schedule_zone("Asia/Singapore") == ZoneInfo("Asia/Singapore")
+
+
+@pytest.mark.unit
+def test_effective_schedule_timezone_sentinels_follow_default() -> None:
+    """'UTC'/NULL/empty follow the owner default; non-UTC values override it."""
+    from butlers.core.scheduler import _effective_schedule_timezone
+
+    default = "Asia/Singapore"
+    assert _effective_schedule_timezone("UTC", default) == default
+    assert _effective_schedule_timezone("utc", default) == default
+    assert _effective_schedule_timezone(None, default) == default
+    assert _effective_schedule_timezone("", default) == default
+    assert _effective_schedule_timezone("America/New_York", default) == "America/New_York"
 
 
 # ---------------------------------------------------------------------------

@@ -159,6 +159,7 @@ async def scheduler_loop(
     get_db: Callable[[], Any],
     completion_hooks: dict[str, Any] | None = None,
     get_eligibility_pool: Callable[[], Any] | None = None,
+    default_timezone: str = "UTC",
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -205,6 +206,11 @@ async def scheduler_loop(
         ``eligibility_state``.  Called lazily per tick so the pool is read after
         startup wiring completes.  When ``None`` (or the callable returns
         ``None``), no eligibility gating is applied and all ticks dispatch.
+    default_timezone:
+        IANA timezone used to interpret cron fields for schedules whose
+        ``timezone`` column is the default ``'UTC'`` sentinel (e.g. TOML
+        schedules).  Forwarded to ``tick_fn`` so hour-pinned crons fire in the
+        owner's local time.  Defaults to ``"UTC"``.
     """
 
     async def _scheduler_notify_fn(envelope: dict) -> None:
@@ -261,6 +267,7 @@ async def scheduler_loop(
                     notify_fn=_scheduler_notify_fn,
                     completion_hooks=completion_hooks,
                     eligibility_pool=eligibility_pool,
+                    default_timezone=default_timezone,
                 )
             )
             try:
