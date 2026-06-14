@@ -1084,6 +1084,7 @@ export interface HealthResearch {
   source_url: string | null;
   condition_id: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,6 +1323,33 @@ export interface ResearchParams {
   tag?: string;
   offset?: number;
   limit?: number;
+}
+
+/**
+ * Request body for creating a research note (POST /health/research).
+ *
+ * Research notes are property facts (like conditions, NOT temporal): a note with
+ * the same title supersedes its predecessor. `condition_id`, when supplied, must
+ * reference an existing condition.
+ */
+export interface ResearchCreateRequest {
+  title: string;
+  content: string;
+  tags?: string[];
+  source_url?: string | null;
+  condition_id?: string | null;
+}
+
+/**
+ * Request body for updating a research note (PUT /health/research/{id}).
+ * All fields optional; only supplied fields are merged into the existing record.
+ */
+export interface ResearchUpdateRequest {
+  title?: string;
+  content?: string;
+  tags?: string[];
+  source_url?: string | null;
+  condition_id?: string | null;
 }
 
 /** A routing log entry from the Switchboard. */

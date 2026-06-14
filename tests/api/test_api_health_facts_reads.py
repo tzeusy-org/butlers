@@ -1175,3 +1175,178 @@ async def test_research_no_orphan_table():
     await _get(app, "/api/health/research")
     for s in _all_sql(pool):
         assert "FROM research" not in s, f"must not touch orphaned table:\n{s}"
+
+
+# ---------------------------------------------------------------------------
+# POST/PUT/DELETE /research — direct dashboard CRUD (property-fact, mirrors
+# conditions: research_save/research_update key supersession on the
+# ``research:{title}`` subject, NOT in-place like symptoms/meals)
+# ---------------------------------------------------------------------------
+
+
+async def test_create_research_delegates_to_research_save():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_save = AsyncMock(
+        return_value={
+            "id": new_id,
+            "title": "Magnesium and sleep",
+            "content": "Studies suggest magnesium improves sleep latency.",
+            "tags": ["sleep", "supplements"],
+            "source_url": "https://example.com/study",
+            "condition_id": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.research_save", fake_save):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/research",
+            json={
+                "title": "Magnesium and sleep",
+                "content": "Studies suggest magnesium improves sleep latency.",
+                "tags": ["sleep", "supplements"],
+                "source_url": "https://example.com/study",
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["id"] == str(new_id)
+    assert body["title"] == "Magnesium and sleep"
+    assert body["tags"] == ["sleep", "supplements"]
+    assert body["source_url"] == "https://example.com/study"
+    fake_save.assert_awaited_once()
+    kwargs = fake_save.await_args.kwargs
+    assert kwargs["title"] == "Magnesium and sleep"
+    assert kwargs["content"].startswith("Studies suggest")
+    assert kwargs["tags"] == ["sleep", "supplements"]
+    assert kwargs["source_url"] == "https://example.com/study"
+
+
+async def test_create_research_rejects_blank_title():
+    app, _ = _make_app()
+    resp = await _request(app, "POST", "/api/health/research", json={"title": "", "content": "x"})
+    assert resp.status_code == 422
+
+
+async def test_create_research_rejects_blank_content():
+    app, _ = _make_app()
+    resp = await _request(app, "POST", "/api/health/research", json={"title": "x", "content": ""})
+    assert resp.status_code == 422
+
+
+async def test_create_research_missing_condition_is_404():
+    app, _ = _make_app()
+    cond_id = str(uuid.uuid4())
+    fake_save = AsyncMock(side_effect=ValueError(f"Condition {cond_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.research_save", fake_save):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/research",
+            json={"title": "T", "content": "C", "condition_id": cond_id},
+        )
+    assert resp.status_code == 404
+
+
+async def test_created_research_is_read_back_by_get():
+    """A dashboard-created research note is read back by the existing GET."""
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_save = AsyncMock(
+        return_value={
+            "id": new_id,
+            "title": "Vitamin D",
+            "content": "Notes about vitamin D.",
+            "tags": [],
+            "source_url": None,
+            "condition_id": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.research_save", fake_save):
+        create_resp = await _request(
+            app, "POST", "/api/health/research", json={"title": "Vitamin D", "content": "Notes."}
+        )
+    assert create_resp.status_code == 201
+
+    read_row = _row(
+        {
+            "id": new_id,
+            "content": "Notes about vitamin D.",
+            "created_at": _NOW,
+            "metadata": {"title": "Vitamin D", "tags": []},
+        }
+    )
+    app2, _ = _make_app(fetch_rows=[read_row], fetchval_result=1)
+    get_resp = await _get(app2, "/api/health/research")
+    assert get_resp.status_code == 200
+    data = get_resp.json()["data"]
+    assert any(r["id"] == str(new_id) and r["title"] == "Vitamin D" for r in data)
+
+
+async def test_update_research_delegates_to_research_update():
+    app, _ = _make_app()
+    res_id = uuid.uuid4()
+    fake_update = AsyncMock(
+        return_value={
+            "id": res_id,
+            "title": "Magnesium and sleep",
+            "content": "Updated body.",
+            "tags": ["sleep"],
+            "source_url": None,
+            "condition_id": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.research_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/research/{res_id}", json={"content": "Updated body."}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["content"] == "Updated body."
+    fake_update.assert_awaited_once()
+    assert fake_update.await_args.kwargs == {"content": "Updated body."}
+
+
+async def test_update_research_empty_body_is_422():
+    app, _ = _make_app()
+    res_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.research_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/research/{res_id}", json={})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_research_missing_is_404():
+    app, _ = _make_app()
+    res_id = uuid.uuid4()
+    fake_update = AsyncMock(side_effect=ValueError(f"Research {res_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.research_update", fake_update):
+        resp = await _request(app, "PUT", f"/api/health/research/{res_id}", json={"title": "New"})
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"]
+
+
+async def test_delete_research_delegates_to_research_delete():
+    app, _ = _make_app()
+    res_id = uuid.uuid4()
+    fake_delete = AsyncMock(return_value=True)
+    with patch(f"{_HEALTH_TOOLS}.research_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/research/{res_id}")
+    assert resp.status_code == 204
+    fake_delete.assert_awaited_once()
+    assert str(res_id) in fake_delete.await_args.args
+
+
+async def test_delete_research_missing_is_404():
+    app, _ = _make_app()
+    res_id = uuid.uuid4()
+    fake_delete = AsyncMock(side_effect=ValueError(f"Research {res_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.research_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/research/{res_id}")
+    assert resp.status_code == 404

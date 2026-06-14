@@ -45,9 +45,11 @@ from butlers.tools.health.reports import (
     trend_report,
 )
 from butlers.tools.health.research import (
+    research_delete,
     research_save,
     research_search,
     research_summarize,
+    research_update,
 )
 
 __all__ = [
@@ -75,9 +77,11 @@ __all__ = [
     "medication_log_dose",
     "medication_update",
     "nutrition_summary",
+    "research_delete",
     "research_save",
     "research_search",
     "research_summarize",
+    "research_update",
     "symptom_delete",
     "symptom_history",
     "symptom_log",
