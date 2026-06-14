@@ -4899,6 +4899,18 @@ export interface FinanceBill {
   updated_at: string;
 }
 
+export interface FinanceAccount {
+  id: string;
+  institution: string;
+  type: string;
+  name: string | null;
+  last_four: string | null;
+  currency: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface FinanceSpendingGroup {
   key: string;
   /** Numeric amount as string. */
@@ -4948,6 +4960,12 @@ export interface FinanceTransactionListParams {
 
 export interface FinanceSubscriptionListParams {
   status?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface FinanceAccountListParams {
+  type?: string;
   offset?: number;
   limit?: number;
 }
