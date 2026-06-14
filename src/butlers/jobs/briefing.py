@@ -244,19 +244,34 @@ async def run_health_briefing_contribution(
     highlights: list[BriefingHighlight] = []
 
     # --- Medication adherence: missed doses today ---
+    # Medications are property facts (predicate='medication', scope='health') and
+    # doses are temporal facts (predicate='took_dose', scope='health') whose
+    # metadata->>'medication_id' references the medication fact's id and whose
+    # valid_at is taken_at. This mirrors the dashboard API read surface
+    # (roster/health/api/router.py) and the medication_add / medication_log_dose
+    # write paths. The legacy health.medications / health.medication_doses
+    # relational tables are orphaned (the butler no longer writes them).
     missed_rows = await pool.fetch(
         """
-        SELECT m.name, m.frequency, m.schedule
-        FROM medications m
-        WHERE m.active = true
+        SELECT m.metadata->>'name' AS name,
+               m.metadata->>'frequency' AS frequency,
+               m.metadata->'schedule' AS schedule
+        FROM facts m
+        WHERE m.predicate = 'medication'
+          AND m.validity = 'active'
+          AND m.scope = 'health'
+          AND (m.metadata->>'active')::boolean = true
           AND NOT EXISTS (
-            SELECT 1 FROM medication_doses d
-            WHERE d.medication_id = m.id
-              AND d.taken_at >= $1
-              AND d.taken_at < $2
-              AND d.skipped = false
+            SELECT 1 FROM facts d
+            WHERE d.predicate = 'took_dose'
+              AND d.validity = 'active'
+              AND d.scope = 'health'
+              AND d.metadata->>'medication_id' = m.id::text
+              AND d.valid_at >= $1
+              AND d.valid_at < $2
+              AND COALESCE((d.metadata->>'skipped')::boolean, false) = false
           )
-        ORDER BY m.name
+        ORDER BY m.metadata->>'name'
         """,
         today_start,
         today_end,
@@ -274,13 +289,18 @@ async def run_health_briefing_contribution(
         )
 
     # --- Taken doses today (for adherence context) ---
+    # Count non-skipped dose facts (predicate='took_dose', scope='health') whose
+    # valid_at (taken_at) falls within today's SGT window.
     taken_rows = await pool.fetch(
         """
         SELECT COUNT(*) AS cnt
-        FROM medication_doses d
-        WHERE d.taken_at >= $1
-          AND d.taken_at < $2
-          AND d.skipped = false
+        FROM facts d
+        WHERE d.predicate = 'took_dose'
+          AND d.validity = 'active'
+          AND d.scope = 'health'
+          AND d.valid_at >= $1
+          AND d.valid_at < $2
+          AND COALESCE((d.metadata->>'skipped')::boolean, false) = false
         """,
         today_start,
         today_end,
