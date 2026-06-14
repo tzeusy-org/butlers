@@ -171,18 +171,32 @@ async def _insert_medication(
     frequency: str = "daily",
     active: bool = True,
 ) -> str:
-    """Insert a medication and return its UUID string."""
+    """Insert a medication FACT into public.facts and return its UUID string.
+
+    Medications are property facts (predicate='medication', scope='health',
+    validity='active') with name/dosage/frequency/active in metadata — the same
+    surface ``medication_add`` writes and ``run_insight_scan`` now reads.
+    """
     med_id = str(uuid.uuid4())
+    metadata = {
+        "name": name,
+        "dosage": dosage,
+        "frequency": frequency,
+        "schedule": [],
+        "active": active,
+    }
+    # The pool registers a JSONB codec that serializes Python objects directly,
+    # so pass the dict (not a pre-serialized string) to avoid double-encoding.
     await pool.execute(
         """
-        INSERT INTO health.medications (id, name, dosage, frequency, active)
-        VALUES ($1::uuid, $2, $3, $4, $5)
+        INSERT INTO public.facts
+            (id, subject, predicate, content, validity, scope, valid_at, metadata)
+        VALUES ($1::uuid, $2, 'medication', $3, 'active', 'health', NULL, $4)
         """,
         med_id,
-        name,
-        dosage,
-        frequency,
-        active,
+        f"medication:{name}",
+        f"{name} {dosage} {frequency}",
+        metadata,
     )
     return med_id
 
@@ -194,19 +208,28 @@ async def _insert_dose(
     taken_at: datetime | None = None,
     skipped: bool = False,
 ) -> str:
-    """Insert a medication dose and return its UUID string."""
+    """Insert a dose FACT into public.facts and return its UUID string.
+
+    Doses are temporal facts (predicate='took_dose', scope='health',
+    validity='active') with valid_at=taken_at and medication_id/skipped in
+    metadata — the same surface ``medication_log_dose`` writes and
+    ``run_insight_scan`` now reads.
+    """
     if taken_at is None:
         taken_at = _utcnow()
     dose_id = str(uuid.uuid4())
+    metadata = {"medication_id": str(medication_id), "skipped": skipped}
+    # Pass the dict so the pool's JSONB codec serializes it once (no double-encode).
     await pool.execute(
         """
-        INSERT INTO health.medication_doses (id, medication_id, taken_at, skipped)
-        VALUES ($1::uuid, $2::uuid, $3, $4)
+        INSERT INTO public.facts
+            (id, subject, predicate, content, validity, scope, valid_at, metadata)
+        VALUES ($1::uuid, 'owner', 'took_dose', $2, 'active', 'health', $3, $4)
         """,
         dose_id,
-        medication_id,
+        "dose",
         taken_at,
-        skipped,
+        metadata,
     )
     return dose_id
 
@@ -218,19 +241,28 @@ async def _insert_symptom(
     severity: int = 4,
     occurred_at: datetime | None = None,
 ) -> str:
-    """Insert a symptom and return its UUID string."""
+    """Insert a symptom FACT into public.facts and return its UUID string.
+
+    Symptoms are temporal facts (predicate='symptom', scope='health',
+    validity='active') with content=name, valid_at=occurred_at, and severity in
+    metadata — the same surface ``symptom_log`` writes and ``run_insight_scan``
+    now reads.
+    """
     if occurred_at is None:
         occurred_at = _utcnow()
     sym_id = str(uuid.uuid4())
+    metadata = {"severity": severity}
+    # Pass the dict so the pool's JSONB codec serializes it once (no double-encode).
     await pool.execute(
         """
-        INSERT INTO health.symptoms (id, name, severity, occurred_at)
-        VALUES ($1::uuid, $2, $3, $4)
+        INSERT INTO public.facts
+            (id, subject, predicate, content, validity, scope, valid_at, metadata)
+        VALUES ($1::uuid, 'owner', 'symptom', $2, 'active', 'health', $3, $4)
         """,
         sym_id,
         name,
-        severity,
         occurred_at,
+        metadata,
     )
     return sym_id
 

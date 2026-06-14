@@ -4,8 +4,11 @@ Each job handler:
 - Takes db_pool: asyncpg.Pool as first parameter
 - Returns a dict with a summary of work done
 - Issues queries directly via db_pool.fetch() / db_pool.fetchrow() / db_pool.execute()
-- Uses health schema tables (health.medications, health.symptoms, etc.)
-  and facts (resolved via search_path to public.facts) for measurements
+- Reads from the ``facts`` table (resolved via search_path to public.facts) by
+  predicate — measurements (``measurement_{type}``), medications (``medication``),
+  doses (``took_dose``), and symptoms (``symptom``), all scope='health'. This is
+  the same surface the butler's MCP tools write; the legacy health.* relational
+  tables (medications, medication_doses, symptoms) are orphaned and never read.
 - Is a no-op (returns early with zeros) when no matching data exists
 """
 
@@ -252,12 +255,19 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # 2. Medication refill insights
     # -----------------------------------------------------------------------
+    # Active medications are property facts (predicate='medication', scope='health'),
+    # mirroring the dashboard API read surface (roster/health/api/router.py
+    # GET /medications) and the medication_add write path: name/frequency/active
+    # live in metadata. The legacy health.medications relational table is orphaned.
     med_rows = await db_pool.fetch(
         """
-        SELECT id, name, frequency
-        FROM health.medications
-        WHERE active = true
-        ORDER BY name ASC
+        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency
+        FROM facts
+        WHERE predicate = 'medication'
+          AND validity = 'active'
+          AND scope = 'health'
+          AND (metadata->>'active')::boolean = true
+        ORDER BY metadata->>'name' ASC
         """
     )
 
@@ -280,14 +290,21 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         # Simpler heuristic per spec: estimate days of supply based on prescribed frequency
         # and compare to dose logging pattern. We check the last 30 days of doses.
         window_start = now_utc - timedelta(days=30)
+        # Doses are temporal facts (predicate='took_dose', scope='health') with
+        # valid_at=taken_at; medication_id and skipped live in metadata. Mirrors the
+        # medication_log_dose write path and the dashboard GET /medications/{id}/doses
+        # read surface. The legacy health.medication_doses relational table is orphaned.
         dose_rows = await db_pool.fetch(
             """
-            SELECT taken_at
-            FROM health.medication_doses
-            WHERE medication_id = $1::uuid
-              AND taken_at >= $2
-              AND skipped = false
-            ORDER BY taken_at DESC
+            SELECT valid_at AS taken_at
+            FROM facts
+            WHERE predicate = 'took_dose'
+              AND validity = 'active'
+              AND scope = 'health'
+              AND metadata->>'medication_id' = $1
+              AND valid_at >= $2
+              AND COALESCE((metadata->>'skipped')::boolean, false) = false
+            ORDER BY valid_at DESC
             """,
             med_id,
             window_start,
@@ -351,13 +368,22 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # 3. Symptom trend insights
     # -----------------------------------------------------------------------
     symptom_window_start = now_utc - timedelta(days=_SYMPTOM_WINDOW_DAYS)
+    # Symptoms are temporal facts (predicate='symptom', scope='health') with
+    # content=name, valid_at=occurred_at, and severity in metadata. Mirrors the
+    # symptom_log write path and the dashboard GET /symptoms read surface. The
+    # legacy health.symptoms relational table is orphaned.
     symptom_rows = await db_pool.fetch(
         """
-        SELECT name, severity, occurred_at
-        FROM health.symptoms
-        WHERE occurred_at >= $1
-          AND severity >= $2
-        ORDER BY name, occurred_at DESC
+        SELECT content AS name,
+               (metadata->>'severity')::int AS severity,
+               valid_at AS occurred_at
+        FROM facts
+        WHERE predicate = 'symptom'
+          AND validity = 'active'
+          AND scope = 'health'
+          AND valid_at >= $1
+          AND (metadata->>'severity')::int >= $2
+        ORDER BY content, valid_at DESC
         """,
         symptom_window_start,
         _SYMPTOM_MIN_SEVERITY,

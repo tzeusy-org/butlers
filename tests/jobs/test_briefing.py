@@ -371,3 +371,62 @@ async def test_run_health_briefing_contribution_no_weight_fact():
 
     assert result["butler"] == "health"
     assert result["has_updates"] is False
+
+
+async def test_run_health_briefing_missed_doses_read_from_facts_not_relational():
+    """The missed-doses and taken-doses adherence queries read the facts table.
+
+    Regression guard for bu-i5l99: the butler writes medications/doses as facts
+    (predicate='medication'/'took_dose', scope='health'), so the briefing must read
+    facts — not the orphaned health.medications / health.medication_doses tables.
+    """
+    pool = _make_pool(fetch_rows=[], fetchrow_value=None)
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+    ):
+        await run_health_briefing_contribution(pool, None)
+
+    # First fetch() = missed doses; second fetch() = taken doses.
+    missed_sql = pool.fetch.call_args_list[0][0][0]
+    taken_sql = pool.fetch.call_args_list[1][0][0]
+
+    # Missed-doses query reads medication + took_dose facts, scope-filtered.
+    assert "FROM facts" in missed_sql
+    assert "predicate = 'medication'" in missed_sql
+    assert "predicate = 'took_dose'" in missed_sql
+    assert "scope = 'health'" in missed_sql
+    assert "metadata->>'medication_id'" in missed_sql
+    # No reads of the orphaned relational tables.
+    assert "FROM medications" not in missed_sql
+    assert "FROM medication_doses" not in missed_sql
+
+    # Taken-doses query counts took_dose facts, not the relational dose table.
+    assert "FROM facts" in taken_sql
+    assert "predicate = 'took_dose'" in taken_sql
+    assert "FROM medication_doses" not in taken_sql
+
+
+async def test_run_health_briefing_missed_doses_positive_case_from_facts():
+    """A medication fact with no dose fact today surfaces a missed-dose highlight."""
+    missed_med_row = {
+        "name": "Metformin",
+        "frequency": "daily",
+        "schedule": None,
+    }
+    # fetch() order: missed_rows -> taken_rows. No weight fact (fetchrow None).
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[missed_med_row], [{"cnt": 0}]])
+    pool.fetchrow = AsyncMock(return_value=None)
+    mock_write = AsyncMock()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
+    ):
+        result = await run_health_briefing_contribution(pool, None)
+
+    assert result["has_updates"] is True
+    assert result["missed_doses"] == 1
+    envelope = mock_write.call_args[0][1]
+    med_highlight = next(h for h in envelope["highlights"] if h["category"] == "medication")
+    assert "Metformin" in med_highlight["text"]
