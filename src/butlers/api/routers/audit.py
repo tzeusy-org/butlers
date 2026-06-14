@@ -239,6 +239,9 @@ async def append(
     note: str | None = None,
     ip: str | None = None,
     request_id: uuid.UUID | None = None,
+    metadata: dict[str, Any] | None = None,
+    result: str | None = None,
+    error: str | None = None,
 ) -> int:
     """Append one row to ``public.audit_log`` and return the new row id.
 
@@ -269,6 +272,19 @@ async def append(
         Optional source IP address as a string (e.g. ``"1.2.3.4"``).
     request_id:
         Optional UUID correlating the audit entry to an HTTP request.
+    metadata:
+        Optional structured context dict persisted to the ``metadata`` JSONB
+        column (core_122).  Non-JSON-safe values (UUID, datetime, …) are
+        coerced to strings before storage.  ``None`` stores SQL ``NULL``.
+    result:
+        Optional outcome label persisted to the ``result`` column (core_122),
+        e.g. ``"success"`` or ``"error"``.
+    error:
+        Optional error message persisted to the ``error`` column (core_122);
+        only meaningful when *result* denotes a failure.
+
+    The three core_122 parameters are keyword-only and default to ``None`` so
+    every existing caller is unaffected.
 
     Returns
     -------
@@ -281,11 +297,16 @@ async def append(
         When ``public.audit_log`` does not exist (migration not yet applied).
         Callers should propagate this as HTTP 503.
     """
+    # Serialise metadata to a JSON string and cast with ``$N::jsonb`` so the
+    # insert does not depend on a JSONB codec being registered on the pool /
+    # connection the caller hands us.  ``None`` stays ``None`` → SQL NULL.
+    metadata_json = json.dumps(metadata, default=str) if metadata is not None else None
+
     try:
         row_id: int = await pool.fetchval(
             "INSERT INTO public.audit_log "
-            "(actor, action, target, note, ip, request_id) "
-            "VALUES ($1, $2, $3, $4, $5::inet, $6) "
+            "(actor, action, target, note, ip, request_id, metadata, result, error) "
+            "VALUES ($1, $2, $3, $4, $5::inet, $6, $7::jsonb, $8, $9) "
             "RETURNING id",
             actor,
             action,
@@ -293,6 +314,9 @@ async def append(
             note,
             ip,
             request_id,
+            metadata_json,
+            result,
+            error,
         )
     except UndefinedTableError as exc:
         raise AuditTableNotAvailableError(
