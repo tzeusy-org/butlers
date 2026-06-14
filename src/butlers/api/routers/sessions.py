@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -113,6 +114,30 @@ def _build_where(
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     return where_clause, args, idx
+
+
+def _resolve_success_filter(
+    status: str | None,
+    success: bool | None,
+) -> bool | None:
+    """Resolve the effective ``success`` boolean filter from the two params.
+
+    The frontend status dropdown sends ``?status=success|failed`` (and omits the
+    param entirely for "all"). ``status`` is mapped to the ``success`` boolean:
+
+    - ``status=success`` -> ``success=True``
+    - ``status=failed``  -> ``success=False``
+    - ``status`` absent / ``all`` -> fall through to the legacy ``success`` bool.
+
+    ``status`` takes precedence over the legacy ``success`` bool param when both
+    are present, so the two never conflict.
+    """
+    if status == "success":
+        return True
+    if status == "failed":
+        return False
+    # status is None or "all" -> preserve backward-compatible success filtering
+    return success
 
 
 def _row_to_summary(row, *, butler: str | None = None) -> SessionSummary:
@@ -218,7 +243,14 @@ async def list_sessions(
     limit: int = Query(50, ge=1, le=1000, description="Max records to return"),
     butler: str | None = Query(None, description="Filter by butler name"),
     trigger_source: str | None = Query(None, description="Filter by trigger source"),
-    success: bool | None = Query(None, description="Filter by success status"),
+    status: Literal["all", "success", "failed"] | None = Query(
+        None,
+        description="Filter by session outcome: 'success', 'failed', or 'all' (no filter)",
+    ),
+    success: bool | None = Query(
+        None,
+        description="Legacy success filter (bool). Superseded by 'status' when both are set.",
+    ),
     from_date: datetime | None = Query(None, description="Sessions started after this time"),
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
     request_id: str | None = Query(None, description="Filter by request_id"),
@@ -230,10 +262,14 @@ async def list_sessions(
     concurrently, then merges, sorts, and paginates the combined results.
     When the ``butler`` query parameter is provided, only that butler's DB
     is queried.
+
+    The ``status`` param (``success`` | ``failed`` | ``all``) is the surface the
+    frontend status dropdown uses; it maps onto the ``success`` boolean filter
+    and takes precedence over the legacy ``success`` bool param.
     """
     where_clause, args, idx = _build_where(
         trigger_source=trigger_source,
-        success=success,
+        success=_resolve_success_filter(status, success),
         from_date=from_date,
         to_date=to_date,
         request_id=request_id,
@@ -324,7 +360,14 @@ async def list_butler_sessions(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=1000, description="Max records to return"),
     trigger_source: str | None = Query(None, description="Filter by trigger source"),
-    success: bool | None = Query(None, description="Filter by success status"),
+    status: Literal["all", "success", "failed"] | None = Query(
+        None,
+        description="Filter by session outcome: 'success', 'failed', or 'all' (no filter)",
+    ),
+    success: bool | None = Query(
+        None,
+        description="Legacy success filter (bool). Superseded by 'status' when both are set.",
+    ),
     from_date: datetime | None = Query(None, description="Sessions started after this time"),
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
     request_id: str | None = Query(None, description="Filter by request_id"),
@@ -333,6 +376,10 @@ async def list_butler_sessions(
     """Return paginated sessions for a single butler.
 
     Queries the butler's database directly via ``DatabaseManager.pool()``.
+
+    The ``status`` param (``success`` | ``failed`` | ``all``) maps onto the
+    ``success`` boolean filter and takes precedence over the legacy ``success``
+    bool param.
     """
     try:
         pool = db.pool(name)
@@ -344,7 +391,7 @@ async def list_butler_sessions(
 
     where_clause, args, idx = _build_where(
         trigger_source=trigger_source,
-        success=success,
+        success=_resolve_success_filter(status, success),
         from_date=from_date,
         to_date=to_date,
         request_id=request_id,
