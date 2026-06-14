@@ -1460,6 +1460,54 @@ describe("EntitiesIndexPage — toolbar search", () => {
     expect(hydrateCall?.[0]?.offset).toBeUndefined();
   });
 
+  it("does NOT flash 'No entities found.' while search hits are still hydrating", () => {
+    // The finder returned a hit, but hydration is still in flight (data
+    // undefined, isLoading true). The table must show the loading state, not a
+    // misleading empty state.
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: {
+        results: [
+          {
+            entity_id: BOB.id,
+            canonical_name: BOB.canonical_name,
+            entity_type: BOB.entity_type,
+            score: 70,
+            match_kind: "contact_fact",
+          },
+        ],
+        total: 1,
+        q: "hatch",
+        limit: 50,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntityFinderSearch>);
+
+    vi.mocked(useRelationshipEntitiesByIds).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    } as unknown as ReturnType<typeof useRelationshipEntitiesByIds>);
+
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+
+    renderPage();
+
+    const input = container.querySelector(
+      "[data-testid='entities-toolbar-search']",
+    ) as HTMLInputElement;
+    act(() => {
+      setter?.call(input, "hatch");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(container.textContent).not.toContain("No entities found.");
+    expect(container.textContent).not.toContain("Search failed.");
+  });
+
   it("passes the search query through to useEntityFinderSearch", () => {
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,

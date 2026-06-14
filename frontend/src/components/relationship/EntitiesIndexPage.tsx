@@ -1138,7 +1138,11 @@ export function EntitiesIndexPage() {
   // match. The active filter chips are passed through so search stays constrained
   // to the same population as the unsearched list (the backend ANDs them with the
   // id set); pagination is omitted. The hook self-disables when there are no ids.
-  const { data: searchHydrated, isError: isHydrateError } = useRelationshipEntitiesByIds({
+  const {
+    data: searchHydrated,
+    isError: isHydrateError,
+    isLoading: isHydrateLoading,
+  } = useRelationshipEntitiesByIds({
     entity_type: typeFilters,
     state: stateFilter ?? undefined,
     has: hasContact ? "contact" : undefined,
@@ -1159,6 +1163,15 @@ export function EntitiesIndexPage() {
       })()
     : allEntities;
   const total = isSearching ? entities.length : (data?.total ?? 0);
+
+  // A search has no rows to show *yet* until the finder has answered and, when it
+  // returned hits, the hydration has resolved. Treat that window as loading so the
+  // table shows skeletons instead of flashing a false "No entities found.".
+  const searchResolving =
+    isSearching &&
+    !searchFailed &&
+    (searchData === undefined || (searchIds.length > 0 && isHydrateLoading));
+  const tableLoading = isSearching ? searchResolving : isLoading;
 
   // Offset pagination applies to the unfiltered list; an active toolbar search
   // filters in place across the loaded page, so paging is suppressed.
@@ -1395,7 +1408,7 @@ export function EntitiesIndexPage() {
           >
             <EntityTable
               entities={entities}
-              isLoading={isLoading}
+              isLoading={tableLoading}
               onMergeEntity={setMergeSourceEntity}
               onForgetEntity={setForgetSourceEntity}
               selectedIds={selectedIds}
