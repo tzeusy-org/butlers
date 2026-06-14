@@ -22,19 +22,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from prometheus_client import Counter, Histogram
+from butlers.metrics_registry import get_or_create_counter, get_or_create_histogram
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 # Ingest submission metrics
-ingest_submissions_total = Counter(
+ingest_submissions_total = get_or_create_counter(
     "connector_ingest_submissions_total",
     "Total number of ingest API submission attempts",
     labelnames=["connector_type", "endpoint_identity", "status"],
 )
 
-ingest_latency_seconds = Histogram(
+ingest_latency_seconds = get_or_create_histogram(
     "connector_ingest_latency_seconds",
     "Latency of ingest API submissions in seconds",
     labelnames=["connector_type", "endpoint_identity", "status"],
@@ -42,60 +42,60 @@ ingest_latency_seconds = Histogram(
 )
 
 # Source API call metrics
-source_api_calls_total = Counter(
+source_api_calls_total = get_or_create_counter(
     "connector_source_api_calls_total",
     "Total number of source API calls",
     labelnames=["connector_type", "endpoint_identity", "api_method", "status"],
 )
 
 # Checkpoint save metrics
-checkpoint_saves_total = Counter(
+checkpoint_saves_total = get_or_create_counter(
     "connector_checkpoint_saves_total",
     "Total number of checkpoint save operations",
     labelnames=["connector_type", "endpoint_identity", "status"],
 )
 
 # Error metrics
-errors_total = Counter(
+errors_total = get_or_create_counter(
     "connector_errors_total",
     "Total number of errors by type",
     labelnames=["connector_type", "endpoint_identity", "error_type", "operation"],
 )
 
 # Attachment fetch metrics — see docs/connectors/attachment_handling.md section 9
-attachment_fetched_eager_total = Counter(
+attachment_fetched_eager_total = get_or_create_counter(
     "connector_attachment_fetched_eager_total",
     "Total number of attachments fetched eagerly at ingest time",
     labelnames=["connector_type", "endpoint_identity", "media_type", "result"],
 )
 
-attachment_fetched_lazy_total = Counter(
+attachment_fetched_lazy_total = get_or_create_counter(
     "connector_attachment_fetched_lazy_total",
     "Total number of lazy attachment ref writes and on-demand materializations",
     labelnames=["connector_type", "endpoint_identity", "media_type", "result"],
 )
 
-attachment_skipped_oversized_total = Counter(
+attachment_skipped_oversized_total = get_or_create_counter(
     "connector_attachment_skipped_oversized_total",
     "Total number of attachments skipped due to per-type or global size cap",
     labelnames=["connector_type", "endpoint_identity", "media_type"],
 )
 
-attachment_type_distribution_total = Counter(
+attachment_type_distribution_total = get_or_create_counter(
     "connector_attachment_type_distribution_total",
     "Count of processed attachments by MIME type",
     labelnames=["connector_type", "endpoint_identity", "media_type"],
 )
 
 # Health butler wellness ingest metrics
-health_wellness_ingest_total = Counter(
+health_wellness_ingest_total = get_or_create_counter(
     "health_wellness_ingest_total",
     "Total wellness ingest events by predicate and outcome",
     labelnames=["predicate", "outcome"],
 )
 
 # Dunbar group-aware interaction gating (RFC 0013)
-interaction_gated_total = Counter(
+interaction_gated_total = get_or_create_counter(
     "butlers_interaction_gated_total",
     "Messages gated from interaction tracking due to participant count threshold",
     labelnames=["connector_type", "chat_type", "participant_count_bucket"],

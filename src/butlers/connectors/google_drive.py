@@ -52,7 +52,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
@@ -63,6 +63,7 @@ from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.google_credentials import resolve_google_credentials
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.metrics_registry import get_or_create_counter, get_or_create_gauge
 
 if TYPE_CHECKING:
     import asyncpg
@@ -131,13 +132,13 @@ _CHANGE_TYPE_FALLBACK = "file_changed"
 # Google Drive–specific Prometheus metrics (task 11.5)
 # ---------------------------------------------------------------------------
 
-gdrive_event_type_total = Counter(
+gdrive_event_type_total = get_or_create_counter(
     "connector_gdrive_event_type_total",
     "Total Google Drive change events processed, broken down by event type",
     labelnames=["endpoint_identity", "event_type"],
 )
 
-gdrive_metadata_cache_size = Gauge(
+gdrive_metadata_cache_size = get_or_create_gauge(
     "connector_gdrive_metadata_cache_size",
     "Current number of entries in the per-account Drive file metadata cache",
     labelnames=["endpoint_identity"],

@@ -35,7 +35,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from prometheus_client import Counter
 from pydantic import BaseModel
 
 from butlers.api.audit_grouping import attention_item_from_audit_group_row, build_audit_group_query
@@ -47,6 +46,7 @@ from butlers.api.briefing.prompts import elaborate_llm
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.core.general_settings import load_general_settings
+from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
@@ -57,32 +57,32 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard-briefing"])
 # Prometheus counters
 # ---------------------------------------------------------------------------
 
-briefing_reads_total = Counter(
+briefing_reads_total = get_or_create_counter(
     "briefing_reads_total",
     "Number of GET /api/dashboard/briefing requests.",
 )
 
-briefing_cache_hits_total = Counter(
+briefing_cache_hits_total = get_or_create_counter(
     "briefing_cache_hits_total",
     "Number of GET /api/dashboard/briefing requests served from cache.",
 )
 
-briefing_elaboration_llm_total = Counter(
+briefing_elaboration_llm_total = get_or_create_counter(
     "briefing_elaboration_llm_total",
     "Number of briefing elaborations produced by the LLM.",
 )
 
-briefing_elaboration_fallback_total = Counter(
+briefing_elaboration_fallback_total = get_or_create_counter(
     "briefing_elaboration_fallback_total",
     "Number of briefing elaborations served from the templated fallback.",
 )
 
-briefing_elaboration_rejected_total = Counter(
+briefing_elaboration_rejected_total = get_or_create_counter(
     "briefing_elaboration_rejected_total",
     "Number of LLM elaborations rejected by the voice lint.",
 )
 
-briefing_classification_error_total = Counter(
+briefing_classification_error_total = get_or_create_counter(
     "briefing_classification_error_total",
     "Number of classification exceptions caught and downgraded to quiet.",
 )
