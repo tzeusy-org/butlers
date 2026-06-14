@@ -3911,6 +3911,20 @@ class CliRotateResult(BaseModel):
     """Raw secret value — returned ONCE; not retrievable via any GET endpoint."""
 
 
+class CliRotateRequest(BaseModel):
+    """Optional request body for POST /api/secrets/cli/<id>/rotate.
+
+    When ``value`` is provided (non-empty after trimming), the endpoint
+    persists *that* exact value supplied by the owner (paste-to-save).  When
+    ``value`` is omitted or empty, the endpoint falls back to generating a
+    fresh cryptographically-random value server-side (the original "rotate /
+    generate for me" behaviour).
+    """
+
+    value: str | None = None
+    """Owner-supplied token to persist verbatim, or ``None`` to auto-generate."""
+
+
 class CliRevokeResult(BaseModel):
     """Response payload for POST /api/secrets/cli/<id>/revoke."""
 
@@ -3928,23 +3942,30 @@ class CliRevokeResult(BaseModel):
 )
 async def rotate_cli_credential(
     credential_id: str,
+    body: CliRotateRequest | None = None,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[CliRotateResult]:
-    """Rotate (regenerate) the secret value for a CLI runtime token.
+    """Persist or rotate the secret value for a CLI runtime token.
 
-    Generates a new cryptographically-random value using
-    ``secrets.token_urlsafe(32)``, persists it in-place via UPDATE on
-    ``butler_secrets WHERE secret_key = <id>``, and
-    returns ``ApiResponse<{fingerprint: str, value: str}>``.
+    Two modes, selected by the optional request body:
+
+    - **Owner-supplied (paste-to-save):** when ``body.value`` is a non-empty
+      string, that exact value is persisted verbatim — it is NOT replaced by a
+      random one.  This is the path the passport "set token" textarea uses, and
+      it works even for a ``never_set`` provider (first-time save UPSERTs a new
+      row rather than 404-ing).
+    - **Auto-generate (true rotate):** when no value is supplied, a fresh
+      cryptographically-random value is generated via
+      ``secrets.token_urlsafe(32)`` and persisted in-place.  This preserves the
+      original "rotate / generate for me" behaviour for callers that rely on
+      server-minted tokens.  Auto-generate still requires the token to already
+      exist (404 on unknown id).
 
     The raw value is returned **exactly once** in this response body.
     No GET endpoint exposes raw values (fingerprint-only), so this is the
-    sole opportunity for the owner to record the new value.
+    sole opportunity for the owner to record the value.
 
     Appends a ``rotated`` audit row to ``public.audit_log``.
-
-    Returns 404 when no matching CLI token exists in the shared credential
-    pool.
 
     Spec anchor
     -----------
@@ -3960,30 +3981,48 @@ async def rotate_cli_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Confirm the CLI token exists before generating a new value.
+    supplied = (body.value or "").strip() if body is not None else ""
+    user_supplied = bool(supplied)
+
     existing = await _fetch_single_cli_secret(shared_pool, credential_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="CLI credential not found")
 
-    # Generate new random secret (cryptographically secure).
-    new_value = _secrets_mod.token_urlsafe(32)
+    if not user_supplied:
+        # Auto-generate path: a fresh value only makes sense for an existing
+        # token, so 404 when there is nothing to rotate.
+        if existing is None:
+            raise HTTPException(status_code=404, detail="CLI credential not found")
+        new_value = _secrets_mod.token_urlsafe(32)
+        audit_note = "Value regenerated via rotate endpoint"
+    else:
+        # Paste-to-save path: persist the owner-supplied value verbatim. This
+        # also covers first-time set for a never_set provider (UPSERT below).
+        new_value = supplied
+        audit_note = (
+            "Value updated via set-token (owner-supplied)"
+            if existing is not None
+            else "Value set via set-token (owner-supplied, first save)"
+        )
 
-    # Persist the new value in-place (scope to PK from pre-fetched row).
+    # Persist. UPSERT so a first-time owner-supplied save creates the row
+    # instead of 404-ing; in-place update keeps category/description intact for
+    # the existing-row case via ON CONFLICT.
     try:
         await shared_pool.execute(
             """
-            UPDATE butler_secrets
-            SET secret_value = $1, updated_at = now()
-            WHERE secret_key = $2
+            INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+            VALUES ($1, $2, 'cli', now())
+            ON CONFLICT (secret_key) DO UPDATE
+                SET secret_value = EXCLUDED.secret_value,
+                    updated_at = EXCLUDED.updated_at
             """,
+            credential_id,
             new_value,
-            existing.id,
         )
     except Exception as exc:
-        logger.warning("rotate_cli_credential: update failed for id=%s: %s", credential_id, exc)
+        logger.warning("rotate_cli_credential: persist failed for id=%s: %s", credential_id, exc)
         raise HTTPException(status_code=503, detail="CLI credential rotation failed") from exc
 
-    # Compute fingerprint of the newly-generated value.
+    # Compute fingerprint of the persisted value.
     fp = _fingerprint(new_value)
 
     # Audit — fire-and-forget.
@@ -3991,7 +4030,7 @@ async def rotate_cli_credential(
         shared_pool,
         action="rotated",
         credential_id=credential_id,
-        note="Value regenerated via rotate endpoint",
+        note=audit_note,
     )
 
     return ApiResponse[CliRotateResult](

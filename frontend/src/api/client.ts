@@ -5838,18 +5838,29 @@ import type { SecretsCliRotateResult, SecretsCliRevokeResult, SecretsCliReauthor
 /**
  * POST /api/secrets/cli/<id>/rotate
  *
- * Rotates (regenerates) the secret value for a CLI runtime token.
- * The new raw value is returned EXACTLY ONCE in this response.
+ * Persists or rotates the secret value for a CLI runtime token.
+ *
+ * When `value` is supplied (non-empty), that exact owner-pasted value is
+ * persisted verbatim — it is NOT replaced by a server-generated random one,
+ * and it works even for a never_set provider (first-time save). When `value`
+ * is omitted, the server generates a fresh random value (true rotate).
+ *
+ * The raw value is returned EXACTLY ONCE in this response.
  * No GET endpoint exposes raw values — this is the sole opportunity to copy
  * the value into local config.
  *
  * Returns ApiResponse<SecretsCliRotateResult> with {fingerprint, value}.
- * Returns 404 when no matching CLI token exists.
  */
-export function rotateCliCredential(id: string): Promise<ApiResponse<SecretsCliRotateResult>> {
+export function rotateCliCredential(
+  id: string,
+  value?: string,
+): Promise<ApiResponse<SecretsCliRotateResult>> {
   return apiFetch<ApiResponse<SecretsCliRotateResult>>(
     `/secrets/cli/${encodeURIComponent(id)}/rotate`,
-    { method: "POST" },
+    {
+      method: "POST",
+      ...(value !== undefined ? { body: JSON.stringify({ value }) } : {}),
+    },
   );
 }
 

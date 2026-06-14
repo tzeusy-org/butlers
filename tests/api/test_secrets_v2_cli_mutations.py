@@ -294,6 +294,106 @@ def test_rotate_cli_envelope_conformance():
     assert "meta" in body, "Expected 'meta' key in response envelope"
 
 
+# ---------------------------------------------------------------------------
+# Tests: paste-to-save (owner-supplied value) — bu-f63t9
+#
+# Regression: the token-mode "set token" textarea posts the pasted value to the
+# rotate endpoint. Previously the endpoint discarded it and minted a random one
+# (silent data loss), and 404'd for a never_set provider. These tests pin the
+# fix: the exact supplied value is persisted, and first-time save works.
+# ---------------------------------------------------------------------------
+
+
+def _persisted_secret_value(shared_pool) -> str | None:
+    """Return the secret_value passed to the INSERT/UPDATE on butler_secrets."""
+    for call in shared_pool.execute.await_args_list:
+        sql = call.args[0] if call.args else ""
+        if "butler_secrets" in sql and (
+            "INSERT INTO butler_secrets" in sql or "UPDATE butler_secrets" in sql
+        ):
+            # secret_key is $1, secret_value is $2 for both INSERT and UPDATE.
+            return call.args[2]
+    return None
+
+
+def test_rotate_cli_persists_user_supplied_value_verbatim():
+    """When a value is supplied, that EXACT value is persisted (not a random one)."""
+    cli_row = _make_cli_row(key="cli-token-abc123", value="old_cli_secret_value")
+    mock_db = _make_db(cli_row=cli_row)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    supplied = "my-own-pasted-token-XYZ"
+    resp = client.post(
+        "/api/secrets/cli/cli-token-abc123/rotate",
+        json={"value": supplied},
+    )
+    assert resp.status_code == 200
+    # Response echoes back the supplied value, not a fresh random one.
+    assert resp.json()["data"]["value"] == supplied
+    # And the supplied value is what got persisted to butler_secrets.
+    assert _persisted_secret_value(shared_pool) == supplied
+
+
+def test_rotate_cli_fingerprint_matches_user_supplied_value():
+    """Fingerprint is sha256[:8] of the SUPPLIED value, confirming it was kept."""
+    cli_row = _make_cli_row(key="cli-token-abc123")
+    mock_db = _make_db(cli_row=cli_row)
+    client = _build_app(mock_db)
+
+    supplied = "another-pasted-token"
+    resp = client.post(
+        "/api/secrets/cli/cli-token-abc123/rotate",
+        json={"value": supplied},
+    )
+    assert resp.status_code == 200
+    expected_fp = hashlib.sha256(supplied.encode()).hexdigest()[:8]
+    assert resp.json()["data"]["fingerprint"] == expected_fp
+
+
+def test_rotate_cli_first_save_never_set_succeeds():
+    """First-time owner-supplied save for a never_set provider returns 200 (no 404)."""
+    # No existing row → previously this 404'd. With a supplied value it UPSERTs.
+    mock_db = _make_db(cli_row=None)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    supplied = "first-time-token"
+    resp = client.post(
+        "/api/secrets/cli/cli-auth-new-provider/rotate",
+        json={"value": supplied},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["value"] == supplied
+    assert _persisted_secret_value(shared_pool) == supplied
+
+
+def test_rotate_cli_empty_supplied_value_falls_back_to_generate():
+    """An empty/whitespace value is treated as 'generate for me' (random)."""
+    cli_row = _make_cli_row(key="cli-token-abc123", value="old_cli_secret_value")
+    mock_db = _make_db(cli_row=cli_row)
+    client = _build_app(mock_db)
+
+    resp = client.post(
+        "/api/secrets/cli/cli-token-abc123/rotate",
+        json={"value": "   "},
+    )
+    assert resp.status_code == 200
+    # Falls back to generate: value is non-empty and differs from old.
+    new_value = resp.json()["data"]["value"]
+    assert new_value
+    assert new_value != "old_cli_secret_value"
+
+
+def test_rotate_cli_no_body_still_generates_and_requires_existing():
+    """No body → generate path: still 404s for an unknown id (rotate semantics)."""
+    mock_db = _make_db(cli_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/does-not-exist/rotate")
+    assert resp.status_code == 404
+
+
 def test_rotate_cli_get_does_not_return_raw_value_after_rotate():
     """Subsequent GET /api/secrets/cli/<id> does NOT return a raw value field.
 

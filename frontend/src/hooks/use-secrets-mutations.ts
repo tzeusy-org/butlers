@@ -219,9 +219,16 @@ export function useDeleteSystemSecret() {
 export function useRotateCliRuntime() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id }: { id: string }) => rotateCliCredential(id),
-    onSuccess: (_, { id }) => {
-      toast.success("CLI token rotated — copy the new value now");
+    mutationFn: ({ id, value }: { id: string; value?: string }) =>
+      // Omit the second arg entirely on the generate path so the call signature
+      // stays rotateCliCredential(id) (no explicit undefined).
+      value === undefined ? rotateCliCredential(id) : rotateCliCredential(id, value),
+    onSuccess: (_, { id, value }) => {
+      toast.success(
+        value && value.trim()
+          ? "CLI token saved — copy the value now"
+          : "CLI token rotated — copy the new value now",
+      );
       void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
       void queryClient.invalidateQueries({ queryKey: secretsCliKeys.byId(id) });
     },
