@@ -29,6 +29,7 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.oauth_scope_registry import (
@@ -614,12 +615,19 @@ async def set_butler_eligibility(
     request: Request,
     body: SetEligibilityRequest,
     db: DatabaseManager = Depends(_get_db_manager),
+    cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[SetEligibilityResponse]:
     """Transition a butler's eligibility state (operator action).
 
     Allows an operator to move a butler between eligibility states, e.g.
     un-quarantining a butler that has recovered.  All transitions are
     audited to the eligibility log.
+
+    When the eligibility state actually changes, the briefing cache is
+    invalidated so the next GET /api/dashboard/briefing reflects the health
+    change immediately rather than waiting up to 5 minutes for TTL expiry
+    (category c from bu-qzjpm; previously carried by the now-removed
+    PATCH /api/butlers/{name}/eligibility route).
     """
     pool = _pool(db)
     now = datetime.datetime.now(datetime.UTC)
@@ -683,6 +691,14 @@ async def set_butler_eligibility(
         )
     except Exception:
         logger.warning("Failed to write eligibility audit log for %s", name, exc_info=True)
+
+    # Invalidate the briefing cache so the next briefing request reflects the
+    # updated butler health immediately (category c from bu-qzjpm).
+    owner_id = await resolve_owner_id(pool)
+    if owner_id is not None:
+        cache.invalidate(owner_id)
+    else:
+        cache.invalidate_all()
 
     logger.info(
         "Operator eligibility transition for butler %r: %s → %s",

@@ -227,6 +227,158 @@ async def test_eligibility_unknown_butler_404(app):
 
 
 # ---------------------------------------------------------------------------
+# POST /registry/{name}/eligibility — operator transition + briefing-cache
+# invalidation (migrated from tests/dashboard/test_briefing_cache_invalidation.py
+# category (c) when the orphaned PATCH /api/butlers/{name}/eligibility route was
+# consolidated onto this canonical switchboard route; bu-qzjpm / bu-bmw1m).
+# ---------------------------------------------------------------------------
+
+
+def _make_owner_row(owner_id: str) -> MagicMock:
+    """Return an asyncpg-like record for an owner contact lookup."""
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda k: owner_id if k == "id" else None)
+    return row
+
+
+def _app_with_cache(app, *, fetchrow_side_effects, cache):
+    """Wire a switchboard app with a mock pool and a real BriefingCache override."""
+    from butlers.api.briefing.cache import get_cache
+
+    _app, mock_pool = _app_with_mock(app, fetchrow_side_effects=fetchrow_side_effects)
+    app.dependency_overrides[get_cache] = lambda: cache
+    return app, mock_pool
+
+
+async def test_set_eligibility_to_active_invalidates_cache(app):
+    """POST eligibility to 'active' (healthy) invalidates the briefing cache."""
+    from butlers.api.briefing.cache import BriefingCache
+
+    owner_id = "owner-eligibility-001"
+    cache = BriefingCache(ttl_seconds=300)
+    cache.set(owner_id, {"state_class": "degraded-quiet"})
+
+    app, _pool = _app_with_cache(
+        app,
+        # (1) registry SELECT (previous state differs → transition fires)
+        # (2) resolve_owner_id owner lookup
+        fetchrow_side_effects=[
+            {"eligibility_state": "stale", "last_seen_at": None},
+            _make_owner_row(owner_id),
+        ],
+        cache=cache,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/registry/calendar/eligibility",
+            json={"eligibility_state": "active"},
+        )
+
+    assert resp.status_code == 200
+    assert cache.get(owner_id) is None
+
+
+async def test_set_eligibility_to_quarantined_invalidates_cache(app):
+    """POST eligibility to 'quarantined' (unhealthy) invalidates the cache."""
+    from butlers.api.briefing.cache import BriefingCache
+
+    owner_id = "owner-eligibility-002"
+    cache = BriefingCache(ttl_seconds=300)
+    cache.set(owner_id, {"state_class": "quiet"})
+
+    app, _pool = _app_with_cache(
+        app,
+        fetchrow_side_effects=[
+            {"eligibility_state": "active", "last_seen_at": None},
+            _make_owner_row(owner_id),
+        ],
+        cache=cache,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/registry/health/eligibility",
+            json={"eligibility_state": "quarantined"},
+        )
+
+    assert resp.status_code == 200
+    assert cache.get(owner_id) is None
+
+
+async def test_set_eligibility_falls_back_to_invalidate_all_when_owner_missing(app):
+    """When the owner lookup yields no row, invalidate_all() clears everything."""
+    from butlers.api.briefing.cache import BriefingCache
+
+    other_owner = "other-owner-eligibility"
+    cache = BriefingCache(ttl_seconds=300)
+    cache.set(other_owner, {"state_class": "quiet"})
+
+    app, _pool = _app_with_cache(
+        app,
+        fetchrow_side_effects=[
+            {"eligibility_state": "stale", "last_seen_at": None},
+            None,  # owner lookup returns no row → resolve_owner_id returns None
+        ],
+        cache=cache,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/registry/health/eligibility",
+            json={"eligibility_state": "active"},
+        )
+
+    assert resp.status_code == 200
+    assert cache.get(other_owner) is None
+
+
+async def test_set_eligibility_invalid_state_returns_422(app):
+    """POST with an unrecognised eligibility_state is rejected by validation."""
+    _app_with_mock(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/registry/calendar/eligibility",
+            json={"eligibility_state": "unknown_state"},
+        )
+    assert resp.status_code == 422
+
+
+async def test_set_eligibility_unknown_butler_404(app):
+    """POST eligibility returns 404 when the butler is not in the registry."""
+    _app_with_mock(app, fetchrow_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/registry/nonexistent/eligibility",
+            json={"eligibility_state": "active"},
+        )
+    assert resp.status_code == 404
+
+
+async def test_patch_butlers_eligibility_route_is_gone(app):
+    """The orphaned PATCH /api/butlers/{name}/eligibility route was removed."""
+    _app_with_mock(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            "/api/butlers/calendar/eligibility",
+            json={"eligibility_state": "active"},
+        )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Ingestion rules
 # ---------------------------------------------------------------------------
 
