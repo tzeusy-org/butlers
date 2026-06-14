@@ -6115,12 +6115,20 @@ async def forget_entity(
     1. Retracts all active ``relationship.entity_facts`` rows where the entity is the
        subject OR where it appears as an object in a relational triple
        (``object_kind = 'entity'`` and ``object = entity_id::text``).
-    2. Tombstones the ``public.entities`` row by setting
+    2. Retracts all active memory-module ``facts`` rows where the entity is the
+       subject (``entity_id`` — gifts, loans, interactions, contact-notes,
+       life-events) OR the object (``object_entity_id`` — edge-facts such as
+       ``works_at``/``friend_of`` pointing AT it). On a forget there is no
+       survivor to re-point onto, so these orphaned rows are retracted rather
+       than left dangling on the tombstone (bu-j820n.2).
+    3. Clears ``public.contacts.entity_id`` for any contact linked to the entity
+       so no CRM record is left pointing at a tombstoned entity (bu-j820n.2).
+    4. Tombstones the ``public.entities`` row by setting
        ``metadata->>'tombstone' = 'true'``.
 
-    Both steps execute inside a single database transaction so the operation is
-    atomic: either all facts are retracted and the entity is tombstoned, or
-    nothing changes.
+    All steps execute inside a single database transaction so the operation is
+    atomic: either every reference is retracted/cleared and the entity is
+    tombstoned, or nothing changes.
 
     **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.
@@ -6155,6 +6163,32 @@ async def forget_entity(
                     subject = $1
                     OR (object_kind = 'entity' AND object = $1::text)
                   )
+                """,
+                entity_id,
+            )
+            # Retract the memory-module ``facts`` rows (gifts/loans/interactions/
+            # notes/life-events keyed by ``entity_id``; edge-facts referencing the
+            # entity as ``object_entity_id``). The previous handler only retracted
+            # ``relationship.entity_facts``, leaving these narrative rows active and
+            # orphaned on the tombstoned entity (bu-j820n.2). Delegate to the
+            # canonical memory helper so the retraction semantics match the rest of
+            # the memory module while running inside THIS transaction.
+            from butlers.modules.memory.tools.entities import _retract_facts_on_conn
+
+            await _retract_facts_on_conn(conn, entity_id)
+
+            # Clear ``public.contacts.entity_id`` for any contact linked to this
+            # entity. A contact is bound to exactly one entity; on forget the link
+            # must be severed or the contact (and its channel details) is left
+            # pointing at a tombstoned entity. ``public.contacts`` lives in the
+            # ``public`` schema — fully qualified so the cross-schema update is
+            # explicit and does not depend on search_path ordering.
+            await conn.execute(
+                """
+                UPDATE public.contacts
+                SET entity_id  = NULL,
+                    updated_at = now()
+                WHERE entity_id = $1
                 """,
                 entity_id,
             )
