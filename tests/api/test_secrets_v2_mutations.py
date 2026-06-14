@@ -655,12 +655,79 @@ def test_reauthorize_writes_attempted_audit_row(monkeypatch):
     )
 
 
-def test_reauthorize_404_on_missing_credential():
-    """reauthorize returns 404 when no credential exists for the provider."""
+def test_reauthorize_first_time_connect_oauth_provider_returns_start_url():
+    """First-time connect for a non-Google OAuth provider with NO entity_info row
+    returns a start/authorize redirect (not 404).
+
+    Regression for bu-vvez2: clicking 'connect' for a never-set non-Google OAuth
+    provider (e.g. spotify) used to 404 because the reauthorize endpoint required
+    a pre-existing credential row.  Google bypassed this via its own start flow;
+    the other OAuth providers had no equivalent.  Now every OAuth-kind provider
+    routes a first-time connect to /api/oauth/<provider>/start.
+    """
     mock_db = _make_db(user_row=None)
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/spotify/reauthorize")
+    assert resp.status_code == 200, resp.text
+    redirect_url = resp.json()["data"]["redirect_url"]
+    assert "/api/oauth/spotify/start" in redirect_url, redirect_url
+    assert "page_of_origin=secrets" in redirect_url, redirect_url
+    # No stored account → no account_hint on a first-time connect.
+    assert "account_hint" not in redirect_url, redirect_url
+
+
+def test_reauthorize_first_time_connect_writes_attempted_audit_row(monkeypatch):
+    """First-time connect (no row) still writes an 'attempted' audit row."""
+    mock_db = _make_db(user_row=None)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/reauthorize")
+    assert resp.status_code == 200, resp.text
+    assert any(c["action"] == "attempted" for c in audit_calls), audit_calls
+
+
+def test_reauthorize_google_first_time_connect_still_works():
+    """Google's first-time connect path stays intact (start URL, not 404)."""
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/reauthorize")
+    assert resp.status_code == 200, resp.text
+    redirect_url = resp.json()["data"]["redirect_url"]
+    assert "/api/oauth/google/start" in redirect_url, redirect_url
+
+
+def test_reauthorize_404_on_missing_non_oauth_credential():
+    """reauthorize returns 404 when no credential exists for a NON-OAuth provider.
+
+    Token / apikey / webhook providers have no OAuth start path — a first-time
+    connect for them is established by writing a value, not by an OAuth dance, so
+    the missing-credential 404 is preserved.  'github' is a token-kind provider.
+    """
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/github/reauthorize")
+    assert resp.status_code == 404
+
+
+def test_reauthorize_404_on_unknown_provider():
+    """reauthorize returns 404 for an unknown provider with no credential row."""
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/not_a_real_provider/reauthorize")
     assert resp.status_code == 404
 
 

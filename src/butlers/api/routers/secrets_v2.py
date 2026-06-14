@@ -3026,7 +3026,7 @@ async def reauthorize_user_credential(
     ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ReauthorizeResponse]:
-    """Initiate an OAuth reauthorization dance for a user-scoped credential.
+    """Initiate an OAuth (re)authorization dance for a user-scoped credential.
 
     Builds and returns a ``redirect_url`` pointing to
     ``/api/oauth/<provider>/start?page_of_origin=secrets`` (plus any
@@ -3034,6 +3034,15 @@ async def reauthorize_user_credential(
     caller is expected to redirect the browser to this URL, which begins
     the OAuth dance.  The OAuth callback will redirect back to
     ``/secrets?focus=u:<provider>&toast=connected`` on success.
+
+    First-time connect: when no ``entity_info`` row exists yet (the credential
+    has never been set), an OAuth-kind provider still gets a start ``redirect_url``
+    so the very first connect works (no account_hint is added, since there is no
+    stored account to pre-select).  This unifies "connect" (never_set) and
+    "reauthorize" (expired/revoked) into one initiate path for OAuth providers —
+    previously this 404'd for non-Google providers because Google had a separate
+    bypass.  Non-OAuth providers (token / apikey / webhook) still return 404 on a
+    missing credential, since they are established by writing a value, not a dance.
 
     Appends an ``attempted`` audit row (because the reauth dance has been
     initiated but not yet completed).
@@ -3060,24 +3069,42 @@ async def reauthorize_user_credential(
 
     # Look up the credential to derive account hint (label may hold email).
     detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+
     if detail is None:
-        raise HTTPException(status_code=404, detail="Credential not found")
+        # First-time connect: no entity_info row exists yet.  For OAuth-kind
+        # providers there is nothing to re-authorize, but the user still needs
+        # an authorization dance to establish the credential — so we route to
+        # the same /api/oauth/<provider>/start initiate path (no account_hint,
+        # because there is no stored account to pre-select).  Google reaches
+        # this same start URL with its own stored row, so behavior stays intact.
+        #
+        # For non-OAuth providers (token / apikey / webhook) there is no OAuth
+        # start path, so a first-time connect via this endpoint is still a 404 —
+        # those credentials are established by writing a value, not by a dance.
+        meta = PROVIDER_CATALOG.get(provider)
+        if meta is None or meta.kind != "oauth":
+            raise HTTPException(status_code=404, detail="Credential not found")
 
     # Build the OAuth start URL.  page_of_origin=secrets so the callback
     # routes the user back to the /secrets page on completion.
     params: dict[str, str] = {"page_of_origin": "secrets"}
-    if detail.label:
+    if detail is not None and detail.label:
         # The label field stores the account email for OAuth credentials.
         params["account_hint"] = detail.label
 
     redirect_url = f"/api/oauth/{provider}/start?{urlencode(params)}"
 
     # Audit — attempted (dance initiated, not yet completed).
+    audit_note = (
+        "First-time connect initiated from /secrets (page_of_origin=secrets)"
+        if detail is None
+        else "Reauthorize initiated from /secrets (page_of_origin=secrets)"
+    )
     await _write_credential_audit(
         shared_pool,
         action="attempted",
         provider=provider,
-        note="Reauthorize initiated from /secrets (page_of_origin=secrets)",
+        note=audit_note,
     )
 
     return ApiResponse[ReauthorizeResponse](
