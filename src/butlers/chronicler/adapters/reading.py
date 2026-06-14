@@ -240,7 +240,6 @@ class ReadingInferredAdapter(ProjectionAdapter):
                     title=out_title[:200],
                     payload=payload,
                     privacy=Privacy.NORMAL,
-                    entity_id=entity_id,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).
@@ -294,7 +293,6 @@ class ReadingInferredAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
-                    entity_id=entity_id,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).

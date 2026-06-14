@@ -482,7 +482,6 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         title=episode_title,
                         payload=payload_common,
                         privacy=Privacy.NORMAL,
-                        entity_id=entity_id,
                     ),
                 )
 

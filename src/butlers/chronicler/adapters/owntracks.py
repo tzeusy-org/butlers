@@ -574,7 +574,6 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         title=title,
                         payload=payload,
                         privacy=Privacy.NORMAL,
-                        entity_id=entity_id,
                     ),
                 )
                 # Write owner row into episode_entities join table (bu-4c1ks).

@@ -5,7 +5,8 @@ Covers:
   the number of participant rows after a project() run with N participants.
 - §8.2: list_episodes handler sets chronicler.episodes.filter_kind span
   attribute to "participant_join" when participant_entity_id is supplied,
-  "owner_only" when entity_id is supplied, and "none" when neither is.
+  and "none" when it is not. (The owner-only entity_id filter was removed in
+  bu-cfsgy.)
 """
 
 from __future__ import annotations
@@ -128,7 +129,6 @@ async def test_counter_increments_by_participant_count_in_project_run() -> None:
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
         )
 
     # event_entities maps event_id → participant list (excludes owner)
@@ -183,7 +183,6 @@ async def test_counter_not_incremented_when_no_participants() -> None:
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
         )
 
     # No participants in event_entities (empty list for this event_id).
@@ -246,7 +245,6 @@ async def test_counter_increments_by_total_across_multiple_episodes() -> None:
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
         )
 
     event_entities = {
@@ -305,7 +303,6 @@ class _ApiRow(dict):
 
 def _episode_api_row(
     *,
-    entity_id: UUID | None = None,
     participant_entity_ids: list[UUID] | None = None,
 ) -> _ApiRow:
     return _ApiRow(
@@ -330,7 +327,6 @@ def _episode_api_row(
             "correction_note": None,
             "created_at": _NOW_API - timedelta(hours=2),
             "updated_at": _NOW_API,
-            "entity_id": entity_id,
             "participant_entity_ids": participant_entity_ids or [],
         }
     )
@@ -400,27 +396,6 @@ async def test_list_episodes_span_attribute_participant_join() -> None:
 
 
 @pytest.mark.unit
-async def test_list_episodes_span_attribute_owner_only() -> None:
-    """list_episodes sets filter_kind=owner_only when entity_id is supplied without participant_entity_id."""
-    rows = [_episode_api_row(entity_id=_ENTITY_X)]
-    app = _build_api_app(rows)
-
-    fake_span = _FakeSpan()
-    fake_tracer = _FakeTracer(fake_span)
-
-    with patch("opentelemetry.trace.get_tracer", return_value=fake_tracer):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/chronicler/episodes?entity_id={_ENTITY_X}")
-
-    assert resp.status_code == 200, resp.text
-    assert fake_span.attributes.get("chronicler.episodes.filter_kind") == "owner_only", (
-        f"Expected filter_kind='owner_only', got: {fake_span.attributes}"
-    )
-
-
-@pytest.mark.unit
 async def test_list_episodes_span_attribute_none() -> None:
     """list_episodes sets filter_kind=none when neither entity_id nor participant_entity_id is supplied."""
     rows = [_episode_api_row()]
@@ -442,9 +417,9 @@ async def test_list_episodes_span_attribute_none() -> None:
 
 
 @pytest.mark.unit
-async def test_list_episodes_span_attribute_participant_join_takes_precedence() -> None:
-    """When both entity_id and participant_entity_id are supplied, filter_kind=participant_join."""
-    rows = [_episode_api_row(entity_id=_ENTITY_X, participant_entity_ids=[_ENTITY_Y])]
+async def test_list_episodes_span_attribute_participant_join_with_extra_query_params() -> None:
+    """An unknown extra query param does not change filter_kind=participant_join."""
+    rows = [_episode_api_row(participant_entity_ids=[_ENTITY_Y])]
     app = _build_api_app(rows)
 
     fake_span = _FakeSpan()
@@ -454,11 +429,9 @@ async def test_list_episodes_span_attribute_participant_join_takes_precedence() 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                f"/api/chronicler/episodes?entity_id={_ENTITY_X}&participant_entity_id={_ENTITY_Y}"
-            )
+            resp = await client.get(f"/api/chronicler/episodes?participant_entity_id={_ENTITY_Y}")
 
     assert resp.status_code == 200, resp.text
     assert fake_span.attributes.get("chronicler.episodes.filter_kind") == "participant_join", (
-        "participant_entity_id takes precedence: filter_kind must be 'participant_join'"
+        "participant_entity_id drives filter_kind='participant_join'"
     )

@@ -252,7 +252,6 @@ class FocusInferredAdapter(ProjectionAdapter):
                     title=out_title[:200],
                     payload=out_payload,
                     privacy=Privacy.NORMAL,
-                    entity_id=entity_id,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).

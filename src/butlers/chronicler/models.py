@@ -142,7 +142,6 @@ class Episode:
     retention_days: int | None = None
     tombstone_at: datetime | None = None
     tombstone_reason: str | None = None
-    entity_id: UUID | None = None
     participant_entity_ids: list[UUID] = field(default_factory=list)
     id: UUID | None = None
     created_at: datetime | None = None
@@ -173,7 +172,6 @@ class CorrectedEpisode:
     correction_note: str | None
     created_at: datetime
     updated_at: datetime
-    entity_id: UUID | None = None
     participant_entity_ids: list[UUID] = field(default_factory=list)
 
     @property

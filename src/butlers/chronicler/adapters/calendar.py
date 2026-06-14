@@ -45,12 +45,11 @@ Entity-id resolution (bu-f4755):
   and a debug-level log is emitted.
 - The dedup guard (``seen_origin``) means the **first** schema that
   projects a given ``origin_instance_ref`` determines the episode's
-  ``entity_id``.  In practice every schema shares the same owner
+  owner entity.  In practice every schema shares the same owner
   entity, so the winning schema makes no difference.
-- To backfill ``entity_id`` on pre-013 episodes, run:
-    ``python scripts/backfill_episode_entity_id.py [--dry-run]``
-  Or reset the adapter watermark in ``projection_checkpoints`` to
-  ``NULL`` and let the next scheduled run re-project all rows.
+- To backfill the owner ``episode_entities`` row on historical episodes,
+  reset the adapter watermark in ``projection_checkpoints`` to ``NULL``
+  and let the next scheduled run re-project all rows.
 
 Multi-entity participant resolution (bu-3zve1):
 - In addition to the owner entity, the adapter reads the calendar
@@ -65,14 +64,15 @@ Multi-entity participant resolution (bu-3zve1):
 - Role-precedence collapse: if the same entity_id appears as both
   owner and participant, it is written once with ``role='owner'``
   (highest-precedence wins: owner > organizer > participant).
-- The derived ``episodes.entity_id`` column (migration chronicler_013)
-  is preserved for the transition window (bu-cfsgy will drop it after
-  two release cycles).
+- The owner entity is now recorded only in ``chronicler.episode_entities``
+  (role='owner'); the derived ``episodes.entity_id`` column was dropped by
+  migration chronicler_016 (bu-cfsgy).
 - When ``calendar_event_entities`` is absent (calendar module not
   installed), the adapter degrades gracefully: only the owner row is
   written into ``episode_entities``.  A DEBUG log is emitted.
-  To backfill episode_entities on historical rows, run:
-    ``python scripts/backfill_episode_participants.py [--dry-run]``
+  To backfill ``episode_entities`` on historical rows, reset the adapter
+  watermark in ``projection_checkpoints`` to ``NULL`` and let the next
+  scheduled run re-project.
 """
 
 from __future__ import annotations
@@ -559,15 +559,13 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     title=resolved_title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
-                    entity_id=entity_id,
                 ),
             )
             # Write the multi-entity join table (bu-3zve1).
             # DELETE-then-INSERT inside a transaction so upstream attendee
-            # removals propagate and replays are idempotent.
-            # episodes.entity_id (the derived owner column from migration 013)
-            # continues to be written above for the transition window; it will
-            # be dropped by bu-cfsgy after two release cycles.
+            # removals propagate and replays are idempotent.  The owner entity
+            # is persisted here (role='owner'); the derived episodes.entity_id
+            # column was dropped by bu-cfsgy.
             await self._upsert_episode_entities(
                 conn,
                 episode.id,

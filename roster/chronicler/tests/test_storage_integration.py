@@ -86,8 +86,9 @@ async def _apply_chronicler_schema(pool) -> None:
     - 002_per_schema_watermarks: subsource column and composite PK on projection_checkpoints
     - 005_tuple_watermark: watermark_id column on projection_checkpoints
     - 006_checkpoint_carryover: carryover JSONB column on projection_checkpoints
-    - 013_episodes_entity_id: entity_id column on episodes + v_episodes_corrected update
     - 015_point_events_entity_id: entity_id column on point_events + v_point_events_corrected update
+    - 016_drop_episodes_entity_id: drops episodes.entity_id (added in 013) +
+      recreates v_episodes_corrected without it
 
     Tables intentionally omitted (not needed by storage integration tests):
     - ``tier2_cache`` (migration 004)
@@ -174,7 +175,6 @@ async def _apply_chronicler_schema(pool) -> None:
             retention_days INTEGER,
             tombstone_at TIMESTAMPTZ,
             tombstone_reason TEXT,
-            entity_id UUID,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref),
@@ -264,8 +264,7 @@ async def _apply_chronicler_schema(pool) -> None:
             o.corrected_at,
             o.note AS correction_note,
             e.created_at,
-            e.updated_at,
-            e.entity_id
+            e.updated_at
         FROM episodes e
         LEFT JOIN v_latest_overrides o
             ON o.target_kind = 'episode' AND o.target_id = e.id
@@ -966,127 +965,6 @@ async def test_sessions_adapter_global_watermark_is_conservative(
         f"Global watermark {result2.watermark} should equal Schema B's existing "
         f"watermark {cp_b.watermark}, not Schema A's new watermark {new_a_time}"
     )
-
-
-# ── entity_id filter (bu-aqe7n / task 12.5) ──────────────────────────────
-
-
-async def test_upsert_episode_with_entity_id(chronicler_pool) -> None:
-    """Episodes can be written and read back with entity_id set."""
-    from uuid import uuid4
-
-    eid = uuid4()
-    now = datetime.now(UTC)
-    ep = Episode(
-        source_name="core.sessions",
-        source_ref="entity-ep-1",
-        episode_type="work",
-        start_at=now,
-        end_at=now + timedelta(minutes=10),
-        entity_id=eid,
-    )
-    stored = await upsert_episode(chronicler_pool, ep)
-    assert stored.entity_id == eid
-
-    fetched = await get_episode(chronicler_pool, stored.id)
-    assert fetched is not None
-    assert fetched.entity_id == eid
-
-
-async def test_list_episodes_entity_id_filter_returns_matching_only(
-    chronicler_pool,
-) -> None:
-    """list_episodes(entity_id=) filters to episodes for that entity only."""
-    from uuid import uuid4
-
-    entity_a = uuid4()
-    entity_b = uuid4()
-    now = datetime.now(UTC)
-
-    await upsert_episode(
-        chronicler_pool,
-        Episode(
-            source_name="core.sessions",
-            source_ref="eid-filter-a",
-            episode_type="work",
-            start_at=now - timedelta(hours=2),
-            end_at=now - timedelta(hours=1),
-            entity_id=entity_a,
-        ),
-    )
-    await upsert_episode(
-        chronicler_pool,
-        Episode(
-            source_name="core.sessions",
-            source_ref="eid-filter-b",
-            episode_type="work",
-            start_at=now - timedelta(hours=4),
-            end_at=now - timedelta(hours=3),
-            entity_id=entity_b,
-        ),
-    )
-    await upsert_episode(
-        chronicler_pool,
-        Episode(
-            source_name="core.sessions",
-            source_ref="eid-filter-none",
-            episode_type="work",
-            start_at=now - timedelta(hours=6),
-            end_at=now - timedelta(hours=5),
-            # entity_id not set — NULL
-        ),
-    )
-
-    results_a = await list_episodes(chronicler_pool, entity_id=entity_a)
-    refs_a = {e.source_ref for e in results_a}
-    assert "eid-filter-a" in refs_a, "entity_a episode must appear"
-    assert "eid-filter-b" not in refs_a, "entity_b episode must not appear"
-    assert "eid-filter-none" not in refs_a, "no-entity episode must not appear"
-
-    results_b = await list_episodes(chronicler_pool, entity_id=entity_b)
-    refs_b = {e.source_ref for e in results_b}
-    assert "eid-filter-b" in refs_b
-    assert "eid-filter-a" not in refs_b
-
-    # No filter — all three appear.
-    all_results = await list_episodes(chronicler_pool)
-    all_refs = {e.source_ref for e in all_results}
-    assert {"eid-filter-a", "eid-filter-b", "eid-filter-none"}.issubset(all_refs)
-
-
-async def test_list_episodes_entity_id_filter_empty_when_no_match(
-    chronicler_pool,
-) -> None:
-    """Filtering on an entity_id with no matching episodes returns empty list."""
-    from uuid import uuid4
-
-    unknown_entity = uuid4()
-    results = await list_episodes(chronicler_pool, entity_id=unknown_entity)
-    assert results == []
-
-
-async def test_upsert_episode_entity_id_updates_on_replay(chronicler_pool) -> None:
-    """Replaying an episode with a new entity_id updates the stored entity_id."""
-    from uuid import uuid4
-
-    eid_1 = uuid4()
-    eid_2 = uuid4()
-    now = datetime.now(UTC)
-    ep = Episode(
-        source_name="core.sessions",
-        source_ref="entity-ep-replay",
-        episode_type="work",
-        start_at=now,
-        end_at=now + timedelta(minutes=5),
-        entity_id=eid_1,
-    )
-    first = await upsert_episode(chronicler_pool, ep)
-    assert first.entity_id == eid_1
-
-    ep.entity_id = eid_2
-    second = await upsert_episode(chronicler_pool, ep)
-    assert second.id == first.id  # same row
-    assert second.entity_id == eid_2
 
 
 # ── point_events entity_id (bu-kihe8) ────────────────────────────────────

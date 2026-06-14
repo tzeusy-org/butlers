@@ -479,100 +479,24 @@ rows after the adapter has run, either the migration has not been applied
 (`alembic upgrade chronicler@head`) or the adapter has not yet re-projected
 (wait for the next scheduled run or trigger manually).
 
-## Backfilling entity_id on historical episodes (bu-f4755)
-
-Migration `chronicler_013` added the `entity_id` column to `chronicler.episodes`.
-Episodes projected **before** the adapter change (PR accompanying bu-f4755) have
-`entity_id = NULL`.
-
-### Option A — Run the backfill script (recommended)
-
-```bash
-# Dry-run: shows what would be updated, no DB writes.
-uv run python scripts/backfill_episode_entity_id.py --dry-run
-
-# Apply: writes entity_id on NULL rows for google_calendar.completed episodes.
-uv run python scripts/backfill_episode_entity_id.py
-```
-
-The script resolves `entity_id` via:
-```
-{schema}.calendar_sources.metadata->>'account_email'
-  → public.google_accounts.entity_id
-```
-
-It is **idempotent** (rows already carrying `entity_id` are skipped) and can be
-re-run safely at any time.
-
-### Option B — Watermark reset (full re-projection)
-
-Reset the adapter watermark to `NULL` so the next scheduled run re-projects all
-calendar episodes from scratch (each row will receive `entity_id` at projection time).
-
-```sql
--- Reset the global watermark for google_calendar.completed.
--- Run this against the chronicler schema.
-UPDATE chronicler.projection_checkpoints
-SET watermark = NULL,
-    watermark_id = NULL,
-    updated_at = now()
-WHERE source_name = 'google_calendar.completed'
-  AND subsource IS NULL;
-```
-
-After the reset, trigger a manual adapter run or wait for the next scheduled
-invocation.  All episodes will be upserted in place with `entity_id` populated.
-
-**Trade-off:** Option A is surgical (touches only NULL rows, no adapter re-run
-overhead).  Option B is simpler to operate but re-projects every episode even
-those that already have `entity_id`.
-
-### Verify backfill completeness
-
-```sql
--- Should return zero rows when all google_calendar.completed episodes are backfilled.
-SELECT COUNT(*) AS remaining_null
-FROM chronicler.episodes
-WHERE source_name = 'google_calendar.completed'
-  AND entity_id IS NULL
-  AND tombstone_at IS NULL;
-```
-
 ## Backfilling episode_entities on historical episodes (bu-xuqyo)
 
 Migration `chronicler_014` added the `episode_entities` join table to `chronicler`.
 Episodes projected **before** the adapter change (bu-3zve1, PR #1869) have no rows
-in `episode_entities` — only the owner's `entity_id` column is populated.
+in `episode_entities`.
 
-### Option A — Run the backfill script (recommended)
+> **Note (bu-cfsgy):** the derived `episodes.entity_id` column and its one-time
+> backfill scripts (`backfill_episode_entity_id.py`,
+> `backfill_ha_presence_entity_id.py`, `backfill_episode_participants.py`) were
+> removed when the column was dropped (migration `chronicler_016`). The owner
+> entity now lives **only** in `episode_entities` (role='owner'), written at
+> projection time. To repopulate historical rows, use the watermark reset below.
 
-```bash
-# Dry-run: shows what would be written, no DB changes.
-uv run python scripts/backfill_episode_participants.py --dry-run
-
-# Apply: upserts episode_entities for all google_calendar.completed episodes.
-uv run python scripts/backfill_episode_participants.py
-```
-
-The script resolves participant entity_ids via:
-```
-chronicler.episodes.payload->>'origin_instance_ref'
-  → {schema}.calendar_event_instances.origin_instance_ref → event_id
-  → {schema}.calendar_event_entities.event_id → entity_id (participant)
-```
-
-The owner row (`role='owner'`) is written from `episodes.entity_id`.
-Participant rows (`role='participant'`) come from the calendar module's upstream join table.
-Role-precedence collapse: if the owner is also listed as an attendee, one row is written
-with `role='owner'` (owner > organizer > participant).
-
-It is **idempotent** (DELETE + INSERT per episode) and can be re-run safely at any time.
-
-### Option B — Watermark reset (full re-projection)
+### Watermark reset (full re-projection)
 
 Reset the adapter watermark to `NULL` so the next scheduled run re-projects all
 calendar episodes from scratch.  Each row will receive `episode_entities` rows at
-projection time (heavier than Option A — re-writes titles and re-runs the dedup pass).
+projection time (re-writes titles and re-runs the dedup pass).
 
 ```sql
 UPDATE chronicler.projection_checkpoints
@@ -584,10 +508,6 @@ WHERE source_name = 'google_calendar.completed';
 
 After the reset, trigger a manual adapter run or wait for the next scheduled
 invocation.
-
-**Trade-off:** Option A is surgical (touches only `episode_entities`, no adapter re-run
-overhead).  Option B is simpler to operate but re-projects every episode including
-those that already have `episode_entities` rows.
 
 ### Verify backfill completeness
 
@@ -611,8 +531,10 @@ adds multi-entity support to chronicler episodes.
 
 ### Pre-condition
 
-`chronicler_013` must be applied first (adds the `entity_id` column to
-`chronicler.episodes` that the view in 013 and 014 both expose).
+`chronicler_013` must be applied first (it created the original
+`v_episodes_corrected` shape that 014 extends). Note: the derived
+`episodes.entity_id` column 013 added was later dropped by `chronicler_016`
+(bu-cfsgy); the owner entity now lives in `episode_entities`.
 
 ### Post-conditions
 
@@ -633,9 +555,9 @@ After `chronicler_014` runs:
 
 ### Role-precedence collapse rule
 
-Writers (`CalendarCompletedAdapter` and the backfill script) MUST collapse
-multiple roles for the same `(episode_id, entity_id)` pair before writing,
-keeping the highest-precedence role:
+Writers (`CalendarCompletedAdapter`) MUST collapse multiple roles for the same
+`(episode_id, entity_id)` pair before writing, keeping the highest-precedence
+role:
 
 ```
 'owner' > 'organizer' > 'participant'
@@ -648,25 +570,9 @@ exactly once with `role='owner'`.
 ### Backfilling episode_entities (bu-xuqyo)
 
 Historical `google_calendar.completed` episodes projected before this adapter
-change have no rows in `episode_entities`.  Two options:
-
-**Option A — Targeted backfill script (recommended, bead bu-xuqyo):**
-
-```bash
-# Dry-run: shows what would be written, no DB changes.
-uv run python scripts/backfill_episode_participants.py --dry-run
-
-# Apply: upserts episode_entities for all google_calendar.completed episodes.
-uv run python scripts/backfill_episode_participants.py
-```
-
-Idempotent — safe to re-run.
-
-**Option B — Watermark reset (full re-projection):**
-
-Reset the `google_calendar.completed` watermark to NULL so the adapter
-re-projects all historical meetings.  Heavier than Option A (re-writes titles
-and runs the full dedup pass), but uses the existing operator playbook.
+change have no rows in `episode_entities`.  Reset the
+`google_calendar.completed` watermark to NULL so the adapter re-projects all
+historical meetings (re-writes titles and runs the full dedup pass):
 
 ```sql
 UPDATE chronicler.projection_checkpoints
@@ -676,6 +582,9 @@ SET watermark = NULL,
 WHERE source_name = 'google_calendar.completed'
   AND (subsource IS NULL OR subsource = '');
 ```
+
+(The one-time `backfill_episode_participants.py` script was removed by bu-cfsgy
+when the derived `episodes.entity_id` column it read was dropped.)
 
 ### Verify episode_entities is populated
 
@@ -691,12 +600,14 @@ FROM chronicler.v_episodes_corrected
 GROUP BY 1;
 ```
 
-### Cleanup window (bead bu-cfsgy)
+### Derived column cleanup (bead bu-cfsgy — DONE)
 
-After at least two release cycles, bead `bu-cfsgy` will drop the derived
-`episodes.entity_id` column and remove the legacy single-column filter path.
-Do NOT run that cleanup until telemetry confirms no callers are reading
-`episodes.entity_id` directly (target: zero callers for 30 days).
+The derived `episodes.entity_id` column (added by `chronicler_013`) was dropped
+by migration `chronicler_016`. The owner-only single-column filter
+(`list_episodes(entity_id=...)`, the `entity_id` MCP/API query param, and the
+adapter/entity-merge writes) was removed at the same time. Callers filter by
+entity via `participant_entity_id` (the `episode_entities` join, exposed as
+`participant_entity_ids`).
 
 ## Grafana panel proposal — participant resolution telemetry (bu-qlce5, PR #1871)
 

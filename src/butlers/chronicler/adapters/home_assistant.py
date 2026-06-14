@@ -49,10 +49,9 @@ Entity-id resolution (bu-v7hen):
     memory entity graph)
 - To bootstrap person-entity mappings, see migration core_116 for SQL
   examples (single-person and multi-person households).
-- To backfill ``entity_id`` on pre-bu-v7hen episodes, run:
-    ``python scripts/backfill_ha_presence_entity_id.py [--dry-run]``
-  Or reset the adapter watermark in ``projection_checkpoints`` to
-  ``NULL`` and let the next scheduled run re-project all rows.
+- To backfill the resolved person entity on historical presence episodes,
+  reset the adapter watermark in ``projection_checkpoints`` to ``NULL``
+  and let the next scheduled run re-project all rows.
 """
 
 from __future__ import annotations
@@ -503,7 +502,6 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
-                    entity_id=entity_id,
                 ),
             )
             # Write the person's entity row into episode_entities (bu-v7hen).

@@ -3,12 +3,11 @@
 Covers (tasks.md §4.3, §4.4, §4.6):
 - GET /api/chronicler/episodes returns participant_entity_ids array field.
 - ?participant_entity_id=<uuid> filters to episodes where the entity appears in the array.
-- ?entity_id=<uuid> (owner-only) returns episodes where entity_id column matches.
-- Both filters compose via AND when both are supplied.
 - GET /api/chronicler/episodes/{id} response includes participant_entity_ids.
 - participant_entity_ids is empty list [] when column absent from row (defensive default).
 - SQL WHERE clause for participant_entity_id uses ::uuid = ANY(participant_entity_ids).
-- SQL WHERE clause for entity_id uses = (owner-only exact match).
+
+(The owner-only ?entity_id filter was removed in bu-cfsgy.)
 """
 
 from __future__ import annotations
@@ -57,7 +56,6 @@ class _Row(dict):
 def _episode_row(
     *,
     episode_id: str = EPISODE_ID_1,
-    entity_id: UUID | None = None,
     participant_entity_ids: list[UUID] | None = None,
     source_name: str = "google_calendar.completed",
     episode_type: str = "scheduled_block",
@@ -85,7 +83,6 @@ def _episode_row(
             "correction_note": None,
             "created_at": _NOW - timedelta(hours=2),
             "updated_at": _NOW,
-            "entity_id": entity_id,
             "participant_entity_ids": participant_entity_ids
             if participant_entity_ids is not None
             else [],
@@ -123,7 +120,6 @@ def _build_app(rows: list[_Row], *, fetchrow_result: _Row | None = None):
 async def test_get_episode_includes_participant_entity_ids_populated() -> None:
     """GET /api/chronicler/episodes/{id} returns participant_entity_ids array."""
     row = _episode_row(
-        entity_id=_ENTITY_A,
         participant_entity_ids=[_ENTITY_A, _ENTITY_B],
     )
     app, _ = _build_app([row])
@@ -139,7 +135,7 @@ async def test_get_episode_includes_participant_entity_ids_populated() -> None:
 
 async def test_get_episode_includes_participant_entity_ids_empty() -> None:
     """GET /api/chronicler/episodes/{id} returns empty list when no entity links."""
-    row = _episode_row(entity_id=None, participant_entity_ids=[])
+    row = _episode_row(participant_entity_ids=[])
     app, _ = _build_app([row])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -201,34 +197,6 @@ async def test_list_episodes_participant_entity_id_filter_passes_uuid_to_sql() -
     assert pool.fetchval.called or pool.fetch.called
 
 
-async def test_list_episodes_entity_id_filter_passes_uuid_to_sql() -> None:
-    """?entity_id=<uuid> (owner-only) is accepted and passed through to the DB query."""
-    rows = [_episode_row(entity_id=_ENTITY_A, participant_entity_ids=[_ENTITY_A])]
-    app, pool = _build_app(rows)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/chronicler/episodes?entity_id={_ENTITY_A}")
-    assert resp.status_code == 200, resp.text
-    assert pool.fetchval.called or pool.fetch.called
-
-
-async def test_list_episodes_both_filters_compose() -> None:
-    """?entity_id=A&participant_entity_id=B — both filters accepted (AND composition)."""
-    rows = [_episode_row(entity_id=_ENTITY_A, participant_entity_ids=[_ENTITY_A, _ENTITY_B])]
-    app, pool = _build_app(rows)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            f"/api/chronicler/episodes?entity_id={_ENTITY_A}&participant_entity_id={_ENTITY_B}"
-        )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()["data"]
-    assert len(data) == 1
-    assert data[0]["participant_entity_ids"] == [str(_ENTITY_A), str(_ENTITY_B)]
-
-
 # ---------------------------------------------------------------------------
 # SQL guardrail: WHERE clause shape
 # ---------------------------------------------------------------------------
@@ -268,20 +236,4 @@ def test_list_episodes_sql_uses_any_for_participant_entity_id() -> None:
     )
     assert any("::uuid" in c for c in any_clauses), (
         "The ANY(participant_entity_ids) clause must cast the parameter with ::uuid"
-    )
-
-
-def test_list_episodes_sql_uses_equality_for_entity_id() -> None:
-    """The list_episodes handler uses entity_id = $N (exact match, not ANY) for owner filter."""
-    source = _ROUTER_PATH.read_text()
-    tree = ast.parse(source)
-    entity_id_clauses = [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "entity_id =" in node.value
-    ]
-    assert entity_id_clauses, (
-        "router.py must contain a SQL clause with 'entity_id = $N' for the owner entity_id filter"
     )

@@ -163,8 +163,12 @@ async def test_resolve_schema_entity_id_string_uuid_is_coerced() -> None:
 
 
 @pytest.mark.unit
-async def test_adapter_project_passes_entity_id_to_upsert() -> None:
-    """When entity_id is resolved, it is passed to the Episode upsert."""
+async def test_adapter_project_writes_resolved_entity_to_episode_entities() -> None:
+    """When entity_id is resolved, it is written to episode_entities as the owner.
+
+    The derived episodes.entity_id column was dropped (bu-cfsgy); the resolved
+    owner now flows only into the episode_entities join table.
+    """
     from unittest.mock import patch
 
     from butlers.chronicler.models import Episode
@@ -201,10 +205,27 @@ async def test_adapter_project_passes_entity_id_to_upsert() -> None:
 
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     captured: list[Episode] = []
+    episode_id = uuid4()
+    owner_calls: list[tuple] = []
 
     async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
-        captured.append(episode)
-        return episode
+        stored = Episode(
+            id=episode_id,
+            source_name=episode.source_name,
+            source_ref=episode.source_ref,
+            episode_type=episode.episode_type,
+            start_at=episode.start_at,
+            end_at=episode.end_at,
+            precision=episode.precision,
+            title=episode.title,
+            payload=episode.payload,
+            privacy=episode.privacy,
+        )
+        captured.append(stored)
+        return stored
+
+    async def _fake_upsert_entities(conn, ep_id, *, owner_id, participant_ids):
+        owner_calls.append((ep_id, owner_id))
 
     # Mock pool returns one row and entity_id
     def _make_project_pool() -> AsyncMock:
@@ -226,6 +247,12 @@ async def test_adapter_project_passes_entity_id_to_upsert() -> None:
             "_resolve_schema_entity_id",
             new=AsyncMock(return_value=entity_id),
         ),
+        patch.object(
+            CalendarCompletedAdapter,
+            "_upsert_episode_entities",
+            autospec=True,
+            side_effect=_fake_upsert_entities,
+        ),
         patch(
             "butlers.chronicler.adapters.calendar.upsert_episode",
             side_effect=_fake_upsert,
@@ -239,14 +266,14 @@ async def test_adapter_project_passes_entity_id_to_upsert() -> None:
 
     assert result.rows_projected == 1
     assert len(captured) == 1
-    assert captured[0].entity_id == entity_id, (
-        "Episode.entity_id must match the resolved entity_id from _resolve_schema_entity_id"
+    assert owner_calls == [(episode_id, entity_id)], (
+        "Resolved entity must be written to episode_entities as the owner"
     )
 
 
 @pytest.mark.unit
-async def test_adapter_project_entity_id_none_when_unresolved() -> None:
-    """When entity_id cannot be resolved, Episode.entity_id is None."""
+async def test_adapter_project_owner_none_when_unresolved() -> None:
+    """When entity_id cannot be resolved, the episode_entities owner_id is None."""
     from datetime import UTC, datetime, timedelta
     from unittest.mock import patch
 
@@ -279,10 +306,14 @@ async def test_adapter_project_entity_id_none_when_unresolved() -> None:
 
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     captured: list[Episode] = []
+    owner_calls: list[tuple] = []
 
     async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
         captured.append(episode)
         return episode
+
+    async def _fake_upsert_entities(conn, ep_id, *, owner_id, participant_ids):
+        owner_calls.append((ep_id, owner_id))
 
     def _make_project_pool() -> AsyncMock:
         conn = AsyncMock()
@@ -295,6 +326,12 @@ async def test_adapter_project_entity_id_none_when_unresolved() -> None:
     with (
         patch.object(adapter, "_fetch_instances", new=AsyncMock(return_value=[row])),
         patch.object(adapter, "_resolve_schema_entity_id", new=AsyncMock(return_value=None)),
+        patch.object(
+            CalendarCompletedAdapter,
+            "_upsert_episode_entities",
+            autospec=True,
+            side_effect=_fake_upsert_entities,
+        ),
         patch(
             "butlers.chronicler.adapters.calendar.upsert_episode",
             side_effect=_fake_upsert,
@@ -307,4 +344,5 @@ async def test_adapter_project_entity_id_none_when_unresolved() -> None:
         )
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id is None
+    assert len(owner_calls) == 1
+    assert owner_calls[0][1] is None

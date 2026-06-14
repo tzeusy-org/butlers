@@ -535,57 +535,92 @@ def _pool_with_person_mapping(
     return pool
 
 
-@pytest.mark.asyncio
-async def test_entity_id_resolved_from_ha_persons_mapping() -> None:
-    """When connectors.home_assistant_persons maps person.alice → entity, episode gets entity_id."""
-    row = _make_row(entity_id="person.alice", state="home", recorded_at=_NOW)
-    adapter = HomeAssistantHistoryAdapter()
+def _capture_entity_writes() -> tuple[list[Episode], list[tuple], object, object]:
+    """Build fake upsert_episode / upsert_owner_episode_entity that record writes.
+
+    Returns (upserted_episodes, owner_entity_calls, fake_upsert, fake_upsert_owner).
+    The resolved person entity lives in the episode_entities join table now
+    (the derived episodes.entity_id column was dropped in bu-cfsgy), so the
+    owner_id captured here is the per-person resolution under test.
+    """
     upserted: list[Episode] = []
+    owner_calls: list[tuple] = []
+    counter = [0]
 
     async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
+        counter[0] += 1
+        stored = Episode(
+            source_name=episode.source_name,
+            source_ref=episode.source_ref,
+            episode_type=episode.episode_type,
+            start_at=episode.start_at,
+            end_at=episode.end_at,
+            precision=episode.precision,
+            title=episode.title,
+            payload=episode.payload,
+            privacy=episode.privacy,
+            id=uuid.UUID(int=counter[0]),
+        )
+        upserted.append(stored)
+        return stored
+
+    async def _fake_upsert_owner(conn: object, episode_id: object, *, owner_id: object) -> None:
+        owner_calls.append((episode_id, owner_id))
+
+    return upserted, owner_calls, _fake_upsert, _fake_upsert_owner
+
+
+@pytest.mark.asyncio
+async def test_entity_id_resolved_from_ha_persons_mapping() -> None:
+    """When person.alice → entity, the owner row in episode_entities carries that entity."""
+    row = _make_row(entity_id="person.alice", state="home", recorded_at=_NOW)
+    adapter = HomeAssistantHistoryAdapter()
+    upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
 
     pool = _pool_with_person_mapping(row, mapping={"person.alice": _ENTITY_ID_ALICE})
     cp = _chronicler_pool()
 
-    with patch(
-        "butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=_fake_upsert
+    with (
+        patch("butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=fake_upsert),
+        patch(
+            "butlers.chronicler.adapters.home_assistant.upsert_owner_episode_entity",
+            side_effect=fake_upsert_owner,
+        ),
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.episodes_closed == 1
-    assert len(upserted) == 1
-    assert upserted[0].entity_id == _ENTITY_ID_ALICE
+    assert len(owner_calls) == 1
+    assert owner_calls[0][1] == _ENTITY_ID_ALICE
 
 
 @pytest.mark.asyncio
 async def test_entity_id_null_when_no_mapping_exists() -> None:
-    """When connectors.home_assistant_persons has no row for the entity, entity_id is NULL."""
+    """When no person mapping exists, the join-table owner_id is None."""
     row = _make_row(entity_id="person.unknown", state="home", recorded_at=_NOW)
     adapter = HomeAssistantHistoryAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
+    upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
 
     pool = _pool_with_person_mapping(row, mapping={})
     cp = _chronicler_pool()
 
-    with patch(
-        "butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=_fake_upsert
+    with (
+        patch("butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=fake_upsert),
+        patch(
+            "butlers.chronicler.adapters.home_assistant.upsert_owner_episode_entity",
+            side_effect=fake_upsert_owner,
+        ),
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.episodes_closed == 1
-    assert len(upserted) == 1
-    assert upserted[0].entity_id is None
+    assert len(owner_calls) == 1
+    assert owner_calls[0][1] is None
 
 
 @pytest.mark.asyncio
 async def test_entity_id_resolved_per_entity_multi_person() -> None:
-    """Multi-person household: each person's episode gets their own entity_id."""
+    """Multi-person household: each person's episode_entities owner row gets their entity."""
     _ENTITY_ID_BOB = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
     t0 = _NOW
     t1 = _NOW + timedelta(hours=1)
@@ -594,11 +629,7 @@ async def test_entity_id_resolved_per_entity_multi_person() -> None:
         _make_row(entity_id="person.bob", state="home", recorded_at=t1, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
+    upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
 
     pool = _pool_with_person_mapping(
         *rows,
@@ -606,20 +637,26 @@ async def test_entity_id_resolved_per_entity_multi_person() -> None:
     )
     cp = _chronicler_pool()
 
-    with patch(
-        "butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=_fake_upsert
+    with (
+        patch("butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=fake_upsert),
+        patch(
+            "butlers.chronicler.adapters.home_assistant.upsert_owner_episode_entity",
+            side_effect=fake_upsert_owner,
+        ),
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.episodes_closed == 2
-    ep_by_entity = {ep.payload["entity_id"]: ep for ep in upserted}
-    assert ep_by_entity["person.alice"].entity_id == _ENTITY_ID_ALICE
-    assert ep_by_entity["person.bob"].entity_id == _ENTITY_ID_BOB
+    # Map each upserted episode's HA person (payload) to the owner_id written for it.
+    owner_by_episode = dict(owner_calls)
+    owner_by_person = {ep.payload["entity_id"]: owner_by_episode[ep.id] for ep in upserted}
+    assert owner_by_person["person.alice"] == _ENTITY_ID_ALICE
+    assert owner_by_person["person.bob"] == _ENTITY_ID_BOB
 
 
 @pytest.mark.asyncio
 async def test_entity_id_mixed_mapped_and_unmapped() -> None:
-    """Mixed household: mapped person gets entity_id, unmapped person gets NULL."""
+    """Mixed household: mapped person gets an entity owner_id, unmapped gets None."""
     t0 = _NOW
     t1 = _NOW + timedelta(hours=1)
     rows = [
@@ -627,25 +664,26 @@ async def test_entity_id_mixed_mapped_and_unmapped() -> None:
         _make_row(entity_id="person.guest", state="home", recorded_at=t1, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
+    upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
 
     # Only alice is mapped; guest is not.
     pool = _pool_with_person_mapping(*rows, mapping={"person.alice": _ENTITY_ID_ALICE})
     cp = _chronicler_pool()
 
-    with patch(
-        "butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=_fake_upsert
+    with (
+        patch("butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=fake_upsert),
+        patch(
+            "butlers.chronicler.adapters.home_assistant.upsert_owner_episode_entity",
+            side_effect=fake_upsert_owner,
+        ),
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.episodes_closed == 2
-    ep_by_entity = {ep.payload["entity_id"]: ep for ep in upserted}
-    assert ep_by_entity["person.alice"].entity_id == _ENTITY_ID_ALICE
-    assert ep_by_entity["person.guest"].entity_id is None
+    owner_by_episode = dict(owner_calls)
+    owner_by_person = {ep.payload["entity_id"]: owner_by_episode[ep.id] for ep in upserted}
+    assert owner_by_person["person.alice"] == _ENTITY_ID_ALICE
+    assert owner_by_person["person.guest"] is None
 
 
 @pytest.mark.asyncio
@@ -668,7 +706,6 @@ async def test_episode_entities_row_written_when_entity_id_resolved() -> None:
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
             id=_UUID_3,
         )
         upserted_episodes.append(episode_with_id)
@@ -720,7 +757,6 @@ async def test_episode_entities_not_written_when_entity_id_null() -> None:
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=None,
             id=_UUID_4,
         )
 

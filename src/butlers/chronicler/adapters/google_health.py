@@ -366,7 +366,6 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
-                    entity_id=entity_id,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).
@@ -677,7 +676,6 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=privacy,
-                    entity_id=entity_id,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).

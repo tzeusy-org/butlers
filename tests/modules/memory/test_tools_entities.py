@@ -670,24 +670,6 @@ class TestRePointEpisodeEntities:
         assert args[2] == SOURCE_UUID  # old entity_id (WHERE entity_id = $2)
         assert EPISODE_UUID_1 in args[3]  # episode_id in ANY($3)
 
-    async def test_repoints_derived_episodes_column(self) -> None:
-        """episodes.entity_id must also be updated (transition window, bu-cfsgy)."""
-        ch_pool, ch_conn = _make_chronicler_pool(
-            src_ep_rows=[_ep_row(EPISODE_UUID_1)],
-            tgt_ep_rows=[],
-        )
-        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
-
-        derived_updates = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "UPDATE chronicler.episodes SET entity_id" in c[0][0]
-        ]
-        assert len(derived_updates) == 1
-        args = derived_updates[0][0]
-        assert args[1] == TARGET_UUID
-        assert args[2] == SOURCE_UUID
-
     async def test_dedup_deletes_src_row_when_target_already_linked(self) -> None:
         """When target is already on the same episode, DELETE the source row."""
         ch_pool, ch_conn = _make_chronicler_pool(
@@ -763,8 +745,12 @@ class TestRePointEpisodeEntities:
         assert len(update_calls) == 1  # EPISODE_UUID_2 re-pointed
         assert len(delete_calls) == 1  # EPISODE_UUID_1 deduped
 
-    async def test_no_source_rows_only_updates_derived_column(self) -> None:
-        """When source has no episode_entities rows, only the derived column UPDATE runs."""
+    async def test_no_source_rows_is_noop(self) -> None:
+        """When source has no episode_entities rows, no writes are issued.
+
+        The derived episodes.entity_id column was dropped (bu-cfsgy), so with no
+        source join-table rows the helper early-returns without any UPDATE/DELETE.
+        """
         ch_pool, ch_conn = _make_chronicler_pool(src_ep_rows=[], tgt_ep_rows=[])
         await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
 
@@ -785,7 +771,7 @@ class TestRePointEpisodeEntities:
         ]
         assert ep_entity_updates == []
         assert ep_deletes == []
-        assert len(derived_updates) == 1  # derived column still moved
+        assert derived_updates == []  # derived column was dropped — no UPDATE
 
 
 class TestEntityMergeEpisodeEntities:
@@ -835,28 +821,6 @@ class TestEntityMergeEpisodeEntities:
         assert len(role_updates) == 1, "Role must be promoted in the surviving target row"
         assert role_updates[0][0][1] == "owner"
         assert len(delete_calls) == 1, "Source duplicate row must be deleted"
-
-    async def test_derived_episodes_entity_id_updated_atomically(self) -> None:
-        """chronicler.episodes.entity_id is updated alongside the join table (same txn)."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, _conn = _merge_pool(src, tgt)
-        ch_pool, ch_conn = _make_chronicler_pool(
-            src_ep_rows=[_ep_row(EPISODE_UUID_1)],
-            tgt_ep_rows=[],
-        )
-
-        await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
-
-        derived_updates = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "UPDATE chronicler.episodes SET entity_id" in c[0][0]
-        ]
-        assert len(derived_updates) == 1
-        args = derived_updates[0][0]
-        assert args[1] == TARGET_UUID
-        assert args[2] == SOURCE_UUID
 
     async def test_graceful_skip_when_episode_entities_table_absent(self) -> None:
         """When chronicler.episode_entities is absent, merge completes without raising."""

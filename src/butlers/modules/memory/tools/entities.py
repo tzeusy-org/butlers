@@ -1072,12 +1072,7 @@ async def _repoint_episode_entities(
         the source row (deduplication on PK (episode_id, entity_id)).
       - Otherwise, update the source row's entity_id to *tgt_uuid*.
 
-    Also updates chronicler.episodes.entity_id rows that equal *src_uuid*
-    to *tgt_uuid* (transition window: derived column kept in sync until
-    bu-cfsgy drops the column).
-
-    Runs in a single transaction so both the join table and the derived
-    column move atomically.
+    Runs in a single transaction so all join-table rows move atomically.
 
     Role precedence (lower number = higher precedence):
       'owner' = 0, 'organizer' = 1, 'participant' = 2
@@ -1093,13 +1088,6 @@ async def _repoint_episode_entities(
                 src_uuid,
             )
             if not src_rows:
-                # Also handle the derived column even if no join rows (bu-cfsgy transition)
-                await conn.execute(
-                    # Transition window: keep derived column in sync until bu-cfsgy drops it.
-                    "UPDATE chronicler.episodes SET entity_id = $1 WHERE entity_id = $2",
-                    tgt_uuid,
-                    src_uuid,
-                )
                 return
 
             src_episode_ids = [r["episode_id"] for r in src_rows]
@@ -1158,14 +1146,6 @@ async def _repoint_episode_entities(
                     to_update,
                 )
 
-            # Transition window: keep chronicler.episodes.entity_id in sync until
-            # bu-cfsgy lands and drops the derived column.
-            await conn.execute(
-                "UPDATE chronicler.episodes SET entity_id = $1 WHERE entity_id = $2",
-                tgt_uuid,
-                src_uuid,
-            )
-
 
 async def entity_merge(
     pool: Pool,
@@ -1192,8 +1172,7 @@ async def entity_merge(
          row is deleted (deduplication on (event_id, entity_id)).
     1d. Re-point chronicler.episode_entities rows from source to target (if
        chronicler_pool is provided). Deduplication respects role precedence
-       (owner > organizer > participant). Also updates the derived
-       chronicler.episodes.entity_id column during the transition window.
+       (owner > organizer > participant).
     2. Append source's aliases to target's alias list (deduplicated).
     3. Merge source's metadata into target's metadata (target wins on conflict).
     4. Tombstone source entity (mark as merged_into=target_entity_id, retained
@@ -1207,8 +1186,8 @@ async def entity_merge(
         extra_pools: Additional pools to re-point facts on (for multi-butler setups
                      where facts may live in different schemas).
         chronicler_pool: Optional asyncpg pool for the chronicler schema. When
-                         provided, episode_entities and episodes.entity_id are
-                         re-pointed atomically. Pass the chronicler DB pool at call
+                         provided, episode_entities rows are re-pointed
+                         atomically. Pass the chronicler DB pool at call
                          sites that have access to it.
 
     Returns:
@@ -1349,8 +1328,6 @@ async def entity_merge(
     # 2c. Re-point chronicler.episode_entities rows from source to target.
     #     Deduplication on PK (episode_id, entity_id) preserves the
     #     higher-precedence role (owner > organizer > participant).
-    #     Also updates the chronicler.episodes.entity_id derived column
-    #     for the transition window (until bu-cfsgy drops the column).
     #     Wrapped in UndefinedTableError guard for deployments where the
     #     chronicler schema or episode_entities table is absent.
     # ---------------------------------------------------------------

@@ -281,10 +281,6 @@ async def list_episodes(
         None,
         description="Overlap window end (both overlaps_start and overlaps_end required)",
     ),
-    entity_id: UUID | None = Query(
-        None,
-        description="Filter by owner entity_id (exact match on episodes.entity_id)",
-    ),
     participant_entity_id: UUID | None = Query(
         None,
         description="Filter episodes where the entity appears in any role via episode_entities",
@@ -306,8 +302,6 @@ async def list_episodes(
         # shape in Grafana.  Mirrors the chronicler.episodes.explain pattern.
         if participant_entity_id is not None:
             span.set_attribute("chronicler.episodes.filter_kind", "participant_join")
-        elif entity_id is not None:
-            span.set_attribute("chronicler.episodes.filter_kind", "owner_only")
         else:
             span.set_attribute("chronicler.episodes.filter_kind", "none")
 
@@ -335,9 +329,6 @@ async def list_episodes(
             clauses.append(f"start_at < ${len(args)}")
             args.append(overlaps_start)
             clauses.append(f"(end_at IS NULL OR end_at > ${len(args)})")
-        if entity_id is not None:
-            args.append(entity_id)
-            clauses.append(f"entity_id = ${len(args)}")
         if participant_entity_id is not None:
             args.append(participant_entity_id)
             clauses.append(f"${len(args)}::uuid = ANY(participant_entity_ids)")

@@ -6,10 +6,10 @@ Covers:
 - upsert_owner_episode_entity: executes INSERT, skips on None owner_id,
   skips on None episode_id.
 - Per-adapter unit tests: mock resolve_owner_entity_id, exercise project(),
-  assert episodes carry the mocked entity_id and upsert_owner_episode_entity
-  was called with the right arguments.
+  assert upsert_owner_episode_entity was called with the resolved owner id
+  (the owner lives in the episode_entities join table, not on the episode).
 - No-owner fallback: mock owner returns None, assert project() still completes
-  and writes episodes with entity_id=None (does not raise).
+  and projects the episode (does not raise).
 - Adapters covered: FocusInferredAdapter, CoreSessionsAdapter,
   SpotifySessionAdapter, SteamPlayAdapter, OwnTracksPointAdapter (movement),
   ReadingInferredAdapter, GoogleHealthSleepAdapter, GoogleHealthWorkoutAdapter.
@@ -110,7 +110,7 @@ def _chronicler_pool_simple() -> AsyncMock:
     return pool
 
 
-def _episode_with_id(episode_id: UUID, *, entity_id: UUID | None = None) -> Episode:
+def _episode_with_id(episode_id: UUID) -> Episode:
     """Return an Episode with a stable id for testing episode_entities writes."""
     return Episode(
         id=episode_id,
@@ -119,7 +119,6 @@ def _episode_with_id(episode_id: UUID, *, entity_id: UUID | None = None) -> Epis
         episode_type="test_type",
         start_at=_NOW,
         end_at=_NOW + timedelta(hours=1),
-        entity_id=entity_id,
     )
 
 
@@ -229,7 +228,7 @@ async def test_focus_adapter_stamps_entity_id_on_episode() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = _make_pool_with_fetchrow(None)  # no owner — tests graceful None path
@@ -267,11 +266,10 @@ async def test_focus_adapter_stamps_entity_id_on_episode() -> None:
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
-    # Episode was projected with the correct entity_id.
+    # Episode was projected.
     assert result.rows_projected == 1
     assert len(captured) == 1
-    assert captured[0].entity_id == _OWNER_ENTITY_ID
-    # episode_entities write was attempted.
+    # Owner is recorded in the episode_entities join table (not on the episode).
     mock_upsert_entity.assert_awaited_once()
     call_kw = mock_upsert_entity.call_args.kwargs
     assert call_kw["owner_id"] == _OWNER_ENTITY_ID
@@ -285,7 +283,7 @@ async def test_focus_adapter_no_owner_fallback() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = _make_pool_with_fetchrow(None)
@@ -319,9 +317,9 @@ async def test_focus_adapter_no_owner_fallback() -> None:
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
-    # Should still project with entity_id=None (no exception raised).
+    # Should still project (no exception raised) even when no owner is found.
     assert result.rows_projected == 1
-    assert captured[0].entity_id is None
+    assert len(captured) == 1
 
 
 @pytest.mark.unit
@@ -332,7 +330,7 @@ async def test_spotify_adapter_stamps_entity_id_on_episode() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -372,7 +370,6 @@ async def test_spotify_adapter_stamps_entity_id_on_episode() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
 
@@ -385,7 +382,7 @@ async def test_spotify_adapter_no_owner_fallback() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -422,7 +419,7 @@ async def test_spotify_adapter_no_owner_fallback() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id is None
+    assert len(captured) == 1
 
 
 @pytest.mark.unit
@@ -435,7 +432,7 @@ async def test_steam_adapter_stamps_entity_id_on_episode() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -470,7 +467,6 @@ async def test_steam_adapter_stamps_entity_id_on_episode() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
 
@@ -483,7 +479,7 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -526,7 +522,6 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
     assert result.rows_projected == 1
     # movement episode was captured with entity_id
     assert len(captured) == 1
-    assert captured[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
 
@@ -539,7 +534,7 @@ async def test_reading_calendar_row_stamps_entity_id() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -577,7 +572,6 @@ async def test_reading_calendar_row_stamps_entity_id() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
 
@@ -590,7 +584,7 @@ async def test_google_health_sleep_adapter_stamps_entity_id() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -634,7 +628,6 @@ async def test_google_health_sleep_adapter_stamps_entity_id() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
 
@@ -647,7 +640,7 @@ async def test_google_health_sleep_adapter_no_owner_fallback() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -690,7 +683,7 @@ async def test_google_health_sleep_adapter_no_owner_fallback() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id is None
+    assert len(captured) == 1
 
 
 @pytest.mark.unit
@@ -701,7 +694,7 @@ async def test_google_health_workout_adapter_stamps_entity_id() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
@@ -740,7 +733,6 @@ async def test_google_health_workout_adapter_stamps_entity_id() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 1
-    assert captured[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
 
@@ -753,7 +745,7 @@ async def test_sessions_adapter_stamps_entity_id_on_work_episode() -> None:
 
     async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
         captured_episodes.append(ep)
-        return _episode_with_id(episode_id, entity_id=ep.entity_id)
+        return _episode_with_id(episode_id)
 
     cp, conn = _chronicler_pool_tracked()
     pool = AsyncMock()
@@ -801,10 +793,9 @@ async def test_sessions_adapter_stamps_entity_id_on_work_episode() -> None:
     ):
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
-    # Work episode was stamped with entity_id.
+    # Work episode was projected; owner goes into the episode_entities join table.
     work_episodes = [e for e in captured_episodes if e.episode_type == "work"]
     assert len(work_episodes) == 1
-    assert work_episodes[0].entity_id == _OWNER_ENTITY_ID
     mock_upsert_entity.assert_awaited()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
 

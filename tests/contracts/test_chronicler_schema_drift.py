@@ -265,7 +265,6 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
             retention_days INTEGER,
             tombstone_at TIMESTAMPTZ,
             tombstone_reason TEXT,
-            entity_id UUID,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref),

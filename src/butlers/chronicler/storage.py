@@ -89,7 +89,6 @@ def _row_to_episode(row: asyncpg.Record) -> Episode:
         retention_days=row["retention_days"],
         tombstone_at=row["tombstone_at"],
         tombstone_reason=row["tombstone_reason"],
-        entity_id=row["entity_id"] if "entity_id" in keys else None,
         participant_entity_ids=(
             list(row["participant_entity_ids"])
             if "participant_entity_ids" in keys and row["participant_entity_ids"] is not None
@@ -123,7 +122,6 @@ def _row_to_corrected_episode(row: asyncpg.Record) -> CorrectedEpisode:
         correction_note=row["correction_note"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        entity_id=row["entity_id"] if "entity_id" in keys else None,
         participant_entity_ids=(
             list(row["participant_entity_ids"])
             if "participant_entity_ids" in keys and row["participant_entity_ids"] is not None
@@ -504,10 +502,9 @@ async def upsert_episode(
         """
         INSERT INTO episodes (
             source_name, source_ref, episode_type, start_at, end_at,
-            precision, title, payload, privacy, retention_days, tombstone_at, tombstone_reason,
-            entity_id
+            precision, title, payload, privacy, retention_days, tombstone_at, tombstone_reason
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             episode_type = EXCLUDED.episode_type,
             start_at = EXCLUDED.start_at,
@@ -519,7 +516,6 @@ async def upsert_episode(
             retention_days = EXCLUDED.retention_days,
             tombstone_at = EXCLUDED.tombstone_at,
             tombstone_reason = EXCLUDED.tombstone_reason,
-            entity_id = EXCLUDED.entity_id,
             updated_at = now()
         RETURNING *
         """,
@@ -535,7 +531,6 @@ async def upsert_episode(
         episode.retention_days,
         episode.tombstone_at,
         episode.tombstone_reason,
-        episode.entity_id,
     )
     return _row_to_episode(row)
 
@@ -605,7 +600,6 @@ async def list_episodes(
     start_to: datetime | None = None,
     source_name: str | None = None,
     episode_type: str | None = None,
-    entity_id: UUID | None = None,
     participant_entity_id: UUID | None = None,
     overlaps_with: tuple[datetime, datetime] | None = None,
     include_tombstoned: bool = False,
@@ -628,9 +622,6 @@ async def list_episodes(
     if episode_type is not None:
         args.append(episode_type)
         clauses.append(f"episode_type = ${len(args)}")
-    if entity_id is not None:
-        args.append(entity_id)
-        clauses.append(f"entity_id = ${len(args)}")
     if participant_entity_id is not None:
         args.append(participant_entity_id)
         clauses.append(f"${len(args)}::uuid = ANY(participant_entity_ids)")

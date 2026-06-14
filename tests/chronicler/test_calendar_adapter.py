@@ -16,7 +16,7 @@ Episode-entities join table (bu-3zve1):
 - Owner + participants written when join table present.
 - DELETE-then-INSERT replaces stale attendees on second adapter run.
 - Idempotent replay does not duplicate ``episode_entities`` rows.
-- ``episodes.entity_id`` equals the owner row in ``episode_entities``.
+- The resolved owner is written to ``episode_entities`` with role='owner'.
 - Role-precedence collapse when the same entity appears as both owner
   and participant (owner wins).
 """
@@ -169,7 +169,6 @@ async def _project_one_tracked(
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
         )
         captured.append(episode)
         return episode
@@ -473,7 +472,6 @@ async def test_episode_entities_owner_only_when_table_absent() -> None:
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
         )
         captured_upserts.append(episode)
         return episode
@@ -570,7 +568,7 @@ async def test_episode_entities_owner_and_participants_when_table_present() -> N
     participant_b = uuid4()
     row = _make_row(event_title="All-hands")
 
-    episode, conn = await _project_one_tracked(
+    _, conn = await _project_one_tracked(
         row,
         entity_id=owner_id,
         participant_ids=[participant_a, participant_b],
@@ -592,9 +590,6 @@ async def test_episode_entities_owner_and_participants_when_table_present() -> N
     assert roles_by_entity[owner_id] == "owner"
     assert roles_by_entity[participant_a] == "participant"
     assert roles_by_entity[participant_b] == "participant"
-
-    # episodes.entity_id (transition window) must equal the owner.
-    assert episode.entity_id == owner_id
 
 
 @pytest.mark.unit
@@ -625,7 +620,6 @@ async def test_episode_entities_delete_then_insert_replaces_stale_attendees() ->
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
         )
 
     # First run: participant_old is an attendee.
@@ -685,7 +679,6 @@ async def test_episode_entities_idempotent_replay_no_duplicates() -> None:
             title=episode.title,
             payload=episode.payload,
             privacy=episode.privacy,
-            entity_id=episode.entity_id,
         )
 
     all_inserted_rows: list[list] = []
@@ -710,37 +703,29 @@ async def test_episode_entities_idempotent_replay_no_duplicates() -> None:
 
 
 @pytest.mark.unit
-async def test_episode_entity_id_equals_owner_row_in_episode_entities() -> None:
-    """episodes.entity_id (transition column) must equal the 'owner' row's entity_id.
+async def test_owner_written_to_episode_entities_join_table() -> None:
+    """The resolved owner entity is written to episode_entities with role='owner'.
 
-    During the transition window, the derived episodes.entity_id column and the
-    episode_entities row with role='owner' must carry the same UUID so that
-    legacy readers (which filter on episodes.entity_id) continue to work.
+    The derived ``episodes.entity_id`` column was dropped (bu-cfsgy); the owner
+    now lives solely in the ``episode_entities`` join table.
     """
     owner_id = uuid4()
     participant_id = uuid4()
     row = _make_row(event_title="Kickoff")
 
-    episode, conn = await _project_one_tracked(
+    _, conn = await _project_one_tracked(
         row,
         entity_id=owner_id,
         participant_ids=[participant_id],
     )
 
-    # episodes.entity_id must equal owner_id.
-    assert episode.entity_id == owner_id, (
-        "episodes.entity_id must match the owner_id for the transition window"
-    )
-
-    # The owner row in episode_entities must also carry owner_id.
+    # The owner row in episode_entities must carry owner_id.
     insert_calls = conn.executemany.call_args_list
     assert insert_calls, "executemany was not called"
     rows_inserted = insert_calls[0].args[1]
     owner_rows = [(ep_id, eid, role) for ep_id, eid, role in rows_inserted if role == "owner"]
     assert len(owner_rows) == 1, "Expected exactly one 'owner' row in episode_entities"
-    assert owner_rows[0][1] == owner_id, (
-        "episode_entities owner row entity_id must match episodes.entity_id"
-    )
+    assert owner_rows[0][1] == owner_id, "episode_entities owner row must carry the resolved owner"
 
 
 @pytest.mark.unit
