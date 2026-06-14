@@ -210,3 +210,79 @@ def test_row_to_pr_summary_does_not_fabricate_ci_or_diff_stats() -> None:
     assert summary.ci_status is None
     assert summary.additions is None
     assert summary.deletions is None
+
+
+def _pr_row() -> dict[str, object]:
+    now = datetime.now(UTC)
+    return {
+        "status": "pr_open",
+        "pr_url": "https://github.com/Tzeusy/butlers/pull/1653",
+        "pr_number": 1653,
+        "branch_name": "agent/bu-z34mk",
+        "created_at": now,
+        "closed_at": None,
+    }
+
+
+class _StubClient:
+    """Stub GithubPrClient: records calls and returns a canned PrMetadata."""
+
+    def __init__(self, meta) -> None:
+        self._meta = meta
+        self.calls: list[tuple[str, str, int, str | None]] = []
+
+    async def fetch(self, owner, repo, number, *, token):
+        self.calls.append((owner, repo, number, token))
+        return self._meta
+
+
+async def test_row_to_pr_summary_live_enriches_with_github_metadata() -> None:
+    """With a token + reachable GitHub, the PR summary carries real CI + diff stats."""
+    from butlers.api.routers.qa import _row_to_pr_summary_live
+    from butlers.core.qa.github_pr import PrMetadata
+
+    client = _StubClient(PrMetadata(ci_status="passing", additions=12, deletions=3))
+
+    summary = await _row_to_pr_summary_live(_pr_row(), token="t0ken", client=client)
+
+    assert summary is not None
+    assert summary.ci_status == "passing"
+    assert summary.additions == 12
+    assert summary.deletions == 3
+    assert client.calls == [("Tzeusy", "butlers", 1653, "t0ken")]
+
+
+async def test_row_to_pr_summary_live_falls_back_when_unavailable() -> None:
+    """No token / GitHub unreachable -> honest unavailable (None) fields, no fake +0/-0."""
+    from butlers.api.routers.qa import _row_to_pr_summary_live
+    from butlers.core.qa.github_pr import PrMetadata
+
+    client = _StubClient(PrMetadata(ci_status=None, additions=None, deletions=None))
+
+    summary = await _row_to_pr_summary_live(_pr_row(), token=None, client=client)
+
+    assert summary is not None
+    assert summary.ci_status is None
+    assert summary.additions is None
+    assert summary.deletions is None
+
+
+async def test_row_to_pr_summary_live_returns_none_without_pr() -> None:
+    """No PR on the row -> None (no GitHub fetch attempted)."""
+    from butlers.api.routers.qa import _row_to_pr_summary_live
+    from butlers.core.qa.github_pr import PrMetadata
+
+    client = _StubClient(PrMetadata(ci_status="passing", additions=1, deletions=1))
+    row = {
+        "status": "investigating",
+        "pr_url": None,
+        "pr_number": None,
+        "branch_name": None,
+        "created_at": datetime.now(UTC),
+        "closed_at": None,
+    }
+
+    summary = await _row_to_pr_summary_live(row, token="t0ken", client=client)
+
+    assert summary is None
+    assert client.calls == []
