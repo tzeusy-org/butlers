@@ -53,6 +53,29 @@ class TestBuildAuditGroupQuery:
         sql = build_audit_group_query()
         assert "dashboard_audit_log" in sql
 
+    def test_unions_public_audit_log(self):
+        """During the writer transition (bu-fyal7) the grouping must read from
+        BOTH the legacy table and the canonical primitive."""
+        sql = build_audit_group_query()
+        assert "public.audit_log" in sql
+        assert "UNION ALL" in sql
+        # Canonical column mapping must be present (actor->butler, ts->created_at,
+        # action->operation, metadata->request_summary).
+        assert "actor AS butler" in sql
+        assert "ts AS created_at" in sql
+        assert "action AS operation" in sql
+        assert "metadata" in sql
+
+    def test_unified_source_feeds_grouping(self):
+        """The trigger-source / result filters operate on the unified source, so
+        the legacy column names survive the UNION (no SQL reference breaks)."""
+        sql = build_audit_group_query()
+        # The inner filter still keys on result='error' over the unified rows.
+        assert "WHERE result = 'error'" in sql
+        # Schedule detection still keys on operation + request_summary.
+        assert "operation = 'session'" in sql
+        assert "request_summary->>'trigger_source'" in sql
+
     def test_contains_tmp_path_normalization(self):
         """The CTE must normalize /tmp/tmpXXX/ paths."""
         sql = build_audit_group_query()
