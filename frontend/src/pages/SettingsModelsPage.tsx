@@ -104,6 +104,7 @@ function EditModelForm({
   const [modelId, setModelId] = useState(model.model_id);
   const [complexityTier, setComplexityTier] = useState<ComplexityTier>(model.complexity_tier);
   const [priority, setPriority] = useState(String(model.priority));
+  const [sessionTimeoutS, setSessionTimeoutS] = useState(String(model.session_timeout_s));
   const [enabled, setEnabled] = useState(model.enabled);
   const [args, setArgs] = useState(
     model.extra_args.length > 0 ? JSON.stringify(model.extra_args) : "",
@@ -119,6 +120,9 @@ function EditModelForm({
     const parsedPriority = parseInt(priority, 10);
     if (isNaN(parsedPriority) || parsedPriority < 0)
       errors.priority = "Priority must be a non-negative integer";
+    const parsedTimeout = parseInt(sessionTimeoutS, 10);
+    if (isNaN(parsedTimeout) || parsedTimeout <= 0)
+      errors.session_timeout_s = "Session timeout must be a positive integer (seconds)";
     if (args.trim()) {
       try {
         const parsed = JSON.parse(args);
@@ -153,6 +157,7 @@ function EditModelForm({
           model_id: modelId.trim(),
           complexity_tier: complexityTier,
           priority: parseInt(priority, 10),
+          session_timeout_s: parseInt(sessionTimeoutS, 10),
           enabled,
           extra_args: extraArgs,
         },
@@ -264,6 +269,31 @@ function EditModelForm({
           />
           {fieldErrors.priority && (
             <p className="font-mono text-[10px] text-destructive">{fieldErrors.priority}</p>
+          )}
+        </div>
+
+        {/* Session timeout (seconds) */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="edit-session-timeout"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Per-session timeout (s)
+          </Label>
+          <Input
+            id="edit-session-timeout"
+            type="number"
+            min={1}
+            step={1}
+            value={sessionTimeoutS}
+            onChange={(e) => setSessionTimeoutS(e.target.value)}
+            aria-invalid={!!fieldErrors.session_timeout_s}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.session_timeout_s && (
+            <p className="font-mono text-[10px] text-destructive">
+              {fieldErrors.session_timeout_s}
+            </p>
           )}
         </div>
 

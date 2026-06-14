@@ -666,12 +666,82 @@ describe("SettingsModelsPage — EditModelDialog", () => {
           alias: "renamed-sonnet",
           complexity_tier: "workhorse",
           priority: 10,
+          session_timeout_s: 300,
           enabled: true,
           extra_args: [],
         }),
       }),
       expect.any(Object),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-session timeout field (bu-cw3xt)
+  // -------------------------------------------------------------------------
+
+  it("renders the per-session timeout input pre-populated from the catalog row", async () => {
+    setHookState({ entries: [makeModel({ session_timeout_s: 900 })] });
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const timeoutInput = screen.getByLabelText(/per-session timeout/i) as HTMLInputElement;
+    expect(timeoutInput).toBeTruthy();
+    expect(timeoutInput.value).toBe("900");
+  });
+
+  it("includes the edited session_timeout_s in the save payload", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const timeoutInput = screen.getByLabelText(/per-session timeout/i);
+    await act(async () => {
+      fireEvent.change(timeoutInput, { target: { value: "1200" } });
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "model-1",
+        body: expect.objectContaining({ session_timeout_s: 1200 }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("rejects a non-positive session timeout and blocks save", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const timeoutInput = screen.getByLabelText(/per-session timeout/i);
+    await act(async () => {
+      fireEvent.change(timeoutInput, { target: { value: "0" } });
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    expect(
+      screen.getByText("Session timeout must be a positive integer (seconds)"),
+    ).toBeTruthy();
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it("calls onSuccess toast and closes dialog when mutate resolves", async () => {
