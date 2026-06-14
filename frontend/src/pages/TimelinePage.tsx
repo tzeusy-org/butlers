@@ -39,7 +39,7 @@ export default function TimelinePage() {
   const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
 
   // Fetch timeline data
-  const { data: response, isLoading } = useTimeline({
+  const { data: response, isLoading, isError, refetch } = useTimeline({
     limit: PAGE_SIZE,
     butler: selectedButlers.length > 0 ? selectedButlers : undefined,
     event_type: selectedTypes.length > 0 ? selectedTypes : undefined,
@@ -174,6 +174,8 @@ export default function TimelinePage() {
           <UnifiedTimeline
             events={displayEvents}
             isLoading={isLoading && cursor === undefined}
+            isError={isError && displayEvents.length === 0}
+            onRetry={() => void refetch()}
             onLoadMore={handleLoadMore}
             hasMore={currentHasMore}
           />

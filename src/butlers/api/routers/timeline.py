@@ -259,9 +259,18 @@ async def list_timeline(
             rows = await pool.fetch(notif_sql, *args_n)
             for row in rows:
                 events.append(_notification_to_event(row, butler=row["source_butler"]))
-        except (KeyError, Exception):
-            # Switchboard DB may not be available; skip notifications gracefully
+        except KeyError:
+            # Switchboard DB is not configured in this deployment; benign — skip
+            # notifications and return the rest of the timeline.
             logger.debug("Switchboard pool not available; skipping notifications")
+        except Exception:
+            # A real notification-query failure: the timeline still returns its
+            # other event sources (partial, non-breaking), but the sub-query
+            # failure must not be invisible — surface it at warning level.
+            logger.warning(
+                "Notification sub-query failed; returning timeline without notifications",
+                exc_info=True,
+            )
 
     # --- Merge and sort ---
     events.sort(key=lambda e: e.timestamp, reverse=True)

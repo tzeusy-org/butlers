@@ -16,6 +16,8 @@ import { cn } from "@/lib/utils";
 export interface UnifiedTimelineProps {
   events: TimelineEvent[];
   isLoading: boolean;
+  isError?: boolean;
+  onRetry?: () => void;
   onLoadMore?: () => void;
   hasMore?: boolean;
 }
@@ -270,17 +272,47 @@ function EmptyState() {
 }
 
 // ---------------------------------------------------------------------------
+// Error state
+// ---------------------------------------------------------------------------
+
+function ErrorState({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div data-testid="timeline-error">
+      <EmptyStateUI
+        title="Could not load the timeline."
+        description="The event stream failed to load. This is not the same as having no activity — please try again."
+        action={
+          onRetry ? (
+            <Button variant="outline" size="sm" onClick={onRetry}>
+              Retry
+            </Button>
+          ) : undefined
+        }
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // UnifiedTimeline
 // ---------------------------------------------------------------------------
 
 export default function UnifiedTimeline({
   events,
   isLoading,
+  isError,
+  onRetry,
   onLoadMore,
   hasMore,
 }: UnifiedTimelineProps) {
   if (isLoading) {
     return <TimelineSkeleton />;
+  }
+
+  // A failed fetch must be distinguishable from genuine no-activity: render a
+  // dedicated error state (with retry) instead of falling through to EmptyState.
+  if (isError) {
+    return <ErrorState onRetry={onRetry} />;
   }
 
   if (events.length === 0) {
