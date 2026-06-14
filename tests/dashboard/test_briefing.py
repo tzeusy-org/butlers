@@ -78,9 +78,10 @@ def _make_owner_pool(
     """Build a mock switchboard pool for the briefing endpoint.
 
     Routes pool.fetch calls by SQL keyword:
-        - "notifications"       -> attention_items (notification rows)
-        - "dashboard_audit_log" -> audit_rows (grouped audit error rows)
-        - "butler_registry"     -> butler_statuses
+        - "notifications"   -> attention_items (notification rows)
+        - "audit_source"    -> audit_rows (grouped audit error rows; the canonical
+                               public.audit_log grouping CTE alias, bu-j26e8)
+        - "butler_registry" -> butler_statuses
     """
     pool = AsyncMock()
 
@@ -104,7 +105,7 @@ def _make_owner_pool(
     async def _fetch(sql, *args):
         if "notifications" in sql:
             return [_make_record(r) for r in items]
-        if "dashboard_audit_log" in sql:
+        if "audit_source" in sql:
             return [_make_record(r) for r in audits]
         if "butler_registry" in sql:
             return [_make_record(r) for r in statuses]
@@ -981,7 +982,7 @@ class TestDataFetchWarnings:
         pool = AsyncMock()
 
         async def _fetch_side_effect(sql, *args):
-            if "dashboard_audit_log" in sql:
+            if "audit_source" in sql:
                 raise RuntimeError("DB outage")
             return []
 
@@ -1060,7 +1061,7 @@ class TestConcurrentFetch:
         async def _fetch_side_effect(sql, *args):
             if "notifications" in sql:
                 key = "notifications"
-            elif "dashboard_audit_log" in sql:
+            elif "audit_source" in sql:
                 key = "audit"
             elif "butler_registry" in sql:
                 key = "registry"
@@ -1179,7 +1180,7 @@ class TestConcurrentFetch:
         original_fetch = pool.fetch.side_effect
 
         async def _patched_fetch(sql, *args):
-            if "dashboard_audit_log" in sql:
+            if "audit_source" in sql:
                 raise RuntimeError("audit unavailable")
             return await original_fetch(sql, *args)
 
@@ -1225,7 +1226,7 @@ def _make_audit_pool(
     async def _fetch(sql, *args):
         if "notifications" in sql:
             return []
-        if "dashboard_audit_log" in sql:
+        if "audit_source" in sql:
             return [_make_record(r) for r in rows]
         if "butler_registry" in sql:
             return [_make_record(r) for r in statuses]
@@ -1391,11 +1392,12 @@ class TestAuditDerivedAttentionItems:
 
 
 # ---------------------------------------------------------------------------
-# _make_owner_pool dispatches dashboard_audit_log (bu-e00sx gap)
+# _make_owner_pool dispatches the audit grouping query (bu-e00sx gap)
 #
-# Verifies that the general-purpose pool helper now routes on
-# "dashboard_audit_log" so tests that mix notification and audit rows
-# exercise the end-to-end audit path through _fetch_dashboard_state.
+# Verifies that the general-purpose pool helper routes on "audit_source" (the
+# canonical public.audit_log grouping CTE alias, bu-j26e8) so tests that mix
+# notification and audit rows exercise the end-to-end audit path through
+# _fetch_dashboard_state.
 # ---------------------------------------------------------------------------
 
 

@@ -1,26 +1,30 @@
-"""DB-level regression for the audit-log UNION read-path re-point (bu-fyal7).
+"""DB-level regression for the canonical-only audit-log read path (bu-j26e8).
 
-The audit-unify chain re-points the three surfaces that previously read ONLY the
-legacy Switchboard ``dashboard_audit_log`` table so they also read the canonical
-``public.audit_log`` primitive (extended with ``metadata``/``result``/``error``
-in core_122).  Until the writer migration (.3) lands, rows live in BOTH tables,
-so these reads UNION the two sources.
+The audit-unify epic finished by making every read surface query the canonical
+``public.audit_log`` primitive ALONE.  The historical Switchboard
+``dashboard_audit_log`` rows were copied into ``public.audit_log`` by migration
+core_124, so the live legacy UNION arm was removed (bu-j26e8) — reads no longer
+touch ``dashboard_audit_log`` at all.  (Earlier in the epic, .2/bu-fyal7 had
+these surfaces UNION both tables during the writer transition; this module
+supersedes those live-UNION assertions.)
 
 The unit tests in ``test_audit_grouping.py`` only assert on the SQL string shape;
 they never execute it.  This module runs the *actual* grouping query and the
 *actual* egress-catalog query against a migrated Postgres (core + switchboard
 chains, flat ``public`` topology) and asserts:
 
-  1. An error row present ONLY in ``public.audit_log`` now appears in the
-     issues/briefing grouping.
-  2. Error-grouping semantics are preserved across the UNION:
+  1. An error row in ``public.audit_log`` appears in the issues/briefing
+     grouping.
+  2. Error-grouping semantics:
      - ``result='error'`` rows are included, ``result='success'`` rows excluded.
      - schedule detection (``operation='session'`` +
-       ``request_summary->>'trigger_source' LIKE 'schedule:%'``) still classifies
-       a canonical row as a scheduled failure.
-  3. Legacy ``dashboard_audit_log`` error rows still appear (no regression).
-  4. The egress catalog counts operations from BOTH tables (UNION ALL — no
-     dedupe), and the canonical ``action`` column maps onto ``operation``.
+       ``request_summary->>'trigger_source' LIKE 'schedule:%'``) classifies a
+       canonical row as a scheduled failure.
+  3. A row present ONLY in the legacy ``dashboard_audit_log`` is NOT read live
+     (it would surface only after the core_124 backfill — covered by the
+     migration test, not a live UNION here).
+  4. The egress catalog counts operations from ``public.audit_log`` only
+     (``action`` -> ``operation``); legacy-only rows are not counted live.
 """
 
 from __future__ import annotations
@@ -163,8 +167,11 @@ async def test_canonical_only_error_appears_in_grouping(pool: asyncpg.Pool) -> N
     )
 
 
-async def test_legacy_error_still_appears_in_grouping(pool: asyncpg.Pool) -> None:
-    """Regression guard: legacy dashboard_audit_log error rows must still group."""
+async def test_legacy_only_error_not_read_live(pool: asyncpg.Pool) -> None:
+    """A row living ONLY in the legacy dashboard_audit_log must NOT surface in the
+    grouping — the live UNION arm was removed (bu-j26e8).  Such rows become
+    visible only after the core_124 backfill copies them into public.audit_log
+    (covered by the migration test), not via a live cross-table read here."""
     await _insert_legacy(
         pool,
         butler="qa",
@@ -174,13 +181,18 @@ async def test_legacy_error_still_appears_in_grouping(pool: asyncpg.Pool) -> Non
     )
     rows = await pool.fetch(build_audit_group_query())
     summaries = [r["error_summary"] for r in rows]
-    assert "Legacy connection refused" in summaries
+    assert "Legacy connection refused" not in summaries, (
+        "legacy-only row leaked into the canonical-only grouping — the live "
+        "UNION arm should be gone"
+    )
+    assert rows == []
 
 
-async def test_grouping_unions_both_sources(pool: asyncpg.Pool) -> None:
-    """Errors from BOTH tables are returned; success rows from either are filtered."""
+async def test_grouping_reads_canonical_only(pool: asyncpg.Pool) -> None:
+    """Only public.audit_log error rows are returned; legacy rows are invisible
+    live and success rows are filtered."""
+    # Legacy rows must be ignored entirely (no live UNION).
     await _insert_legacy(pool, butler="qa", operation="session", result="error", error="legacy-err")
-    await _insert_legacy(pool, butler="qa", operation="session", result="success", error=None)
     await _insert_canonical(
         pool, actor="health", action="session", result="error", error="canonical-err"
     )
@@ -188,11 +200,11 @@ async def test_grouping_unions_both_sources(pool: asyncpg.Pool) -> None:
 
     rows = await pool.fetch(build_audit_group_query())
     summaries = {r["error_summary"] for r in rows}
-    assert "legacy-err" in summaries
     assert "canonical-err" in summaries
+    assert "legacy-err" not in summaries  # legacy is not read live
     # success rows contribute no group
     assert all(s not in {"", None} for s in summaries)
-    assert len(rows) == 2
+    assert len(rows) == 1
 
 
 async def test_canonical_scheduled_failure_classified_critical(pool: asyncpg.Pool) -> None:
@@ -276,11 +288,12 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
         return await client.get(path)
 
 
-async def test_egress_counts_both_tables(pool: asyncpg.Pool, egress_app: FastAPI) -> None:
-    """The egress catalog aggregates llm_api_call counts from BOTH the legacy
-    table and public.audit_log (action -> operation)."""
+async def test_egress_counts_canonical_only(pool: asyncpg.Pool, egress_app: FastAPI) -> None:
+    """The egress catalog aggregates llm_api_call counts from public.audit_log
+    ONLY (action -> operation); legacy dashboard_audit_log rows are not counted
+    live (bu-j26e8 — the UNION arm was removed)."""
     await _seed_owner(pool)
-    # 5 legacy llm_api_call rows.
+    # 5 legacy llm_api_call rows — must be IGNORED (no live UNION).
     for _ in range(5):
         await _insert_legacy(pool, butler="x", operation="llm_api_call", result="success")
     # 3 canonical rows whose action maps onto the operation grouping key.
@@ -292,8 +305,8 @@ async def test_egress_counts_both_tables(pool: asyncpg.Pool, egress_app: FastAPI
     actors = resp.json()["data"]["actors"]
     claude = next((a for a in actors if a["actor_id"] == "anthropic.claude"), None)
     assert claude is not None
-    assert claude["total_calls"] == 8, (
-        f"egress did not UNION both tables; expected 8, got {claude['total_calls']}"
+    assert claude["total_calls"] == 3, (
+        f"egress should count canonical rows only; expected 3, got {claude['total_calls']}"
     )
 
 

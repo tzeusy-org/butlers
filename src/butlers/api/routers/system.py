@@ -22,8 +22,9 @@ Operation names assumed in the actor registry for /api/system/egress
     "google_calendar_write" -- outbound Google Calendar API mutation
     "gmail_send"            -- outbound Gmail SMTP / API send
 
-These names are the values stored in the ``operation`` column of
-``switchboard.dashboard_audit_log`` for externally-visible API calls.
+These names are the values stored in the ``action`` column of the canonical
+``public.audit_log`` table (the ``operation`` alias in the egress query) for
+externally-visible API calls.
 """
 
 from __future__ import annotations
@@ -184,8 +185,8 @@ class HeartbeatFacts(BaseModel):
 # ---------------------------------------------------------------------------
 # Actor registry (server-side constant)
 #
-# Maps operation strings from switchboard.dashboard_audit_log to stable
-# actor identifiers and human-readable display names.
+# Maps operation strings from the canonical public.audit_log (action column) to
+# stable actor identifiers and human-readable display names.
 #
 # Operation naming convention (see module docstring and bu-n28xh audit):
 #   - llm_api_call:          outbound LLM provider API call
@@ -523,11 +524,11 @@ async def get_egress_catalog(
     """Return the data-egress catalog for this instance (owner-only).
 
     Aggregates the unified audit log by operation, mapping each operation to an
-    external actor via the server-side actor registry. During the audit-log
-    writer transition (bu-fyal7) the source is a UNION of the legacy
-    ``switchboard.dashboard_audit_log`` table and the canonical
-    ``public.audit_log`` primitive (``action`` -> ``operation``, ``ts`` ->
-    ``created_at``), so calls recorded against either table are counted.
+    external actor via the server-side actor registry. The source is the
+    canonical ``public.audit_log`` primitive alone (``action`` -> ``operation``,
+    ``ts`` -> ``created_at``); the legacy ``switchboard.dashboard_audit_log``
+    UNION arm was removed (bu-j26e8) after migration core_124 backfilled the
+    historical rows into the canonical table.
 
     Only the owner contact may view the egress catalog. Non-owner callers
     receive HTTP 403. See _assert_owner_contact() for the assertion logic.
@@ -547,9 +548,6 @@ async def get_egress_catalog(
             rows = await sw_pool.fetch(
                 """
                 WITH egress_source AS (
-                    SELECT operation, created_at
-                    FROM dashboard_audit_log
-                    UNION ALL
                     SELECT action AS operation, ts AS created_at
                     FROM public.audit_log
                 )

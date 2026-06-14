@@ -13,17 +13,19 @@ Several mutation sites write ONLY to the Switchboard butler's
   * src/butlers/api/routers/calendar_workspace.py
   * src/butlers/api/dashboard_audit_middleware.py (every non-GET mutation)
 
-The /audit-log read endpoint reads ``public.audit_log`` and so these mutations
-were INVISIBLE on the page — a split-brained audit log.
+As of the audit-unify epic, every writer routes through ``public.audit_log``
+(.3 / bu-h47nm) and the read endpoint reads ``public.audit_log`` ALONE — the
+live legacy UNION arm was removed (bu-j26e8) after migration core_124 backfilled
+the historical ``dashboard_audit_log`` rows into the canonical table.
 
 The unit tests in ``test_audit_log.py`` mock the DB pools and therefore cannot
-catch this: they never exercise the real two-table topology.  This test runs the
-*actual* read endpoint against a migrated Postgres (core + switchboard chains)
-and asserts that a row written by the orphaned ``log_audit_entry`` writer (the
-exact helper ``state.py`` / ``schedules.py`` call) shows up in the response.
+catch read-topology regressions: they never exercise the real two-table layout.
+This module runs the *actual* read endpoint against a migrated Postgres (core +
+switchboard chains) and asserts the canonical-only read contract:
 
-Pre-fix: the row is invisible (endpoint reads only public.audit_log) → fails.
-Post-fix: the endpoint UNIONs dashboard_audit_log → the row is returned.
+  * a row written via ``log_audit_entry`` lands in (and is read from)
+    ``public.audit_log``;
+  * a row living ONLY in the legacy ``dashboard_audit_log`` is NOT read live.
 """
 
 from __future__ import annotations
@@ -139,12 +141,14 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
     assert entry["target"] == "/api/qa/schedules"  # target <- request_summary.path
 
 
-async def test_genuinely_legacy_dashboard_row_still_visible_via_union(
+async def test_genuinely_legacy_dashboard_row_not_read_live(
     pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
-    """Read-side regression guard (bu-isi4i): rows that genuinely live only in
-    the legacy ``dashboard_audit_log`` (pre-cutover history) must still surface
-    on /audit-log via the .2 UNION even though writers no longer target it."""
+    """Read-side contract (bu-j26e8): a row living ONLY in the legacy
+    ``dashboard_audit_log`` must NOT surface on /audit-log — the live UNION arm
+    was removed.  Such pre-cutover history becomes visible only after the
+    core_124 backfill copies it into ``public.audit_log`` (covered by the
+    migration test), not via a live cross-table read here."""
     # The pool registers the JSONB codec, so hand request_summary / user_context
     # as plain dicts (matching how the legacy log_audit_entry writer wrote them).
     await pool.execute(
@@ -169,14 +173,11 @@ async def test_genuinely_legacy_dashboard_row_still_visible_via_union(
     body = resp.json()
 
     actions = [e["action"] for e in body["data"]]
-    assert "schedule.create" in actions, (
-        "legacy dashboard_audit_log row invisible on /audit-log — "
-        f"UNION read regression. Got actions={actions}"
+    assert "schedule.create" not in actions, (
+        "legacy-only dashboard_audit_log row leaked onto /audit-log — the live "
+        f"UNION arm should be gone. Got actions={actions}"
     )
-    assert body["meta"]["total"] == 1
-    entry = next(e for e in body["data"] if e["action"] == "schedule.create")
-    assert entry["actor"] == "qa"
-    assert entry["target"] == "/api/qa/schedules"
+    assert body["meta"]["total"] == 0
 
 
 async def test_canonical_and_legacy_rows_merged_ts_desc(
@@ -214,7 +215,8 @@ async def test_canonical_and_legacy_rows_merged_ts_desc(
 async def test_action_filter_matches_legacy_operation(
     pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
-    """?action= filters legacy rows on their operation label."""
+    """?action= filters canonical rows by their action label (operation maps to
+    action via the log_audit_entry shim)."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     await log_audit_entry(mock_db, butler="qa", operation="schedule.delete", request_summary={})
@@ -227,10 +229,12 @@ async def test_action_filter_matches_legacy_operation(
     assert body["data"][0]["action"] == "schedule.delete"
 
 
-async def test_key_filter_excludes_legacy_rows(pool: asyncpg.Pool, audit_app: FastAPI) -> None:
-    """The credential-key filter (?key=) must never match legacy rows (they have
-    no credential target), preserving its exact semantics."""
-    # Legacy row — has no credential target.
+async def test_key_filter_excludes_rows_without_credential_target(
+    pool: asyncpg.Pool, audit_app: FastAPI
+) -> None:
+    """The credential-key filter (?key=) must never match rows with no credential
+    target, preserving its exact semantics."""
+    # Row with no credential target (shim writer leaves target NULL).
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     await log_audit_entry(mock_db, butler="qa", operation="schedule.create", request_summary={})

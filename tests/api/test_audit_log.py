@@ -345,8 +345,9 @@ def _make_audit_app(rows: list[dict], total: int | None = None) -> tuple:
     mock_pool.fetchval = AsyncMock(return_value=total)
     mock_pool.fetch = AsyncMock(return_value=[_make_record(r) for r in rows])
 
-    # Empty legacy (switchboard.dashboard_audit_log) source so the merged read
-    # path exercises only the canonical public.audit_log rows by default.
+    # The read path queries the canonical public.audit_log via
+    # credential_shared_pool() only (bu-j26e8 removed the legacy UNION arm).  A
+    # spare switchboard-pool stub is kept wired for any non-read code paths.
     sw_pool = AsyncMock()
     sw_pool.fetchval = AsyncMock(return_value=0)
     sw_pool.fetch = AsyncMock(return_value=[])
@@ -401,10 +402,11 @@ def test_list_audit_log_default_limit():
     app, mock_pool, _ = _make_audit_app([])
     client = TestClient(app)
     client.get("/api/audit-log")
-    # The LIMIT $N arg is appended last to the args list passed to fetch
+    # Trailing positional args to pool.fetch are (limit, offset); limit defaults
+    # to 100 and offset to 0.
     call_args = mock_pool.fetch.call_args[0]
-    # Last positional arg to pool.fetch is the limit value
-    assert call_args[-1] == 100
+    assert call_args[-2] == 100
+    assert call_args[-1] == 0
 
 
 def test_list_audit_log_limit_clamped():
@@ -452,23 +454,22 @@ def test_list_audit_log_order_ts_desc():
     assert "ORDER BY ts DESC" in sql
 
 
-def test_list_audit_log_offset_overfetches_head_for_merge():
-    """The canonical query over-fetches offset+limit rows so the in-memory merge
-    with the legacy source has enough candidates to slice the requested page.
-
-    Offset itself is applied in Python after merging both sources (the legacy
-    dashboard_audit_log rows must interleave by ts), so the canonical SQL caps
-    at LIMIT (offset+limit) and carries no SQL OFFSET clause.
-    """
+def test_list_audit_log_paginates_with_sql_limit_offset():
+    """Post audit-unify (bu-j26e8) reads come solely from public.audit_log, so
+    pagination is a plain SQL ``LIMIT $N OFFSET $N+1`` against the canonical
+    table — no in-memory merge, no over-fetch.  The last two positional args to
+    pool.fetch are (limit, offset)."""
     app, mock_pool, _ = _make_audit_app([])
     client = TestClient(app)
     client.get("/api/audit-log?offset=50&limit=25")
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
     assert "LIMIT" in sql
+    assert "OFFSET" in sql
     args = fetch_call[1:]
-    # Last positional arg is the head (offset + limit = 75).
-    assert args[-1] == 75
+    # Trailing positional args: limit then offset.
+    assert args[-2] == 25
+    assert args[-1] == 50
 
 
 def test_list_audit_log_offset_reflected_in_meta():
