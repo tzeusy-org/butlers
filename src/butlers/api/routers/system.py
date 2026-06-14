@@ -522,8 +522,12 @@ async def get_egress_catalog(
 ) -> ApiResponse[EgressCatalog]:
     """Return the data-egress catalog for this instance (owner-only).
 
-    Aggregates switchboard.dashboard_audit_log by operation, mapping each
-    operation to an external actor via the server-side actor registry.
+    Aggregates the unified audit log by operation, mapping each operation to an
+    external actor via the server-side actor registry. During the audit-log
+    writer transition (bu-fyal7) the source is a UNION of the legacy
+    ``switchboard.dashboard_audit_log`` table and the canonical
+    ``public.audit_log`` primitive (``action`` -> ``operation``, ``ts`` ->
+    ``created_at``), so calls recorded against either table are counted.
 
     Only the owner contact may view the egress catalog. Non-owner callers
     receive HTTP 403. See _assert_owner_contact() for the assertion logic.
@@ -542,12 +546,19 @@ async def get_egress_catalog(
         try:
             rows = await sw_pool.fetch(
                 """
+                WITH egress_source AS (
+                    SELECT operation, created_at
+                    FROM dashboard_audit_log
+                    UNION ALL
+                    SELECT action AS operation, ts AS created_at
+                    FROM public.audit_log
+                )
                 SELECT
                     operation,
                     max(created_at) AS last_seen_at,
                     count(*) AS total_calls,
                     min(created_at) AS first_seen_at
-                FROM dashboard_audit_log
+                FROM egress_source
                 GROUP BY operation
                 ORDER BY last_seen_at DESC
                 """

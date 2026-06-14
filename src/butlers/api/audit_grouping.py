@@ -34,8 +34,44 @@ from butlers.api.models import Issue
 
 #: Shared CTE fragment. Paste into a larger query; the outer SELECT operates on
 #: the ``normalized_errors`` CTE, then callers add WHERE/LIMIT as needed.
+#:
+#: Source unification (bu-fyal7)
+#: -----------------------------
+#: During the audit-log writer transition, error rows live in BOTH the legacy
+#: Switchboard ``dashboard_audit_log`` table AND the canonical
+#: ``public.audit_log`` primitive (which gained ``metadata``/``result``/``error``
+#: columns in core_122).  The ``audit_source`` CTE UNIONs the two into a single
+#: row shape with the legacy column names — ``butler, created_at, error,
+#: operation, request_summary, result`` — so the downstream grouping logic, the
+#: inner ``WHERE result = 'error'{where_extra}`` filter (callers reference
+#: ``created_at``), and the trigger-source / operation semantics all keep working
+#: unchanged across both sources.
+#:
+#: Column mapping for the canonical side:
+#:   actor    -> butler          action   -> operation
+#:   ts       -> created_at      metadata -> request_summary
+#:   error    -> error           result   -> result
 _AUDIT_GROUP_CTE = """
-WITH normalized_errors AS (
+WITH audit_source AS (
+    SELECT
+        butler,
+        created_at,
+        error,
+        operation,
+        request_summary,
+        result
+    FROM dashboard_audit_log
+    UNION ALL
+    SELECT
+        actor AS butler,
+        ts AS created_at,
+        error,
+        action AS operation,
+        COALESCE(metadata, '{{}}'::jsonb) AS request_summary,
+        result
+    FROM public.audit_log
+),
+normalized_errors AS (
     SELECT
         butler,
         created_at,
@@ -58,7 +94,7 @@ WITH normalized_errors AS (
             SPLIT_PART(COALESCE(request_summary->>'trigger_source', ''), ':', 2),
             ''
         ) AS schedule_name
-    FROM dashboard_audit_log
+    FROM audit_source
     WHERE result = 'error'{where_extra}
 ),
 grouped_errors AS (
