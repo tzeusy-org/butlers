@@ -72,13 +72,41 @@ def test_module_reimport_does_not_raise_duplicate_timeseries(module_path: str) -
     """Reloading a metrics-defining module must not collide in the registry.
 
     This is the exact failure mode (audit_log_appended_total registered twice)
-    that flaked the finance bulk suite under pytest-xdist.
+    that flaked the finance bulk suite under pytest-xdist. The reload is wrapped
+    in ``_reload_restoring_attrs`` so it cannot leak rebound module-level objects
+    (e.g. ``_get_db_manager``) into later same-worker tests [bu-uhn47].
     """
     module = importlib.import_module(module_path)
-    importlib.reload(module)  # would raise ValueError before the fix
+    _reload_restoring_attrs(module)  # would raise ValueError before the fix
 
 
 def test_audit_counter_is_present_after_reload() -> None:
     audit = importlib.import_module("butlers.api.routers.audit")
-    importlib.reload(audit)
+    _reload_restoring_attrs(audit)
     assert REGISTRY._names_to_collectors.get("audit_log_appended") is not None
+
+
+def _reload_restoring_attrs(module: object) -> None:
+    """Reload ``module`` then restore its original module-level attributes.
+
+    Isolation [bu-uhn47]: ``importlib.reload`` re-executes the module body and
+    rebinds every module-level name to a *new* object — including FastAPI
+    dependency stubs like ``_get_db_manager`` and ``APIRouter`` instances.
+    Leaving that mutation in place poisons later tests in the same xdist worker:
+    a test that overrides ``app.dependency_overrides[module._get_db_manager]``
+    would key on the post-reload function while the route was wired to the
+    pre-reload one, so the override silently no-ops (observed as the
+    google_health grant-flow test seeing ``state='not_configured'``). We
+    snapshot the module's ``__dict__`` and restore it after the reload so the
+    duplicate-timeseries check still runs but no identity leak escapes.
+    """
+    before = dict(vars(module))
+    try:
+        importlib.reload(module)  # type: ignore[arg-type]
+    finally:
+        current = vars(module)
+        for key, value in before.items():
+            current[key] = value
+        for key in list(current.keys()):
+            if key not in before:
+                del current[key]
