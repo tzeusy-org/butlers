@@ -246,20 +246,23 @@ async def create_temp_contact(
 
     Creates a ``public.entities`` entry with ``metadata.unidentified = true``
     and a ``public.contacts`` entry linked to it (with
-    ``metadata.needs_disambiguation = true``), then asserts the sender's channel
-    identifier as a triple in ``relationship.entity_facts`` via the central
-    writer ``relationship_assert_fact()``.
+    ``metadata.needs_disambiguation = true``). It does NOT write the sender's
+    channel triple to ``relationship.entity_facts``.
 
-    Write-path cut-over (bu-k9ylx): the channel identifier is NO LONGER written
-    to ``public.contact_info`` (that table is read-only). Existing-sender
-    detection now queries the triple store (the same path
-    ``resolve_contact_by_channel()`` uses after the bead-7 read cut-over).
+    entity-v3 (bu-hvrt1): the channel-triple assertion — the existing-sender
+    dedup key ``resolve_contact_by_channel()`` reads — was moved OUT of this
+    function (and off the Switchboard ingress path) into a deterministic
+    post-resolution hook in the routing pipeline:
+    ``relationship.tools.relationship_assert_fact.assert_sender_channel_fact()``.
+    Switchboard ingress must never write ``relationship.entity_facts``
+    (switchboard-identity invariant). Existing-sender detection still queries the
+    triple store via ``resolve_contact_by_channel()`` (bead-7 read cut-over).
 
     Parameters
     ----------
     pool:
         asyncpg connection pool.  Role must have INSERT on public.entities and
-        public.contacts; the channel triple is written via the central writer.
+        public.contacts.
     channel_type:
         Channel type (e.g., ``"telegram"``).
     channel_value:
@@ -332,39 +335,13 @@ async def create_temp_contact(
                 )
                 contact_id: UUID = contact_row["id"]
 
-        # Write-path cut-over (bu-k9ylx): assert the channel identifier as a
-        # triple via the central writer.  No public.contact_info write.
-        predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
-        if predicate is not None:
-            try:
-                from butlers.tools.relationship.relationship_assert_fact import (
-                    relationship_assert_fact,
-                )
-
-                await relationship_assert_fact(
-                    pool,
-                    entity_id,
-                    predicate,
-                    channel_value,
-                    src="identity",
-                    object_kind="literal",
-                    primary=True,
-                )
-            except Exception:  # noqa: BLE001 — never block temp-contact creation
-                logger.warning(
-                    "create_temp_contact: relationship_assert_fact failed for entity %s "
-                    "(channel_type=%r, value=%r) — channel triple not written",
-                    entity_id,
-                    channel_type,
-                    channel_value,
-                    exc_info=True,
-                )
-        else:
-            logger.debug(
-                "create_temp_contact: no predicate mapping for channel_type=%r; "
-                "channel triple not written",
-                channel_type,
-            )
+        # entity-v3 (bu-hvrt1): create_temp_contact NO LONGER writes the sender's
+        # channel triple to relationship.entity_facts. Switchboard ingress must not
+        # write entity_facts (switchboard-identity invariant); the channel-triple
+        # assertion — the existing-sender dedup key resolve_contact_by_channel()
+        # reads — is asserted deterministically from the routing pipeline via
+        # ``relationship.tools.relationship_assert_fact.assert_sender_channel_fact``.
+        # This function still mints the public.entities / public.contacts rows.
 
         return ResolvedContact(
             contact_id=contact_id,

@@ -5,15 +5,24 @@ relationship.entity_facts instead of public.contact_info / public.contacts.
 contact_id is no longer returned (set to None); entity_id is the primary key.
 build_identity_preamble no longer includes contact_id in its output string.
 
+entity-v3 (bu-hvrt1): create_temp_contact NO LONGER asserts the sender's channel
+triple to relationship.entity_facts. Switchboard ingress must not write
+entity_facts (switchboard-identity invariant); that assertion moved into a
+deterministic post-resolution hook in the routing pipeline
+(relationship.tools.relationship_assert_fact.assert_sender_channel_fact). This
+function still mints the public.entities / public.contacts rows.
+
 Covers:
 - resolve_contact_by_channel: owner, non-owner, unknown→None, DB error→None
 - build_identity_preamble: owner, known non-owner with/without entity_id, unknown with temp_id
 - create_temp_contact: creates new, returns existing on race, DB error→None
-- create_temp_contact dual-write shim (Group A, bu-3jfvv): flag on/off, shim failure swallowed
+- create_temp_contact: mints the public entity/contact WITHOUT any entity_facts
+  assertion (the channel triple is the pipeline hook's responsibility)
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -234,10 +243,11 @@ def test_build_identity_preamble():
 def _make_new_temp_contact_pool(contact_id: uuid.UUID, entity_id: uuid.UUID):
     """Pool mock for create_temp_contact's new-contact path (no existing match).
 
-    Write-path cut-over (bu-k9ylx): create_temp_contact first calls
+    entity-v3 (bu-hvrt1): create_temp_contact first calls
     resolve_contact_by_channel (pool.fetchrow on entity_facts → None here), then
     acquires a conn to INSERT the entity (conn.fetchval) and contact
-    (conn.fetchrow), then asserts the channel triple via the central writer.
+    (conn.fetchrow). It does NOT assert the channel triple — that is the routing
+    pipeline's deterministic hook, not this function's job.
     """
     pool = MagicMock()
     # resolve_contact_by_channel queries the triple store on the pool → no match.
@@ -271,8 +281,7 @@ async def test_create_temp_contact():
     contact_id = uuid.uuid4()
     pool, _conn = _make_new_temp_contact_pool(contact_id, entity_id)
 
-    with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock):
-        result = await create_temp_contact(pool, "telegram", "555")
+    result = await create_temp_contact(pool, "telegram", "555")
 
     assert result is not None
     assert result.contact_id == contact_id
@@ -289,8 +298,7 @@ async def test_create_temp_contact_db_error_returns_none():
     pool.acquire.return_value.__aenter__ = AsyncMock(side_effect=Exception("connection refused"))
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
-    with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock):
-        assert await create_temp_contact(pool, "telegram", "999") is None
+    assert await create_temp_contact(pool, "telegram", "999") is None
 
 
 async def test_create_temp_contact_returns_existing_on_conflict():
@@ -312,9 +320,7 @@ async def test_create_temp_contact_returns_existing_on_conflict():
         }
     )
 
-    with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
-        result = await create_temp_contact(pool, "telegram", "existing-chat")
-        mock_assert.assert_not_awaited()
+    result = await create_temp_contact(pool, "telegram", "existing-chat")
 
     assert result is not None
     assert result.contact_id is None  # entity_id is the authoritative key post bead 7
@@ -324,42 +330,38 @@ async def test_create_temp_contact_returns_existing_on_conflict():
 
 
 # ---------------------------------------------------------------------------
-# create_temp_contact — central-writer cut-over (Migration bead 8, bu-k9ylx)
+# create_temp_contact — entity-v3 ownership: NO entity_facts write (bu-hvrt1)
 # ---------------------------------------------------------------------------
-# The dual-write shim is removed.  create_temp_contact now writes the sender's
-# channel identifier to relationship.entity_facts ONLY, via the central writer
-# relationship_assert_fact() — there is NO public.contact_info INSERT.
+# entity-v3 reverses the Migration-bead-8 (bu-k9ylx) ownership: create_temp_contact
+# no longer asserts the sender's channel triple. Switchboard ingress must never
+# write relationship.entity_facts (switchboard-identity invariant). The channel
+# triple — the existing-sender dedup key — is now asserted by a deterministic
+# post-resolution hook in the routing pipeline
+# (relationship.tools.relationship_assert_fact.assert_sender_channel_fact).
 
 
 class TestCreateTempContactCentralWriter:
-    """create_temp_contact asserts the channel triple via the central writer."""
+    """create_temp_contact mints the public entity/contact and asserts NO fact."""
 
-    async def test_assert_fact_called_with_mapped_predicate(self):
-        """The channel triple is asserted with the mapped predicate + entity subject."""
+    async def test_does_not_call_relationship_assert_fact(self):
+        """create_temp_contact must NOT call the central entity_facts writer.
+
+        The channel-triple assertion is the routing pipeline's job (entity-v3,
+        bu-hvrt1); minting it here would re-introduce a switchboard-ingress
+        entity_facts write.
+        """
         contact_id = uuid.uuid4()
         entity_id = uuid.uuid4()
         pool, _conn = _make_new_temp_contact_pool(contact_id, entity_id)
 
         with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
-            await create_temp_contact(pool, "telegram", "12345")
-            mock_assert.assert_awaited_once()
-            call = mock_assert.call_args
-            # positional: (pool, subject=entity_id, predicate, object=value)
-            assert call.args[1] == entity_id
-            assert call.args[2] == "has-handle"  # telegram → has-handle
-            assert call.args[3] == "12345"
-            assert call.kwargs.get("primary") is True
-
-    async def test_assert_fact_failure_does_not_block_return_value(self):
-        """A central-writer failure is swallowed — ResolvedContact is still returned."""
-        contact_id = uuid.uuid4()
-        entity_id = uuid.uuid4()
-        pool, _conn = _make_new_temp_contact_pool(contact_id, entity_id)
-
-        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock, side_effect=RuntimeError("boom")):
             result = await create_temp_contact(pool, "telegram", "12345")
-            assert result is not None
-            assert result.contact_id == contact_id
+
+        mock_assert.assert_not_awaited()
+        # The public entity/contact are still minted and returned.
+        assert result is not None
+        assert result.entity_id == entity_id
+        assert result.contact_id == contact_id
 
     async def test_no_contact_info_insert_anywhere(self):
         """No INSERT/UPDATE/DELETE against public.contact_info is ever issued."""
@@ -367,14 +369,41 @@ class TestCreateTempContactCentralWriter:
         entity_id = uuid.uuid4()
         pool, conn = _make_new_temp_contact_pool(contact_id, entity_id)
 
-        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock):
-            await create_temp_contact(pool, "telegram", "12345")
+        await create_temp_contact(pool, "telegram", "12345")
 
         # Inspect every SQL string passed to conn.execute / conn.fetchrow:
         # none may write public.contact_info.
-        for mock_call in [*conn.execute.await_args_list, *conn.fetchrow.await_args_list]:
+        calls = [*conn.execute.await_args_list, *conn.fetchrow.await_args_list]
+        assert calls, "Expected database calls to be recorded"
+        for mock_call in calls:
             sql = mock_call.args[0] if mock_call.args else ""
             assert "contact_info" not in sql.lower(), f"unexpected contact_info SQL: {sql!r}"
+
+    async def test_no_entity_facts_write_dml_anywhere(self):
+        """No write-DML against relationship.entity_facts is issued.
+
+        The read-path re-check (resolve_contact_by_channel issues a SELECT/JOIN on
+        entity_facts) is legal and expected; only INSERT/UPDATE/DELETE would be a
+        switchboard-ingress fact write.
+        """
+        contact_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
+        pool, conn = _make_new_temp_contact_pool(contact_id, entity_id)
+
+        await create_temp_contact(pool, "telegram", "12345")
+
+        write_dml = re.compile(
+            r"\b(?:insert\s+into|update|delete\s+from)\s+relationship\.entity_facts\b"
+        )
+        all_calls = [
+            *conn.execute.await_args_list,
+            *conn.fetchrow.await_args_list,
+            *pool.fetchrow.await_args_list,
+        ]
+        assert all_calls, "Expected database calls to be recorded"
+        for mock_call in all_calls:
+            sql = (mock_call.args[0] if mock_call.args else "").lower()
+            assert not write_dml.search(sql), f"unexpected entity_facts write-DML: {sql!r}"
 
     async def test_existing_match_short_circuits_before_writes(self):
         """An existing triple match returns immediately without acquiring a conn."""
@@ -389,10 +418,120 @@ class TestCreateTempContactCentralWriter:
         )
         pool.acquire = MagicMock()  # must not be used
 
-        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
-            result = await create_temp_contact(pool, "telegram", "777")
-            mock_assert.assert_not_awaited()
+        result = await create_temp_contact(pool, "telegram", "777")
+
         pool.acquire.assert_not_called()
         assert result is not None
         assert result.entity_id == existing_entity_id
         assert result.roles == ["owner"]
+
+
+# ---------------------------------------------------------------------------
+# entity-v3 dedup invariant: 1st-then-2nd message mints exactly one entity
+# ---------------------------------------------------------------------------
+# This is the safety property the whole replacement-before-removal sequence
+# protects: a brand-new sender that messages twice must resolve to a SINGLE
+# entity. It only holds if the deterministic pipeline hook
+# (assert_sender_channel_fact) writes the channel triple that
+# resolve_contact_by_channel reads on the 2nd message. With the triple written by
+# the hook (not by create_temp_contact), the 2nd message resolves and never mints
+# a duplicate.
+
+
+def _make_triple_backed_pool(store: dict[tuple[str, str], dict[str, Any]]):
+    """A pool whose entity_facts SELECT is backed by an in-memory triple *store*.
+
+    *store* maps ``(predicate, object_value)`` → a row dict
+    (``entity_id`` / ``name`` / ``roles``) — exactly the shape
+    ``_resolve_entity_by_triple`` returns. ``create_temp_contact``'s entity /
+    contact INSERTs are served from the acquired connection; the channel triple
+    itself is written by the pipeline hook (mocked into *store* in the test).
+    """
+
+    def _lookup(query: str, *args):
+        # resolve_contact_by_channel's only fetchrow is the entity_facts join
+        # (predicate=$1, object=$2). Serve it from the in-memory store.
+        if "entity_facts" in query:
+            predicate, object_value = args[0], args[1]
+            return store.get((predicate, object_value))
+        return None
+
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(side_effect=_lookup)
+
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=_lookup)
+
+    # entity INSERT … RETURNING id mints a fresh entity id each call.
+    async def conn_fetchval(query, *args):
+        if "INSERT INTO public.entities" in query:
+            return uuid.uuid4()
+        return None
+
+    conn.fetchval = AsyncMock(side_effect=conn_fetchval)
+
+    async def conn_insert_contact(query, *args):
+        if "INSERT INTO public.contacts" in query:
+            # args: (name, entity_id, metadata)
+            return {"id": uuid.uuid4(), "name": args[0], "entity_id": args[1]}
+        # entity_facts SELECT under the txn re-check.
+        return _lookup(query, *args)
+
+    conn.fetchrow = AsyncMock(side_effect=conn_insert_contact)
+    conn.execute = AsyncMock()
+
+    mock_txn = AsyncMock()
+    mock_txn.__aenter__ = AsyncMock(return_value=mock_txn)
+    mock_txn.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=mock_txn)
+
+    pool.acquire = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    return pool
+
+
+async def test_second_message_from_new_sender_does_not_mint_duplicate_entity():
+    """1st message mints an entity + the hook writes its channel triple; the 2nd
+    message resolves to the SAME entity — exactly one entity, no duplicate."""
+    from butlers.tools.relationship.relationship_assert_fact import (
+        assert_sender_channel_fact,
+    )
+
+    channel_type, channel_value = "telegram", "new-sender-42"
+    predicate = "has-handle"  # telegram → has-handle
+
+    # In-memory triple store shared by the read path (resolve_contact_by_channel)
+    # and the deterministic hook's write (mocked relationship_assert_fact).
+    store: dict[tuple[str, str], dict[str, Any]] = {}
+    pool = _make_triple_backed_pool(store)
+
+    # The hook's central writer records the triple into the shared store, so the
+    # next resolve_contact_by_channel finds it (deterministic, no LLM involved).
+    async def _record_triple(_pool, subject, pred, obj, **_kwargs):
+        store[(pred, obj)] = {"entity_id": subject, "name": None, "roles": []}
+        return MagicMock()
+
+    # --- 1st message: unknown sender → mint temp contact, then hook asserts. ---
+    first = await create_temp_contact(pool, channel_type, channel_value)
+    assert first is not None
+    first_entity_id = first.entity_id
+    assert first_entity_id is not None
+    assert (predicate, channel_value) not in store  # not written by create_temp_contact
+
+    with patch(_ASSERT_FACT_PATCH, new=_record_triple):
+        await assert_sender_channel_fact(pool, first_entity_id, channel_type, channel_value)
+
+    # The hook wrote the dedup triple keyed to the freshly-minted entity.
+    assert store[(predicate, channel_value)]["entity_id"] == first_entity_id
+
+    # --- 2nd message: same sender now resolves; no new entity is minted. ---
+    resolved = await resolve_contact_by_channel(pool, channel_type, channel_value)
+    assert resolved is not None
+    assert resolved.entity_id == first_entity_id
+
+    # create_temp_contact, called again, short-circuits on the existing triple
+    # and returns the SAME entity instead of minting a second one.
+    second = await create_temp_contact(pool, channel_type, channel_value)
+    assert second is not None
+    assert second.entity_id == first_entity_id

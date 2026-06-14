@@ -683,6 +683,99 @@ async def relationship_assert_fact(
 
 
 # ---------------------------------------------------------------------------
+# Deterministic ingress channel-fact hook (entity-v3, bu-hvrt1)
+# ---------------------------------------------------------------------------
+#
+# When the Switchboard routes a message from an unresolved sender, a temporary
+# entity is minted (in public.entities/public.contacts) but the sender's channel
+# identifier is NOT yet recorded in relationship.entity_facts. That triple is the
+# dedup key resolve_contact_by_channel() reads on the *next* message, so without
+# it every subsequent message from the same new sender would mint another
+# duplicate entity.
+#
+# The entity-v3 switchboard-identity invariant forbids the Switchboard from
+# writing entity_facts itself: fact assertion belongs to the relationship domain.
+# This hook is that assertion — owned by the relationship butler (which owns the
+# entity_facts writer and the channel→predicate mapping), invoked DETERMINISTICALLY
+# from the routing pipeline (code, not the routed LLM session). Running in code
+# guarantees the dedup triple lands on exactly the path that minted the temp
+# entity, so the dedup invariant cannot regress on an LLM no-op.
+
+
+async def assert_sender_channel_fact(
+    pool: asyncpg.Pool,
+    entity_id: uuid.UUID,
+    channel_type: str,
+    channel_value: str,
+    *,
+    conn: asyncpg.Connection | None = None,
+) -> AssertResult | None:
+    """Deterministically record an unresolved sender's channel triple.
+
+    Maps *channel_type* to its contact predicate and asserts
+    ``(entity_id, predicate, channel_value)`` as a ``primary`` literal fact via
+    the central writer. This is the LLM-independent replacement for the channel
+    triple that ``create_temp_contact`` used to write inline; moving it here keeps
+    Switchboard ingress free of ``entity_facts`` writes (entity-v3
+    switchboard-identity invariant) while preserving the existing-sender dedup
+    key ``resolve_contact_by_channel`` depends on.
+
+    Returns the :class:`AssertResult` on success, or ``None`` when the channel
+    type has no predicate mapping (nothing to assert) — never raises: an
+    assertion failure is logged and swallowed so it cannot break routing.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool for the relationship schema.
+    entity_id:
+        UUID of the (temporary) entity the channel identifier belongs to.
+    channel_type:
+        Source channel type (e.g. ``"telegram"``, ``"email"``).
+    channel_value:
+        The raw sender identifier observed on the channel.
+    conn:
+        Optional open connection (pass when inside an existing transaction).
+    """
+    # Resolve the predicate from the shared channel-type mapping at the identity
+    # resolution layer so reads (resolve_contact_by_channel) and this write stay
+    # keyed identically.
+    from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE
+
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    if predicate is None:
+        logger.debug(
+            "assert_sender_channel_fact: no predicate mapping for channel_type=%r; "
+            "skipping channel-triple assertion for entity %s",
+            channel_type,
+            entity_id,
+        )
+        return None
+
+    try:
+        return await relationship_assert_fact(
+            pool,
+            entity_id,
+            predicate,
+            channel_value,
+            src="identity",
+            object_kind="literal",
+            primary=True,
+            conn=conn,
+        )
+    except Exception:  # noqa: BLE001 — never let a fact write break routing
+        logger.warning(
+            "assert_sender_channel_fact: failed to assert channel triple for entity %s "
+            "(channel_type=%r, value=%r) — sender dedup key not written",
+            entity_id,
+            channel_type,
+            channel_value,
+            exc_info=True,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Retraction helper
 # ---------------------------------------------------------------------------
 

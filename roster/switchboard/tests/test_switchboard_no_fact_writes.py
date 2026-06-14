@@ -19,13 +19,17 @@ Two flows stay LEGAL and MUST NOT be flagged:
 
 Scan scope is the Switchboard module itself: its roster tree
 (``roster/switchboard/``) plus the switchboard-owned source modules
-(``src/butlers/switchboard_wiring.py``, ``src/butlers/core_tools/_switchboard.py``).
-That is exactly the "switchboard module and roster trees" target named in the
-spec delta. The shared channel-resolution helper ``src/butlers/identity.py`` is
-covered for the *mandated read* positively (see
-``test_identity_helper_keeps_the_mandated_read``); its temp-contact fact-write is
-a separately-tracked spec gap (see the module docstring of that test), not a
-switchboard-code violation.
+(``src/butlers/switchboard_wiring.py``, ``src/butlers/core_tools/_switchboard.py``),
+AND the shared channel-resolution helper ``src/butlers/identity.py``. The helper
+hosts ``create_temp_contact()``, which runs on the switchboard ingress path; the
+entity-v3 ``switchboard-identity`` delta requires that ingress write nothing to
+``relationship.entity_facts``. As of bu-hvrt1 the channel-triple assertion moved
+OUT of ``create_temp_contact`` into a deterministic routing-pipeline hook
+(``relationship.tools.relationship_assert_fact.assert_sender_channel_fact``), so
+``identity.py`` must now be free of ``relationship_assert_fact`` calls and
+``entity_facts`` write-DML — this scan guards that. The helper's *mandated read*
+(``resolve_contact_by_channel``) is covered positively (see
+``test_identity_helper_keeps_the_mandated_read``).
 
 It needs no DB, no async fixtures, and no external dependencies. It mirrors the
 scan style of ``roster/relationship/tests/test_chronicler_boundary.py`` and
@@ -72,13 +76,17 @@ def _switchboard_source_files() -> list[Path]:
 
     Tests under roster/switchboard/tests/ are excluded: they construct synthetic
     SQL to prove the guardrail bites (see the synthetic-violation tests below).
+
+    The shared channel-resolution helper (``src/butlers/identity.py``) is included
+    because ``create_temp_contact()`` runs on the switchboard ingress path and
+    must (post bu-hvrt1) never write ``relationship.entity_facts``.
     """
     roster_files = [
         p
         for p in _SWITCHBOARD_ROSTER.rglob("*.py")
         if p.resolve() != _HERE and "tests" not in p.parts
     ]
-    src_files = [p for p in _SWITCHBOARD_SRC_FILES if p.exists()]
+    src_files = [p for p in (*_SWITCHBOARD_SRC_FILES, _IDENTITY_HELPER) if p.exists()]
     return roster_files + src_files
 
 
@@ -169,23 +177,31 @@ def test_identity_helper_keeps_the_mandated_read() -> None:
     ``switchboard-identity`` keeps switchboard's entity_facts access as read-only
     channel resolution. This pins the mandated read so a refactor that drops it
     (and silently strands switchboard routing) is caught here.
-
-    NOTE (separately-tracked spec gap): ``src/butlers/identity.py`` also hosts
-    ``create_temp_contact()``, which today asserts the sender's channel triple via
-    ``relationship_assert_fact()`` on the switchboard ingress path (bu-k9ylx
-    Migration bead 8). The entity-v3 ``switchboard-identity`` delta reverses that —
-    the ``has-*`` assertion must move into the routed relationship session. That
-    migration is a multi-surface behavioral change (it also rewrites
-    ``tests/core/test_identity.py::TestCreateTempContactCentralWriter`` and changes
-    existing-sender-detection timing) and is filed as a discovered follow-up under
-    epic bu-89993, not landed in this guardrail bead. This guardrail's fail-scan is
-    therefore scoped to switchboard-module code, which is clean on HEAD.
     """
     assert _IDENTITY_HELPER.exists(), f"Expected shared identity helper at {_IDENTITY_HELPER}"
     text = _IDENTITY_HELPER.read_text(encoding="utf-8")
     assert "def resolve_contact_by_channel" in text, (
         "resolve_contact_by_channel() is the switchboard's mandated read into "
         "relationship.entity_facts (switchboard-identity). It must remain present."
+    )
+
+
+def test_identity_helper_does_not_assert_entity_facts() -> None:
+    """entity-v3 (bu-hvrt1): ``src/butlers/identity.py`` must not write entity_facts.
+
+    ``create_temp_contact()`` runs on the switchboard ingress path. After bu-hvrt1
+    it mints only ``public.entities`` / ``public.contacts`` rows; the sender's
+    channel triple is asserted by the deterministic routing-pipeline hook
+    ``assert_sender_channel_fact``. The helper must therefore be free of
+    ``relationship_assert_fact`` calls and ``entity_facts`` write-DML.
+    """
+    assert _IDENTITY_HELPER.exists(), f"Expected shared identity helper at {_IDENTITY_HELPER}"
+    offenders = _fact_write_offenders(_IDENTITY_HELPER.read_text(encoding="utf-8"))
+    assert not offenders, (
+        "src/butlers/identity.py MUST NOT assert entity facts on the switchboard "
+        "ingress path (entity-v3 switchboard-identity delta). The channel-triple "
+        "assertion belongs to the routing-pipeline hook assert_sender_channel_fact, "
+        f"not create_temp_contact.\nOffenders: {offenders}"
     )
 
 

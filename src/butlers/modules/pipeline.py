@@ -722,6 +722,36 @@ class MessagePipeline:
         """Clear the per-task routing context via ContextVar after runtime spawn."""
         _routing_ctx_var.set(None)
 
+    async def _assert_sender_channel_fact(
+        self,
+        *,
+        entity_id: UUID,
+        channel_type: str,
+        channel_value: str,
+    ) -> None:
+        """Deterministically record an unresolved sender's channel triple.
+
+        entity-v3 (bu-hvrt1): when the Switchboard routes a message from an
+        unresolved sender, a temporary entity is minted but its channel
+        identifier is not yet in ``relationship.entity_facts`` — the dedup key
+        ``resolve_contact_by_channel()`` reads on the next message. This hook
+        asserts that triple in code (NOT via the routed LLM session), keeping
+        Switchboard ingress free of ``entity_facts`` writes while guaranteeing a
+        2nd message from the same new sender resolves instead of minting a
+        duplicate entity. Failures are swallowed by the writer-side helper so a
+        fact-write hiccup never breaks routing.
+        """
+        from butlers.tools.relationship.relationship_assert_fact import (
+            assert_sender_channel_fact,
+        )
+
+        await assert_sender_channel_fact(
+            self._pool,
+            entity_id,
+            channel_type,
+            channel_value,
+        )
+
     async def _load_decomp_conversation_history(
         self,
         message_inbox_id: Any | None,
@@ -1716,6 +1746,27 @@ class MessagePipeline:
                                         source_contact_id = str(identity_result.contact_id)
                                     if identity_result.entity_id is not None:
                                         source_entity_id = str(identity_result.entity_id)
+
+                                    # entity-v3 (bu-hvrt1): for an unresolved/temp
+                                    # sender, deterministically assert the channel
+                                    # triple here — in the routing pipeline, in code
+                                    # (NOT the routed LLM session). This is the dedup
+                                    # key resolve_contact_by_channel() reads on the
+                                    # next message; asserting it deterministically is
+                                    # what stops a 2nd message from minting a second
+                                    # entity. Switchboard ingress (inject.py /
+                                    # create_temp_contact) no longer writes it, so the
+                                    # switchboard-identity invariant holds.
+                                    if (
+                                        identity_result.is_unknown
+                                        and identity_result.entity_id is not None
+                                        and identity_result.channel_value
+                                    ):
+                                        await self._assert_sender_channel_fact(
+                                            entity_id=identity_result.entity_id,
+                                            channel_type=source,
+                                            channel_value=identity_result.channel_value,
+                                        )
                             except Exception:
                                 logger.debug(
                                     "Identity resolution failed; proceeding without preamble",

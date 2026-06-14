@@ -85,6 +85,13 @@ class IdentityResolutionResult:
     new_unknown_sender:
         ``True`` iff a new temporary contact was created in this call
         (i.e., the owner should be notified).
+    channel_value:
+        The raw sender identifier observed on the channel (e.g. a Telegram chat
+        ID or email address). Carried through so the routing pipeline can
+        deterministically assert the unresolved/temp sender's channel triple
+        (entity-v3, bu-hvrt1) — switchboard ingress itself must not write
+        ``relationship.entity_facts``. ``None`` when resolution was skipped
+        (no channel_value supplied) or the sender was already known.
     """
 
     preamble: str = ""
@@ -95,6 +102,7 @@ class IdentityResolutionResult:
     is_known: bool = False
     is_unknown: bool = False
     new_unknown_sender: bool = False
+    channel_value: str | None = None
 
 
 async def resolve_and_inject_identity(
@@ -195,6 +203,10 @@ async def resolve_and_inject_identity(
         is_known=False,
         is_unknown=True,
         new_unknown_sender=new_sender,
+        # Carry the raw identifier so the routing pipeline can deterministically
+        # assert the channel triple for this unresolved/temp sender (entity-v3,
+        # bu-hvrt1). Switchboard ingress itself never writes entity_facts.
+        channel_value=channel_value,
     )
 
     # Step 3: Notify owner once per new unknown sender.
