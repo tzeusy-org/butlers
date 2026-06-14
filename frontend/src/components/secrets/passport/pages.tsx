@@ -2892,7 +2892,14 @@ export function PassportAddPanel({
   function handleSystemSubmit() {
     if (!systemKey.trim() || !systemValue.trim() || systemMutation.isPending) return;
     systemMutation.mutate(
-      { key: systemKey.trim().toUpperCase(), body: { value: systemValue.trim(), target: systemTarget || "shared" } },
+      {
+        key: systemKey.trim().toUpperCase(),
+        body: {
+          value: systemValue.trim(),
+          target: systemTarget || "shared",
+          category: systemCategory,
+        },
+      },
       {
         onSuccess: () => {
           const createdKey = systemKey.trim().toUpperCase();

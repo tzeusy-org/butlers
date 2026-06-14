@@ -15,10 +15,11 @@
 
 import { useState } from "react";
 import { useSearchParams } from "react-router";
+import { toast } from "sonner";
 
 import { CaseDossier, CaseList, QaKpiStrip } from "@/components/qa";
 import { Time } from "@/components/ui/time";
-import { useQaCases, useQaSummary } from "@/hooks/use-qa";
+import { useForceQaPatrol, useQaCases, useQaSummary } from "@/hooks/use-qa";
 import { useDarkMode } from "@/hooks/useDarkMode";
 
 // ---------------------------------------------------------------------------
@@ -58,11 +59,15 @@ function StickyTopBar({
   onSeverityChange,
   since,
   onSinceChange,
+  onForcePatrol,
+  forcePatrolPending,
 }: {
   severity: SeverityFilter;
   onSeverityChange: (sev: SeverityFilter) => void;
   since: SinceFilter;
   onSinceChange: (since: SinceFilter) => void;
+  onForcePatrol: () => void;
+  forcePatrolPending: boolean;
 }) {
   const { theme, setTheme, resolvedTheme } = useDarkMode();
 
@@ -121,11 +126,23 @@ function StickyTopBar({
         </div>
       </div>
 
-      {/* Theme toggle */}
-      <button
-        type="button"
-        onClick={toggleTheme}
-        aria-label="Toggle theme"
+      <div className="flex items-center gap-3">
+        {/* Force patrol — trigger an immediate patrol cycle */}
+        <button
+          type="button"
+          onClick={onForcePatrol}
+          disabled={forcePatrolPending}
+          aria-label="Force patrol"
+          className="rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground transition-colors duration-fast hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {forcePatrolPending ? "Patrolling…" : "Force patrol"}
+        </button>
+
+        {/* Theme toggle */}
+        <button
+          type="button"
+          onClick={toggleTheme}
+          aria-label="Toggle theme"
         className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors duration-fast hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         {resolvedTheme === "dark" ? (
@@ -160,7 +177,8 @@ function StickyTopBar({
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
           </svg>
         )}
-      </button>
+        </button>
+      </div>
     </div>
   );
 }
@@ -229,10 +247,26 @@ export default function QaOverviewPage() {
   const selectedCaseId = params.get("case") ?? undefined;
 
   const summary = useQaSummary();
+  const forcePatrol = useForceQaPatrol();
   const cases = useQaCases({
     sev: severity === "all" ? undefined : severity,
     since,
   });
+
+  function handleForcePatrol() {
+    if (forcePatrol.isPending) return;
+    if (!window.confirm("Trigger an immediate QA patrol cycle now?")) return;
+    forcePatrol.mutate(undefined, {
+      onSuccess: (res) => {
+        toast.success(res.data?.message ?? "Patrol triggered");
+      },
+      onError: (err) => {
+        toast.error(
+          `Force patrol failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        );
+      },
+    });
+  }
 
   const casesData = cases.data?.data ?? [];
 
@@ -256,6 +290,8 @@ export default function QaOverviewPage() {
         onSeverityChange={setSeverity}
         since={since}
         onSinceChange={setSince}
+        onForcePatrol={handleForcePatrol}
+        forcePatrolPending={forcePatrol.isPending}
       />
 
       <PageHeader summary={summary} />

@@ -63,4 +63,19 @@ describe("RuntimeSummaryKpi", () => {
 
     expect(html.match(/—/g)?.length).toBe(4);
   });
+
+  it("renders '—' for total/healthy/sessions on error instead of a literal 0", () => {
+    // On error DashboardPage passes a fallback empty butlers list, which would
+    // otherwise compute genuine-looking zeros for the first three cells. Pending
+    // approvals comes from a separate query, so mark it unavailable too here.
+    const html = renderComponent({
+      isError: true,
+      pendingApprovalsAvailable: false,
+      kpis: { totalButlers: 0, healthyButlers: 0, sessions24h: 0, pendingApprovals: 0 },
+    });
+
+    // No cell shows a literal 0; all four degrade to the em dash.
+    expect(html).not.toContain(">0<");
+    expect(html.match(/—/g)?.length).toBe(4);
+  });
 });

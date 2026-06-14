@@ -6342,6 +6342,12 @@ export interface SecretsSystemSetRequest {
   value: string;
   /** "shared" (default) or a butler name for per-butler override. */
   target: "shared" | string;
+  /**
+   * Credential category, persisted on butler_secrets.category at first-time
+   * create. Optional; backend defaults to "general". Free-form string so the FE
+   * template vocabulary (src/lib/secret-templates.ts) can supply any category.
+   */
+  category?: string;
 }
 
 /**

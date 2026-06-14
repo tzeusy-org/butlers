@@ -22,6 +22,7 @@ vi.mock("@/hooks/use-qa", () => ({
   useQaCase: vi.fn(),
   useQaCaseJournal: vi.fn(),
   useRemoveDismissal: vi.fn(),
+  useForceQaPatrol: vi.fn(),
 }));
 
 vi.mock("@/hooks/useDarkMode", () => ({
@@ -39,6 +40,7 @@ import {
   useQaCase,
   useQaCaseJournal,
   useRemoveDismissal,
+  useForceQaPatrol,
 } from "@/hooks/use-qa";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -98,6 +100,7 @@ function renderPage() {
   (useQaCase as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: false });
   (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
   (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+  (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
 
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(

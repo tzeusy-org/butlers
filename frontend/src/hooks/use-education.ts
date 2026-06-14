@@ -240,6 +240,15 @@ export function useUpdateMindMapStatus() {
       qc.invalidateQueries({ queryKey: ["education", "mind-maps"] });
       qc.invalidateQueries({ queryKey: ["education", "mind-map"] });
     },
+    onError: (err) => {
+      // Surface PUT failures instead of silently closing the dialog as if the
+      // status change succeeded.
+      toast.error(
+        `Failed to update curriculum status: ${
+          err instanceof Error ? err.message : "Unknown error"
+        }`,
+      );
+    },
   });
 }
 

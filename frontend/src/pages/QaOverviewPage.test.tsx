@@ -26,6 +26,7 @@ vi.mock("@/hooks/use-qa", () => ({
   useQaCase: vi.fn(),
   useQaCaseJournal: vi.fn(),
   useRemoveDismissal: vi.fn(),
+  useForceQaPatrol: vi.fn(),
 }));
 
 vi.mock("@/hooks/useDarkMode", () => ({
@@ -40,7 +41,14 @@ vi.mock("@/hooks/useDarkMode", () => ({
 // Imports after mocks
 // ---------------------------------------------------------------------------
 
-import { useQaSummary, useQaCases, useQaCase, useQaCaseJournal, useRemoveDismissal } from "@/hooks/use-qa";
+import {
+  useQaSummary,
+  useQaCases,
+  useQaCase,
+  useQaCaseJournal,
+  useRemoveDismissal,
+  useForceQaPatrol,
+} from "@/hooks/use-qa";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -129,6 +137,10 @@ describe("QaOverviewPage -- dossier shell", () => {
       data: { data: MOCK_SUMMARY },
       isLoading: false,
       isError: false,
+    });
+    (useForceQaPatrol as AnyMock).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
     });
   });
 

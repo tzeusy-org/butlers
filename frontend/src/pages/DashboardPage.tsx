@@ -136,6 +136,7 @@ export default function DashboardPage() {
           <RuntimeSummaryKpi
             kpis={model.kpis}
             isLoading={butlersQuery.isLoading}
+            isError={model.butlersError}
             pendingApprovalsAvailable={!approvalMetricsQuery.isError && approvalMetricsQuery.data != null}
           />
         </div>

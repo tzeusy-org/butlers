@@ -153,6 +153,7 @@ export function useArchiveContact() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
       void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["pending-contacts"] });
     },
   });
 }

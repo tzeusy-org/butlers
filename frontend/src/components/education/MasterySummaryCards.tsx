@@ -6,10 +6,24 @@ interface MasterySummaryCardsProps {
 }
 
 export default function MasterySummaryCards({ mindMapId }: MasterySummaryCardsProps) {
-  const { data: summary } = useMasterySummary(mindMapId);
+  const { data: summary, isError } = useMasterySummary(mindMapId);
   const { data: analytics } = useMindMapAnalytics(mindMapId);
 
   const estimatedDays = (analytics?.metrics?.estimated_completion_days as number) ?? null;
+
+  if (isError) {
+    return (
+      <div className="grid gap-4 sm:grid-cols-4">
+        {[1, 2, 3, 4].map((i) => (
+          <Card key={i}>
+            <CardContent className="flex h-20 items-center justify-center text-center text-sm text-destructive">
+              Couldn't load mastery summary.
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    );
+  }
 
   if (!summary) {
     return (
