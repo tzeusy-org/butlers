@@ -87,11 +87,19 @@ async def test_export_calls_audit(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             await client.post("/api/data/export", json={"scope": "contacts"})
 
-    mock_audit.assert_called_once()
-    call_args = mock_audit.call_args
-    # pool, actor, action are positional; note is keyword-only
-    assert call_args.args[2] == "data.export"
-    assert call_args.kwargs["note"] == "contacts"
+    # The route emits an explicit audit entry with action "data.export"; the
+    # dashboard_audit_middleware ALSO routes through the same canonical
+    # audit.append() as a fire-and-forget task, so the total count races between
+    # 1 and 2.  Assert on the route's specific call rather than the count.
+    # pool, actor, action are positional; note is keyword-only.
+    route_calls = [
+        c for c in mock_audit.call_args_list if len(c.args) >= 3 and c.args[2] == "data.export"
+    ]
+    assert len(route_calls) == 1, (
+        f"expected exactly one route audit.append with action 'data.export', "
+        f"got call list: {mock_audit.call_args_list}"
+    )
+    assert route_calls[0].kwargs["note"] == "contacts"
 
 
 async def test_export_signed_url_includes_issued_at(app):

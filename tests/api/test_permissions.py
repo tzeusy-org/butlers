@@ -152,11 +152,24 @@ async def test_put_permission_success(app):
     assert data["permission"] == "email.read"
     assert data["granted"] is True
 
-    mock_audit.assert_called_once()
-    call_args = mock_audit.call_args
-    # pool, actor, action are positional; target and note are keyword-only
-    assert call_args.args[2] == "permission.set"
-    assert call_args.kwargs["target"] == "chronicler.email.read"
+    # The route handler emits an explicit audit entry with action
+    # "permission.set".  The dashboard_audit_middleware ALSO routes through the
+    # same canonical audit.append() as a fire-and-forget background task (its
+    # call carries action "PUT /api/..." and a metadata kwarg), so the total
+    # call count races between 1 and 2.  Assert on the ROUTE's specific call
+    # rather than the count so the test is deterministic regardless of whether
+    # the middleware's append has landed by assertion time.
+    # pool, actor, action are positional; target and note are keyword-only.
+    route_calls = [
+        c for c in mock_audit.call_args_list if len(c.args) >= 3 and c.args[2] == "permission.set"
+    ]
+    assert len(route_calls) == 1, (
+        f"expected exactly one route audit.append with action 'permission.set', "
+        f"got call list: {mock_audit.call_args_list}"
+    )
+    route_call = route_calls[0]
+    assert route_call.kwargs["target"] == "chronicler.email.read"
+    assert route_call.kwargs["note"] == "Needed for digest emails"
 
 
 async def test_put_permission_empty_reason_returns_422(app):

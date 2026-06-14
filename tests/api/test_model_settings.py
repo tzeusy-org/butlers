@@ -275,11 +275,20 @@ async def test_priority_stepper_200_and_clamp_at_zero(app, audit_append_spy):
         )
     assert resp.status_code == 200
     assert resp.json()["data"]["priority"] == 5
-    # audit.append must have been called
-    audit_append_spy.assert_awaited_once()
-    call_kwargs = audit_append_spy.call_args
-    assert call_kwargs.args[2] == "model.priority"
-    assert call_kwargs.kwargs["note"] == "5"
+    # The route emits an explicit audit entry with action "model.priority"; the
+    # dashboard_audit_middleware ALSO routes through the same canonical
+    # audit.append() spy as a fire-and-forget task, so the total count races
+    # between 1 and 2.  Assert on the route's specific call rather than the count.
+    route_calls = [
+        c
+        for c in audit_append_spy.call_args_list
+        if len(c.args) >= 3 and c.args[2] == "model.priority"
+    ]
+    assert len(route_calls) == 1, (
+        f"expected exactly one route audit.append with action 'model.priority', "
+        f"got call list: {audit_append_spy.call_args_list}"
+    )
+    assert route_calls[0].kwargs["note"] == "5"
 
 
 async def test_priority_stepper_404_on_missing(app, audit_append_spy):
@@ -320,8 +329,20 @@ async def test_verify_all_rate_limit(app, audit_append_spy, monkeypatch):
 
     assert r1.status_code == 200
     assert r429.status_code == 429
-    # audit.append called once (for the accepted run)
-    assert audit_append_spy.await_count == 1
+    # The accepted run emits an explicit audit entry with action
+    # "models.verify_all".  The dashboard_audit_middleware ALSO routes through
+    # the same canonical audit.append() spy as a fire-and-forget task (once per
+    # POST, including the 429), so the total count races.  Assert on the route's
+    # specific calls rather than the total count.
+    route_calls = [
+        c
+        for c in audit_append_spy.call_args_list
+        if len(c.args) >= 3 and c.args[2] == "models.verify_all"
+    ]
+    assert len(route_calls) == 1, (
+        f"expected exactly one route audit.append with action 'models.verify_all', "
+        f"got call list: {audit_append_spy.call_args_list}"
+    )
 
 
 async def test_verify_all_accepted_after_interval(app, audit_append_spy, monkeypatch):
@@ -376,11 +397,20 @@ async def test_update_catalog_entry_200_writes_audit(app, audit_append_spy):
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["alias"] == "renamed"
-    # audit.append must have been called with action="model.update"
-    audit_append_spy.assert_awaited_once()
-    call_kwargs = audit_append_spy.call_args
-    assert call_kwargs.args[2] == "model.update"
-    assert call_kwargs.kwargs["target"] == str(entry_id)
+    # The route emits an explicit audit entry with action "model.update"; the
+    # dashboard_audit_middleware ALSO routes through the same canonical
+    # audit.append() spy as a fire-and-forget task, so the total count races
+    # between 1 and 2.  Assert on the route's specific call rather than the count.
+    route_calls = [
+        c
+        for c in audit_append_spy.call_args_list
+        if len(c.args) >= 3 and c.args[2] == "model.update"
+    ]
+    assert len(route_calls) == 1, (
+        f"expected exactly one route audit.append with action 'model.update', "
+        f"got call list: {audit_append_spy.call_args_list}"
+    )
+    assert route_calls[0].kwargs["target"] == str(entry_id)
 
 
 async def test_update_catalog_entry_422_invalid_tier(app, audit_append_spy):
