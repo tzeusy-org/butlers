@@ -61,14 +61,14 @@ The `finance.merchant_mappings` table SHALL store learned and manual merchant-to
 The `finance.recurring_groups` table SHALL track detected recurring charge patterns and link them to individual transactions.
 
 #### Scenario: Recurring group structure
-- **WHEN** a recurring charge pattern is detected
-- **THEN** it SHALL be recorded with `merchant TEXT`, `expected_amount NUMERIC(14,2)`, `currency CHAR(3)`, `frequency TEXT` (one of `'weekly'`, `'monthly'`, `'quarterly'`, `'yearly'`), `occurrence_count INTEGER`, `last_charge_date DATE`, `next_expected_date DATE`, and `confidence TEXT` (one of `'high'`, `'medium'`, `'low'`)
+- **WHEN** a recurring charge pattern is detected and persisted
+- **THEN** it SHALL be recorded with `merchant TEXT` (UNIQUE, backing an upsert on conflict), `avg_amount NUMERIC(14,2)`, `currency CHAR(3)`, `estimated_frequency TEXT` (NULL or one of `'weekly'`, `'monthly'`, `'quarterly'`, `'yearly'`, `'custom'`), `last_seen_date DATE`, and `next_expected_date DATE`
+- **AND** the `id UUID` primary key SHALL be referenced by `finance.transactions.recurring_group_id`
 
 #### Scenario: Recurring group lifecycle
 - **WHEN** a recurring group is tracked
-- **THEN** `status TEXT` SHALL be one of: `'active'`, `'paused'`, `'stopped'`
-- **AND** `is_subscription BOOLEAN` SHALL indicate whether the group is confirmed as a subscription
-- **AND** `subscription_id UUID` SHALL optionally reference `finance.subscriptions(id)` when linked to a tracked subscription
+- **THEN** `is_active BOOLEAN` SHALL indicate whether the group is currently considered active
+- **AND** detecting the same merchant again SHALL upsert the existing row (ON CONFLICT on `merchant`) rather than create a duplicate
 
 ### Requirement: Import batch correlation
 Each bulk import operation SHALL stamp an ephemeral `import_batch_id` correlator onto every transaction it inserts, so that rows ingested in the same import can be grouped after the fact. There is no persisted `finance.import_batches` audit-trail table; the correlator lives in the transaction's `metadata` JSONB.
