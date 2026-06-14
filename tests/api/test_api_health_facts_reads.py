@@ -470,6 +470,203 @@ async def test_conditions_no_orphan_table():
 
 
 # ---------------------------------------------------------------------------
+# POST/PUT/DELETE /conditions — direct dashboard CRUD (mirrors medications)
+# ---------------------------------------------------------------------------
+
+
+async def test_create_condition_delegates_to_condition_add():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_add = AsyncMock(
+        return_value={
+            "id": new_id,
+            "name": "Hypertension",
+            "status": "managed",
+            "diagnosed_at": "2024-01-01T00:00:00+00:00",
+            "notes": "monitor BP",
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.condition_add", fake_add):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/conditions",
+            json={
+                "name": "Hypertension",
+                "status": "managed",
+                "diagnosed_at": "2024-01-01T00:00:00+00:00",
+                "notes": "monitor BP",
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["id"] == str(new_id)
+    assert body["name"] == "Hypertension"
+    assert body["status"] == "managed"
+    # The endpoint forwarded the validated request fields to the butler tool.
+    fake_add.assert_awaited_once()
+    kwargs = fake_add.await_args.kwargs
+    assert kwargs["name"] == "Hypertension"
+    assert kwargs["status"] == "managed"
+    assert kwargs["diagnosed_at"] == datetime(2024, 1, 1, tzinfo=UTC)
+    assert kwargs["notes"] == "monitor BP"
+
+
+async def test_create_condition_defaults_status_active():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_add = AsyncMock(
+        return_value={
+            "id": new_id,
+            "name": "Asthma",
+            "status": "active",
+            "diagnosed_at": None,
+            "notes": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.condition_add", fake_add):
+        resp = await _request(app, "POST", "/api/health/conditions", json={"name": "Asthma"})
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "active"
+    assert fake_add.await_args.kwargs["status"] == "active"
+
+
+async def test_create_condition_rejects_blank_name():
+    app, _ = _make_app()
+    resp = await _request(app, "POST", "/api/health/conditions", json={"name": ""})
+    assert resp.status_code == 422
+
+
+async def test_create_condition_rejects_invalid_status():
+    app, _ = _make_app()
+    resp = await _request(
+        app,
+        "POST",
+        "/api/health/conditions",
+        json={"name": "Asthma", "status": "chronic"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_created_condition_is_read_back_by_get():
+    """A dashboard-created condition is read back by the existing GET (same fact path)."""
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_add = AsyncMock(
+        return_value={
+            "id": new_id,
+            "name": "Migraine",
+            "status": "active",
+            "diagnosed_at": None,
+            "notes": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.condition_add", fake_add):
+        create_resp = await _request(
+            app, "POST", "/api/health/conditions", json={"name": "Migraine"}
+        )
+    assert create_resp.status_code == 201
+
+    # Now simulate the GET surface returning the same fact (predicate 'condition').
+    read_row = _row(
+        {
+            "id": new_id,
+            "content": "Migraine: active",
+            "created_at": _NOW,
+            "metadata": {"name": "Migraine", "status": "active"},
+        }
+    )
+    app2, _ = _make_app(fetch_rows=[read_row], fetchval_result=1)
+    get_resp = await _get(app2, "/api/health/conditions")
+    assert get_resp.status_code == 200
+    data = get_resp.json()["data"]
+    assert any(c["id"] == str(new_id) and c["name"] == "Migraine" for c in data)
+
+
+async def test_update_condition_delegates_to_condition_update():
+    app, _ = _make_app()
+    cond_id = uuid.uuid4()
+    fake_update = AsyncMock(
+        return_value={
+            "id": cond_id,
+            "name": "Hypertension",
+            "status": "resolved",
+            "diagnosed_at": None,
+            "notes": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.condition_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/conditions/{cond_id}", json={"status": "resolved"}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "resolved"
+    fake_update.assert_awaited_once()
+    # Only the supplied field is forwarded (exclude_none).
+    assert fake_update.await_args.kwargs == {"status": "resolved"}
+
+
+async def test_update_condition_empty_body_is_422():
+    app, _ = _make_app()
+    cond_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.condition_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/conditions/{cond_id}", json={})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_condition_invalid_status_is_422():
+    app, _ = _make_app()
+    cond_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.condition_update", AsyncMock()) as fake_update:
+        resp = await _request(
+            app, "PUT", f"/api/health/conditions/{cond_id}", json={"status": "chronic"}
+        )
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_condition_missing_is_404():
+    app, _ = _make_app()
+    cond_id = uuid.uuid4()
+    fake_update = AsyncMock(side_effect=ValueError(f"Condition {cond_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.condition_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/conditions/{cond_id}", json={"status": "resolved"}
+        )
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"]
+
+
+async def test_delete_condition_delegates_to_condition_delete():
+    app, _ = _make_app()
+    cond_id = uuid.uuid4()
+    fake_delete = AsyncMock(return_value=True)
+    with patch(f"{_HEALTH_TOOLS}.condition_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/conditions/{cond_id}")
+    assert resp.status_code == 204
+    fake_delete.assert_awaited_once()
+    assert str(cond_id) in fake_delete.await_args.args
+
+
+async def test_delete_condition_missing_is_404():
+    app, _ = _make_app()
+    cond_id = uuid.uuid4()
+    fake_delete = AsyncMock(side_effect=ValueError(f"Condition {cond_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.condition_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/conditions/{cond_id}")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /symptoms
 # ---------------------------------------------------------------------------
 

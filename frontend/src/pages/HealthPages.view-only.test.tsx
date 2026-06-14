@@ -4,20 +4,23 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// bu-7oyhi.2 / bu-aisjm — health-page write surfaces.
+// bu-7oyhi.2 / bu-aisjm / bu-a7vw9 — health-page write surfaces.
 //
 // As of bu-aisjm the Medications page has direct dashboard CRUD (add/edit/
 // delete wired to /api/health/medications), so it is NO LONGER view-only.
+// As of bu-a7vw9 the Conditions page also has direct dashboard CRUD wired to
+// /api/health/conditions, so it is NO LONGER view-only either.
 //
-// The remaining FIVE pages (Conditions, Symptoms, Research, Meals,
-// Measurements) are still an observability surface: the Health butler owns all
-// writes via its own MCP tools/conversation, and the dashboard must NOT present
-// any affordance implying the user can add/edit/delete records here.
+// The remaining FOUR pages (Symptoms, Research, Meals, Measurements) are still
+// an observability surface: the Health butler owns all writes via its own MCP
+// tools/conversation, and the dashboard must NOT present any affordance
+// implying the user can add/edit/delete records here.
 //
 // These tests assert:
-//   - For the 5 not-yet-converted pages: the "Managed by the Health butler"
+//   - For the 4 not-yet-converted pages: the "Managed by the Health butler"
 //     view-only note renders AND no add/edit/delete affordance is present.
-//   - For Medications: NO view-only note AND add/edit/delete affordances exist.
+//   - For Medications and Conditions: NO view-only note AND add/edit/delete
+//     affordances exist.
 // ---------------------------------------------------------------------------
 
 // All health pages read through these hooks. Stub them with a loaded shape so
@@ -59,7 +62,26 @@ vi.mock("@/hooks/use-health", () => {
     useCreateMedication: noopMutation,
     useUpdateMedication: noopMutation,
     useDeleteMedication: noopMutation,
-    useConditions: () => empty,
+    useConditions: () => ({
+      data: {
+        data: [
+          {
+            id: "cond-1",
+            name: "Hypertension",
+            status: "managed",
+            diagnosed_at: null,
+            notes: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        meta: { total: 1, has_more: false },
+      },
+      isLoading: false,
+    }),
+    useCreateCondition: noopMutation,
+    useUpdateCondition: noopMutation,
+    useDeleteCondition: noopMutation,
     useSymptoms: () => empty,
     useMeals: () => empty,
     useResearch: () => empty,
@@ -75,10 +97,9 @@ import SymptomsPage from "./SymptomsPage";
 
 afterEach(cleanup);
 
-// Only the 5 not-yet-converted pages remain view-only. Medications is asserted
-// separately below to have CRUD affordances.
+// Only the 4 not-yet-converted pages remain view-only. Medications and
+// Conditions are asserted separately below to have CRUD affordances.
 const PAGES: Array<{ name: string; Component: () => React.ReactElement }> = [
-  { name: "Conditions", Component: ConditionsPage },
   { name: "Symptoms", Component: SymptomsPage },
   { name: "Research", Component: ResearchPage },
   { name: "Meals", Component: MealsPage },
@@ -133,6 +154,23 @@ describe("Medications health page — direct CRUD (bu-aisjm)", () => {
     // Per-card edit + delete affordances (one medication row is mocked).
     expect(screen.getByRole("button", { name: /edit vitamin d/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /delete vitamin d/i })).toBeTruthy();
+  });
+});
+
+describe("Conditions health page — direct CRUD (bu-a7vw9)", () => {
+  it("does NOT render the butler-managed view-only note", () => {
+    const { container } = render(<ConditionsPage />);
+    const notes = container.querySelectorAll('[data-testid="butler-managed-note"]');
+    expect(notes.length).toBe(0);
+  });
+
+  it("exposes add, edit, and delete affordances", () => {
+    render(<ConditionsPage />);
+    // Add affordance in the tracker toolbar.
+    expect(screen.getByRole("button", { name: /add condition/i })).toBeTruthy();
+    // Per-row edit + delete affordances (one condition row is mocked).
+    expect(screen.getByRole("button", { name: /edit hypertension/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /delete hypertension/i })).toBeTruthy();
   });
 });
 

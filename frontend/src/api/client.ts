@@ -79,6 +79,8 @@ import type {
   ButlerMcpTool,
   ButlerMcpToolCallRequest,
   ButlerMcpToolCallResponse,
+  ConditionCreateRequest,
+  ConditionUpdateRequest,
   Dose,
   HealthCondition,
   HealthResearch,
@@ -1411,6 +1413,36 @@ export function getConditions(params?: { offset?: number; limit?: number }): Pro
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<HealthCondition>>(qs ? `/health/conditions?${qs}` : "/health/conditions");
+}
+
+/**
+ * Create a condition. Persists through the Health butler's own fact-store path
+ * (POST /health/conditions -> condition_add), so the new record is read back by
+ * getConditions immediately.
+ */
+export function createCondition(body: ConditionCreateRequest): Promise<HealthCondition> {
+  return apiFetch<HealthCondition>("/health/conditions", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Update a condition. Only supplied fields are merged (PUT /health/conditions/{id}). */
+export function updateCondition(
+  conditionId: string,
+  body: ConditionUpdateRequest,
+): Promise<HealthCondition> {
+  return apiFetch<HealthCondition>(`/health/conditions/${encodeURIComponent(conditionId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Soft-delete a condition (DELETE /health/conditions/{id}). Returns 204. */
+export function deleteCondition(conditionId: string): Promise<void> {
+  return apiFetch<void>(`/health/conditions/${encodeURIComponent(conditionId)}`, {
+    method: "DELETE",
+  });
 }
 
 /** Fetch a paginated list of symptoms. */

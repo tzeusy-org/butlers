@@ -1215,6 +1215,26 @@ export interface MedicationUpdateRequest {
   notes?: string | null;
 }
 
+/** Request body for creating a condition (POST /health/conditions). */
+export interface ConditionCreateRequest {
+  name: string;
+  status?: "active" | "managed" | "resolved";
+  /** Onset / diagnosis timestamp (ISO-8601). */
+  diagnosed_at?: string | null;
+  notes?: string | null;
+}
+
+/**
+ * Request body for updating a condition (PUT /health/conditions/{id}).
+ * All fields optional; only supplied fields are merged into the existing record.
+ */
+export interface ConditionUpdateRequest {
+  name?: string;
+  status?: "active" | "managed" | "resolved";
+  diagnosed_at?: string | null;
+  notes?: string | null;
+}
+
 /** Query parameters for symptom endpoints. */
 export interface SymptomParams {
   name?: string;

@@ -28,6 +28,8 @@ if _spec is not None and _spec.loader is not None:
     _spec.loader.exec_module(_models)
 
     Condition = _models.Condition
+    ConditionCreateRequest = _models.ConditionCreateRequest
+    ConditionUpdateRequest = _models.ConditionUpdateRequest
     Dose = _models.Dose
     LatestMeasurementEntry = _models.LatestMeasurementEntry
     LatestMeasurementsResponse = _models.LatestMeasurementsResponse
@@ -480,6 +482,109 @@ async def list_conditions(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# POST/PUT/DELETE /conditions — direct dashboard CRUD
+#
+# These mutations persist through the SAME fact-store path the Health butler's
+# own MCP tools use:
+#   - POST   -> condition_add     (predicate 'condition', property fact)
+#   - PUT    -> condition_update  (superseding store_fact, same subject key)
+#   - DELETE -> condition_delete  (forget_memory -> validity = 'retracted')
+# so a dashboard-authored condition is indistinguishable from a butler-authored
+# one and is read back by GET /conditions above.  Supersession is keyed on the
+# (subject, predicate) pair — condition_add/condition_update deliberately omit
+# entity_id so each condition's edits supersede only that condition's prior
+# fact, never every condition anchored to the owner entity.  No new predicates,
+# tables, or DDL are introduced.
+# ---------------------------------------------------------------------------
+
+
+def _condition_response(result: dict) -> Condition:
+    """Build the Condition response model from a write-tool result dict."""
+    diagnosed_at = result.get("diagnosed_at")
+    return Condition(
+        id=str(result["id"]),
+        name=result.get("name", ""),
+        status=result.get("status", "active"),
+        diagnosed_at=_isoformat(diagnosed_at) if diagnosed_at is not None else None,
+        notes=result.get("notes"),
+        created_at=_isoformat(result.get("created_at")),
+        updated_at=_isoformat(result.get("updated_at") or result.get("created_at")),
+    )
+
+
+@router.post("/conditions", response_model=Condition, status_code=status.HTTP_201_CREATED)
+async def create_condition(
+    body: ConditionCreateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Condition:
+    """Create a condition via the butler's ``condition_add`` fact-store path.
+
+    Writes a property fact (predicate = ``condition``, scope = ``health``) — the
+    same surface the ``condition_add`` MCP tool writes — so the new condition
+    appears in GET /conditions immediately.
+    """
+    from butlers.tools.health import condition_add
+
+    pool = _pool(db)
+    result = await condition_add(
+        pool,
+        name=body.name,
+        status=body.status,
+        diagnosed_at=body.diagnosed_at,
+        notes=body.notes,
+    )
+    return _condition_response(result)
+
+
+@router.put("/conditions/{condition_id}", response_model=Condition)
+async def update_condition(
+    condition_id: str,
+    body: ConditionUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Condition:
+    """Update a condition via the superseding ``condition_update`` fact path.
+
+    Only the supplied (non-null) fields are merged into the existing condition
+    fact; a new property fact is written under the same subject key so the prior
+    fact is superseded.  Returns 404 if the condition does not exist and 422 if
+    no updatable fields were provided.
+    """
+    from butlers.tools.health import condition_update
+
+    pool = _pool(db)
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(
+            status_code=422,
+            detail="No updatable fields provided",
+        )
+    try:
+        result = await condition_update(pool, condition_id, **updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _condition_response(result)
+
+
+@router.delete("/conditions/{condition_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_condition(
+    condition_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a condition via ``condition_delete`` (validity = retracted).
+
+    The fact is retained for audit but excluded from all active read surfaces.
+    Returns 204 on success and 404 if no active condition with this id exists.
+    """
+    from butlers.tools.health import condition_delete
+
+    pool = _pool(db)
+    try:
+        await condition_delete(pool, condition_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

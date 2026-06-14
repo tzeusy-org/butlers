@@ -8,6 +8,7 @@ from butlers.tools.health._helpers import _row_to_dict
 from butlers.tools.health.conditions import (
     VALID_CONDITION_STATUSES,
     condition_add,
+    condition_delete,
     condition_list,
     condition_update,
     symptom_history,
@@ -52,6 +53,7 @@ __all__ = [
     "VALID_TREND_PERIODS",
     "_row_to_dict",
     "condition_add",
+    "condition_delete",
     "condition_list",
     "condition_update",
     "health_summary",
