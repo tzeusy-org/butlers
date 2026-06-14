@@ -18,7 +18,7 @@
 import { createElement } from "react";
 import type { ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
@@ -60,6 +60,12 @@ vi.mock("@/hooks/use-finance", () => ({
   useFinanceUpcomingBills: vi.fn(),
   useFinanceSpendingSummary: vi.fn(),
   useFinanceAccounts: vi.fn(),
+  useBulkUpdateTransactionMetadata: vi.fn(),
+}));
+
+// sonner toast is fire-and-forget; stub it so tests don't depend on a portal.
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 import {
@@ -68,6 +74,7 @@ import {
   useFinanceUpcomingBills,
   useFinanceSpendingSummary,
   useFinanceAccounts,
+  useBulkUpdateTransactionMetadata,
 } from "@/hooks/use-finance";
 
 import ButlerFinanceFinancesTab from "./ButlerFinanceFinancesTab";
@@ -286,7 +293,20 @@ function renderTab() {
 // Mock setup helpers
 // ---------------------------------------------------------------------------
 
+// Shared bulk-mutation mock. `mockMutate` captures the payload + callbacks so
+// tests can assert the request shape and drive success.
+let mockMutate: ReturnType<typeof vi.fn>;
+
+function setupBulkMutation(isPending = false) {
+  mockMutate = vi.fn();
+  vi.mocked(useBulkUpdateTransactionMetadata).mockReturnValue({
+    mutate: mockMutate,
+    isPending,
+  } as unknown as ReturnType<typeof useBulkUpdateTransactionMetadata>);
+}
+
 function setupWithData() {
+  setupBulkMutation();
   vi.mocked(useFinanceTransactions).mockReturnValue({
     data: { data: TRANSACTIONS, meta: { total: 2, offset: 0, limit: 15 } },
     isLoading: false,
@@ -328,6 +348,7 @@ function setupWithData() {
 }
 
 function setupEmpty() {
+  setupBulkMutation();
   vi.mocked(useFinanceTransactions).mockReturnValue({
     data: { data: [], meta: { total: 0, offset: 0, limit: 15 } },
     isLoading: false,
@@ -367,6 +388,7 @@ function setupEmpty() {
 }
 
 function setupLoading() {
+  setupBulkMutation();
   vi.mocked(useFinanceTransactions).mockReturnValue({
     data: undefined,
     isLoading: true,
@@ -579,6 +601,7 @@ const SUBS_WITH_NOISE = [
 ];
 
 function setupKpiNoise() {
+  setupBulkMutation();
   vi.mocked(useFinanceTransactions).mockReturnValue({
     data: { data: TRANSACTIONS, meta: { total: 2, offset: 0, limit: 15 } },
     isLoading: false,
@@ -923,5 +946,141 @@ describe("ButlerDetailPage — finance finances tab in getAllTabs", () => {
   it("non-finance butlers do not include 'finances' tab", () => {
     expect(getAllTabs("general", "operator")).not.toContain("finances");
     expect(getAllTabs("education", "resident")).not.toContain("finances");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: bulk edit / categorize (bu-v3a4x.3)
+//
+// Verifies the Finances tab is no longer read-only: row selection + the bulk
+// action bar drive PATCH /transactions/bulk-metadata through the mutation hook.
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () => {
+  let confirmSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+    confirmSpy = vi.fn().mockReturnValue(true);
+    window.confirm = confirmSpy;
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders the bulk action bar and a checkbox per transaction row", () => {
+    renderTab();
+    expect(screen.getByTestId("finance-bulk-action-bar")).toBeDefined();
+    // One checkbox per data row (2 fixtures) plus the select-all header checkbox.
+    expect(screen.getAllByTestId("transaction-checkbox").length).toBe(2);
+    expect(screen.getByTestId("select-all-checkbox")).toBeDefined();
+  });
+
+  it("disables the apply button with zero selection", () => {
+    renderTab();
+    const btn = screen.getByTestId("bulk-apply-button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("keeps apply disabled when rows are selected but no edit is entered", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    const btn = screen.getByTestId("bulk-apply-button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("enables apply once a row is selected and a category is entered", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    const btn = screen.getByTestId("bulk-apply-button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it("calls the mutation with the correct overlay payload (category + merchant)", () => {
+    renderTab();
+    // Select the first transaction (Whole Foods, raw merchant "Whole Foods").
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    fireEvent.change(screen.getByTestId("bulk-merchant-input"), {
+      target: { value: "Whole Foods Market" },
+    });
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+
+    expect(mockMutate).toHaveBeenCalledTimes(1);
+    const [payload] = mockMutate.mock.calls[0];
+    expect(payload).toEqual({
+      ops: [
+        {
+          match: { merchant_pattern: "Whole Foods" },
+          set: {
+            inferred_category: "groceries",
+            normalized_merchant: "Whole Foods Market",
+          },
+        },
+      ],
+    });
+  });
+
+  it("collapses a multi-row selection into one op per distinct raw merchant", () => {
+    renderTab();
+    // Select both fixtures: "Whole Foods" and "Netflix" → two distinct merchants.
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[1]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "subscriptions" },
+    });
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+
+    const [payload] = mockMutate.mock.calls[0];
+    expect(payload.ops).toHaveLength(2);
+    const patterns = payload.ops.map(
+      (o: { match: { merchant_pattern: string } }) => o.match.merchant_pattern,
+    );
+    expect(patterns).toContain("Whole Foods");
+    expect(patterns).toContain("Netflix");
+    for (const op of payload.ops) {
+      expect(op.set).toEqual({ inferred_category: "subscriptions" });
+    }
+  });
+
+  it("does not call the mutation when the confirmation is cancelled", () => {
+    confirmSpy.mockReturnValue(false);
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it("select-all toggles every row checkbox", () => {
+    renderTab();
+    fireEvent.click(screen.getByTestId("select-all-checkbox"));
+    expect(screen.getByTestId("bulk-selection-count").textContent).toContain("2 selected");
+  });
+
+  it("invalidates transactions on success (mutation onSuccess fires)", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+
+    // The component passes onSuccess via the mutate options; invoking it must
+    // not throw and should clear the selection. (Query invalidation itself is
+    // wired in the hook, exercised by the hook's own onSuccess.)
+    const [, options] = mockMutate.mock.calls[0];
+    expect(typeof options.onSuccess).toBe("function");
+    act(() => options.onSuccess({ updated_total: 1, results: [] }));
+    expect(screen.getByTestId("bulk-selection-count").textContent).toContain("0 selected");
   });
 });

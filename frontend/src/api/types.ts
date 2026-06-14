@@ -5128,6 +5128,70 @@ export interface FinanceUpcomingBillsParams {
 }
 
 // ---------------------------------------------------------------------------
+// Finance bulk metadata overlay (PATCH /api/finance/transactions/bulk-metadata)
+//
+// Bulk edits write to the bitemporal `facts` overlay (normalized_merchant /
+// inferred_category), which the overlay-aware GET /transactions read merges
+// over the base finance.transactions rows (bu-v3a4x.1). Each op matches facts
+// by an ILIKE merchant pattern and sets one or both overlay fields.
+// ---------------------------------------------------------------------------
+
+/** Match criteria for a single bulk-metadata op (ILIKE on raw merchant). */
+export interface FinanceBulkUpdateMatch {
+  merchant_pattern: string;
+}
+
+/** Overlay fields to set on matching transaction facts. At least one required. */
+export interface FinanceBulkUpdateSet {
+  normalized_merchant?: string;
+  inferred_category?: string;
+}
+
+/** A single op in a bulk-metadata request. */
+export interface FinanceBulkUpdateOp {
+  match: FinanceBulkUpdateMatch;
+  set: FinanceBulkUpdateSet;
+}
+
+/** Request body for PATCH /api/finance/transactions/bulk-metadata. */
+export interface FinanceBulkUpdateRequest {
+  ops: FinanceBulkUpdateOp[];
+}
+
+/** Result of a single bulk-metadata op. */
+export interface FinanceBulkUpdateOpResult {
+  pattern: string;
+  set: Record<string, unknown>;
+  matched: number;
+  updated: number;
+}
+
+/** Response from PATCH /api/finance/transactions/bulk-metadata. */
+export interface FinanceBulkUpdateResponse {
+  updated_total: number;
+  results: FinanceBulkUpdateOpResult[];
+}
+
+/** Aggregate row from GET /api/finance/merchants/distinct. */
+export interface FinanceDistinctMerchant {
+  merchant: string;
+  normalized_merchant: string | null;
+  count: number;
+  /** Numeric total as string to preserve precision. */
+  total_amount: string;
+}
+
+/** Query params for GET /api/finance/merchants/distinct. */
+export interface FinanceDistinctMerchantsParams {
+  start_date?: string;
+  end_date?: string;
+  min_count?: number;
+  unnormalized_only?: boolean;
+  offset?: number;
+  limit?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Travel butler types (bu-0eac9)
 // ---------------------------------------------------------------------------
 

@@ -989,10 +989,12 @@ export type {
 export {
   getFinanceAccounts,
   getFinanceBills,
+  getFinanceDistinctMerchants,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
   getFinanceTransactions,
   getFinanceUpcomingBills,
+  patchFinanceBulkMetadata,
 } from "./client.ts";
 
 export type {
@@ -1000,6 +1002,14 @@ export type {
   FinanceAccountListParams,
   FinanceBill,
   FinanceBillListParams,
+  FinanceBulkUpdateMatch,
+  FinanceBulkUpdateOp,
+  FinanceBulkUpdateOpResult,
+  FinanceBulkUpdateRequest,
+  FinanceBulkUpdateResponse,
+  FinanceBulkUpdateSet,
+  FinanceDistinctMerchant,
+  FinanceDistinctMerchantsParams,
   FinanceSpendingGroup,
   FinanceSpendingSummary,
   FinanceSpendingSummaryParams,
