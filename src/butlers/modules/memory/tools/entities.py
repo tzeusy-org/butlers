@@ -796,6 +796,34 @@ async def _repoint_facts_on_pool(
 ) -> dict[str, int]:
     """Re-point facts from source entity to target on a single pool's schema.
 
+    Owns its own transaction. Delegates the actual re-point work to
+    :func:`_repoint_facts_on_conn` so callers that already hold a connection
+    inside a larger transaction (e.g. the dashboard ``merge_entities`` handler,
+    which must repoint ``facts`` atomically alongside ``relationship.entity_facts``
+    and ``public.contacts``) can share the same supersession semantics without
+    opening a nested transaction.
+
+    Returns dict with facts_repointed, facts_superseded, edge_facts_repointed,
+    edge_facts_superseded counts.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await _repoint_facts_on_conn(conn, src_uuid, tgt_uuid)
+
+
+async def _repoint_facts_on_conn(
+    conn: Any,
+    src_uuid: uuid.UUID,
+    tgt_uuid: uuid.UUID,
+) -> dict[str, int]:
+    """Re-point ``facts`` rows from source entity to target on an existing connection.
+
+    The caller is responsible for the surrounding transaction. This is the shared
+    body of :func:`_repoint_facts_on_pool`; it re-points both subject-side
+    (``entity_id``) and object-side (``object_entity_id``) facts, resolving
+    property-fact conflicts by confidence (higher-confidence row survives) while
+    temporal facts (``valid_at IS NOT NULL``) always coexist.
+
     Returns dict with facts_repointed, facts_superseded, edge_facts_repointed,
     edge_facts_superseded counts.
     """
@@ -804,122 +832,116 @@ async def _repoint_facts_on_pool(
     edge_facts_repointed = 0
     edge_facts_superseded = 0
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Subject-side facts
-            src_facts = await conn.fetch(
-                "SELECT id, scope, predicate, confidence, valid_at FROM facts "
-                "WHERE entity_id = $1 AND validity = 'active'",
-                src_uuid,
+    # Subject-side facts
+    src_facts = await conn.fetch(
+        "SELECT id, scope, predicate, confidence, valid_at FROM facts "
+        "WHERE entity_id = $1 AND validity = 'active'",
+        src_uuid,
+    )
+
+    for src_fact in src_facts:
+        # Mirror store_fact temporal-coexistence semantics: supersession
+        # applies ONLY to property facts (valid_at IS NULL). A temporal
+        # source fact (valid_at IS NOT NULL) always coexists — it never
+        # supersedes nor is superseded — so it is repointed unconditionally,
+        # and it must not collide with a target PROPERTY fact either. We
+        # therefore only look for a conflict when the source is a property
+        # fact, and that conflict is restricted to target PROPERTY facts.
+        conflict = None
+        if src_fact["valid_at"] is None:
+            conflict = await conn.fetchrow(
+                "SELECT id, confidence FROM facts "
+                "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
+                "AND validity = 'active' AND valid_at IS NULL",
+                tgt_uuid,
+                src_fact["scope"],
+                src_fact["predicate"],
             )
 
-            for src_fact in src_facts:
-                # Mirror store_fact temporal-coexistence semantics: supersession
-                # applies ONLY to property facts (valid_at IS NULL). A temporal
-                # source fact (valid_at IS NOT NULL) always coexists — it never
-                # supersedes nor is superseded — so it is repointed unconditionally,
-                # and it must not collide with a target PROPERTY fact either. We
-                # therefore only look for a conflict when the source is a property
-                # fact, and that conflict is restricted to target PROPERTY facts.
-                conflict = None
-                if src_fact["valid_at"] is None:
-                    conflict = await conn.fetchrow(
-                        "SELECT id, confidence FROM facts "
-                        "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
-                        "AND validity = 'active' AND valid_at IS NULL",
-                        tgt_uuid,
-                        src_fact["scope"],
-                        src_fact["predicate"],
-                    )
+        if conflict is None:
+            await conn.execute(
+                "UPDATE facts SET entity_id = $1 WHERE id = $2",
+                tgt_uuid,
+                src_fact["id"],
+            )
+            facts_repointed += 1
+        else:
+            src_confidence = src_fact["confidence"]
+            tgt_confidence = conflict["confidence"]
 
-                if conflict is None:
-                    await conn.execute(
-                        "UPDATE facts SET entity_id = $1 WHERE id = $2",
-                        tgt_uuid,
-                        src_fact["id"],
-                    )
-                    facts_repointed += 1
-                else:
-                    src_confidence = src_fact["confidence"]
-                    tgt_confidence = conflict["confidence"]
+            if src_confidence > tgt_confidence:
+                await conn.execute(
+                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    src_fact["id"],
+                    conflict["id"],
+                )
+                await conn.execute(
+                    "UPDATE facts SET entity_id = $1 WHERE id = $2",
+                    tgt_uuid,
+                    src_fact["id"],
+                )
+            else:
+                await conn.execute(
+                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    conflict["id"],
+                    src_fact["id"],
+                )
+            facts_superseded += 1
 
-                    if src_confidence > tgt_confidence:
-                        await conn.execute(
-                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
-                            "WHERE id = $2",
-                            src_fact["id"],
-                            conflict["id"],
-                        )
-                        await conn.execute(
-                            "UPDATE facts SET entity_id = $1 WHERE id = $2",
-                            tgt_uuid,
-                            src_fact["id"],
-                        )
-                    else:
-                        await conn.execute(
-                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
-                            "WHERE id = $2",
-                            conflict["id"],
-                            src_fact["id"],
-                        )
-                    facts_superseded += 1
+    # Edge facts (object_entity_id)
+    obj_facts = await conn.fetch(
+        "SELECT id, entity_id, scope, predicate, confidence, valid_at FROM facts "
+        "WHERE object_entity_id = $1 AND validity = 'active'",
+        src_uuid,
+    )
 
-            # Edge facts (object_entity_id)
-            obj_facts = await conn.fetch(
-                "SELECT id, entity_id, scope, predicate, confidence, valid_at FROM facts "
-                "WHERE object_entity_id = $1 AND validity = 'active'",
-                src_uuid,
+    for obj_fact in obj_facts:
+        # Same temporal-coexistence guard as the subject side: a temporal
+        # edge-fact (valid_at IS NOT NULL) always coexists and is repointed
+        # unconditionally; only property edge-facts resolve by confidence,
+        # and only against a target PROPERTY edge-fact.
+        edge_conflict = None
+        if obj_fact["valid_at"] is None:
+            edge_conflict = await conn.fetchrow(
+                "SELECT id, confidence FROM facts "
+                "WHERE entity_id = $1 AND object_entity_id = $2 "
+                "AND scope = $3 AND predicate = $4 "
+                "AND validity = 'active' AND valid_at IS NULL",
+                obj_fact["entity_id"],
+                tgt_uuid,
+                obj_fact["scope"],
+                obj_fact["predicate"],
             )
 
-            for obj_fact in obj_facts:
-                # Same temporal-coexistence guard as the subject side: a temporal
-                # edge-fact (valid_at IS NOT NULL) always coexists and is repointed
-                # unconditionally; only property edge-facts resolve by confidence,
-                # and only against a target PROPERTY edge-fact.
-                edge_conflict = None
-                if obj_fact["valid_at"] is None:
-                    edge_conflict = await conn.fetchrow(
-                        "SELECT id, confidence FROM facts "
-                        "WHERE entity_id = $1 AND object_entity_id = $2 "
-                        "AND scope = $3 AND predicate = $4 "
-                        "AND validity = 'active' AND valid_at IS NULL",
-                        obj_fact["entity_id"],
-                        tgt_uuid,
-                        obj_fact["scope"],
-                        obj_fact["predicate"],
-                    )
+        if edge_conflict is None:
+            await conn.execute(
+                "UPDATE facts SET object_entity_id = $1 WHERE id = $2",
+                tgt_uuid,
+                obj_fact["id"],
+            )
+            edge_facts_repointed += 1
+        else:
+            src_conf = obj_fact["confidence"]
+            tgt_conf = edge_conflict["confidence"]
 
-                if edge_conflict is None:
-                    await conn.execute(
-                        "UPDATE facts SET object_entity_id = $1 WHERE id = $2",
-                        tgt_uuid,
-                        obj_fact["id"],
-                    )
-                    edge_facts_repointed += 1
-                else:
-                    src_conf = obj_fact["confidence"]
-                    tgt_conf = edge_conflict["confidence"]
-
-                    if src_conf > tgt_conf:
-                        await conn.execute(
-                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
-                            "WHERE id = $2",
-                            obj_fact["id"],
-                            edge_conflict["id"],
-                        )
-                        await conn.execute(
-                            "UPDATE facts SET object_entity_id = $1 WHERE id = $2",
-                            tgt_uuid,
-                            obj_fact["id"],
-                        )
-                    else:
-                        await conn.execute(
-                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
-                            "WHERE id = $2",
-                            edge_conflict["id"],
-                            obj_fact["id"],
-                        )
-                    edge_facts_superseded += 1
+            if src_conf > tgt_conf:
+                await conn.execute(
+                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    obj_fact["id"],
+                    edge_conflict["id"],
+                )
+                await conn.execute(
+                    "UPDATE facts SET object_entity_id = $1 WHERE id = $2",
+                    tgt_uuid,
+                    obj_fact["id"],
+                )
+            else:
+                await conn.execute(
+                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    edge_conflict["id"],
+                    obj_fact["id"],
+                )
+            edge_facts_superseded += 1
 
     return {
         "facts_repointed": facts_repointed,

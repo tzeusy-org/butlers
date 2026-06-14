@@ -1063,7 +1063,15 @@ class TestMergeEntities:
         lock_rows.sort(key=lambda r: r["id"])
 
         mock_conn = AsyncMock()
-        mock_conn.fetch = AsyncMock(return_value=lock_rows)
+
+        # conn.fetch serves the entity FOR UPDATE lock AND the memory-module
+        # ``facts`` repoint scans added in bu-j820n.1. Only the lock query returns
+        # entity rows; the facts scans return [] so the per-row repoint loops do
+        # not run against the lock MagicMocks (which lack a ``valid_at`` key).
+        async def _conn_fetch(query, *args):
+            return lock_rows if "FOR UPDATE" in query else []
+
+        mock_conn.fetch = AsyncMock(side_effect=_conn_fetch)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
         mock_conn.fetchval = AsyncMock(return_value=0)  # moved row count
 
@@ -2632,7 +2640,14 @@ class TestMergeWritesAuditRow:
             key=lambda r: r["id"],
         )
         mock_conn = AsyncMock()
-        mock_conn.fetch = AsyncMock(return_value=lock_rows)
+
+        # conn.fetch serves the entity FOR UPDATE lock AND the memory-module
+        # ``facts`` repoint scans (bu-j820n.1); only the lock returns entity rows,
+        # the facts scans return [] (no narrative facts in this audit-row test).
+        async def _conn_fetch(query, *args):
+            return lock_rows if "FOR UPDATE" in query else []
+
+        mock_conn.fetch = AsyncMock(side_effect=_conn_fetch)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
         # In-transaction conn.fetchval call order (#2230): subject-rewire count,
         # object-rewire count, then the merge_reviews INSERT ... RETURNING id.

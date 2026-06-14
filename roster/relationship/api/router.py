@@ -6406,9 +6406,16 @@ async def merge_entities(
     3. Rewires ``relationship.entity_facts`` rows where ``subject = source`` → ``subject = target``.
     4. Rewires ``relationship.entity_facts`` rows where ``object_kind='entity'`` and
        ``object = source::text`` → ``object = target::text``.
-    5. Tombstones source entity: sets ``metadata->>'merged_into'`` to the target UUID string.
+    5. Re-points the memory-module ``facts`` store (gifts, loans, interactions,
+       notes, life-events keyed by ``entity_id``; edge-facts via
+       ``object_entity_id``) from source → target, with the same
+       confidence-based supersession used by the memory butler's ``entity_merge``.
+    6. Re-points ``public.contacts.entity_id`` from source → target so linked
+       contacts (and their channel details) follow the survivor.
+    7. Tombstones source entity: sets ``metadata->>'merged_into'`` to the target UUID string.
 
-    Steps 3–5 execute inside a **single transaction** (atomicity guarantee).
+    Steps 3–7 execute inside a **single transaction** (atomicity guarantee): a
+    partial merge can never leave rows stranded on the tombstoned source.
 
     **Conflict handling:** rewiring a subject row may collide with an existing active triple
     at (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index.
@@ -6626,6 +6633,37 @@ async def merge_entities(
                 target_text,
             )
             object_facts_rewired = object_result
+
+            # 3b. Re-point the memory-module ``facts`` store (gifts, loans,
+            # interactions, contact-notes, life-events all live here keyed by
+            # ``entity_id``; edge-facts reference the source as
+            # ``object_entity_id``). The dashboard previously only moved
+            # ``relationship.entity_facts``, so these narrative rows orphaned onto
+            # the tombstoned source and vanished from the survivor (bu-j820n.1).
+            # Delegating to the canonical ``_repoint_facts_on_conn`` keeps the
+            # confidence-based supersession semantics identical to the memory
+            # butler's ``entity_merge`` while running inside THIS transaction.
+            from butlers.modules.memory.tools.entities import _repoint_facts_on_conn
+
+            await _repoint_facts_on_conn(conn, source_id, target_id)
+
+            # 3c. Re-point linked contacts (``public.contacts.entity_id``). A
+            # contact is bound to exactly one entity; on merge every contact that
+            # pointed at the source must follow it onto the survivor or the
+            # contact (and its channel details) silently disappears from the
+            # merged entity's CRM view. ``public.contacts`` lives in the ``public``
+            # schema — fully qualified here so the cross-schema update is explicit
+            # and does not depend on search_path ordering.
+            await conn.execute(
+                """
+                UPDATE public.contacts
+                SET entity_id = $2,
+                    updated_at = now()
+                WHERE entity_id = $1
+                """,
+                source_id,
+                target_id,
+            )
 
             # 4. Tombstone source entity via merged_into metadata key.
             tombstone_meta = {**src_meta, "merged_into": str(target_id)}

@@ -111,12 +111,15 @@ async def pool(provisioned_postgres_pool):
             CREATE TABLE IF NOT EXISTS facts (
                 id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
                 entity_id     UUID,
+                object_entity_id UUID,
                 predicate     TEXT        NOT NULL,
                 content       TEXT,
                 source_butler TEXT,
                 confidence       FLOAT    NOT NULL DEFAULT 1.0,
                 observed_at      TIMESTAMPTZ,
                 last_confirmed_at TIMESTAMPTZ,
+                valid_at         TIMESTAMPTZ,
+                supersedes_id    UUID,
                 scope         TEXT        NOT NULL DEFAULT 'relationship',
                 validity      TEXT        NOT NULL DEFAULT 'active',
                 created_at    TIMESTAMPTZ NOT NULL DEFAULT now()

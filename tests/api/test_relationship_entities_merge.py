@@ -166,7 +166,15 @@ def _make_conn_mock(
     if target_row is not None:
         fetch_rows.append(target_row)
 
-    mock_conn.fetch = AsyncMock(return_value=fetch_rows)
+    # conn.fetch is issued for the entity FOR UPDATE lock AND, after the
+    # entity_facts rewire, for the memory-module ``facts`` repoint (subject- and
+    # object-side scans in ``_repoint_facts_on_conn``, bu-j820n.1). Only the lock
+    # query returns entity rows; the facts scans return [] so the per-row loops
+    # do not run against the entity MagicMocks (which have no ``valid_at`` key).
+    async def _fetch(query, *args):
+        return fetch_rows if "FOR UPDATE" in query else []
+
+    mock_conn.fetch = AsyncMock(side_effect=_fetch)
 
     # fetchval returns subject count, object count, then the merge_reviews id
     # (the in-transaction audit INSERT).
