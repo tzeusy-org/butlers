@@ -420,6 +420,98 @@ async def test_medication_history_date_range(pool):
 
 
 # ------------------------------------------------------------------
+# Owner-entity supersession regression (bu-k402w)
+#
+# In production the owner entity is bootstrapped into public.entities, so
+# store_fact keys property-fact supersession on (entity_id, scope, predicate)
+# when entity_id is passed — IGNORING the subject.  The health per-item *_add
+# tools used a name-keyed subject AND passed entity_id=owner, which collapsed
+# every item onto a single (owner, health, <predicate>) key and silently
+# superseded the previous one.  These tests seed an owner entity (which the
+# integration test DB normally lacks) to reproduce the prod scenario, and assert
+# that distinct items coexist while re-adding the same name still supersedes.
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+async def owner_entity(pool):
+    """Seed an owner entity into public.entities for the duration of one test.
+
+    The ``pool`` fixture truncates facts/memory_links but NOT public.entities,
+    so this fixture inserts the owner row and removes it on teardown to avoid
+    leaking owner state into other tests (which rely on the no-owner fallback).
+    """
+    entity_id = await pool.fetchval(
+        """
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ('Owner', 'person', $1)
+        RETURNING id
+        """,
+        ["owner"],
+    )
+    yield entity_id
+    # facts reference entity_id via FK-less column, but clear them first to be safe.
+    await pool.execute("DELETE FROM public.facts WHERE entity_id = $1", entity_id)
+    await pool.execute("DELETE FROM public.entities WHERE id = $1", entity_id)
+
+
+async def test_medication_add_two_distinct_meds_coexist_with_owner_entity(owner_entity, pool):
+    """Two different medications stay active even when an owner entity exists.
+
+    Regression for bu-k402w: previously the second medication superseded the
+    first because supersession keyed on (owner, health, medication).
+    """
+    # Sanity: the owner entity is resolvable (otherwise the test would pass
+    # trivially via the no-owner subject-keyed fallback and not exercise the bug).
+    from butlers.core.owner import fetch_owner_entity_id
+    from butlers.tools.health import medication_add, medication_list
+
+    assert await fetch_owner_entity_id(pool) == owner_entity
+
+    await medication_add(pool, "Metformin", "500mg", "twice daily")
+    await medication_add(pool, "Lisinopril", "10mg", "daily")
+
+    names = {m["name"] for m in await medication_list(pool, active_only=False)}
+    assert names == {"Metformin", "Lisinopril"}
+
+
+async def test_medication_add_same_name_supersedes_with_owner_entity(owner_entity, pool):
+    """Re-adding the same medication name supersedes the previous fact (idempotent update)."""
+    from butlers.tools.health import medication_add, medication_list
+
+    await medication_add(pool, "Metformin", "500mg", "twice daily")
+    await medication_add(pool, "Metformin", "1000mg", "twice daily")
+
+    metformin = [
+        m for m in await medication_list(pool, active_only=False) if m["name"] == "Metformin"
+    ]
+    assert len(metformin) == 1
+    assert metformin[0]["dosage"] == "1000mg"
+
+
+async def test_condition_add_two_distinct_conditions_coexist_with_owner_entity(owner_entity, pool):
+    """Sibling check: two distinct conditions coexist with an owner entity present."""
+    from butlers.tools.health import condition_add, condition_list
+
+    await condition_add(pool, "Asthma")
+    await condition_add(pool, "Hypertension")
+
+    names = {c["name"] for c in await condition_list(pool)}
+    assert names == {"Asthma", "Hypertension"}
+
+
+async def test_research_save_two_distinct_notes_coexist_with_owner_entity(owner_entity, pool):
+    """Sibling check: two distinct research notes coexist with an owner entity present."""
+    from butlers.tools.health import research_save, research_search
+
+    await research_save(pool, "Vitamin D study", "Body A")
+    await research_save(pool, "Magnesium study", "Body B")
+
+    titles = {r["title"] for r in await research_search(pool, "study")}
+    assert titles == {"Vitamin D study", "Magnesium study"}
+
+
+# ------------------------------------------------------------------
 # Conditions
 # ------------------------------------------------------------------
 

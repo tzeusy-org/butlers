@@ -10,8 +10,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _get_owner_entity_id
-
 logger = logging.getLogger(__name__)
 
 _embedding_engine: Any = None
@@ -83,7 +81,13 @@ async def research_save(
     if condition_id is not None:
         metadata["condition_id"] = str(condition_id)
 
-    # Use title-keyed subject so multiple research notes coexist independently.
+    # Use a title-keyed subject so multiple research notes coexist independently.
+    # Supersession is keyed on (subject, predicate) ONLY when entity_id is
+    # omitted — passing the owner entity_id would make store_fact key
+    # supersession on (entity_id, scope, predicate) and IGNORE the subject, so
+    # every research note for the owner would collide on (owner, health,
+    # research) and silently supersede the previous one. Therefore do NOT anchor
+    # these per-item facts to the owner entity.
     subject = f"research:{title}"
 
     fact_id = (
@@ -95,7 +99,6 @@ async def research_save(
             embedding_engine=embedding_engine,
             permanence="stable",
             scope="health",
-            entity_id=await _get_owner_entity_id(pool),
             valid_at=None,  # property fact — supersedes previous for same title
             metadata=metadata,
         )
