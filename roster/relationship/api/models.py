@@ -179,8 +179,63 @@ class Group(BaseModel):
     name: str
     description: str | None = None
     member_count: int = 0
+    labels: list[Label] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Group label write models
+# ---------------------------------------------------------------------------
+
+
+class CreateLabelRequest(BaseModel):
+    """Request body for POST /labels — create a new label."""
+
+    name: str = Field(..., min_length=1, description="Unique label name.")
+    color: str | None = Field(
+        default=None,
+        description="Optional display colour (e.g. '#ff6347').  None means no colour.",
+    )
+
+
+class CreateLabelResponse(BaseModel):
+    """Response for POST /labels."""
+
+    id: UUID
+    name: str
+    color: str | None = None
+
+
+class AssignGroupLabelResponse(BaseModel):
+    """Response for POST /groups/{group_id}/labels/{label_id}.
+
+    ``assigned`` is True when the label was newly assigned; False when
+    the assignment already existed (idempotent endpoint).
+    """
+
+    group_id: UUID
+    label_id: UUID
+    assigned: bool
+
+
+class RemoveGroupLabelResponse(BaseModel):
+    """Response for DELETE /groups/{group_id}/labels/{label_id}.
+
+    ``removed`` is True when the assignment was deleted; False when
+    no such assignment existed (idempotent endpoint).
+    """
+
+    group_id: UUID
+    label_id: UUID
+    removed: bool
+
+
+class GroupLabelsResponse(BaseModel):
+    """Response for GET /groups/{group_id}/labels — all labels on a group."""
+
+    group_id: UUID
+    labels: list[Label]
 
 
 class UpcomingDate(BaseModel):

@@ -19,6 +19,9 @@ import {
   getEntitySuggestions,
   getGroups,
   getLabels,
+  createLabel,
+  assignGroupLabel,
+  removeGroupLabel,
   getOverdueContacts,
   getPendingContacts,
   getUnlinkedContacts,
@@ -67,6 +70,53 @@ export function useLabels() {
   return useQuery({
     queryKey: ["labels"],
     queryFn: () => getLabels(),
+  });
+}
+
+/** Create a new label. */
+export function useCreateLabel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; color?: string | null }) => createLabel(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["labels"] });
+      toast.success("Label created");
+    },
+    onError: (err: Error) => {
+      toast.error(err.message ?? "Failed to create label");
+    },
+  });
+}
+
+/** Assign a label to a group. */
+export function useAssignGroupLabel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, labelId }: { groupId: string; labelId: string }) =>
+      assignGroupLabel(groupId, labelId),
+    onSuccess: (_, { groupId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      void queryClient.invalidateQueries({ queryKey: ["group", groupId] });
+    },
+    onError: (err: Error) => {
+      toast.error(err.message ?? "Failed to assign label");
+    },
+  });
+}
+
+/** Remove a label from a group. */
+export function useRemoveGroupLabel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, labelId }: { groupId: string; labelId: string }) =>
+      removeGroupLabel(groupId, labelId),
+    onSuccess: (_, { groupId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      void queryClient.invalidateQueries({ queryKey: ["group", groupId] });
+    },
+    onError: (err: Error) => {
+      toast.error(err.message ?? "Failed to remove label");
+    },
   });
 }
 

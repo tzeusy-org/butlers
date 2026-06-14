@@ -893,8 +893,36 @@ export interface Group {
   name: string;
   description: string | null;
   member_count: number;
+  labels: Label[];
   created_at: string;
   updated_at: string;
+}
+
+/** Response for creating a label. */
+export interface CreateLabelResponse {
+  id: string;
+  name: string;
+  color: string | null;
+}
+
+/** Response for assigning a label to a group. */
+export interface AssignGroupLabelResponse {
+  group_id: string;
+  label_id: string;
+  assigned: boolean;
+}
+
+/** Response for removing a label from a group. */
+export interface RemoveGroupLabelResponse {
+  group_id: string;
+  label_id: string;
+  removed: boolean;
+}
+
+/** Response for GET /groups/{group_id}/labels. */
+export interface GroupLabelsResponse {
+  group_id: string;
+  labels: Label[];
 }
 
 /** An upcoming date (birthday, anniversary, etc.). */

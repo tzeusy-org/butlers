@@ -166,6 +166,11 @@ if _models_path.exists():
         CompareResponse = _models_module.CompareResponse
         DismissPairRequest = _models_module.DismissPairRequest
         DismissPairResponse = _models_module.DismissPairResponse
+        CreateLabelRequest = _models_module.CreateLabelRequest
+        CreateLabelResponse = _models_module.CreateLabelResponse
+        AssignGroupLabelResponse = _models_module.AssignGroupLabelResponse
+        RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
+        GroupLabelsResponse = _models_module.GroupLabelsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2247,7 +2252,7 @@ async def list_groups(
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> GroupListResponse:
-    """List all groups with member counts, paginated."""
+    """List all groups with member counts and assigned labels, paginated."""
     pool = _pool(db)
     group_columns = await _table_columns(pool, "groups")
     description_sql, updated_at_sql = _group_select_fragments(group_columns)
@@ -2273,12 +2278,34 @@ async def list_groups(
         limit,
     )
 
+    # Batch-fetch group labels (guards against missing table on older DBs)
+    group_ids = [r["id"] for r in rows]
+    labels_by_group: dict[Any, list[Label]] = {gid: [] for gid in group_ids}
+    if group_ids:
+        gl_tables = await _table_columns(pool, "group_labels")
+        if gl_tables:
+            label_rows = await pool.fetch(
+                """
+                SELECT gl.group_id, l.id, l.name, l.color
+                FROM group_labels gl
+                JOIN labels l ON l.id = gl.label_id
+                WHERE gl.group_id = ANY($1::uuid[])
+                ORDER BY l.name
+                """,
+                group_ids,
+            )
+            for lr in label_rows:
+                labels_by_group[lr["group_id"]].append(
+                    Label(id=lr["id"], name=lr["name"], color=lr["color"])
+                )
+
     groups = [
         Group(
             id=r["id"],
             name=r["name"],
             description=r["description"],
             member_count=r["member_count"],
+            labels=labels_by_group.get(r["id"], []),
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
@@ -2323,11 +2350,28 @@ async def get_group(
     if row is None:
         raise HTTPException(status_code=404, detail="Group not found")
 
+    # Fetch labels for this group (defensive guard in case migration not applied)
+    labels: list[Label] = []
+    gl_columns = await _table_columns(pool, "group_labels")
+    if gl_columns:
+        label_rows = await pool.fetch(
+            """
+            SELECT l.id, l.name, l.color
+            FROM group_labels gl
+            JOIN labels l ON l.id = gl.label_id
+            WHERE gl.group_id = $1
+            ORDER BY l.name
+            """,
+            group_id,
+        )
+        labels = [Label(id=lr["id"], name=lr["name"], color=lr["color"]) for lr in label_rows]
+
     return Group(
         id=row["id"],
         name=row["name"],
         description=row["description"],
         member_count=row["member_count"],
+        labels=labels,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -2346,6 +2390,138 @@ async def list_labels(
     pool = _pool(db)
     rows = await pool.fetch("SELECT id, name, color FROM labels ORDER BY name")
     return [Label(id=r["id"], name=r["name"], color=r["color"]) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# POST /labels — create a new label
+# ---------------------------------------------------------------------------
+
+
+@router.post("/labels", response_model=CreateLabelResponse, status_code=201)
+async def create_label(
+    body: CreateLabelRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CreateLabelResponse:
+    """Create a new label (name must be unique)."""
+    pool = _pool(db)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Label name cannot be empty or whitespace only")
+    try:
+        row = await pool.fetchrow(
+            """
+            INSERT INTO labels (name, color)
+            VALUES ($1, $2)
+            RETURNING id, name, color
+            """,
+            name,
+            body.color,
+        )
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            raise HTTPException(status_code=409, detail=f"Label '{name}' already exists") from exc
+        raise
+    return CreateLabelResponse(id=row["id"], name=row["name"], color=row["color"])
+
+
+# ---------------------------------------------------------------------------
+# GET /groups/{group_id}/labels — list labels on a group
+# ---------------------------------------------------------------------------
+
+
+@router.get("/groups/{group_id}/labels", response_model=GroupLabelsResponse)
+async def get_group_labels(
+    group_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> GroupLabelsResponse:
+    """List all labels assigned to a group."""
+    pool = _pool(db)
+    # Verify group exists
+    exists = await pool.fetchval("SELECT 1 FROM groups WHERE id = $1", group_id)
+    if not exists:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    gl_columns = await _table_columns(pool, "group_labels")
+    if not gl_columns:
+        return GroupLabelsResponse(group_id=group_id, labels=[])
+
+    rows = await pool.fetch(
+        """
+        SELECT l.id, l.name, l.color
+        FROM group_labels gl
+        JOIN labels l ON l.id = gl.label_id
+        WHERE gl.group_id = $1
+        ORDER BY l.name
+        """,
+        group_id,
+    )
+    labels = [Label(id=r["id"], name=r["name"], color=r["color"]) for r in rows]
+    return GroupLabelsResponse(group_id=group_id, labels=labels)
+
+
+# ---------------------------------------------------------------------------
+# POST /groups/{group_id}/labels/{label_id} — assign a label to a group
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/groups/{group_id}/labels/{label_id}",
+    response_model=AssignGroupLabelResponse,
+    status_code=200,
+)
+async def assign_group_label(
+    group_id: UUID,
+    label_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> AssignGroupLabelResponse:
+    """Assign a label to a group (idempotent — safe to call if already assigned)."""
+    pool = _pool(db)
+    # Verify group and label exist
+    group_exists = await pool.fetchval("SELECT 1 FROM groups WHERE id = $1", group_id)
+    if not group_exists:
+        raise HTTPException(status_code=404, detail="Group not found")
+    label_exists = await pool.fetchval("SELECT 1 FROM labels WHERE id = $1", label_id)
+    if not label_exists:
+        raise HTTPException(status_code=404, detail="Label not found")
+
+    inserted = await pool.fetchval(
+        """
+        INSERT INTO group_labels (group_id, label_id)
+        VALUES ($1, $2)
+        ON CONFLICT (group_id, label_id) DO NOTHING
+        RETURNING 1
+        """,
+        group_id,
+        label_id,
+    )
+    return AssignGroupLabelResponse(
+        group_id=group_id, label_id=label_id, assigned=inserted is not None
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /groups/{group_id}/labels/{label_id} — remove a label from a group
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/groups/{group_id}/labels/{label_id}",
+    response_model=RemoveGroupLabelResponse,
+)
+async def remove_group_label(
+    group_id: UUID,
+    label_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> RemoveGroupLabelResponse:
+    """Remove a label from a group."""
+    pool = _pool(db)
+    result = await pool.execute(
+        "DELETE FROM group_labels WHERE group_id = $1 AND label_id = $2",
+        group_id,
+        label_id,
+    )
+    removed = result != "DELETE 0"
+    return RemoveGroupLabelResponse(group_id=group_id, label_id=label_id, removed=removed)
 
 
 # ---------------------------------------------------------------------------

@@ -384,6 +384,10 @@ import type {
   TimelineSavedViewEntry,
   TimelineSavedViewCreateRequest,
   TimelineSavedViewUpdateRequest,
+  CreateLabelResponse,
+  AssignGroupLabelResponse,
+  RemoveGroupLabelResponse,
+  GroupLabelsResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1344,6 +1348,38 @@ export function getGroup(groupId: string): Promise<Group> {
 /** Fetch all labels. */
 export function getLabels(): Promise<Label[]> {
   return apiFetch<Label[]>("/relationship/labels");
+}
+
+/** Create a new label. */
+export function createLabel(body: { name: string; color?: string | null }): Promise<CreateLabelResponse> {
+  return apiFetch<CreateLabelResponse>("/relationship/labels", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Fetch labels assigned to a group. */
+export function getGroupLabels(groupId: string): Promise<GroupLabelsResponse> {
+  return apiFetch<GroupLabelsResponse>(
+    `/relationship/groups/${encodeURIComponent(groupId)}/labels`,
+  );
+}
+
+/** Assign a label to a group. */
+export function assignGroupLabel(groupId: string, labelId: string): Promise<AssignGroupLabelResponse> {
+  return apiFetch<AssignGroupLabelResponse>(
+    `/relationship/groups/${encodeURIComponent(groupId)}/labels/${encodeURIComponent(labelId)}`,
+    { method: "POST" },
+  );
+}
+
+/** Remove a label from a group. */
+export function removeGroupLabel(groupId: string, labelId: string): Promise<RemoveGroupLabelResponse> {
+  return apiFetch<RemoveGroupLabelResponse>(
+    `/relationship/groups/${encodeURIComponent(groupId)}/labels/${encodeURIComponent(labelId)}`,
+    { method: "DELETE" },
+  );
 }
 
 /** Fetch upcoming dates within a given number of days. */
