@@ -15,11 +15,12 @@ This migration seeds the matrix vocabulary: one row per
 capability vocabulary, all ``granted=true`` by default (opt-in deny — the owner
 revokes a capability by flipping a cell to ``granted=false``).
 
-The ``spawn`` permission is the one currently ENFORCED at runtime
-(``butlers.core.permissions.check_permission`` consulted by the Spawner). The
-remaining permissions are seeded as real, owner-visible options whose enforcement
-is tracked as follow-up work; they are not silently inert config — they are the
-governance surface the matrix is meant to expose.
+All five seeded permissions are now ENFORCED at runtime at their own call
+sites (``butlers.core.permissions.check_permission`` / ``require_permission``):
+``spawn`` (Spawner), ``cross_butler`` (Switchboard route_to_butler),
+``notify`` (notify() core tool / telegram), ``email.send`` (email module), and
+``calendar.write`` (calendar module). They are the live governance surface the
+matrix exposes, not inert config.
 
 Idempotent: ``INSERT ... ON CONFLICT (butler, permission) DO NOTHING`` so it
 never clobbers an owner's later grant/revoke decisions on re-run.
@@ -55,14 +56,17 @@ _BUTLERS = (
 #   spawn         — ENFORCED: butler may spawn an ephemeral runtime session at
 #                   all (the universal "may this butler act?" gate). Consulted by
 #                   butlers.core.permissions.check_permission in the Spawner.
-#   cross_butler  — butler may invoke other butlers via the Switchboard.
-#   notify        — butler may send owner-facing notifications.
-#   email.send    — butler may send email on the owner's behalf.
-#   calendar.write— butler may create/modify calendar events.
+#   cross_butler  — ENFORCED: butler may invoke other butlers via the Switchboard
+#                   (core_tools/_switchboard.route_to_butler).
+#   notify        — ENFORCED: butler may send owner-facing notifications
+#                   (notify() core tool / telegram module).
+#   email.send    — ENFORCED: butler may send email on the owner's behalf
+#                   (email module _send_email).
+#   calendar.write— ENFORCED: butler may create/modify calendar events
+#                   (calendar module _require_calendar_write_permission).
 #
-# Only ``spawn`` is enforced today; the rest are governance options whose
-# enforcement is flagged for follow-up. Seeding them makes the matrix a real,
-# non-empty control surface instead of an empty grid.
+# All five permissions are enforced at their own call sites today. Seeding them
+# makes the matrix a real, non-empty control surface instead of an empty grid.
 _PERMISSIONS = (
     "spawn",
     "cross_butler",

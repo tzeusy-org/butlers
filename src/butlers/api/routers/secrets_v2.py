@@ -3123,6 +3123,13 @@ class SystemSetRequest(BaseModel):
 
     value: str
     """New secret value to store."""
+    category: str = "general"
+    """Credential category (e.g. ``general``, ``telegram``, ``email``, ``google``).
+
+    Persisted on the ``butler_secrets.category`` column at first-time create only;
+    rotations preserve the existing category so an edit cannot silently re-bucket
+    a credential. Defaults to ``general``.
+    """
     target: str = "shared"
     """Write target for the credential:
 
@@ -3255,6 +3262,7 @@ async def set_system_credential(
     """
     target = body.target
     value = body.value
+    category = body.category or "general"
 
     if target == "shared":
         # Shared row lives in the switchboard butler schema.
@@ -3283,11 +3291,12 @@ async def set_system_credential(
             try:
                 await pool.execute(
                     """
-                    INSERT INTO butler_secrets (secret_key, secret_value, updated_at)
-                    VALUES ($1, $2, now())
+                    INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                    VALUES ($1, $2, $3, now())
                     """,
                     key,
                     value,
+                    category,
                 )
             except Exception as exc:
                 logger.warning("set_system_credential: INSERT failed key=%s: %s", key, exc)
@@ -3351,11 +3360,12 @@ async def set_system_credential(
             try:
                 await pool.execute(
                     """
-                    INSERT INTO butler_secrets (secret_key, secret_value, updated_at)
-                    VALUES ($1, $2, now())
+                    INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                    VALUES ($1, $2, $3, now())
                     """,
                     key,
                     value,
+                    category,
                 )
             except UndefinedTableError as exc:
                 raise HTTPException(
@@ -3423,14 +3433,15 @@ async def set_system_credential(
         try:
             await pool.execute(
                 """
-                INSERT INTO butler_secrets (secret_key, secret_value, updated_at)
-                VALUES ($1, $2, now())
+                INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                VALUES ($1, $2, $3, now())
                 ON CONFLICT (secret_key) DO UPDATE
                     SET secret_value = EXCLUDED.secret_value,
                         updated_at = EXCLUDED.updated_at
                 """,
                 key,
                 value,
+                category,
             )
         except UndefinedTableError as exc:
             raise HTTPException(

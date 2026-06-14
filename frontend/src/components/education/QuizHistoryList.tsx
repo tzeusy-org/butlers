@@ -32,7 +32,7 @@ export default function QuizHistoryList({
   nodeId,
   compact,
 }: QuizHistoryListProps) {
-  const { data: responses } = useQuizResponses({
+  const { data: responses, isError } = useQuizResponses({
     mind_map_id: mindMapId,
     node_id: nodeId,
     limit: compact ? 5 : 20,
@@ -40,6 +40,21 @@ export default function QuizHistoryList({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const items = responses?.data ?? [];
+
+  if (isError) {
+    const errMsg = compact
+      ? "Couldn't load quiz history"
+      : "Couldn't load quiz responses for this curriculum.";
+    return compact ? (
+      <p className="text-xs text-destructive">{errMsg}</p>
+    ) : (
+      <Card>
+        <CardContent className="flex h-48 items-center justify-center text-destructive">
+          {errMsg}
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (items.length === 0) {
     const msg = compact

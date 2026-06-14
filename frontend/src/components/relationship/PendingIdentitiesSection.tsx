@@ -41,6 +41,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  useArchiveContact,
   useConfirmContact,
   useContacts,
   usePendingContacts,
@@ -203,6 +204,7 @@ function MergeDialog({ pendingContact, open, onOpenChange }: MergeDialogProps) {
 export function PendingIdentitiesSection() {
   const { data: pending, isLoading } = usePendingContacts();
   const confirmMutation = useConfirmContact();
+  const archiveMutation = useArchiveContact();
   const [mergeTarget, setMergeTarget] = useState<ContactDetail | null>(null);
 
   const pendingContacts = pending ?? [];
@@ -228,9 +230,19 @@ export function PendingIdentitiesSection() {
   }
 
   function handleArchive(contact: ContactDetail) {
-    // Archive: patch contact to set archived (not yet a full backend action)
-    // For now, show a toast to indicate this is not yet supported
-    toast.info(`Archive not yet implemented for ${contact.full_name}`);
+    // Soft-archive the pending contact via the real backend endpoint
+    // (POST /relationship/contacts/{id}/archive). Source links are preserved so
+    // sync won't re-create it.
+    archiveMutation.mutate(contact.id, {
+      onSuccess: () => {
+        toast.success(`Archived ${contact.full_name}`);
+      },
+      onError: (err) => {
+        toast.error(
+          `Archive failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        );
+      },
+    });
   }
 
   return (
@@ -304,6 +316,7 @@ export function PendingIdentitiesSection() {
                         <Button
                           size="sm"
                           variant="ghost"
+                          disabled={archiveMutation.isPending}
                           onClick={() => handleArchive(contact)}
                         >
                           Archive

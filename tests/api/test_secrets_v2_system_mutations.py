@@ -230,6 +230,79 @@ def test_set_new_returns_200_with_system_secret_detail():
     assert "meta" in body
 
 
+def test_set_new_persists_category_on_insert():
+    """POST with a category threads it into the first-time INSERT (bu-occhw)."""
+    new_row = _make_butler_secrets_row(secret_key="MY_API_KEY", last_test_ok=True)
+    mock_db = _make_db(switchboard_row=None)
+    switchboard_pool = mock_db.pool("switchboard")
+
+    call_count = [0]
+
+    async def _fetchrow_side_effect(sql, *args):
+        if "secret_probe_log" in sql:
+            return None
+        call_count[0] += 1
+        return None if call_count[0] == 1 else new_row
+
+    switchboard_pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
+
+    insert_calls: list[tuple] = []
+    orig_execute = switchboard_pool.execute
+
+    async def _spy_execute(sql, *args):
+        if "INSERT INTO butler_secrets" in sql:
+            insert_calls.append((sql, args))
+        return await orig_execute(sql, *args)
+
+    switchboard_pool.execute = AsyncMock(side_effect=_spy_execute)
+
+    client = _build_app(mock_db)
+    resp = client.post(
+        "/api/secrets/system/MY_API_KEY",
+        json={"value": "s3cr3t", "category": "telegram"},
+    )
+    assert resp.status_code == 200
+    assert insert_calls, "Expected an INSERT INTO butler_secrets on first-time create"
+    sql, args = insert_calls[0]
+    assert "category" in sql
+    # category is the third positional arg ($3) in the INSERT.
+    assert "telegram" in args
+
+
+def test_set_new_category_defaults_to_general():
+    """POST without a category defaults to 'general' on the INSERT (bu-occhw)."""
+    new_row = _make_butler_secrets_row(secret_key="MY_API_KEY", last_test_ok=True)
+    mock_db = _make_db(switchboard_row=None)
+    switchboard_pool = mock_db.pool("switchboard")
+
+    call_count = [0]
+
+    async def _fetchrow_side_effect(sql, *args):
+        if "secret_probe_log" in sql:
+            return None
+        call_count[0] += 1
+        return None if call_count[0] == 1 else new_row
+
+    switchboard_pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
+
+    insert_calls: list[tuple] = []
+    orig_execute = switchboard_pool.execute
+
+    async def _spy_execute(sql, *args):
+        if "INSERT INTO butler_secrets" in sql:
+            insert_calls.append((sql, args))
+        return await orig_execute(sql, *args)
+
+    switchboard_pool.execute = AsyncMock(side_effect=_spy_execute)
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/system/MY_API_KEY", json={"value": "s3cr3t"})
+    assert resp.status_code == 200
+    assert insert_calls
+    _sql, args = insert_calls[0]
+    assert "general" in args
+
+
 def test_set_new_writes_set_audit_action(monkeypatch):
     """POST creates a new key → audit action is 'set'."""
     new_row = _make_butler_secrets_row(secret_key="MY_KEY", last_test_ok=True)
