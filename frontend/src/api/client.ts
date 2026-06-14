@@ -323,6 +323,10 @@ import type {
   FinanceAccountListParams,
   FinanceSpendingSummaryParams,
   FinanceUpcomingBillsParams,
+  FinanceBulkUpdateRequest,
+  FinanceBulkUpdateResponse,
+  FinanceDistinctMerchant,
+  FinanceDistinctMerchantsParams,
   TravelTrip,
   TravelTripSummary,
   TravelUpcomingModel,
@@ -5445,6 +5449,41 @@ export function getFinanceAccounts(
   return apiFetch<PaginatedResponse<FinanceAccount>>(
     qs ? `/finance/accounts?${qs}` : "/finance/accounts",
   );
+}
+
+/**
+ * List distinct raw merchants with aggregate stats and any existing
+ * normalization. GET /api/finance/merchants/distinct.
+ */
+export function getFinanceDistinctMerchants(
+  params?: FinanceDistinctMerchantsParams,
+): Promise<PaginatedResponse<FinanceDistinctMerchant>> {
+  const sp = new URLSearchParams();
+  if (params?.start_date) sp.set("start_date", params.start_date);
+  if (params?.end_date) sp.set("end_date", params.end_date);
+  if (params?.min_count != null) sp.set("min_count", String(params.min_count));
+  if (params?.unnormalized_only != null)
+    sp.set("unnormalized_only", String(params.unnormalized_only));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<FinanceDistinctMerchant>>(
+    qs ? `/finance/merchants/distinct?${qs}` : "/finance/merchants/distinct",
+  );
+}
+
+/**
+ * Apply bulk metadata overlay (normalized_merchant / inferred_category) to
+ * transaction facts matching each op's ILIKE merchant pattern.
+ * PATCH /api/finance/transactions/bulk-metadata.
+ */
+export function patchFinanceBulkMetadata(
+  request: FinanceBulkUpdateRequest,
+): Promise<FinanceBulkUpdateResponse> {
+  return apiFetch<FinanceBulkUpdateResponse>("/finance/transactions/bulk-metadata", {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
 }
 
 // ---------------------------------------------------------------------------

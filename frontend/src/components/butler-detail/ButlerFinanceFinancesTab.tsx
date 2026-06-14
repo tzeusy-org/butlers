@@ -28,15 +28,20 @@
 //   useFinanceUpcomingBills, useFinanceTransactions
 // ---------------------------------------------------------------------------
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { formatInTimeZone } from "date-fns-tz";
+import { toast } from "sonner";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Time } from "@/components/ui/time";
 import {
+  useBulkUpdateTransactionMetadata,
   useFinanceAccounts,
   useFinanceSpendingSummary,
   useFinanceSubscriptions,
@@ -45,6 +50,7 @@ import {
 } from "@/hooks/use-finance";
 import type {
   FinanceAccount,
+  FinanceBulkUpdateOp,
   FinanceTransaction,
   FinanceSubscription,
   FinanceUpcomingBillItem,
@@ -256,60 +262,179 @@ function CategorySpendPanel({
 // Row 3: Recent transactions table
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Bulk-action bar (bu-v3a4x.3)
+//
+// Lets the owner select transaction rows and bulk-write to the facts OVERLAY
+// via PATCH /transactions/bulk-metadata: set an inferred_category and/or a
+// normalized_merchant. The endpoint matches facts by an ILIKE merchant_pattern,
+// so the bar builds one op per distinct RAW merchant in the selection (the base
+// merchant is the overlay key). Overlay-aware reads (bu-v3a4x.1) then surface
+// these edits on the next /transactions refresh.
+// ---------------------------------------------------------------------------
+
+function BulkActionBar({
+  selectedCount,
+  onApply,
+  isPending,
+}: {
+  selectedCount: number;
+  onApply: (category: string, normalizedMerchant: string) => void;
+  isPending: boolean;
+}) {
+  const [category, setCategory] = useState("");
+  const [normalizedMerchant, setNormalizedMerchant] = useState("");
+
+  const hasSelection = selectedCount > 0;
+  const hasEdit = category.trim() !== "" || normalizedMerchant.trim() !== "";
+  const disabled = !hasSelection || !hasEdit || isPending;
+
+  return (
+    <div
+      className="flex flex-wrap items-end gap-3 border-b border-border/60 pb-3 mb-3"
+      data-testid="finance-bulk-action-bar"
+    >
+      <div className="flex flex-col gap-1">
+        <label
+          htmlFor="bulk-category"
+          className="text-xs text-muted-foreground font-medium"
+        >
+          Set category
+        </label>
+        <Input
+          id="bulk-category"
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          placeholder="e.g. groceries"
+          className="h-8 w-44 text-sm"
+          data-testid="bulk-category-input"
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <label
+          htmlFor="bulk-merchant"
+          className="text-xs text-muted-foreground font-medium"
+        >
+          Normalize merchant
+        </label>
+        <Input
+          id="bulk-merchant"
+          value={normalizedMerchant}
+          onChange={(e) => setNormalizedMerchant(e.target.value)}
+          placeholder="e.g. Whole Foods Market"
+          className="h-8 w-52 text-sm"
+          data-testid="bulk-merchant-input"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          disabled={disabled}
+          onClick={() => onApply(category.trim(), normalizedMerchant.trim())}
+          data-testid="bulk-apply-button"
+        >
+          {isPending ? "Applying..." : "Apply to selected"}
+        </Button>
+        <span
+          className="text-xs text-muted-foreground tnum"
+          data-testid="bulk-selection-count"
+        >
+          {selectedCount} selected
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function TransactionsPanel({
   transactions,
   isLoading,
+  selectedIds,
+  onToggleRow,
+  onToggleAll,
+  onApplyBulk,
+  isApplying,
 }: {
   transactions: FinanceTransaction[];
   isLoading: boolean;
+  selectedIds: Set<string>;
+  onToggleRow: (id: string) => void;
+  onToggleAll: (ids: string[], checked: boolean) => void;
+  onApplyBulk: (category: string, normalizedMerchant: string) => void;
+  isApplying: boolean;
 }) {
   const rows = transactions.slice(0, 15);
+  const rowIds = rows.map((tx) => tx.id);
+  const allSelected = rowIds.length > 0 && rowIds.every((id) => selectedIds.has(id));
 
   return (
-    <Panel title="Recent transactions" span={4} scroll height="320px" testId="finance-transactions-section">
+    <Panel title="Recent transactions" span={4} scroll height="380px" testId="finance-transactions-section">
       {isLoading ? (
         <LoadingLine />
       ) : rows.length === 0 ? (
         <EmptyLine>No transactions recorded yet.</EmptyLine>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm" data-testid="transactions-table">
-            <thead>
-              <tr className="border-b text-xs text-muted-foreground">
-                <th className="py-1 pr-3 text-left font-medium">Date</th>
-                <th className="py-1 pr-3 text-left font-medium">Merchant</th>
-                <th className="py-1 pr-3 text-left font-medium">Category</th>
-                <th className="py-1 text-right font-medium">Amount</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {rows.map((tx) => (
-                <tr key={tx.id} data-testid="transaction-row">
-                  <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">
-                    <Time
-                      value={tx.posted_at}
-                      mode="absolute"
-                      precision="day"
-                      compact
+        <>
+          <BulkActionBar
+            selectedCount={selectedIds.size}
+            onApply={onApplyBulk}
+            isPending={isApplying}
+          />
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" data-testid="transactions-table">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className="py-1 pr-3 text-left font-medium w-8">
+                    <Checkbox
+                      checked={allSelected}
+                      onCheckedChange={(c) => onToggleAll(rowIds, c === true)}
+                      aria-label="Select all transactions"
+                      data-testid="select-all-checkbox"
                     />
-                  </td>
-                  <td className="py-2 pr-3 font-medium max-w-[160px] truncate">
-                    {tx.normalized_merchant ?? tx.merchant}
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-muted-foreground">
-                    {titleCase(tx.inferred_category ?? tx.category)}
-                  </td>
-                  <td
-                    className={`py-2 text-right font-mono tnum text-xs ${DIRECTION_CLASS[tx.direction] ?? ""}`}
-                  >
-                    {tx.direction === "debit" ? "−" : "+"}
-                    {formatCurrency(tx.amount, tx.currency)}
-                  </td>
+                  </th>
+                  <th className="py-1 pr-3 text-left font-medium">Date</th>
+                  <th className="py-1 pr-3 text-left font-medium">Merchant</th>
+                  <th className="py-1 pr-3 text-left font-medium">Category</th>
+                  <th className="py-1 text-right font-medium">Amount</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y">
+                {rows.map((tx) => (
+                  <tr key={tx.id} data-testid="transaction-row">
+                    <td className="py-2 pr-3">
+                      <Checkbox
+                        checked={selectedIds.has(tx.id)}
+                        onCheckedChange={() => onToggleRow(tx.id)}
+                        aria-label={`Select transaction ${tx.merchant}`}
+                        data-testid="transaction-checkbox"
+                      />
+                    </td>
+                    <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">
+                      <Time
+                        value={tx.posted_at}
+                        mode="absolute"
+                        precision="day"
+                        compact
+                      />
+                    </td>
+                    <td className="py-2 pr-3 font-medium max-w-[160px] truncate">
+                      {tx.normalized_merchant ?? tx.merchant}
+                    </td>
+                    <td className="py-2 pr-3 text-xs text-muted-foreground">
+                      {titleCase(tx.inferred_category ?? tx.category)}
+                    </td>
+                    <td
+                      className={`py-2 text-right font-mono tnum text-xs ${DIRECTION_CLASS[tx.direction] ?? ""}`}
+                    >
+                      {tx.direction === "debit" ? "−" : "+"}
+                      {formatCurrency(tx.amount, tx.currency)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </Panel>
   );
@@ -494,7 +619,90 @@ export default function ButlerFinanceFinancesTab() {
   });
   const { data: accountsResp, isLoading: accountsLoading } = useFinanceAccounts();
 
-  const transactions = txResp?.data ?? [];
+  // Memoized so the applyBulk useCallback below has a stable transactions dep.
+  const transactions = useMemo(() => txResp?.data ?? [], [txResp]);
+
+  // ---- Bulk edit state (bu-v3a4x.3) --------------------------------------
+  const bulkUpdate = useBulkUpdateTransactionMetadata();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const toggleRow = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleAll = useCallback((ids: string[], checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const applyBulk = useCallback(
+    (category: string, normalizedMerchant: string) => {
+      if (selectedIds.size === 0) return;
+      if (category === "" && normalizedMerchant === "") return;
+
+      // Build the overlay set once; both fields are optional.
+      const set: { inferred_category?: string; normalized_merchant?: string } = {};
+      if (category !== "") set.inferred_category = category;
+      if (normalizedMerchant !== "") set.normalized_merchant = normalizedMerchant;
+
+      // The overlay endpoint keys on the RAW merchant (ILIKE merchant_pattern),
+      // so collapse the selection to one op per distinct base merchant. Use an
+      // exact ILIKE on the literal merchant string (no wildcards) to avoid
+      // accidentally matching look-alike merchants.
+      const selected = transactions.filter((tx) => selectedIds.has(tx.id));
+      const merchants = Array.from(new Set(selected.map((tx) => tx.merchant)));
+      const ops: FinanceBulkUpdateOp[] = merchants.map((merchant) => ({
+        match: { merchant_pattern: merchant },
+        set,
+      }));
+
+      if (ops.length === 0) return;
+
+      const summary =
+        `Apply ${[
+          set.inferred_category ? `category "${set.inferred_category}"` : null,
+          set.normalized_merchant ? `merchant "${set.normalized_merchant}"` : null,
+        ]
+          .filter(Boolean)
+          .join(" and ")} to ${selectedIds.size} ` +
+        `transaction${selectedIds.size === 1 ? "" : "s"} ` +
+        `(${ops.length} merchant${ops.length === 1 ? "" : "s"})?`;
+
+      // Honest confirmation before a write that fans out across the overlay.
+      if (typeof window !== "undefined" && !window.confirm(summary)) return;
+
+      bulkUpdate.mutate(
+        { ops },
+        {
+          onSuccess: (resp) => {
+            toast.success(
+              `Updated ${resp.updated_total} transaction fact${
+                resp.updated_total === 1 ? "" : "s"
+              }.`,
+            );
+            setSelectedIds(new Set());
+          },
+          onError: (err) => {
+            toast.error(
+              err instanceof Error ? err.message : "Bulk update failed.",
+            );
+          },
+        },
+      );
+    },
+    [bulkUpdate, selectedIds, transactions],
+  );
   const subscriptions = subResp?.data ?? [];
   const upcomingBills = upcomingResp?.items ?? [];
   const accounts = accountsResp?.data ?? [];
@@ -603,7 +811,15 @@ export default function ButlerFinanceFinancesTab() {
       />
 
       {/* Row 3: Recent transactions (span-4, scrollable) */}
-      <TransactionsPanel transactions={transactions} isLoading={txLoading} />
+      <TransactionsPanel
+        transactions={transactions}
+        isLoading={txLoading}
+        selectedIds={selectedIds}
+        onToggleRow={toggleRow}
+        onToggleAll={toggleAll}
+        onApplyBulk={applyBulk}
+        isApplying={bulkUpdate.isPending}
+      />
 
       {/* Row 4: Subscriptions (span-2) + Accounts (span-2) */}
       <SubscriptionsPanel subscriptions={subscriptions} isLoading={subLoading} />
