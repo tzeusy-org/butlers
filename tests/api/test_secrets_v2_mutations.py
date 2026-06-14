@@ -677,6 +677,34 @@ def test_reauthorize_first_time_connect_oauth_provider_returns_start_url():
     assert "account_hint" not in redirect_url, redirect_url
 
 
+def test_reauthorize_unregistered_catalog_oauth_provider_returns_501():
+    """First-time connect for a catalog-oauth provider with no OAuth integration
+    wired into _PROVIDER_REGISTRY (e.g. whatsapp) returns an honest 501 instead
+    of a redirect_url that would land the browser on a confusing JSON 404.
+
+    Regression for bu-atcfw: whatsapp is kind='oauth' in the catalog but has no
+    registered OAuth provider (no real OAuth app credentials).  Rather than
+    fabricating a provider, reauthorize returns 501 so the FE can show an honest
+    'not yet available' message.
+    """
+    from butlers.api.routers.oauth import _PROVIDER_REGISTRY
+    from butlers.secrets_provider_catalog import PROVIDER_CATALOG
+
+    # Preconditions this test depends on.
+    assert PROVIDER_CATALOG["whatsapp"].kind == "oauth"
+    assert "whatsapp" not in _PROVIDER_REGISTRY
+
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/whatsapp/reauthorize")
+    assert resp.status_code == 501, resp.text
+    # FastAPI HTTPException → {"detail": "..."} so the FE surfaces an honest message.
+    detail = resp.json()["detail"]
+    assert "not yet available" in detail.lower()
+    assert "WhatsApp" in detail
+
+
 def test_reauthorize_first_time_connect_writes_attempted_audit_row(monkeypatch):
     """First-time connect (no row) still writes an 'attempted' audit row."""
     mock_db = _make_db(user_row=None)

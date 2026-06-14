@@ -33,7 +33,7 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
-import { reauthorizeUserCredential } from "@/api/client.ts"
+import { reauthorizeUserCredential, ApiError } from "@/api/client.ts"
 const mockReauth = vi.mocked(reauthorizeUserCredential)
 
 // ---------------------------------------------------------------------------
@@ -169,6 +169,36 @@ describe("PageUser: re-authorize button (expired credential)", () => {
     await waitFor(() => {
       expect(screen.getAllByText("re-authorize").length).toBeGreaterThan(0)
     })
+    const [reenabled] = screen
+      .getAllByText("re-authorize")
+      .map((el) => el.closest("button")!) as HTMLButtonElement[]
+    expect(reenabled.disabled).toBe(false)
+  })
+
+  it("surfaces an honest 'not yet available' notice (not a red error) on HTTP 501 [bu-atcfw]", async () => {
+    // Backend returns 501 oauth_provider_not_configured for a catalog-oauth
+    // provider with no wired OAuth integration (e.g. whatsapp). The connect
+    // handler should show the honest message and NOT navigate the browser.
+    mockReauth.mockRejectedValue(
+      new ApiError(
+        "oauth_provider_not_configured",
+        "WhatsApp OAuth connect is not yet available.",
+        501,
+      ),
+    )
+    renderPageUser()
+
+    const [btn] = screen.getAllByText("re-authorize")
+    fireEvent.click(btn)
+
+    // Honest message is rendered via the dedicated not-available slot.
+    await waitFor(() => {
+      const el = document.querySelector("[data-reauth-not-available]")
+      expect(el).toBeTruthy()
+      expect(el?.textContent).toContain("not yet available")
+    })
+
+    // Button re-enables (no spinner stuck); this is not a hard failure.
     const [reenabled] = screen
       .getAllByText("re-authorize")
       .map((el) => el.closest("button")!) as HTMLButtonElement[]
