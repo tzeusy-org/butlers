@@ -1405,8 +1405,59 @@ describe("EntitiesIndexPage — toolbar search", () => {
     // …and the hydration hook was called with exactly the ranked id set.
     const hydrateCall = vi
       .mocked(useRelationshipEntitiesByIds)
-      .mock.calls.find((c) => Array.isArray(c[0]) && c[0].length > 0);
-    expect(hydrateCall?.[0]).toEqual([CAROL.id]);
+      .mock.calls.find((c) => (c[0]?.ids?.length ?? 0) > 0);
+    expect(hydrateCall?.[0]).toMatchObject({ ids: [CAROL.id] });
+  });
+
+  it("constrains search hydration to the active filter chips", () => {
+    // Faceted search: when a chip is active (?has=contact here), the hydrated
+    // search results must stay within that filtered population — the active
+    // filters are threaded into the hydration query (the backend ANDs them with
+    // the ranked id set). Pagination is omitted (the id set is the window).
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: {
+        results: [
+          {
+            entity_id: ALICE.id,
+            canonical_name: ALICE.canonical_name,
+            entity_type: ALICE.entity_type,
+            score: 100,
+            match_kind: "prefix",
+          },
+        ],
+        total: 1,
+        q: "al",
+        limit: 50,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntityFinderSearch>);
+
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+
+    renderPage("/entities?has=contact");
+
+    const input = container.querySelector(
+      "[data-testid='entities-toolbar-search']",
+    ) as HTMLInputElement;
+    act(() => {
+      setter?.call(input, "al");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const hydrateCall = vi
+      .mocked(useRelationshipEntitiesByIds)
+      .mock.calls.find((c) => (c[0]?.ids?.length ?? 0) > 0);
+    expect(hydrateCall?.[0]).toMatchObject({
+      has: "contact",
+      entity_type: ["person", "organization"],
+      ids: [ALICE.id],
+    });
+    // Pagination is intentionally not threaded into the hydration window.
+    expect(hydrateCall?.[0]?.offset).toBeUndefined();
   });
 
   it("passes the search query through to useEntityFinderSearch", () => {

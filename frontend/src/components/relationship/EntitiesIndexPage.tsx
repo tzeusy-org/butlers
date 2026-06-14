@@ -1135,9 +1135,16 @@ export function EntitiesIndexPage() {
   );
   // Hydrate full relationship summaries (tier, last_seen, contact counts, …) for
   // exactly the search-matched ids, so the table keeps its rich columns for EVERY
-  // match. The hook self-disables when there are no ids (i.e. no active search).
-  const { data: searchHydrated, isError: isHydrateError } =
-    useRelationshipEntitiesByIds(searchIds, SEARCH_RESULT_LIMIT);
+  // match. The active filter chips are passed through so search stays constrained
+  // to the same population as the unsearched list (the backend ANDs them with the
+  // id set); pagination is omitted. The hook self-disables when there are no ids.
+  const { data: searchHydrated, isError: isHydrateError } = useRelationshipEntitiesByIds({
+    entity_type: typeFilters,
+    state: stateFilter ?? undefined,
+    has: hasContact ? "contact" : undefined,
+    ids: searchIds,
+    limit: SEARCH_RESULT_LIMIT,
+  });
   // A failed search must not masquerade as "no entities" — surface the error
   // distinctly instead of collapsing to the empty state.
   const searchFailed = isSearching && (isSearchError || isHydrateError);

@@ -310,13 +310,19 @@ export function useRelationshipEntities(params?: RelationshipEntityListParams) {
  * (tier, last_seen, contact counts, …) for exactly those ids — independent of
  * which paginated page is currently loaded. Disabled when ``ids`` is empty.
  *
+ * ``params`` carries the active filter chips (entity_type / state / has) so the
+ * hydrated rows stay constrained to the same population as the unsearched list;
+ * the backend ANDs them with the id set. Pagination is intentionally omitted —
+ * the id set is already the (capped) result window.
+ *
  * Distinct hook (not a flag on ``useRelationshipEntities``) so the primary list
  * query and this hydration query never share a cache key or call site.
  */
-export function useRelationshipEntitiesByIds(ids: string[], limit: number) {
+export function useRelationshipEntitiesByIds(params: RelationshipEntityListParams) {
+  const ids = params.ids ?? [];
   return useQuery({
-    queryKey: ["relationship-entities", "by-ids", ids, limit],
-    queryFn: () => listRelationshipEntities({ ids, limit }),
+    queryKey: ["relationship-entities", "by-ids", params],
+    queryFn: () => listRelationshipEntities(params),
     enabled: ids.length > 0,
   });
 }
