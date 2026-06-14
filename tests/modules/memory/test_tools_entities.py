@@ -20,7 +20,9 @@ import pytest
 from butlers.modules.memory.tools.entities import (
     _SCORE_EXACT_DEMOTED,
     _SCORE_EXACT_NAME,
+    _parse_rowcount,
     _repoint_episode_entities,
+    _retract_facts_on_conn,
     entity_create,
     entity_get,
     entity_merge,
@@ -1223,3 +1225,52 @@ class TestMemoryEntityMergeMCPMergeReviewWiring:
 
         assert result == {"target_entity_id": TARGET_ID}
         fake_entities.entity_merge.assert_awaited_once()
+
+
+class TestRetractFactsOnConn:
+    """bu-j820n.2: forget/tombstone analogue of ``_repoint_facts_on_conn``.
+
+    On a forget there is no survivor — every active fact referencing the entity
+    (subject-side ``entity_id`` for gifts/loans/interactions/notes/life-events,
+    and object-side ``object_entity_id`` for edge-facts) must be retracted
+    (``validity = 'retracted'``), not left active and dangling on the tombstone.
+    """
+
+    async def test_issues_subject_and_object_retraction_updates(self):
+        conn = AsyncMock()
+        conn.execute = AsyncMock(side_effect=["UPDATE 3", "UPDATE 1"])
+
+        result = await _retract_facts_on_conn(conn, ENTITY_UUID)
+
+        # Two UPDATEs: subject-side (entity_id) then object-side (object_entity_id).
+        assert conn.execute.await_count == 2
+        subject_sql = conn.execute.await_args_list[0].args[0]
+        object_sql = conn.execute.await_args_list[1].args[0]
+
+        assert "UPDATE facts" in subject_sql
+        assert "validity = 'retracted'" in subject_sql
+        assert "entity_id = $1" in subject_sql
+        assert "object_entity_id" not in subject_sql
+
+        assert "UPDATE facts" in object_sql
+        assert "validity = 'retracted'" in object_sql
+        assert "object_entity_id = $1" in object_sql
+
+        # Only active rows are retracted (idempotent on re-forget).
+        assert "validity = 'active'" in subject_sql
+        assert "validity = 'active'" in object_sql
+
+        # Both UPDATEs are bound to the entity being forgotten.
+        assert conn.execute.await_args_list[0].args[1] == ENTITY_UUID
+        assert conn.execute.await_args_list[1].args[1] == ENTITY_UUID
+
+        # Command tags are parsed into counts.
+        assert result == {"facts_retracted": 3, "edge_facts_retracted": 1}
+
+    async def test_parse_rowcount_handles_non_numeric_tags(self):
+        # Real asyncpg tag.
+        assert _parse_rowcount("UPDATE 5") == 5
+        # Mock / unexpected return values degrade to 0 rather than raising.
+        assert _parse_rowcount(None) == 0
+        assert _parse_rowcount("UPDATE") == 0
+        assert _parse_rowcount(MagicMock()) == 0

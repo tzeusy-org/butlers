@@ -129,19 +129,24 @@ def _make_delete_app(
     *,
     owner_exists: bool = True,
     entity_exists: bool = True,
-) -> tuple[FastAPI, AsyncMock]:
+) -> tuple[FastAPI, AsyncMock, AsyncMock]:
     """Wire a FastAPI app for DELETE /entities/{id} (forget) tests.
 
     Call sequence inside the endpoint:
       1. pool.fetchrow  — owner roles check (returns owner row or None)
       2. pool.fetchrow  — entity existence check
       3. pool.acquire() — transaction context
-         conn.execute   — retract subject facts
-         conn.execute   — retract object facts
+         conn.execute   — retract relationship.entity_facts (subject + object)
+         conn.execute   — retract memory facts where entity_id = $1   (bu-j820n.2)
+         conn.execute   — retract memory facts where object_entity_id = $1 (bu-j820n.2)
+         conn.execute   — clear public.contacts.entity_id            (bu-j820n.2)
          conn.execute   — tombstone entity
 
     ``owner_exists=False`` makes the first fetchrow return None → 403.
     ``entity_exists=False`` makes the second fetchrow return None → 404.
+
+    Returns ``(app, mock_pool, mock_conn)`` so tests can inspect the
+    transactional ``conn.execute`` calls (the full-repoint retraction surface).
     """
     owner_row = _make_owner_row() if owner_exists else None
     entity_row = _make_entity_row() if entity_exists else None
@@ -174,7 +179,7 @@ def _make_delete_app(
             app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
             break
 
-    return app, mock_pool
+    return app, mock_pool, mock_conn
 
 
 async def _post(app: FastAPI, path: str = _ARCHIVE_PATH) -> httpx.Response:
@@ -275,13 +280,13 @@ class TestForgetEntity:
 
     async def test_forget_returns_204_on_success(self):
         """Successful forget returns HTTP 204 No Content."""
-        app, _ = _make_delete_app()
+        app, _, _ = _make_delete_app()
         resp = await _delete(app, _DELETE_PATH)
         assert resp.status_code == 204, f"Expected 204, got {resp.status_code}: {resp.text}"
 
     async def test_forget_retracts_subject_facts(self):
         """Delete retracts facts where entity is the subject (conn.execute called)."""
-        app, mock_pool = _make_delete_app()
+        app, mock_pool, _ = _make_delete_app()
         await _delete(app, _DELETE_PATH)
 
         # Verify the transaction's conn.execute was called for subject retraction.
@@ -291,19 +296,19 @@ class TestForgetEntity:
 
     async def test_forget_returns_403_when_no_owner_entity(self):
         """Returns 403 owner_required when no owner entity is registered."""
-        app, _ = _make_delete_app(owner_exists=False)
+        app, _, _ = _make_delete_app(owner_exists=False)
         resp = await _delete(app, _DELETE_PATH)
         _assert_owner_required(resp)
 
     async def test_forget_returns_404_when_entity_not_found(self):
         """Returns 404 when the entity UUID does not exist."""
-        app, _ = _make_delete_app(entity_exists=False)
+        app, _, _ = _make_delete_app(entity_exists=False)
         resp = await _delete(app, f"/api/relationship/entities/{uuid4()}")
         assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
 
     async def test_forget_runs_in_transaction(self):
-        """Delete executes inside a single transaction (all three UPDATEs commit atomically)."""
-        app, mock_pool = _make_delete_app()
+        """Delete executes inside a single transaction (all UPDATEs commit atomically)."""
+        app, mock_pool, _ = _make_delete_app()
         resp = await _delete(app, _DELETE_PATH)
         assert resp.status_code == 204
 
@@ -313,15 +318,106 @@ class TestForgetEntity:
     async def test_forget_no_direct_pool_execute_for_facts(self):
         """Delete does NOT call pool.execute directly for fact retraction (uses conn.execute).
 
-        All three UPDATEs (subject facts, object facts, entity tombstone) go through
-        the transactional connection obtained via pool.acquire(), not pool.execute()
-        directly — this preserves atomicity.
+        Every UPDATE (relationship.entity_facts, memory facts, contacts clear,
+        entity tombstone) goes through the transactional connection obtained via
+        pool.acquire(), not pool.execute() directly — this preserves atomicity.
         """
-        app, mock_pool = _make_delete_app()
+        app, mock_pool, _ = _make_delete_app()
         await _delete(app, _DELETE_PATH)
 
         # pool.execute (outside the transaction) should NOT have been called.
         assert not mock_pool.execute.called, (
             "pool.execute was called directly, bypassing the transaction context. "
-            "All three UPDATEs must go through conn.execute inside pool.acquire()."
+            "All UPDATEs must go through conn.execute inside pool.acquire()."
+        )
+
+    # -----------------------------------------------------------------------
+    # bu-j820n.2 regression: forget must do a FULL repoint/retract — it must
+    # retract the memory-module ``facts`` rows (gifts/loans/interactions/etc.)
+    # AND clear ``public.contacts.entity_id`` — not just relationship.entity_facts.
+    # Previously these references were left active/dangling on the tombstone.
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _conn_execute_sqls(mock_conn: AsyncMock) -> list[str]:
+        """All SQL statements issued through the transactional connection."""
+        return [
+            call.args[0]
+            for call in mock_conn.execute.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+
+    async def test_forget_retracts_memory_gifts_loans_subject_facts(self):
+        """Forget retracts memory ``facts`` rows where the entity is the subject.
+
+        Gifts, loans, interactions, contact-notes and life-events all live in the
+        memory-module ``facts`` table keyed by ``entity_id``. A bare
+        relationship.entity_facts retraction leaves them ACTIVE and orphaned on
+        the tombstone (bu-j820n.2). Assert an UPDATE retracts ``facts`` by
+        ``entity_id``.
+        """
+        app, _, mock_conn = _make_delete_app()
+        resp = await _delete(app, _DELETE_PATH)
+        assert resp.status_code == 204
+
+        sqls = self._conn_execute_sqls(mock_conn)
+        retract_facts = [
+            s
+            for s in sqls
+            if "UPDATE facts" in s
+            and "retracted" in s
+            and "entity_id = $1" in s
+            and "object_entity_id" not in s
+        ]
+        assert retract_facts, (
+            "Expected an UPDATE retracting memory facts WHERE entity_id = $1 "
+            f"(gifts/loans/interactions). conn.execute SQLs: {sqls}"
+        )
+
+    async def test_forget_retracts_memory_edge_facts(self):
+        """Forget retracts memory edge-facts pointing AT the entity (object_entity_id)."""
+        app, _, mock_conn = _make_delete_app()
+        resp = await _delete(app, _DELETE_PATH)
+        assert resp.status_code == 204
+
+        sqls = self._conn_execute_sqls(mock_conn)
+        retract_edges = [
+            s
+            for s in sqls
+            if "UPDATE facts" in s and "retracted" in s and "object_entity_id = $1" in s
+        ]
+        assert retract_edges, (
+            "Expected an UPDATE retracting memory edge-facts WHERE "
+            f"object_entity_id = $1. conn.execute SQLs: {sqls}"
+        )
+
+    async def test_forget_clears_linked_contacts_entity_id(self):
+        """Forget clears ``public.contacts.entity_id`` so no contact dangles on the tombstone."""
+        app, _, mock_conn = _make_delete_app()
+        resp = await _delete(app, _DELETE_PATH)
+        assert resp.status_code == 204
+
+        sqls = self._conn_execute_sqls(mock_conn)
+        clear_contacts = [
+            s for s in sqls if "public.contacts" in s and "entity_id" in s and "NULL" in s.upper()
+        ]
+        assert clear_contacts, (
+            "Expected an UPDATE clearing public.contacts.entity_id to NULL for the "
+            f"forgotten entity. conn.execute SQLs: {sqls}"
+        )
+
+    async def test_forget_contacts_clear_inside_transaction(self):
+        """The contacts clear must run through conn.execute (atomic with the tombstone)."""
+        app, mock_pool, mock_conn = _make_delete_app()
+        await _delete(app, _DELETE_PATH)
+
+        # The contacts UPDATE must NOT have leaked to pool.execute (would break atomicity).
+        pool_sqls = [
+            call.args[0]
+            for call in mock_pool.execute.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        assert not any("public.contacts" in s for s in pool_sqls), (
+            "public.contacts UPDATE ran on pool.execute, outside the transaction; "
+            "it must run on conn.execute inside pool.acquire()."
         )

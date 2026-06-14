@@ -951,6 +951,57 @@ async def _repoint_facts_on_conn(
     }
 
 
+async def _retract_facts_on_conn(
+    conn: Any,
+    entity_uuid: uuid.UUID,
+) -> dict[str, int]:
+    """Retract every active ``facts`` row referencing *entity_uuid* on a connection.
+
+    This is the **forget** (tombstone) analogue of :func:`_repoint_facts_on_conn`.
+    On a forget there is no survivor entity to re-point references onto — the
+    entity is being destroyed — so gifts, loans, interactions, contact-notes,
+    life-events (subject-side ``entity_id``) and edge-facts (object-side
+    ``object_entity_id``) that point at the entity become orphaned. They must be
+    retracted (``validity = 'retracted'``, the same soft-delete state that
+    ``forget_memory`` writes), not left active dangling on a tombstoned entity.
+
+    The caller owns the surrounding transaction so this runs atomically with the
+    ``relationship.entity_facts`` retraction and the entity tombstone.
+
+    Returns a dict with ``facts_retracted`` and ``edge_facts_retracted`` counts.
+    """
+    # Subject-side facts (entity_id) — gifts/loans/interactions/notes/life-events.
+    subject_result = await conn.execute(
+        "UPDATE facts SET validity = 'retracted' WHERE entity_id = $1 AND validity = 'active'",
+        entity_uuid,
+    )
+
+    # Edge facts (object_entity_id) — e.g. works_at/friend_of pointing AT the entity.
+    object_result = await conn.execute(
+        "UPDATE facts SET validity = 'retracted' "
+        "WHERE object_entity_id = $1 AND validity = 'active'",
+        entity_uuid,
+    )
+
+    return {
+        "facts_retracted": _parse_rowcount(subject_result),
+        "edge_facts_retracted": _parse_rowcount(object_result),
+    }
+
+
+def _parse_rowcount(status: Any) -> int:
+    """Parse an asyncpg ``UPDATE <n>`` command tag into ``<n>``.
+
+    Returns 0 when the status is not a parseable ``UPDATE n`` string (e.g. a
+    mock return value in unit tests), so callers never raise on the count.
+    """
+    try:
+        parts = str(status).split()
+        return int(parts[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 async def _repoint_calendar_event_entities(
     pool: Pool,
     src_uuid: uuid.UUID,
