@@ -70,9 +70,17 @@ def test_redact_body_does_not_mutate_original():
 
 
 class TestEmitDashboardAudit:
+    """As of bu-h47nm, emit_dashboard_audit routes through audit.append() into
+    the canonical ``public.audit_log`` table (no more dashboard_audit_log write).
+
+    append() uses ``pool.fetchval`` (RETURNING id); the legacy column shape is
+    mapped onto append params: butler->actor, operation->action, path->target,
+    request_summary/user_context->metadata JSONB.
+    """
+
     async def test_inserts_row_on_success(self):
         mock_pool = AsyncMock()
-        mock_pool.execute = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
 
@@ -86,21 +94,26 @@ class TestEmitDashboardAudit:
             response_status=204,
         )
 
-        mock_pool.execute.assert_awaited_once()
-        call_args = mock_pool.execute.call_args[0]
-        assert "INSERT INTO dashboard_audit_log" in call_args[0]
+        mock_pool.fetchval.assert_awaited_once()
+        call_args = mock_pool.fetchval.call_args[0]
+        assert "INSERT INTO public.audit_log" in call_args[0]
+        assert "dashboard_audit_log" not in call_args[0]
+        # actor <- butler, action <- operation, target <- path
         assert call_args[1] == "relationship"
         assert call_args[2] == "contact_info_delete"
+        assert call_args[3] == "/api/relationship/contacts/abc/contact-info/xyz"
+        # metadata ($7) is a JSON string carrying request_summary + user_context.
+        metadata_json = call_args[7]
+        assert isinstance(metadata_json, str)
+        assert '"request_summary"' in metadata_json
         # user_context defaults to owner principal even when no request/context
         # is supplied — never the legacy empty dict.
-        user_context = call_args[6]
-        assert isinstance(user_context, dict)
-        assert user_context["principal"] == "owner"
-        assert user_context["source"] == "dashboard"
+        assert '"principal": "owner"' in metadata_json
+        assert '"source": "dashboard"' in metadata_json
 
     async def test_explicit_user_context_overrides_default(self):
         mock_pool = AsyncMock()
-        mock_pool.execute = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
 
@@ -113,9 +126,8 @@ class TestEmitDashboardAudit:
             user_context={"principal": "owner", "actor": "dashboard:rest-api"},
         )
 
-        call_args = mock_pool.execute.call_args[0]
-        user_context = call_args[6]
-        assert user_context == {"principal": "owner", "actor": "dashboard:rest-api"}
+        metadata_json = mock_pool.fetchval.call_args[0][7]
+        assert '"actor": "dashboard:rest-api"' in metadata_json
 
     async def test_noop_when_db_manager_is_none(self):
         # Should not raise
@@ -129,7 +141,7 @@ class TestEmitDashboardAudit:
 
     async def test_swallows_db_errors(self):
         mock_pool = AsyncMock()
-        mock_pool.execute = AsyncMock(side_effect=RuntimeError("db gone"))
+        mock_pool.fetchval = AsyncMock(side_effect=RuntimeError("db gone"))
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
 
@@ -144,7 +156,7 @@ class TestEmitDashboardAudit:
 
     async def test_body_redaction_applied(self):
         mock_pool = AsyncMock()
-        mock_pool.execute = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
 
@@ -157,14 +169,12 @@ class TestEmitDashboardAudit:
             body={"type": "email", "value": "secret@example.com"},
         )
 
-        # request_summary is now passed as a dict so the asyncpg JSONB codec
-        # encodes it once, not as a pre-serialized JSON string (double-encoding
-        # corrupts the column).
-        call_args = mock_pool.execute.call_args[0]
-        summary = call_args[3]
-        assert isinstance(summary, dict)
-        assert summary["body"]["type"] == "email"
-        assert summary["body"]["value"] == "[REDACTED]"
+        # Sensitive body fields are redacted before landing in metadata JSONB.
+        metadata_json = mock_pool.fetchval.call_args[0][7]
+        assert isinstance(metadata_json, str)
+        assert '"type": "email"' in metadata_json
+        assert "[REDACTED]" in metadata_json
+        assert "secret@example.com" not in metadata_json
 
 
 # ---------------------------------------------------------------------------
@@ -245,11 +255,10 @@ class TestDashboardAuditMiddleware:
             ) as client:
                 await client.delete("/api/test-delete-audit")
 
-        # The middleware should have called pool.execute (INSERT INTO dashboard_audit_log)
-        mock_pool.execute.assert_awaited()
-        # Verify the call was to dashboard_audit_log
+        # The middleware now appends via pool.fetchval (INSERT INTO public.audit_log).
+        mock_pool.fetchval.assert_awaited()
         any_audit_call = any(
-            "dashboard_audit_log" in str(call) for call in mock_pool.execute.call_args_list
+            "public.audit_log" in str(call) for call in mock_pool.fetchval.call_args_list
         )
         assert any_audit_call, "Expected audit INSERT but found none"
 
@@ -269,9 +278,9 @@ class TestDashboardAuditMiddleware:
                 resp = await client.get("/api/test-get-no-audit")
 
         assert resp.status_code == 200
-        # pool.execute should NOT have been called (no audit row)
+        # No audit append should have fired for a GET.
         audit_calls = [
-            call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
+            call for call in mock_pool.fetchval.call_args_list if "public.audit_log" in str(call)
         ]
         assert audit_calls == [], f"Expected no audit rows for GET, got: {audit_calls}"
 
@@ -286,9 +295,7 @@ class TestDashboardAuditMiddleware:
                 resp = await client.get("/api/health")
 
         assert resp.status_code == 200
-        audit_calls = [
-            c for c in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(c)
-        ]
+        audit_calls = [c for c in mock_pool.fetchval.call_args_list if "public.audit_log" in str(c)]
         assert audit_calls == []
 
     async def test_middleware_fires_on_post(self):
@@ -307,12 +314,15 @@ class TestDashboardAuditMiddleware:
                 await client.post("/api/test-post-audit", json={"key": "value"})
 
         any_audit_call = any(
-            "dashboard_audit_log" in str(call) for call in mock_pool.execute.call_args_list
+            "public.audit_log" in str(call) for call in mock_pool.fetchval.call_args_list
         )
         assert any_audit_call, "Expected audit INSERT for POST but found none"
 
     async def test_middleware_records_method_and_path(self):
-        """Audit row request_summary contains method and path."""
+        """Audit row metadata carries the request_summary (method + path); the
+        path is also surfaced on the dedicated ``target`` column (bu-h47nm)."""
+        import json as _json
+
         app, mock_db, mock_pool = self._make_app_with_mock_db()
 
         with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
@@ -326,15 +336,18 @@ class TestDashboardAuditMiddleware:
             ) as client:
                 await client.delete("/api/test-detail-check")
 
-        # Find the audit INSERT call and inspect request_summary (passed as a dict
-        # so the asyncpg JSONB codec encodes it once).
+        # append() args: 0=sql 1=actor 2=action 3=target 4=note 5=ip
+        #                6=request_id 7=metadata_json(str) 8=result 9=error
         audit_calls = [
-            call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
+            call for call in mock_pool.fetchval.call_args_list if "public.audit_log" in str(call)
         ]
         assert audit_calls, "No audit INSERT found"
         call_args = audit_calls[-1][0]
-        summary = call_args[3]
-        assert isinstance(summary, dict)
+        # target column carries the request path.
+        assert "/api/test-detail-check" in call_args[3]
+        # metadata JSONB carries the full request_summary.
+        metadata = _json.loads(call_args[7])
+        summary = metadata["request_summary"]
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
 
@@ -361,12 +374,13 @@ class TestDashboardAuditMiddleware:
                     headers={"X-API-Key": "ignored", "User-Agent": "pytest-suite"},
                 )
 
-        audit_calls = [
-            c for c in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(c)
-        ]
+        import json as _json
+
+        audit_calls = [c for c in mock_pool.fetchval.call_args_list if "public.audit_log" in str(c)]
         assert audit_calls, "Expected audit INSERT but found none"
-        # Index 6 is user_context (sql, butler, op, summary, result, error, user_context).
-        user_context = audit_calls[-1][0][6]
+        # user_context now lives inside the metadata JSONB column (index 7).
+        metadata = _json.loads(audit_calls[-1][0][7])
+        user_context = metadata["user_context"]
         assert isinstance(user_context, dict)
         assert user_context, "user_context must not be empty"
         assert user_context["principal"] == "owner"
@@ -398,22 +412,24 @@ class TestDashboardAuditMiddleware:
         # The value must be a valid UUID
         _uuid.UUID(header_trace_id)  # raises ValueError if not a UUID
 
-        # The same trace_id must appear in the audit INSERT call.
-        # emit_dashboard_audit passes request_summary as a dict (the asyncpg JSONB
-        # codec encodes it once at the wire layer).
-        # Index: 0=sql 1=butler 2=operation 3=summary_dict 4=result 5=error 6=user_context
+        # The same trace_id must appear in the audit append() call.
+        # append() args: 0=sql 1=actor 2=action 3=target 4=note 5=ip
+        #                6=request_id 7=metadata_json(str) 8=result 9=error
+        import json as _json
+
         audit_calls = [
-            call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
+            call for call in mock_pool.fetchval.call_args_list if "public.audit_log" in str(call)
         ]
         assert audit_calls, "No audit INSERT found"
         call_args = audit_calls[-1][0]
-        summary = call_args[3]
-        assert isinstance(summary, dict)
-        audit_trace_id = summary.get("trace_id")
-        assert audit_trace_id == header_trace_id, (
+        # The trace_id is surfaced on the request_id column AND inside metadata.
+        assert str(call_args[6]) == header_trace_id, (
             f"X-Trace-Id header ({header_trace_id!r}) does not match "
-            f"audit row trace_id ({audit_trace_id!r})"
+            f"audit row request_id ({call_args[6]!r})"
         )
+        metadata = _json.loads(call_args[7])
+        audit_trace_id = metadata["request_summary"].get("trace_id")
+        assert audit_trace_id == header_trace_id
 
 
 # ---------------------------------------------------------------------------

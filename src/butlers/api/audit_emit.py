@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -217,27 +218,58 @@ async def emit_dashboard_audit(
     if trace_id:
         request_summary["trace_id"] = trace_id
 
+    # Imported lazily to avoid a circular import (routers.audit pulls in API
+    # models / router wiring that need not be loaded at module import time).
+    from butlers.api.routers.audit import AuditTableNotAvailableError, append
+
     try:
         if user_context is None:
             user_context = build_user_context(request)
 
-        # Pre-coerce non-JSON-safe values (e.g. UUIDs in path_params) to strings,
-        # then hand the codec a plain dict — wrapping with json.dumps() here would
-        # double-encode and store a JSONB string scalar instead of an object.
+        # Pre-coerce non-JSON-safe values (e.g. UUIDs in path_params) to strings
+        # before they land in the ``metadata`` JSONB column.
         safe_summary = json.loads(json.dumps(request_summary, default=str))
         safe_context = json.loads(json.dumps(user_context, default=str))
 
+        # Field mapping onto public.audit_log (bu-h47nm):
+        #   butler -> actor, operation -> action, request_summary.path -> target,
+        #   result/error -> their columns, the rest -> metadata JSONB.
+        metadata: dict[str, Any] = {"request_summary": safe_summary}
+        if safe_context:
+            metadata["user_context"] = safe_context
+
+        # ``trace_id`` correlates the audit entry to an HTTP request; surface it
+        # on the dedicated ``request_id`` column when it parses as a UUID.
+        request_id: uuid.UUID | None = None
+        if trace_id:
+            try:
+                request_id = uuid.UUID(str(trace_id))
+            except (ValueError, AttributeError, TypeError):
+                request_id = None
+
+        ip = safe_context.get("client_ip") or safe_context.get("forwarded_for")
+        ip_str = str(ip) if ip else None
+
         pool = db_manager.pool("switchboard")
-        await pool.execute(
-            "INSERT INTO dashboard_audit_log "
-            "(butler, operation, request_summary, result, error, user_context) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
+        await append(
+            pool,
             butler,
             operation,
-            safe_summary,
-            result,
-            error,
-            safe_context,
+            target=path,
+            ip=ip_str,
+            request_id=request_id,
+            metadata=metadata,
+            result=result,
+            error=error,
+        )
+    except AuditTableNotAvailableError:
+        logger.warning(
+            "Audit table unavailable, dropping dashboard audit entry: "
+            "butler=%s operation=%s method=%s path=%s",
+            butler,
+            operation,
+            method,
+            path,
         )
     except Exception:
         logger.warning(
