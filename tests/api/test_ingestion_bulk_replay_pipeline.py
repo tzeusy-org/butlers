@@ -1246,6 +1246,10 @@ _CREATE_CONNECTOR_REGISTRY_SQL = """
     )
 """
 
+# Mirror production: core_092 creates audit_log; core_122 adds the
+# metadata/result/error columns that the unified audit writer (append())
+# now INSERTs into.  Omitting them makes the handler's _audit_append raise
+# UndefinedColumnError, rolling back the bulk_submit transaction.
 _CREATE_AUDIT_LOG_SQL = """
     CREATE TABLE IF NOT EXISTS public.audit_log (
         id         BIGSERIAL PRIMARY KEY,
@@ -1255,7 +1259,10 @@ _CREATE_AUDIT_LOG_SQL = """
         target     TEXT,
         note       TEXT,
         ip         INET,
-        request_id UUID
+        request_id UUID,
+        metadata   JSONB,
+        result     TEXT,
+        error      TEXT
     )
 """
 
