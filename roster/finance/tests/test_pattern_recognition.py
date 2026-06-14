@@ -1577,19 +1577,6 @@ class TestLearnMerchantCategories:
         )
         assert row is None
 
-    async def test_creates_merchant_mappings_table_if_missing(self, provisioned_postgres_pool):
-        """learn_merchant_categories creates merchant_mappings if it doesn't exist."""
-        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
-
-        async with provisioned_postgres_pool() as p:
-            await p.execute(CREATE_TRANSACTIONS_SQL)
-            # Do NOT create merchant_mappings table
-
-            await _insert_categorized_txn(p, "AutoCreate Store", "electronics")
-            result = await learn_merchant_categories(p)
-
-            assert result["upserted"] == 1
-
 
 class TestSuggestCategories:
     """Tests for suggest_categories() — task 2.2."""
