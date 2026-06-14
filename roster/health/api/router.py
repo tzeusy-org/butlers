@@ -34,6 +34,8 @@ if _spec is not None and _spec.loader is not None:
     LatestMeasurementEntry = _models.LatestMeasurementEntry
     LatestMeasurementsResponse = _models.LatestMeasurementsResponse
     Meal = _models.Meal
+    MealCreateRequest = _models.MealCreateRequest
+    MealUpdateRequest = _models.MealUpdateRequest
     Measurement = _models.Measurement
     MeasurementSource = _models.MeasurementSource
     MeasurementSourcesResponse = _models.MeasurementSourcesResponse
@@ -884,6 +886,136 @@ async def list_meals(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# POST/PUT/DELETE /meals — direct dashboard CRUD
+#
+# These mutations persist through the SAME fact-store path the Health butler's
+# own MCP tools use:
+#   - POST   -> meal_log     (predicate 'meal_{type}', TEMPORAL fact)
+#   - PUT    -> meal_update  (in-place UPDATE of the existing meal fact)
+#   - DELETE -> meal_delete  (forget_memory -> validity = 'retracted')
+# so a dashboard-logged meal is indistinguishable from a butler-logged one and
+# is read back by GET /meals above.  Meals are TEMPORAL facts: ``eaten_at``
+# becomes the fact's ``valid_at`` and multiple entries coexist by design —
+# there is NO supersession (unlike conditions/medications), so the update path
+# edits the existing fact row in place rather than re-storing.  The ``facts``
+# table has no ``updated_at`` column.  No new predicates, tables, or DDL are
+# introduced.
+# ---------------------------------------------------------------------------
+
+
+def _meal_response(result: dict) -> Meal:
+    """Build the Meal response model from a write-tool result dict.
+
+    The ``meal_log`` / ``meal_update`` tools return ``estimated_calories`` and a
+    ``macros`` dict; reshape those into the same ``nutrition`` envelope GET
+    /meals returns so create/update responses match the list surface.
+    """
+    estimated_calories = result.get("estimated_calories")
+    macros = result.get("macros") or {}
+    if isinstance(macros, str):
+        macros = json.loads(macros)
+    has_nutrition = estimated_calories is not None or any(
+        macros.get(k) is not None for k in ("protein_g", "carbs_g", "fat_g")
+    )
+    nutrition = (
+        {
+            "calories": estimated_calories,
+            "protein_g": macros.get("protein_g"),
+            "carbs_g": macros.get("carbs_g"),
+            "fat_g": macros.get("fat_g"),
+        }
+        if has_nutrition
+        else None
+    )
+    return Meal(
+        id=str(result["id"]),
+        type=result.get("type", ""),
+        description=result.get("description", ""),
+        nutrition=nutrition,
+        eaten_at=_isoformat(result.get("eaten_at")),
+        notes=result.get("notes"),
+        created_at=_isoformat(result.get("created_at")),
+    )
+
+
+@router.post("/meals", response_model=Meal, status_code=status.HTTP_201_CREATED)
+async def create_meal(
+    body: MealCreateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Meal:
+    """Log a meal via the butler's ``meal_log`` fact-store path.
+
+    Writes a temporal fact (predicate = ``meal_{type}``, scope = ``health``,
+    ``valid_at`` = eaten_at) — the same surface the ``meal_log`` MCP tool
+    writes — so the new meal appears in GET /meals immediately.  Returns 422 if
+    the meal type is invalid.
+    """
+    from butlers.tools.health import meal_log
+
+    pool = _pool(db)
+    try:
+        result = await meal_log(
+            pool,
+            type=body.type,
+            description=body.description,
+            eaten_at=body.eaten_at,
+            nutrition=body.nutrition,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _meal_response(result)
+
+
+@router.put("/meals/{meal_id}", response_model=Meal)
+async def update_meal(
+    meal_id: str,
+    body: MealUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Meal:
+    """Update a meal via the in-place ``meal_update`` fact path.
+
+    Only the supplied (non-null) fields are applied to the existing meal fact.
+    Because meals are temporal facts, the edit updates the existing row in place
+    (rather than superseding it).  Returns 404 if the meal does not exist and
+    422 if no updatable fields were provided.
+    """
+    from butlers.tools.health import meal_update
+
+    pool = _pool(db)
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(
+            status_code=422,
+            detail="No updatable fields provided",
+        )
+    try:
+        result = await meal_update(pool, meal_id, **updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _meal_response(result)
+
+
+@router.delete("/meals/{meal_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_meal(
+    meal_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a meal via ``meal_delete`` (validity = retracted).
+
+    The fact is retained for audit but excluded from all active read surfaces.
+    Returns 204 on success and 404 if no active meal with this id exists.
+    """
+    from butlers.tools.health import meal_delete
+
+    pool = _pool(db)
+    try:
+        await meal_delete(pool, meal_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

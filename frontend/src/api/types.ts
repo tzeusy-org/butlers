@@ -1280,6 +1280,42 @@ export interface MealParams {
   limit?: number;
 }
 
+/** Nutrition payload shared by the meal create/update request bodies. */
+export interface MealNutrition {
+  calories?: number | null;
+  protein_g?: number | null;
+  carbs_g?: number | null;
+  fat_g?: number | null;
+}
+
+/**
+ * Request body for logging a meal (POST /health/meals).
+ *
+ * Meals are temporal facts: `eaten_at` is the eating time and multiple entries
+ * coexist by design (no supersession). `type` is one of breakfast/lunch/
+ * dinner/snack.
+ */
+export interface MealCreateRequest {
+  type: string;
+  description: string;
+  /** Eating timestamp (ISO-8601). Required. */
+  eaten_at: string;
+  nutrition?: MealNutrition | null;
+  notes?: string | null;
+}
+
+/**
+ * Request body for updating a meal (PUT /health/meals/{id}).
+ * All fields optional; only supplied fields are applied to the existing entry.
+ */
+export interface MealUpdateRequest {
+  type?: string;
+  description?: string;
+  eaten_at?: string | null;
+  nutrition?: MealNutrition | null;
+  notes?: string | null;
+}
+
 /** Query parameters for research endpoints. */
 export interface ResearchParams {
   q?: string;

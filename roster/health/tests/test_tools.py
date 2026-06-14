@@ -1680,3 +1680,124 @@ async def test_trend_report_invalid_period(pool):
 
     with pytest.raises(ValueError, match="Invalid period"):
         await trend_report(pool, period="year")
+
+
+# ---------------------------------------------------------------------------
+# meal_update / meal_delete — direct dashboard CRUD on temporal meal facts
+# (bu-5oeoq). Meals mirror symptoms: temporal facts edited in place (no
+# supersession) and soft-deleted via forget_memory.
+# ---------------------------------------------------------------------------
+
+
+async def _insert_meal_fact(
+    pool, predicate: str, content: str, valid_at: datetime, metadata=None
+) -> uuid.UUID:
+    """Insert a meal fact and return its id (for update/delete tests)."""
+    meal_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO facts (id, subject, predicate, content, valid_at, metadata, validity, scope)
+        VALUES ($1, 'owner', $2, $3, $4, $5, 'active', 'health')
+        """,
+        meal_id,
+        predicate,
+        content,
+        valid_at,
+        metadata or {},
+    )
+    return meal_id
+
+
+async def test_meal_update_edits_in_place(pool):
+    """meal_update edits the existing temporal fact in place (same id)."""
+    from butlers.tools.health import meal_history, meal_update
+
+    now = _utcnow()
+    meal_id = await _insert_meal_fact(
+        pool, "meal_lunch", "UpdMeal", now - timedelta(hours=1), metadata={"notes": "ok"}
+    )
+    updated = await meal_update(
+        pool,
+        str(meal_id),
+        description="UpdMeal v2",
+        notes="much better",
+        nutrition={"calories": 500, "protein_g": 30, "carbs_g": 40, "fat_g": 15},
+    )
+    # Same identity — temporal facts are not superseded.
+    assert updated["id"] == str(meal_id)
+    assert updated["description"] == "UpdMeal v2"
+    assert updated["notes"] == "much better"
+    assert updated["estimated_calories"] == 500
+
+    # Exactly one active entry remains (no duplicate coexisting meal).
+    history = await meal_history(pool, start_date=now - timedelta(hours=2), end_date=now)
+    matches = [m for m in history if m["description"] == "UpdMeal v2"]
+    assert len(matches) == 1
+    assert "UpdMeal" not in [m["description"] for m in history if m["description"] != "UpdMeal v2"]
+
+
+async def test_meal_update_type_rewrites_predicate(pool):
+    """meal_update changes the predicate when the meal type changes."""
+    from butlers.tools.health import meal_update
+
+    now = _utcnow()
+    meal_id = await _insert_meal_fact(pool, "meal_lunch", "TypeChange", now)
+    updated = await meal_update(pool, str(meal_id), type="dinner")
+    assert updated["type"] == "dinner"
+    predicate = await pool.fetchval("SELECT predicate FROM facts WHERE id = $1", meal_id)
+    assert predicate == "meal_dinner"
+
+
+async def test_meal_update_invalid_type(pool):
+    """meal_update rejects an invalid meal type."""
+    from butlers.tools.health import meal_update
+
+    now = _utcnow()
+    meal_id = await _insert_meal_fact(pool, "meal_lunch", "BadTypeUpd", now)
+    with pytest.raises(ValueError, match="Invalid meal type"):
+        await meal_update(pool, str(meal_id), type="brunch")
+
+
+async def test_meal_update_not_found(pool):
+    """meal_update raises ValueError for a non-existent meal."""
+    from butlers.tools.health import meal_update
+
+    with pytest.raises(ValueError, match="not found"):
+        await meal_update(pool, str(uuid.uuid4()), description="nope")
+
+
+async def test_meal_update_no_valid_fields(pool):
+    """meal_update raises ValueError when no allowed fields are given."""
+    from butlers.tools.health import meal_update
+
+    now = _utcnow()
+    meal_id = await _insert_meal_fact(pool, "meal_lunch", "NoFieldsMeal", now)
+    with pytest.raises(ValueError, match="No valid fields"):
+        await meal_update(pool, str(meal_id), bogus_field="nope")
+
+
+async def test_meal_delete_retracts(pool):
+    """meal_delete soft-deletes so the meal disappears from history."""
+    from butlers.tools.health import meal_delete, meal_history
+
+    now = _utcnow()
+    meal_id = await _insert_meal_fact(pool, "meal_dinner", "DelMeal", now - timedelta(minutes=5))
+    history = await meal_history(pool, start_date=now - timedelta(hours=1), end_date=now)
+    assert "DelMeal" in [m["description"] for m in history]
+
+    ok = await meal_delete(pool, str(meal_id))
+    assert ok is True
+    history2 = await meal_history(pool, start_date=now - timedelta(hours=1), end_date=now)
+    assert "DelMeal" not in [m["description"] for m in history2]
+
+    # The fact is retained but retracted (audit-preserving soft delete).
+    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", meal_id)
+    assert validity == "retracted"
+
+
+async def test_meal_delete_not_found(pool):
+    """meal_delete raises ValueError for a non-existent meal."""
+    from butlers.tools.health import meal_delete
+
+    with pytest.raises(ValueError, match="not found"):
+        await meal_delete(pool, str(uuid.uuid4()))

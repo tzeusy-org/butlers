@@ -86,6 +86,8 @@ import type {
   HealthResearch,
   Meal,
   MealParams,
+  MealCreateRequest,
+  MealUpdateRequest,
   Measurement,
   MeasurementParams,
   Medication,
@@ -1499,6 +1501,33 @@ export function getMeals(params?: MealParams): Promise<PaginatedResponse<Meal>> 
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<Meal>>(qs ? `/health/meals?${qs}` : "/health/meals");
+}
+
+/**
+ * Log a meal. Persists through the Health butler's own fact-store path
+ * (POST /health/meals -> meal_log), so the new record is read back by
+ * getMeals immediately.
+ */
+export function createMeal(body: MealCreateRequest): Promise<Meal> {
+  return apiFetch<Meal>("/health/meals", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Update a meal. Only supplied fields are applied (PUT /health/meals/{id}). */
+export function updateMeal(mealId: string, body: MealUpdateRequest): Promise<Meal> {
+  return apiFetch<Meal>(`/health/meals/${encodeURIComponent(mealId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Soft-delete a meal (DELETE /health/meals/{id}). Returns 204. */
+export function deleteMeal(mealId: string): Promise<void> {
+  return apiFetch<void>(`/health/meals/${encodeURIComponent(mealId)}`, {
+    method: "DELETE",
+  });
 }
 
 /** Fetch the latest measurement value for each requested type.

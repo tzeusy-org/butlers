@@ -6,9 +6,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createCondition,
+  createMeal,
   createMedication,
   createSymptom,
   deleteCondition,
+  deleteMeal,
   deleteMedication,
   deleteSymptom,
   getConditions,
@@ -22,13 +24,16 @@ import {
   getSleepLatest,
   getSymptoms,
   updateCondition,
+  updateMeal,
   updateMedication,
   updateSymptom,
 } from "@/api/index.ts";
 import type {
   ConditionCreateRequest,
   ConditionUpdateRequest,
+  MealCreateRequest,
   MealParams,
+  MealUpdateRequest,
   MeasurementParams,
   MedicationCreateRequest,
   MedicationParams,
@@ -222,6 +227,48 @@ export function useMeals(params?: MealParams) {
     queryKey: ["health-meals", params],
     queryFn: () => getMeals(params),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Invalidate every meal-list query so freshly mutated meals appear.
+ *
+ * The meal-list cache is keyed by the params object (type/since/until/...), so
+ * we invalidate on the `["health-meals"]` prefix to cover all variants.
+ */
+function useInvalidateMeals() {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: ["health-meals"] });
+}
+
+/**
+ * Log a meal. On success, invalidates the meal list so the new record appears
+ * without a manual refetch.
+ */
+export function useCreateMeal() {
+  const invalidate = useInvalidateMeals();
+  return useMutation({
+    mutationFn: (body: MealCreateRequest) => createMeal(body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Update a meal by id (only supplied fields are applied). */
+export function useUpdateMeal() {
+  const invalidate = useInvalidateMeals();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: MealUpdateRequest }) =>
+      updateMeal(id, body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Soft-delete a meal by id. */
+export function useDeleteMeal() {
+  const invalidate = useInvalidateMeals();
+  return useMutation({
+    mutationFn: (id: string) => deleteMeal(id),
+    onSuccess: invalidate,
   });
 }
 
