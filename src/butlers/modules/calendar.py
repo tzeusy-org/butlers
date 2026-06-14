@@ -7118,9 +7118,18 @@ class CalendarModule(Module):
         """Programmatic event creation for inter-module use (e.g. auto-creating meal events).
 
         Silently returns if the provider is not initialised (calendar module not ready).
+
+        Permissions-matrix enforcement (public.permissions: calendar.write): this
+        path writes to the provider without going through the 3 blessed MCP
+        calendar tools, so it must consult the matrix itself. Reuses the same
+        :meth:`_require_calendar_write_permission` helper the MCP tools use, so a
+        butler with ``calendar.write`` revoked cannot create events via this
+        sibling path. require_permission fails open, so a DB error never wedges
+        calendar writes.
         """
         if self._provider is None:
             return
+        await self._require_calendar_write_permission()
         calendar_id = self._resolve_calendar_id(None)
         payload = CalendarEventCreate(
             title=title,

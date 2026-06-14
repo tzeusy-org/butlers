@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.core.audit import write_audit_entry
+from butlers.core.permissions import NOTIFY_PERMISSION, require_permission
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -326,10 +327,35 @@ class TelegramModule(Module):
     # Telegram API helpers
     # ------------------------------------------------------------------
 
+    def _permission_pool(self) -> Any:
+        """Return a pool able to read ``public.permissions`` for the gate.
+
+        Prefers the switchboard audit pool (cross-butler, reads ``public``);
+        falls back to the butler's own pool (which can also read ``public``).
+        ``None`` when neither is wired, which fails the gate open.
+        """
+        if self._audit_pool is not None:
+            return self._audit_pool
+        return getattr(self._db, "pool", None) if self._db is not None else None
+
     async def _send_message(
         self, chat_id: str, text: str, reply_to_message_id: int | None = None
     ) -> dict[str, Any]:
-        """Call Telegram sendMessage API."""
+        """Call Telegram sendMessage API.
+
+        Permissions-matrix enforcement (public.permissions: notify): Telegram is
+        an owner-facing notify channel (the notify() core tool itself delivers
+        via Telegram), so a butler with ``notify`` revoked must not be able to
+        message the owner through the raw ``telegram_send_message`` /
+        ``telegram_reply_to_message`` tools either. ``_send_message`` is the
+        chokepoint both send and reply funnel through; gating it here covers both.
+        Reuses the same ``notify`` capability the notify() gate enforces rather
+        than introducing a parallel ``telegram.send`` key (no migration needed).
+        Mirrors the spawn gate: consult the matrix at the decision point before
+        any Telegram traffic. require_permission fails open, so a DB error never
+        wedges delivery.
+        """
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
         url = f"{self._base_url()}/sendMessage"
         payload: dict[str, Any] = {
             "chat_id": chat_id,
