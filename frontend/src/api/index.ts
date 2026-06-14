@@ -960,6 +960,7 @@ export type {
 } from "./types.ts";
 
 export {
+  getFinanceAccounts,
   getFinanceBills,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
@@ -968,6 +969,8 @@ export {
 } from "./client.ts";
 
 export type {
+  FinanceAccount,
+  FinanceAccountListParams,
   FinanceBill,
   FinanceBillListParams,
   FinanceSpendingGroup,

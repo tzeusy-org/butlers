@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import {
+  getFinanceAccounts,
   getFinanceBills,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
@@ -8,6 +9,7 @@ import {
   getFinanceUpcomingBills,
 } from "@/api/index.ts";
 import type {
+  FinanceAccountListParams,
   FinanceBillListParams,
   FinanceSpendingSummaryParams,
   FinanceSubscriptionListParams,
@@ -56,6 +58,15 @@ export function useFinanceSpendingSummary(params?: FinanceSpendingSummaryParams)
   return useQuery({
     queryKey: ["finance", "spending-summary", params],
     queryFn: () => getFinanceSpendingSummary(params),
+    refetchInterval: 60_000,
+  });
+}
+
+/** List financial accounts with an optional type filter. Refreshes every 60s. */
+export function useFinanceAccounts(params?: FinanceAccountListParams) {
+  return useQuery({
+    queryKey: ["finance", "accounts", params],
+    queryFn: () => getFinanceAccounts(params),
     refetchInterval: 60_000,
   });
 }

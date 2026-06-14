@@ -59,6 +59,7 @@ vi.mock("@/hooks/use-finance", () => ({
   useFinanceSubscriptions: vi.fn(),
   useFinanceUpcomingBills: vi.fn(),
   useFinanceSpendingSummary: vi.fn(),
+  useFinanceAccounts: vi.fn(),
 }));
 
 import {
@@ -66,6 +67,7 @@ import {
   useFinanceSubscriptions,
   useFinanceUpcomingBills,
   useFinanceSpendingSummary,
+  useFinanceAccounts,
 } from "@/hooks/use-finance";
 
 import ButlerFinanceFinancesTab from "./ButlerFinanceFinancesTab";
@@ -215,6 +217,31 @@ const UPCOMING_BILLS = [
   },
 ];
 
+const ACCOUNTS = [
+  {
+    id: "acct-1",
+    institution: "Chase",
+    type: "checking",
+    name: "Everyday Checking",
+    last_four: "4321",
+    currency: "USD",
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  {
+    id: "acct-2",
+    institution: "Amex",
+    type: "credit_card",
+    name: null,
+    last_four: "1009",
+    currency: "USD",
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+];
+
 const MONTHLY_SUMMARY = {
   start_date: "2026-05-01",
   end_date: "2026-05-10",
@@ -293,6 +320,11 @@ function setupWithData() {
       isLoading: false,
     } as ReturnType<typeof useFinanceSpendingSummary>;
   });
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceAccounts>);
 }
 
 function setupEmpty() {
@@ -327,6 +359,11 @@ function setupEmpty() {
     },
     isLoading: false,
   } as unknown as ReturnType<typeof useFinanceSpendingSummary>);
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: { data: [], meta: { total: 0, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceAccounts>);
 }
 
 function setupLoading() {
@@ -349,6 +386,11 @@ function setupLoading() {
     data: undefined,
     isLoading: true,
   } as ReturnType<typeof useFinanceSpendingSummary>);
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceAccounts>);
 }
 
 // ---------------------------------------------------------------------------
@@ -567,6 +609,11 @@ function setupKpiNoise() {
       isLoading: false,
     } as ReturnType<typeof useFinanceSpendingSummary>;
   });
+
+  vi.mocked(useFinanceAccounts).mockReturnValue({
+    data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceAccounts>);
 }
 
 describe("ButlerFinanceFinancesTab — KPI strip honesty (bu-t5w6w)", () => {
@@ -689,6 +736,64 @@ describe("ButlerFinanceFinancesTab — subscriptions", () => {
   it("renders the subscriptions list", () => {
     renderTab();
     expect(screen.getByTestId("subscriptions-list")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Accounts panel (bu-alenp)
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — accounts panel", () => {
+  afterEach(() => cleanup());
+
+  it("renders the accounts section", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    expect(screen.getByTestId("finance-accounts-section")).toBeDefined();
+  });
+
+  it("renders account rows when accounts are present", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    const rows = screen.getAllByTestId("account-row");
+    expect(rows.length).toBe(2);
+  });
+
+  it("shows account institution/name in the accounts list", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    const list = screen.getByTestId("accounts-list");
+    // acct-1 has a name ("Everyday Checking"); acct-2 falls back to institution ("Amex").
+    expect(list.textContent).toContain("Everyday Checking");
+    expect(list.textContent).toContain("Amex");
+  });
+
+  it("renders a count summary line when accounts exist", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    expect(screen.getByTestId("accounts-summary").textContent).toContain("2 accounts");
+  });
+
+  it("shows an honest empty state when no accounts exist", () => {
+    vi.resetAllMocks();
+    setupEmpty();
+    renderTab();
+    // No list, no fabricated net-worth — just the empty-state line inside the panel.
+    expect(screen.queryByTestId("accounts-list")).toBeNull();
+    const section = screen.getByTestId("finance-accounts-section");
+    expect(section.querySelector('[data-testid="empty-state-line"]')).not.toBeNull();
+  });
+
+  it("shows a loading line in the accounts panel while pending", () => {
+    vi.resetAllMocks();
+    setupLoading();
+    renderTab();
+    const section = screen.getByTestId("finance-accounts-section");
+    expect(section.querySelector('[data-testid="loading-line"]')).not.toBeNull();
   });
 });
 

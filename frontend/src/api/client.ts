@@ -304,11 +304,13 @@ import type {
   FinanceTransaction,
   FinanceSubscription,
   FinanceBill,
+  FinanceAccount,
   FinanceSpendingSummary,
   FinanceUpcomingBillsResponse,
   FinanceBillListParams,
   FinanceTransactionListParams,
   FinanceSubscriptionListParams,
+  FinanceAccountListParams,
   FinanceSpendingSummaryParams,
   FinanceUpcomingBillsParams,
   TravelTrip,
@@ -5271,6 +5273,20 @@ export function getFinanceBills(
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<FinanceBill>>(
     qs ? `/finance/bills?${qs}` : "/finance/bills",
+  );
+}
+
+/** List financial accounts with an optional type filter. */
+export function getFinanceAccounts(
+  params?: FinanceAccountListParams,
+): Promise<PaginatedResponse<FinanceAccount>> {
+  const sp = new URLSearchParams();
+  if (params?.type) sp.set("type", params.type);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<FinanceAccount>>(
+    qs ? `/finance/accounts?${qs}` : "/finance/accounts",
   );
 }
 

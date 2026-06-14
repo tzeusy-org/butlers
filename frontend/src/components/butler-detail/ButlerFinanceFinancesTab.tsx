@@ -37,12 +37,14 @@ import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
 import {
+  useFinanceAccounts,
   useFinanceSpendingSummary,
   useFinanceSubscriptions,
   useFinanceTransactions,
   useFinanceUpcomingBills,
 } from "@/hooks/use-finance";
 import type {
+  FinanceAccount,
   FinanceTransaction,
   FinanceSubscription,
   FinanceUpcomingBillItem,
@@ -376,6 +378,85 @@ function SubscriptionsPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Row 4b: Accounts panel (bu-alenp)
+//
+// Surfaces the existing GET /finance/accounts endpoint. The endpoint returns
+// account registry rows (institution, type, last_four, currency) — there is no
+// balance field on the response, so this is an honest account-context list, not
+// a fabricated net-worth total. Empty state renders gracefully when the live
+// endpoint returns total:0.
+// ---------------------------------------------------------------------------
+
+/** Title-case an account type token (e.g. "checking" → "Checking"). */
+function formatAccountType(type: string): string {
+  return type
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map(titleCase)
+    .join(" ");
+}
+
+function AccountsPanel({
+  accounts,
+  isLoading,
+}: {
+  accounts: FinanceAccount[];
+  isLoading: boolean;
+}) {
+  // Distinct currencies across tracked accounts — a light "context" summary
+  // that does not invent balances the endpoint never returns.
+  const currencies = useMemo(
+    () => Array.from(new Set(accounts.map((a) => a.currency))).sort(),
+    [accounts],
+  );
+
+  return (
+    <Panel title="Accounts" span={2} testId="finance-accounts-section">
+      {isLoading ? (
+        <LoadingLine />
+      ) : accounts.length === 0 ? (
+        <EmptyLine>
+          No accounts on file yet -- connect or add an account to see net-worth context.
+        </EmptyLine>
+      ) : (
+        <>
+          <p
+            className="text-xs text-muted-foreground mb-2"
+            data-testid="accounts-summary"
+          >
+            {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
+            {currencies.length > 0 ? ` · ${currencies.join(", ")}` : ""}
+          </p>
+          <ul className="divide-y" data-testid="accounts-list">
+            {accounts.map((acct) => (
+              <li
+                key={acct.id}
+                className="flex items-center justify-between py-2 gap-2"
+                data-testid="account-row"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">
+                    {acct.name ?? acct.institution}
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {acct.name ? `${acct.institution} · ` : ""}
+                    {formatAccountType(acct.type)}
+                    {acct.last_four ? ` ····${acct.last_four}` : ""}
+                  </p>
+                </div>
+                <Badge variant="outline" className="text-xs font-mono shrink-0">
+                  {acct.currency}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ButlerFinanceFinancesTab — composed entry point
 // ---------------------------------------------------------------------------
 
@@ -411,10 +492,12 @@ export default function ButlerFinanceFinancesTab() {
     end_date: monthEnd,
     group_by: "category",
   });
+  const { data: accountsResp, isLoading: accountsLoading } = useFinanceAccounts();
 
   const transactions = txResp?.data ?? [];
   const subscriptions = subResp?.data ?? [];
   const upcomingBills = upcomingResp?.items ?? [];
+  const accounts = accountsResp?.data ?? [];
 
   // Active subscriptions KPI: count only real, billable active subs. Drop the
   // literal service:'dummy' test record and any $0 placeholder — neither
@@ -522,9 +605,9 @@ export default function ButlerFinanceFinancesTab() {
       {/* Row 3: Recent transactions (span-4, scrollable) */}
       <TransactionsPanel transactions={transactions} isLoading={txLoading} />
 
-      {/* Row 4: Subscriptions (span-2) + empty slot (span-2) */}
+      {/* Row 4: Subscriptions (span-2) + Accounts (span-2) */}
       <SubscriptionsPanel subscriptions={subscriptions} isLoading={subLoading} />
-      <Panel span={2} />
+      <AccountsPanel accounts={accounts} isLoading={accountsLoading} />
     </div>
   );
 }
