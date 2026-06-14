@@ -233,3 +233,50 @@ Because fanout is at-least-once, butlers must tolerate duplicate routed subreque
 #### Scenario: Duplicate notify tolerated
 - **WHEN** the same `notify.v1` envelope is delivered twice with the same `request_context.request_id`
 - **THEN** the Messenger applies deduplication or the butler tolerates the duplicate response
+
+### Requirement: [TARGET-STATE] Notify Media Attachments
+The `notify` tool SHALL accept an optional `delivery.attachments` list so butlers can deliver files and images alongside or instead of text. Each attachment references a blob already persisted in the S3-compatible blob store (`s3-blob-storage`) by `storage_ref`, and the Messenger uploads it to the target channel using channel-native media transport.
+
+#### Scenario: Attachment delivered with message
+- **WHEN** `notify(channel="telegram", message="Your report", attachments=[{type:"document", storage_ref:"s3://bucket/key.pdf", filename:"report.pdf", mime_type:"application/pdf"}])` is called
+- **THEN** the `notify.v1` envelope includes `delivery.attachments` with each entry's `type`, `storage_ref`, `filename`, and `mime_type`
+- **AND** the Messenger fetches each blob by `storage_ref` and uploads it to the channel as native media (Telegram document/photo, email MIME attachment)
+- **AND** the text `message`, when present, accompanies the attachment as a caption or body
+
+#### Scenario: Attachment-only delivery
+- **WHEN** `notify(channel="email", attachments=[...])` is called with no `message`
+- **THEN** delivery proceeds with the attachment(s) and an empty or default body
+
+#### Scenario: Missing blob fails closed
+- **WHEN** an attachment `storage_ref` cannot be resolved in the blob store at delivery time
+- **THEN** the notify response returns `status="error"` with an error identifying the unresolved `storage_ref`
+- **AND** no partial message is delivered without its referenced attachment
+
+### Requirement: [TARGET-STATE] Draft Delivery Intent
+A fifth delivery intent `draft` SHALL be supported. Instead of delivering a message, `intent="draft"` creates a reviewable draft in the target channel (e.g. Gmail Drafts) or presents the proposed message to the owner for explicit confirmation before any send. Drafts are non-destructive by design and never reach an external recipient without a subsequent approved send.
+
+#### Scenario: Email draft created, not sent
+- **WHEN** `notify(channel="email", intent="draft", recipient="alice@example.com", subject="Re: lunch", message="Sounds good")` is called
+- **THEN** a draft is created in the owner's Gmail Drafts and no email is sent to the recipient
+- **AND** the notify response returns `status="ok"` with a `draft_ref` identifying the created draft
+
+#### Scenario: Draft never auto-sends
+- **WHEN** a draft is created via `intent="draft"`
+- **THEN** the message is NOT delivered to any external recipient until a separate, approval-gated send is invoked
+
+### Requirement: [TARGET-STATE] Multi-Channel Delivery
+The `notify` tool SHALL accept a list of channels in a single call so one message is delivered to multiple destinations (e.g. telegram and email) with per-channel formatting. A single approval covers all named channels. Delivery status is reported per channel; partial failure does not silently drop the message on other channels.
+
+#### Scenario: Single call fans out to multiple channels
+- **WHEN** `notify(channels=["telegram","email"], message="Trip confirmed", subject="Itinerary")` is called
+- **THEN** the message is delivered to both telegram and email, each with channel-appropriate formatting (Markdown/Telegram-HTML for telegram, HTML/plain for email)
+- **AND** the response reports per-channel outcome (`{telegram:"ok", email:"ok"}`)
+
+#### Scenario: Partial delivery surfaced
+- **WHEN** a multi-channel notify succeeds on email but fails on telegram
+- **THEN** the response reports `{email:"ok", telegram:"error"}` rather than a single aggregate status
+- **AND** the successful channel's delivery is not rolled back
+
+#### Scenario: Single approval covers all channels
+- **WHEN** a multi-channel notify to a non-owner requires approval
+- **THEN** one pending action is created that names all target channels, and approving it permits delivery to all of them

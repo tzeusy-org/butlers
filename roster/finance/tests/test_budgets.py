@@ -713,7 +713,7 @@ CREATE TABLE IF NOT EXISTS budgets (
 )
 """
 
-# Includes deleted_at column per finance-data-model-redesign spec contract
+# Includes deleted_at column per finance-transaction-schema spec contract
 _CREATE_TRANSACTIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS transactions (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -359,7 +359,7 @@ async def budget_status(
 
     now = datetime.now(UTC)
 
-    # Check whether transactions.deleted_at exists (added by finance-data-model-redesign).
+    # Check whether transactions.deleted_at exists (per finance-transaction-schema spec).
     # Guard the filter dynamically so budget_status works on schemas both with and without it.
     has_deleted_at = await pool.fetchval(
         """

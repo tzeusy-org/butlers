@@ -140,6 +140,67 @@ checkpoints, source adapter state, and idempotency keys.
   entity resolution
 - **AND** the no-per-event-LLM invariant from RFC 0014 §D5 SHALL hold
 
+### Requirement: Owner-Only Adapter Entity Attribution
+
+Projection adapters whose source is owner-driven self-tracking data and
+carries no distinct participant set (focus, sessions, spotify, steam,
+meals, owntracks, reading, google_health) SHALL attribute every projected
+row to the owner entity, mirroring the calendar adapter's entity surface
+without invoking attendee resolution.
+
+#### Scenario: Owner entity resolved once per run
+
+- **WHEN** an owner-only adapter's `project()` executes
+- **THEN** the owner `entity_id` SHALL be resolved exactly once via
+  `public.contacts WHERE 'owner' = ANY(roles)` (not per row)
+- **AND** the resolved `entity_id` SHALL be stamped on every upserted
+  episode and point-event row
+- **AND** a single `episode_entities` row with `role='owner'` SHALL be
+  written per episode within the same transaction as the episode upsert
+
+#### Scenario: Unresolved owner degrades to NULL
+
+- **WHEN** no owner contact exists, the owner contact's `entity_id` is
+  NULL, or `public.contacts` is absent
+- **THEN** the adapter SHALL write `entity_id = NULL` and SHALL NOT write
+  an `episode_entities` row
+- **AND** it SHALL log at DEBUG level and SHALL NOT raise
+
+#### Scenario: Backfill enumerates all owner-only source names
+
+- **WHEN** historical owner-only rows are backfilled with the owner entity
+- **THEN** the backfill SHALL enumerate every owner-only `source_name`
+  including the distinct health values `health.steps` and
+  `health.heart_rate` separately from `google_health.measurements`
+- **AND** it SHALL resolve the owner via `public.contacts` rather than the
+  calendar-specific `google_accounts` path
+
+### Requirement: Home Assistant Presence Person Attribution
+
+The Home Assistant presence adapter SHALL attribute each `presence_episode`
+to the resident whose presence is tracked (the `person.*` entity), not the
+schema owner, resolving the entity per tracked person without an LLM call.
+
+#### Scenario: Person entity resolved per tracked person
+
+- **WHEN** the adapter rolls up `home` state runs for a `person.*` entity
+  into a `presence_episode`
+- **THEN** the HA entity id SHALL be resolved to a graph `entity_id` via
+  `connectors.home_assistant_persons` joined to `public.contacts.entity_id`,
+  resolved once per tracked person (not per row)
+- **AND** the resolved `entity_id` SHALL be stamped on the episode
+- **AND** an `episode_entities` row SHALL be written for the resolved
+  person with `role='owner'` (the subject of the episode)
+
+#### Scenario: Unmapped resident degrades to NULL
+
+- **WHEN** the `connectors.home_assistant_persons` mapping is absent, has
+  no row for the `person.*` entity, or the mapped contact has a NULL
+  `entity_id`
+- **THEN** the presence episode SHALL be written with `entity_id = NULL`
+  and no `episode_entities` row
+- **AND** the adapter SHALL log at DEBUG level and SHALL NOT raise
+
 ### Requirement: Correction Overlay Model
 
 User corrections SHALL layer on top of canonical projections via an

@@ -102,3 +102,15 @@ The module supports setting Telegram reactions for ingest pipeline lifecycle eve
 - **WHEN** the Telegram API rejects a reaction (e.g., unsupported chat type)
 - **THEN** processing continues and a debug log is emitted (non-fatal)
 
+### Requirement: [TARGET-STATE] Inline Approval Buttons
+The Telegram module SHALL support sending a message with an inline keyboard so the owner can approve or reject a pending action directly from the notification. Button presses (callback queries) MUST resolve to the corresponding pending-action verb in the approvals system.
+
+#### Scenario: Approval message carries inline buttons
+- **WHEN** the Messenger delivers an approval-request notification to the owner over telegram with inline-button support enabled
+- **THEN** the message includes Approve and Reject inline buttons bound to the pending action's id
+
+#### Scenario: Button press resolves the pending action
+- **WHEN** the owner taps Approve on the inline keyboard
+- **THEN** the corresponding pending action transitions to `approved` and executes via the standard approved-action executor
+- **AND** the originating message is updated to reflect the resolved state
+
