@@ -368,6 +368,9 @@ export function useForgetRelationshipEntity() {
     onSuccess: (_, entityId) => {
       invalidateRelationshipEntityIndex(queryClient);
       void queryClient.invalidateQueries({ queryKey: ["relationship-entity", entityId] });
+      // The entity DETAIL page reads ["memory-entity", id] (use-memory.ts useEntity),
+      // so invalidate that too or the detail view shows stale post-forget data.
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
     },
   });
 }
@@ -391,6 +394,12 @@ export function useMergeRelationshipEntities() {
       invalidateRelationshipEntityIndex(queryClient);
       void queryClient.invalidateQueries({ queryKey: ["relationship-entity", request.entityA] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entity", request.entityB] });
+      // The entity DETAIL page reads ["memory-entity", id] (use-memory.ts useEntity).
+      // Invalidate both the surviving entity and the merged-away source so the
+      // detail page refreshes immediately for whichever id the route shows (the
+      // tombstoned source detail route should reflect the merge too).
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", request.entityA] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", request.entityB] });
     },
   });
 }
