@@ -259,6 +259,61 @@ describe("PageCli: api-key mode (e.g. Claude)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Token mode: paste-to-save persists the exact pasted value [bu-f63t9]
+//
+// Regression: the "set token" textarea must persist the EXACT pasted value via
+// rotateCliCredential(id, value) — not trigger a server-side random generate.
+// First-time save for a never_set provider must work (no 404).
+// ---------------------------------------------------------------------------
+
+describe("PageCli: token-mode set-token (paste-to-save)", () => {
+  // Default deviceAuth is token mode (isApiKeyMode: false, supported: false).
+  it("set token for never_set provider opens panel and saves the pasted value", async () => {
+    vi.mocked(apiClient.rotateCliCredential).mockResolvedValueOnce(
+      { data: { fingerprint: "fp123", value: "my-pasted-token" } } as ReturnType<typeof apiClient.rotateCliCredential> extends Promise<infer T> ? T : never,
+    );
+
+    renderWithQuery(
+      <PageCli credential={cred({ state: "never_set", fingerprint: null })} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^set token$/i }));
+    const panel = document.querySelector("[data-set-token-panel]");
+    expect(panel).toBeTruthy();
+
+    const textarea = panel!.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "my-pasted-token" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    });
+
+    // The EXACT pasted value is forwarded — not discarded for a random one.
+    expect(apiClient.rotateCliCredential).toHaveBeenCalledWith("claude-cli", "my-pasted-token");
+  });
+
+  it("token-mode save does NOT trigger the server-generate (no-value) rotate path", async () => {
+    vi.mocked(apiClient.rotateCliCredential).mockResolvedValueOnce(
+      { data: { fingerprint: "fp", value: "tok" } } as ReturnType<typeof apiClient.rotateCliCredential> extends Promise<infer T> ? T : never,
+    );
+
+    renderWithQuery(
+      <PageCli credential={cred({ state: "never_set", fingerprint: null })} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^set token$/i }));
+    const textarea = document.querySelector("[data-set-token-panel] textarea")!;
+    fireEvent.change(textarea, { target: { value: "keep-me" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    });
+
+    // Must be called WITH the value (2 args), never the id-only generate form.
+    expect(apiClient.rotateCliCredential).toHaveBeenCalledWith("claude-cli", "keep-me");
+    expect(apiClient.rotateCliCredential).not.toHaveBeenCalledWith("claude-cli");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test button
 // ---------------------------------------------------------------------------
 

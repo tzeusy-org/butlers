@@ -2273,6 +2273,7 @@ export function PageCli({
   const rotateMutation = useRotateCliRuntime();
   const [rotatedSecret, setRotatedSecret] = React.useState<string | null>(null);
 
+  // Rotate (true server-generated): no value → backend mints a random token.
   function handleRotate() {
     if (rotateMutation.isPending) return;
     setRotatedSecret(null);
@@ -2282,6 +2283,23 @@ export function PageCli({
         onSuccess: (data) => {
           const val = (data as { data?: { value?: string } })?.data?.value ?? null;
           setRotatedSecret(val);
+        },
+      },
+    );
+  }
+
+  // Set-token save (paste-to-save): persists the exact owner-supplied value
+  // (not a random one) and works for never_set providers (first save).
+  function handleSetTokenSave() {
+    const trimmed = setTokenValue.trim();
+    if (!trimmed || rotateMutation.isPending) return;
+    setRotatedSecret(null);
+    rotateMutation.mutate(
+      { id: credential.id, value: trimmed },
+      {
+        onSuccess: () => {
+          setSetTokenOpen(false);
+          setSetTokenValue("");
         },
       },
     );
@@ -2340,8 +2358,9 @@ export function PageCli({
   }
 
   // ── Set token (token mode: paste into text entry) ─────────────────────────
-  // For providers WITHOUT api_key mode, "set token" pastes the raw value
-  // using the rotate endpoint (which also persists for first-time set).
+  // For providers WITHOUT api_key mode, "set token" persists the pasted raw
+  // value verbatim via the rotate endpoint (which accepts an owner-supplied
+  // value and UPSERTs — so first-time set works without a 404).
   const [setTokenOpen, setSetTokenOpen] = React.useState(false);
   const [setTokenValue, setSetTokenValue] = React.useState("");
   // Re-use rotateMutation — rotate endpoint handles both create and rotation.
@@ -2357,11 +2376,9 @@ export function PageCli({
     rotateMutation.reset();
   }
 
-  // For token-mode "set token": currently the rotate endpoint generates a new
-  // random value server-side (no paste). A future endpoint may accept a
-  // user-supplied value. For now, clicking "set token" opens the rotate flow
-  // OR the api-key save flow depending on provider mode.
-  // For api_key mode (e.g. Claude): paste the key → useSaveCLIAuthApiKey.
+  // Token-mode "set token" persists the pasted value via the rotate endpoint
+  // (handleSetTokenSave). For api_key mode (e.g. Claude): paste the key and
+  // persist via useSaveCLIAuthApiKey.
   const saveApiKeyMutation = useSaveCLIAuthApiKey();
   const deleteApiKeyMutation = useDeleteCLIAuthApiKey();
 
@@ -2577,7 +2594,7 @@ export function PageCli({
           <div className="flex gap-2">
             <PillBtn
               variant="commit"
-              onClick={isApiKeyMode ? handleSaveApiKey : handleRotate}
+              onClick={isApiKeyMode ? handleSaveApiKey : handleSetTokenSave}
               disabled={!setTokenValue.trim() || (isApiKeyMode ? saveApiKeyMutation.isPending : rotateMutation.isPending)}
             >
               {(isApiKeyMode ? saveApiKeyMutation.isPending : rotateMutation.isPending) ? "saving…" : "save"}
