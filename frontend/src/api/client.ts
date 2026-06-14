@@ -94,7 +94,9 @@ import type {
   MedicationParams,
   MedicationCreateRequest,
   MedicationUpdateRequest,
+  ResearchCreateRequest,
   ResearchParams,
+  ResearchUpdateRequest,
   Symptom,
   SymptomParams,
   SymptomCreateRequest,
@@ -1571,6 +1573,36 @@ export function getResearch(params?: ResearchParams): Promise<PaginatedResponse<
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<HealthResearch>>(qs ? `/health/research?${qs}` : "/health/research");
+}
+
+/**
+ * Create a research note. Persists through the Health butler's own fact-store
+ * path (POST /health/research -> research_save), so the new note is read back by
+ * getResearch immediately.
+ */
+export function createResearch(body: ResearchCreateRequest): Promise<HealthResearch> {
+  return apiFetch<HealthResearch>("/health/research", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Update a research note. Only supplied fields are merged (PUT /health/research/{id}). */
+export function updateResearch(
+  researchId: string,
+  body: ResearchUpdateRequest,
+): Promise<HealthResearch> {
+  return apiFetch<HealthResearch>(`/health/research/${encodeURIComponent(researchId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Soft-delete a research note (DELETE /health/research/{id}). Returns 204. */
+export function deleteResearch(researchId: string): Promise<void> {
+  return apiFetch<void>(`/health/research/${encodeURIComponent(researchId)}`, {
+    method: "DELETE",
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -1561,6 +1561,82 @@ async def test_research_summarize_by_tags(pool):
     assert "SumTag_match" in summary["titles"]
 
 
+async def test_research_update(pool):
+    """research_update supersedes the note's prior property fact (subject-keyed)."""
+    from butlers.tools.health import research_save, research_search, research_update
+
+    entry = await research_save(
+        pool, "UpdateNote", "Original body.", tags=["a"], source_url="https://x/old"
+    )
+    updated = await research_update(
+        pool,
+        str(entry["id"]),
+        content="Revised body.",
+        tags=["a", "b"],
+        source_url="https://x/new",
+    )
+    assert updated["content"] == "Revised body."
+    assert updated["tags"] == ["a", "b"]
+    assert updated["source_url"] == "https://x/new"
+    assert updated["title"] == "UpdateNote"
+
+    # Only the superseding note remains active for that title.
+    results = await research_search(pool, query="UpdateNote")
+    matching = [r for r in results if r["title"] == "UpdateNote"]
+    assert len(matching) == 1
+    assert matching[0]["content"] == "Revised body."
+
+
+async def test_research_update_not_found(pool):
+    """research_update raises ValueError for a non-existent note."""
+    from butlers.tools.health import research_update
+
+    with pytest.raises(ValueError, match="not found"):
+        await research_update(pool, str(uuid.uuid4()), content="x")
+
+
+async def test_research_update_no_valid_fields(pool):
+    """research_update raises ValueError when no valid fields are given."""
+    from butlers.tools.health import research_save, research_update
+
+    entry = await research_save(pool, "NoFieldNote", "Body")
+    with pytest.raises(ValueError, match="No valid fields"):
+        await research_update(pool, str(entry["id"]), bogus_field="nope")
+
+
+async def test_research_update_invalid_condition(pool):
+    """research_update rejects an invalid condition_id."""
+    from butlers.tools.health import research_save, research_update
+
+    entry = await research_save(pool, "BadCondNote", "Body")
+    with pytest.raises(ValueError, match="Condition.*not found"):
+        await research_update(pool, str(entry["id"]), condition_id=str(uuid.uuid4()))
+
+
+async def test_research_delete_retracts(pool):
+    """research_delete soft-deletes so the note disappears from search."""
+    from butlers.tools.health import research_delete, research_save, research_search
+
+    entry = await research_save(pool, "DelNote", "Body")
+    assert "DelNote" in [r["title"] for r in await research_search(pool, query="DelNote")]
+
+    ok = await research_delete(pool, str(entry["id"]))
+    assert ok is True
+    assert "DelNote" not in [r["title"] for r in await research_search(pool, query="DelNote")]
+
+    # The fact is retained but retracted (audit-preserving soft delete).
+    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", entry["id"])
+    assert validity == "retracted"
+
+
+async def test_research_delete_not_found(pool):
+    """research_delete raises ValueError for a non-existent note."""
+    from butlers.tools.health import research_delete
+
+    with pytest.raises(ValueError, match="not found"):
+        await research_delete(pool, str(uuid.uuid4()))
+
+
 # ------------------------------------------------------------------
 # Reports
 # ------------------------------------------------------------------

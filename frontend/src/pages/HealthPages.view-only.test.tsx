@@ -4,8 +4,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// bu-7oyhi.2 / bu-aisjm / bu-a7vw9 / bu-gk38e / bu-5oeoq — health-page write
-// surfaces.
+// bu-7oyhi.2 / bu-aisjm / bu-a7vw9 / bu-gk38e / bu-5oeoq / bu-wamzk —
+// health-page write surfaces.
 //
 // As of bu-aisjm the Medications page has direct dashboard CRUD (add/edit/
 // delete wired to /api/health/medications), so it is NO LONGER view-only.
@@ -15,17 +15,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // /api/health/symptoms, so it is NO LONGER view-only either.
 // As of bu-5oeoq the Meals page also has direct dashboard CRUD wired to
 // /api/health/meals, so it is NO LONGER view-only either.
+// As of bu-wamzk the Research page also has direct dashboard CRUD wired to
+// /api/health/research, so it is NO LONGER view-only either.
 //
-// The remaining TWO pages (Research, Measurements) are still an observability
-// surface: the Health butler owns all writes via its own MCP tools/
-// conversation, and the dashboard must NOT present any affordance implying the
-// user can add/edit/delete records here.
+// The remaining ONE page (Measurements) is still an observability surface: the
+// Health butler owns all writes via its own MCP tools/conversation, and the
+// dashboard must NOT present any affordance implying the user can add/edit/
+// delete records here.
 //
 // These tests assert:
-//   - For the 2 not-yet-converted pages: the "Managed by the Health butler"
+//   - For the 1 not-yet-converted page: the "Managed by the Health butler"
 //     view-only note renders AND no add/edit/delete affordance is present.
-//   - For Medications, Conditions, Symptoms, and Meals: NO view-only note AND
-//     add/edit/delete affordances exist.
+//   - For Medications, Conditions, Symptoms, Meals, and Research: NO view-only
+//     note AND add/edit/delete affordances exist.
 // ---------------------------------------------------------------------------
 
 // All health pages read through these hooks. Stub them with a loaded shape so
@@ -33,10 +35,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // QueryClient or network. Medications returns one row so the per-card edit /
 // delete affordances render. The mutation hooks are stubbed as no-op mutations.
 vi.mock("@/hooks/use-health", () => {
-  const empty = {
-    data: { data: [], meta: { total: 0, has_more: false } },
-    isLoading: false,
-  };
   const noopMutation = () => ({
     mutate: vi.fn(),
     mutateAsync: vi.fn(),
@@ -127,7 +125,27 @@ vi.mock("@/hooks/use-health", () => {
     useCreateMeal: noopMutation,
     useUpdateMeal: noopMutation,
     useDeleteMeal: noopMutation,
-    useResearch: () => empty,
+    useResearch: () => ({
+      data: {
+        data: [
+          {
+            id: "research-1",
+            title: "Magnesium and sleep",
+            content: "Studies suggest magnesium improves sleep latency.",
+            tags: ["sleep"],
+            source_url: null,
+            condition_id: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        meta: { total: 1, has_more: false },
+      },
+      isLoading: false,
+    }),
+    useCreateResearch: noopMutation,
+    useUpdateResearch: noopMutation,
+    useDeleteResearch: noopMutation,
   };
 });
 
@@ -140,11 +158,10 @@ import SymptomsPage from "./SymptomsPage";
 
 afterEach(cleanup);
 
-// Only the 2 not-yet-converted pages remain view-only. Medications,
-// Conditions, Symptoms, and Meals are asserted separately below to have CRUD
-// affordances.
+// Only the 1 not-yet-converted page remains view-only. Medications,
+// Conditions, Symptoms, Meals, and Research are asserted separately below to
+// have CRUD affordances.
 const PAGES: Array<{ name: string; Component: () => React.ReactElement }> = [
-  { name: "Research", Component: ResearchPage },
   { name: "Measurements", Component: MeasurementsPage },
 ];
 
@@ -247,6 +264,23 @@ describe("Meals health page — direct CRUD (bu-5oeoq)", () => {
     // Per-row edit + delete affordances (one meal row is mocked).
     expect(screen.getByRole("button", { name: /edit grilled chicken salad/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /delete grilled chicken salad/i })).toBeTruthy();
+  });
+});
+
+describe("Research health page — direct CRUD (bu-wamzk)", () => {
+  it("does NOT render the butler-managed view-only note", () => {
+    const { container } = render(<ResearchPage />);
+    const notes = container.querySelectorAll('[data-testid="butler-managed-note"]');
+    expect(notes.length).toBe(0);
+  });
+
+  it("exposes add, edit, and delete affordances", () => {
+    render(<ResearchPage />);
+    // Add affordance in the tracker toolbar.
+    expect(screen.getByRole("button", { name: /add research/i })).toBeTruthy();
+    // Per-row edit + delete affordances (one research row is mocked).
+    expect(screen.getByRole("button", { name: /edit magnesium and sleep/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /delete magnesium and sleep/i })).toBeTruthy();
   });
 });
 

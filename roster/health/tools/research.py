@@ -116,6 +116,132 @@ async def research_save(
     }
 
 
+async def research_update(
+    pool: asyncpg.Pool,
+    research_id: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Update a research note. Allowed fields: title, content, tags, source_url,
+    condition_id.
+
+    Research notes are PROPERTY facts (like conditions): supersession is keyed on
+    the (subject, predicate) pair, where the subject is ``research:{title}``.
+    This re-stores the note with the same subject key via ``store_fact`` so the
+    previous fact is superseded.  ``entity_id`` is deliberately omitted so the
+    edit supersedes only THIS note's prior fact, not every research note anchored
+    to the owner entity (see ``research_save`` for the rationale).
+
+    If ``condition_id`` is provided it must reference an existing condition fact.
+    """
+    from butlers.modules.memory.storage import store_fact
+
+    res_uuid = uuid.UUID(research_id) if isinstance(research_id, str) else research_id
+    allowed = {"title", "content", "tags", "source_url", "condition_id"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+
+    if not updates:
+        raise ValueError("No valid fields to update")
+
+    if updates.get("condition_id") is not None:
+        await _validate_condition_fact(pool, updates["condition_id"])
+
+    # Fetch existing research fact by ID
+    row = await pool.fetchrow(
+        "SELECT id, subject, content, metadata FROM facts"
+        " WHERE id = $1 AND predicate = 'research' AND scope = 'health'"
+        " AND validity = 'active'",
+        res_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Research {research_id} not found")
+
+    existing_meta = row["metadata"] or {}
+    if isinstance(existing_meta, str):
+        existing_meta = json.loads(existing_meta)
+
+    new_meta = dict(existing_meta)
+    if "title" in updates:
+        new_meta["title"] = updates["title"]
+    if "tags" in updates:
+        new_meta["tags"] = updates["tags"] or []
+    if "source_url" in updates:
+        if updates["source_url"] is None:
+            new_meta.pop("source_url", None)
+        else:
+            new_meta["source_url"] = updates["source_url"]
+    if "condition_id" in updates:
+        if updates["condition_id"] is None:
+            new_meta.pop("condition_id", None)
+        else:
+            new_meta["condition_id"] = str(updates["condition_id"])
+
+    title = new_meta.get("title", "")
+    content = updates.get("content", row["content"])
+    # Keep the subject keyed on the (possibly updated) title so the note remains a
+    # distinct property fact. Fall back to the stored subject when title is blank.
+    existing_subject = row["subject"] or f"research:{existing_meta.get('title', research_id)}"
+    subject = f"research:{title}" if title else existing_subject
+
+    embedding_engine = _get_embedding_engine()
+    now = datetime.now(UTC)
+
+    new_fact_id = (
+        await store_fact(
+            pool,
+            subject=subject,
+            predicate="research",
+            content=content,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            valid_at=None,  # property fact — supersedes the previous
+            metadata=new_meta,
+        )
+    )["id"]
+
+    cond_id = new_meta.get("condition_id")
+    cond_out = uuid.UUID(cond_id) if cond_id else None
+    return {
+        "id": new_fact_id,
+        "title": new_meta.get("title", ""),
+        "content": content,
+        "tags": new_meta.get("tags", []),
+        "source_url": new_meta.get("source_url"),
+        "condition_id": cond_out,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def research_delete(
+    pool: asyncpg.Pool,
+    research_id: str,
+) -> bool:
+    """Soft-delete a research note by retracting its fact.
+
+    Delegates to ``forget_memory(pool, "fact", id)``, which sets the fact's
+    ``validity`` to ``'retracted'`` — the canonical soft-delete path used across
+    the memory subsystem.  The fact remains in the database for audit but is
+    excluded from all ``validity = 'active'`` read surfaces (including the
+    dashboard GET endpoint and ``research_search`` / ``research_summarize``).
+    Raises ``ValueError`` if no active research fact with this id exists.
+    """
+    from butlers.modules.memory.storage import forget_memory
+
+    res_uuid = uuid.UUID(research_id) if isinstance(research_id, str) else research_id
+
+    row = await pool.fetchrow(
+        "SELECT id FROM facts"
+        " WHERE id = $1 AND predicate = 'research' AND scope = 'health'"
+        " AND validity = 'active'",
+        res_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Research {research_id} not found")
+
+    return await forget_memory(pool, "fact", res_uuid)
+
+
 async def research_search(
     pool: asyncpg.Pool,
     query: str | None = None,

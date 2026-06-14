@@ -236,6 +236,42 @@ class Research(BaseModel):
     updated_at: str
 
 
+class ResearchCreateRequest(BaseModel):
+    """Request body for POST /research.
+
+    Persisted through the same ``research_save`` fact-store path the Health
+    butler's own MCP tool uses (predicate ``research``, scope ``health``), so a
+    dashboard-created research note is indistinguishable from a butler-created
+    one and is read back by GET /research.  Research notes are PROPERTY facts
+    (like conditions): supersession is keyed on the ``research:{title}`` subject,
+    so a note with the same title supersedes its predecessor.  ``condition_id``,
+    when supplied, must reference an existing condition.
+    """
+
+    title: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+    tags: list[str] = []
+    source_url: str | None = None
+    condition_id: str | None = None
+
+
+class ResearchUpdateRequest(BaseModel):
+    """Request body for PUT /research/{id}.
+
+    All fields are optional; only the supplied (non-null) fields are merged into
+    the existing research fact via the superseding ``research_update`` path (a
+    property fact keyed on the ``research:{title}`` subject).  At least one field
+    must be provided.  When supplied, ``condition_id`` must reference an existing
+    condition.
+    """
+
+    title: str | None = Field(default=None, min_length=1)
+    content: str | None = Field(default=None, min_length=1)
+    tags: list[str] | None = None
+    source_url: str | None = None
+    condition_id: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Measurements — latest-by-type, sleep, sources
 # ---------------------------------------------------------------------------

@@ -43,6 +43,8 @@ if _spec is not None and _spec.loader is not None:
     MedicationCreateRequest = _models.MedicationCreateRequest
     MedicationUpdateRequest = _models.MedicationUpdateRequest
     Research = _models.Research
+    ResearchCreateRequest = _models.ResearchCreateRequest
+    ResearchUpdateRequest = _models.ResearchUpdateRequest
     SleepSessionResponse = _models.SleepSessionResponse
     SleepStage = _models.SleepStage
     Symptom = _models.Symptom
@@ -1101,6 +1103,116 @@ async def list_research(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# POST/PUT/DELETE /research — direct dashboard CRUD
+#
+# These mutations persist through the SAME fact-store path the Health butler's
+# own MCP tools use:
+#   - POST   -> research_save    (predicate 'research', PROPERTY fact)
+#   - PUT    -> research_update  (superseding store_fact, same subject key)
+#   - DELETE -> research_delete  (forget_memory -> validity = 'retracted')
+# so a dashboard-authored research note is indistinguishable from a
+# butler-authored one and is read back by GET /research above.  Research notes
+# are PROPERTY facts (like conditions, NOT temporal like symptoms/meals):
+# supersession is keyed on the ``research:{title}`` subject, so an edit
+# supersedes only THIS note's prior fact, never every note anchored to the owner
+# entity (research_save/research_update deliberately omit entity_id).  No new
+# predicates, tables, or DDL are introduced.
+# ---------------------------------------------------------------------------
+
+
+def _research_response(result: dict) -> Research:
+    """Build the Research response model from a write-tool result dict."""
+    cond_id = result.get("condition_id")
+    return Research(
+        id=str(result["id"]),
+        title=result.get("title", ""),
+        content=result.get("content", ""),
+        tags=list(result.get("tags") or []),
+        source_url=result.get("source_url"),
+        condition_id=str(cond_id) if cond_id else None,
+        created_at=_isoformat(result.get("created_at")),
+        updated_at=_isoformat(result.get("updated_at") or result.get("created_at")),
+    )
+
+
+@router.post("/research", response_model=Research, status_code=status.HTTP_201_CREATED)
+async def create_research(
+    body: ResearchCreateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Research:
+    """Create a research note via the butler's ``research_save`` fact-store path.
+
+    Writes a property fact (predicate = ``research``, scope = ``health``) — the
+    same surface the ``research_save`` MCP tool writes — so the new note appears
+    in GET /research immediately.  Returns 404 if ``condition_id`` references a
+    non-existent condition.
+    """
+    from butlers.tools.health import research_save
+
+    pool = _pool(db)
+    try:
+        result = await research_save(
+            pool,
+            title=body.title,
+            content=body.content,
+            tags=body.tags,
+            source_url=body.source_url,
+            condition_id=body.condition_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _research_response(result)
+
+
+@router.put("/research/{research_id}", response_model=Research)
+async def update_research(
+    research_id: str,
+    body: ResearchUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Research:
+    """Update a research note via the superseding ``research_update`` fact path.
+
+    Only the supplied (non-null) fields are merged into the existing research
+    fact; a new property fact is written under the same subject key so the prior
+    fact is superseded.  Returns 404 if the note does not exist and 422 if no
+    updatable fields were provided.
+    """
+    from butlers.tools.health import research_update
+
+    pool = _pool(db)
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(
+            status_code=422,
+            detail="No updatable fields provided",
+        )
+    try:
+        result = await research_update(pool, research_id, **updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _research_response(result)
+
+
+@router.delete("/research/{research_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_research(
+    research_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a research note via ``research_delete`` (validity = retracted).
+
+    The fact is retained for audit but excluded from all active read surfaces.
+    Returns 204 on success and 404 if no active research note with this id exists.
+    """
+    from butlers.tools.health import research_delete
+
+    pool = _pool(db)
+    try:
+        await research_delete(pool, research_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

@@ -8,10 +8,12 @@ import {
   createCondition,
   createMeal,
   createMedication,
+  createResearch,
   createSymptom,
   deleteCondition,
   deleteMeal,
   deleteMedication,
+  deleteResearch,
   deleteSymptom,
   getConditions,
   getMeals,
@@ -26,6 +28,7 @@ import {
   updateCondition,
   updateMeal,
   updateMedication,
+  updateResearch,
   updateSymptom,
 } from "@/api/index.ts";
 import type {
@@ -38,7 +41,9 @@ import type {
   MedicationCreateRequest,
   MedicationParams,
   MedicationUpdateRequest,
+  ResearchCreateRequest,
   ResearchParams,
+  ResearchUpdateRequest,
   SymptomCreateRequest,
   SymptomParams,
   SymptomUpdateRequest,
@@ -278,6 +283,48 @@ export function useResearch(params?: ResearchParams) {
     queryKey: ["health-research", params],
     queryFn: () => getResearch(params),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Invalidate every research-list query so freshly mutated notes appear.
+ *
+ * The research-list cache is keyed by the params object (q/tag/offset/...), so
+ * we invalidate on the `["health-research"]` prefix to cover all variants.
+ */
+function useInvalidateResearch() {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: ["health-research"] });
+}
+
+/**
+ * Create a research note. On success, invalidates the research list so the new
+ * note appears without a manual refetch.
+ */
+export function useCreateResearch() {
+  const invalidate = useInvalidateResearch();
+  return useMutation({
+    mutationFn: (body: ResearchCreateRequest) => createResearch(body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Update a research note by id (only supplied fields are merged). */
+export function useUpdateResearch() {
+  const invalidate = useInvalidateResearch();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ResearchUpdateRequest }) =>
+      updateResearch(id, body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Soft-delete a research note by id. */
+export function useDeleteResearch() {
+  const invalidate = useInvalidateResearch();
+  return useMutation({
+    mutationFn: (id: string) => deleteResearch(id),
+    onSuccess: invalidate,
   });
 }
 

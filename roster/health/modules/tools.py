@@ -391,6 +391,40 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     @_tool("research")
+    async def research_update(
+        research_id: str,
+        title: str | None = None,
+        content: str | None = None,
+        tags: list[str] | None = None,
+        source_url: str | None = None,
+        condition_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Update a research note. Allowed fields: title, content, tags,
+        source_url, condition_id.
+
+        Research notes are property facts, so the edit supersedes the prior note
+        keyed on its (subject, predicate) pair. If condition_id is provided it
+        must reference an existing condition.
+        """
+        fields = {
+            k: v
+            for k, v in {
+                "title": title,
+                "content": content,
+                "tags": tags,
+                "source_url": source_url,
+                "condition_id": condition_id,
+            }.items()
+            if v is not None
+        }
+        return await _research.research_update(module._get_pool(), research_id, **fields)
+
+    @_tool("research")
+    async def research_delete(research_id: str) -> bool:
+        """Soft-delete a research note (retracts the fact, audit-preserving)."""
+        return await _research.research_delete(module._get_pool(), research_id)
+
+    @_tool("research")
     async def research_summarize(
         condition_id: str | None = None,
         tags: list[str] | None = None,
