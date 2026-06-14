@@ -80,6 +80,30 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 )
 """
 
+# The pre-finance_008 (finance_006) shape of recurring_groups. The fixture below
+# applies the finance_008 reconcile SQL to this to produce the live, code-usable
+# schema — exercising the actual migration statements end-to-end (bead bu-xqncx).
+CREATE_RECURRING_GROUPS_FINANCE_006_SQL = """
+CREATE TABLE IF NOT EXISTS recurring_groups (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    merchant          TEXT NOT NULL,
+    normalized_name   TEXT,
+    expected_amount   NUMERIC(14, 2),
+    amount_variance   NUMERIC(14, 2),
+    frequency         TEXT,
+    status            TEXT NOT NULL DEFAULT 'active',
+    is_subscription   BOOLEAN NOT NULL DEFAULT false,
+    next_expected_date DATE,
+    last_seen_at      TIMESTAMPTZ,
+    confidence        NUMERIC(4, 3) NOT NULL DEFAULT 0.5,
+    transaction_count INTEGER NOT NULL DEFAULT 0,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT recurring_groups_status_check CHECK (status IN ('active', 'inactive', 'paused'))
+)
+"""
+
 
 async def _insert_transaction(
     pool,
@@ -139,12 +163,37 @@ async def _insert_subscription(
 # ---------------------------------------------------------------------------
 
 
+def _load_finance_008_upgrade_sql() -> tuple[str, ...]:
+    """Load the finance_008 migration's UPGRADE_SQL (module name starts with a digit)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "008_recurring_groups_schema_reconcile.py"
+    )
+    spec = importlib.util.spec_from_file_location("finance_008_migration", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod.UPGRADE_SQL
+
+
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance pattern recognition tables."""
+    """Provision a fresh database with finance pattern recognition tables.
+
+    ``recurring_groups`` is created in its finance_006 shape, then reconciled by
+    applying the real finance_008 migration SQL — so these tests exercise the
+    deployed schema rather than an ad-hoc copy (bead bu-xqncx).
+    """
     async with provisioned_postgres_pool() as p:
         await p.execute(CREATE_TRANSACTIONS_SQL)
         await p.execute(CREATE_SUBSCRIPTIONS_SQL)
+        await p.execute(CREATE_RECURRING_GROUPS_FINANCE_006_SQL)
+        for stmt in _load_finance_008_upgrade_sql():
+            await p.execute(stmt)
         yield p
 
 
@@ -224,6 +273,34 @@ class TestDetectRecurringMonthly:
             "Adobe",
         )
         assert count == 1
+
+    async def test_upsert_updates_existing_row(self, pool):
+        """Second call with a changed amount UPDATEs the existing row in place."""
+        from butlers.tools.finance.pattern_recognition import detect_recurring
+
+        base = datetime(2025, 5, 1, 0, 0, tzinfo=UTC)
+        for i in range(3):
+            await _insert_transaction(
+                pool, merchant="Hulu", amount="11.99", posted_at=base + timedelta(days=30 * i)
+            )
+        await detect_recurring(pool, min_occurrences=3)
+        first = await pool.fetchrow(
+            "SELECT id, avg_amount FROM recurring_groups WHERE merchant = $1", "Hulu"
+        )
+
+        # Add more charges at a higher amount; variance stays within tolerance.
+        for i in range(3, 6):
+            await _insert_transaction(
+                pool, merchant="Hulu", amount="12.99", posted_at=base + timedelta(days=30 * i)
+            )
+        await detect_recurring(pool, min_occurrences=3)
+        second = await pool.fetchrow(
+            "SELECT id, avg_amount FROM recurring_groups WHERE merchant = $1", "Hulu"
+        )
+
+        # Same row (id stable), updated avg_amount — confirms ON CONFLICT (merchant) DO UPDATE.
+        assert second["id"] == first["id"]
+        assert float(second["avg_amount"]) > float(first["avg_amount"])
 
     async def test_medium_confidence_monthly(self, pool):
         """3–5 occurrences with <10% variance yields medium confidence."""
@@ -1871,3 +1948,70 @@ class TestUpdateTransactionCategoryFeedback:
         # Merchant-only update must not trigger the category feedback loop.
         mappings = await recall_merchant_mappings(pool_merchant, merchant_pattern="New Name")
         assert len(mappings["mappings"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# TestRecurringGroupsSchemaReconcile (bead bu-xqncx)
+# ---------------------------------------------------------------------------
+
+
+class TestRecurringGroupsSchemaReconcile:
+    """finance_008 reconciles recurring_groups to the schema the code uses."""
+
+    async def test_reconciled_columns_present(self, pool):
+        """All code-expected columns exist after the migration is applied."""
+        rows = await pool.fetch(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'recurring_groups' AND table_schema = current_schema()
+            """
+        )
+        cols = {r["column_name"] for r in rows}
+        expected = {
+            "id",
+            "merchant",
+            "estimated_frequency",
+            "avg_amount",
+            "currency",
+            "last_seen_date",
+            "next_expected_date",
+            "is_active",
+            "created_at",
+            "updated_at",
+        }
+        assert expected.issubset(cols), f"missing: {expected - cols}"
+
+    async def test_dead_finance_006_columns_dropped(self, pool):
+        """The finance_006-only columns are removed by the reconcile migration."""
+        rows = await pool.fetch(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'recurring_groups' AND table_schema = current_schema()
+            """
+        )
+        cols = {r["column_name"] for r in rows}
+        dead = {
+            "normalized_name",
+            "amount_variance",
+            "status",
+            "subscription_id",
+            "is_subscription",
+            "confidence",
+            "transaction_count",
+            "metadata",
+        }
+        assert not (cols & dead), f"dead columns still present: {cols & dead}"
+
+    async def test_merchant_unique_constraint_present(self, pool):
+        """A UNIQUE index on merchant backs the ON CONFLICT (merchant) upsert."""
+        idx = await pool.fetchval(
+            """
+            SELECT indexdef FROM pg_indexes
+            WHERE tablename = 'recurring_groups'
+              AND schemaname = current_schema()
+              AND indexname = 'uq_recurring_groups_merchant'
+            """
+        )
+        assert idx is not None
+        assert "UNIQUE" in idx
+        assert "merchant" in idx

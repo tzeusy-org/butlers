@@ -280,26 +280,9 @@ async def detect_recurring(
                 "currency": sub["currency"],
             }
 
-    # Build the recurring_groups table guard (CREATE IF NOT EXISTS).
-    await pool.execute(
-        """
-        CREATE TABLE IF NOT EXISTS recurring_groups (
-            id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            merchant             TEXT NOT NULL UNIQUE,
-            estimated_frequency  TEXT
-                                     CHECK (estimated_frequency IS NULL OR estimated_frequency IN (
-                                         'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                                     )),
-            avg_amount           NUMERIC(14, 2) NOT NULL,
-            currency             CHAR(3) DEFAULT 'USD',
-            last_seen_date       DATE,
-            next_expected_date   DATE,
-            is_active            BOOLEAN NOT NULL DEFAULT true,
-            created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-        """
-    )
+    # The recurring_groups table is owned by the finance migration chain
+    # (finance_006 created it; finance_008 reconciled it to this schema).
+    # Modules never create tables at runtime — schema is the DB's source of truth.
 
     patterns: list[dict[str, Any]] = []
 
