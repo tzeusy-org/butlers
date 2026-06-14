@@ -8,13 +8,15 @@
  *
  * Gate order: accept → dedupe → tier → route → execute
  *
- * Action → gate mapping:
- *   drop / preserve / allow  → accept (these control whether an event survives the entry gate)
- *   dedupe                   → dedupe
- *   tier                     → tier
- *   route                    → route
- *   execute / replay         → execute
- *   everything else          → accept (fallback)
+ * Action → gate mapping (runtime vocabulary from ingestion_policy.py, plus
+ * legacy display aliases kept for backward-compat with any older stored rows):
+ *   skip / metadata_only / pass_through  → accept (survive-the-entry-gate verdicts)
+ *   drop / preserve / allow              → accept (legacy aliases)
+ *   low_priority_queue / tier            → tier   (processing-priority verdicts)
+ *   dedupe                               → dedupe
+ *   route_to: / route                    → route
+ *   execute / replay                     → execute
+ *   everything else                      → accept (fallback)
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline"
@@ -84,14 +86,14 @@ export const GATE_DEFS: GateDefinition[] = [
 
 export function gateForRule(rule: IngestionRule): GateKey {
   const action = rule.action.toLowerCase()
-  if (action.startsWith('drop') || action.startsWith('preserve') || action.startsWith('allow')) {
-    return 'accept'
-  }
-  if (action.startsWith('dedupe')) return 'dedupe'
-  if (action.startsWith('tier')) return 'tier'
+  // Runtime routing verdict + legacy display alias.
   if (action.startsWith('route')) return 'route'
+  // Processing-priority verdicts: runtime low_priority_queue + legacy tier.
+  if (action.startsWith('low_priority_queue') || action.startsWith('tier')) return 'tier'
+  if (action.startsWith('dedupe')) return 'dedupe'
   if (action.startsWith('execute') || action.startsWith('replay')) return 'execute'
-  // fallback: accept
+  // Survive-the-entry-gate verdicts: runtime skip/metadata_only/pass_through +
+  // legacy drop/preserve/allow. Also the catch-all fallback.
   return 'accept'
 }
 

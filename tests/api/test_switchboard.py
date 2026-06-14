@@ -326,6 +326,58 @@ async def test_ingestion_rules_create_global_201(app):
     assert resp.status_code == 201
 
 
+async def test_ingestion_rules_create_rejects_inert_action_422(app):
+    """POST /ingestion-rules rejects an action the policy engine cannot honor.
+
+    Regression for bu-4rt0h: the rule editor historically offered the inert
+    verbs drop/preserve/tier/route, none of which the runtime evaluator
+    (ingestion_policy.py) matches. Such an action must be rejected at create
+    with 422 rather than silently stored as a meaningless verdict.
+    """
+    _app_with_mock(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/ingestion-rules",
+            json={
+                "scope": "global",
+                "rule_type": "sender_domain",
+                "condition": {"domain": "chase.com", "match": "exact"},
+                "action": "drop",  # inert FE-vocabulary verb — not a runtime action
+                "priority": 10,
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_ingestion_rules_create_accepts_canonical_action_201(app):
+    """POST /ingestion-rules accepts a canonical runtime verdict ('skip').
+
+    Pairs with the inert-action rejection above: a rule authored with an action
+    the evaluator actually dispatches on must be stored (201). 'skip' needs no
+    route_to butler lookup, so a single INSERT...RETURNING row suffices.
+    """
+    skip_rule = dict(_GLOBAL_RULE)
+    skip_rule["action"] = "skip"
+    _app, _mock_pool = _app_with_mock(app, fetchrow_result=_make_row(skip_rule))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/ingestion-rules",
+            json={
+                "scope": "global",
+                "rule_type": "sender_domain",
+                "condition": {"domain": "chase.com", "match": "exact"},
+                "action": "skip",
+                "priority": 10,
+            },
+        )
+    assert resp.status_code == 201
+    assert resp.json()["data"]["action"] == "skip"
+
+
 @pytest.mark.parametrize(
     "bad_payload,exp_status",
     [

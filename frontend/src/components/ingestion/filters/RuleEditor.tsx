@@ -50,13 +50,61 @@ const RULE_TYPES: { value: string; label: string }[] = [
   { value: 'source_channel', label: 'Source channel' },
 ]
 
-/** Verdicts the pipeline understands (one per rule). */
+/**
+ * Verdicts the policy engine actually honors (global scope).
+ *
+ * These MUST stay in lock-step with the runtime evaluator and the backend
+ * validator:
+ *   - runtime parse/dispatch: src/butlers/ingestion_policy.py
+ *     (_VALID_GLOBAL_ACTIONS + the `route_to:` prefix form)
+ *   - backend create/patch validation:
+ *     roster/switchboard/api/models.py::validate_ingestion_action
+ *
+ * The previous vocabulary (drop/preserve/tier/route) was INERT — the evaluator
+ * never matched it, so editor-authored rules produced meaningless verdicts and
+ * the backend rejected them at create with 422. The labels below are
+ * human-friendly; the `value` is the literal action the engine matches.
+ *
+ * `route_to` is special: it is stored as `route_to:<butler>`, so selecting it
+ * reveals a target-butler field and the submit handler assembles the prefixed
+ * form.
+ */
+const ROUTE_TO_VALUE = 'route_to'
+
 const ACTIONS: { value: string; label: string }[] = [
-  { value: 'drop', label: 'drop' },
-  { value: 'preserve', label: 'preserve' },
-  { value: 'tier', label: 'tier' },
-  { value: 'route', label: 'route' },
+  { value: 'skip', label: 'skip (drop, bypass LLM)' },
+  { value: 'metadata_only', label: 'metadata only' },
+  { value: 'low_priority_queue', label: 'low priority queue' },
+  { value: 'pass_through', label: 'pass through (default)' },
+  { value: ROUTE_TO_VALUE, label: 'route to butler…' },
 ]
+
+const DEFAULT_ACTION = 'skip'
+
+/**
+ * Split a stored `action` string into the editor's (action, target) pair.
+ *
+ * `route_to:finance` → { action: 'route_to', target: 'finance' }
+ * `skip`             → { action: 'skip',     target: '' }
+ */
+function parseAction(stored: string | undefined | null): {
+  action: string
+  target: string
+} {
+  const raw = (stored ?? '').trim()
+  if (raw.startsWith('route_to:')) {
+    return { action: ROUTE_TO_VALUE, target: raw.slice('route_to:'.length) }
+  }
+  return { action: raw || DEFAULT_ACTION, target: '' }
+}
+
+/** Assemble the literal action string the evaluator matches. */
+function composeAction(action: string, target: string): string {
+  if (action === ROUTE_TO_VALUE) {
+    return `route_to:${target.trim()}`
+  }
+  return action
+}
 
 function defaultConditionForType(ruleType: string): Record<string, unknown> {
   switch (ruleType) {
@@ -403,9 +451,9 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
   const [condition, setCondition] = useState<Record<string, unknown>>(
     rule?.condition ?? defaultConditionForType(rule?.rule_type ?? 'sender_domain'),
   )
-  const [action, setAction] = useState<string>(
-    rule?.action?.split(' ')[0] ?? 'drop',
-  )
+  const initialAction = parseAction(rule?.action)
+  const [action, setAction] = useState<string>(initialAction.action)
+  const [routeTarget, setRouteTarget] = useState<string>(initialAction.target)
   const [priority, setPriority] = useState<number>(rule?.priority ?? 100)
   const [name, setName] = useState<string>(rule?.name ?? '')
   const [description, setDescription] = useState<string>(rule?.description ?? '')
@@ -430,13 +478,23 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
       return
     }
 
+    if (action === ROUTE_TO_VALUE && !routeTarget.trim()) {
+      setError('Target butler is required for the "route to butler" verdict.')
+      return
+    }
+
+    // Assemble the literal action the policy engine matches (route_to:<butler>
+    // for routing; the bare runtime verb otherwise). This is what the backend
+    // validator accepts and what ingestion_policy.py dispatches on.
+    const composedAction = composeAction(action, routeTarget)
+
     try {
       if (isEditing && rule) {
         await updateRule.mutateAsync({
           id: rule.id,
           body: {
             condition,
-            action,
+            action: composedAction,
             priority,
             name: name.trim() || null,
             description: description.trim() || null,
@@ -447,7 +505,7 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
           scope: 'global',
           rule_type: ruleType,
           condition,
-          action,
+          action: composedAction,
           priority,
           name: name.trim() || null,
           description: description.trim() || null,
@@ -538,6 +596,17 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
               ))}
             </select>
           </label>
+
+          {action === ROUTE_TO_VALUE && (
+            <TextField
+              label="target butler"
+              value={routeTarget}
+              onChange={setRouteTarget}
+              placeholder="e.g. finance"
+              testid="rule-editor-route-target"
+              lowercase
+            />
+          )}
 
           <label className="block">
             <span className={labelCls}>priority (lower = higher)</span>
