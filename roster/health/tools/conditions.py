@@ -89,9 +89,13 @@ async def condition_add(
     if notes is not None:
         metadata["notes"] = notes
 
-    # Use name-keyed subject so multiple conditions coexist as independent property
-    # facts. Supersession applies per (subject, predicate) key, so each condition
-    # name is an independent record.
+    # Use a name-keyed subject so multiple conditions coexist as independent
+    # property facts. Supersession is keyed on (subject, predicate) ONLY when
+    # entity_id is omitted — passing the owner entity_id would make store_fact
+    # key supersession on (entity_id, scope, predicate) and IGNORE the subject,
+    # so every condition for the owner would collide on (owner, health,
+    # condition) and silently supersede the previous one. Therefore do NOT
+    # anchor these per-item facts to the owner entity.
     subject = f"condition:{name}"
 
     fact_id = (
@@ -103,7 +107,6 @@ async def condition_add(
             embedding_engine=embedding_engine,
             permanence="stable",
             scope="health",
-            entity_id=await _get_owner_entity_id(pool),
             valid_at=None,  # property fact — supersedes previous for same name
             metadata=metadata,
         )
@@ -202,7 +205,10 @@ async def condition_update(
     embedding_engine = _get_embedding_engine()
     now = datetime.now(UTC)
 
-    # Re-store with the same subject key to supersede the previous condition fact
+    # Re-store with the same subject key to supersede the previous condition
+    # fact. Do NOT pass entity_id: supersession must key on (subject, predicate)
+    # so the edit only supersedes THIS condition's prior fact, not every other
+    # condition anchored to the owner entity (see condition_add for details).
     new_fact_id = (
         await store_fact(
             pool,
@@ -212,7 +218,6 @@ async def condition_update(
             embedding_engine=embedding_engine,
             permanence="stable",
             scope="health",
-            entity_id=await _get_owner_entity_id(pool),
             valid_at=None,  # property fact — supersedes the previous
             metadata=new_meta,
         )

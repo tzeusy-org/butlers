@@ -87,8 +87,15 @@ async def medication_add(
     if notes is not None:
         metadata["notes"] = notes
 
-    # Use name-keyed subject so multiple medications can coexist as independent
-    # property facts. Supersession applies per (subject, predicate) key.
+    # Use a name-keyed subject so multiple medications coexist as independent
+    # property facts. Supersession is keyed on (subject, predicate) ONLY when
+    # entity_id is omitted — when an entity_id is passed, store_fact keys
+    # supersession on (entity_id, scope, predicate) and IGNORES the subject,
+    # which would make every medication for the owner collide on
+    # (owner, health, medication) and silently supersede the previous one.
+    # Therefore do NOT anchor these per-item facts to the owner entity; the
+    # name-keyed subject is the correct supersession key (re-adding the same
+    # name supersedes; distinct names coexist).
     subject = f"medication:{name}"
 
     fact_id = (
@@ -100,7 +107,6 @@ async def medication_add(
             embedding_engine=embedding_engine,
             permanence="stable",
             scope="health",
-            entity_id=await _get_owner_entity_id(pool),
             valid_at=None,  # property fact — supersedes previous for same name
             metadata=metadata,
         )
@@ -167,7 +173,10 @@ async def medication_update(
     embedding_engine = _get_embedding_engine()
     now = datetime.now(UTC)
 
-    # Re-store with the same subject key to supersede the previous medication fact.
+    # Re-store with the same subject key to supersede the previous medication
+    # fact. Do NOT pass entity_id: supersession must key on (subject, predicate)
+    # so the edit only supersedes THIS medication's prior fact, not every other
+    # medication anchored to the owner entity (see medication_add for details).
     new_fact_id = (
         await store_fact(
             pool,
@@ -177,7 +186,6 @@ async def medication_update(
             embedding_engine=embedding_engine,
             permanence="stable",
             scope="health",
-            entity_id=await _get_owner_entity_id(pool),
             valid_at=None,  # property fact — supersedes the previous
             metadata=new_meta,
         )
