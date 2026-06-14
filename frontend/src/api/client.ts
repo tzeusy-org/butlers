@@ -95,6 +95,8 @@ import type {
   ResearchParams,
   Symptom,
   SymptomParams,
+  SymptomCreateRequest,
+  SymptomUpdateRequest,
   RegistryEntry,
   RoutingEntry,
   SetEligibilityResponse,
@@ -1455,6 +1457,36 @@ export function getSymptoms(params?: SymptomParams): Promise<PaginatedResponse<S
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<Symptom>>(qs ? `/health/symptoms?${qs}` : "/health/symptoms");
+}
+
+/**
+ * Log a symptom. Persists through the Health butler's own fact-store path
+ * (POST /health/symptoms -> symptom_log), so the new record is read back by
+ * getSymptoms immediately.
+ */
+export function createSymptom(body: SymptomCreateRequest): Promise<Symptom> {
+  return apiFetch<Symptom>("/health/symptoms", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Update a symptom. Only supplied fields are applied (PUT /health/symptoms/{id}). */
+export function updateSymptom(
+  symptomId: string,
+  body: SymptomUpdateRequest,
+): Promise<Symptom> {
+  return apiFetch<Symptom>(`/health/symptoms/${encodeURIComponent(symptomId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Soft-delete a symptom (DELETE /health/symptoms/{id}). Returns 204. */
+export function deleteSymptom(symptomId: string): Promise<void> {
+  return apiFetch<void>(`/health/symptoms/${encodeURIComponent(symptomId)}`, {
+    method: "DELETE",
+  });
 }
 
 /** Fetch a paginated list of meals. */

@@ -7,8 +7,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createCondition,
   createMedication,
+  createSymptom,
   deleteCondition,
   deleteMedication,
+  deleteSymptom,
   getConditions,
   getMeals,
   getMeasurements,
@@ -21,6 +23,7 @@ import {
   getSymptoms,
   updateCondition,
   updateMedication,
+  updateSymptom,
 } from "@/api/index.ts";
 import type {
   ConditionCreateRequest,
@@ -31,7 +34,9 @@ import type {
   MedicationParams,
   MedicationUpdateRequest,
   ResearchParams,
+  SymptomCreateRequest,
   SymptomParams,
+  SymptomUpdateRequest,
 } from "@/api/index.ts";
 
 /** Fetch a paginated list of health measurements. */
@@ -165,6 +170,49 @@ export function useSymptoms(params?: SymptomParams) {
     queryKey: ["health-symptoms", params],
     queryFn: () => getSymptoms(params),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Invalidate every symptom-list query so freshly mutated symptoms appear.
+ *
+ * The symptom-list cache is keyed by the params object (name/since/until/...),
+ * so we invalidate on the `["health-symptoms"]` prefix to cover all variants.
+ */
+function useInvalidateSymptoms() {
+  const queryClient = useQueryClient();
+  return () =>
+    queryClient.invalidateQueries({ queryKey: ["health-symptoms"] });
+}
+
+/**
+ * Log a symptom. On success, invalidates the symptom list so the new record
+ * appears without a manual refetch.
+ */
+export function useCreateSymptom() {
+  const invalidate = useInvalidateSymptoms();
+  return useMutation({
+    mutationFn: (body: SymptomCreateRequest) => createSymptom(body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Update a symptom by id (only supplied fields are applied). */
+export function useUpdateSymptom() {
+  const invalidate = useInvalidateSymptoms();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: SymptomUpdateRequest }) =>
+      updateSymptom(id, body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Soft-delete a symptom by id. */
+export function useDeleteSymptom() {
+  const invalidate = useInvalidateSymptoms();
+  return useMutation({
+    mutationFn: (id: string) => deleteSymptom(id),
+    onSuccess: invalidate,
   });
 }
 

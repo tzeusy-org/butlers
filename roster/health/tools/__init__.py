@@ -11,9 +11,11 @@ from butlers.tools.health.conditions import (
     condition_delete,
     condition_list,
     condition_update,
+    symptom_delete,
     symptom_history,
     symptom_log,
     symptom_search,
+    symptom_update,
 )
 from butlers.tools.health.diet import (
     VALID_MEAL_TYPES,
@@ -72,8 +74,10 @@ __all__ = [
     "research_save",
     "research_search",
     "research_summarize",
+    "symptom_delete",
     "symptom_history",
     "symptom_log",
     "symptom_search",
+    "symptom_update",
     "trend_report",
 ]

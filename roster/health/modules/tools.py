@@ -207,6 +207,40 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             end_date=end_date,
         )
 
+    @_tool("symptoms")
+    async def symptom_update(
+        symptom_id: str,
+        name: str | None = None,
+        severity: int | None = None,
+        condition_id: str | None = None,
+        notes: str | None = None,
+        occurred_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Update a logged symptom. Allowed fields: name, severity, condition_id,
+        notes, occurred_at.
+
+        Symptoms are temporal facts, so the edit updates the existing entry
+        in place rather than superseding it. If severity is provided it must be
+        between 1 and 10.
+        """
+        fields = {
+            k: v
+            for k, v in {
+                "name": name,
+                "severity": severity,
+                "condition_id": condition_id,
+                "notes": notes,
+                "occurred_at": occurred_at,
+            }.items()
+            if v is not None
+        }
+        return await _cond.symptom_update(module._get_pool(), symptom_id, **fields)
+
+    @_tool("symptoms")
+    async def symptom_delete(symptom_id: str) -> bool:
+        """Soft-delete a logged symptom (retracts the fact, audit-preserving)."""
+        return await _cond.symptom_delete(module._get_pool(), symptom_id)
+
     # =================================================================
     # Diet & Nutrition tools
     # =================================================================
