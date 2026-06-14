@@ -73,6 +73,7 @@ def _tx_row(
     external_ref: str | None = None,
     source_message_id: str | None = None,
     metadata: dict | None = None,
+    overlay_metadata: dict | None = None,
     created_at: Any = None,
     updated_at: Any = None,
 ) -> dict:
@@ -91,6 +92,9 @@ def _tx_row(
         "external_ref": external_ref,
         "source_message_id": source_message_id,
         "metadata": metadata or {},
+        # Facts overlay row (bu-v3a4x.1). None when the transaction has no
+        # overlay; the LATERAL join produces NULL in that case.
+        "overlay_metadata": overlay_metadata,
         "created_at": created_at or _NOW,
         "updated_at": updated_at or _NOW,
     }
@@ -390,6 +394,108 @@ async def test_list_transactions_optional_fields():
     assert item["external_ref"] == "ext-001"
     assert item["source_message_id"] == "msg-001"
     assert item["metadata"]["order_id"] == "ORD-123"
+
+
+@pytest.mark.asyncio
+async def test_list_transactions_joins_facts_overlay():
+    """GET /api/finance/transactions joins the facts overlay on the natural key.
+
+    The split-brain fix (bu-v3a4x.1): overlay edits (normalized_merchant,
+    inferred_category, bulk-metadata) live in the bitemporal `facts` store, not
+    on `finance.transactions`. The read must LEFT JOIN LATERAL the facts overlay
+    keyed on (posted_at, merchant, currency, abs(amount)).
+    """
+    app, mock_pool = _make_app(fetch_rows=[], fetchval_return=0)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get("/api/finance/transactions")
+
+    fetch_sql = mock_pool.fetch.call_args[0][0]
+    count_sql = mock_pool.fetchval.call_args[0][0]
+    for sql in (fetch_sql, count_sql):
+        assert "LEFT JOIN LATERAL" in sql
+        assert "FROM facts f" in sql
+        assert "f.scope = 'finance'" in sql
+        assert "f.validity = 'active'" in sql
+        # Natural-key join (idempotency-key components).
+        assert "f.valid_at = t.posted_at" in sql
+        assert "f.metadata->>'merchant' = t.merchant" in sql
+        assert "(f.metadata->>'amount')::numeric = abs(t.amount)" in sql
+
+
+@pytest.mark.asyncio
+async def test_list_transactions_overlay_values_win():
+    """Overlay normalized_merchant / inferred_category surface over base values.
+
+    Resolves bu-v3a4x.2: these projection columns were structurally always null
+    because the dashboard read the transaction's own metadata, which never
+    carries overlay edits. They must now populate from the facts overlay. Bulk
+    metadata edits in the overlay must also merge into the response metadata.
+    """
+    rows = [
+        _tx_row(
+            merchant="STARBUCKS #001",
+            category="uncategorized",
+            metadata={"order_id": "ORD-9"},
+            overlay_metadata={
+                "merchant": "STARBUCKS #001",
+                "normalized_merchant": "Starbucks",
+                "inferred_category": "dining",
+                "review_flag": "needs_audit",
+            },
+        )
+    ]
+    app, _ = _make_app(fetch_rows=rows, fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/transactions")
+
+    assert response.status_code == 200
+    item = response.json()["data"][0]
+    # Base columns are preserved (overlay is non-destructive).
+    assert item["merchant"] == "STARBUCKS #001"
+    assert item["category"] == "uncategorized"
+    # Overlay-sourced projections now populate (previously always null).
+    assert item["normalized_merchant"] == "Starbucks"
+    assert item["inferred_category"] == "dining"
+    # Bulk-metadata overlay edits merge into the response metadata blob...
+    assert item["metadata"]["review_flag"] == "needs_audit"
+    # ...without clobbering base metadata...
+    assert item["metadata"]["order_id"] == "ORD-9"
+    # ...and the projected keys are not duplicated into the metadata blob.
+    assert "normalized_merchant" not in item["metadata"]
+    assert "inferred_category" not in item["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_list_transactions_no_overlay_falls_back_to_base():
+    """A transaction with NO facts overlay falls back to base values (nulls)."""
+    rows = [
+        _tx_row(
+            merchant="Trader Joe's",
+            category="groceries",
+            metadata={"order_id": "ORD-1"},
+            overlay_metadata=None,
+        )
+    ]
+    app, _ = _make_app(fetch_rows=rows, fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/transactions")
+
+    assert response.status_code == 200
+    item = response.json()["data"][0]
+    assert item["merchant"] == "Trader Joe's"
+    assert item["category"] == "groceries"
+    assert item["normalized_merchant"] is None
+    assert item["inferred_category"] is None
+    assert item["metadata"] == {"order_id": "ORD-1"}
 
 
 # ---------------------------------------------------------------------------
@@ -777,9 +883,13 @@ async def test_spending_summary_excludes_transfer_and_uncategorized():
     group_sql = mock_pool.fetch.call_args[0][0]
 
     for sql in (total_sql, group_sql):
-        # Exclusion keyed off the effective (overlay-aware) category.
-        assert "COALESCE(metadata->>'inferred_category', category)" in sql
+        # Exclusion keyed off the effective (overlay-aware) category: the facts
+        # overlay's inferred_category wins, falling back to the base column.
+        assert "COALESCE(ovl.overlay_metadata->>'inferred_category', t.category)" in sql
         assert "NOT IN ('transfer', 'uncategorized')" in sql
+        # The facts overlay join must be present on both reads.
+        assert "LEFT JOIN LATERAL" in sql
+        assert "FROM facts f" in sql
         # Prior guards must remain intact.
         assert "direction = 'debit'" in sql
         assert "deleted_at IS NULL" in sql

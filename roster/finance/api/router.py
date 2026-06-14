@@ -8,6 +8,7 @@ from the finance butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import sys
 from datetime import date, timedelta
@@ -70,6 +71,114 @@ def _pool(db: DatabaseManager):
 
 
 # ---------------------------------------------------------------------------
+# Facts overlay join (split-brain read fix — bu-v3a4x.1 / bu-v3a4x.2)
+# ---------------------------------------------------------------------------
+#
+# Bulk-metadata edits, merchant normalization, and category inference write to
+# the bitemporal `facts` overlay (scope='finance', predicate transaction_*),
+# NOT to `finance.transactions`. The dashboard reads `finance.transactions`, so
+# without this join the overlay values (normalized_merchant / inferred_category
+# / bulk-metadata edits) are invisible and the projection columns are always
+# null. We keep `finance.transactions` as the base store of record and MERGE the
+# overlay on read.
+#
+# Overlay key: a transaction is linked to its facts row by the SAME natural key
+# the fact's idempotency hash is derived from — (posted_at, merchant, currency,
+# absolute amount). facts stores valid_at=posted_at, metadata->>'merchant' (raw),
+# metadata->>'currency' (uppercase), metadata->>'amount' (NUMERIC(14,2) string,
+# always positive). finance.transactions.amount is SIGNED, so we match on ABS().
+# Both amount columns are NUMERIC(14,2), so the ::numeric cast comparison is
+# precision-safe. Only the latest active fact (created_at DESC) is surfaced.
+_OVERLAY_JOIN = (
+    " LEFT JOIN LATERAL ("
+    "   SELECT f.metadata AS overlay_metadata"
+    "   FROM facts f"
+    "   WHERE f.scope = 'finance'"
+    "     AND f.validity = 'active'"
+    "     AND f.predicate IN ('transaction_debit', 'transaction_credit')"
+    "     AND f.valid_at = t.posted_at"
+    "     AND f.metadata->>'merchant' = t.merchant"
+    "     AND upper(f.metadata->>'currency') = upper(t.currency)"
+    "     AND (f.metadata->>'amount')::numeric = abs(t.amount)"
+    "   ORDER BY f.created_at DESC"
+    "   LIMIT 1"
+    " ) ovl ON true"
+)
+
+# Effective (overlay-preferred) expressions for filtering/grouping. The overlay
+# value wins when present; otherwise the base column is used.
+_EFFECTIVE_MERCHANT = "COALESCE(ovl.overlay_metadata->>'normalized_merchant', t.merchant)"
+_EFFECTIVE_CATEGORY = "COALESCE(ovl.overlay_metadata->>'inferred_category', t.category)"
+
+# Overlay keys that are projected onto dedicated TransactionModel fields rather
+# than left in the merged `metadata` blob.
+_OVERLAY_PROJECTED_KEYS = ("normalized_merchant", "inferred_category")
+
+
+def _coerce_jsonb(value: object) -> dict:
+    """Coerce an asyncpg JSONB value (dict or JSON string) into a plain dict."""
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _overlay_transaction_model(r) -> TransactionModel:
+    """Build a TransactionModel, merging the facts overlay over the base row.
+
+    The base ``finance.transactions`` row is the store of record. The facts
+    overlay (``overlay_metadata``) carries normalized_merchant / inferred_category
+    and any bulk-metadata edits. Overlay values win on conflict; base metadata is
+    preserved where the overlay is absent. The two projected overlay fields are
+    surfaced on dedicated model fields and stripped from the merged ``metadata``
+    blob to keep the response shape stable.
+    """
+    base_meta = _coerce_jsonb(r["metadata"])
+    overlay_meta = _coerce_jsonb(r["overlay_metadata"])
+
+    # Surface the projected overlay fields, falling back to any value already on
+    # the base metadata (legacy rows that wrote the overlay inline).
+    normalized_merchant = overlay_meta.get("normalized_merchant") or base_meta.get(
+        "normalized_merchant"
+    )
+    inferred_category = overlay_meta.get("inferred_category") or base_meta.get("inferred_category")
+
+    # Merge overlay edits onto the base metadata blob (overlay wins), then drop
+    # the projected keys so they only appear on their dedicated fields.
+    merged_meta = {**base_meta, **overlay_meta}
+    for key in _OVERLAY_PROJECTED_KEYS:
+        merged_meta.pop(key, None)
+
+    return TransactionModel(
+        id=str(r["id"]),
+        posted_at=str(r["posted_at"]),
+        merchant=r["merchant"],
+        normalized_merchant=normalized_merchant,
+        description=r["description"],
+        amount=str(r["amount"]),
+        currency=r["currency"],
+        direction=r["direction"],
+        category=r["category"],
+        inferred_category=inferred_category,
+        payment_method=r["payment_method"],
+        account_id=str(r["account_id"]) if r["account_id"] else None,
+        receipt_url=r["receipt_url"],
+        external_ref=r["external_ref"],
+        source_message_id=r["source_message_id"],
+        metadata=merged_meta,
+        created_at=str(r["created_at"]),
+        updated_at=str(r["updated_at"]),
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /transactions — list transactions
 # ---------------------------------------------------------------------------
 
@@ -92,86 +201,74 @@ async def list_transactions(
 
     # Soft-delete exclusion (spec: finance-crud-operations §"Filtered transaction
     # listing"). Every transaction read SHALL exclude soft-deleted rows.
-    conditions: list[str] = ["deleted_at IS NULL"]
+    #
+    # Reads are overlay-aware (bu-v3a4x.1): merchant/category filters resolve
+    # against the facts overlay (normalized_merchant / inferred_category) first,
+    # falling back to the base columns. Base-table columns are `t.`-qualified
+    # because the overlay LATERAL join is always present.
+    conditions: list[str] = ["t.deleted_at IS NULL"]
     args: list[object] = []
     idx = 1
 
     if category is not None:
-        conditions.append(f"COALESCE(metadata->>'inferred_category', category) = ${idx}")
+        conditions.append(f"{_EFFECTIVE_CATEGORY} = ${idx}")
         args.append(category)
         idx += 1
 
     if merchant is not None:
-        conditions.append(
-            f"COALESCE(metadata->>'normalized_merchant', merchant) ILIKE '%' || ${idx} || '%'"
-        )
+        conditions.append(f"{_EFFECTIVE_MERCHANT} ILIKE '%' || ${idx} || '%'")
         args.append(merchant)
         idx += 1
 
     if account_id is not None:
-        conditions.append(f"account_id = ${idx}::uuid")
+        conditions.append(f"t.account_id = ${idx}::uuid")
         args.append(account_id)
         idx += 1
 
     if since is not None:
-        conditions.append(f"posted_at >= ${idx}")
+        conditions.append(f"t.posted_at >= ${idx}")
         args.append(since)
         idx += 1
 
     if until is not None:
-        conditions.append(f"posted_at <= ${idx}")
+        conditions.append(f"t.posted_at <= ${idx}")
         args.append(until)
         idx += 1
 
     if min_amount is not None:
-        conditions.append(f"amount >= ${idx}")
+        conditions.append(f"t.amount >= ${idx}")
         args.append(min_amount)
         idx += 1
 
     if max_amount is not None:
-        conditions.append(f"amount <= ${idx}")
+        conditions.append(f"t.amount <= ${idx}")
         args.append(max_amount)
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    total = await pool.fetchval(f"SELECT count(*) FROM finance.transactions{where}", *args) or 0
+    total = (
+        await pool.fetchval(
+            f"SELECT count(*) FROM finance.transactions t{_OVERLAY_JOIN}{where}",
+            *args,
+        )
+        or 0
+    )
 
     rows = await pool.fetch(
-        f"SELECT id, posted_at, merchant, description, amount, currency, direction,"
-        f" category, payment_method, account_id, receipt_url, external_ref,"
-        f" source_message_id, metadata, created_at, updated_at"
-        f" FROM finance.transactions{where}"
-        f" ORDER BY posted_at DESC"
+        f"SELECT t.id, t.posted_at, t.merchant, t.description, t.amount, t.currency,"
+        f" t.direction, t.category, t.payment_method, t.account_id, t.receipt_url,"
+        f" t.external_ref, t.source_message_id, t.metadata, t.created_at, t.updated_at,"
+        f" ovl.overlay_metadata AS overlay_metadata"
+        f" FROM finance.transactions t{_OVERLAY_JOIN}{where}"
+        f" ORDER BY t.posted_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
         offset,
         limit,
     )
 
-    data = [
-        TransactionModel(
-            id=str(r["id"]),
-            posted_at=str(r["posted_at"]),
-            merchant=r["merchant"],
-            normalized_merchant=(r["metadata"] or {}).get("normalized_merchant"),
-            description=r["description"],
-            amount=str(r["amount"]),
-            currency=r["currency"],
-            direction=r["direction"],
-            category=r["category"],
-            inferred_category=(r["metadata"] or {}).get("inferred_category"),
-            payment_method=r["payment_method"],
-            account_id=str(r["account_id"]) if r["account_id"] else None,
-            receipt_url=r["receipt_url"],
-            external_ref=r["external_ref"],
-            source_message_id=r["source_message_id"],
-            metadata=dict(r["metadata"]) if r["metadata"] else {},
-            created_at=str(r["created_at"]),
-            updated_at=str(r["updated_at"]),
-        )
-        for r in rows
-    ]
+    data = [_overlay_transaction_model(r) for r in rows]
 
     return PaginatedResponse[TransactionModel](
         data=data,
@@ -422,18 +519,22 @@ async def get_spending_summary(
     # (overlay inferred_category preferred, else the raw category column) — keeps
     # the 'Top category' KPI and the spend total honest. Exclusion applies to
     # every group_by dimension, not just category.
+    #
+    # Reads are overlay-aware (bu-v3a4x.1): the effective category/merchant
+    # resolve against the facts overlay first, so normalized merchants and
+    # inferred categories drive both the exclusion filter and the grouping.
     conditions: list[str] = [
-        "direction = 'debit'",
-        "deleted_at IS NULL",
-        "COALESCE(metadata->>'inferred_category', category) NOT IN ('transfer', 'uncategorized')",
-        "posted_at::date >= $1",
-        "posted_at::date <= $2",
+        "t.direction = 'debit'",
+        "t.deleted_at IS NULL",
+        f"{_EFFECTIVE_CATEGORY} NOT IN ('transfer', 'uncategorized')",
+        "t.posted_at::date >= $1",
+        "t.posted_at::date <= $2",
     ]
     args: list[object] = [start, end]
     idx = 3
 
     if account_id is not None:
-        conditions.append(f"account_id = ${idx}::uuid")
+        conditions.append(f"t.account_id = ${idx}::uuid")
         args.append(account_id)
         idx += 1
 
@@ -441,27 +542,27 @@ async def get_spending_summary(
 
     # Build group expression — prefer overlay fields when present
     if group_by == "category":
-        group_expr = "COALESCE(metadata->>'inferred_category', category)"
+        group_expr = _EFFECTIVE_CATEGORY
     elif group_by == "merchant":
-        group_expr = "COALESCE(metadata->>'normalized_merchant', merchant)"
+        group_expr = _EFFECTIVE_MERCHANT
     elif group_by == "week":
-        group_expr = "to_char(posted_at, 'IYYY-\"W\"IW')"
+        group_expr = "to_char(t.posted_at, 'IYYY-\"W\"IW')"
     else:  # month
-        group_expr = "to_char(posted_at, 'YYYY-MM')"
+        group_expr = "to_char(t.posted_at, 'YYYY-MM')"
 
     total_row = await pool.fetchrow(
-        f"SELECT COALESCE(SUM(amount), 0) AS total, COALESCE(MAX(currency), 'USD') AS currency"
-        f" FROM finance.transactions{where}",
+        f"SELECT COALESCE(SUM(t.amount), 0) AS total, COALESCE(MAX(t.currency), 'USD') AS currency"
+        f" FROM finance.transactions t{_OVERLAY_JOIN}{where}",
         *args,
     )
     total_spend = str(total_row["total"])
     currency = total_row["currency"]
 
     group_rows = await pool.fetch(
-        f"SELECT {group_expr} AS key, SUM(amount) AS amount, COUNT(*) AS count"
-        f" FROM finance.transactions{where}"
+        f"SELECT {group_expr} AS key, SUM(t.amount) AS amount, COUNT(*) AS count"
+        f" FROM finance.transactions t{_OVERLAY_JOIN}{where}"
         f" GROUP BY {group_expr}"
-        f" ORDER BY SUM(amount) DESC",
+        f" ORDER BY SUM(t.amount) DESC",
         *args,
     )
 
