@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Measurement(BaseModel):
@@ -36,6 +36,38 @@ class Medication(BaseModel):
     notes: str | None = None
     created_at: str
     updated_at: str
+
+
+class MedicationCreateRequest(BaseModel):
+    """Request body for POST /medications.
+
+    Persisted through the same ``medication_add`` fact-store path the Health
+    butler's own MCP tool uses (predicate ``medication``, scope ``health``), so
+    a dashboard-created medication is indistinguishable from a butler-created
+    one and is read back by GET /medications.
+    """
+
+    name: str = Field(..., min_length=1)
+    dosage: str = Field(..., min_length=1)
+    frequency: str = Field(..., min_length=1)
+    schedule: list[str] = []
+    notes: str | None = None
+
+
+class MedicationUpdateRequest(BaseModel):
+    """Request body for PUT /medications/{id}.
+
+    All fields are optional; only the supplied (non-null) fields are merged into
+    the existing medication fact via the superseding ``medication_update`` path.
+    At least one field must be provided.
+    """
+
+    name: str | None = Field(default=None, min_length=1)
+    dosage: str | None = Field(default=None, min_length=1)
+    frequency: str | None = Field(default=None, min_length=1)
+    schedule: list[str] | None = None
+    active: bool | None = None
+    notes: str | None = None
 
 
 class Dose(BaseModel):

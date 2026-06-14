@@ -28,9 +28,11 @@ from butlers.tools.health.measurements import (
 )
 from butlers.tools.health.medications import (
     medication_add,
+    medication_delete,
     medication_history,
     medication_list,
     medication_log_dose,
+    medication_update,
 )
 from butlers.tools.health.reports import (
     VALID_TREND_PERIODS,
@@ -59,9 +61,11 @@ __all__ = [
     "measurement_latest",
     "measurement_log",
     "medication_add",
+    "medication_delete",
     "medication_history",
     "medication_list",
     "medication_log_dose",
+    "medication_update",
     "nutrition_summary",
     "research_save",
     "research_search",

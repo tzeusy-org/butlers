@@ -24,7 +24,7 @@ import sys
 import uuid
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -92,6 +92,13 @@ async def _get(app, path: str) -> httpx.Response:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         return await client.get(path)
+
+
+async def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.request(method, path, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +226,197 @@ async def test_doses_no_orphan_table():
     await _get(app, f"/api/health/medications/{med_id}/doses")
     for s in _all_sql(pool):
         assert "FROM medication_doses" not in s, f"must not touch orphaned table:\n{s}"
+
+
+# ---------------------------------------------------------------------------
+# POST / PUT / DELETE /medications — direct dashboard CRUD (bu-aisjm)
+#
+# These mutations delegate to the Health butler's own fact-store tools
+# (medication_add / medication_update / medication_delete) so dashboard writes
+# and butler writes share a single predicate ('medication') and code path.
+# We patch the tool functions to assert the endpoints wire to them correctly
+# (status codes, request mapping, error translation) without a live DB.
+# ---------------------------------------------------------------------------
+
+_HEALTH_TOOLS = "butlers.tools.health"
+
+
+async def test_create_medication_delegates_to_medication_add():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_add = AsyncMock(
+        return_value={
+            "id": new_id,
+            "name": "Vitamin D",
+            "dosage": "1000IU",
+            "frequency": "daily",
+            "schedule": ["08:00"],
+            "active": True,
+            "notes": "with breakfast",
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.medication_add", fake_add):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/medications",
+            json={
+                "name": "Vitamin D",
+                "dosage": "1000IU",
+                "frequency": "daily",
+                "schedule": ["08:00"],
+                "notes": "with breakfast",
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["id"] == str(new_id)
+    assert body["name"] == "Vitamin D"
+    assert body["active"] is True
+    # The endpoint forwarded the validated request fields to the butler tool.
+    fake_add.assert_awaited_once()
+    kwargs = fake_add.await_args.kwargs
+    assert kwargs["name"] == "Vitamin D"
+    assert kwargs["dosage"] == "1000IU"
+    assert kwargs["frequency"] == "daily"
+    assert kwargs["schedule"] == ["08:00"]
+    assert kwargs["notes"] == "with breakfast"
+
+
+async def test_create_medication_validates_required_fields():
+    app, _ = _make_app()
+    # Missing required `dosage` / `frequency` — pydantic rejects before any tool call.
+    resp = await _request(app, "POST", "/api/health/medications", json={"name": "Vitamin D"})
+    assert resp.status_code == 422
+
+
+async def test_create_medication_rejects_blank_name():
+    app, _ = _make_app()
+    resp = await _request(
+        app,
+        "POST",
+        "/api/health/medications",
+        json={"name": "", "dosage": "1000IU", "frequency": "daily"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_created_medication_is_read_back_by_get():
+    """A dashboard-created medication is read back by the existing GET (same fact path)."""
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_add = AsyncMock(
+        return_value={
+            "id": new_id,
+            "name": "Magnesium",
+            "dosage": "200mg",
+            "frequency": "nightly",
+            "schedule": [],
+            "active": True,
+            "notes": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.medication_add", fake_add):
+        create_resp = await _request(
+            app,
+            "POST",
+            "/api/health/medications",
+            json={"name": "Magnesium", "dosage": "200mg", "frequency": "nightly"},
+        )
+    assert create_resp.status_code == 201
+
+    # Now simulate the GET surface returning the same fact (predicate 'medication').
+    read_row = _row(
+        {
+            "id": new_id,
+            "content": "Magnesium 200mg nightly",
+            "created_at": _NOW,
+            "metadata": {
+                "name": "Magnesium",
+                "dosage": "200mg",
+                "frequency": "nightly",
+                "schedule": [],
+                "active": True,
+            },
+        }
+    )
+    app2, _ = _make_app(fetch_rows=[read_row], fetchval_result=1)
+    get_resp = await _get(app2, "/api/health/medications")
+    assert get_resp.status_code == 200
+    data = get_resp.json()["data"]
+    assert any(m["id"] == str(new_id) and m["name"] == "Magnesium" for m in data)
+
+
+async def test_update_medication_delegates_to_medication_update():
+    app, _ = _make_app()
+    med_id = uuid.uuid4()
+    fake_update = AsyncMock(
+        return_value={
+            "id": med_id,
+            "name": "Vitamin D",
+            "dosage": "2000IU",
+            "frequency": "daily",
+            "schedule": [],
+            "active": True,
+            "notes": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.medication_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/medications/{med_id}", json={"dosage": "2000IU"}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["dosage"] == "2000IU"
+    fake_update.assert_awaited_once()
+    # Only the supplied field is forwarded (exclude_none).
+    assert fake_update.await_args.kwargs == {"dosage": "2000IU"}
+
+
+async def test_update_medication_empty_body_is_422():
+    app, _ = _make_app()
+    med_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.medication_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/medications/{med_id}", json={})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_medication_missing_is_404():
+    app, _ = _make_app()
+    med_id = uuid.uuid4()
+    fake_update = AsyncMock(side_effect=ValueError(f"Medication {med_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.medication_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/medications/{med_id}", json={"dosage": "5mg"}
+        )
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"]
+
+
+async def test_delete_medication_delegates_to_medication_delete():
+    app, _ = _make_app()
+    med_id = uuid.uuid4()
+    fake_delete = AsyncMock(return_value=True)
+    with patch(f"{_HEALTH_TOOLS}.medication_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/medications/{med_id}")
+    assert resp.status_code == 204
+    fake_delete.assert_awaited_once()
+    assert str(med_id) in fake_delete.await_args.args
+
+
+async def test_delete_medication_missing_is_404():
+    app, _ = _make_app()
+    med_id = uuid.uuid4()
+    fake_delete = AsyncMock(side_effect=ValueError(f"Medication {med_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.medication_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/medications/{med_id}")
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
