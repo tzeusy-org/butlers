@@ -44,6 +44,8 @@ if _spec is not None and _spec.loader is not None:
     SleepSessionResponse = _models.SleepSessionResponse
     SleepStage = _models.SleepStage
     Symptom = _models.Symptom
+    SymptomCreateRequest = _models.SymptomCreateRequest
+    SymptomUpdateRequest = _models.SymptomUpdateRequest
     TrendBucket = _models.TrendBucket
     TrendResponse = _models.TrendResponse
 
@@ -674,6 +676,115 @@ async def list_symptoms(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# POST/PUT/DELETE /symptoms — direct dashboard CRUD
+#
+# These mutations persist through the SAME fact-store path the Health butler's
+# own MCP tools use:
+#   - POST   -> symptom_log     (predicate 'symptom', TEMPORAL fact)
+#   - PUT    -> symptom_update  (in-place UPDATE of the existing symptom fact)
+#   - DELETE -> symptom_delete  (forget_memory -> validity = 'retracted')
+# so a dashboard-logged symptom is indistinguishable from a butler-logged one
+# and is read back by GET /symptoms above.  Symptoms are TEMPORAL facts:
+# ``occurred_at`` becomes the fact's ``valid_at`` and multiple entries coexist
+# by design — there is NO supersession (unlike conditions/medications), so the
+# update path edits the existing fact row in place rather than re-storing.  No
+# new predicates, tables, or DDL are introduced.
+# ---------------------------------------------------------------------------
+
+
+def _symptom_response(result: dict) -> Symptom:
+    """Build the Symptom response model from a write-tool result dict."""
+    severity = result.get("severity")
+    cond_id = result.get("condition_id")
+    return Symptom(
+        id=str(result["id"]),
+        name=result.get("name", ""),
+        severity=int(severity) if severity is not None else 0,
+        condition_id=str(cond_id) if cond_id else None,
+        occurred_at=_isoformat(result.get("occurred_at")),
+        notes=result.get("notes"),
+        created_at=_isoformat(result.get("created_at")),
+    )
+
+
+@router.post("/symptoms", response_model=Symptom, status_code=status.HTTP_201_CREATED)
+async def create_symptom(
+    body: SymptomCreateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Symptom:
+    """Log a symptom via the butler's ``symptom_log`` fact-store path.
+
+    Writes a temporal fact (predicate = ``symptom``, scope = ``health``,
+    ``valid_at`` = occurred_at) — the same surface the ``symptom_log`` MCP tool
+    writes — so the new symptom appears in GET /symptoms immediately.  Returns
+    404 if ``condition_id`` references a non-existent condition.
+    """
+    from butlers.tools.health import symptom_log
+
+    pool = _pool(db)
+    try:
+        result = await symptom_log(
+            pool,
+            name=body.name,
+            severity=body.severity,
+            condition_id=body.condition_id,
+            notes=body.notes,
+            occurred_at=body.occurred_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _symptom_response(result)
+
+
+@router.put("/symptoms/{symptom_id}", response_model=Symptom)
+async def update_symptom(
+    symptom_id: str,
+    body: SymptomUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Symptom:
+    """Update a symptom via the in-place ``symptom_update`` fact path.
+
+    Only the supplied (non-null) fields are applied to the existing symptom
+    fact.  Because symptoms are temporal facts, the edit updates the existing
+    row in place (rather than superseding it).  Returns 404 if the symptom does
+    not exist and 422 if no updatable fields were provided.
+    """
+    from butlers.tools.health import symptom_update
+
+    pool = _pool(db)
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(
+            status_code=422,
+            detail="No updatable fields provided",
+        )
+    try:
+        result = await symptom_update(pool, symptom_id, **updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _symptom_response(result)
+
+
+@router.delete("/symptoms/{symptom_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_symptom(
+    symptom_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a symptom via ``symptom_delete`` (validity = retracted).
+
+    The fact is retained for audit but excluded from all active read surfaces.
+    Returns 204 on success and 404 if no active symptom with this id exists.
+    """
+    from butlers.tools.health import symptom_delete
+
+    pool = _pool(db)
+    try:
+        await symptom_delete(pool, symptom_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

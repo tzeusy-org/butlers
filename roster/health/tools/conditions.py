@@ -329,6 +329,121 @@ async def symptom_log(
     }
 
 
+async def symptom_update(
+    pool: asyncpg.Pool,
+    symptom_id: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Update a logged symptom. Allowed fields: name, severity, condition_id,
+    notes, occurred_at.
+
+    Symptoms are TEMPORAL facts (``valid_at`` is the occurrence time and
+    supersession is skipped for temporal facts), so unlike conditions there is
+    no superseding store_fact path keyed on (subject, predicate) — re-storing
+    would create a *second* coexisting symptom rather than replacing the first.
+    Instead this performs an in-place UPDATE of the existing symptom fact row so
+    the edit preserves the same identity and the temporal log keeps exactly one
+    entry per logged symptom.
+
+    If ``severity`` is provided it must be between 1 and 10. If ``condition_id``
+    is provided it must reference an existing condition fact.
+    """
+    sym_uuid = uuid.UUID(symptom_id) if isinstance(symptom_id, str) else symptom_id
+    allowed = {"name", "severity", "condition_id", "notes", "occurred_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+
+    if not updates:
+        raise ValueError("No valid fields to update")
+
+    if "severity" in updates:
+        sev = updates["severity"]
+        if not (1 <= sev <= 10):
+            raise ValueError(f"Severity must be between 1 and 10, got {sev}")
+
+    if updates.get("condition_id") is not None:
+        await _validate_condition_fact(pool, updates["condition_id"])
+
+    # Fetch existing symptom fact by ID
+    row = await pool.fetchrow(
+        "SELECT id, content, valid_at, created_at, metadata FROM facts"
+        " WHERE id = $1 AND predicate = 'symptom' AND scope = 'health'"
+        " AND validity = 'active'",
+        sym_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Symptom {symptom_id} not found")
+
+    existing_meta = row["metadata"] or {}
+    if isinstance(existing_meta, str):
+        existing_meta = json.loads(existing_meta)
+
+    new_meta = dict(existing_meta)
+    if "severity" in updates:
+        new_meta["severity"] = updates["severity"]
+    if "condition_id" in updates:
+        if updates["condition_id"] is None:
+            new_meta.pop("condition_id", None)
+        else:
+            new_meta["condition_id"] = str(updates["condition_id"])
+    if "notes" in updates:
+        if updates["notes"] is None:
+            new_meta.pop("notes", None)
+        else:
+            new_meta["notes"] = updates["notes"]
+
+    name = updates.get("name", row["content"])
+    occurred_at = updates.get("occurred_at", row["valid_at"])
+
+    await pool.execute(
+        "UPDATE facts SET content = $2, metadata = $3, valid_at = $4 WHERE id = $1",
+        sym_uuid,
+        name,
+        new_meta,
+        occurred_at,
+    )
+
+    cond_id = new_meta.get("condition_id")
+    cond_out = uuid.UUID(cond_id) if cond_id else None
+    return {
+        "id": sym_uuid,
+        "name": name,
+        "severity": new_meta.get("severity"),
+        "condition_id": cond_out,
+        "notes": new_meta.get("notes"),
+        "occurred_at": occurred_at,
+        "created_at": row["created_at"],
+    }
+
+
+async def symptom_delete(
+    pool: asyncpg.Pool,
+    symptom_id: str,
+) -> bool:
+    """Soft-delete a logged symptom by retracting its fact.
+
+    Delegates to ``forget_memory(pool, "fact", id)``, which sets the fact's
+    ``validity`` to ``'retracted'`` — the canonical soft-delete path used across
+    the memory subsystem.  The fact remains in the database for audit but is
+    excluded from all ``validity = 'active'`` read surfaces (including the
+    dashboard GET endpoints and ``symptom_history`` / ``symptom_search``).
+    Raises ``ValueError`` if no active symptom fact with this id exists.
+    """
+    from butlers.modules.memory.storage import forget_memory
+
+    sym_uuid = uuid.UUID(symptom_id) if isinstance(symptom_id, str) else symptom_id
+
+    row = await pool.fetchrow(
+        "SELECT id FROM facts"
+        " WHERE id = $1 AND predicate = 'symptom' AND scope = 'health'"
+        " AND validity = 'active'",
+        sym_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Symptom {symptom_id} not found")
+
+    return await forget_memory(pool, "fact", sym_uuid)
+
+
 async def symptom_history(
     pool: asyncpg.Pool,
     start_date: datetime | None = None,

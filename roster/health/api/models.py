@@ -137,6 +137,41 @@ class Symptom(BaseModel):
     created_at: str
 
 
+class SymptomCreateRequest(BaseModel):
+    """Request body for POST /symptoms.
+
+    Persisted through the same ``symptom_log`` fact-store path the Health
+    butler's own MCP tool uses (predicate ``symptom``, scope ``health``), so a
+    dashboard-logged symptom is indistinguishable from a butler-logged one and
+    is read back by GET /symptoms.  Symptoms are TEMPORAL facts: ``occurred_at``
+    becomes the fact's ``valid_at`` and multiple entries coexist by design (no
+    supersession).  ``severity`` is on a 1-10 scale.  ``condition_id``, when
+    supplied, must reference an existing condition.
+    """
+
+    name: str = Field(..., min_length=1)
+    severity: int = Field(..., ge=1, le=10)
+    condition_id: str | None = None
+    occurred_at: datetime | None = None
+    notes: str | None = None
+
+
+class SymptomUpdateRequest(BaseModel):
+    """Request body for PUT /symptoms/{id}.
+
+    All fields are optional; only the supplied (non-null) fields are applied to
+    the existing symptom fact via the in-place ``symptom_update`` path (temporal
+    facts are edited in place rather than superseded).  At least one field must
+    be provided.  When supplied, ``severity`` must be between 1 and 10.
+    """
+
+    name: str | None = Field(default=None, min_length=1)
+    severity: int | None = Field(default=None, ge=1, le=10)
+    condition_id: str | None = None
+    occurred_at: datetime | None = None
+    notes: str | None = None
+
+
 class Meal(BaseModel):
     """A recorded meal with optional nutrition data."""
 

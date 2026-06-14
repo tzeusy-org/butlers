@@ -725,6 +725,193 @@ async def test_symptoms_no_orphan_table():
 
 
 # ---------------------------------------------------------------------------
+# POST / PUT / DELETE /symptoms — direct dashboard CRUD (bu-gk38e)
+#
+# Each mutation delegates to the Health butler's own fact-store tool
+# (symptom_log / symptom_update / symptom_delete) so dashboard writes and
+# butler writes share a single predicate ('symptom') and code path.  Symptoms
+# are TEMPORAL facts — occurred_at -> valid_at, no supersession.
+# ---------------------------------------------------------------------------
+
+
+async def test_create_symptom_delegates_to_symptom_log():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_log = AsyncMock(
+        return_value={
+            "id": new_id,
+            "name": "Headache",
+            "severity": 7,
+            "condition_id": None,
+            "notes": "after screen time",
+            "occurred_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.symptom_log", fake_log):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/symptoms",
+            json={
+                "name": "Headache",
+                "severity": 7,
+                "occurred_at": "2024-01-01T00:00:00+00:00",
+                "notes": "after screen time",
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["id"] == str(new_id)
+    assert body["name"] == "Headache"
+    assert body["severity"] == 7
+    fake_log.assert_awaited_once()
+    kwargs = fake_log.await_args.kwargs
+    assert kwargs["name"] == "Headache"
+    assert kwargs["severity"] == 7
+    assert kwargs["occurred_at"] == datetime(2024, 1, 1, tzinfo=UTC)
+    assert kwargs["notes"] == "after screen time"
+
+
+async def test_create_symptom_rejects_blank_name():
+    app, _ = _make_app()
+    resp = await _request(app, "POST", "/api/health/symptoms", json={"name": "", "severity": 5})
+    assert resp.status_code == 422
+
+
+async def test_create_symptom_rejects_out_of_range_severity():
+    app, _ = _make_app()
+    resp = await _request(
+        app, "POST", "/api/health/symptoms", json={"name": "Headache", "severity": 11}
+    )
+    assert resp.status_code == 422
+
+
+async def test_create_symptom_missing_condition_is_404():
+    app, _ = _make_app()
+    cond_id = str(uuid.uuid4())
+    fake_log = AsyncMock(side_effect=ValueError(f"Condition {cond_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.symptom_log", fake_log):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/symptoms",
+            json={"name": "Headache", "severity": 5, "condition_id": cond_id},
+        )
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"]
+
+
+async def test_created_symptom_is_read_back_by_get():
+    """A dashboard-logged symptom is read back by the existing GET (same fact path)."""
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_log = AsyncMock(
+        return_value={
+            "id": new_id,
+            "name": "Nausea",
+            "severity": 4,
+            "condition_id": None,
+            "notes": None,
+            "occurred_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.symptom_log", fake_log):
+        create_resp = await _request(
+            app, "POST", "/api/health/symptoms", json={"name": "Nausea", "severity": 4}
+        )
+    assert create_resp.status_code == 201
+
+    # Now simulate the GET surface returning the same fact (predicate 'symptom').
+    read_row = _row(
+        {
+            "id": new_id,
+            "content": "Nausea",
+            "valid_at": _NOW,
+            "created_at": _NOW,
+            "metadata": {"severity": 4},
+        }
+    )
+    app2, _ = _make_app(fetch_rows=[read_row], fetchval_result=1)
+    get_resp = await _get(app2, "/api/health/symptoms")
+    assert get_resp.status_code == 200
+    data = get_resp.json()["data"]
+    assert any(s["id"] == str(new_id) and s["name"] == "Nausea" for s in data)
+
+
+async def test_update_symptom_delegates_to_symptom_update():
+    app, _ = _make_app()
+    sym_id = uuid.uuid4()
+    fake_update = AsyncMock(
+        return_value={
+            "id": sym_id,
+            "name": "Headache",
+            "severity": 9,
+            "condition_id": None,
+            "notes": None,
+            "occurred_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.symptom_update", fake_update):
+        resp = await _request(app, "PUT", f"/api/health/symptoms/{sym_id}", json={"severity": 9})
+    assert resp.status_code == 200
+    assert resp.json()["severity"] == 9
+    fake_update.assert_awaited_once()
+    # Only the supplied field is forwarded (exclude_none).
+    assert fake_update.await_args.kwargs == {"severity": 9}
+
+
+async def test_update_symptom_empty_body_is_422():
+    app, _ = _make_app()
+    sym_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.symptom_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/symptoms/{sym_id}", json={})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_symptom_out_of_range_severity_is_422():
+    app, _ = _make_app()
+    sym_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.symptom_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/symptoms/{sym_id}", json={"severity": 0})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_symptom_missing_is_404():
+    app, _ = _make_app()
+    sym_id = uuid.uuid4()
+    fake_update = AsyncMock(side_effect=ValueError(f"Symptom {sym_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.symptom_update", fake_update):
+        resp = await _request(app, "PUT", f"/api/health/symptoms/{sym_id}", json={"severity": 5})
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"]
+
+
+async def test_delete_symptom_delegates_to_symptom_delete():
+    app, _ = _make_app()
+    sym_id = uuid.uuid4()
+    fake_delete = AsyncMock(return_value=True)
+    with patch(f"{_HEALTH_TOOLS}.symptom_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/symptoms/{sym_id}")
+    assert resp.status_code == 204
+    fake_delete.assert_awaited_once()
+    assert str(sym_id) in fake_delete.await_args.args
+
+
+async def test_delete_symptom_missing_is_404():
+    app, _ = _make_app()
+    sym_id = uuid.uuid4()
+    fake_delete = AsyncMock(side_effect=ValueError(f"Symptom {sym_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.symptom_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/symptoms/{sym_id}")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /research
 # ---------------------------------------------------------------------------
 

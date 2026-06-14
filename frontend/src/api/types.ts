@@ -1244,6 +1244,33 @@ export interface SymptomParams {
   limit?: number;
 }
 
+/**
+ * Request body for logging a symptom (POST /health/symptoms).
+ *
+ * Symptoms are temporal facts: `occurred_at` is the occurrence time and
+ * multiple entries coexist by design (no supersession). `severity` is 1-10.
+ */
+export interface SymptomCreateRequest {
+  name: string;
+  severity: number;
+  condition_id?: string | null;
+  /** Occurrence timestamp (ISO-8601). Defaults to now when omitted. */
+  occurred_at?: string | null;
+  notes?: string | null;
+}
+
+/**
+ * Request body for updating a symptom (PUT /health/symptoms/{id}).
+ * All fields optional; only supplied fields are applied to the existing entry.
+ */
+export interface SymptomUpdateRequest {
+  name?: string;
+  severity?: number;
+  condition_id?: string | null;
+  occurred_at?: string | null;
+  notes?: string | null;
+}
+
 /** Query parameters for meal endpoints. */
 export interface MealParams {
   type?: string;

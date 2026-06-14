@@ -781,6 +781,82 @@ async def test_symptom_search_no_matches(pool):
     assert results == []
 
 
+async def test_symptom_update_edits_in_place(pool):
+    """symptom_update edits the existing temporal fact in place (same id)."""
+    from butlers.tools.health import symptom_log, symptom_search, symptom_update
+
+    sym = await symptom_log(pool, "UpdSym", 4, notes="mild")
+    updated = await symptom_update(pool, str(sym["id"]), severity=8, notes="worse now")
+    # Same identity — temporal facts are not superseded.
+    assert updated["id"] == sym["id"]
+    assert updated["severity"] == 8
+    assert updated["notes"] == "worse now"
+
+    # Exactly one active entry remains (no duplicate coexisting symptom).
+    matches = [s for s in await symptom_search(pool, name="UpdSym")]
+    assert len(matches) == 1
+    assert matches[0]["severity"] == 8
+
+
+async def test_symptom_update_invalid_severity(pool):
+    """symptom_update rejects severity outside 1-10."""
+    from butlers.tools.health import symptom_log, symptom_update
+
+    sym = await symptom_log(pool, "BadSevUpd", 5)
+    with pytest.raises(ValueError, match="Severity must be between 1 and 10"):
+        await symptom_update(pool, str(sym["id"]), severity=0)
+
+
+async def test_symptom_update_invalid_condition(pool):
+    """symptom_update rejects a condition_id that does not exist."""
+    from butlers.tools.health import symptom_log, symptom_update
+
+    sym = await symptom_log(pool, "BadCondUpd", 5)
+    with pytest.raises(ValueError, match="Condition.*not found"):
+        await symptom_update(pool, str(sym["id"]), condition_id=str(uuid.uuid4()))
+
+
+async def test_symptom_update_not_found(pool):
+    """symptom_update raises ValueError for a non-existent symptom."""
+    from butlers.tools.health import symptom_update
+
+    with pytest.raises(ValueError, match="not found"):
+        await symptom_update(pool, str(uuid.uuid4()), severity=5)
+
+
+async def test_symptom_update_no_valid_fields(pool):
+    """symptom_update raises ValueError when no allowed fields are given."""
+    from butlers.tools.health import symptom_log, symptom_update
+
+    sym = await symptom_log(pool, "NoFieldsUpd", 5)
+    with pytest.raises(ValueError, match="No valid fields"):
+        await symptom_update(pool, str(sym["id"]), bogus_field="nope")
+
+
+async def test_symptom_delete_retracts(pool):
+    """symptom_delete soft-deletes so the symptom disappears from history."""
+    from butlers.tools.health import symptom_delete, symptom_log, symptom_search
+
+    sym = await symptom_log(pool, "DelSym", 6)
+    assert "DelSym" in [s["name"] for s in await symptom_search(pool, name="DelSym")]
+
+    ok = await symptom_delete(pool, str(sym["id"]))
+    assert ok is True
+    assert "DelSym" not in [s["name"] for s in await symptom_search(pool, name="DelSym")]
+
+    # The fact is retained but retracted (audit-preserving soft delete).
+    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", sym["id"])
+    assert validity == "retracted"
+
+
+async def test_symptom_delete_not_found(pool):
+    """symptom_delete raises ValueError for a non-existent symptom."""
+    from butlers.tools.health import symptom_delete
+
+    with pytest.raises(ValueError, match="not found"):
+        await symptom_delete(pool, str(uuid.uuid4()))
+
+
 # ------------------------------------------------------------------
 # Diet and Nutrition
 # ------------------------------------------------------------------
