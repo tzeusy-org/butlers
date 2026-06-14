@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -216,6 +217,84 @@ async def test_append_with_all_optional_fields():
     assert call_args[4] == "Deleted stale rule"
     assert call_args[5] == "1.2.3.4"
     assert call_args[6] == rid
+
+
+async def test_append_persists_metadata_result_error():
+    """append() forwards metadata/result/error (core_122) into the INSERT.
+
+    metadata is JSON-serialised and cast via ``$N::jsonb``; result and error
+    are passed through as plain TEXT positional args.
+    """
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=123)
+
+    row_id = await append(
+        pool,
+        "owner",
+        "model_priority_change",
+        metadata={"path": "/api/x", "trigger_source": "dashboard"},
+        result="success",
+        error=None,
+    )
+    assert row_id == 123
+
+    call_args = pool.fetchval.call_args[0]
+    sql = call_args[0]
+    assert "metadata" in sql
+    assert "result" in sql
+    assert "error" in sql
+    assert "$7::jsonb" in sql
+    # metadata is serialised to a JSON string and round-trips to the same dict.
+    metadata_arg = call_args[7]
+    assert isinstance(metadata_arg, str)
+    assert json.loads(metadata_arg) == {"path": "/api/x", "trigger_source": "dashboard"}
+    assert call_args[8] == "success"
+    assert call_args[9] is None
+
+
+async def test_append_without_new_fields_passes_nulls():
+    """Omitting the core_122 fields keeps the call backward compatible.
+
+    metadata defaults to None (→ SQL NULL, no JSON serialisation) and
+    result/error default to None, so legacy callers are unaffected.
+    """
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=5)
+
+    row_id = await append(pool, "owner", "setting_change")
+    assert row_id == 5
+
+    call_args = pool.fetchval.call_args[0]
+    # metadata (idx 7), result (idx 8), error (idx 9) all None.
+    assert call_args[7] is None
+    assert call_args[8] is None
+    assert call_args[9] is None
+
+
+def test_audit_log_entry_new_fields_default_none():
+    """AuditLogEntry exposes metadata/result/error, defaulting to None."""
+    entry = AuditLogEntry(
+        id=1,
+        ts=datetime.now(tz=UTC),
+        actor="owner",
+        action="x",
+    )
+    assert entry.metadata is None
+    assert entry.result is None
+    assert entry.error is None
+
+    populated = AuditLogEntry(
+        id=2,
+        ts=datetime.now(tz=UTC),
+        actor="owner",
+        action="x",
+        metadata={"k": "v"},
+        result="error",
+        error="boom",
+    )
+    assert populated.metadata == {"k": "v"}
+    assert populated.result == "error"
+    assert populated.error == "boom"
 
 
 async def test_append_increments_prometheus_counter():

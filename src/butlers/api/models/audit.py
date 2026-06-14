@@ -11,6 +11,7 @@ introduced in core_092.  This is the model returned by the
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -44,10 +45,23 @@ class AuditLogEntry(BaseModel):
     note: str | None = None
     ip: str | None = None
     request_id: UUID | None = None
+    # Added in core_122 to support unifying the richer dashboard_audit_log
+    # writers into public.audit_log.  All three are optional so existing rows
+    # (and callers) that never populate them deserialise unchanged.
+    metadata: dict[str, Any] | None = None
+    result: str | None = None
+    error: str | None = None
 
     @classmethod
     def from_record(cls, row: object) -> AuditLogEntry:
-        """Build an AuditLogEntry from an asyncpg Record."""
+        """Build an AuditLogEntry from an asyncpg Record.
+
+        The ``metadata``/``result``/``error`` columns (core_122) are NOT read
+        here: the existing read queries do not project them, so they default to
+        ``None``.  Wiring the reader to surface them is intentionally left to a
+        later PR in the audit-writer unification (this change is schema + write
+        capability only).
+        """
         raw_ip = row["ip"]  # type: ignore[index]
         ip_str = str(raw_ip) if raw_ip is not None else None
         return cls(
