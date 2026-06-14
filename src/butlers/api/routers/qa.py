@@ -69,6 +69,7 @@ from butlers.api.models import (
 from butlers.config import ConfigError, load_config
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes
 from butlers.core.qa.repo_whitelist import parse_repo_url
@@ -199,6 +200,69 @@ def _shared_pool(db: DatabaseManager):
             status_code=503,
             detail="Shared database pool is not available",
         )
+
+
+async def _resolve_github_token(db: DatabaseManager) -> str | None:
+    """Resolve a GitHub token for live PR metadata, or ``None``.
+
+    Resolution order (first hit wins):
+
+    1. CredentialStore ``BUTLERS_QA_GH_TOKEN`` (the QA subsystem's canonical
+       token, used for PR creation).
+    2. Conventional ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the environment
+       (ops provisions either via the daemon env).
+
+    Returns ``None`` when no token can be found — the PR panel then degrades
+    gracefully to the honest "unavailable" state.
+    """
+    try:
+        from butlers.core.qa.dispatch import QA_GH_TOKEN_KEY
+        from butlers.credential_store import CredentialStore
+
+        pool = db.credential_shared_pool()
+        token = await CredentialStore(pool).resolve(QA_GH_TOKEN_KEY)
+        if token:
+            return token
+    except Exception:
+        # CredentialStore unavailable / pool missing — fall through to env.
+        logger.debug("CredentialStore GitHub token resolution failed; trying env", exc_info=True)
+
+    for env_key in ("GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.environ.get(env_key, "").strip()
+        if value:
+            return value
+    return None
+
+
+async def _row_to_pr_summary_live(
+    row: Any,
+    *,
+    token: str | None,
+    client: GithubPrClient,
+) -> QaPrSummary | None:
+    """Build the dossier PR summary, enriched with live GitHub metadata.
+
+    Falls back to the base (honest "unavailable") summary when there is no PR,
+    no token, or GitHub is unreachable — the dossier never breaks on a GitHub
+    failure.
+    """
+    summary = _row_to_pr_summary(row)
+    if summary is None:
+        return None
+
+    parsed = parse_pr_url(summary.url)
+    if parsed is None:
+        return summary
+
+    owner, repo, number = parsed
+    meta = await client.fetch(owner, repo, number, token=token)
+    return summary.model_copy(
+        update={
+            "ci_status": meta.ci_status,
+            "additions": meta.additions,
+            "deletions": meta.deletions,
+        }
+    )
 
 
 def _synthetic_findings_enabled() -> bool:
@@ -970,9 +1034,10 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
         state=pr_state,
         title=f"PR #{pr_number}",
         branch=branch,
-        # Left as None: the healing_attempts row carries no CI status or diff
-        # stat, and there is no GitHub fetch path to populate them. Emitting
-        # None keeps the dossier honest rather than fabricating "unknown" / 0.
+        # Base summary carries no CI status / diff stat: the healing_attempts
+        # row does not persist them. The dossier endpoint enriches these via a
+        # live GitHub fetch (``_row_to_pr_summary_live``) when a token is
+        # available; without one, None stays None — honest "unavailable".
         ci_status=None,
         additions=None,
         deletions=None,
@@ -1908,13 +1973,15 @@ async def get_case(
         case_id,
     )
     case = _row_to_case_summary(row)
+    gh_token = await _resolve_github_token(db)
+    pr_summary = await _row_to_pr_summary_live(row, token=gh_token, client=get_pr_client())
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,
         fingerprint=row.get("finding_fingerprint"),
         dismissal=dismissal,
         investigation_notes=_investigation_notes_from_case_row(row),
-        pr=_row_to_pr_summary(row),
+        pr=pr_summary,
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
     )
     return ApiResponse(data=dossier)
