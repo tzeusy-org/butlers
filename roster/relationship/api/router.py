@@ -3063,6 +3063,38 @@ _STALE_DAYS = 365
 _DUP_DETECTION_PREDICATES = ("has-email", "has-phone")
 
 
+def _not_dismissed_sql(entity_id_sql: str) -> str:
+    """SQL clause excluding entities the operator has dismissed from the queue.
+
+    The dismiss endpoint (``POST /entities/queue/dismiss``) writes an active
+    ``queue.dismissed`` state-marker triple via ``relationship_assert_fact``.
+    Without this clause the queue read path re-classifies the entity into the
+    same bucket on the post-dismiss refetch, so the row reappears and the
+    Dismiss button looks like a no-op.
+
+    This is a blanket per-entity suppression: a dismissed entity leaves the
+    queue regardless of which bucket surfaced it. (Contrast
+    ``_dismissed_pair_suppression_sql``, which suppresses a single
+    duplicate-candidate *pair* and re-raises on new shared evidence.)
+
+    Applied to every queue bucket in ``get_entities_queue`` AND to
+    ``_classify_entity_state`` so the two paths stay in sync — a dismissed
+    entity classifies as ``healthy``.
+
+    ``_QUEUE_DISMISSED_PREDICATE`` is resolved at call time (defined alongside
+    the dismiss endpoint below); this helper only runs inside request handlers.
+    """
+    return f"""
+        NOT EXISTS (
+            SELECT 1
+            FROM relationship.entity_facts rf_dismissed
+            WHERE rf_dismissed.subject = {entity_id_sql}
+              AND rf_dismissed.predicate = '{_QUEUE_DISMISSED_PREDICATE}'
+              AND rf_dismissed.validity = 'active'
+        )
+    """
+
+
 def _dismissed_pair_suppression_sql(entity_id_sql: str, predicate_sql: str, value_sql: str) -> str:
     """SQL clause suppressing a duplicate-candidate row only when every peer is dismissed.
 
@@ -3144,6 +3176,10 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
     - ``stale`` — ``{"last_seen": "<iso-datetime>|null"}``
     - ``healthy`` — ``None``
 
+    A dismissed entity (active ``queue.dismissed`` triple) classifies as
+    ``healthy`` — the same ``_not_dismissed_sql`` exclusion applied to the
+    queue buckets keeps this helper in sync.
+
     Canonical semantics live in ``get_entities_queue``; keep this helper in sync
     with any changes to the queue SQL.
     """
@@ -3170,6 +3206,7 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
             FROM public.entities e
             WHERE e.id = $1
               AND {_active_entity_condition("e")}
+              AND {_not_dismissed_sql("e.id")}
         ),
         dup_detected AS (
             SELECT
@@ -3260,6 +3297,11 @@ async def get_entities_queue(
     Priority: unidentified > duplicate-candidate > stale.  Entities that match
     multiple buckets appear only in their highest-priority bucket.
 
+    **Dismissal:** entities carrying an active ``queue.dismissed`` triple
+    (written by ``POST /entities/queue/dismiss``) are excluded from every
+    bucket via ``_not_dismissed_sql`` so a dismissed entity does not reappear
+    on the post-dismiss refetch.
+
     **Owner-only authz gate (Clause 12b, Amendment 12b):** returns HTTP 403
     with ``{"code": "owner_required"}`` if no owner entity is registered.
 
@@ -3306,6 +3348,7 @@ async def get_entities_queue(
         FROM public.entities e
         WHERE (e.metadata->>'unidentified')::text = 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_dismissed_sql("e.id")}
     """
 
     # -------------------------------------------------------------------
@@ -3331,6 +3374,7 @@ async def get_entities_queue(
         WHERE (e.metadata->>'duplicate_candidate')::text = 'true'
           AND (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_dismissed_sql("e.id")}
     """
 
     # Deterministic dup-detection: find entities sharing a has-email / has-phone value.
@@ -3376,6 +3420,7 @@ async def get_entities_queue(
            AND f_link.validity = 'active'
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_dismissed_sql("e.id")}
           AND {_dismissed_pair_suppression_sql("e.id", "grp.predicate", "grp.object")}
     """
 
@@ -3408,6 +3453,7 @@ async def get_entities_queue(
         FROM public.entities e
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_dismissed_sql("e.id")}
           AND NOT EXISTS (
               SELECT 1 FROM relationship.entity_facts rf
               WHERE rf.subject = e.id
