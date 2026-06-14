@@ -1,5 +1,13 @@
 # Chronicler Adapter entity_id Audit
 
+> **SUPERSEDED (2026-06-14):** This audit is historical and no longer reflects the
+> schema. The `episodes.entity_id` column it analyzes was **dropped** in bu-cfsgy
+> (PR #2292), and the calendar-specific backfill script it references
+> (`scripts/backfill_episode_entity_id.py`) has been **removed** from the repo.
+> Entity attribution now lives solely in the `episode_entities` join table. Retained
+> for decision-history context; do not treat its `episodes.entity_id` /
+> backfill-script guidance as actionable.
+
 **Date:** 2026-05-23
 **Issue:** bu-q7hf6
 **Reference implementation:** [`src/butlers/chronicler/adapters/calendar.py`](../../src/butlers/chronicler/adapters/calendar.py)
