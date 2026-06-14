@@ -446,25 +446,6 @@ async def learn_merchant_categories(
     if not merchant_category:
         return {"upserted": 0, "as_of": datetime.now(UTC).isoformat()}
 
-    # Ensure table exists using the live raw_pattern schema.
-    await pool.execute(
-        """
-        CREATE TABLE IF NOT EXISTS merchant_mappings (
-            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            raw_pattern         TEXT NOT NULL,
-            normalized_merchant TEXT NOT NULL,
-            category            TEXT NOT NULL,
-            confidence          NUMERIC(5, 4) NOT NULL DEFAULT 0.5,
-            learned_from_count  INT NOT NULL DEFAULT 1,
-            source              TEXT NOT NULL DEFAULT 'learned',
-            is_active           BOOLEAN NOT NULL DEFAULT true,
-            metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-        """
-    )
-
     upserted = 0
     for merchant, (category, freq) in merchant_category.items():
         # Confidence is capped at 0.99; grows with sample count.
