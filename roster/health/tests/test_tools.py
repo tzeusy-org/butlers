@@ -614,6 +614,30 @@ async def test_condition_update_no_valid_fields(pool):
         await condition_update(pool, str(cond["id"]), bogus_field="nope")
 
 
+async def test_condition_delete_retracts(pool):
+    """condition_delete soft-deletes so the condition disappears from list."""
+    from butlers.tools.health import condition_add, condition_delete, condition_list
+
+    cond = await condition_add(pool, "DelCond2", status="active")
+    assert "DelCond2" in [c["name"] for c in await condition_list(pool)]
+
+    ok = await condition_delete(pool, str(cond["id"]))
+    assert ok is True
+    assert "DelCond2" not in [c["name"] for c in await condition_list(pool)]
+
+    # The fact is retained but retracted (audit-preserving soft delete).
+    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", cond["id"])
+    assert validity == "retracted"
+
+
+async def test_condition_delete_not_found(pool):
+    """condition_delete raises ValueError for a non-existent condition."""
+    from butlers.tools.health import condition_delete
+
+    with pytest.raises(ValueError, match="not found"):
+        await condition_delete(pool, str(uuid.uuid4()))
+
+
 # ------------------------------------------------------------------
 # Symptoms
 # ------------------------------------------------------------------

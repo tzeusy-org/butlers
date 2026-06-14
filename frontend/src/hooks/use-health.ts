@@ -5,7 +5,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createCondition,
   createMedication,
+  deleteCondition,
   deleteMedication,
   getConditions,
   getMeals,
@@ -17,9 +19,12 @@ import {
   getResearch,
   getSleepLatest,
   getSymptoms,
+  updateCondition,
   updateMedication,
 } from "@/api/index.ts";
 import type {
+  ConditionCreateRequest,
+  ConditionUpdateRequest,
   MealParams,
   MeasurementParams,
   MedicationCreateRequest,
@@ -108,6 +113,49 @@ export function useConditions(params?: { offset?: number; limit?: number }) {
     queryKey: ["health-conditions", params],
     queryFn: () => getConditions(params),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Invalidate every condition-list query so freshly mutated conditions appear.
+ *
+ * The condition-list cache is keyed by the params object (offset/limit/...), so
+ * we invalidate on the `["health-conditions"]` prefix to cover all variants.
+ */
+function useInvalidateConditions() {
+  const queryClient = useQueryClient();
+  return () =>
+    queryClient.invalidateQueries({ queryKey: ["health-conditions"] });
+}
+
+/**
+ * Create a condition. On success, invalidates the condition list so the new
+ * record appears without a manual refetch.
+ */
+export function useCreateCondition() {
+  const invalidate = useInvalidateConditions();
+  return useMutation({
+    mutationFn: (body: ConditionCreateRequest) => createCondition(body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Update a condition by id (only supplied fields are merged). */
+export function useUpdateCondition() {
+  const invalidate = useInvalidateConditions();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ConditionUpdateRequest }) =>
+      updateCondition(id, body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Soft-delete a condition by id. */
+export function useDeleteCondition() {
+  const invalidate = useInvalidateConditions();
+  return useMutation({
+    mutationFn: (id: string) => deleteCondition(id),
+    onSuccess: invalidate,
   });
 }
 

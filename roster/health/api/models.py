@@ -93,6 +93,38 @@ class Condition(BaseModel):
     updated_at: str
 
 
+class ConditionCreateRequest(BaseModel):
+    """Request body for POST /conditions.
+
+    Persisted through the same ``condition_add`` fact-store path the Health
+    butler's own MCP tool uses (predicate ``condition``, scope ``health``), so a
+    dashboard-created condition is indistinguishable from a butler-created one
+    and is read back by GET /conditions.  ``status`` must be one of
+    ``active``, ``managed``, or ``resolved``.  ``diagnosed_at`` is the onset /
+    diagnosis timestamp (ISO-8601).
+    """
+
+    name: str = Field(..., min_length=1)
+    status: Literal["active", "managed", "resolved"] = "active"
+    diagnosed_at: datetime | None = None
+    notes: str | None = None
+
+
+class ConditionUpdateRequest(BaseModel):
+    """Request body for PUT /conditions/{id}.
+
+    All fields are optional; only the supplied (non-null) fields are merged into
+    the existing condition fact via the superseding ``condition_update`` path.
+    At least one field must be provided.  When supplied, ``status`` must be one
+    of ``active``, ``managed``, or ``resolved``.
+    """
+
+    name: str | None = Field(default=None, min_length=1)
+    status: Literal["active", "managed", "resolved"] | None = None
+    diagnosed_at: datetime | None = None
+    notes: str | None = None
+
+
 class Symptom(BaseModel):
     """A recorded symptom occurrence."""
 

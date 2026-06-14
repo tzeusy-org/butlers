@@ -234,6 +234,35 @@ async def condition_update(
     }
 
 
+async def condition_delete(
+    pool: asyncpg.Pool,
+    condition_id: str,
+) -> bool:
+    """Soft-delete a condition by retracting its fact.
+
+    Delegates to ``forget_memory(pool, "fact", id)``, which sets the fact's
+    ``validity`` to ``'retracted'`` — the canonical soft-delete path used across
+    the memory subsystem.  The fact remains in the database for audit but is
+    excluded from all ``validity = 'active'`` read surfaces (including the
+    dashboard GET endpoints).  Raises ``ValueError`` if no active condition
+    fact with this id exists.
+    """
+    from butlers.modules.memory.storage import forget_memory
+
+    cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
+
+    row = await pool.fetchrow(
+        "SELECT id FROM facts"
+        " WHERE id = $1 AND predicate = 'condition' AND scope = 'health'"
+        " AND validity = 'active'",
+        cond_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Condition {condition_id} not found")
+
+    return await forget_memory(pool, "fact", cond_uuid)
+
+
 async def _validate_condition_fact(pool: asyncpg.Pool, condition_id: str) -> None:
     """Raise ValueError if no condition fact with this id exists."""
     cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
