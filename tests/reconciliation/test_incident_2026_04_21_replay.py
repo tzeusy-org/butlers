@@ -353,10 +353,16 @@ class TestAC4DashboardAudit:
     """bu-m24ua: dashboard mutations are audit-logged."""
 
     async def test_emit_dashboard_audit_delete(self) -> None:
-        """emit_dashboard_audit for a contact_info DELETE writes to dashboard_audit_log."""
+        """emit_dashboard_audit for a contact_info DELETE appends to public.audit_log.
+
+        As of bu-h47nm the writer routes through audit.append() into the
+        canonical ``public.audit_log`` table (the read surface UNIONs the legacy
+        ``dashboard_audit_log`` so readers still see legacy rows).
+        """
         from butlers.api.audit_emit import emit_dashboard_audit
 
         pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=1)
         db_manager = MagicMock()
         db_manager.pool = MagicMock(return_value=pool)
 
@@ -373,18 +379,19 @@ class TestAC4DashboardAudit:
             response_status=204,
         )
 
-        assert pool.execute.called, "emit_dashboard_audit must call pool.execute"
-        insert_sql = pool.execute.call_args[0][0]
-        assert "dashboard_audit_log" in insert_sql, (
-            f"Must INSERT into dashboard_audit_log, got: {insert_sql}"
+        assert pool.fetchval.called, "emit_dashboard_audit must append via pool.fetchval"
+        insert_sql = pool.fetchval.call_args[0][0]
+        assert "public.audit_log" in insert_sql, (
+            f"Must INSERT into public.audit_log, got: {insert_sql}"
         )
 
-        # Verify operation and butler are recorded correctly
-        call_args = pool.execute.call_args[0]
-        butler_arg = call_args[1]
-        operation_arg = call_args[2]
-        assert butler_arg == "relationship"
-        assert operation_arg == "contact_info_delete"
+        # Verify actor (<- butler), action (<- operation) and target (<- path).
+        call_args = pool.fetchval.call_args[0]
+        assert call_args[1] == "relationship"  # actor
+        assert call_args[2] == "contact_info_delete"  # action
+        assert call_args[3] == (
+            f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}"
+        )  # target
 
     async def test_middleware_fires_on_delete(self) -> None:
         """DashboardAuditMiddleware records DELETE /api/... to audit log."""

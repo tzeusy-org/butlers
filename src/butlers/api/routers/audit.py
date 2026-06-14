@@ -192,29 +192,61 @@ async def log_audit_entry(
     error: str | None = None,
     user_context: dict | None = None,
 ) -> None:
-    """Insert an audit log entry into the switchboard database.
+    """Append an audit log entry to the canonical ``public.audit_log`` table.
 
-    Silently logs and swallows errors so audit logging never breaks the
-    primary operation.
+    This is the API-layer compatibility shim that maps the legacy
+    ``dashboard_audit_log`` field shape onto the canonical :func:`append`
+    primitive (bu-h47nm):
+
+    - ``butler``        → ``actor``
+    - ``operation``     → ``action``
+    - ``request_summary.path`` → ``target`` (when present)
+    - ``request_summary``/``user_context`` → ``metadata`` JSONB
+    - ``result`` / ``error`` → the ``result`` / ``error`` columns
+
+    Writes ONLY to ``public.audit_log``; the read surface UNIONs the legacy
+    table so callers still see every row.  Silently logs and swallows errors
+    so audit logging never breaks the primary operation.
     """
-    # Pre-coerce non-JSON-safe values to strings, then hand the codec dicts —
-    # wrapping with json.dumps() here would double-encode and store JSONB
-    # string scalars in JSONB columns instead of objects.
-    safe_summary = json.loads(json.dumps(request_summary, default=str))
-    safe_context = json.loads(json.dumps(user_context or {}, default=str))
-
     try:
         pool = db.pool("switchboard")
-        await pool.execute(
-            "INSERT INTO dashboard_audit_log "
-            "(butler, operation, request_summary, result, error, user_context) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
+    except Exception:
+        logger.warning(
+            "Failed to acquire audit pool: butler=%s operation=%s",
             butler,
             operation,
-            safe_summary,
-            result,
-            error,
-            safe_context,
+            exc_info=True,
+        )
+        return
+
+    # Pre-coerce non-JSON-safe values to plain JSON types before they land in
+    # the ``metadata`` JSONB column (append() json.dumps()es metadata itself,
+    # but doing the coercion here keeps the stored shape identical to legacy).
+    safe_summary = json.loads(json.dumps(request_summary or {}, default=str))
+    safe_context = json.loads(json.dumps(user_context or {}, default=str))
+
+    target = safe_summary.get("path")
+    target_str = str(target) if target else None
+
+    metadata: dict[str, Any] = {"request_summary": safe_summary}
+    if safe_context:
+        metadata["user_context"] = safe_context
+
+    try:
+        await append(
+            pool,
+            butler,
+            operation,
+            target=target_str,
+            metadata=metadata,
+            result=result,
+            error=error,
+        )
+    except AuditTableNotAvailableError:
+        logger.warning(
+            "Audit table unavailable, dropping entry: butler=%s operation=%s",
+            butler,
+            operation,
         )
     except Exception:
         logger.warning(

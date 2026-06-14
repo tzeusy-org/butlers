@@ -103,13 +103,14 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
         return await client.get(path)
 
 
-async def test_legacy_dashboard_audit_row_visible_on_audit_log(
+async def test_log_audit_entry_lands_in_canonical_audit_log(
     pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
-    """A mutation written via log_audit_entry (dashboard_audit_log) appears on
-    /audit-log.  This is the bu-isi4i split-brain regression."""
-    # Write a row exactly as state.py / schedules.py do — only to
-    # dashboard_audit_log, never to public.audit_log.
+    """As of bu-h47nm, log_audit_entry routes to ``public.audit_log`` (not the
+    legacy ``dashboard_audit_log``); the row appears on /audit-log directly.
+
+    Field mapping: butler->actor, operation->action, request_summary.path->target.
+    """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     await log_audit_entry(
@@ -119,7 +120,45 @@ async def test_legacy_dashboard_audit_row_visible_on_audit_log(
         request_summary={"method": "POST", "path": "/api/qa/schedules"},
     )
 
-    # Sanity: nothing was written to the canonical table.
+    # The writer now lands the row in the canonical table, NOT the legacy one.
+    canonical_count = await pool.fetchval("SELECT count(*) FROM public.audit_log")
+    assert canonical_count == 1
+    legacy_count = await pool.fetchval("SELECT count(*) FROM dashboard_audit_log")
+    assert legacy_count == 0
+
+    resp = await _get(audit_app, AUDIT_PATH)
+    assert resp.status_code == 200
+    body = resp.json()
+
+    actions = [e["action"] for e in body["data"]]
+    assert "schedule.create" in actions, f"Got actions={actions}"
+    assert body["meta"]["total"] == 1
+
+    entry = next(e for e in body["data"] if e["action"] == "schedule.create")
+    assert entry["actor"] == "qa"  # actor <- butler
+    assert entry["target"] == "/api/qa/schedules"  # target <- request_summary.path
+
+
+async def test_genuinely_legacy_dashboard_row_still_visible_via_union(
+    pool: asyncpg.Pool, audit_app: FastAPI
+) -> None:
+    """Read-side regression guard (bu-isi4i): rows that genuinely live only in
+    the legacy ``dashboard_audit_log`` (pre-cutover history) must still surface
+    on /audit-log via the .2 UNION even though writers no longer target it."""
+    # The pool registers the JSONB codec, so hand request_summary / user_context
+    # as plain dicts (matching how the legacy log_audit_entry writer wrote them).
+    await pool.execute(
+        "INSERT INTO dashboard_audit_log "
+        "(butler, operation, request_summary, result, error, user_context) "
+        "VALUES ($1, $2, $3, $4, $5, $6)",
+        "qa",
+        "schedule.create",
+        {"method": "POST", "path": "/api/qa/schedules"},
+        "success",
+        None,
+        {},
+    )
+
     canonical_count = await pool.fetchval("SELECT count(*) FROM public.audit_log")
     assert canonical_count == 0
     legacy_count = await pool.fetchval("SELECT count(*) FROM dashboard_audit_log")
@@ -129,17 +168,13 @@ async def test_legacy_dashboard_audit_row_visible_on_audit_log(
     assert resp.status_code == 200
     body = resp.json()
 
-    # The legacy mutation must now be visible.
     actions = [e["action"] for e in body["data"]]
     assert "schedule.create" in actions, (
-        "dashboard_audit_log mutation is invisible on /audit-log — "
-        f"split-brain not fixed. Got actions={actions}"
+        "legacy dashboard_audit_log row invisible on /audit-log — "
+        f"UNION read regression. Got actions={actions}"
     )
     assert body["meta"]["total"] == 1
-
     entry = next(e for e in body["data"] if e["action"] == "schedule.create")
-    # log_audit_entry writes an empty user_context, so actor falls back to the
-    # butler name (no user_context.principal to override it).
     assert entry["actor"] == "qa"
     assert entry["target"] == "/api/qa/schedules"
 
@@ -147,16 +182,16 @@ async def test_legacy_dashboard_audit_row_visible_on_audit_log(
 async def test_canonical_and_legacy_rows_merged_ts_desc(
     pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:
-    """Canonical (public.audit_log) and legacy rows interleave by ts DESC and
-    the combined total is correct."""
-    # Canonical row (older).
+    """Two canonical rows (one inserted directly, one via the rerouted
+    log_audit_entry writer) interleave by ts DESC and the total is correct."""
+    # Direct canonical row (older).
     await pool.execute(
         "INSERT INTO public.audit_log (actor, action, ts) "
         "VALUES ($1, $2, now() - interval '1 hour')",
         "owner",
         "model_priority_change",
     )
-    # Legacy row (newer).
+    # Newer row via log_audit_entry (also canonical, post bu-h47nm).
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     await log_audit_entry(
