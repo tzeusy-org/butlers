@@ -55,6 +55,7 @@ import type {
   HealthResponse,
   Issue,
   DismissIssueResult,
+  UndismissIssueResult,
   Label,
   CursorPaginatedResponse,
   AckFailedResult,
@@ -671,9 +672,17 @@ export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
 // Issues
 // ---------------------------------------------------------------------------
 
-/** Fetch grouped issues across all butlers. */
-export function getIssues(): Promise<ApiResponse<Issue[]>> {
-  return apiFetch<ApiResponse<Issue[]>>("/issues");
+/** Fetch grouped issues across all butlers.
+ *
+ * When `includeDismissed` is true, the server returns *only* the issues that
+ * have been dismissed (acked) — each flagged `dismissed: true` — so the UI can
+ * offer a restore affordance instead of the active feed.
+ */
+export function getIssues(
+  includeDismissed = false,
+): Promise<ApiResponse<Issue[]>> {
+  const query = includeDismissed ? "?include_dismissed=true" : "";
+  return apiFetch<ApiResponse<Issue[]>>(`/issues${query}`);
 }
 
 /** Dismiss (ack) an issue group server-side so it persists across browsers. */
@@ -684,6 +693,20 @@ export function dismissIssue(
     method: "POST",
     body: JSON.stringify({ issue_key: issueKey }),
   });
+}
+
+/** Undismiss (restore) a previously-dismissed issue group server-side.
+ *
+ * Mirrors {@link dismissIssue}; removes the persisted ack so the issue can
+ * reappear in the active feed.
+ */
+export function undismissIssue(
+  issueKey: string,
+): Promise<ApiResponse<UndismissIssueResult>> {
+  return apiFetch<ApiResponse<UndismissIssueResult>>(
+    `/issues/dismiss/${encodeURIComponent(issueKey)}`,
+    { method: "DELETE" },
+  );
 }
 
 // ---------------------------------------------------------------------------

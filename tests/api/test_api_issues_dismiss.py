@@ -133,6 +133,75 @@ class TestListFiltersDismissed:
         assert resp.json()["data"] == []
 
 
+class TestListIncludeDismissed:
+    async def test_include_dismissed_returns_only_dismissed_issues(self) -> None:
+        """GET /api/issues?include_dismissed=true surfaces only dismissed issues."""
+        audit_row = {
+            "error_summary": "boom",
+            "first_seen_at": None,
+            "last_seen_at": None,
+            "occurrences": 3,
+            "butlers": ["general"],
+            "has_schedule": False,
+            "schedule_names": [],
+        }
+        dismissed_key = compute_issue_key("audit_error_group:boom", "general")
+
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            if "dismissed_issues" in query:
+                return [{"issue_key": dismissed_key}]
+            return [audit_row]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        resp = await _call(app, "get", "/api/issues?include_dismissed=true")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["issue_key"] == dismissed_key
+        # The dismissed flag lets the UI render a restore affordance.
+        assert data[0]["dismissed"] is True
+
+    async def test_include_dismissed_empty_when_nothing_dismissed(self) -> None:
+        """With no dismissals, the dismissed view is empty even if issues exist."""
+        audit_row = {
+            "error_summary": "boom",
+            "first_seen_at": None,
+            "last_seen_at": None,
+            "occurrences": 3,
+            "butlers": ["general"],
+            "has_schedule": False,
+            "schedule_names": [],
+        }
+
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            if "dismissed_issues" in query:
+                return []
+            return [audit_row]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        resp = await _call(app, "get", "/api/issues?include_dismissed=true")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+
 class TestIssueKeyComputation:
     def test_audit_group_key_uses_type(self) -> None:
         assert compute_issue_key("audit_error_group:foo", "general") == (
