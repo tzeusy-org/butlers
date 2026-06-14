@@ -119,6 +119,112 @@ async def medication_add(
     }
 
 
+async def medication_update(
+    pool: asyncpg.Pool,
+    medication_id: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Update a medication. Allowed fields: name, dosage, frequency, schedule, active, notes.
+
+    Implemented as a superseding ``store_fact`` (property-fact semantics): the
+    existing medication fact is looked up by ``id``, its metadata is merged with
+    the supplied fields, and a new fact is written with the same subject key so
+    the previous fact is superseded.  This is the same write path the butler's
+    own tools use, so dashboard edits and butler edits are indistinguishable.
+    """
+    from butlers.modules.memory.storage import store_fact
+
+    med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
+    allowed = {"name", "dosage", "frequency", "schedule", "active", "notes"}
+    updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+
+    if not updates:
+        raise ValueError("No valid fields to update")
+
+    # Fetch the existing medication fact by ID.
+    row = await pool.fetchrow(
+        "SELECT id, subject, metadata FROM facts"
+        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
+        med_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Medication {medication_id} not found")
+
+    existing_meta = row["metadata"] or {}
+    if isinstance(existing_meta, str):
+        existing_meta = json.loads(existing_meta)
+    existing_subject = row["subject"] or f"medication:{existing_meta.get('name', medication_id)}"
+
+    # Merge updates into existing metadata.
+    new_meta = dict(existing_meta)
+    new_meta.update(updates)
+
+    name = new_meta.get("name", "")
+    dosage = new_meta.get("dosage", "")
+    frequency = new_meta.get("frequency", "")
+    content = f"{name} {dosage} {frequency}".strip()
+
+    embedding_engine = _get_embedding_engine()
+    now = datetime.now(UTC)
+
+    # Re-store with the same subject key to supersede the previous medication fact.
+    new_fact_id = (
+        await store_fact(
+            pool,
+            subject=existing_subject,
+            predicate="medication",
+            content=content,
+            embedding_engine=embedding_engine,
+            permanence="stable",
+            scope="health",
+            entity_id=await _get_owner_entity_id(pool),
+            valid_at=None,  # property fact — supersedes the previous
+            metadata=new_meta,
+        )
+    )["id"]
+
+    return {
+        "id": new_fact_id,
+        "name": new_meta.get("name", ""),
+        "dosage": new_meta.get("dosage", ""),
+        "frequency": new_meta.get("frequency", ""),
+        "schedule": list(new_meta.get("schedule") or []),
+        "active": bool(new_meta.get("active", True)),
+        "notes": new_meta.get("notes"),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def medication_delete(
+    pool: asyncpg.Pool,
+    medication_id: str,
+) -> bool:
+    """Soft-delete a medication by retracting its fact.
+
+    Delegates to ``forget_memory(pool, "fact", id)``, which sets the fact's
+    ``validity`` to ``'retracted'`` — the canonical soft-delete path used across
+    the memory subsystem.  The fact remains in the database for audit but is
+    excluded from all ``validity = 'active'`` read surfaces (including the
+    dashboard GET endpoints).  Raises ``ValueError`` if no active medication
+    fact with this id exists.
+    """
+    from butlers.modules.memory.storage import forget_memory
+
+    med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
+
+    row = await pool.fetchrow(
+        "SELECT id FROM facts"
+        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'"
+        " AND validity = 'active'",
+        med_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Medication {medication_id} not found")
+
+    return await forget_memory(pool, "fact", med_uuid)
+
+
 async def medication_list(
     pool: asyncpg.Pool,
     active_only: bool = True,

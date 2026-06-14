@@ -2,9 +2,11 @@
  * TanStack Query hooks for the health butler API.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createMedication,
+  deleteMedication,
   getConditions,
   getMeals,
   getMeasurements,
@@ -15,11 +17,14 @@ import {
   getResearch,
   getSleepLatest,
   getSymptoms,
+  updateMedication,
 } from "@/api/index.ts";
 import type {
   MealParams,
   MeasurementParams,
+  MedicationCreateRequest,
   MedicationParams,
+  MedicationUpdateRequest,
   ResearchParams,
   SymptomParams,
 } from "@/api/index.ts";
@@ -51,6 +56,49 @@ export function useMedicationDoses(
     queryKey: ["health-medication-doses", medicationId, params],
     queryFn: () => getMedicationDoses(medicationId, params),
     enabled: !!medicationId,
+  });
+}
+
+/**
+ * Invalidate every medication-list query so freshly mutated medications appear.
+ *
+ * The medication-list cache is keyed by the params object (active/limit/...),
+ * so we invalidate on the `["health-medications"]` prefix to cover all variants.
+ */
+function useInvalidateMedications() {
+  const queryClient = useQueryClient();
+  return () =>
+    queryClient.invalidateQueries({ queryKey: ["health-medications"] });
+}
+
+/**
+ * Create a medication. On success, invalidates the medication list so the new
+ * record appears without a manual refetch.
+ */
+export function useCreateMedication() {
+  const invalidate = useInvalidateMedications();
+  return useMutation({
+    mutationFn: (body: MedicationCreateRequest) => createMedication(body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Update a medication by id (only supplied fields are merged). */
+export function useUpdateMedication() {
+  const invalidate = useInvalidateMedications();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: MedicationUpdateRequest }) =>
+      updateMedication(id, body),
+    onSuccess: invalidate,
+  });
+}
+
+/** Soft-delete a medication by id. */
+export function useDeleteMedication() {
+  const invalidate = useInvalidateMedications();
+  return useMutation({
+    mutationFn: (id: string) => deleteMedication(id),
+    onSuccess: invalidate,
   });
 }
 

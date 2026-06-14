@@ -11,9 +11,10 @@ import importlib.util
 import json
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
@@ -35,6 +36,8 @@ if _spec is not None and _spec.loader is not None:
     MeasurementSource = _models.MeasurementSource
     MeasurementSourcesResponse = _models.MeasurementSourcesResponse
     Medication = _models.Medication
+    MedicationCreateRequest = _models.MedicationCreateRequest
+    MedicationUpdateRequest = _models.MedicationUpdateRequest
     Research = _models.Research
     SleepSessionResponse = _models.SleepSessionResponse
     SleepStage = _models.SleepStage
@@ -309,6 +312,115 @@ async def list_medication_doses(
             )
         )
     return data
+
+
+# ---------------------------------------------------------------------------
+# POST/PUT/DELETE /medications — direct dashboard CRUD
+#
+# These mutations persist through the SAME fact-store path the Health butler's
+# own MCP tools use:
+#   - POST   -> medication_add     (predicate 'medication', property fact)
+#   - PUT    -> medication_update  (superseding store_fact, same subject key)
+#   - DELETE -> medication_delete  (forget_memory -> validity = 'retracted')
+# so a dashboard-authored medication is indistinguishable from a butler-authored
+# one and is read back by GET /medications above.  No new predicates, tables, or
+# DDL are introduced.
+# ---------------------------------------------------------------------------
+
+
+def _isoformat(value: object) -> str:
+    """Coerce a datetime (or already-string) timestamp to an ISO-8601 string."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _medication_response(result: dict) -> Medication:
+    """Build the Medication response model from a write-tool result dict."""
+    return Medication(
+        id=str(result["id"]),
+        name=result.get("name", ""),
+        dosage=result.get("dosage", ""),
+        frequency=result.get("frequency", ""),
+        schedule=list(result.get("schedule") or []),
+        active=bool(result.get("active", True)),
+        notes=result.get("notes"),
+        created_at=_isoformat(result.get("created_at")),
+        updated_at=_isoformat(result.get("updated_at") or result.get("created_at")),
+    )
+
+
+@router.post("/medications", response_model=Medication, status_code=status.HTTP_201_CREATED)
+async def create_medication(
+    body: MedicationCreateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Medication:
+    """Create a medication via the butler's ``medication_add`` fact-store path.
+
+    Writes a property fact (predicate = ``medication``, scope = ``health``) — the
+    same surface the ``medication_add`` MCP tool writes — so the new medication
+    appears in GET /medications immediately.
+    """
+    from butlers.tools.health import medication_add
+
+    pool = _pool(db)
+    result = await medication_add(
+        pool,
+        name=body.name,
+        dosage=body.dosage,
+        frequency=body.frequency,
+        schedule=body.schedule,
+        notes=body.notes,
+    )
+    return _medication_response(result)
+
+
+@router.put("/medications/{medication_id}", response_model=Medication)
+async def update_medication(
+    medication_id: str,
+    body: MedicationUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Medication:
+    """Update a medication via the superseding ``medication_update`` fact path.
+
+    Only the supplied (non-null) fields are merged into the existing medication
+    fact; a new property fact is written under the same subject key so the prior
+    fact is superseded.  Returns 404 if the medication does not exist and 422 if
+    no updatable fields were provided.
+    """
+    from butlers.tools.health import medication_update
+
+    pool = _pool(db)
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(
+            status_code=422,
+            detail="No updatable fields provided",
+        )
+    try:
+        result = await medication_update(pool, medication_id, **updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _medication_response(result)
+
+
+@router.delete("/medications/{medication_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_medication(
+    medication_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a medication via ``medication_delete`` (validity = retracted).
+
+    The fact is retained for audit but excluded from all active read surfaces.
+    Returns 204 on success and 404 if no active medication with this id exists.
+    """
+    from butlers.tools.health import medication_delete
+
+    pool = _pool(db)
+    try:
+        await medication_delete(pool, medication_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

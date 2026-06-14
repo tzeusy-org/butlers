@@ -87,6 +87,8 @@ import type {
   MeasurementParams,
   Medication,
   MedicationParams,
+  MedicationCreateRequest,
+  MedicationUpdateRequest,
   ResearchParams,
   Symptom,
   SymptomParams,
@@ -1345,6 +1347,36 @@ export function getMedicationDoses(medicationId: string, params?: { since?: stri
   const qs = sp.toString();
   const base = `/health/medications/${encodeURIComponent(medicationId)}/doses`;
   return apiFetch<Dose[]>(qs ? `${base}?${qs}` : base);
+}
+
+/**
+ * Create a medication. Persists through the Health butler's own fact-store path
+ * (POST /health/medications -> medication_add), so the new record is read back
+ * by getMedications immediately.
+ */
+export function createMedication(body: MedicationCreateRequest): Promise<Medication> {
+  return apiFetch<Medication>("/health/medications", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Update a medication. Only supplied fields are merged (PUT /health/medications/{id}). */
+export function updateMedication(
+  medicationId: string,
+  body: MedicationUpdateRequest,
+): Promise<Medication> {
+  return apiFetch<Medication>(`/health/medications/${encodeURIComponent(medicationId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Soft-delete a medication (DELETE /health/medications/{id}). Returns 204. */
+export function deleteMedication(medicationId: string): Promise<void> {
+  return apiFetch<void>(`/health/medications/${encodeURIComponent(medicationId)}`, {
+    method: "DELETE",
+  });
 }
 
 /** Fetch a paginated list of health conditions. */

@@ -1,6 +1,17 @@
 import { useState } from "react";
 
 import type { Medication } from "@/api/types";
+import { MedicationForm } from "@/components/health/MedicationForm";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +21,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -20,7 +38,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useMedicationDoses, useMedications } from "@/hooks/use-health";
+import { toast } from "sonner";
+import {
+  useDeleteMedication,
+  useMedicationDoses,
+  useMedications,
+} from "@/hooks/use-health";
 import { Time } from "@/components/ui/time";
 
 // ---------------------------------------------------------------------------
@@ -49,7 +72,7 @@ function EmptyState() {
   return (
     <EmptyStateUI
       title="No medications found."
-      description="Medications appear here once the Health butler adds them to your record."
+      description="Add a medication with the button above, or log one by talking to your Health butler."
     />
   );
 }
@@ -124,7 +147,7 @@ function DoseLog({ medicationId, frequency }: { medicationId: string; frequency:
                 </Badge>
               </TableCell>
               <TableCell className="text-muted-foreground max-w-xs truncate text-sm">
-                {dose.notes ?? "\u2014"}
+                {dose.notes ?? "—"}
               </TableCell>
             </TableRow>
           ))}
@@ -138,8 +161,26 @@ function DoseLog({ medicationId, frequency }: { medicationId: string; frequency:
 // MedicationCard
 // ---------------------------------------------------------------------------
 
-function MedicationCard({ medication }: { medication: Medication }) {
+function MedicationCard({
+  medication,
+  onEdit,
+}: {
+  medication: Medication;
+  onEdit: (medication: Medication) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const deleteMutation = useDeleteMedication();
+
+  async function handleDelete() {
+    try {
+      await deleteMutation.mutateAsync(medication.id);
+      toast.success("Medication deleted.");
+      setConfirmingDelete(false);
+    } catch {
+      toast.error("Failed to delete medication.");
+    }
+  }
 
   return (
     <Card className="cursor-pointer" onClick={() => setExpanded((v) => !v)}>
@@ -160,6 +201,30 @@ function MedicationCard({ medication }: { medication: Medication }) {
           <p className="text-muted-foreground mt-1 text-xs">{medication.notes}</p>
         )}
 
+        {/* Per-card actions — stopPropagation so they don't toggle the dose log. */}
+        <div
+          className="mt-3 flex items-center gap-2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onEdit(medication)}
+            aria-label={`Edit ${medication.name}`}
+          >
+            Edit
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setConfirmingDelete(true)}
+            aria-label={`Delete ${medication.name}`}
+          >
+            Delete
+          </Button>
+        </div>
+
         {/* Expandable dose log */}
         {expanded && (
           <div onClick={(e) => e.stopPropagation()}>
@@ -167,6 +232,30 @@ function MedicationCard({ medication }: { medication: Medication }) {
           </div>
         )}
       </CardContent>
+
+      <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
+        <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {medication.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes {medication.name} from your medication list. The record is
+              retained for history but will no longer appear here.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDelete();
+              }}
+              disabled={deleteMutation.isPending}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }
@@ -177,6 +266,8 @@ function MedicationCard({ medication }: { medication: Medication }) {
 
 export default function MedicationTracker() {
   const [showAll, setShowAll] = useState(false);
+  // `null` = closed; `undefined` = add mode; a Medication = edit mode.
+  const [formTarget, setFormTarget] = useState<Medication | null | undefined>(null);
 
   const { data, isLoading } = useMedications({
     active: showAll ? undefined : true,
@@ -184,24 +275,31 @@ export default function MedicationTracker() {
   });
 
   const medications = data?.data ?? [];
+  const dialogOpen = formTarget !== null;
+  const editing = formTarget != null;
 
   return (
     <div className="space-y-4">
-      {/* Filter toggle */}
-      <div className="flex items-center gap-3">
-        <Button
-          variant={!showAll ? "default" : "outline"}
-          size="sm"
-          onClick={() => setShowAll(false)}
-        >
-          Active
-        </Button>
-        <Button
-          variant={showAll ? "default" : "outline"}
-          size="sm"
-          onClick={() => setShowAll(true)}
-        >
-          All
+      {/* Toolbar: filter toggle + add affordance */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Button
+            variant={!showAll ? "default" : "outline"}
+            size="sm"
+            onClick={() => setShowAll(false)}
+          >
+            Active
+          </Button>
+          <Button
+            variant={showAll ? "default" : "outline"}
+            size="sm"
+            onClick={() => setShowAll(true)}
+          >
+            All
+          </Button>
+        </div>
+        <Button size="sm" onClick={() => setFormTarget(undefined)}>
+          Add medication
         </Button>
       </div>
 
@@ -213,10 +311,29 @@ export default function MedicationTracker() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {medications.map((med) => (
-            <MedicationCard key={med.id} medication={med} />
+            <MedicationCard key={med.id} medication={med} onEdit={setFormTarget} />
           ))}
         </div>
       )}
+
+      {/* Add / edit dialog */}
+      <Dialog open={dialogOpen} onOpenChange={(open) => !open && setFormTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editing ? "Edit medication" : "Add medication"}</DialogTitle>
+            <DialogDescription>
+              {editing
+                ? "Update this medication's details."
+                : "Add a medication to your record. It appears immediately."}
+            </DialogDescription>
+          </DialogHeader>
+          <MedicationForm
+            medication={editing ? formTarget : undefined}
+            onDone={() => setFormTarget(null)}
+            onCancel={() => setFormTarget(null)}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

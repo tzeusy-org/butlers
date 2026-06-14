@@ -1188,6 +1188,28 @@ export interface MedicationParams {
   limit?: number;
 }
 
+/** Request body for creating a medication (POST /health/medications). */
+export interface MedicationCreateRequest {
+  name: string;
+  dosage: string;
+  frequency: string;
+  schedule?: string[];
+  notes?: string | null;
+}
+
+/**
+ * Request body for updating a medication (PUT /health/medications/{id}).
+ * All fields optional; only supplied fields are merged into the existing record.
+ */
+export interface MedicationUpdateRequest {
+  name?: string;
+  dosage?: string;
+  frequency?: string;
+  schedule?: string[];
+  active?: boolean;
+  notes?: string | null;
+}
+
 /** Query parameters for symptom endpoints. */
 export interface SymptomParams {
   name?: string;

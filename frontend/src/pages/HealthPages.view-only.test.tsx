@@ -1,32 +1,64 @@
 // @vitest-environment jsdom
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// bu-7oyhi.2 — honest "view-only / butler-managed" framing for the 6 health
-// pages. These pages are an observability surface: the Health butler owns all
-// writes via its own MCP tools/conversation. The dashboard must NOT present any
-// affordance implying the user can add/edit/delete records here (nothing would
-// persist — there are no health mutation endpoints).
+// bu-7oyhi.2 / bu-aisjm — health-page write surfaces.
 //
-// These tests assert two contracts per page:
-//   1. The "Managed by the Health butler" view-only note renders.
-//   2. No add/edit/delete/"New X"/"Save" mutation affordance is present.
+// As of bu-aisjm the Medications page has direct dashboard CRUD (add/edit/
+// delete wired to /api/health/medications), so it is NO LONGER view-only.
+//
+// The remaining FIVE pages (Conditions, Symptoms, Research, Meals,
+// Measurements) are still an observability surface: the Health butler owns all
+// writes via its own MCP tools/conversation, and the dashboard must NOT present
+// any affordance implying the user can add/edit/delete records here.
+//
+// These tests assert:
+//   - For the 5 not-yet-converted pages: the "Managed by the Health butler"
+//     view-only note renders AND no add/edit/delete affordance is present.
+//   - For Medications: NO view-only note AND add/edit/delete affordances exist.
 // ---------------------------------------------------------------------------
 
-// All health pages read through these hooks. Stub them with a loaded-but-empty
-// shape so the pages render their normal (non-loading) chrome without needing a
-// QueryClient or network.
+// All health pages read through these hooks. Stub them with a loaded shape so
+// the pages render their normal (non-loading) chrome without needing a real
+// QueryClient or network. Medications returns one row so the per-card edit /
+// delete affordances render. The mutation hooks are stubbed as no-op mutations.
 vi.mock("@/hooks/use-health", () => {
   const empty = {
     data: { data: [], meta: { total: 0, has_more: false } },
     isLoading: false,
   };
+  const noopMutation = () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+  });
   return {
     useMeasurements: () => ({ data: { data: [] }, isLoading: false }),
-    useMedications: () => ({ data: { data: [] }, isLoading: false }),
+    useMedications: () => ({
+      data: {
+        data: [
+          {
+            id: "med-1",
+            name: "Vitamin D",
+            dosage: "1000IU",
+            frequency: "daily",
+            schedule: [],
+            active: true,
+            notes: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        meta: { total: 1, has_more: false },
+      },
+      isLoading: false,
+    }),
     useMedicationDoses: () => ({ data: [], isLoading: false }),
+    useCreateMedication: noopMutation,
+    useUpdateMedication: noopMutation,
+    useDeleteMedication: noopMutation,
     useConditions: () => empty,
     useSymptoms: () => empty,
     useMeals: () => empty,
@@ -43,8 +75,9 @@ import SymptomsPage from "./SymptomsPage";
 
 afterEach(cleanup);
 
+// Only the 5 not-yet-converted pages remain view-only. Medications is asserted
+// separately below to have CRUD affordances.
 const PAGES: Array<{ name: string; Component: () => React.ReactElement }> = [
-  { name: "Medications", Component: MedicationsPage },
   { name: "Conditions", Component: ConditionsPage },
   { name: "Symptoms", Component: SymptomsPage },
   { name: "Research", Component: ResearchPage },
@@ -86,14 +119,24 @@ describe.each(PAGES)("$name health page — view-only / butler-managed", ({ Comp
   });
 });
 
-describe("Health page descriptions — honest framing", () => {
-  it("Medications page does not use imperative 'Manage medications' copy", () => {
+describe("Medications health page — direct CRUD (bu-aisjm)", () => {
+  it("does NOT render the butler-managed view-only note", () => {
     const { container } = render(<MedicationsPage />);
-    // The old copy "Manage medications and track dose adherence." dishonestly
-    // implied the user could manage medications from this read-only page.
-    expect(container.textContent ?? "").not.toMatch(/Manage medications/i);
+    const notes = container.querySelectorAll('[data-testid="butler-managed-note"]');
+    expect(notes.length).toBe(0);
   });
 
+  it("exposes add, edit, and delete affordances", () => {
+    render(<MedicationsPage />);
+    // Add affordance in the tracker toolbar.
+    expect(screen.getByRole("button", { name: /add medication/i })).toBeTruthy();
+    // Per-card edit + delete affordances (one medication row is mocked).
+    expect(screen.getByRole("button", { name: /edit vitamin d/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /delete vitamin d/i })).toBeTruthy();
+  });
+});
+
+describe("Health page descriptions — honest framing", () => {
   it("Symptoms/Meals/Measurements pages drop imperative 'Track ...' lead copy", () => {
     for (const Component of [SymptomsPage, MealsPage, MeasurementsPage]) {
       const { container } = render(<Component />);

@@ -221,6 +221,66 @@ async def test_medication_add_with_schedule(pool):
     assert med["notes"] == "Take with food"
 
 
+async def test_medication_update_merges_fields(pool):
+    """medication_update merges supplied fields and the change is read back by list."""
+    from butlers.tools.health import medication_add, medication_list, medication_update
+
+    med = await medication_add(pool, "UpdMed", "100mg", "daily", notes="orig")
+    updated = await medication_update(pool, str(med["id"]), dosage="250mg", notes="after meals")
+    # Unchanged fields are preserved; supplied fields are applied.
+    assert updated["name"] == "UpdMed"
+    assert updated["dosage"] == "250mg"
+    assert updated["frequency"] == "daily"
+    assert updated["notes"] == "after meals"
+
+    # The superseding write means exactly one active "UpdMed" remains, with the
+    # new values.
+    actives = [m for m in await medication_list(pool, active_only=False) if m["name"] == "UpdMed"]
+    assert len(actives) == 1
+    assert actives[0]["dosage"] == "250mg"
+
+
+async def test_medication_update_no_fields(pool):
+    """medication_update raises when no updatable fields are provided."""
+    from butlers.tools.health import medication_add, medication_update
+
+    med = await medication_add(pool, "NoFieldMed", "10mg", "daily")
+    with pytest.raises(ValueError, match="No valid fields"):
+        await medication_update(pool, str(med["id"]))
+
+
+async def test_medication_update_not_found(pool):
+    """medication_update raises ValueError for a non-existent medication."""
+    from butlers.tools.health import medication_update
+
+    with pytest.raises(ValueError, match="not found"):
+        await medication_update(pool, str(uuid.uuid4()), dosage="5mg")
+
+
+async def test_medication_delete_retracts(pool):
+    """medication_delete soft-deletes so the medication disappears from list."""
+    from butlers.tools.health import medication_add, medication_delete, medication_list
+
+    med = await medication_add(pool, "DelMed", "10mg", "daily")
+    assert "DelMed" in [m["name"] for m in await medication_list(pool, active_only=False)]
+
+    ok = await medication_delete(pool, str(med["id"]))
+    assert ok is True
+    assert "DelMed" not in [m["name"] for m in await medication_list(pool, active_only=False)]
+
+    # The fact is retained but retracted (audit-preserving soft delete).
+    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", med["id"])
+    assert validity == "retracted"
+
+
+async def test_medication_delete_not_found(pool):
+    """medication_delete raises ValueError for a non-existent medication."""
+    from butlers.tools.health import medication_delete
+
+    with pytest.raises(ValueError, match="not found"):
+        await medication_delete(pool, str(uuid.uuid4()))
+
+
 async def test_medication_list_active_only(pool):
     """medication_list returns only active medications by default."""
     from butlers.tools.health import medication_add, medication_list
