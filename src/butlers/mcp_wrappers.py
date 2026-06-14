@@ -25,6 +25,7 @@ from butlers.module_state import ModuleRuntimeState
 logger = logging.getLogger(__name__)
 
 _MCP_TOOL_CALL_LOG_LINE = "MCP tool called (butler=%s module=%s tool=%s)"
+_MCP_TOOL_CALL_FAILED_LOG_LINE = "MCP tool call failed (butler=%s module=%s tool=%s): %s"
 _VISIBLE_CAPTURE_INPUT_FIELDS = frozenset(
     ("butler", "target_butler", "butler_name", "prompt", "context")
 )
@@ -33,6 +34,51 @@ _VISIBLE_CAPTURE_INPUT_FIELDS = frozenset(
 def _visible_capture_input(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Return the small raw-input allowlist that is safe to persist."""
     return {k: kwargs.get(k) for k in _VISIBLE_CAPTURE_INPUT_FIELDS if k in kwargs}
+
+
+def _log_tool_call_failure(
+    *,
+    butler_name: str,
+    module_name: str,
+    tool_name: str,
+    exc: Exception,
+) -> None:
+    """Emit one structured error log per failed MCP tool call.
+
+    This is the observability hook the autonomous QA log-scanner relies on:
+    when a butler's LLM agent catches a tool exception and the session still
+    completes ``success=true``, the session-records source never sees the
+    failure, so the *only* way QA learns about it is a structured error entry
+    in ``logs/butlers/<butler>.log``.  FastMCP's own rich traceback only
+    reaches the container's stdout/stderr and is never JSON-formatted into the
+    per-butler log file.
+
+    The per-butler file handler routes records via ``ButlerContextFileFilter``,
+    which only passes records whose butler ContextVar matches.  Tool handlers
+    can run in async tasks where that ContextVar is unset (the info-level
+    "MCP tool called" line shows ``butler=None``), so we bind the butler
+    context here to guarantee the record reaches the scanned log file.
+
+    The ``exception`` extra is surfaced as the log entry's exception type so the
+    log-scanner can fingerprint/score it; it is not a switchboard/timeout shape,
+    so it is not matched by any non-actionable suppression rule.
+    """
+    from butlers.core.logging import set_butler_context
+
+    set_butler_context(butler_name)
+    logger.error(
+        _MCP_TOOL_CALL_FAILED_LOG_LINE,
+        butler_name,
+        module_name,
+        tool_name,
+        f"{type(exc).__name__}: {exc}",
+        extra={
+            "butler_name": butler_name,
+            "module_name": module_name,
+            "tool": tool_name,
+            "exception": type(exc).__name__,
+        },
+    )
 
 
 def _tool_input_fingerprint(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
@@ -133,6 +179,12 @@ class _SpanWrappingMCP:
                         outcome="error",
                         error=f"{type(exc).__name__}: {exc}",
                     )
+                    _log_tool_call_failure(
+                        butler_name=self._butler_name,
+                        module_name=self._module_name,
+                        tool_name=resolved_tool_name,
+                        exc=exc,
+                    )
                     raise
 
                 capture_tool_call(
@@ -198,6 +250,12 @@ class _ToolCallLoggingMCP:
                         input_fingerprint=input_fingerprint,
                         outcome="error",
                         error=f"{type(exc).__name__}: {exc}",
+                    )
+                    _log_tool_call_failure(
+                        butler_name=self._butler_name,
+                        module_name=self._module_name,
+                        tool_name=resolved_tool_name,
+                        exc=exc,
                     )
                     raise
                 capture_tool_call(
