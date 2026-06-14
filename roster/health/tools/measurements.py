@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -117,6 +118,126 @@ async def measurement_log(
         "measured_at": valid_at,
         "created_at": now,
     }
+
+
+async def measurement_update(
+    pool: asyncpg.Pool,
+    measurement_id: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Update a logged measurement. Allowed fields: type, value, notes, measured_at.
+
+    Measurements are TEMPORAL facts (``valid_at`` is the reading time and
+    supersession is skipped for temporal facts), so — like symptoms and meals —
+    there is no superseding ``store_fact`` path keyed on (subject, predicate).
+    Re-storing would create a *second* coexisting reading rather than replacing
+    the first. Instead this performs an in-place UPDATE of the existing
+    measurement fact row so the edit preserves the same identity and the
+    temporal log keeps exactly one entry per logged reading.
+
+    Changing ``type`` rewrites the predicate to ``measurement_{type}`` (the
+    measurement type is encoded in the predicate, not in metadata) and must be
+    one of the recognized measurement types. ``value`` is stored in the
+    ``value`` metadata field (scalar or compound dict). The ``facts`` table has
+    no ``updated_at`` column, so only ``predicate``, ``content``, ``metadata``,
+    and ``valid_at`` are touched.
+    """
+    meas_uuid = uuid.UUID(measurement_id) if isinstance(measurement_id, str) else measurement_id
+    allowed = {"type", "value", "notes", "measured_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+
+    if not updates:
+        raise ValueError("No valid fields to update")
+
+    if "type" in updates and updates["type"] not in VALID_MEASUREMENT_TYPES:
+        raise ValueError(
+            f"Unrecognized measurement type: {updates['type']!r}. "
+            f"Must be one of: {', '.join(sorted(VALID_MEASUREMENT_TYPES))}"
+        )
+
+    row = await pool.fetchrow(
+        "SELECT id, predicate, content, valid_at, created_at, metadata FROM facts"
+        " WHERE id = $1 AND predicate LIKE 'measurement~_%' ESCAPE '~'"
+        " AND scope = 'health' AND validity = 'active'",
+        meas_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Measurement {measurement_id} not found")
+
+    existing_meta = row["metadata"] or {}
+    if isinstance(existing_meta, str):
+        existing_meta = json.loads(existing_meta)
+    new_meta = dict(existing_meta)
+
+    if "value" in updates:
+        new_meta["value"] = updates["value"]
+    if "notes" in updates:
+        if updates["notes"] is None:
+            new_meta.pop("notes", None)
+        else:
+            new_meta["notes"] = updates["notes"]
+
+    mtype = updates["type"] if "type" in updates else row["predicate"].removeprefix("measurement_")
+    predicate = f"measurement_{mtype}"
+    valid_at = updates.get("measured_at", row["valid_at"])
+    value = new_meta.get("value")
+
+    # Rebuild the human-readable content summary to match measurement_log.
+    if isinstance(value, dict):
+        parts = [f"{k}={v}" for k, v in value.items()]
+        content = f"{mtype}: {', '.join(parts)}"
+    else:
+        unit = _MEASUREMENT_UNITS.get(mtype, "")
+        content = f"{mtype}: {value}{(' ' + unit) if unit else ''}"
+
+    await pool.execute(
+        "UPDATE facts SET predicate = $2, content = $3, metadata = $4, valid_at = $5 WHERE id = $1",
+        meas_uuid,
+        predicate,
+        content,
+        new_meta,
+        valid_at,
+    )
+
+    return _fact_to_measurement(
+        {
+            "id": meas_uuid,
+            "predicate": predicate,
+            "content": content,
+            "valid_at": valid_at,
+            "created_at": row["created_at"],
+            "metadata": new_meta,
+        }
+    )
+
+
+async def measurement_delete(
+    pool: asyncpg.Pool,
+    measurement_id: str,
+) -> bool:
+    """Soft-delete a logged measurement by retracting its fact.
+
+    Delegates to ``forget_memory(pool, "fact", id)``, which sets the fact's
+    ``validity`` to ``'retracted'`` — the canonical soft-delete path used across
+    the memory subsystem. The fact remains in the database for audit but is
+    excluded from all ``validity = 'active'`` read surfaces (including the
+    dashboard GET endpoint and ``measurement_history`` / ``measurement_latest``).
+    Raises ``ValueError`` if no active measurement fact with this id exists.
+    """
+    from butlers.modules.memory.storage import forget_memory
+
+    meas_uuid = uuid.UUID(measurement_id) if isinstance(measurement_id, str) else measurement_id
+
+    row = await pool.fetchrow(
+        "SELECT id FROM facts"
+        " WHERE id = $1 AND predicate LIKE 'measurement~_%' ESCAPE '~'"
+        " AND scope = 'health' AND validity = 'active'",
+        meas_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Measurement {measurement_id} not found")
+
+    return await forget_memory(pool, "fact", meas_uuid)
 
 
 async def measurement_history(

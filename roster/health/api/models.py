@@ -24,6 +24,44 @@ class Measurement(BaseModel):
     created_at: str
 
 
+_MEASUREMENT_TYPE = Literal["weight", "blood_pressure", "heart_rate", "blood_sugar", "temperature"]
+
+
+class MeasurementCreateRequest(BaseModel):
+    """Request body for POST /measurements.
+
+    Persisted through the same ``measurement_log`` fact-store path the Health
+    butler's own MCP tool uses (predicate ``measurement_{type}``, scope
+    ``health``), so a dashboard-logged measurement is indistinguishable from a
+    butler-logged one and is read back by GET /measurements.  Measurements are
+    TEMPORAL facts: ``measured_at`` becomes the fact's ``valid_at`` and multiple
+    readings coexist by design (no supersession).  ``value`` is stored as JSONB
+    and may be a scalar (e.g. ``{"value": 165}``) or a compound dict (e.g.
+    ``{"systolic": 120, "diastolic": 80}``).
+    """
+
+    type: _MEASUREMENT_TYPE
+    value: dict
+    measured_at: datetime | None = None
+    notes: str | None = None
+
+
+class MeasurementUpdateRequest(BaseModel):
+    """Request body for PUT /measurements/{id}.
+
+    All fields are optional; only the supplied (non-null) fields are applied to
+    the existing measurement fact via the in-place ``measurement_update`` path
+    (temporal facts are edited in place rather than superseded).  At least one
+    field must be provided.  Changing ``type`` rewrites the underlying
+    ``measurement_{type}`` predicate.
+    """
+
+    type: _MEASUREMENT_TYPE | None = None
+    value: dict | None = None
+    measured_at: datetime | None = None
+    notes: str | None = None
+
+
 class Medication(BaseModel):
     """A tracked medication with dosage and schedule."""
 

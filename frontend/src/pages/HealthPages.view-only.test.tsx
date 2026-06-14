@@ -4,7 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// bu-7oyhi.2 / bu-aisjm / bu-a7vw9 / bu-gk38e / bu-5oeoq / bu-wamzk —
+// bu-7oyhi.2 / bu-aisjm / bu-a7vw9 / bu-gk38e / bu-5oeoq / bu-wamzk / bu-mqhas —
 // health-page write surfaces.
 //
 // As of bu-aisjm the Medications page has direct dashboard CRUD (add/edit/
@@ -17,17 +17,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // /api/health/meals, so it is NO LONGER view-only either.
 // As of bu-wamzk the Research page also has direct dashboard CRUD wired to
 // /api/health/research, so it is NO LONGER view-only either.
+// As of bu-mqhas the Measurements page also has direct dashboard CRUD wired to
+// /api/health/measurements, so it is NO LONGER view-only either.
 //
-// The remaining ONE page (Measurements) is still an observability surface: the
-// Health butler owns all writes via its own MCP tools/conversation, and the
-// dashboard must NOT present any affordance implying the user can add/edit/
-// delete records here.
+// This completes the six-page health-CRUD epic (bu-eqkmi): ALL SIX health pages
+// (Measurements, Medications, Conditions, Symptoms, Meals, Research) now expose
+// direct add/edit/delete affordances and NONE render the butler-managed
+// view-only note. The view-only PAGES list below is therefore empty.
 //
-// These tests assert:
-//   - For the 1 not-yet-converted page: the "Managed by the Health butler"
-//     view-only note renders AND no add/edit/delete affordance is present.
-//   - For Medications, Conditions, Symptoms, Meals, and Research: NO view-only
-//     note AND add/edit/delete affordances exist.
+// These tests assert that every converted page exposes add/edit/delete
+// affordances and renders NO "Managed by the Health butler" view-only note.
 // ---------------------------------------------------------------------------
 
 // All health pages read through these hooks. Stub them with a loaded shape so
@@ -41,7 +40,25 @@ vi.mock("@/hooks/use-health", () => {
     isPending: false,
   });
   return {
-    useMeasurements: () => ({ data: { data: [] }, isLoading: false }),
+    useMeasurements: () => ({
+      data: {
+        data: [
+          {
+            id: "meas-1",
+            type: "weight",
+            value: { value: 70 },
+            measured_at: "2026-01-01T00:00:00Z",
+            notes: null,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        meta: { total: 1, has_more: false },
+      },
+      isLoading: false,
+    }),
+    useCreateMeasurement: noopMutation,
+    useUpdateMeasurement: noopMutation,
+    useDeleteMeasurement: noopMutation,
     useMedications: () => ({
       data: {
         data: [
@@ -158,44 +175,40 @@ import SymptomsPage from "./SymptomsPage";
 
 afterEach(cleanup);
 
-// Only the 1 not-yet-converted page remains view-only. Medications,
-// Conditions, Symptoms, Meals, and Research are asserted separately below to
-// have CRUD affordances.
-const PAGES: Array<{ name: string; Component: () => React.ReactElement }> = [
-  { name: "Measurements", Component: MeasurementsPage },
-];
-
-// Mutation affordances that would be dishonest on a read-only surface. The
-// pages legitimately contain data-filter/pagination controls (Previous, Next,
-// Clear, All, Active, Show raw data, meal-type/measurement-type tabs) — those
-// are allowed. We assert specifically that there is no control whose label
-// implies persisting a NEW record or editing/deleting an existing one.
-const FORBIDDEN_BUTTON_LABELS =
-  /\b(add|new|create|edit|delete|remove|save|log\s|record\s+a|update)\b/i;
+// The six-page health-CRUD epic (bu-eqkmi) is complete: no health page remains
+// view-only, so this list is empty. Each converted page is asserted to have
+// CRUD affordances in its own describe block below. The list is retained (empty)
+// so a regression that re-introduces a view-only surface has a home to land in.
+const PAGES: Array<{ name: string; Component: () => React.ReactElement }> = [];
 
 describe.each(PAGES)("$name health page — view-only / butler-managed", ({ Component }) => {
   it("renders exactly one butler-managed view-only note", () => {
     const { container } = render(<Component />);
     const notes = container.querySelectorAll('[data-testid="butler-managed-note"]');
     expect(notes.length).toBe(1);
-    const text = notes[0].textContent ?? "";
-    expect(text).toMatch(/managed by the Health butler/i);
-    expect(text).toMatch(/read-only view/i);
+  });
+});
+
+describe("All six health pages have CRUD (epic bu-eqkmi complete)", () => {
+  it("no view-only page remains", () => {
+    expect(PAGES).toEqual([]);
+  });
+});
+
+describe("Measurements health page — direct CRUD (bu-mqhas)", () => {
+  it("does NOT render the butler-managed view-only note", () => {
+    const { container } = render(<MeasurementsPage />);
+    const notes = container.querySelectorAll('[data-testid="butler-managed-note"]');
+    expect(notes.length).toBe(0);
   });
 
-  it("exposes no add/edit/delete mutation affordance", () => {
-    const { container } = render(<Component />);
-    const buttons = Array.from(container.querySelectorAll("button"));
-    const offenders = buttons
-      .map((b) => b.textContent?.trim() ?? "")
-      .filter((label) => label.length > 0 && FORBIDDEN_BUTTON_LABELS.test(label));
-    expect(offenders).toEqual([]);
-
-    // No native form submit controls either.
-    const submits = container.querySelectorAll(
-      'button[type="submit"], input[type="submit"]',
-    );
-    expect(submits.length).toBe(0);
+  it("exposes add, edit, and delete affordances", () => {
+    render(<MeasurementsPage />);
+    // Add affordance in the tracker toolbar.
+    expect(screen.getByRole("button", { name: /log measurement/i })).toBeTruthy();
+    // Per-row edit + delete affordances (one weight reading is mocked).
+    expect(screen.getByRole("button", { name: /edit weight/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /delete weight/i })).toBeTruthy();
   });
 });
 

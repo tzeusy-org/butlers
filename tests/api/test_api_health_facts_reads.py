@@ -1350,3 +1350,236 @@ async def test_delete_research_missing_is_404():
     with patch(f"{_HEALTH_TOOLS}.research_delete", fake_delete):
         resp = await _request(app, "DELETE", f"/api/health/research/{res_id}")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST / PUT / DELETE /measurements — direct dashboard CRUD (bu-mqhas)
+#
+# Each mutation delegates to the Health butler's own fact-store tool
+# (measurement_log / measurement_update / measurement_delete) so dashboard
+# writes and butler writes share the same predicate family
+# ('measurement_{type}') and code path.  Measurements are TEMPORAL facts —
+# measured_at -> valid_at, no supersession; the type is encoded in the predicate.
+# ---------------------------------------------------------------------------
+
+
+async def test_create_measurement_delegates_to_measurement_log():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_log = AsyncMock(
+        return_value={
+            "id": new_id,
+            "type": "weight",
+            "value": 70,
+            "notes": "morning",
+            "measured_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.measurement_log", fake_log):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/measurements",
+            json={
+                "type": "weight",
+                "value": {"value": 70},
+                "measured_at": "2024-01-01T00:00:00+00:00",
+                "notes": "morning",
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["id"] == str(new_id)
+    assert body["type"] == "weight"
+    assert body["value"] == {"value": 70}
+    fake_log.assert_awaited_once()
+    kwargs = fake_log.await_args.kwargs
+    assert kwargs["type"] == "weight"
+    # Single-key {"value": x} payloads are unwrapped to a scalar for the tool.
+    assert kwargs["value"] == 70
+    assert kwargs["measured_at"] == datetime(2024, 1, 1, tzinfo=UTC)
+    assert kwargs["notes"] == "morning"
+
+
+async def test_create_measurement_preserves_compound_value():
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    bp = {"systolic": 120, "diastolic": 80}
+    fake_log = AsyncMock(
+        return_value={
+            "id": new_id,
+            "type": "blood_pressure",
+            "value": bp,
+            "notes": None,
+            "measured_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.measurement_log", fake_log):
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/measurements",
+            json={"type": "blood_pressure", "value": bp},
+        )
+    assert resp.status_code == 201
+    assert resp.json()["value"] == bp
+    # Compound dicts pass through to the tool untouched.
+    assert fake_log.await_args.kwargs["value"] == bp
+
+
+async def test_create_measurement_rejects_invalid_type():
+    app, _ = _make_app()
+    resp = await _request(
+        app, "POST", "/api/health/measurements", json={"type": "cholesterol", "value": {"value": 1}}
+    )
+    assert resp.status_code == 422
+
+
+async def test_create_measurement_invalid_type_from_tool_is_404():
+    app, _ = _make_app()
+    fake_log = AsyncMock(side_effect=ValueError("Unrecognized measurement type: 'weight'"))
+    with patch(f"{_HEALTH_TOOLS}.measurement_log", fake_log):
+        resp = await _request(
+            app, "POST", "/api/health/measurements", json={"type": "weight", "value": {"value": 1}}
+        )
+    assert resp.status_code == 404
+
+
+async def test_created_measurement_is_read_back_by_get():
+    """A dashboard-logged measurement is read back by the existing GET (same fact path)."""
+    app, _ = _make_app()
+    new_id = uuid.uuid4()
+    fake_log = AsyncMock(
+        return_value={
+            "id": new_id,
+            "type": "weight",
+            "value": 70,
+            "notes": None,
+            "measured_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.measurement_log", fake_log):
+        create_resp = await _request(
+            app, "POST", "/api/health/measurements", json={"type": "weight", "value": {"value": 70}}
+        )
+    assert create_resp.status_code == 201
+
+    # Now simulate the GET surface returning the same fact (predicate measurement_weight).
+    read_row = _row(
+        {
+            "id": new_id,
+            "predicate": "measurement_weight",
+            "valid_at": _NOW,
+            "created_at": _NOW,
+            "metadata": {"value": 70},
+        }
+    )
+    app2, _ = _make_app(fetch_rows=[read_row], fetchval_result=1)
+    get_resp = await _get(app2, "/api/health/measurements")
+    assert get_resp.status_code == 200
+    data = get_resp.json()["data"]
+    assert any(m["id"] == str(new_id) and m["type"] == "weight" for m in data)
+
+
+async def test_update_measurement_delegates_to_measurement_update():
+    app, _ = _make_app()
+    meas_id = uuid.uuid4()
+    fake_update = AsyncMock(
+        return_value={
+            "id": meas_id,
+            "type": "weight",
+            "value": 72,
+            "notes": None,
+            "measured_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.measurement_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/measurements/{meas_id}", json={"value": {"value": 72}}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["value"] == {"value": 72}
+    fake_update.assert_awaited_once()
+    # Only the supplied field is forwarded (exclude_none), unwrapped to scalar.
+    assert fake_update.await_args.kwargs == {"value": 72}
+
+
+async def test_update_measurement_rewrites_type():
+    app, _ = _make_app()
+    meas_id = uuid.uuid4()
+    fake_update = AsyncMock(
+        return_value={
+            "id": meas_id,
+            "type": "blood_sugar",
+            "value": 95,
+            "notes": None,
+            "measured_at": _NOW,
+            "created_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.measurement_update", fake_update):
+        resp = await _request(
+            app,
+            "PUT",
+            f"/api/health/measurements/{meas_id}",
+            json={"type": "blood_sugar", "value": {"value": 95}},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["type"] == "blood_sugar"
+    assert fake_update.await_args.kwargs == {"type": "blood_sugar", "value": 95}
+
+
+async def test_update_measurement_empty_body_is_422():
+    app, _ = _make_app()
+    meas_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.measurement_update", AsyncMock()) as fake_update:
+        resp = await _request(app, "PUT", f"/api/health/measurements/{meas_id}", json={})
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_measurement_invalid_type_is_422():
+    app, _ = _make_app()
+    meas_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.measurement_update", AsyncMock()) as fake_update:
+        resp = await _request(
+            app, "PUT", f"/api/health/measurements/{meas_id}", json={"type": "cholesterol"}
+        )
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
+
+
+async def test_update_measurement_missing_is_404():
+    app, _ = _make_app()
+    meas_id = uuid.uuid4()
+    fake_update = AsyncMock(side_effect=ValueError(f"Measurement {meas_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.measurement_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/measurements/{meas_id}", json={"value": {"value": 5}}
+        )
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"]
+
+
+async def test_delete_measurement_delegates_to_measurement_delete():
+    app, _ = _make_app()
+    meas_id = uuid.uuid4()
+    fake_delete = AsyncMock(return_value=True)
+    with patch(f"{_HEALTH_TOOLS}.measurement_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/measurements/{meas_id}")
+    assert resp.status_code == 204
+    fake_delete.assert_awaited_once()
+    assert str(meas_id) in fake_delete.await_args.args
+
+
+async def test_delete_measurement_missing_is_404():
+    app, _ = _make_app()
+    meas_id = uuid.uuid4()
+    fake_delete = AsyncMock(side_effect=ValueError(f"Measurement {meas_id} not found"))
+    with patch(f"{_HEALTH_TOOLS}.measurement_delete", fake_delete):
+        resp = await _request(app, "DELETE", f"/api/health/measurements/{meas_id}")
+    assert resp.status_code == 404

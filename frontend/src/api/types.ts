@@ -1187,6 +1187,42 @@ export interface MeasurementParams {
   limit?: number;
 }
 
+/** The five measurement types the Health butler recognizes for direct CRUD. */
+export type MeasurementType =
+  | "weight"
+  | "blood_pressure"
+  | "heart_rate"
+  | "blood_sugar"
+  | "temperature";
+
+/**
+ * Request body for logging a measurement (POST /health/measurements).
+ *
+ * Measurements are temporal facts: `measured_at` is the reading time and
+ * multiple readings coexist by design (no supersession). `value` is JSONB and
+ * may be a scalar wrapped as `{ value: 165 }` or a compound dict such as
+ * `{ systolic: 120, diastolic: 80 }`.
+ */
+export interface MeasurementCreateRequest {
+  type: MeasurementType;
+  value: Record<string, unknown>;
+  /** Reading timestamp (ISO-8601). Defaults to now when omitted. */
+  measured_at?: string | null;
+  notes?: string | null;
+}
+
+/**
+ * Request body for updating a measurement (PUT /health/measurements/{id}).
+ * All fields optional; only supplied fields are applied to the existing entry.
+ * Changing `type` rewrites the underlying `measurement_{type}` predicate.
+ */
+export interface MeasurementUpdateRequest {
+  type?: MeasurementType;
+  value?: Record<string, unknown>;
+  measured_at?: string | null;
+  notes?: string | null;
+}
+
 /** Query parameters for medication endpoints. */
 export interface MedicationParams {
   active?: boolean;

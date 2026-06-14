@@ -90,6 +90,8 @@ import type {
   MealUpdateRequest,
   Measurement,
   MeasurementParams,
+  MeasurementCreateRequest,
+  MeasurementUpdateRequest,
   Medication,
   MedicationParams,
   MedicationCreateRequest,
@@ -1360,6 +1362,36 @@ export function getMeasurements(params?: MeasurementParams): Promise<PaginatedRe
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<Measurement>>(qs ? `/health/measurements?${qs}` : "/health/measurements");
+}
+
+/**
+ * Log a measurement. Persists through the Health butler's own fact-store path
+ * (POST /health/measurements -> measurement_log), so the new reading is read
+ * back by getMeasurements immediately.
+ */
+export function createMeasurement(body: MeasurementCreateRequest): Promise<Measurement> {
+  return apiFetch<Measurement>("/health/measurements", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Update a measurement. Only supplied fields are applied (PUT /health/measurements/{id}). */
+export function updateMeasurement(
+  measurementId: string,
+  body: MeasurementUpdateRequest,
+): Promise<Measurement> {
+  return apiFetch<Measurement>(`/health/measurements/${encodeURIComponent(measurementId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Soft-delete a measurement (DELETE /health/measurements/{id}). Returns 204. */
+export function deleteMeasurement(measurementId: string): Promise<void> {
+  return apiFetch<void>(`/health/measurements/${encodeURIComponent(measurementId)}`, {
+    method: "DELETE",
+  });
 }
 
 /** Fetch a paginated list of medications. */

@@ -27,9 +27,11 @@ from butlers.tools.health.diet import (
 )
 from butlers.tools.health.measurements import (
     VALID_MEASUREMENT_TYPES,
+    measurement_delete,
     measurement_history,
     measurement_latest,
     measurement_log,
+    measurement_update,
 )
 from butlers.tools.health.medications import (
     medication_add,
@@ -67,9 +69,11 @@ __all__ = [
     "meal_history",
     "meal_log",
     "meal_update",
+    "measurement_delete",
     "measurement_history",
     "measurement_latest",
     "measurement_log",
+    "measurement_update",
     "medication_add",
     "medication_delete",
     "medication_history",

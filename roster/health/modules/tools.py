@@ -67,6 +67,38 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """Get the most recent measurement for a type."""
         return await _meas.measurement_latest(module._get_pool(), type)
 
+    @_tool("measurements")
+    async def measurement_update(
+        measurement_id: str,
+        type: str | None = None,
+        value: Any | None = None,
+        notes: str | None = None,
+        measured_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Update a logged measurement. Allowed fields: type, value, notes,
+        measured_at.
+
+        Measurements are temporal facts, so the edit updates the existing entry
+        in place rather than superseding it. Changing type rewrites the
+        predicate; type must be one of the recognized measurement types.
+        """
+        fields = {
+            k: v
+            for k, v in {
+                "type": type,
+                "value": value,
+                "notes": notes,
+                "measured_at": measured_at,
+            }.items()
+            if v is not None
+        }
+        return await _meas.measurement_update(module._get_pool(), measurement_id, **fields)
+
+    @_tool("measurements")
+    async def measurement_delete(measurement_id: str) -> bool:
+        """Soft-delete a logged measurement (retracts the fact, audit-preserving)."""
+        return await _meas.measurement_delete(module._get_pool(), measurement_id)
+
     # =================================================================
     # Medication tools
     # =================================================================

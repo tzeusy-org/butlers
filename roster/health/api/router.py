@@ -37,6 +37,8 @@ if _spec is not None and _spec.loader is not None:
     MealCreateRequest = _models.MealCreateRequest
     MealUpdateRequest = _models.MealUpdateRequest
     Measurement = _models.Measurement
+    MeasurementCreateRequest = _models.MeasurementCreateRequest
+    MeasurementUpdateRequest = _models.MeasurementUpdateRequest
     MeasurementSource = _models.MeasurementSource
     MeasurementSourcesResponse = _models.MeasurementSourcesResponse
     Medication = _models.Medication
@@ -175,6 +177,133 @@ async def list_measurements(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# POST/PUT/DELETE /measurements — direct dashboard CRUD
+#
+# These mutations persist through the SAME fact-store path the Health butler's
+# own MCP tools use:
+#   - POST   -> measurement_log    (predicate 'measurement_{type}', TEMPORAL fact)
+#   - PUT    -> measurement_update (in-place UPDATE of the existing fact)
+#   - DELETE -> measurement_delete (forget_memory -> validity = 'retracted')
+# so a dashboard-logged reading is indistinguishable from a butler-logged one
+# and is read back by GET /measurements above.  Measurements are TEMPORAL facts:
+# ``measured_at`` becomes the fact's ``valid_at`` and multiple readings coexist
+# by design — there is NO supersession (unlike conditions/medications), so the
+# update path edits the existing fact row in place rather than re-storing.  The
+# measurement type is encoded in the predicate, so changing it rewrites the
+# ``measurement_{type}`` predicate.  No new predicates, tables, or DDL.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_measurement_value(value: object) -> object:
+    """Unwrap a single-key ``{"value": x}`` dict to its scalar.
+
+    The Measurement response model carries ``value`` as a dict, so the dashboard
+    sends scalar readings (e.g. weight) wrapped as ``{"value": 165}``.  The
+    fact-store, however, stores scalars natively (``measurement_log`` accepts
+    ``Any``).  Unwrapping the single-key form keeps round-trips consistent with
+    butler-logged readings; compound values (blood pressure, etc.) pass through
+    untouched.
+    """
+    if isinstance(value, dict) and set(value.keys()) == {"value"}:
+        return value["value"]
+    return value
+
+
+def _measurement_response(result: dict) -> Measurement:
+    """Build the Measurement response model from a write-tool result dict."""
+    raw_value = result.get("value")
+    if not isinstance(raw_value, dict):
+        raw_value = {"value": raw_value}
+    return Measurement(
+        id=str(result["id"]),
+        type=result.get("type", ""),
+        value=raw_value,
+        measured_at=_isoformat(result.get("measured_at")),
+        notes=result.get("notes"),
+        created_at=_isoformat(result.get("created_at")),
+    )
+
+
+@router.post("/measurements", response_model=Measurement, status_code=status.HTTP_201_CREATED)
+async def create_measurement(
+    body: MeasurementCreateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Measurement:
+    """Log a measurement via the butler's ``measurement_log`` fact-store path.
+
+    Writes a temporal fact (predicate = ``measurement_{type}``, scope =
+    ``health``, ``valid_at`` = measured_at) — the same surface the
+    ``measurement_log`` MCP tool writes — so the new reading appears in
+    GET /measurements immediately.  Returns 404 if ``type`` is unrecognized.
+    """
+    from butlers.tools.health import measurement_log
+
+    pool = _pool(db)
+    try:
+        result = await measurement_log(
+            pool,
+            type=body.type,
+            value=_normalize_measurement_value(body.value),
+            notes=body.notes,
+            measured_at=body.measured_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _measurement_response(result)
+
+
+@router.put("/measurements/{measurement_id}", response_model=Measurement)
+async def update_measurement(
+    measurement_id: str,
+    body: MeasurementUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Measurement:
+    """Update a measurement via the in-place ``measurement_update`` fact path.
+
+    Only the supplied (non-null) fields are applied to the existing measurement
+    fact.  Because measurements are temporal facts, the edit updates the
+    existing row in place (rather than superseding it); changing ``type``
+    rewrites the ``measurement_{type}`` predicate.  Returns 404 if the
+    measurement does not exist and 422 if no updatable fields were provided.
+    """
+    from butlers.tools.health import measurement_update
+
+    pool = _pool(db)
+    updates = body.model_dump(exclude_none=True)
+    if "value" in updates:
+        updates["value"] = _normalize_measurement_value(updates["value"])
+    if not updates:
+        raise HTTPException(
+            status_code=422,
+            detail="No updatable fields provided",
+        )
+    try:
+        result = await measurement_update(pool, measurement_id, **updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _measurement_response(result)
+
+
+@router.delete("/measurements/{measurement_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_measurement(
+    measurement_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a measurement via ``measurement_delete`` (validity = retracted).
+
+    The fact is retained for audit but excluded from all active read surfaces.
+    Returns 204 on success and 404 if no active measurement with this id exists.
+    """
+    from butlers.tools.health import measurement_delete
+
+    pool = _pool(db)
+    try:
+        await measurement_delete(pool, measurement_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
