@@ -992,11 +992,38 @@ async def list_rules(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
     tool_name: str | None = Query(default=None),
-    active_only: bool = Query(default=True),
+    active: bool | None = Query(default=None),
+    butler: str | None = Query(default=None),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalRule]:
-    """List standing approval rules with filtering and pagination."""
-    target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
+    """List standing approval rules with filtering and pagination.
+
+    The ``active`` parameter is tri-state, matching the dashboard's
+    status filter:
+
+    * ``active=true``  → only active rules (the dashboard default).
+    * ``active=false`` → only inactive/revoked rules (``active = false``).
+    * omitted          → all rules regardless of status.
+
+    Revoking a rule sets ``active = false``, so ``active=false`` is how the
+    dashboard surfaces revoked rules.
+
+    When ``butler`` is supplied, only that butler's rules are returned;
+    without it, rules are aggregated across every butler that owns the
+    ``approval_rules`` table.
+    """
+    # Short-circuit: unknown butler can't own any rules — avoid scanning pools.
+    if butler is not None and butler not in db_mgr.butler_names:
+        return PaginatedResponse(
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        )
+
+    named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
+    if butler is not None:
+        target_pools = [p for n, p in named_pools if n == butler]
+    else:
+        target_pools = [p for _n, p in named_pools]
 
     if not target_pools:
         return PaginatedResponse(
@@ -1008,8 +1035,10 @@ async def list_rules(
     args = []
     idx = 1
 
-    if active_only:
-        conditions.append("active = true")
+    if active is not None:
+        conditions.append(f"active = ${idx}")
+        args.append(active)
+        idx += 1
 
     if tool_name is not None:
         conditions.append(f"tool_name = ${idx}")
