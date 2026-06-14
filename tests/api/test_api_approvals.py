@@ -298,6 +298,208 @@ async def test_list_executed_actions_butler_filter(app):
 
 
 # ---------------------------------------------------------------------------
+# list_rules: active (tri-state) + butler filters (bu-2176m)
+# ---------------------------------------------------------------------------
+
+
+def _make_rule(*, tool_name="send_email", active=True):
+    """Return a dict matching approval_rules columns."""
+    return {
+        "id": uuid4(),
+        "tool_name": tool_name,
+        "arg_constraints": {},
+        "description": "test rule",
+        "created_from": None,
+        "created_at": _NOW,
+        "expires_at": None,
+        "max_uses": None,
+        "use_count": 0,
+        "active": active,
+    }
+
+
+def _rules_app_with_capture(app, *, rows):
+    """Mock DB for /rules that records the SQL + args passed to fetch/fetchval."""
+    captured: dict[str, object] = {}
+    mock_conn = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "approval_rules" in sql and "COUNT" not in sql:
+            captured["sql"] = sql
+            captured["args"] = args
+        return rows
+
+    async def _fetchval(sql, *args):
+        if "to_regclass" in sql:
+            return True
+        if "COUNT" in sql:
+            captured["count_sql"] = sql
+            captured["count_args"] = args
+            return len(rows)
+        return 0
+
+    mock_conn.fetch = AsyncMock(side_effect=_fetch)
+    mock_conn.fetchval = AsyncMock(side_effect=_fetchval)
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool.return_value = mock_pool
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+    return app, captured
+
+
+async def test_list_rules_default_returns_active_only_filter_absent(app):
+    """No params: query carries no ``active`` WHERE filter (returns all rows)."""
+    app, captured = _rules_app_with_capture(app, rows=[_make_rule(active=True)])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/rules")
+    assert resp.status_code == 200
+    assert "active = " not in captured["sql"]
+    assert captured["args"] == ()
+
+
+async def test_list_rules_active_true_filters_to_active(app):
+    """active=true threads ``active = $1`` with True into the query."""
+    app, captured = _rules_app_with_capture(app, rows=[_make_rule(active=True)])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/rules?active=true")
+    assert resp.status_code == 200
+    assert "active = $1" in captured["sql"]
+    assert captured["args"] == (True,)
+
+
+async def test_list_rules_active_false_returns_inactive_revoked(app):
+    """active=false surfaces inactive/revoked rules (active = false)."""
+    revoked = _make_rule(active=False)
+    app, captured = _rules_app_with_capture(app, rows=[revoked])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/rules?active=false")
+    assert resp.status_code == 200
+    assert "active = $1" in captured["sql"]
+    assert captured["args"] == (False,)
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["active"] is False
+
+
+def _rules_app_with_two_butlers(app, *, home_rows=None, general_rows=None):
+    """Mock DB with two butlers (home, general) each owning approval_rules."""
+    home_rows = home_rows or []
+    general_rows = general_rows or []
+
+    def _make_conn(rows):
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=rows)
+
+        def fetchval_mock(*args, **kwargs):
+            sql = args[0] if args else ""
+            if "to_regclass" in sql:
+                return True
+            return len(rows)
+
+        conn.fetchval = AsyncMock(side_effect=fetchval_mock)
+        conn.fetchrow = AsyncMock(return_value=None)
+        return conn
+
+    home_conn = _make_conn(home_rows)
+    general_conn = _make_conn(general_rows)
+
+    class _MockAcquire:
+        def __init__(self, conn):
+            self._conn = conn
+
+        async def __aenter__(self):
+            return self._conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    home_pool = AsyncMock()
+    home_pool.acquire = MagicMock(side_effect=lambda: _MockAcquire(home_conn))
+    general_pool = AsyncMock()
+    general_pool.acquire = MagicMock(side_effect=lambda: _MockAcquire(general_conn))
+
+    pools = {"home": home_pool, "general": general_pool}
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["home", "general"]
+    mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+    return app
+
+
+async def test_list_rules_butler_filter_returns_only_that_butler(app):
+    """?butler=home returns only home's rules, not general's."""
+    app = _rules_app_with_two_butlers(
+        app,
+        home_rows=[_make_rule(tool_name="notify")],
+        general_rows=[_make_rule(tool_name="send_telegram")],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/rules?butler=home")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) == 1
+    assert data[0]["tool_name"] == "notify"
+
+
+async def test_list_rules_no_butler_filter_aggregates_all(app):
+    """Without ?butler=, rules from all butlers are aggregated."""
+    app = _rules_app_with_two_butlers(
+        app,
+        home_rows=[_make_rule(tool_name="notify")],
+        general_rows=[_make_rule(tool_name="send_telegram")],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/rules")
+    assert resp.status_code == 200
+    tools = {r["tool_name"] for r in resp.json()["data"]}
+    assert tools == {"notify", "send_telegram"}
+
+
+async def test_list_rules_unknown_butler_returns_empty(app):
+    """?butler=nonexistent returns empty list, not 404."""
+    app = _rules_app_with_two_butlers(app, home_rows=[_make_rule()])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/rules?butler=nonexistent")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+
+
+# ---------------------------------------------------------------------------
 # §8.7 — defer bounds, policy round-trip, audit.append on verbs
 # ---------------------------------------------------------------------------
 
