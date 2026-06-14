@@ -242,6 +242,33 @@ async def test_unknown_provider_callback_returns_404(app):
     assert resp.status_code == 404
 
 
+async def test_catalog_oauth_provider_not_in_registry_returns_not_configured(app):
+    """A provider declared kind='oauth' in the catalog but absent from the OAuth
+    registry (e.g. whatsapp) returns an honest 'not configured' response, NOT a
+    confusing unknown_provider/404 and NOT a fabricated redirect."""
+    _make_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/oauth/whatsapp/start", params={"redirect": "false"})
+    assert resp.status_code == 501
+    body = resp.json()
+    assert body["error"] == "oauth_provider_not_configured"
+    assert body["provider"] == "whatsapp"
+    # Honest human-readable message naming the provider; no authorization_url leaked.
+    assert "not yet available" in body["message"].lower()
+    assert "authorization_url" not in body
+
+
+def test_whatsapp_is_catalog_oauth_but_unregistered():
+    """Guard the precondition this fix targets: whatsapp is kind='oauth' in the
+    catalog yet intentionally absent from _PROVIDER_REGISTRY (no fake provider)."""
+    from butlers.secrets_provider_catalog import PROVIDER_CATALOG
+
+    assert PROVIDER_CATALOG["whatsapp"].kind == "oauth"
+    assert "whatsapp" not in oauth_module._PROVIDER_REGISTRY
+
+
 # ===========================================================================
 # 5. Generalised /api/oauth/{provider}/start — google parity snapshots
 # ===========================================================================

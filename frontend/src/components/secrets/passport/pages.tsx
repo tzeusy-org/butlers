@@ -952,11 +952,17 @@ export function PageUser({
   // initiates the OAuth dance and returns a redirect_url.
   const [reauthPending, setReauthPending] = React.useState(false);
   const [reauthError, setReauthError] = React.useState<string | null>(null);
+  // Honest "not yet available" notice: the backend returns HTTP 501 when a
+  // catalog-declared oauth provider (e.g. whatsapp) has no OAuth integration
+  // wired up. That is not a failure to apologise for in red — it is an honest
+  // "not built yet" message, surfaced in a neutral tone below.
+  const [reauthNotAvailable, setReauthNotAvailable] = React.useState<string | null>(null);
 
   async function handleReauthorize() {
     if (reauthPending) return;
     setReauthPending(true);
     setReauthError(null);
+    setReauthNotAvailable(null);
     try {
       const resp = await reauthorizeUserCredential(credential.provider, credential.identity);
       // Follow the returned redirect_url to begin the OAuth dance.
@@ -965,7 +971,12 @@ export function PageUser({
       }
       window.location.href = resp.data.redirect_url;
     } catch (err) {
-      setReauthError(err instanceof Error ? err.message : "Reauthorization failed.");
+      if (err instanceof ApiError && err.status === 501) {
+        // Provider OAuth is not yet available — honest, non-error messaging.
+        setReauthNotAvailable(err.message || `${provider.label} connect is not yet available.`);
+      } else {
+        setReauthError(err instanceof Error ? err.message : "Reauthorization failed.");
+      }
       setReauthPending(false);
     }
   }
@@ -1386,6 +1397,13 @@ export function PageUser({
         <Mono size={11} color="var(--red)" className="mt-1">
           {reauthError}
         </Mono>
+      )}
+      {reauthNotAvailable && (
+        <div className="mt-1" data-reauth-not-available={credential.provider}>
+          <Mono size={11} color="var(--dim)">
+            {reauthNotAvailable}
+          </Mono>
+        </div>
       )}
       <CommitFooter
         left={

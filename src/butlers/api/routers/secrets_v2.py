@@ -3085,6 +3085,23 @@ async def reauthorize_user_credential(
         if meta is None or meta.kind != "oauth":
             raise HTTPException(status_code=404, detail="Credential not found")
 
+    # Honest "not yet available" guard: a provider may be declared kind='oauth'
+    # in the secrets catalog (e.g. whatsapp) yet have no OAuth integration wired
+    # into the OAuth router's _PROVIDER_REGISTRY (no real OAuth app credentials,
+    # support undecided).  Returning a redirect_url to /api/oauth/<provider>/start
+    # would land the browser on a confusing JSON "unknown_provider" page.  Detect
+    # that case here and return a clear 501 with a stable error code so the FE can
+    # show an honest "<Provider> connect is not yet available" message instead.
+    from butlers.api.routers.oauth import _PROVIDER_REGISTRY  # noqa: PLC0415
+
+    if provider not in _PROVIDER_REGISTRY:
+        meta = PROVIDER_CATALOG.get(provider)
+        label = meta.label if meta is not None else provider
+        raise HTTPException(
+            status_code=501,
+            detail=f"{label} OAuth connect is not yet available.",
+        )
+
     # Build the OAuth start URL.  page_of_origin=secrets so the callback
     # routes the user back to the /secrets page on completion.
     params: dict[str, str] = {"page_of_origin": "secrets"}

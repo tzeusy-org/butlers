@@ -125,6 +125,7 @@ from butlers.google_credentials import (
     store_app_credentials,
     store_google_credentials,
 )
+from butlers.secrets_provider_catalog import PROVIDER_CATALOG
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,20 @@ _PROVIDER_REGISTRY: dict[str, _ProviderConfig] = {
 def _get_provider_config(provider: str) -> _ProviderConfig | None:
     """Return the _ProviderConfig for *provider*, or None if unknown."""
     return _PROVIDER_REGISTRY.get(provider)
+
+
+def _is_catalog_oauth_provider(provider: str) -> bool:
+    """Return True when *provider* is declared ``kind='oauth'`` in the secrets catalog.
+
+    Used to distinguish a known-but-not-yet-wired OAuth provider (e.g.
+    ``whatsapp``, which appears in ``PROVIDER_CATALOG`` as ``kind='oauth'`` but
+    has no ``_PROVIDER_REGISTRY`` entry because no real OAuth app is configured)
+    from a genuinely-unknown / typo'd provider that is absent from the catalog
+    entirely.  The former gets an honest ``oauth_provider_not_configured``
+    response; the latter keeps the existing ``unknown_provider`` 404.
+    """
+    meta = PROVIDER_CATALOG.get(provider)
+    return meta is not None and meta.kind == "oauth"
 
 
 # ---------------------------------------------------------------------------
@@ -2613,6 +2628,29 @@ async def oauth_provider_start(
     """
     provider_cfg = _get_provider_config(provider)
     if provider_cfg is None:
+        # Distinguish a catalog-declared oauth provider that simply has not been
+        # wired into _PROVIDER_REGISTRY yet (e.g. whatsapp — no real OAuth app
+        # credentials, support undecided) from a genuinely-unknown / typo'd
+        # provider.  The former gets an honest "not yet available" response so the
+        # UI can say so plainly instead of surfacing a confusing 404.
+        if _is_catalog_oauth_provider(provider):
+            meta = PROVIDER_CATALOG[provider]
+            logger.info(
+                "OAuth start requested for catalog provider %r (kind=oauth) that is not "
+                "registered in _PROVIDER_REGISTRY — returning oauth_provider_not_configured.",
+                provider,
+            )
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "error": "oauth_provider_not_configured",
+                    "provider": provider,
+                    "message": (
+                        f"{meta.label} OAuth connect is not yet available. "
+                        "This provider has no OAuth integration configured on the server."
+                    ),
+                },
+            )
         return JSONResponse(
             status_code=404,
             content={
