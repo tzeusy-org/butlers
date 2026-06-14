@@ -893,7 +893,6 @@ export interface Group {
   name: string;
   description: string | null;
   member_count: number;
-  labels: Label[];
   created_at: string;
   updated_at: string;
 }

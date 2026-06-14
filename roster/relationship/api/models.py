@@ -179,7 +179,6 @@ class Group(BaseModel):
     name: str
     description: str | None = None
     member_count: int = 0
-    labels: list[Label] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

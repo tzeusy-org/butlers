@@ -2279,7 +2279,6 @@ async def list_groups(
             name=r["name"],
             description=r["description"],
             member_count=r["member_count"],
-            labels=[],
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
@@ -2329,7 +2328,6 @@ async def get_group(
         name=row["name"],
         description=row["description"],
         member_count=row["member_count"],
-        labels=[],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
