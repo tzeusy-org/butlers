@@ -702,6 +702,14 @@ function LedgerRow({
           e.stopPropagation();
           if (eligible) onToggleSelect();
         }}
+        onKeyDown={(e) => {
+          if (eligible && (e.key === " " || e.key === "Enter")) {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggleSelect();
+          }
+        }}
+        tabIndex={eligible ? 0 : -1}
         className={["flex items-center", eligible ? "" : "cursor-not-allowed"].join(" ")}
         title={eligible ? undefined : (ineligibleReason ?? undefined)}
         data-testid={eligible ? "row-checkbox" : "row-checkbox-disabled"}
