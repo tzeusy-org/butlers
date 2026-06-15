@@ -9,9 +9,9 @@
  * - useConnectorDetail — full connector metadata (liveness, state, counters, etc.)
  * - useConnectorStats  — 24h timeseries for the histogram
  *
- * OAuth scopes surface: not yet available from the real backend.
- * The ScopeList renders the explicit "unavailable" state (per spec AC3 —
- * unsupported/unavailable state must be rendered explicitly, not hidden).
+ * OAuth scopes are populated live from the backend via useConnectorDetail
+ * and rendered by ScopeList. When the connector has no scopes the list
+ * renders the explicit "unavailable" state (spec AC3).
  *
  * Auth status is derived from liveness + state via deriveConnectorDispatchInfo,
  * which is the same function used by the roster's AttentionStrip and row —

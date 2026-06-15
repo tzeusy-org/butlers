@@ -126,34 +126,32 @@ async def _connector_stats_from_db(
     period: PeriodLiteral,
     db: DatabaseManager,
 ) -> ApiResponse:
-    """Compute per-connector time-series from connector_heartbeat_log deltas."""
+    """Compute per-connector time-series from public.ingestion_events.
+
+    Sources volume from public.ingestion_events (the same table the roster
+    sparkline and recent-events list use) rather than heartbeat counter-deltas.
+    This correctly reflects all transports — including websocket connectors such
+    as home_assistant that never increment connector_heartbeat_log counters.
+    """
     pool = _pool(db)
     trunc = _DB_TRUNC[period]
     interval = _DB_INTERVAL[period]
     try:
         rows = await pool.fetch(
-            f"SELECT date_trunc('{trunc}', received_at) AS bucket,"
-            f" GREATEST(0, MAX(counter_messages_ingested)"
-            f"   - MIN(NULLIF(counter_messages_ingested, 0))) AS messages_ingested,"
-            f" GREATEST(0, MAX(counter_messages_failed)"
-            f"   - MIN(NULLIF(counter_messages_failed, 0))) AS messages_failed,"
-            f" GREATEST(0, MAX(counter_source_api_calls)"
-            f"   - MIN(counter_source_api_calls)) AS source_api_calls,"
-            f" GREATEST(0, MAX(counter_dedupe_accepted)"
-            f"   - MIN(counter_dedupe_accepted)) AS dedupe_accepted,"
-            f" COUNT(*) AS heartbeat_count,"
-            f" COUNT(*) FILTER (WHERE state = 'healthy') AS healthy_count,"
-            f" COUNT(*) FILTER (WHERE state = 'degraded') AS degraded_count,"
-            f" COUNT(*) FILTER (WHERE state = 'error') AS error_count"
-            f" FROM connector_heartbeat_log"
-            f" WHERE connector_type = $1 AND endpoint_identity = $2"
+            f"SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')"
+            f" AT TIME ZONE 'UTC' AS bucket,"
+            f" COUNT(*) FILTER (WHERE status = 'ingested') AS messages_ingested,"
+            f" COUNT(*) FILTER (WHERE status = 'failed') AS messages_failed"
+            f" FROM public.ingestion_events"
+            f" WHERE COALESCE(source_provider, source_channel) = $1"
+            f"   AND source_endpoint_identity = $2"
             f"   AND received_at >= NOW() - INTERVAL '{interval}'"
             f" GROUP BY bucket ORDER BY bucket",
             connector_type,
             endpoint_identity,
         )
     except Exception:
-        logger.warning("heartbeat_log fallback query failed", exc_info=True)
+        logger.warning("ingestion_events fallback query failed", exc_info=True)
         return ApiResponse(data=[])
 
     if period == "24h":
@@ -164,12 +162,6 @@ async def _connector_stats_from_db(
                 hour=r["bucket"].isoformat(),
                 messages_ingested=int(r["messages_ingested"]),
                 messages_failed=int(r["messages_failed"]),
-                source_api_calls=int(r["source_api_calls"]),
-                dedupe_accepted=int(r["dedupe_accepted"]),
-                heartbeat_count=int(r["heartbeat_count"]),
-                healthy_count=int(r["healthy_count"]),
-                degraded_count=int(r["degraded_count"]),
-                error_count=int(r["error_count"]),
             )
             for r in rows
         ]
@@ -181,12 +173,6 @@ async def _connector_stats_from_db(
                 day=r["bucket"].date().isoformat(),
                 messages_ingested=int(r["messages_ingested"]),
                 messages_failed=int(r["messages_failed"]),
-                source_api_calls=int(r["source_api_calls"]),
-                dedupe_accepted=int(r["dedupe_accepted"]),
-                heartbeat_count=int(r["heartbeat_count"]),
-                healthy_count=int(r["healthy_count"]),
-                degraded_count=int(r["degraded_count"]),
-                error_count=int(r["error_count"]),
             )
             for r in rows
         ]

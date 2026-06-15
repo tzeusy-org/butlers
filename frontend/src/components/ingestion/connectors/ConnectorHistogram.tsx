@@ -5,6 +5,9 @@
  * Peak bar uses full foreground; others use 60% opacity. Zero bars use the
  * border color. Hour labels below (00 / 03 / 06 / 09 / 12 / 15 / 18 / 21 / 23).
  *
+ * All-zero windows show an explicit "no throughput recorded" empty state
+ * instead of a misleading min-height baseline.
+ *
  * No card chrome. One elevation. No color fills beyond foreground treatment.
  *
  * Spec: docs/redesigns/ingestion-connector-detail.jsx §ConnectorHistogram
@@ -23,18 +26,47 @@ const HOUR_LABELS = ['00', '03', '06', '09', '12', '15', '18', '21', '23']
  *
  * Peak bar rendered in full foreground; others at 60% opacity.
  * Zero bars use the border color. Hour labels shown at known offsets below.
+ * When all buckets are zero, renders an explicit "no throughput recorded" state.
  */
 export function ConnectorHistogram({ data, height = 96 }: ConnectorHistogramProps) {
   const bars = data.length === 24 ? data : Array(24).fill(0).map((_, i) => data[i] ?? 0)
-  const peak = Math.max(...bars, 1)
   const peakValue = Math.max(...bars)
 
   const barWidth = 3
   const barGap = 1
   const totalWidth = bars.length * (barWidth + barGap) - barGap
 
+  // All-zero window: no data recorded — render explicit empty state rather
+  // than a row of min-height baseline bars that look like real (near-zero) data.
+  if (peakValue === 0) {
+    return (
+      <div data-testid="histogram-empty">
+        <div
+          style={{ height }}
+          className="flex items-center justify-center border border-dashed border-border rounded-sm"
+        >
+          <span className="font-mono text-[9px] tracking-[0.12em] uppercase text-muted-foreground/40">
+            no throughput recorded
+          </span>
+        </div>
+        <div className="flex justify-between mt-1.5">
+          {HOUR_LABELS.map((label) => (
+            <span
+              key={label}
+              className="font-mono text-[9.5px] tracking-[0.06em] text-muted-foreground/60"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  const peak = peakValue
+
   return (
-    <div>
+    <div data-testid="histogram-bars">
       <svg
         viewBox={`0 0 ${totalWidth} ${height}`}
         preserveAspectRatio="none"
