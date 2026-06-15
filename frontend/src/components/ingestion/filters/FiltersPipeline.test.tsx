@@ -180,6 +180,7 @@ function makePriorityContact(
     added_by: 'dashboard',
     name: 'VIP Contact',
     contact_info_values: ['vip@example.com'],
+    is_inert: false,
     ...overrides,
   }
 }
@@ -715,6 +716,74 @@ describe('AC3: priority senders read + mutation (public.priority_contacts)', () 
 
     const errEl = container.querySelector('[data-testid="priority-senders-error"]')
     expect(errEl).not.toBeNull()
+  })
+
+  it('shows inert warning badge when is_inert=true', () => {
+    const inertEntry = makePriorityContact({
+      contact_id: 'contact-inert',
+      name: 'No Entity',
+      contact_info_values: [],
+      is_inert: true,
+    })
+
+    renderComponent(container, root, (
+      <PrioritySendersBlock
+        contacts={[inertEntry]}
+        loaded={true}
+        error={false}
+        mutationError={null}
+      />
+    ))
+
+    const badge = container.querySelector('[data-testid="priority-sender-inert-contact-inert"]')
+    expect(badge, 'inert warning badge should be present').not.toBeNull()
+    expect(badge?.textContent).toContain('no email fact')
+  })
+
+  it('does not show inert warning badge when is_inert=false', () => {
+    const activeEntry = makePriorityContact({
+      contact_id: 'contact-active',
+      name: 'Active VIP',
+      contact_info_values: ['vip@example.com'],
+      is_inert: false,
+    })
+
+    renderComponent(container, root, (
+      <PrioritySendersBlock
+        contacts={[activeEntry]}
+        loaded={true}
+        error={false}
+        mutationError={null}
+      />
+    ))
+
+    const badge = container.querySelector('[data-testid="priority-sender-inert-contact-active"]')
+    expect(badge, 'inert warning badge should NOT be present for active contact').toBeNull()
+  })
+
+  it('shows inert badge on inert row but not on active row in mixed list', () => {
+    const inertEntry = makePriorityContact({
+      contact_id: 'contact-inert',
+      is_inert: true,
+      contact_info_values: [],
+    })
+    const activeEntry = makePriorityContact({
+      contact_id: 'contact-active',
+      is_inert: false,
+      contact_info_values: ['active@example.com'],
+    })
+
+    renderComponent(container, root, (
+      <PrioritySendersBlock
+        contacts={[inertEntry, activeEntry]}
+        loaded={true}
+        error={false}
+        mutationError={null}
+      />
+    ))
+
+    expect(container.querySelector('[data-testid="priority-sender-inert-contact-inert"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="priority-sender-inert-contact-active"]')).toBeNull()
   })
 })
 

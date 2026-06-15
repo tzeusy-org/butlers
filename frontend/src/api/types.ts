@@ -3013,6 +3013,14 @@ export interface PriorityContactEntry {
   name: string | null;
   /** Non-sensitive channel identifiers (email/handle) from entity_facts. */
   contact_info_values: string[];
+  /**
+   * True when this entry would silently match nothing at runtime.
+   * The Gmail policy evaluator resolves priority senders via a 3-hop join
+   * (priority_contacts → contacts.entity_id → entity_facts has-email).
+   * A contact is inert when it has no linked entity_id or its entity carries
+   * no active has-email fact — the row saves OK but never matches any sender.
+   */
+  is_inert: boolean;
 }
 
 /** Request body for POST /api/ingestion/priority-contacts. */
