@@ -42,7 +42,7 @@ import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 // ---------------------------------------------------------------------------
 
 const COLUMN_LABELS = [
-  '',          // health dot
+  '',          // liveness dot (top) + state dot (bottom)
   'channel',
   'function',
   '24h activity',
