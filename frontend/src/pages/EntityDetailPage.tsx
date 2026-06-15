@@ -2590,6 +2590,16 @@ export default function EntityDetailPage() {
   const [forgetDialogOpen, setForgetDialogOpen] = useState(false);
   const [forgetError, setForgetError] = useState<string | null>(null);
 
+  // Name-edit state declared here so handleDetailKeyDown (below) can reference
+  // handleStartEditName without forward-reference lint issues.
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState("");
+
+  const handleStartEditName = useCallback(() => {
+    setDraftName(entity?.canonical_name ?? "");
+    setEditingName(true);
+  }, [entity?.canonical_name]);
+
   // Merge-review entry point: the detail page's `m` key opens the compare view
   // when duplicate evidence exists for this entity (relationship-merge-review
   // "Single-pair review UX"). Duplicate evidence + the peer entity come from the
@@ -2698,9 +2708,11 @@ export default function EntityDetailPage() {
   // (detailRootRef + tabIndex below) — NEVER to window — so `m`/`j`/`k`/`Esc`
   // are active only while this page holds keyboard focus and never shadow the
   // app-wide ⌘K / "/" shortcuts or another route's bindings.
-  //   m            open the merge-review compare view (when a duplicate peer exists)
-  //   k / j        step to the previous / next entity in Index order
-  //   Esc          return to the Index
+  //   m                open the merge-review compare view (when a duplicate peer exists)
+  //   k / j            step to the previous / next entity in Index order
+  //   Esc              return to the Index
+  //   e                start editing the entity name
+  //   Shift+Backspace  open the forget confirmation dialog (no unconfirmed deletion)
   const handleDetailKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -2720,9 +2732,15 @@ export default function EntityDetailPage() {
       } else if (e.key === "Escape") {
         e.preventDefault();
         void navigate("/entities");
+      } else if (e.key === "e") {
+        e.preventDefault();
+        handleStartEditName();
+      } else if (e.shiftKey && e.key === "Backspace") {
+        e.preventDefault();
+        setForgetDialogOpen(true);
       }
     },
-    [duplicatePeerId, openMergeReview, stepSibling, navigate],
+    [duplicatePeerId, openMergeReview, stepSibling, navigate, handleStartEditName, setForgetDialogOpen],
   );
 
   const handleForgetConfirm = async () => {
@@ -2736,14 +2754,6 @@ export default function EntityDetailPage() {
     } catch (err) {
       setForgetError(err instanceof Error ? err.message : "Failed to forget entity");
     }
-  };
-
-  const [editingName, setEditingName] = useState(false);
-  const [draftName, setDraftName] = useState("");
-
-  const handleStartEditName = () => {
-    setDraftName(entity?.canonical_name ?? "");
-    setEditingName(true);
   };
 
   const handleSaveName = () => {

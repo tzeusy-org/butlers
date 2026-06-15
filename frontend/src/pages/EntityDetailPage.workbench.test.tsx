@@ -409,4 +409,60 @@ describe("EntityDetailPage — Workbench keyboard map", () => {
     });
     expect(navigateMock).not.toHaveBeenCalled();
   });
+
+  it("e starts editing the entity name (name input appears)", () => {
+    render();
+    // Before pressing 'e', no text input for the name should be visible.
+    const inputsBefore = container.querySelectorAll("input");
+    const nameInputBefore = Array.from(inputsBefore).find(
+      (el) => el.classList.contains("text-2xl"),
+    );
+    expect(nameInputBefore).toBeUndefined();
+
+    dispatchKey("e");
+
+    // After pressing 'e', the name-edit inline input should appear.
+    const inputsAfter = container.querySelectorAll("input");
+    const nameInputAfter = Array.from(inputsAfter).find(
+      (el) => el.classList.contains("text-2xl"),
+    );
+    expect(nameInputAfter).toBeDefined();
+  });
+
+  it("Shift+Backspace opens the forget confirmation dialog without confirming", () => {
+    render();
+    // Dialog should not be open initially (Radix portals render into document.body).
+    expect(document.body.querySelector("[role='alertdialog']")).toBeNull();
+
+    dispatchKey("Backspace", { shiftKey: true });
+
+    // Forget confirmation dialog should be open; entity should NOT be forgotten.
+    expect(document.body.querySelector("[role='alertdialog']")).toBeTruthy();
+  });
+
+  it("e is ignored when the event target is an INPUT element", () => {
+    render();
+    // Press 'e' first to open the edit input, then fire another 'e' from inside
+    // the input — the second dispatch should not re-trigger (no crash / no double).
+    dispatchKey("e");
+    const nameInput = Array.from(container.querySelectorAll("input")).find(
+      (el) => el.classList.contains("text-2xl"),
+    ) as HTMLInputElement | undefined;
+    expect(nameInput).toBeDefined();
+
+    // Dispatch 'e' from the input itself — guard should suppress the handler.
+    act(() => {
+      nameInput!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "e", bubbles: true }),
+      );
+    });
+    // Navigate should still not have been called.
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("Shift+Backspace is ignored when meta key is held", () => {
+    render();
+    dispatchKey("Backspace", { shiftKey: true, metaKey: true });
+    expect(document.body.querySelector("[role='alertdialog']")).toBeNull();
+  });
 });
