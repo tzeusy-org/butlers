@@ -96,19 +96,6 @@ export function ConnectorsListPage() {
     (p) => !registeredTypes.has(p.connector_type),
   );
 
-  // Derive online/stale/offline counts from client-side liveness (same logic
-  // as the LivenessBadge on each card) so the summary bar matches the cards.
-  // The backend summary counts by DB `state` (healthy/degraded/error) which
-  // uses different semantics from liveness.
-  const correctedSummary = summaryResp?.data
-    ? {
-        ...summaryResp.data,
-        connectors_online: connectors.filter((c) => c.liveness === "online").length,
-        connectors_stale: connectors.filter((c) => c.liveness === "stale").length,
-        connectors_offline: connectors.filter((c) => c.liveness === "offline").length,
-      }
-    : undefined;
-
   // Pipeline stats for aggregates_available flag
   const { data: pipelineStats } = usePipelineStats("24h");
   const aggregatesAvailable = pipelineStats?.aggregates_available !== false;
@@ -131,8 +118,8 @@ export function ConnectorsListPage() {
       {/* Period selector + summary bar */}
       <div className="flex items-center justify-between">
         <ConnectorSummaryBar
-          summary={correctedSummary}
-          isLoading={summaryLoading || connectorsLoading}
+          summary={summaryResp?.data}
+          isLoading={summaryLoading}
         />
         <PeriodSelector value={period} onChange={handlePeriodChange} />
       </div>
