@@ -20,7 +20,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { EntityDetail, EntityFact, NeighbourEntry } from "@/api/types";
+import type { EntityFact, NeighbourEntry } from "@/api/types";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -51,9 +51,9 @@ vi.mock("@/hooks/use-memory", () => ({
 const useRelationshipEntityQueue = vi.fn();
 const useEntityNeighbours = vi.fn();
 const useRelationshipEntities = vi.fn();
-const useRelationshipEntitiesByIds = vi.fn(() => ({
-  data: { items: [], total: 0, limit: 1, offset: 0 },
-}));
+const useRelationshipEntitiesByIds = vi
+  .fn()
+  .mockReturnValue({ data: { items: [], total: 0, limit: 1, offset: 0 } });
 const useEntityFacts = vi.fn();
 
 vi.mock("@/hooks/use-entities", () => ({
@@ -72,12 +72,12 @@ vi.mock("@/hooks/use-entities", () => ({
   useMarkEntityView: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityCoreDates: vi.fn(() => ({ data: { items: [] }, isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useEntityNeighbours: (...args: Parameters<typeof useEntityNeighbours>) => useEntityNeighbours(...args),
-  useRelationshipEntities: (...args: Parameters<typeof useRelationshipEntities>) => useRelationshipEntities(...args),
-  useRelationshipEntitiesByIds: (...args: Parameters<typeof useRelationshipEntitiesByIds>) => useRelationshipEntitiesByIds(...args),
+  useEntityNeighbours: (...args: Parameters<typeof import("@/hooks/use-entities").useEntityNeighbours>) => useEntityNeighbours(...args),
+  useRelationshipEntities: (...args: Parameters<typeof import("@/hooks/use-entities").useRelationshipEntities>) => useRelationshipEntities(...args),
+  useRelationshipEntitiesByIds: (...args: Parameters<typeof import("@/hooks/use-entities").useRelationshipEntitiesByIds>) => useRelationshipEntitiesByIds(...args),
   useArchiveRelationshipEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useEntityFacts: (...args: Parameters<typeof useEntityFacts>) => useEntityFacts(...args),
-  useRelationshipEntityQueue: (...args: Parameters<typeof useRelationshipEntityQueue>) => useRelationshipEntityQueue(...args),
+  useEntityFacts: (...args: Parameters<typeof import("@/hooks/use-entities").useEntityFacts>) => useEntityFacts(...args),
+  useRelationshipEntityQueue: (...args: Parameters<typeof import("@/hooks/use-entities").useRelationshipEntityQueue>) => useRelationshipEntityQueue(...args),
   useCompareEntities: vi.fn(() => ({
     mutateAsync: vi.fn().mockResolvedValue({
       a: { entity: { id: "entity-001", canonical_name: "A", entity_type: "person", aliases: [], tier: null, state: "active" }, identity_facts: [], narrative_facts: [] },
@@ -106,34 +106,9 @@ vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
 
 import { useEntity } from "@/hooks/use-memory";
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
+import { DUP_QUEUE, EMPTY_QUEUE, ENTITY } from "@/test-utils/entity-detail-page";
 
 // localStorage is provided by jsdom; default the detail mode to workbench.
-
-const ENTITY: EntityDetail = {
-  id: "entity-001",
-  canonical_name: "Test Person",
-  entity_type: "person",
-  aliases: [],
-  roles: [],
-  fact_count: 0,
-  linked_contact_id: null,
-  linked_contact_name: null,
-  unidentified: false,
-  source_butler: null,
-  source_scope: null,
-  created_at: "2025-01-01T00:00:00Z",
-  updated_at: "2025-01-01T00:00:00Z",
-  dunbar_tier: null,
-  dunbar_score: null,
-  archived: false,
-  metadata: {},
-  recent_facts: [],
-  recent_facts_total: 0,
-  recent_facts_offset: 0,
-  recent_facts_limit: 20,
-  recent_facts_has_more: false,
-  entity_info: [],
-};
 
 const NEIGHBOUR: NeighbourEntry = {
   entity_id: "peer-200",
@@ -182,26 +157,6 @@ const NARRATIVE_FACT: EntityFact = {
   store: "narrative",
   staleness_band: "fresh",
 };
-
-const DUP_QUEUE = {
-  data: {
-    items: [
-      {
-        entity_id: "entity-001",
-        canonical_name: "Test Person",
-        entity_type: "person",
-        bucket: "duplicate-candidate",
-        evidence: { predicate: "has-email", shared_value: "x@y.com", peer_entity_ids: ["peer-002"] },
-        last_seen: null,
-      },
-    ],
-    total: 1,
-    limit: 100,
-    offset: 0,
-  },
-};
-
-const EMPTY_QUEUE = { data: { items: [], total: 0, limit: 100, offset: 0 } };
 
 let container: HTMLDivElement;
 let root: Root;

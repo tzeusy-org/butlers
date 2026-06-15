@@ -16,7 +16,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { EntityDetail } from "@/api/types";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -69,7 +68,7 @@ vi.mock("@/hooks/use-entities", () => ({
     isFetching: false,
     error: null,
   })),
-  useRelationshipEntityQueue: (...args: Parameters<typeof useRelationshipEntityQueue>) => useRelationshipEntityQueue(...args),
+  useRelationshipEntityQueue: (...args: Parameters<typeof import("@/hooks/use-entities").useRelationshipEntityQueue>) => useRelationshipEntityQueue(...args),
   useCompareEntities: vi.fn(() => ({
     mutateAsync: vi.fn().mockResolvedValue({
       a: { entity: { id: "entity-001", canonical_name: "A", entity_type: "person", aliases: [], tier: null, state: "active" }, identity_facts: [], narrative_facts: [] },
@@ -98,52 +97,7 @@ vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
 
 import { useEntity } from "@/hooks/use-memory";
 import EntityDetailPage from "@/pages/EntityDetailPage";
-
-const ENTITY: EntityDetail = {
-  id: "entity-001",
-  canonical_name: "Test Person",
-  entity_type: "person",
-  aliases: [],
-  roles: [],
-  fact_count: 0,
-  linked_contact_id: null,
-  linked_contact_name: null,
-  unidentified: false,
-  source_butler: null,
-  source_scope: null,
-  created_at: "2025-01-01T00:00:00Z",
-  updated_at: "2025-01-01T00:00:00Z",
-  dunbar_tier: null,
-  dunbar_score: null,
-  archived: false,
-  metadata: {},
-  recent_facts: [],
-  recent_facts_total: 0,
-  recent_facts_offset: 0,
-  recent_facts_limit: 20,
-  recent_facts_has_more: false,
-  entity_info: [],
-};
-
-const DUP_QUEUE = {
-  data: {
-    items: [
-      {
-        entity_id: "entity-001",
-        canonical_name: "Test Person",
-        entity_type: "person",
-        bucket: "duplicate-candidate",
-        evidence: { predicate: "has-email", shared_value: "x@y.com", peer_entity_ids: ["peer-002"] },
-        last_seen: null,
-      },
-    ],
-    total: 1,
-    limit: 100,
-    offset: 0,
-  },
-};
-
-const EMPTY_QUEUE = { data: { items: [], total: 0, limit: 100, offset: 0 } };
+import { DUP_QUEUE, EMPTY_QUEUE, ENTITY } from "@/test-utils/entity-detail-page";
 
 // This entity collides with two distinct peers on the same identifier.
 const MULTI_PEER_QUEUE = {
