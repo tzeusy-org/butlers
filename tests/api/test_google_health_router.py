@@ -227,6 +227,7 @@ async def test_fetch_heartbeat_rows_by_email_parses_per_account_rows():
             "uptime_s": 100,
             "endpoint_identity": "google_health:user:alice@example.com",
             "metadata": {},
+            "error_message": None,
         },
         {
             "state": "degraded",
@@ -234,35 +235,63 @@ async def test_fetch_heartbeat_rows_by_email_parses_per_account_rows():
             "uptime_s": 50,
             "endpoint_identity": "google_health:user:bob@example.com",
             "metadata": {"rate_limit_remaining": 10},
+            "error_message": None,
         },
-        # Degraded sentinel row — should be skipped (no @ in email segment)
+        # Degraded sentinel row — captured separately, not included in per-email dict
         {
             "state": "degraded",
             "last_heartbeat_at": datetime.now(UTC),
             "uptime_s": 0,
             "endpoint_identity": "google_health:degraded",
             "metadata": {},
+            "error_message": "api_forbidden",
         },
     ]
     swb = AsyncMock()
     swb.fetch = AsyncMock(return_value=rows)
 
-    result = await _fetch_heartbeat_rows_by_email(swb)
-    assert set(result.keys()) == {"alice@example.com", "bob@example.com"}
-    assert result["alice@example.com"]["state"] == "healthy"
-    assert result["bob@example.com"]["state"] == "degraded"
+    per_email, sentinel = await _fetch_heartbeat_rows_by_email(swb)
+    assert set(per_email.keys()) == {"alice@example.com", "bob@example.com"}
+    assert per_email["alice@example.com"]["state"] == "healthy"
+    assert per_email["bob@example.com"]["state"] == "degraded"
+    # Sentinel is returned separately with its error_message intact.
+    assert sentinel is not None
+    assert sentinel["endpoint_identity"] == "google_health:degraded"
+    assert sentinel["error_message"] == "api_forbidden"
+
+
+async def test_fetch_heartbeat_rows_by_email_no_sentinel_when_absent():
+    """When no degraded-sentinel row exists, sentinel is None."""
+    rows = [
+        {
+            "state": "healthy",
+            "last_heartbeat_at": datetime.now(UTC),
+            "uptime_s": 100,
+            "endpoint_identity": "google_health:user:alice@example.com",
+            "metadata": {},
+            "error_message": None,
+        },
+    ]
+    swb = AsyncMock()
+    swb.fetch = AsyncMock(return_value=rows)
+
+    per_email, sentinel = await _fetch_heartbeat_rows_by_email(swb)
+    assert set(per_email.keys()) == {"alice@example.com"}
+    assert sentinel is None
 
 
 async def test_fetch_heartbeat_rows_by_email_returns_empty_on_none_pool():
-    result = await _fetch_heartbeat_rows_by_email(None)
-    assert result == {}
+    per_email, sentinel = await _fetch_heartbeat_rows_by_email(None)
+    assert per_email == {}
+    assert sentinel is None
 
 
 async def test_fetch_heartbeat_rows_by_email_returns_empty_on_exception():
     swb = AsyncMock()
     swb.fetch = AsyncMock(side_effect=RuntimeError("db error"))
-    result = await _fetch_heartbeat_rows_by_email(swb)
-    assert result == {}
+    per_email, sentinel = await _fetch_heartbeat_rows_by_email(swb)
+    assert per_email == {}
+    assert sentinel is None
 
 
 # ---------------------------------------------------------------------------
@@ -588,3 +617,66 @@ async def test_status_two_accounts_vs_one_account_shape():
     assert body_two["daily_summaries_7d"] == counts_two["daily_summaries_7d"]
     assert body_one["sleep_sessions_7d"] == counts_one["sleep_sessions_7d"]
     assert body_one["daily_summaries_7d"] == counts_one["daily_summaries_7d"]
+
+
+async def test_status_degraded_sentinel_surfaces_error_message_when_no_per_account_row():
+    """Regression: /status must surface error_message from the connector-level degraded sentinel
+    when no per-account heartbeat row exists yet (e.g. a 403 arrives before accounts are resolved).
+
+    Before the fix, _fetch_heartbeat_rows_by_email silently discarded the degraded-sentinel row
+    (endpoint_identity='google_health:degraded'), so heartbeat_by_email.get(email) returned None
+    and _extract_error_message(None, state) returned None — disagreeing with /summaries which
+    reads connector_registry directly and returns 'api_forbidden'.
+
+    After the fix, the sentinel is returned as a second value and used as a fallback, so both
+    endpoints return the same error_message.  This test exercises the /status path.
+
+    Related: bu-scvfk.
+    """
+    now = datetime.now(UTC)
+    email = "owner@example.com"
+
+    # Account has all health scopes — the ONLY degraded signal is the 403.
+    row = _make_ga_row(email=email, is_primary=True)
+    ha = _make_health_scoped_account(email, acct_id=row["id"])
+
+    # Only the connector-level degraded sentinel exists; no per-account row yet.
+    degraded_sentinel = {
+        "state": "degraded",
+        "last_heartbeat_at": now,
+        "uptime_s": 0,
+        "endpoint_identity": "google_health:degraded",
+        "metadata": {},
+        "error_message": "api_forbidden",
+    }
+
+    db = _make_db(
+        primary_row=row,
+        heartbeat_rows=[degraded_sentinel],  # Only sentinel; no per-account row.
+        ga_rows=[row],
+    )
+
+    with patch(
+        "butlers.api.routers.google_health.list_health_scoped_accounts",
+        AsyncMock(return_value=[ha]),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/google-health/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Connector is degraded due to the 403.
+    assert body["state"] == "degraded"
+    assert body["connected"] is False
+
+    # The error_message must be surfaced from the sentinel — this was the bug.
+    assert body["error_message"] == "api_forbidden"
+
+    # Per-account entry must also carry the error_message from the sentinel fallback.
+    assert len(body["accounts"]) == 1
+    acct = body["accounts"][0]
+    assert acct["state"] == "degraded"
+    assert acct["error_message"] == "api_forbidden"
