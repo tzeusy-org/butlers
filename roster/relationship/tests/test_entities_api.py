@@ -1180,7 +1180,12 @@ class TestEntityConcentration:
     def _make_tab_row(
         self, predicate: str = "knows", label: str = "Knows", entity_count: int = 0
     ) -> MagicMock:
-        data = {"predicate": predicate, "label": label, "description": None, "entity_count": entity_count}
+        data = {
+            "predicate": predicate,
+            "label": label,
+            "description": None,
+            "entity_count": entity_count,
+        }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
         return row
