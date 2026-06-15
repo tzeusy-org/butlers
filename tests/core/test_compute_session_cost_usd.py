@@ -116,15 +116,37 @@ def test_pricing_path_wins_over_jsonb() -> None:
     assert abs(result - 0.002) < 1e-9
 
 
-def test_pricing_path_unknown_model_returns_zero() -> None:
-    """pricing + model not in catalog → estimate_session_cost returns 0.0."""
+def test_pricing_path_unknown_model_falls_through_to_jsonb_none() -> None:
+    """pricing + model not in catalog + no JSONB cost → falls through to None.
+
+    estimate_session_cost returns 0.0 for unknown models; _compute_session_cost_usd
+    must NOT return 0.0 directly — it falls through to the JSONB fallback.
+    With no stored cost the result is None.
+    """
     from butlers.core.ingestion_events import _compute_session_cost_usd
 
     pricing = _make_pricing("known-model", price_per_token=1e-6)
     session = _session(model="unknown-model-xyz", input_tokens=1000, output_tokens=500)
     result = _compute_session_cost_usd(session, pricing)
-    # estimate_session_cost returns 0.0 for unknown models
-    assert result == 0.0
+    # unknown model → estimate returns 0.0 → falls through → no JSONB → None
+    assert result is None
+
+
+def test_pricing_path_unknown_model_falls_through_to_jsonb_value() -> None:
+    """pricing + unknown model + JSONB cost present → returns JSONB value, not 0.0."""
+    from butlers.core.ingestion_events import _compute_session_cost_usd
+
+    pricing = _make_pricing("known-model", price_per_token=1e-6)
+    session = _session(
+        model="unknown-model-xyz",
+        input_tokens=1000,
+        output_tokens=500,
+        cost={"total_usd": 0.0314},
+    )
+    result = _compute_session_cost_usd(session, pricing)
+    # estimate_session_cost yields 0.0 for unknown model → falls through → JSONB wins
+    assert result is not None
+    assert abs(result - 0.0314) < 1e-9
 
 
 def test_pricing_path_zero_tokens_falls_through_to_jsonb() -> None:

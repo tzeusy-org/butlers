@@ -650,7 +650,12 @@ def _compute_session_cost_usd(
     if pricing is not None:
         model = session.get("model") or ""
         if model and (in_tok or out_tok):
-            return estimate_session_cost(pricing, model, in_tok, out_tok)
+            session_cost = estimate_session_cost(pricing, model, in_tok, out_tok)
+            if session_cost != 0.0:
+                return session_cost
+            # estimate_session_cost returns 0.0 for unknown models — fall
+            # through to JSONB fallback so stored cost_usd is not lost.
+            # Mirrors the precedence used by ingestion_event_rollup.
         # Pricing is available but we have no model/tokens — fall through to
         # JSONB fallback rather than returning 0.0, which would mask a real
         # stored value.
