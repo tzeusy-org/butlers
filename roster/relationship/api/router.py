@@ -2804,6 +2804,13 @@ _ENTITY_LIST_DEFAULT_LIMIT = 50
 _ENTITY_LIST_MAX_LIMIT = 200
 
 
+#: Predicate written by the dismiss endpoint (state-marker triple).
+_QUEUE_DISMISSED_PREDICATE = "queue.dismissed"
+
+#: Literal object value for a queue-dismissed triple.
+_QUEUE_DISMISSED_OBJECT = "dismissed"
+
+
 def _active_entity_condition(alias: str = "e") -> str:
     """SQL predicate for entities visible in standard active surfaces.
 
@@ -2817,6 +2824,25 @@ def _active_entity_condition(alias: str = "e") -> str:
         AND ({metadata}->>'archived_at') IS NULL
         AND ({metadata}->>'tombstone') IS DISTINCT FROM 'true'
         AND ({metadata}->>'deleted_at') IS NULL
+    """
+
+
+def _not_queue_dismissed_sql(id_expr: str = "e.id") -> str:
+    """SQL predicate excluding entities dismissed from the curation queue.
+
+    The single-item dismiss endpoint (``POST /entities/queue/dismiss``) records
+    a ``queue.dismissed`` state-marker triple in ``relationship.entity_facts``
+    via the central writer.  Every queue bucket must exclude entities carrying
+    such an *active* triple, otherwise a dismissed entity reappears on refetch.
+    """
+    return f"""
+        NOT EXISTS (
+            SELECT 1 FROM relationship.entity_facts qd
+            WHERE qd.subject = {id_expr}
+              AND qd.predicate = '{_QUEUE_DISMISSED_PREDICATE}'
+              AND qd.object = '{_QUEUE_DISMISSED_OBJECT}'
+              AND qd.validity = 'active'
+        )
     """
 
 
@@ -3342,7 +3368,8 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
                     WHERE rf.subject = $1
                       AND rf.validity = 'active'
                       AND rf.last_seen > (now() - INTERVAL '{_STALE_DAYS} days')
-                ) AS has_fresh_fact
+                ) AS has_fresh_fact,
+                NOT ({_not_queue_dismissed_sql("$1")}) AS is_dismissed
             FROM public.entities e
             WHERE e.id = $1
               AND {_active_entity_condition("e")}
@@ -3379,6 +3406,7 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
             e.is_unidentified,
             e.is_dup_flagged,
             e.has_fresh_fact,
+            e.is_dismissed,
             e.last_seen,
             d.predicate        AS dup_predicate,
             d.shared_value     AS dup_shared_value,
@@ -3391,6 +3419,11 @@ async def _classify_entity_state(pool, entity_id: UUID) -> tuple[str, dict | Non
 
     if row is None:
         # Entity not found — caller will have already raised 404 before calling this.
+        return "healthy", None
+
+    # Dismissed entities are removed from the curation queue entirely; surface
+    # them as healthy so the detail view doesn't show a stale curation badge.
+    if row["is_dismissed"]:
         return "healthy", None
 
     if row["is_unidentified"]:
@@ -3482,6 +3515,7 @@ async def get_entities_queue(
         FROM public.entities e
         WHERE (e.metadata->>'unidentified')::text = 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_queue_dismissed_sql("e.id")}
     """
 
     # -------------------------------------------------------------------
@@ -3507,6 +3541,7 @@ async def get_entities_queue(
         WHERE (e.metadata->>'duplicate_candidate')::text = 'true'
           AND (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_queue_dismissed_sql("e.id")}
     """
 
     # Deterministic dup-detection: find entities sharing a has-email / has-phone value.
@@ -3552,6 +3587,7 @@ async def get_entities_queue(
            AND f_link.validity = 'active'
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_queue_dismissed_sql("e.id")}
           AND {_dismissed_pair_suppression_sql("e.id", "grp.predicate", "grp.object")}
     """
 
@@ -3584,6 +3620,7 @@ async def get_entities_queue(
         FROM public.entities e
         WHERE (e.metadata->>'unidentified') IS DISTINCT FROM 'true'
           AND {_active_entity_condition("e")}
+          AND {_not_queue_dismissed_sql("e.id")}
           AND NOT EXISTS (
               SELECT 1 FROM relationship.entity_facts rf
               WHERE rf.subject = e.id
@@ -3672,12 +3709,8 @@ async def get_entities_queue(
 # ---------------------------------------------------------------------------
 # POST /entities/queue/dismiss — dismiss entity from curation queue (bu-297lj)
 # ---------------------------------------------------------------------------
-
-#: Predicate written by the dismiss endpoint (state-marker triple).
-_QUEUE_DISMISSED_PREDICATE = "queue.dismissed"
-
-#: Literal object value for a queue-dismissed triple.
-_QUEUE_DISMISSED_OBJECT = "dismissed"
+# Predicate/object constants for the queue-dismissed triple are defined near
+# ``_active_entity_condition`` (shared with the queue list filter).
 
 
 @router.post(

@@ -1297,6 +1297,7 @@ def _make_classify_row(**kwargs) -> MagicMock:
         "is_unidentified": False,
         "is_dup_flagged": False,
         "has_fresh_fact": True,
+        "is_dismissed": False,
         "last_seen": _NOW,
         "dup_predicate": None,
         "dup_shared_value": None,

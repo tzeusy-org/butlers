@@ -342,3 +342,98 @@ async def test_all_peers_dismissed_suppresses_row(pool, router_mod):
     assert await _classify(pool, router_mod, x) != "duplicate-candidate"
     # Y and Z still share V with each other (undismissed Y-Z), so they remain.
     assert {y, z} <= surfaced
+
+
+# ---------------------------------------------------------------------------
+# Scenario 5: single-item dismiss (queue.dismissed triple) drops from queue
+#
+# Regression for the bug where dismissing a single queue entity wrote a
+# ``queue.dismissed`` triple but the queue list/classification never filtered
+# on it, so the entity reappeared on refetch. The dismiss endpoint writes the
+# triple via ``relationship_assert_fact`` WITHOUT a ``last_seen`` (it defaults
+# to NULL), which is the value that makes a stale entity stay stale — the test
+# helper mirrors that NULL exactly.
+# ---------------------------------------------------------------------------
+
+
+async def _add_queue_dismissed(pool: asyncpg.Pool, *, subject: uuid.UUID) -> None:
+    """Insert the ``queue.dismissed`` marker the dismiss endpoint writes.
+
+    Faithfully mirrors the production writer: ``last_seen`` is NULL (the dismiss
+    endpoint never passes one), so this fact must NOT count as a "fresh" fact.
+    """
+    await pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, validity, last_seen)
+        VALUES ($1, 'queue.dismissed', 'dismissed', 'literal', 'test', 'active', NULL)
+        """,
+        subject,
+    )
+
+
+class _StubDBManager:
+    """Minimal DatabaseManager exposing ``pool(name)`` for the queue endpoint."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    def pool(self, _name: str) -> asyncpg.Pool:
+        return self._pool
+
+
+async def _register_owner(pool: asyncpg.Pool) -> uuid.UUID:
+    """Register an owner entity so the queue endpoint's owner gate passes."""
+    return await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ('Owner', 'person', ARRAY['owner']) RETURNING id",
+    )
+
+
+async def _queue_entity_ids(pool: asyncpg.Pool, router_mod) -> set[uuid.UUID]:
+    """Call the real ``get_entities_queue`` endpoint and return surfaced ids."""
+    resp = await router_mod.get_entities_queue(
+        limit=router_mod._QUEUE_MAX_LIMIT,
+        offset=0,
+        db=_StubDBManager(pool),
+    )
+    return {item.entity_id for item in resp.items}
+
+
+async def test_single_dismiss_drops_stale_entity_from_queue(pool, router_mod):
+    """A ``queue.dismissed`` triple removes a stale entity from the queue.
+
+    Regression: the stale entity has no fresh fact (NULL/absent last_seen), so it
+    surfaces in the stale bucket. After the single-item dismiss writes the
+    ``queue.dismissed`` marker, it must disappear from both the queue list and
+    ``_classify_entity_state`` (which shares the queue's semantics).
+    """
+    await _register_owner(pool)
+    stale = await _make_entity(pool, "Allan Patrick Uy")
+
+    # Before dismissal: surfaces as stale (no fresh fact at all).
+    assert await _classify(pool, router_mod, stale) == "stale"
+    assert stale in await _queue_entity_ids(pool, router_mod)
+
+    await _add_queue_dismissed(pool, subject=stale)
+
+    # After dismissal: gone from the queue and classified healthy.
+    assert stale not in await _queue_entity_ids(pool, router_mod)
+    assert await _classify(pool, router_mod, stale) == "healthy"
+
+
+async def test_single_dismiss_drops_unidentified_entity_from_queue(pool, router_mod):
+    """A ``queue.dismissed`` triple also suppresses an unidentified entity."""
+    await _register_owner(pool)
+    ent = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+        "VALUES ('Mystery', 'person', '{\"unidentified\": \"true\"}'::jsonb) RETURNING id",
+    )
+
+    assert await _classify(pool, router_mod, ent) == "unidentified"
+    assert ent in await _queue_entity_ids(pool, router_mod)
+
+    await _add_queue_dismissed(pool, subject=ent)
+
+    assert ent not in await _queue_entity_ids(pool, router_mod)
+    assert await _classify(pool, router_mod, ent) == "healthy"

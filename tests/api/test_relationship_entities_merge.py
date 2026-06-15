@@ -112,6 +112,7 @@ def _make_classify_row() -> MagicMock:
         "is_unidentified": False,
         "is_dup_flagged": False,
         "has_fresh_fact": True,
+        "is_dismissed": False,
         "last_seen": None,
         "dup_predicate": None,
         "dup_shared_value": None,
