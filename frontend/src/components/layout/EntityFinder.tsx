@@ -44,12 +44,6 @@ import {
   aggregateOwnerPinned,
 } from "@/lib/entity-finder";
 import { navSections, type NavItem } from "@/components/layout/nav-config";
-import {
-  getEntityGloss,
-  type DunbarTier,
-  type EntityState,
-  type EntityType,
-} from "@/lib/entity-glosses";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { KbMono } from "@/components/ui/KbMono";
 import type {
@@ -106,31 +100,11 @@ function matchKindLabel(kind: EntityFinderSearchResult["match_kind"]): string {
 // Gloss helpers
 //
 // The search/neighbours payloads do not carry the Dunbar tier or curation
-// state, so the inert preview gloss orients on the entity TYPE only and uses a
-// neutral (meaningful / healthy) tier+state baseline. The gloss is a
-// non-authoritative hint, never an action surface.
+// state. The preview pane therefore omits the tier/state gloss entirely —
+// showing a fabricated "Meaningful contact. Active in the network." (or similar)
+// for an entity whose real tier and health are unknown is misleading. Only the
+// entity type label (derived from the search payload) is shown.
 // ---------------------------------------------------------------------------
-
-const PREVIEW_DEFAULT_TIER: DunbarTier = 150;
-const PREVIEW_DEFAULT_STATE: EntityState = "healthy";
-
-const ENTITY_TYPE_ALIASES: Record<string, EntityType> = {
-  person: "person",
-  organization: "organization",
-  place: "place",
-  location: "place",
-  product: "product",
-  account: "account",
-  email: "account",
-  event: "event",
-  group: "group",
-  other: "other",
-};
-
-/** Normalize a raw API entity_type string to a gloss EntityType category. */
-function glossCategory(entityType: string): EntityType {
-  return ENTITY_TYPE_ALIASES[entityType?.toLowerCase()] ?? "other";
-}
 
 /** Human-readable type label for the preview header. */
 function typeLabel(entityType: string): string {
@@ -192,12 +166,6 @@ function PreviewPane({ active }: PreviewPaneProps) {
     );
   }
 
-  const gloss = getEntityGloss({
-    tier: PREVIEW_DEFAULT_TIER,
-    state: PREVIEW_DEFAULT_STATE,
-    category: glossCategory(active.entity_type),
-  });
-
   return (
     <div
       className="hidden w-64 shrink-0 flex-col gap-3 border-l border-border p-4 sm:flex"
@@ -222,14 +190,9 @@ function PreviewPane({ active }: PreviewPaneProps) {
         </div>
       </div>
 
-      {/* Canned gloss — serif, inert orientation hint */}
-      <p
-        className="text-xs italic leading-relaxed text-muted-foreground"
-        style={{ fontFamily: "var(--font-serif)" }}
-        data-testid="entity-finder-preview-gloss"
-      >
-        {gloss}
-      </p>
+      {/* Gloss is intentionally omitted: the search payload carries no tier or
+          curation state, so any gloss here would use fabricated defaults. Open
+          the entity detail page to see the authoritative gloss. */}
 
       {/* Top-5 relations — inert (no links) */}
       <div className="flex flex-col gap-1" data-testid="entity-finder-preview-relations">
