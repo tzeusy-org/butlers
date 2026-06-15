@@ -105,6 +105,7 @@ def _make_entity_row(
     metadata: dict | None = None,
     tier: int | None = None,
     last_seen: datetime | None = None,
+    first_seen: datetime | None = None,
     contact_fact_count: int = 0,
 ) -> MagicMock:
     """Generic entity row mock (used across multiple endpoints)."""
@@ -117,6 +118,7 @@ def _make_entity_row(
         "metadata": metadata if metadata is not None else {},
         "tier": tier,
         "last_seen": last_seen,
+        "first_seen": first_seen,
         "contact_fact_count": contact_fact_count,
         "created_at": _NOW,
         "updated_at": _NOW,
