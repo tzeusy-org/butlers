@@ -31,6 +31,12 @@ export interface NeighbourRowProps {
    * ``hop-neighbour-<entity_id>`` element id for aria-activedescendant wiring.
    */
   cursored?: boolean;
+  /**
+   * When true, the row is the currently selected neighbour (detail pane open
+   * for this entity). Renders a distinct selection highlight (muted background)
+   * so the user knows which entity is being inspected. Independent of cursor.
+   */
+  selected?: boolean;
   /** Additional data attributes forwarded to the <li> element. */
   "data-column-index"?: number;
 }
@@ -55,6 +61,7 @@ export function NeighbourRow({
   ariaLabel,
   testId = "neighbour-row",
   cursored = false,
+  selected = false,
   "data-column-index": columnIndex,
 }: NeighbourRowProps) {
   const entityId = entry.entity_id;
@@ -65,14 +72,17 @@ export function NeighbourRow({
     <li
       id={`hop-neighbour-${entityId}`}
       role="option"
-      aria-selected={cursored || undefined}
+      aria-selected={cursored || selected || undefined}
       className={[
         "flex items-center justify-between py-2 border-b last:border-0 hover:bg-muted/40 px-2 rounded-sm",
         // Design-language focus treatment: 2px left border, no glow.
         cursored ? "border-l-2 border-l-foreground bg-muted/40" : "border-l-2 border-l-transparent",
+        // Selection highlight: muted bg when the detail pane is open for this row.
+        selected && !cursored ? "bg-muted/20" : "",
       ].join(" ")}
       data-testid={testId}
       data-cursored={cursored ? "true" : undefined}
+      data-selected={selected ? "true" : undefined}
       data-column-index={columnIndex}
     >
       <button

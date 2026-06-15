@@ -64,6 +64,13 @@ export interface PredicateGroupProps {
    * is active (e.g. the Columns cascade tracks its cursor separately).
    */
   cursoredEntityId?: string | null;
+  /**
+   * The entity_id of the currently selected neighbour (Hop view detail pane).
+   * The matching row renders the selection highlight. Distinct from the
+   * keyboard cursor: a row can be selected without being cursored, and vice
+   * versa. Unused in Columns view.
+   */
+  selectedEntityId?: string | null;
 }
 
 /**
@@ -93,6 +100,7 @@ export function PredicateGroup({
   getRowAriaLabel,
   remainder,
   cursoredEntityId,
+  selectedEntityId,
 }: PredicateGroupProps) {
   const label = predicate.replace(/-/g, " ");
   const isColumns = columnIndex !== undefined;
@@ -125,6 +133,7 @@ export function PredicateGroup({
             ariaLabel={getRowAriaLabel?.(entry)}
             testId={rowTestId}
             cursored={cursoredEntityId != null && entry.entity_id === cursoredEntityId}
+            selected={selectedEntityId != null && entry.entity_id === selectedEntityId}
             {...(isColumns ? { "data-column-index": columnIndex } : {})}
           />
         ))}

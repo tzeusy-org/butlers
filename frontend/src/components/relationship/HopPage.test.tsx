@@ -420,13 +420,27 @@ describe("HopPage — breadcrumb trail", () => {
     expect(container.querySelector("[data-testid='hop-trail-reset']")).toBeTruthy();
   });
 
-  it("pushes the leaving centre onto the trail when re-centring", async () => {
+  it("pushes the leaving centre onto the trail when re-centring via detail pane", async () => {
     renderPage("/entities/hop?center=owner-uuid-001");
+    // Step 1: click a neighbour to open the detail pane (no re-centre yet).
     const neighbourBtn = container.querySelector(
       "[data-entity-id='ent-bob-002']",
     ) as HTMLButtonElement | null;
+    expect(neighbourBtn).toBeTruthy();
     await act(async () => {
       neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // Pane is open, but no trail yet.
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='hop-trail']")).toBeNull();
+
+    // Step 2: click "Go to this entity" in the detail pane to actually re-centre.
+    const recentreBtn = container.querySelector(
+      "[data-testid='detail-pane-recentre-btn']",
+    ) as HTMLButtonElement | null;
+    expect(recentreBtn).toBeTruthy();
+    await act(async () => {
+      recentreBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     // After re-centring, the hook is queried for the new centre, and the trail
     // now holds the previous owner centre (rendered as a clickable segment).
@@ -525,5 +539,341 @@ describe("HopPage — no owner registered", () => {
 
     const clearBtn = container.querySelector("[data-testid='clear-center-btn']");
     expect(clearBtn).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Predicate filter chips (conditional — only when 2+ predicates)
+// ---------------------------------------------------------------------------
+
+describe("HopPage — predicate filter chips", () => {
+  it("renders predicate chips when there are 2+ distinct predicates", () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS, // has 2 predicates: knows + family-of
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const chips = container.querySelector("[data-testid='predicate-chips']");
+    expect(chips).toBeTruthy();
+    // One chip per predicate
+    expect(container.querySelector("[data-testid='predicate-chip-knows']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='predicate-chip-family-of']")).toBeTruthy();
+  });
+
+  it("does NOT render chips when there is only 1 predicate", () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: {
+        neighbours: {
+          knows: KNOWS_NEIGHBOURS.neighbours.knows,
+        },
+        remainders: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const chips = container.querySelector("[data-testid='predicate-chips']");
+    expect(chips).toBeNull();
+  });
+
+  it("clicking a chip filters out other predicate groups", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    // Both groups visible initially
+    expect(container.querySelector("[data-testid='predicate-group-knows']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='predicate-group-family-of']")).toBeTruthy();
+
+    // Click "knows" chip to filter to that predicate only
+    const knowsChip = container.querySelector(
+      "[data-testid='predicate-chip-knows']",
+    ) as HTMLButtonElement | null;
+    expect(knowsChip).toBeTruthy();
+
+    await act(async () => {
+      knowsChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // "knows" group still visible, "family-of" filtered out
+    expect(container.querySelector("[data-testid='predicate-group-knows']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='predicate-group-family-of']")).toBeNull();
+  });
+
+  it("clicking an active chip again removes it from the filter (toggle off)", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const knowsChip = container.querySelector(
+      "[data-testid='predicate-chip-knows']",
+    ) as HTMLButtonElement | null;
+
+    // Click once → filter active (only knows visible)
+    await act(async () => {
+      knowsChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='predicate-group-family-of']")).toBeNull();
+
+    // Click again → filter cleared (both groups restored)
+    await act(async () => {
+      knowsChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='predicate-group-knows']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='predicate-group-family-of']")).toBeTruthy();
+  });
+
+  it("clear button removes all active filters and restores full set", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const knowsChip = container.querySelector(
+      "[data-testid='predicate-chip-knows']",
+    ) as HTMLButtonElement | null;
+
+    // Activate a filter
+    await act(async () => {
+      knowsChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // Clear button should appear
+    const clearBtn = container.querySelector(
+      "[data-testid='predicate-chips-clear']",
+    ) as HTMLButtonElement | null;
+    expect(clearBtn).toBeTruthy();
+
+    // Click clear → full set restored
+    await act(async () => {
+      clearBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='predicate-group-knows']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='predicate-group-family-of']")).toBeTruthy();
+    // Clear button gone (no active filters)
+    expect(container.querySelector("[data-testid='predicate-chips-clear']")).toBeNull();
+  });
+
+  it("clear button does not appear when no chips are active", () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const clearBtn = container.querySelector("[data-testid='predicate-chips-clear']");
+    expect(clearBtn).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Right detail pane — inspect a selected neighbour without re-centring
+// ---------------------------------------------------------------------------
+
+describe("HopPage — right detail pane", () => {
+  it("detail pane is not shown initially (no neighbour selected)", () => {
+    renderPage("/entities/hop?center=owner-uuid-001");
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeNull();
+  });
+
+  it("clicking a neighbour opens the detail pane for that entity", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const neighbourBtn = container.querySelector(
+      "[data-entity-id='ent-bob-002']",
+    ) as HTMLButtonElement | null;
+    expect(neighbourBtn).toBeTruthy();
+
+    await act(async () => {
+      neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Detail pane should appear
+    const pane = container.querySelector("[data-testid='neighbour-detail-pane']");
+    expect(pane).toBeTruthy();
+  });
+
+  it("clicking the same neighbour again deselects (toggles) the detail pane", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const neighbourBtn = container.querySelector(
+      "[data-entity-id='ent-bob-002']",
+    ) as HTMLButtonElement | null;
+
+    // Open pane
+    await act(async () => {
+      neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeTruthy();
+
+    // Click same entity again → pane closes
+    await act(async () => {
+      neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeNull();
+  });
+
+  it("clicking the detail pane close button dismisses the pane", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    // Open pane
+    const neighbourBtn = container.querySelector(
+      "[data-entity-id='ent-bob-002']",
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeTruthy();
+
+    // Click close
+    const closeBtn = container.querySelector(
+      "[data-testid='detail-pane-close']",
+    ) as HTMLButtonElement | null;
+    expect(closeBtn).toBeTruthy();
+    await act(async () => {
+      closeBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeNull();
+  });
+
+  it("the detail pane 'Go to this entity' button re-centres on the selected neighbour", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    // Open pane for Bob
+    const neighbourBtn = container.querySelector(
+      "[data-entity-id='ent-bob-002']",
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Click "Go to this entity"
+    const recentreBtn = container.querySelector(
+      "[data-testid='detail-pane-recentre-btn']",
+    ) as HTMLButtonElement | null;
+    expect(recentreBtn).toBeTruthy();
+
+    await act(async () => {
+      recentreBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // After re-centring, the hook should have been called with the new entity ID,
+    // and the pane should be dismissed.
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    expect(calls.find((c) => c[0] === "ent-bob-002")).toBeTruthy();
+    // The pane is dismissed after re-centring
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeNull();
+  });
+
+  it("clicking a neighbour does NOT immediately re-centre (URL stays the same)", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const neighbourBtn = container.querySelector(
+      "[data-entity-id='ent-bob-002']",
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      neighbourBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // The trail should NOT have appeared (no re-centre happened)
+    // and the original anchor card loading/state should still be present.
+    // We check that the clear-center-btn is still there (it was present because center=owner-uuid-001).
+    // No new trail segment should have been created.
+    const trail = container.querySelector("[data-testid='hop-trail']");
+    expect(trail).toBeNull(); // no trail — click didn't re-centre
+  });
+
+  it("Enter on the keyboard cursor still re-centres (not just opens the pane)", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage("/entities/hop?center=owner-uuid-001");
+
+    const pane = container.querySelector("[data-testid='neighbours-panel']") as HTMLElement | null;
+    // Enter on cursor (first row) should re-centre
+    await act(async () => {
+      pane?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    // The hook should have been called with the first flat-entry entity.
+    // Predicates are sorted: "family-of" < "knows", so first row is Carol (ent-carol-003).
+    const calls = vi.mocked(useEntityNeighbours).mock.calls;
+    expect(calls.find((c) => c[0] === "ent-carol-003")).toBeTruthy();
+    // Detail pane closed after re-centring
+    expect(container.querySelector("[data-testid='neighbour-detail-pane']")).toBeNull();
   });
 });
