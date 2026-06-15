@@ -312,6 +312,33 @@ async def test_state_duplicate_candidate_filter_accepted():
     assert body["total"] == 1
 
 
+async def test_state_duplicate_candidate_sql_uses_live_self_join():
+    """SQL for state=duplicate-candidate must use the same live detection as the
+    queue rail: metadata flag OR shared has-email/has-phone self-join (not just
+    the dead metadata flag alone).
+
+    This test guards against the data-contract break where the filter chip returned
+    empty results while the queue rail surfaced duplicate candidates (bu-1l8d2).
+    """
+    app, pool = _app_with_pool(total=0, fetch_rows=[])
+    resp = await _get(app, state="duplicate-candidate")
+    assert resp.status_code == 200
+
+    # Both the metadata flag path and the live self-join path must be present
+    # in the generated SQL.
+    count_sql = pool.fetchval.call_args[0][0]
+    fetch_sql = pool.fetch.call_args[0][0]
+
+    for sql in (count_sql, fetch_sql):
+        # Metadata flag branch
+        assert "duplicate_candidate" in sql, "must still check metadata flag"
+        # Live detection: entity_facts self-join on has-email / has-phone
+        assert "has-email" in sql, "must detect duplicates via has-email self-join"
+        assert "has-phone" in sql, "must detect duplicates via has-phone self-join"
+        # Must be an OR combination (both paths), not a replacement
+        assert "OR" in sql.upper(), "flag and self-join must be OR-combined"
+
+
 # ---------------------------------------------------------------------------
 # Scenario: state=stale filter
 # ---------------------------------------------------------------------------

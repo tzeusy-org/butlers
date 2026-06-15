@@ -2894,7 +2894,11 @@ async def list_entities(
       (e.g. ``person`` + ``organization``).
     - ``state`` — state chip filter:
         - ``unidentified``: entities where ``metadata->>'unidentified' = 'true'``.
-        - ``duplicate-candidate``: entities where ``metadata->>'duplicate_candidate' = 'true'``.
+        - ``duplicate-candidate``: entities detected by the same live logic as the
+          curation queue — either ``metadata->>'duplicate_candidate' = 'true'`` OR
+          sharing a ``has-email``/``has-phone`` fact value with at least one other
+          entity (non-dismissed self-join, identical to the queue rail's
+          ``dup_detected_sql``).
         - ``stale``: entities whose most-recent ``last_seen`` across all facts in
           ``relationship.entity_facts`` is older than 365 days (or have no facts at all).
     - ``has=contact`` — entities with at least one contact-type triple
@@ -2952,7 +2956,26 @@ async def list_entities(
     if state == "unidentified":
         conditions.append("(e.metadata->>'unidentified')::text = 'true'")
     elif state == "duplicate-candidate":
-        conditions.append("(e.metadata->>'duplicate_candidate')::text = 'true'")
+        # Align with the queue rail's duplicate-candidate detection: metadata flag
+        # OR live self-join detecting entities sharing a has-email/has-phone value
+        # with at least one other entity (with dismissal suppression, same as queue).
+        dup_predicates_literal = ", ".join(f"'{p}'" for p in _DUP_DETECTION_PREDICATES)
+        _suppression = _dismissed_pair_suppression_sql("e.id", "f_link.predicate", "f_link.object")
+        conditions.append(
+            f"""
+            (
+                (e.metadata->>'duplicate_candidate')::text = 'true'
+                OR EXISTS (
+                    SELECT 1
+                    FROM relationship.entity_facts f_link
+                    WHERE f_link.subject = e.id
+                      AND f_link.validity = 'active'
+                      AND f_link.predicate IN ({dup_predicates_literal})
+                      AND {_suppression}
+                )
+            )
+            """
+        )
     elif state == "stale":
         # Stale: no recent fact OR latest fact last_seen older than 365 days.
         # We check against relationship.entity_facts for last_seen.
