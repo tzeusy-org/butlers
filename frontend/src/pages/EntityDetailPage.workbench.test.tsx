@@ -263,6 +263,82 @@ describe("EntityDetailPage — Workbench three-rail layout", () => {
   });
 });
 
+describe("EntityDetailPage — Workbench KPI strip accuracy", () => {
+  // IDENTITY_FACT has predicate "has-email" (a channel fact) from src "general".
+  // NARRATIVE_FACT has predicate "discussed" (not a channel) from src "general".
+  // Default mock: has_more=false → 1 unique src ("general"), 1 channel fact.
+
+  it("shows exact source count when facts window is complete (has_more=false)", () => {
+    render();
+    const strip = container.querySelector("[data-testid='workbench-kpi-strip']")!;
+    // 2 facts, both src="general" → 1 unique source; no "+" suffix since has_more=false.
+    expect(strip.textContent).toContain("sources");
+    const cells = strip.querySelectorAll("[data-testid='workbench-kpi-cell']");
+    // 3rd cell (index 2) is "sources"
+    const sourcesCell = cells[2];
+    expect(sourcesCell.textContent).toMatch(/sources.*1$/is);
+    expect(sourcesCell.textContent).not.toContain("+");
+  });
+
+  it("labels the fourth KPI cell as 'channels' (not 'contacts')", () => {
+    render();
+    const strip = container.querySelector("[data-testid='workbench-kpi-strip']")!;
+    expect(strip.textContent?.toLowerCase()).toContain("channels");
+    expect(strip.textContent?.toLowerCase()).not.toContain("contacts");
+  });
+
+  it("shows exact channel count when facts window is complete (has_more=false)", () => {
+    // 1 has-email fact → channels=1, exact (no "+")
+    render();
+    const strip = container.querySelector("[data-testid='workbench-kpi-strip']")!;
+    const cells = strip.querySelectorAll("[data-testid='workbench-kpi-cell']");
+    const channelsCell = cells[3];
+    expect(channelsCell.textContent).toMatch(/channels.*1$/is);
+    expect(channelsCell.textContent).not.toContain("+");
+  });
+
+  it("shows lower-bound counts with '+' suffix when facts window is truncated (has_more=true)", () => {
+    // Simulate >200 facts: has_more=true; the visible window has 1 src and 1 channel.
+    useEntityFacts.mockReturnValue({
+      data: { items: [IDENTITY_FACT, NARRATIVE_FACT], next_cursor: "abc123", has_more: true },
+      isFetching: false,
+      error: null,
+    });
+    render();
+    const strip = container.querySelector("[data-testid='workbench-kpi-strip']")!;
+    const cells = strip.querySelectorAll("[data-testid='workbench-kpi-cell']");
+    // Both sources and channels show lower-bound suffix.
+    expect(cells[2].textContent).toContain("1+");
+    expect(cells[3].textContent).toContain("1+");
+  });
+
+  it("counts only has-* predicates as channels (not all facts)", () => {
+    // 1 has-email + 1 has-phone channel facts, 1 non-channel "discussed" fact
+    const hasPhone: EntityFact = {
+      ...IDENTITY_FACT,
+      id: "fact-phone-1",
+      predicate: "has-phone",
+      object: "+1555000000",
+      src: "contacts",
+    };
+    useEntityFacts.mockReturnValue({
+      data: {
+        items: [IDENTITY_FACT, NARRATIVE_FACT, hasPhone],
+        next_cursor: null,
+        has_more: false,
+      },
+      isFetching: false,
+      error: null,
+    });
+    render();
+    const strip = container.querySelector("[data-testid='workbench-kpi-strip']")!;
+    const cells = strip.querySelectorAll("[data-testid='workbench-kpi-cell']");
+    // sources: "general" + "contacts" = 2; channels: has-email + has-phone = 2
+    expect(cells[2].textContent).toMatch(/sources.*2$/is);
+    expect(cells[3].textContent).toMatch(/channels.*2$/is);
+  });
+});
+
 describe("EntityDetailPage — Workbench staleness inspector", () => {
   it("renders the staleness band for each fact", () => {
     render();
