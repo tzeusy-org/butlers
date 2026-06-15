@@ -3040,6 +3040,13 @@ async def list_entities(
                     WHERE rf.subject = e.id
                       AND rf.validity = 'active'
                 ) AS last_seen,
+                -- Earliest last_seen across all active relationship facts (first contact)
+                (
+                    SELECT min(rf.last_seen)
+                    FROM relationship.entity_facts rf
+                    WHERE rf.subject = e.id
+                      AND rf.validity = 'active'
+                ) AS first_seen,
                 -- Count of contact-type facts
                 (
                     SELECT count(*)
@@ -3062,6 +3069,7 @@ async def list_entities(
             updated_at,
             tier,
             last_seen,
+            first_seen,
             contact_fact_count
         FROM annotated
         ORDER BY
@@ -3094,6 +3102,7 @@ async def list_entities(
             metadata=dict(r["metadata"]) if isinstance(r["metadata"], dict) else {},
             tier=r["tier"],
             last_seen=r["last_seen"],
+            first_seen=r["first_seen"],
             contact_fact_count=int(r["contact_fact_count"] or 0),
             created_at=r["created_at"],
             updated_at=r["updated_at"],

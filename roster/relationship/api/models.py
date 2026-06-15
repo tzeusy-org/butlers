@@ -815,6 +815,8 @@ class EntitySummary(BaseModel):
     fact), or ``None`` when the entity has no pinned tier (rank-based assignment).
     ``last_seen`` is the most-recent ``last_seen`` timestamp across all of the
     entity's facts in ``relationship.entity_facts``, or ``None`` when no facts exist.
+    ``first_seen`` is the earliest ``last_seen`` timestamp across all of the
+    entity's facts in ``relationship.entity_facts``, or ``None`` when no facts exist.
     ``contact_fact_count`` is the count of active contact-type facts
     (``has-email | has-phone | has-handle | has-address | has-birthday |
     has-website``) in ``relationship.entity_facts`` for this entity.
@@ -828,6 +830,7 @@ class EntitySummary(BaseModel):
     metadata: dict = Field(default_factory=dict)
     tier: int | None = None
     last_seen: datetime | None = None
+    first_seen: datetime | None = None
     contact_fact_count: int = 0
     created_at: datetime
     updated_at: datetime

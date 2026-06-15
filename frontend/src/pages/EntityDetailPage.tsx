@@ -2673,17 +2673,6 @@ export default function EntityDetailPage() {
   // below), never to window, so it is active only while this page holds focus
   // and never shadows app-wide shortcuts or other routes' keyboard maps.
 
-  // last_seen for this entity — sourced from the relationship list endpoint
-  // (the memory detail endpoint does not carry it). Fetches a single-item list
-  // constrained to this entity so we get the max(rf.last_seen) value without
-  // adding a new backend endpoint. first_seen (min of last_seen) is not yet
-  // returned by any endpoint; see filed follow-up bu-maqrc.
-  const { data: entityRelData } = useRelationshipEntitiesByIds(
-    entityId ? { ids: [entityId] } : { ids: [] },
-  );
-  const entityLastSeen: string | null =
-    entityRelData?.items.find((item) => item.id === entityId)?.last_seen ?? null;
-
   // Sibling navigation for the Detail keyboard map: `k`/`j` step to the
   // previous/next entity in Index order (default scope), `Esc` returns to the
   // Index. View-local handlers only — they never shadow the app-wide ⌘K/`/`.
@@ -2703,6 +2692,15 @@ export default function EntityDetailPage() {
     },
     [entityId, siblingIds, navigate],
   );
+
+  // Fetch first_seen / last_seen for the current entity from the relationship
+  // entity list endpoint (the only surface that exposes these computed fields).
+  const { data: entityRelData } = useRelationshipEntitiesByIds(
+    entityId ? { ids: [entityId] } : { ids: [] },
+  );
+  const entityRelItem = entityRelData?.items.find((item) => item.id === entityId) ?? null;
+  const entityFirstSeen: string | null = entityRelItem?.first_seen ?? null;
+  const entityLastSeen: string | null = entityRelItem?.last_seen ?? null;
 
   // The view-local Detail keyboard map. Bound to the page root via onKeyDown
   // (detailRootRef + tabIndex below) — NEVER to window — so `m`/`j`/`k`/`Esc`
@@ -3254,25 +3252,24 @@ export default function EntityDetailPage() {
                 entityType={entity.entity_type}
               />
 
-              {/* First-seen / last-seen line — editorial hero provenance row.
-                  last_seen comes from the relationship list endpoint (max of
-                  entity_facts.last_seen). first_seen (min) is not yet surfaced
-                  by any endpoint and degrades to "—" until bu-maqrc ships. */}
+              {/* First / last seen — from the relationship entity index (entity v3). */}
               <dl className="grid grid-cols-[8rem_1fr] items-baseline gap-x-3 gap-y-0 border-t border-border pt-4 text-sm">
                 <dt className="text-muted-foreground text-xs uppercase tracking-wide">
                   First seen
                 </dt>
-                <dd className="text-sm text-muted-foreground">—</dd>
+                <dd className="text-sm">
+                  {entityFirstSeen ? (
+                    <Time value={entityFirstSeen} mode="absolute" precision="day" />
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </dd>
                 <dt className="text-muted-foreground text-xs uppercase tracking-wide">
                   Last seen
                 </dt>
                 <dd className="text-sm">
                   {entityLastSeen ? (
-                    <Time
-                      value={entityLastSeen}
-                      mode="absolute"
-                      precision="day"
-                    />
+                    <Time value={entityLastSeen} mode="absolute" precision="day" />
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}

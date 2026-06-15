@@ -4660,7 +4660,7 @@ export interface RelationshipEntityDetail {
 /**
  * Compact entity row from GET /api/butlers/relationship/entities (list+filter API, §9.1).
  * Distinct from the memory-butler EntitySummary: this surface includes relationship-scoped
- * fields (tier, last_seen, contact_fact_count) instead of memory-butler fact_count.
+ * fields (tier, last_seen, first_seen, contact_fact_count) instead of memory-butler fact_count.
  */
 export interface RelationshipEntitySummary {
   id: string;
@@ -4671,6 +4671,7 @@ export interface RelationshipEntitySummary {
   metadata: Record<string, unknown>;
   tier: number | null;
   last_seen: string | null;
+  first_seen: string | null;
   contact_fact_count: number;
   created_at: string;
   updated_at: string;

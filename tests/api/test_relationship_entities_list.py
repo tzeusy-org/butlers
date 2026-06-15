@@ -53,6 +53,7 @@ def _make_entity_row(
     metadata: dict | None = None,
     tier: int | None = None,
     last_seen: datetime | None = None,
+    first_seen: datetime | None = None,
     contact_fact_count: int = 0,
 ) -> MagicMock:
     """Build a MagicMock that behaves like an asyncpg Record for entity rows."""
@@ -65,6 +66,7 @@ def _make_entity_row(
         "metadata": metadata or {},
         "tier": tier,
         "last_seen": last_seen,
+        "first_seen": first_seen,
         "contact_fact_count": contact_fact_count,
         "created_at": _NOW,
         "updated_at": _NOW,
@@ -137,6 +139,7 @@ async def test_empty_result_returns_200_with_empty_items():
 
 
 async def test_response_shape_contains_required_fields():
+    _FIRST_SEEN = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     rows = [
         _make_entity_row(
             entity_id=_ENTITY_ID_1,
@@ -146,6 +149,7 @@ async def test_response_shape_contains_required_fields():
             roles=["owner"],
             tier=5,
             last_seen=_NOW,
+            first_seen=_FIRST_SEEN,
             contact_fact_count=2,
         )
     ]
@@ -167,6 +171,9 @@ async def test_response_shape_contains_required_fields():
     assert item["roles"] == ["owner"]
     assert item["tier"] == 5
     assert item["last_seen"] is not None
+    assert item["first_seen"] is not None
+    # first_seen must not be later than last_seen
+    assert datetime.fromisoformat(item["first_seen"]) <= datetime.fromisoformat(item["last_seen"])
     assert item["contact_fact_count"] == 2
     assert "created_at" in item
     assert "updated_at" in item
