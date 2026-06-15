@@ -2169,7 +2169,7 @@ function WorkbenchContextRail({
 }
 
 /** One cell of the four-cell KPI strip: mono eyebrow + tabular mega-number. */
-function WorkbenchKpiCell({ label, value }: { label: string; value: number }) {
+function WorkbenchKpiCell({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="px-3 py-2 first:pl-0" data-testid="workbench-kpi-cell">
       <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
@@ -2183,15 +2183,20 @@ function WorkbenchKpiCell({ label, value }: { label: string; value: number }) {
 }
 
 /**
- * Middle-column KPI strip: relations / touches 90d / sources / contacts.
+ * Middle-column KPI strip: relations / touches 90d / sources / channels.
  * All numerals tabular. No card chrome — a hairline-divided four-cell grid.
+ *
+ * Sources and channels are derived from the first page of facts (max 200).
+ * When the entity has more than 200 facts (has_more=true), these counts are
+ * lower bounds — displayed with a "+" suffix to signal incompleteness rather
+ * than showing a silently wrong exact number.
  */
 function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
   const { data: neighboursData } = useEntityNeighbours(entityId);
   const { data: binsData } = useEntityActivityBins(entityId, { window: "90d" });
-  // Pull a wide-but-bounded facts window over both stores to count the distinct
-  // contributing sources and contact-fact rows. The grid below paginates; this
-  // count is a quick-glance KPI, not an exhaustive tally.
+  // Pull the max page of facts (200) to count distinct sources and channel
+  // predicates. has_more=true means >200 facts exist; in that case we surface
+  // the observed counts as lower bounds (e.g. "3+") rather than exact totals.
   const { data: factsData } = useEntityFacts(entityId, { store: "all", limit: 200 });
 
   const relations = useMemo(() => {
@@ -2205,11 +2210,17 @@ function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
   }, [binsData]);
 
   const facts = useMemo(() => factsData?.items ?? [], [factsData]);
-  const sources = useMemo(() => new Set(facts.map((f) => f.src)).size, [facts]);
-  const contacts = useMemo(
+  // has_more=true means the 200-fact window is incomplete; counts are lower bounds.
+  const truncated = factsData?.has_more ?? false;
+  const sourcesCount = useMemo(() => new Set(facts.map((f) => f.src)).size, [facts]);
+  const channelsCount = useMemo(
     () => facts.filter((f) => f.predicate.startsWith("has-")).length,
     [facts],
   );
+  // Display exact count when complete, or "${n}+" as an honest lower bound when
+  // the facts window was truncated.
+  const sources: string | number = truncated ? `${sourcesCount}+` : sourcesCount;
+  const channels: string | number = truncated ? `${channelsCount}+` : channelsCount;
 
   return (
     <div
@@ -2219,7 +2230,7 @@ function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
       <WorkbenchKpiCell label="relations" value={relations} />
       <WorkbenchKpiCell label="touches 90d" value={touches90d} />
       <WorkbenchKpiCell label="sources" value={sources} />
-      <WorkbenchKpiCell label="contacts" value={contacts} />
+      <WorkbenchKpiCell label="channels" value={channels} />
     </div>
   );
 }
