@@ -1626,10 +1626,26 @@ def _build_app_for_dunbar_patch(
 
     Patches the engine import so the router calls a mocked dunbar_tier_set
     rather than touching real DB logic.
+
+    The contactless path (contact_row=None) uses pool.acquire() as an async
+    context manager, so we wire up a proper CM mock for that path.
     """
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
     pool.fetchrow = AsyncMock(return_value=contact_row)
+
+    # Wire pool.acquire() as a proper async context manager for the contactless
+    # code path, which does: async with pool.acquire() as conn: ...
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock(return_value=None)
+    _mock_txn = MagicMock()
+    _mock_txn.__aenter__ = AsyncMock(return_value=None)
+    _mock_txn.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=_mock_txn)
+    _mock_acm = MagicMock()
+    _mock_acm.__aenter__ = AsyncMock(return_value=mock_conn)
+    _mock_acm.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=_mock_acm)
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
@@ -1687,15 +1703,19 @@ class TestDunbarTierOverride:
         )
         assert resp.status_code == 404
 
-    async def test_returns_404_when_no_linked_contact(self):
+    async def test_pins_tier_for_contactless_entity(self):
+        """Contactless entity: PATCH with valid tier succeeds (200) and pins the tier."""
         app, _ = _build_app_for_dunbar_patch(entity_exists=True, contact_row=None)
         resp = await _patch(
             app,
             f"/api/relationship/entities/{_ENT_ID}/dunbar-tier",
             {"tier": 50},
         )
-        assert resp.status_code == 404
-        assert "linked contact" in resp.json()["detail"].lower()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["action"] == "set"
+        assert body["tier"] == 50
+        assert body["contact_id"] is None
 
     async def test_pins_tier_successfully(self):
         contact_id = uuid4()

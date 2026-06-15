@@ -13,7 +13,7 @@ Endpoints under test (§9.1–§9.12):
         DELETE /entities/{id}/contacts/{p}/{h} — retract contact fact
   9.5   GET  /entities/queue                   — curation queue
   9.6   GET  /entities/search                  — deterministic finder
-  9.7   POST /entities/{id}/promote-tier       — tier promotion
+  9.7   PATCH /entities/{id}/dunbar-tier        — dunbar tier override (replaces promote-tier)
   9.8   POST /entities/{id}/archive            — soft archive
         DELETE /entities/{id}                  — tombstone / forget
   9.9   POST /entities/{id}/merge              — entity merge
@@ -70,7 +70,6 @@ _LIST_PATH = "/api/relationship/entities"
 _ENTITY_PATH = f"/api/relationship/entities/{_ENT_ID}"
 _ARCHIVE_PATH = f"/api/relationship/entities/{_ENT_ID}/archive"
 _MERGE_PATH = f"/api/relationship/entities/{_ENT_ID}/merge"
-_PROMOTE_TIER_PATH = f"/api/relationship/entities/{_ENT_ID}/promote-tier"
 _CONTACTS_PATH = f"/api/relationship/entities/{_ENT_ID}/contacts"
 _QUEUE_PATH = "/api/relationship/entities/queue"
 _SEARCH_PATH = "/api/relationship/entities/search"
@@ -886,77 +885,6 @@ class TestEntitySearch:
         app, _ = self._make_app()
         resp = await _get(app, _SEARCH_PATH, q="alice", limit=51)
         assert resp.status_code == 422
-
-
-# ===========================================================================
-# §9.7 POST /entities/{id}/promote-tier — tier promotion
-# ===========================================================================
-
-
-class TestPromoteTier:
-    """POST /entities/{id}/promote-tier — §9.7/§9.8."""
-
-    _WRITER_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
-
-    def _make_app(
-        self,
-        *,
-        owner_exists: bool = True,
-        entity_exists: bool = True,
-        outcome: str = "inserted",
-    ) -> tuple[FastAPI, AsyncMock]:
-        fact_id = uuid4()
-        mock_result = MagicMock()
-        mock_result.outcome = AssertOutcome(outcome)
-        mock_result.fact_id = fact_id
-        mock_result.action_id = None
-
-        mock_pool = AsyncMock()
-        owner_row = _make_owner_row() if owner_exists else None
-        entity_val = 1 if entity_exists else None
-        # Sequence: owner-roles check (fetchrow), then entity-existence check (fetchval)
-        mock_pool.fetchrow = AsyncMock(return_value=owner_row)
-        mock_pool.fetchval = AsyncMock(return_value=entity_val)
-        return _wire_app(mock_pool), mock_pool
-
-    async def test_happy_path_returns_201_inserted(self):
-        """POST /entities/{id}/promote-tier returns 201 + outcome='inserted'."""
-        app, _ = self._make_app()
-        with patch(self._WRITER_PATCH, new=AsyncMock(return_value=self._make_result("inserted"))):
-            resp = await _post(app, _PROMOTE_TIER_PATH, {"tier": 15})
-        assert resp.status_code == 201
-        body = resp.json()
-        assert body["outcome"] in ("inserted", "unchanged", "superseded")
-
-    def _make_result(self, outcome: str) -> MagicMock:
-        mock_result = MagicMock()
-        mock_result.outcome = AssertOutcome(outcome)
-        mock_result.fact_id = uuid4()
-        mock_result.action_id = None
-        return mock_result
-
-    async def test_owner_gate_returns_403(self):
-        """POST /entities/{id}/promote-tier returns 403 when no owner entity."""
-        app, _ = self._make_app(owner_exists=False)
-        with patch(self._WRITER_PATCH, new=AsyncMock(return_value=self._make_result("inserted"))):
-            resp = await _post(app, _PROMOTE_TIER_PATH, {"tier": 15})
-        _assert_owner_required(resp)
-
-    async def test_invalid_tier_returns_422(self):
-        """POST /entities/{id}/promote-tier rejects tier not in allowed set."""
-        app, _ = self._make_app()
-        with patch(self._WRITER_PATCH, new=AsyncMock(return_value=self._make_result("inserted"))):
-            resp = await _post(app, _PROMOTE_TIER_PATH, {"tier": 999})
-        assert resp.status_code == 422
-
-    async def test_missing_entity_returns_404(self):
-        """POST /entities/{id}/promote-tier returns 404 for unknown entity."""
-        app, _ = self._make_app(entity_exists=False)
-        with patch(self._WRITER_PATCH, new=AsyncMock(return_value=self._make_result("inserted"))):
-            resp = await _post(
-                app, f"/api/relationship/entities/{_MISSING_ENT_ID}/promote-tier", {"tier": 15}
-            )
-        assert resp.status_code == 404
 
 
 # ===========================================================================

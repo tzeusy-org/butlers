@@ -1423,6 +1423,11 @@ export function EntitiesIndexPage() {
             <div className="flex items-center justify-between">
               <p className="text-sm tabular-nums text-muted-foreground">
                 Showing {rangeStart}&ndash;{rangeEnd} of {total.toLocaleString()}
+                {isSearching && entities.length >= SEARCH_RESULT_LIMIT && (
+                  <span className="ml-1 text-xs text-muted-foreground/70">
+                    (top {SEARCH_RESULT_LIMIT} results shown)
+                  </span>
+                )}
               </p>
               <div className="flex gap-2">
                 <Button

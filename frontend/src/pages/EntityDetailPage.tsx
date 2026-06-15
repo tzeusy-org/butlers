@@ -64,6 +64,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { TierBadge } from "@/components/ui/TierBadge";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -3078,6 +3079,9 @@ export default function EntityDetailPage() {
                   <Check className="mr-1 h-3.5 w-3.5" />
                   {promoteEntity.isPending ? "Confirming..." : "Mark confirmed"}
                 </Button>
+              )}
+              {entity.dunbar_tier != null && (
+                <TierBadge tier={entity.dunbar_tier} data-testid="hero-tier-badge" />
               )}
             </div>
 

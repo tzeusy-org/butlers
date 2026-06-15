@@ -588,7 +588,7 @@ async def relationship_assert_fact(
 
     This is the SINGLE authoritative ingress point for all writes to
     ``relationship.entity_facts``.  All endpoints that need to write a triple
-    (contacts CRUD, entity API, merge, archive, promote-tier, queue/dismiss,
+    (contacts CRUD, entity API, merge, archive, dunbar-tier, queue/dismiss,
     dual-write shim, backfill) MUST call this function.
 
     Parameters

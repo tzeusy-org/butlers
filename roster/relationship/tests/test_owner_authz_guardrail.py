@@ -159,7 +159,6 @@ def _assert_owner_required(resp: httpx.Response) -> None:
 #   POST /entities               → bead 9.7 (entity create)
 #   POST /entities/{id}/merge    → bead 9.8 (entity merge)
 #   POST /entities/{id}/archive  → bead 9.9 (entity archive)
-#   POST /entities/{id}/promote-tier → bead 9.10 (entity promote-tier)
 #   DELETE /entities/{id}        → bead 9.7 (entity delete / forget)
 #   POST /entities/queue/dismiss → bead 9.11 (queue dismiss)
 #   POST /entities/{id}/contacts → bead 9.7 (entity contacts write)
@@ -189,13 +188,6 @@ class TestClause12aMutationNonOwner:
     async def test_post_entities_archive_non_owner_403(self):
         app = _non_owner_app()
         resp = await _request(app, "post", f"{_BASE}/{_ENT_ID}/archive", json_body={})
-        _assert_owner_required(resp)
-
-    async def test_post_entities_promote_tier_non_owner_403(self):
-        app = _non_owner_app()
-        resp = await _request(
-            app, "post", f"{_BASE}/{_ENT_ID}/promote-tier", json_body={"tier": 15}
-        )
         _assert_owner_required(resp)
 
     async def test_delete_entity_non_owner_403(self):
