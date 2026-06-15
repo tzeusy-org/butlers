@@ -476,20 +476,29 @@ def _extract_error_message(
     return text or None
 
 
-async def _fetch_heartbeat_rows_by_email(switchboard_pool: Any) -> dict[str, dict[str, Any]]:
-    """Return all connector_registry heartbeat rows for Google Health keyed by email.
+async def _fetch_heartbeat_rows_by_email(
+    switchboard_pool: Any,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+    """Return all connector_registry heartbeat rows for Google Health.
 
     Parses the ``endpoint_identity`` column — which has the shape
     ``google_health:user:<email>`` for per-account heartbeats — to extract the
-    email segment.  Rows whose ``endpoint_identity`` does not match the expected
-    pattern (e.g. the legacy connector-level degraded sentinel) are silently
-    skipped.
+    email segment.
 
-    Returns a dict mapping email → heartbeat row dict.  Empty dict when the
-    switchboard pool is unavailable or the query fails.
+    Also captures the connector-level degraded-sentinel row
+    (``endpoint_identity='google_health:degraded'``) which is emitted before
+    accounts are resolved.  Callers use the sentinel as a fallback ``error_message``
+    source when no per-account row exists yet for a given email (e.g. when the
+    connector receives a 403 before it has finished enumerating accounts).
+
+    Returns a 2-tuple:
+    - ``per_email``: dict mapping email → heartbeat row dict (most-recent per email)
+    - ``degraded_sentinel``: the most-recent ``google_health:degraded`` row, or ``None``
+
+    Both are empty / ``None`` when the switchboard pool is unavailable or the query fails.
     """
     if switchboard_pool is None:
-        return {}
+        return {}, None
     try:
         rows = await switchboard_pool.fetch(
             "SELECT cr.state, cr.last_heartbeat_at, cr.uptime_s,"
@@ -500,11 +509,17 @@ async def _fetch_heartbeat_rows_by_email(switchboard_pool: Any) -> dict[str, dic
         )
     except Exception:  # noqa: BLE001
         logger.debug("connector_registry multi-row query failed for Google Health", exc_info=True)
-        return {}
+        return {}, None
     result: dict[str, dict[str, Any]] = {}
+    degraded_sentinel: dict[str, Any] | None = None
     for row in rows:
         eid = row.get("endpoint_identity") or ""
-        # Expected shape: "google_health:user:<email>"
+        # Capture the connector-level degraded sentinel (fired before accounts are resolved).
+        if eid == "google_health:degraded":
+            if degraded_sentinel is None:
+                degraded_sentinel = dict(row)
+            continue
+        # Expected per-account shape: "google_health:user:<email>"
         parts = eid.split(":", 2)
         if len(parts) != 3 or parts[0] != "google_health" or parts[1] != "user":
             continue
@@ -515,7 +530,7 @@ async def _fetch_heartbeat_rows_by_email(switchboard_pool: Any) -> dict[str, dic
             continue
         if email not in result:
             result[email] = dict(row)
-    return result
+    return result, degraded_sentinel
 
 
 async def _fetch_per_account_ingest_counts(
@@ -726,7 +741,9 @@ async def get_google_health_status(
             health_accounts = []
 
         if health_accounts:
-            heartbeat_by_email = await _fetch_heartbeat_rows_by_email(switchboard_pool)
+            heartbeat_by_email, degraded_sentinel = await _fetch_heartbeat_rows_by_email(
+                switchboard_pool
+            )
 
             # Fetch account rows from google_accounts for granted_scopes and token metadata.
             # Filter to the health-scoped set so the query scales with accounts, not total DB rows.
@@ -756,7 +773,10 @@ async def get_google_health_status(
                     email=ha.email,
                     account_row=ga_by_email.get(ha.email)
                     or {"email": ha.email, "granted_scopes": None},
-                    heartbeat=heartbeat_by_email.get(ha.email),
+                    # Fall back to the connector-level degraded sentinel when no per-account
+                    # heartbeat row exists yet (e.g. connector received a 403 before resolving
+                    # accounts, so only the sentinel row carries the error_message).
+                    heartbeat=heartbeat_by_email.get(ha.email) or degraded_sentinel,
                     shared_pool=shared_pool,
                 )
                 for ha in health_accounts
