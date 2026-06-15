@@ -22,6 +22,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
@@ -30,6 +31,7 @@ import {
   CheckCircleIcon,
   GitMergeIcon,
   Loader2Icon,
+  PlusIcon,
   TrashIcon,
   XIcon,
 } from "lucide-react";
@@ -53,12 +55,21 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Page } from "@/components/ui/page";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import {
   useArchiveRelationshipEntity,
+  useCreateRelationshipEntity,
   useDismissRelationshipEntityQueueItem,
   useEntityFinderSearch,
   useForgetRelationshipEntity,
@@ -1006,6 +1017,103 @@ function QueueSection({
 }
 
 // ---------------------------------------------------------------------------
+// Create-entity dialog
+// ---------------------------------------------------------------------------
+
+function CreateEntityDialog({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [entityType, setEntityType] = useState<EntityType>("person");
+  const createMutation = useCreateRelationshipEntity();
+
+  function handleClose() {
+    setName("");
+    setEntityType("person");
+    onClose();
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    try {
+      await createMutation.mutateAsync({
+        canonicalName: name.trim(),
+        entityType,
+      });
+      toast.success(`Created entity "${name.trim()}"`);
+      handleClose();
+    } catch (err) {
+      toast.error(`Create failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
+      <DialogContent data-testid="create-entity-dialog">
+        <DialogHeader>
+          <DialogTitle>New entity</DialogTitle>
+          <DialogDescription>
+            Create a new entity in the relationship graph.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="create-entity-name">Name</Label>
+            <Input
+              id="create-entity-name"
+              data-testid="create-entity-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Full name or organisation name"
+              autoFocus
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="create-entity-type">Type</Label>
+            <Select
+              value={entityType}
+              onValueChange={(v) => setEntityType(v as EntityType)}
+            >
+              <SelectTrigger id="create-entity-type" data-testid="create-entity-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ENTITY_TYPES.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {TYPE_LABELS[t]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={handleClose}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={createMutation.isPending || !name.trim()}
+              data-testid="create-entity-submit"
+            >
+              {createMutation.isPending ? (
+                <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Create
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
 
@@ -1023,6 +1131,8 @@ export function EntitiesIndexPage() {
   // deterministic ranking as the Cmd-K Finder) instead of a client-side
   // substring pass. Spec: "Index toolbar search uses the search endpoint".
   const [searchQuery, setSearchQuery] = useState("");
+
+  const [createEntityOpen, setCreateEntityOpen] = useState(false);
 
   const archiveMutation = useArchiveRelationshipEntity();
   const forgetMutation = useForgetRelationshipEntity();
@@ -1197,6 +1307,15 @@ export function EntitiesIndexPage() {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+
+      // n — open the create-entity dialog (guard for modifier keys to avoid
+      // shadowing browser shortcuts like Ctrl+N / Cmd+N).
+      if (e.key === "n" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setCreateEntityOpen(true);
+        return;
+      }
+
       if (entities.length === 0) return;
 
       const clamp = (n: number) => Math.max(0, Math.min(entities.length - 1, n));
@@ -1309,9 +1428,8 @@ export function EntitiesIndexPage() {
       {/* SubpageTabs strip — Index is active */}
       <SubpageTabs />
 
-      {/* Toolbar search — queries the relationship search endpoint (same
-          ranking as the Cmd-K Finder), filtering the table in place. */}
-      <div className="mb-3">
+      {/* Toolbar: search + New entity button */}
+      <div className="mb-3 flex items-center gap-2">
         <Input
           type="search"
           aria-label="Search entities"
@@ -1319,7 +1437,18 @@ export function EntitiesIndexPage() {
           value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)}
           data-testid="entities-toolbar-search"
+          className="flex-1"
         />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setCreateEntityOpen(true)}
+          data-testid="new-entity-button"
+        >
+          <PlusIcon className="mr-1.5 h-3.5 w-3.5" />
+          New entity
+        </Button>
       </div>
 
       {/* Filter chips */}
@@ -1491,6 +1620,10 @@ export function EntitiesIndexPage() {
         onOpenChange={(open) => {
           if (!open) setBulkConfirm(null);
         }}
+      />
+      <CreateEntityDialog
+        open={createEntityOpen}
+        onClose={() => setCreateEntityOpen(false)}
       />
     </Page>
   );

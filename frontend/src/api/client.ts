@@ -302,6 +302,7 @@ import type {
   MergeRelationshipEntitiesRequest,
   MergeRelationshipEntitiesResponse,
   PromoteRelationshipEntityRequest,
+  CreateRelationshipEntityRequest,
   InstanceFacts,
   DatabaseFacts,
   BackupFacts,
@@ -2497,6 +2498,16 @@ export function getRelationshipEntityQueue(params?: {
 /** Promote an existing unidentified relationship entity in-place. */
 export function promoteRelationshipEntity(
   request: PromoteRelationshipEntityRequest,
+): Promise<RelationshipEntityDetail> {
+  return apiFetch<RelationshipEntityDetail>("/relationship/entities", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+/** Create a brand-new canonical entity through the relationship API (create path — no entity_id). */
+export function createRelationshipEntity(
+  request: CreateRelationshipEntityRequest,
 ): Promise<RelationshipEntityDetail> {
   return apiFetch<RelationshipEntityDetail>("/relationship/entities", {
     method: "POST",

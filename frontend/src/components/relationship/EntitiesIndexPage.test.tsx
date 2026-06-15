@@ -30,6 +30,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useRelationshipEntitiesByIds: vi.fn(),
   useRelationshipEntityQueue: vi.fn(),
   usePromoteRelationshipEntity: vi.fn(),
+  useCreateRelationshipEntity: vi.fn(),
   useArchiveRelationshipEntity: vi.fn(),
   useForgetRelationshipEntity: vi.fn(),
   useDismissRelationshipEntityQueueItem: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock("@/hooks/use-entities", () => ({
 import {
   useArchiveRelationshipEntity,
   useCompareEntities,
+  useCreateRelationshipEntity,
   useDismissEntityPair,
   useDismissRelationshipEntityQueueItem,
   useEntityFinderSearch,
@@ -129,6 +131,7 @@ function makeQueryClient() {
 let container: HTMLDivElement;
 let root: Root;
 let promoteMutateAsync: ReturnType<typeof vi.fn>;
+let createMutateAsync: ReturnType<typeof vi.fn>;
 let archiveMutateAsync: ReturnType<typeof vi.fn>;
 let forgetMutateAsync: ReturnType<typeof vi.fn>;
 let dismissMutateAsync: ReturnType<typeof vi.fn>;
@@ -150,6 +153,7 @@ function renderPage(initialUrl = "/entities") {
 beforeEach(() => {
   vi.resetAllMocks();
   promoteMutateAsync = vi.fn().mockResolvedValue({});
+  createMutateAsync = vi.fn().mockResolvedValue({ id: "new-ent-001", canonical_name: "New Entity", entity_type: "person" });
   archiveMutateAsync = vi.fn().mockResolvedValue(undefined);
   forgetMutateAsync = vi.fn().mockResolvedValue(undefined);
   dismissMutateAsync = vi.fn().mockResolvedValue({});
@@ -188,6 +192,10 @@ beforeEach(() => {
     mutateAsync: promoteMutateAsync,
     isPending: false,
   } as unknown as ReturnType<typeof usePromoteRelationshipEntity>);
+  vi.mocked(useCreateRelationshipEntity).mockReturnValue({
+    mutateAsync: createMutateAsync,
+    isPending: false,
+  } as unknown as ReturnType<typeof useCreateRelationshipEntity>);
   vi.mocked(useArchiveRelationshipEntity).mockReturnValue({
     mutateAsync: archiveMutateAsync,
     isPending: false,
@@ -1623,5 +1631,87 @@ describe("EntitiesIndexPage — merge-target picker", () => {
 
     expect(document.body.textContent).toContain("No matching entity found.");
     expect(document.body.textContent).not.toContain("Search failed.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Create-entity affordance: button + n shortcut + dialog
+// ---------------------------------------------------------------------------
+
+describe("EntitiesIndexPage — create entity affordance", () => {
+  function dispatchKeyOnList(key: string, init: KeyboardEventInit = {}) {
+    const list = container.querySelector(
+      "[data-testid='entity-list-container']",
+    ) as HTMLDivElement;
+    act(() => {
+      list.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
+    });
+  }
+
+  it("renders a 'New entity' button in the toolbar", () => {
+    renderPage();
+    expect(container.querySelector("[data-testid='new-entity-button']")).toBeTruthy();
+  });
+
+  it("clicking 'New entity' button opens the create dialog", () => {
+    renderPage();
+    const btn = container.querySelector(
+      "[data-testid='new-entity-button']",
+    ) as HTMLButtonElement;
+    act(() => btn.click());
+    // Dialog renders into document.body via portal.
+    expect(document.body.querySelector("[data-testid='create-entity-dialog']")).toBeTruthy();
+  });
+
+  it("pressing 'n' on the list container opens the create dialog", () => {
+    renderPage();
+    dispatchKeyOnList("n");
+    expect(document.body.querySelector("[data-testid='create-entity-dialog']")).toBeTruthy();
+  });
+
+  it("pressing 'n' while an input is focused does NOT open the create dialog", () => {
+    renderPage();
+    // Simulate 'n' dispatched from the toolbar search input (tag = INPUT).
+    const input = container.querySelector(
+      "[data-testid='entities-toolbar-search']",
+    ) as HTMLInputElement;
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "n", bubbles: true }));
+    });
+    // The input guard should prevent the dialog from opening.
+    expect(document.body.querySelector("[data-testid='create-entity-dialog']")).toBeNull();
+  });
+
+  it("submitting the create form calls createMutateAsync with name and type", async () => {
+    renderPage();
+    const btn = container.querySelector(
+      "[data-testid='new-entity-button']",
+    ) as HTMLButtonElement;
+    act(() => btn.click());
+
+    const nameInput = document.body.querySelector(
+      "[data-testid='create-entity-name']",
+    ) as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+
+    await act(async () => {
+      setter?.call(nameInput, "Eve Morton");
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const submitBtn = document.body.querySelector(
+      "[data-testid='create-entity-submit']",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      submitBtn.click();
+    });
+
+    expect(createMutateAsync).toHaveBeenCalledWith({
+      canonicalName: "Eve Morton",
+      entityType: "person",
+    });
   });
 });

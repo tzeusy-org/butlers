@@ -38,6 +38,7 @@ import {
   markEntityView,
   mergeRelationshipEntities,
   promoteRelationshipEntity,
+  createRelationshipEntity,
   revealEntitySecret,
   searchRelationshipEntities,
   setEntityPreferredChannel,
@@ -52,6 +53,7 @@ import type {
   NeighboursParams,
   MergeRelationshipEntitiesRequest,
   PromoteRelationshipEntityRequest,
+  CreateRelationshipEntityRequest,
   RelationshipEntityListParams,
 } from "@/api/index.ts";
 
@@ -373,6 +375,29 @@ export function usePromoteRelationshipEntity() {
     onSuccess: (_, { entityId }) => {
       invalidateRelationshipEntityIndex(queryClient);
       void queryClient.invalidateQueries({ queryKey: ["relationship-entity", entityId] });
+    },
+  });
+}
+
+/** Create a brand-new canonical entity through the relationship API. */
+export function useCreateRelationshipEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      canonicalName,
+      entityType,
+    }: {
+      canonicalName: string;
+      entityType: string;
+    }) => {
+      const request: CreateRelationshipEntityRequest = {
+        canonical_name: canonicalName,
+        entity_type: entityType,
+      };
+      return createRelationshipEntity(request);
+    },
+    onSuccess: () => {
+      invalidateRelationshipEntityIndex(queryClient);
     },
   });
 }
