@@ -51,9 +51,9 @@ vi.mock("@/hooks/use-memory", () => ({
 const useRelationshipEntityQueue = vi.fn();
 const useEntityNeighbours = vi.fn();
 const useRelationshipEntities = vi.fn();
-const useRelationshipEntitiesByIds = vi.fn(() => ({
-  data: { items: [], total: 0, limit: 1, offset: 0 },
-}));
+const useRelationshipEntitiesByIds = vi
+  .fn()
+  .mockReturnValue({ data: { items: [], total: 0, limit: 1, offset: 0 } });
 const useEntityFacts = vi.fn();
 
 vi.mock("@/hooks/use-entities", () => ({
