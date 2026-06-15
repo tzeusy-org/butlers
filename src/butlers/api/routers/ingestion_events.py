@@ -153,8 +153,10 @@ async def list_ingestion_events(
         None,
         max_length=200,
         description=(
-            "Freetext search (ILIKE %%q%%) against source_channel, "
-            "source_sender_identity, and error_detail. "
+            "Freetext search (ILIKE %%q%%) against event id, source_channel, "
+            "source_sender_identity, source_endpoint_identity, external_event_id, "
+            "triage_target (butler routing destination), triage_decision, "
+            "filter_reason, and error_detail. "
             "Parameterized — safe against SQL injection."
         ),
     ),
@@ -1111,7 +1113,11 @@ async def get_ingestion_window_rollup(
     q: str | None = Query(
         None,
         max_length=200,
-        description="Freetext search (ILIKE %%q%%) against channel, sender, error_detail",
+        description=(
+            "Freetext search (ILIKE %%q%%) against event id, channel, sender, "
+            "endpoint identity, external event id, triage target, triage decision, "
+            "filter reason, and error detail."
+        ),
     ),
     db: DatabaseManager = Depends(_get_rollup_db_manager),
     pricing: PricingConfig | None = Depends(_get_pricing_optional),

@@ -275,8 +275,11 @@ async def ingestion_events_list(
         statuses: Optional list of status values to include.  Generates a
             ``status = ANY($N::text[])`` clause and takes precedence over
             ``status``.
-        q: Optional freetext search (ILIKE %q%) against source_channel,
-            source_sender_identity, and error_detail.
+        q: Optional freetext search (ILIKE %q%) against the event id (as text),
+            source_channel, source_sender_identity, source_endpoint_identity,
+            external_event_id, triage_target (butler routing destination),
+            triage_decision, filter_reason, and error_detail.  Searching a
+            visible event ID prefix always returns that row.
         from_dt: Inclusive lower bound on ``received_at``.  ``None`` = no lower bound.
         to_dt: Exclusive upper bound on ``received_at``.  ``None`` = no upper bound.
 
@@ -303,7 +306,14 @@ async def ingestion_events_list(
         args.append(q_pattern)
         n = len(args)
         where_parts.append(
-            f"(source_channel ILIKE ${n} OR source_sender_identity ILIKE ${n}"
+            f"(id::text ILIKE ${n}"
+            f" OR source_channel ILIKE ${n}"
+            f" OR source_sender_identity ILIKE ${n}"
+            f" OR source_endpoint_identity ILIKE ${n}"
+            f" OR external_event_id ILIKE ${n}"
+            f" OR triage_target ILIKE ${n}"
+            f" OR triage_decision ILIKE ${n}"
+            f" OR filter_reason ILIKE ${n}"
             f" OR error_detail ILIKE ${n})"
         )
     if from_dt is not None:
@@ -807,8 +817,10 @@ async def ingestion_window_rollup(
         to_dt:     Exclusive upper bound on ``received_at``. ``None`` = no upper bound.
         channels:  Optional list of source_channel values to include.
         statuses:  Optional list of status values to include.
-        q:         Optional freetext search against source_channel + source_sender_identity +
-                   error_detail (ILIKE %q%).  ``None`` = no text filter.
+        q:         Optional freetext search (ILIKE %q%) against event id, source_channel,
+                   source_sender_identity, source_endpoint_identity, external_event_id,
+                   triage_target, triage_decision, filter_reason, and error_detail.
+                   ``None`` = no text filter.
         db:        DatabaseManager for the cross-butler session fan-out.
                    When ``None``, session count is omitted (returns 0) and cost is ``None``.
         pricing:   Optional pricing config for cost estimation.  When provided, cost is
@@ -842,7 +854,14 @@ async def ingestion_window_rollup(
         args.append(q_pattern)
         n = len(args)
         where_parts.append(
-            f"(source_channel ILIKE ${n} OR source_sender_identity ILIKE ${n}"
+            f"(id::text ILIKE ${n}"
+            f" OR source_channel ILIKE ${n}"
+            f" OR source_sender_identity ILIKE ${n}"
+            f" OR source_endpoint_identity ILIKE ${n}"
+            f" OR external_event_id ILIKE ${n}"
+            f" OR triage_target ILIKE ${n}"
+            f" OR triage_decision ILIKE ${n}"
+            f" OR filter_reason ILIKE ${n}"
             f" OR error_detail ILIKE ${n})"
         )
 

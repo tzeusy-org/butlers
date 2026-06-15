@@ -355,6 +355,64 @@ async def test_ingestion_events_list_and_sessions() -> None:
     assert rollup_result["by_butler"]["herald"]["cost"] == 0.0
 
 
+async def test_ingestion_events_list_q_search_coverage() -> None:
+    """q search includes event id (primary fix) and other readily-available fields.
+
+    Verifies that the WHERE clause built by ingestion_events_list contains an
+    ILIKE predicate for each of the newly-covered columns, and that the single
+    bound parameter is reused for all of them (one ILIKE arg, not N).
+    """
+    from butlers.core.ingestion_events import ingestion_events_list
+
+    # Each field that must appear in the SQL predicate
+    expected_columns = [
+        "id::text",
+        "source_channel",
+        "source_sender_identity",
+        "source_endpoint_identity",
+        "external_event_id",
+        "triage_target",
+        "triage_decision",
+        "filter_reason",
+        "error_detail",
+    ]
+
+    pool = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool, q="abc123", limit=5)
+    _, sql, args = pool.calls[0]
+
+    # Every expected column is in the WHERE clause
+    for col in expected_columns:
+        assert col in sql, f"Expected column {col!r} missing from q search SQL: {sql!r}"
+
+    # The ILIKE pattern appears exactly once in the args list (all branches reuse $N)
+    assert args.count("%abc123%") == 1, f"Expected exactly one ILIKE arg for q; got: {args}"
+
+    # Cursor pagination still composes correctly: adding a cursor must not break
+    # the q predicate already in the WHERE clause.
+    import base64
+    import json as _json_mod
+    from datetime import UTC, datetime
+
+    cursor_payload = {"ra": datetime(2026, 5, 1, tzinfo=UTC).isoformat(), "id": str(uuid.uuid4())}
+    cursor = base64.urlsafe_b64encode(_json_mod.dumps(cursor_payload).encode()).decode()
+
+    pool2 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool2, q="xyz", cursor=cursor, limit=5)
+    _, sql2, args2 = pool2.calls[0]
+
+    # Both the id::text ILIKE and the keyset clause must be present
+    assert "id::text ILIKE" in sql2
+    assert "(received_at, id) <" in sql2
+    assert "%xyz%" in args2
+
+    # Searching by triage_target covers "butler name" match
+    pool3 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool3, q="atlas", limit=5)
+    _, sql3, args3 = pool3.calls[0]
+    assert "triage_target ILIKE" in sql3 and "%atlas%" in args3
+
+
 async def test_replay_request_and_inbox_lifecycle() -> None:
     """replay_request ok/not_found/conflict outcomes; inbox_lifecycle state lookup."""
     from butlers.core.ingestion_events import (
