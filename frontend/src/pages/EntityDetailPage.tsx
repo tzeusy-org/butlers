@@ -52,7 +52,7 @@ import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Row } from "@/components/ui/Row";
 import { Voice } from "@/components/ui/Voice";
-import { ConfBar, ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
+import { ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1576,13 +1576,6 @@ function FactRow({
           data-testid={`fact-provenance-reveal-${fact.id}`}
           className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 text-xs"
         >
-          {/* Two distinct axes — confidence and staleness — never blended. */}
-          <span className="flex items-center gap-1.5">
-            <span className="text-muted-foreground text-[10px] uppercase tracking-[0.08em]">
-              conf
-            </span>
-            <ConfBar conf={provenance.conf} width={40} />
-          </span>
           <StalenessBand band={provenance.staleness_band} />
           <ProvenanceMarks src={provenance.src} verified={provenance.verified} />
         </div>
@@ -2383,21 +2376,15 @@ function EditorialCurationRail({
 }
 
 /**
- * Per-fact confidence/staleness inspector row. Renders the two axes side by
- * side — conf bar (amber when < 0.85) and staleness band (dim when stale) —
- * plus source/verified marks. NEVER a single blended score.
+ * Per-fact staleness inspector row. Renders the staleness band (dim when stale)
+ * plus source/verified marks.
  */
 function WorkbenchInspectorRow({ fact }: { fact: EntityFact }) {
   return (
     <Row
       density="scan"
       className="px-0"
-      meta={
-        <div className="flex items-center gap-2">
-          <ConfBar conf={fact.conf} width={40} />
-          <StalenessBand band={fact.staleness_band} />
-        </div>
-      }
+      meta={<StalenessBand band={fact.staleness_band} />}
       data-testid="workbench-inspector-row"
     >
       <div className="min-w-0">
@@ -2517,7 +2504,7 @@ function WorkbenchActionRail({
       </section>
 
       <section className="space-y-2">
-        <Eyebrow>confidence · staleness</Eyebrow>
+        <Eyebrow>staleness</Eyebrow>
         {facts.length === 0 ? (
           <p className="text-xs text-muted-foreground">No facts to inspect.</p>
         ) : (

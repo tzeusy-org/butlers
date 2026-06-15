@@ -3,16 +3,14 @@
 //
 // Visual gallery for the single-source entity UI primitives consumed by every
 // entity view (Index, Hop, Columns, Concentration, Detail, Finder):
-//   EntityMark · TierBadge · StateDot · Row · ConfBar · StalenessBand ·
-//   ProvenanceMarks.
+//   EntityMark · TierBadge · StateDot · Row · StalenessBand · ProvenanceMarks.
 //
-// The provenance section makes the binding invariant visible: confidence and
-// staleness are two distinct axes that never blend — including the headline
-// case of a fully-confident yet stale fact.
+// Note: ConfBar was removed (bu-8j0ir) — conf is hardcoded 1.0 at every write
+// site so the bar was always full and the amber branch was unreachable.
 // ---------------------------------------------------------------------------
 
 import { EntityMark } from "./EntityMark"
-import { ConfBar, ProvenanceMarks, StalenessBand } from "./Provenance"
+import { ProvenanceMarks, StalenessBand } from "./Provenance"
 import { Row } from "./Row"
 import { StateDot, type EntityState } from "./StateDot"
 import { TierBadge, type DunbarTier } from "./TierBadge"
@@ -130,21 +128,6 @@ export const Rows = () => (
 
 export const Provenance = () => (
   <div style={{ padding: 24, maxWidth: 520 }}>
-    <Section title="ConfBar · confidence axis">
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {[1.0, 0.9, 0.85, 0.7, 0.4].map((c) => (
-          <span key={c} style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-            <ConfBar conf={c} />
-            <span
-              style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--mfg)" }}
-            >
-              {c.toFixed(2)}
-            </span>
-          </span>
-        ))}
-      </div>
-    </Section>
-
     <Section title="StalenessBand · staleness axis">
       <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
         <StalenessBand band="fresh" />
@@ -160,11 +143,10 @@ export const Provenance = () => (
       </div>
     </Section>
 
-    <Section title="Two axes, never blended (conf=1.0 AND stale)">
+    <Section title="Staleness + provenance marks (stale fact)">
       <Row
         meta={
           <span style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
-            <ConfBar conf={1.0} />
             <StalenessBand band="stale" />
             <ProvenanceMarks src="relationship" verified />
           </span>
@@ -174,20 +156,6 @@ export const Provenance = () => (
           has-email · alice@example.com
         </span>
       </Row>
-      <p
-        style={{
-          fontFamily: "var(--font-serif)",
-          fontStyle: "italic",
-          fontSize: 14,
-          color: "var(--mfg)",
-          marginTop: 12,
-          maxWidth: "50ch",
-        }}
-      >
-        The bar is full and the band is stale at the same time. Confidence and
-        staleness are separate axes; the system never collapses them into one
-        score.
-      </p>
     </Section>
   </div>
 )

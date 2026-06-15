@@ -9,8 +9,7 @@
  *    action rail.
  *  - "Duplicate panel routes to compare" — the right-rail panel's commit button
  *    opens the compare view (no direct merge).
- *  - "Confidence and staleness are separate axes" — the inspector renders a full
- *    conf bar AND a stale band for a conf=1.0 / stale fact; no blended score.
+ *  - "Staleness inspector" — the inspector renders a stale band per fact.
  * Plus: the Detail keyboard map (k/j siblings, Esc back) and the no-44px-Display
  *  invariant.
  */
@@ -309,17 +308,12 @@ describe("EntityDetailPage — Workbench three-rail layout", () => {
   });
 });
 
-describe("EntityDetailPage — Workbench confidence/staleness inspector", () => {
-  it("renders confidence and staleness as two separate axes (full conf + stale)", () => {
+describe("EntityDetailPage — Workbench staleness inspector", () => {
+  it("renders the staleness band for each fact", () => {
     render();
     const inspector = container.querySelector("[data-testid='workbench-inspector']");
     expect(inspector).toBeTruthy();
-    // Axis 1 — confidence bar (role=meter); the conf=1.0 fact is NOT low-confidence.
-    const meter = inspector!.querySelector("[role='meter']") as HTMLElement;
-    expect(meter).toBeTruthy();
-    expect(meter.getAttribute("aria-valuenow")).toBe("1");
-    expect(meter.getAttribute("data-low-confidence")).toBeNull();
-    // Axis 2 — staleness band, rendered independently, marked stale.
+    // Staleness band rendered for each fact row.
     const staleBand = inspector!.querySelector("[data-staleness='stale']");
     expect(staleBand).toBeTruthy();
     expect(staleBand!.getAttribute("data-stale")).toBe("true");

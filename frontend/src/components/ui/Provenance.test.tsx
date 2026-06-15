@@ -2,70 +2,22 @@
 // ---------------------------------------------------------------------------
 // Provenance primitives tests — bu-ovq7t
 //
-// The binding invariant under test: confidence and staleness are TWO distinct
-// axes that NEVER blend into one score. The headline case
-// ("conf=1.0 + stale simultaneously") proves a full confidence bar and a stale
-// dim treatment coexist on the same fact.
+// Note: the ConfBar component was removed (bu-8j0ir) because conf is
+// hardcoded 1.0 at every write site — no calibration path exists — making the
+// bar always 100% and the amber branch unreachable. Tests removed accordingly.
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import {
-  CONF_AMBER_THRESHOLD,
-  ConfBar,
   ProvenanceMarks,
   StalenessBand,
   stalenessBandForTimestamp,
 } from "./Provenance"
 
 // ---------------------------------------------------------------------------
-// Axis 1 — ConfBar
-// ---------------------------------------------------------------------------
-
-describe("ConfBar: confidence axis", () => {
-  it("renders a meter with the confidence value", () => {
-    const html = renderToStaticMarkup(<ConfBar conf={0.9} />)
-    expect(html).toContain('role="meter"')
-    expect(html).toContain('aria-valuenow="0.9"')
-  })
-
-  it("is neutral (--mfg) at or above the amber threshold", () => {
-    const html = renderToStaticMarkup(<ConfBar conf={CONF_AMBER_THRESHOLD} />)
-    expect(html).toContain("var(--mfg)")
-    expect(html).not.toContain("var(--amber)")
-    expect(html).not.toContain('data-low-confidence')
-  })
-
-  it("turns amber below the threshold", () => {
-    const html = renderToStaticMarkup(<ConfBar conf={0.4} />)
-    expect(html).toContain("var(--amber)")
-    expect(html).toContain('data-low-confidence="true"')
-  })
-
-  it("is 4px tall (spec: conf bar 4px)", () => {
-    const html = renderToStaticMarkup(<ConfBar conf={0.9} />)
-    expect(html).toContain("height:4px")
-  })
-
-  it("fill width is proportional to conf", () => {
-    const html = renderToStaticMarkup(<ConfBar conf={0.5} />)
-    expect(html).toContain("width:50%")
-  })
-
-  it("clamps out-of-range values", () => {
-    expect(renderToStaticMarkup(<ConfBar conf={1.5} />)).toContain("width:100%")
-    expect(renderToStaticMarkup(<ConfBar conf={-0.2} />)).toContain("width:0%")
-  })
-
-  it("uses no hex literals (token discipline)", () => {
-    const html = renderToStaticMarkup(<ConfBar conf={0.4} />)
-    expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}\b/)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Axis 2 — StalenessBand
+// Axis 1 — StalenessBand
 // ---------------------------------------------------------------------------
 
 describe("StalenessBand: staleness axis", () => {
@@ -86,32 +38,6 @@ describe("StalenessBand: staleness axis", () => {
     const html = renderToStaticMarkup(<StalenessBand band="aging" />)
     expect(html).toContain("Aging")
     expect(html).not.toContain("opacity-40")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// The binding invariant: two axes, never blended
-// ---------------------------------------------------------------------------
-
-describe("Provenance: confidence and staleness are separate axes", () => {
-  it("conf=1.0 + stale renders a FULL confidence bar AND a stale dim simultaneously", () => {
-    // Spec scenario: a fact with conf = 1.0 observed 300 days ago renders the
-    // confidence bar full and the staleness indicator stale — no blended score.
-    const conf = renderToStaticMarkup(<ConfBar conf={1.0} />)
-    const stale = renderToStaticMarkup(<StalenessBand band="stale" />)
-
-    // Full bar, neutral (high confidence is NOT amber).
-    expect(conf).toContain("width:100%")
-    expect(conf).toContain("var(--mfg)")
-    expect(conf).not.toContain("var(--amber)")
-
-    // Stale band is dimmed at the same time.
-    expect(stale).toContain("opacity-40")
-    expect(stale).toContain("Stale")
-
-    // The two primitives are independent: neither emits a combined numeric score.
-    expect(conf).not.toContain("Stale")
-    expect(stale).not.toContain("role=\"meter\"")
   })
 })
 

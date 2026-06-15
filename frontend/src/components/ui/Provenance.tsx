@@ -1,20 +1,20 @@
 // ---------------------------------------------------------------------------
 // Provenance — shared provenance display primitives (bu-ovq7t)
 //
-// Confidence and staleness are TWO VISUALLY DISTINCT AXES and MUST NEVER be
-// blended into a single "score" (spec: dashboard-relationship
-// "Provenance rendering in the UI" + "Confidence and staleness are separate
-// axes"). These primitives render each axis independently so the same fact can
-// show full confidence AND a stale band simultaneously.
+// Staleness and source attribution are TWO VISUALLY DISTINCT SIGNALS and MUST
+// NEVER be blended into a single "score" (spec: dashboard-relationship
+// "Provenance rendering in the UI"). These primitives render each axis
+// independently.
 //
-//   - ConfBar         — 4px confidence bar; amber when conf < 0.85.
 //   - StalenessBand   — read-time freshness band; dim treatment when stale.
 //   - ProvenanceMarks — the source attribution (`src`) + `verified` marks.
 //
-// Axis 1 (ConfBar) answers "how sure are we this is true". Axis 2
-// (StalenessBand) answers "how recently did we last observe it". They are
-// orthogonal: a 1.0-confidence fact observed 300 days ago renders a full bar
-// AND a stale band. No combined numeral is ever produced.
+// Note: the `conf` column exists in the DB and is used by the backend for
+// merge-conflict resolution (higher-conf wins), but conf is hardcoded 1.0 at
+// every write site — no calibration path exists. The per-fact confidence bar
+// (ConfBar) was removed (bu-8j0ir) to stop implying calibration that does not
+// exist. If real confidence scoring is added in the future, re-introduce the
+// visual axis at that point.
 //
 // Token discipline: no hex literals here. Colors come from --amber / --green /
 // --dim / --mfg / --fg. (Per entity-model.ts: hex is permitted only there.)
@@ -26,69 +26,7 @@ import type { EntityFactStalenessBand } from "@/api/types"
 import { cn } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
-// Axis 1 — Confidence
-// ---------------------------------------------------------------------------
-
-/**
- * Confidence threshold below which the bar turns amber. A fact at or above
- * this confidence renders neutral; below it the bar signals "low confidence".
- * Spec: conf bar "amber when < 0.85".
- */
-export const CONF_AMBER_THRESHOLD = 0.85
-
-export interface ConfBarProps extends React.HTMLAttributes<HTMLDivElement> {
-  /** Confidence in [0, 1]. Clamped on render. */
-  conf: number
-  /** Bar width in pixels. Defaults to 48. */
-  width?: number
-}
-
-/**
- * A 4px-tall confidence bar. The fill width is proportional to `conf`; the
- * fill color is amber below {@link CONF_AMBER_THRESHOLD}, neutral above it.
- *
- * This is ONLY the confidence axis — it carries no staleness information.
- *
- * @example
- *   <ConfBar conf={0.92} />   // full-ish, neutral
- *   <ConfBar conf={0.40} />   // short, amber
- */
-export function ConfBar({ conf, width = 48, className, style, ...props }: ConfBarProps) {
-  const clamped = Math.max(0, Math.min(1, conf))
-  const isLow = clamped < CONF_AMBER_THRESHOLD
-  const pct = `${Math.round(clamped * 100)}%`
-
-  return (
-    <div
-      role="meter"
-      aria-label="Confidence"
-      aria-valuenow={clamped}
-      aria-valuemin={0}
-      aria-valuemax={1}
-      data-low-confidence={isLow ? "true" : undefined}
-      className={cn("inline-block overflow-hidden rounded-sm", className)}
-      style={{
-        width,
-        height: 4,
-        // Track: faint neutral so the unfilled portion reads as "remaining".
-        backgroundColor: "var(--border)",
-        ...style,
-      }}
-      {...props}
-    >
-      <div
-        style={{
-          width: pct,
-          height: "100%",
-          backgroundColor: isLow ? "var(--amber)" : "var(--mfg)",
-        }}
-      />
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Axis 2 — Staleness
+// Axis 1 — Staleness
 // ---------------------------------------------------------------------------
 
 /** Human-readable label per staleness band. */
@@ -188,10 +126,15 @@ export interface ProvenanceMarksProps extends React.HTMLAttributes<HTMLSpanEleme
 /**
  * Source + verification marks: a mono `src` tag plus a `verified` check-mark.
  * Both are quiet attributions, not a score — they answer "who said it" and
- * "did verification pass", independent of the confidence and staleness axes.
+ * "did verification pass", independent of the staleness axis.
  *
  * The verified mark renders green when verified, dim when not. The `src` tag
  * is mono/muted. Either field may be omitted.
+ *
+ * Note: at present, `verified=true` is only reachable for the
+ * `prefers-channel` predicate (set by assert_prefers_channel). For ordinary
+ * entity facts, `verified` is always false. Contact-channel verification is
+ * tracked separately (bu-e90i6).
  *
  * @example
  *   <ProvenanceMarks src="relationship" verified />

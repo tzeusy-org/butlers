@@ -5,7 +5,7 @@
  * Spec scenario "Editorial reveals provenance on demand":
  * - the default fact-row chrome carries no provenance clutter;
  * - activating a row's affordance reveals `src`, `verified`, and the staleness
- *   band (the two distinct axes — confidence and staleness — never blended).
+ *   band.
  *
  * Renders the full page in editorial mode with one editorial `recent_facts` row
  * and a matching facts-drill `EntityFact` carrying real provenance.
@@ -203,9 +203,6 @@ describe("EntityDetailPage — editorial provenance reveal", () => {
     expect(text).toContain("relationship");
     expect(reveal.querySelector('[data-verified="true"]')).not.toBeNull();
     expect(reveal.querySelector('[data-staleness="stale"]')).not.toBeNull();
-    // Confidence and staleness render as two separate axes — a full conf bar AND
-    // a stale band on the same row, never a blended score.
-    expect(reveal.querySelector('[role="meter"]')).not.toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
   });
 
