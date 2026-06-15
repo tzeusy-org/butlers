@@ -298,7 +298,7 @@ describe("EntityDetailPage — Workbench three-rail layout", () => {
     render();
     expect(container.querySelector("[data-testid='workbench-action-promote-tier']")).toBeTruthy();
     expect(container.querySelector("[data-testid='workbench-action-demote-tier']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='workbench-action-edit-aliases']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='workbench-action-edit-names']")).toBeTruthy();
     expect(container.querySelector("[data-testid='workbench-action-edit-contacts']")).toBeTruthy();
     expect(container.querySelector("[data-testid='workbench-action-archive']")).toBeTruthy();
     expect(container.querySelector("[data-testid='workbench-action-forget']")).toBeTruthy();

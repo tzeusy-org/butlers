@@ -2496,8 +2496,8 @@ function WorkbenchActionRail({
             onClick={onDemoteTier}
           />
           <CurationAction
-            label="Edit aliases"
-            testId="workbench-action-edit-aliases"
+            label="Edit names"
+            testId="workbench-action-edit-names"
             onClick={onEditAliases}
           />
           <CurationAction
