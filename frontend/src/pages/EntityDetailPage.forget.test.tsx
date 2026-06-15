@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity, useForgetRelationshipEntity } from "@/hooks/use-memory";
 import type { EntityDetail } from "@/api/types";
+import { makeLocalStorageMock } from "@/test-utils/entity-detail-page";
 
 // ---------------------------------------------------------------------------
 // Router mocks
@@ -41,15 +42,7 @@ vi.mock("react-router", async (importOriginal) => {
 // localStorage mock
 // ---------------------------------------------------------------------------
 
-const localStorageMock = (() => {
-  let store: Record<string, string | null> = {};
-  return {
-    getItem: vi.fn((key: string) => store[key] ?? null),
-    setItem: vi.fn((key: string, value: string) => { store[key] = value; }),
-    removeItem: vi.fn((key: string) => { delete store[key]; }),
-    clear: vi.fn(() => { store = {}; }),
-  };
-})();
+const localStorageMock = makeLocalStorageMock();
 
 Object.defineProperty(globalThis, "localStorage", {
   value: localStorageMock,
