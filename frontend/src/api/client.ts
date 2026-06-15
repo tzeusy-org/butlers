@@ -457,6 +457,11 @@ export async function apiFetch<T>(
         message = body.detail
           .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
           .join("; ");
+      } else if (body.detail !== null && typeof body.detail === "object") {
+        // FastAPI HTTPException with a dict detail (e.g. 409 unsafe-channel rejection).
+        // Surface the "error" field if present, otherwise JSON-stringify the whole detail.
+        const det = body.detail as Record<string, unknown>;
+        message = typeof det.error === "string" ? det.error : JSON.stringify(det);
       }
     } catch {
       // Response body is not valid JSON — fall through to defaults.

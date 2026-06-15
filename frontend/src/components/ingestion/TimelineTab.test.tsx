@@ -63,7 +63,7 @@ vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorSummaries: vi.fn(),
 }));
 
-import { bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
+import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
 import { toast } from "sonner";
 import {
   useIngestionEvents,
@@ -1463,5 +1463,77 @@ describe("TimelineTab — BulkActionBar", () => {
     expect(errMsg).not.toBeNull();
     expect(errMsg!.textContent).toContain("1 event failed to queue");
     expect(toast.error).toHaveBeenCalledWith("1 event failed to queue");
+  });
+
+  it("409 unsafe-channel rejection surfaces specific error message and toast", async () => {
+    vi.mocked(bulkRetryEvents).mockRejectedValueOnce(
+      new ApiError("UNSAFE_CHANNEL", "Batch contains replay-unsafe events", 409),
+    );
+
+    renderAndSelectEvents([makeEvent({ id: EVENT_ID_1, source_channel: "email" })], 1);
+
+    const btn = container.querySelector("[data-testid='bulk-retry-button']") as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+
+    // Bar still visible (selection not cleared on error)
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).not.toBeNull();
+    // Specific unsafe-channel message in inline error
+    const errMsg = container.querySelector("[data-testid='bulk-error-msg']");
+    expect(errMsg).not.toBeNull();
+    expect(errMsg!.textContent).toContain("email or replay-unsafe events");
+    // Toast also fires with the same message
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("email or replay-unsafe events"),
+    );
+  });
+
+  it("Copy IDs button copies selected event IDs to clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+
+    renderAndSelectEvents(
+      [makeEvent({ id: EVENT_ID_1 }), makeEvent({ id: EVENT_ID_2 })],
+      2,
+    );
+
+    const copyBtn = container.querySelector(
+      "[data-testid='bulk-copy-ids-button']",
+    ) as HTMLButtonElement;
+    expect(copyBtn).not.toBeNull();
+
+    await act(async () => { copyBtn.click(); });
+
+    // Should have called clipboard.writeText with newline-joined IDs
+    expect(writeText).toHaveBeenCalledWith(`${EVENT_ID_1}\n${EVENT_ID_2}`);
+    // Button text should change to "Copied!"
+    expect(copyBtn.textContent).toContain("Copied!");
+  });
+
+  it("Copy IDs button shows error toast when Clipboard API is unavailable", async () => {
+    // Simulate non-HTTPS context where navigator.clipboard is undefined.
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
+
+    renderAndSelectEvents([makeEvent({ id: EVENT_ID_1 })], 1);
+
+    const copyBtn = container.querySelector(
+      "[data-testid='bulk-copy-ids-button']",
+    ) as HTMLButtonElement;
+    expect(copyBtn).not.toBeNull();
+
+    await act(async () => { copyBtn.click(); });
+
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("Clipboard API not available"),
+    );
+    // Button should NOT show "Copied!" — copy did not succeed.
+    expect(copyBtn.textContent).not.toContain("Copied!");
   });
 });

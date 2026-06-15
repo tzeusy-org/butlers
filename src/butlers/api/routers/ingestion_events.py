@@ -594,9 +594,14 @@ async def bulk_retry_ingestion_events(
     Accepts ``{"event_ids": [...]}`` where ``event_ids`` is a list of UUID
     strings (max 100).
 
+    Email events and events with ``connector_registry.replay_safe = false`` are
+    rejected with HTTP 409 before any replay is attempted (same safety gate as
+    ``POST /api/ingestion/events/replay/bulk``).
+
     Returns:
         200 — ``{"results": [{event_id, status, error?}], "succeeded": N, "failed": N}``
         400 — missing/empty ``event_ids``, or batch exceeds max size
+        409 — batch contains replay-unsafe events (email or replay_safe=false)
         503 — shared database pool unavailable
     """
     event_ids_raw: list = body.get("event_ids", [])
@@ -624,14 +629,88 @@ async def bulk_retry_ingestion_events(
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
+    client_host = getattr(request.client, "host", None) if request.client else None
+
+    # ---------------------------------------------------------------------------
+    # Pre-flight safety gate — mirror the _UNSAFE_CHANNELS check from /replay/bulk.
+    #
+    # /retry/bulk covers both public.ingestion_events and connectors.filtered_events,
+    # so we query BOTH tables to identify any email (or replay_safe=false) events
+    # before touching any rows.  A single unsafe event rejects the entire batch with
+    # HTTP 409 — same fail-closed semantics as /replay/bulk.
+    # ---------------------------------------------------------------------------
+    try:
+        # Collect (id, source_channel, replay_safe) from both tables in one query.
+        # ingestion_events does not have a connector_registry join, so replay_safe is
+        # treated as TRUE for those rows (only source_channel is checked).
+        channel_rows = await pool.fetch(
+            """
+            SELECT id::text, source_channel, TRUE AS replay_safe
+            FROM public.ingestion_events
+            WHERE id = ANY($1::uuid[])
+            UNION ALL
+            SELECT fe.id::text, fe.source_channel,
+                   COALESCE(cr.replay_safe, TRUE) AS replay_safe
+            FROM connectors.filtered_events fe
+            LEFT JOIN connector_registry cr
+              ON cr.connector_type = fe.connector_type
+             AND cr.endpoint_identity = fe.endpoint_identity
+            WHERE fe.id = ANY($1::uuid[])
+            """,
+            [UUID(e) for e in event_ids],
+        )
+    except Exception:
+        logger.warning("bulk_retry: pre-flight channel safety check failed", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database error during safety pre-flight check")
+
+    unsafe_events: list[dict] = []
+    for row in channel_rows:
+        channel = row["source_channel"]
+        replay_safe = row["replay_safe"]
+        if channel in _UNSAFE_CHANNELS or not replay_safe:
+            unsafe_events.append(
+                {
+                    "id": row["id"],
+                    "source_channel": channel,
+                    "reason": (
+                        f"source_channel='{channel}' is not replay-safe"
+                        if channel in _UNSAFE_CHANNELS
+                        else "connector_registry.replay_safe=false"
+                    ),
+                }
+            )
+
+    if unsafe_events:
+        try:
+            await _audit_append(
+                pool,
+                actor="dashboard",
+                action="ingestion.retry.bulk_reject",
+                target=json.dumps(event_ids),
+                note=json.dumps(
+                    {
+                        "reason": "unsafe_channel",
+                        "unsafe_events": unsafe_events,
+                    }
+                ),
+                ip=client_host,
+            )
+        except Exception:
+            logger.warning("bulk_retry: failed to write bulk_reject audit entry", exc_info=True)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "Batch contains replay-unsafe events",
+                "unsafe_events": unsafe_events,
+            },
+        )
+
     # Obtain the switchboard pool for resetting message_inbox on replay.
     switchboard_pool = None
     try:
         switchboard_pool = db.pool("switchboard")
     except (KeyError, Exception):
         pass  # Non-fatal: replay of ingested events will log a warning.
-
-    client_host = getattr(request.client, "host", None) if request.client else None
 
     results: list[dict] = []
     succeeded = 0

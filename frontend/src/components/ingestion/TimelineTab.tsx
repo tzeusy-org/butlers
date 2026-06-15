@@ -20,7 +20,7 @@
  * - GET /api/ingestion/events/{id}/replays   (drawer replays tab)
  * - GET /api/ingestion/events/{id}/payload   (drawer raw tab, audit-gated)
  * - POST /api/ingestion/events/{id}/replay   (replay action)
- * - POST /api/ingestion/events/retry/bulk    (bulk replay action)
+ * - POST /api/ingestion/events/retry/bulk    (bulk replay action; email/replay-unsafe events rejected with 409)
  * - GET/POST/PATCH/DELETE /api/timeline/saved-views  (custom saved views; bu-vgj88)
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
@@ -36,7 +36,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { AlertTriangle, BookmarkPlus, Loader2, RotateCw, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, BookmarkPlus, Copy, Loader2, RotateCw, Search, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -67,7 +67,7 @@ import type {
   TimelineSavedViewEntry,
   TimelineSavedViewFilterSpec,
 } from "@/api/index.ts";
-import { bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
+import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
 import { StatusBadge } from "./StatusBadge";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { deriveMinuteCounts } from "./timeline/deriveMinuteCounts";
@@ -503,6 +503,7 @@ interface BulkActionBarProps {
 function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselectIds }: BulkActionBarProps) {
   const [isRetrying, setIsRetrying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [copySuccess, setCopySuccess] = useState(false);
 
   if (selectedCount === 0) return null;
 
@@ -533,10 +534,31 @@ function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselec
         toast.error(failedMsg);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Bulk replay failed";
-      setErrorMsg(msg);
+      // 409 means the batch contains email or replay-unsafe events — surface a clear message.
+      if (err instanceof ApiError && err.status === 409) {
+        const msg = "Selection contains email or replay-unsafe events — remove them and retry";
+        setErrorMsg(msg);
+        toast.error(msg);
+      } else {
+        const msg = err instanceof Error ? err.message : "Bulk replay failed";
+        setErrorMsg(msg);
+      }
     } finally {
       setIsRetrying(false);
+    }
+  }
+
+  async function handleCopyIds() {
+    if (!navigator.clipboard) {
+      toast.error("Clipboard API not available (requires HTTPS or localhost)");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selectedIds.join("\n"));
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    } catch {
+      toast.error("Failed to copy IDs to clipboard");
     }
   }
 
@@ -567,6 +589,17 @@ function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselec
           <RotateCw className="size-3 mr-1" />
         )}
         Replay all
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="font-mono text-[11px] h-7 text-muted-foreground"
+        onClick={handleCopyIds}
+        title="Copy selected event IDs to clipboard"
+        data-testid="bulk-copy-ids-button"
+      >
+        <Copy className="size-3 mr-1" />
+        {copySuccess ? "Copied!" : "Copy IDs"}
       </Button>
       <Button
         variant="ghost"

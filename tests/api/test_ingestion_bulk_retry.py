@@ -1,4 +1,4 @@
-"""Tests for POST /api/ingestion/events/retry/bulk (bu-va06h).
+"""Tests for POST /api/ingestion/events/retry/bulk (bu-va06h, bu-9c7f7).
 
 The bulk-retry endpoint calls ingestion_event_replay_request per event
 (same logic as the single-event replay endpoint) so it handles events from
@@ -12,6 +12,10 @@ Covers:
 - missing event_ids rejected with 400
 - invalid UUID in event_ids rejected with 400
 - shared database unavailable → 503
+- email event in batch → 409 (replay-unsafe guard) [bu-9c7f7]
+- replay_safe=false event in batch → 409 (replay-unsafe guard) [bu-9c7f7]
+- pre-flight DB error → 503 [bu-9c7f7]
+- safe batch (no unsafe events) passes guard → 200 [bu-9c7f7]
 """
 
 from __future__ import annotations
@@ -383,3 +387,160 @@ async def test_bulk_retry_audit_failure_is_nonfatal(app):
     body = resp.json()
     assert body["succeeded"] == 2
     assert body["failed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Replay-unsafe guard [bu-9c7f7]
+# ---------------------------------------------------------------------------
+
+
+def _make_db_row(**kwargs):
+    """Return a minimal asyncpg-like record dict for pool.fetch() results."""
+    return kwargs
+
+
+async def test_bulk_retry_email_event_rejected_409(app):
+    """A batch containing an email event is rejected with 409 before any replay."""
+    email_id = str(uuid4())
+    safe_id = str(uuid4())
+
+    pool = _make_shared_pool()
+    # Pre-flight check returns one email event (unsafe) and one safe event.
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_db_row(id=email_id, source_channel="email", replay_safe=True),
+            _make_db_row(id=safe_id, source_channel="telegram", replay_safe=True),
+        ]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+        ) as mock_replay,
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+        ) as mock_audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/retry/bulk",
+                json={"event_ids": [email_id, safe_id]},
+            )
+
+    assert resp.status_code == 409
+    body = resp.json()
+    # FastAPI serializes HTTPException detail dict under the "detail" key.
+    assert body["detail"]["error"] == "Batch contains replay-unsafe events"
+    unsafe = body["detail"]["unsafe_events"]
+    assert len(unsafe) == 1
+    assert unsafe[0]["id"] == email_id
+    assert unsafe[0]["source_channel"] == "email"
+    # No replay attempted — the guard is a pre-flight check.
+    mock_replay.assert_not_called()
+    # Rejection audit entry written.
+    assert mock_audit.await_count >= 1
+    audit_call = mock_audit.call_args
+    assert audit_call.kwargs["action"] == "ingestion.retry.bulk_reject"
+
+
+async def test_bulk_retry_replay_safe_false_rejected_409(app):
+    """A batch containing a connector_registry.replay_safe=false event is rejected with 409."""
+    unsafe_id = str(uuid4())
+
+    pool = _make_shared_pool()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_db_row(id=unsafe_id, source_channel="webhook", replay_safe=False),
+        ]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+        ) as mock_replay,
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/retry/bulk",
+                json={"event_ids": [unsafe_id]},
+            )
+
+    assert resp.status_code == 409
+    body = resp.json()
+    detail = body["detail"]
+    assert detail["error"] == "Batch contains replay-unsafe events"
+    assert len(detail["unsafe_events"]) == 1
+    assert detail["unsafe_events"][0]["id"] == unsafe_id
+    assert "replay_safe=false" in detail["unsafe_events"][0]["reason"]
+    mock_replay.assert_not_called()
+
+
+async def test_bulk_retry_safe_batch_passes_guard_200(app):
+    """A batch with only safe channels passes the pre-flight guard → 200."""
+    safe_id = str(uuid4())
+
+    pool = _make_shared_pool()
+    # Pre-flight check: one telegram event, replay_safe=True
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_db_row(id=safe_id, source_channel="telegram", replay_safe=True),
+        ]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    ok_result = {"outcome": "ok", "id": safe_id, "source": "filtered_events"}
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+            return_value=ok_result,
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/retry/bulk",
+                json={"event_ids": [safe_id]},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["succeeded"] == 1
+    assert body["failed"] == 0
+
+
+async def test_bulk_retry_preflight_db_error_503(app):
+    """A DB error during the pre-flight channel check returns 503."""
+    pool = _make_shared_pool()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("connection reset"))
+    _app_with_mock_db(app, shared_pool=pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/ingestion/events/retry/bulk",
+            json={"event_ids": [str(uuid4())]},
+        )
+
+    assert resp.status_code == 503
+    assert "safety pre-flight" in resp.json()["detail"]
