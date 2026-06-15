@@ -36,6 +36,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useAddEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDeleteEntityContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useUpdateEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useMarkEntityContactVerified: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRevealEntityContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
   useSetPreferredChannel: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useClearPreferredChannel: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
