@@ -26,8 +26,9 @@
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector Detail"
  */
 
-import { useCallback } from 'react'
-import { useParams } from 'react-router'
+import { useCallback, useEffect } from 'react'
+import { useParams, useSearchParams, useNavigate } from 'react-router'
+import { toast } from 'sonner'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchSurface } from '@/components/ingestion/dispatch'
 import { ConnectorDetailView } from '@/components/ingestion/connectors/ConnectorDetailView'
@@ -59,11 +60,29 @@ function _toOAuthScopes(scopes: ConnectorScopeEntry[] | null | undefined): OAuth
 // ConnectorDetailPage
 // ---------------------------------------------------------------------------
 
+/**
+ * Map a connector_type to its OAuth scope set name, if any.
+ *
+ * The backend ``GOOGLE_SCOPE_SETS`` registry maps named scope sets to actual
+ * OAuth scopes.  Connectors that request non-default scopes must pass the
+ * correct scope_set so the reauth grants the right permissions.
+ *
+ * - google_health → "health" (Google Fit / Health Connect scopes)
+ * - other google_* → omitted (default Calendar/Drive/Gmail scope composition)
+ * - non-google → omitted
+ */
+function _scopeSetForConnectorType(connectorType: string): string | undefined {
+  if (connectorType === 'google_health') return 'health'
+  return undefined
+}
+
 export default function ConnectorDetailPage() {
   const { connectorType, endpointIdentity } = useParams<{
     connectorType: string
     endpointIdentity: string
   }>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
 
   const {
     data: detailResp,
@@ -96,9 +115,32 @@ export default function ConnectorDetailPage() {
   const connector = detailResp?.data
   const stats = statsResp?.data
 
+  // Surface ?oauth_error= from a failed reauth redirect and strip it from the URL.
+  // no_primary_account is NOT an auth error — it needs "set primary account" guidance.
+  // Other oauth_error values indicate a failed reauth attempt.
+  const oauthError = searchParams.get('oauth_error')
+  useEffect(() => {
+    if (!oauthError) return
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev)
+        params.delete('oauth_error')
+        return params
+      },
+      { replace: true },
+    )
+    if (oauthError === 'no_primary_account') {
+      toast.warning('No primary account set. Go to Secrets to set a primary account.')
+    } else {
+      toast.warning(`OAuth error: ${oauthError.replace(/_/g, ' ')} — try re-authorizing.`)
+    }
+  }, [oauthError, setSearchParams])
+
   // Build the onReauth handler: initiates OAuth reauth for this connector's
   // provider (derived from connector_type) and carries connector_detail_path
   // so the callback deep-links back to this specific detail page.
+  // scopeSet is passed so google_health requests health scopes, not the default
+  // Calendar/Drive/Gmail scope composition — without it reauth would stay degraded.
   const handleReauth = useCallback(() => {
     if (!connectorType || !endpointIdentity) return
     // Derive the OAuth provider name from connector_type.  The backend registry
@@ -113,9 +155,17 @@ export default function ConnectorDetailPage() {
       pageOfOrigin: 'ingestion',
       connectorDetailPath,
       forceConsent: true,
+      scopeSet: _scopeSetForConnectorType(connectorType),
     })
     window.location.href = url
   }, [connectorType, endpointIdentity])
+
+  // Build the onSetPrimaryAccount handler: navigates to /secrets where the user
+  // can set a primary Google account. no_primary_account is not a reauth issue —
+  // the connector has a valid credential but no account is designated as primary.
+  const handleSetPrimaryAccount = useCallback(() => {
+    navigate('/secrets')
+  }, [navigate])
 
   return (
     <DispatchLayout>
@@ -134,6 +184,7 @@ export default function ConnectorDetailPage() {
             incidents={incidentsResp ?? null}
             routingRules={routingRulesResp ?? null}
             onReauth={handleReauth}
+            onSetPrimaryAccount={handleSetPrimaryAccount}
           />
         ) : (
           <NotFoundState connectorType={connectorType} endpointIdentity={endpointIdentity} />

@@ -34,6 +34,7 @@ vi.mock("react-router", async (importOriginal) => {
       endpointIdentity: "user@example.com",
     })),
     useSearchParams: vi.fn(() => [new URLSearchParams(), vi.fn()]),
+    useNavigate: vi.fn(() => vi.fn()),
   };
 });
 
@@ -81,6 +82,26 @@ const REAUTH_CONNECTOR: ConnectorDetail = {
   state: "error",
   error_message: "401 Unauthorized — token expired",
   today: { messages_ingested: 0, messages_failed: 8, uptime_pct: null },
+};
+
+/** Degraded connector with api_forbidden error (real google_health live scenario). */
+const API_FORBIDDEN_CONNECTOR: ConnectorDetail = {
+  ...BASE_CONNECTOR,
+  connector_type: "google_health",
+  liveness: "online",
+  state: "degraded",
+  error_message: "api_forbidden: 403 Forbidden from Google Fit API",
+  today: { messages_ingested: 0, messages_failed: 2, uptime_pct: 80 },
+};
+
+/** Degraded connector with no_primary_account error. */
+const NO_PRIMARY_ACCOUNT_CONNECTOR: ConnectorDetail = {
+  ...BASE_CONNECTOR,
+  connector_type: "google_health",
+  liveness: "online",
+  state: "degraded",
+  error_message: "no_primary_account",
+  today: { messages_ingested: 0, messages_failed: 1, uptime_pct: 90 },
 };
 
 function setConnectorState(
@@ -243,6 +264,40 @@ describe("ConnectorDetailPage — content", () => {
     const html = renderPage();
     // Error note appears in the reauth callout or header
     expect(html).toContain("401 Unauthorized");
+  });
+
+  it("renders reauth callout with needs_reauth for degraded+api_forbidden connector", () => {
+    setConnectorState(API_FORBIDDEN_CONNECTOR);
+    setStatsState();
+    const html = renderPage();
+    expect(html).toContain("reauth-callout");
+    expect(html).toContain("reauth required");
+    // re-authorize button must be present
+    expect(html).toContain("reauth-button");
+  });
+
+  it("renders recovery callout with set-primary-account for degraded+no_primary_account connector", () => {
+    setConnectorState(NO_PRIMARY_ACCOUNT_CONNECTOR);
+    setStatsState();
+    const html = renderPage();
+    expect(html).toContain("reauth-callout");
+    expect(html).toContain("no primary account");
+    // set-primary-account button must be present; re-authorize button must NOT
+    expect(html).toContain("set-primary-account-button");
+    expect(html).not.toContain("reauth-button");
+  });
+
+  it("does NOT render reauth callout for degraded connector with non-auth error", () => {
+    const degradedOther: ConnectorDetail = {
+      ...BASE_CONNECTOR,
+      state: "degraded",
+      error_message: "rate_limit_exceeded: too many requests",
+    };
+    setConnectorState(degradedOther);
+    setStatsState();
+    const html = renderPage();
+    // callout must not render — rate limit is not an auth issue
+    expect(html).not.toContain("reauth-callout");
   });
 });
 

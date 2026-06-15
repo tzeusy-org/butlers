@@ -119,8 +119,10 @@ export interface ConnectorDetailViewProps {
   incidents?: ConnectorIncidentsResponse | null
   /** Routing rules response from /connectors/{type}/{identity}/routing-rules. [bu-5ywn2] */
   routingRules?: ConnectorRoutingRulesResponse | null
-  /** Called when user clicks re-authorize. */
+  /** Called when user clicks re-authorize (auth error / expiring). */
   onReauth?: () => void
+  /** Called when user clicks "set primary account" (no_primary_account case). */
+  onSetPrimaryAccount?: () => void
   /** Called when user clicks "pause poll". */
   onPause?: () => void
   /** Called when user clicks "run now". */
@@ -142,6 +144,7 @@ export function ConnectorDetailView({
   incidents,
   routingRules,
   onReauth,
+  onSetPrimaryAccount,
   onPause,
   onRunNow,
 }: ConnectorDetailViewProps) {
@@ -205,12 +208,13 @@ export function ConnectorDetailView({
           </p>
         </div>
 
-        {/* Right: reauth callout (conditional) */}
+        {/* Right: recovery callout (conditional) */}
         <ReauthCallout
           authStatus={info.authStatus}
           authNote={info.authNote}
           connectorType={connector.connector_type}
           onReauth={onReauth}
+          onSetPrimaryAccount={onSetPrimaryAccount}
         />
       </div>
 
