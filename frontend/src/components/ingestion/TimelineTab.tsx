@@ -69,6 +69,7 @@ import type {
 } from "@/api/index.ts";
 import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
 import { StatusBadge } from "./StatusBadge";
+import { isBulkEligible, bulkIneligibleReason } from "./bulkEligibility";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { deriveMinuteCounts } from "./timeline/deriveMinuteCounts";
 import { EventDrawer } from "./timeline/EventDrawer";
@@ -106,6 +107,7 @@ function isReplayable(status: IngestionEventStatus): boolean {
 function isReplayPending(status: IngestionEventStatus): boolean {
   return status === "replay_pending";
 }
+
 
 function hourGroupLabel(receivedAt: string | null): string {
   if (!receivedAt) return "Unknown time";
@@ -695,6 +697,8 @@ function LedgerRow({
   onToggleSelect,
   onOptimisticUpdate,
 }: LedgerRowProps) {
+  const eligible = isBulkEligible(event.status);
+  const ineligibleReason = bulkIneligibleReason(event.status);
   const { data: rollupResp } = useIngestionEventRollup(event.id);
   const r = rollupResp?.data;
   const { data: senderResp } = useIngestionEventSenderContact(event.id, {
@@ -731,13 +735,37 @@ function LedgerRow({
       data-testid="ledger-row"
       data-event-id={event.id}
     >
-      {/* Checkbox */}
-      <div onClick={(e) => { e.stopPropagation(); onToggleSelect(); }} className="flex items-center">
+      {/* Checkbox — disabled and titled with reason for ineligible-status rows */}
+      <div
+        onClick={(e) => {
+          e.stopPropagation();
+          if (eligible) onToggleSelect();
+        }}
+        onKeyDown={(e) => {
+          if (eligible && (e.key === " " || e.key === "Enter")) {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggleSelect();
+          }
+        }}
+        tabIndex={eligible ? 0 : -1}
+        className={["flex items-center", eligible ? "" : "cursor-not-allowed"].join(" ")}
+        title={eligible ? undefined : (ineligibleReason ?? undefined)}
+        data-testid={eligible ? "row-checkbox" : "row-checkbox-disabled"}
+        aria-disabled={eligible ? undefined : true}
+        role="checkbox"
+        aria-checked={isSelected}
+        aria-label={eligible ? "Select event" : (ineligibleReason ?? "Ineligible for bulk replay")}
+      >
         <div className={[
-          "size-4 rounded border border-border/60 flex items-center justify-center transition-colors",
-          isSelected ? "bg-foreground" : "hover:border-foreground/40",
+          "size-4 rounded border flex items-center justify-center transition-colors",
+          eligible
+            ? isSelected
+              ? "border-border/60 bg-foreground"
+              : "border-border/60 hover:border-foreground/40"
+            : "border-border/30 bg-muted/20 opacity-40",
         ].join(" ")}>
-          {isSelected && <div className="size-2 rounded-sm bg-background" />}
+          {isSelected && eligible && <div className="size-2 rounded-sm bg-background" />}
         </div>
       </div>
 
