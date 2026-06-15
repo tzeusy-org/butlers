@@ -548,7 +548,6 @@ export type {
 } from "./types.ts";
 
 export {
-  bulkReplayEvents,
   bulkRetryEvents,
   deleteConnector,
   getCrossConnectorSummary,

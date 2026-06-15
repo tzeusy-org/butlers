@@ -3960,24 +3960,6 @@ export async function getPipelineStats(
 }
 
 /**
- * POST /api/ingestion/events/replay/bulk
- * Bulk-replay up to 50 filtered events.
- */
-export async function bulkReplayEvents(
-  eventIds: string[],
-  reason?: string,
-): Promise<{ accepted: string[]; capped: string[]; skipped_locked: string[] }> {
-  return apiFetch<{ accepted: string[]; capped: string[]; skipped_locked: string[] }>(
-    `/ingestion/events/replay/bulk`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_ids: eventIds, reason: reason ?? "bulk replay" }),
-    },
-  );
-}
-
-/**
  * POST /api/ingestion/events/retry/bulk
  * Bulk-retry/replay up to 100 events from both ingestion and filtered tables.
  * Each event is attempted independently — partial failures do not abort the batch.

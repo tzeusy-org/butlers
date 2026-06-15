@@ -19,7 +19,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  bulkReplayEvents,
   deleteConnector,
   getCrossConnectorSummary,
   getCrossConnectorSummaryWithAggregates,
@@ -341,28 +340,6 @@ export function usePipelineStats(
     queryFn: () => getPipelineStats(window),
     refetchInterval: 60_000,
     enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Mutation to bulk-replay up to 50 filtered ingestion events.
- * Email events are rejected at the server with HTTP 409.
- */
-export function useBulkReplayEvents() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      eventIds,
-      reason,
-    }: {
-      eventIds: string[];
-      reason?: string;
-    }) => bulkReplayEvents(eventIds, reason),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ingestionKeys.all,
-      });
-    },
   });
 }
 
