@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
-import { useEntityDeltaFacts, useEntityFacts } from "@/hooks/use-entities";
+import { useEntityDeltaFacts, useEntityFacts, useRelationshipEntitiesByIds } from "@/hooks/use-entities";
 import type { EntityDetail, EntityFact } from "@/api/types";
 
 // Mock react-router's useParams and useSearchParams so we can control both
@@ -70,6 +70,9 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityNeighbours: vi.fn(() => ({ data: { neighbours: {}, remainders: {} } })),
   useRelationshipEntities: vi.fn(() => ({
     data: { items: [], total: 0, limit: 200, offset: 0 },
+  })),
+  useRelationshipEntitiesByIds: vi.fn(() => ({
+    data: { items: [], total: 0, limit: 1, offset: 0 },
   })),
   useArchiveRelationshipEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityFacts: vi.fn(() => ({
@@ -1179,5 +1182,60 @@ describe("EntityDetailPage — LinkedContactSection plain-text display", () => {
     const html = renderPage();
     // No link to a contact page should appear
     expect(html).not.toContain("/contacts/");
+  });
+});
+
+describe("EntityDetailPage — editorial hero first-seen / last-seen line", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders First seen and Last seen labels in the editorial hero", () => {
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    expect(html).toContain("First seen");
+    expect(html).toContain("Last seen");
+  });
+
+  it("renders the last_seen date from relationship entity data when available", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useRelationshipEntitiesByIds).mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "entity-001",
+            canonical_name: "Test Owner",
+            entity_type: "person",
+            aliases: [],
+            roles: ["owner"],
+            metadata: {},
+            tier: null,
+            last_seen: "2025-06-01T12:00:00Z",
+            contact_fact_count: 0,
+            created_at: "2025-01-01T00:00:00Z",
+            updated_at: "2025-01-01T00:00:00Z",
+          },
+        ],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      },
+    } as unknown as ReturnType<typeof useRelationshipEntitiesByIds>);
+    const html = renderPage();
+    // Date value from the last_seen ISO string should appear
+    expect(html).toContain("2025");
+    expect(html).toContain("Last seen");
+  });
+
+  it("shows em dash for last_seen when relationship data is not available", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useRelationshipEntitiesByIds).mockReturnValue({
+      data: { items: [], total: 0, limit: 1, offset: 0 },
+    } as unknown as ReturnType<typeof useRelationshipEntitiesByIds>);
+    const html = renderPage();
+    // Should contain the em-dash placeholder for missing last_seen
+    expect(html).toContain("Last seen");
+    // The "—" character should appear at least once (first seen + possibly last seen too)
+    expect(html).toContain("—");
   });
 });

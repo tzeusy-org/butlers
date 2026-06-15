@@ -52,6 +52,9 @@ vi.mock("@/hooks/use-memory", () => ({
 const useRelationshipEntityQueue = vi.fn();
 const useEntityNeighbours = vi.fn();
 const useRelationshipEntities = vi.fn();
+const useRelationshipEntitiesByIds = vi.fn(() => ({
+  data: { items: [], total: 0, limit: 1, offset: 0 },
+}));
 const useEntityFacts = vi.fn();
 
 vi.mock("@/hooks/use-entities", () => ({
@@ -72,6 +75,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityNeighbours: (...args: unknown[]) => useEntityNeighbours(...args),
   useRelationshipEntities: (...args: unknown[]) => useRelationshipEntities(...args),
+  useRelationshipEntitiesByIds: (...args: unknown[]) => useRelationshipEntitiesByIds(...args),
   useArchiveRelationshipEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityFacts: (...args: unknown[]) => useEntityFacts(...args),
   useRelationshipEntityQueue: (...args: unknown[]) => useRelationshipEntityQueue(...args),

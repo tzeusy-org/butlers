@@ -102,6 +102,7 @@ import {
   useEntityNeighbours,
   useEntityTimeline,
   useRelationshipEntities,
+  useRelationshipEntitiesByIds,
   useRelationshipEntityQueue,
   useUpdateEntityDunbarTier,
 } from "@/hooks/use-entities";
@@ -2662,6 +2663,17 @@ export default function EntityDetailPage() {
   // below), never to window, so it is active only while this page holds focus
   // and never shadows app-wide shortcuts or other routes' keyboard maps.
 
+  // last_seen for this entity — sourced from the relationship list endpoint
+  // (the memory detail endpoint does not carry it). Fetches a single-item list
+  // constrained to this entity so we get the max(rf.last_seen) value without
+  // adding a new backend endpoint. first_seen (min of last_seen) is not yet
+  // returned by any endpoint; see filed follow-up bu-maqrc.
+  const { data: entityRelData } = useRelationshipEntitiesByIds(
+    entityId ? { ids: [entityId] } : { ids: [] },
+  );
+  const entityLastSeen: string | null =
+    entityRelData?.items.find((item) => item.id === entityId)?.last_seen ?? null;
+
   // Sibling navigation for the Detail keyboard map: `k`/`j` step to the
   // previous/next entity in Index order (default scope), `Esc` returns to the
   // Index. View-local handlers only — they never shadow the app-wide ⌘K/`/`.
@@ -3230,6 +3242,31 @@ export default function EntityDetailPage() {
                 unidentified={entity.unidentified}
                 entityType={entity.entity_type}
               />
+
+              {/* First-seen / last-seen line — editorial hero provenance row.
+                  last_seen comes from the relationship list endpoint (max of
+                  entity_facts.last_seen). first_seen (min) is not yet surfaced
+                  by any endpoint and degrades to "—" until bu-maqrc ships. */}
+              <dl className="grid grid-cols-[8rem_1fr] items-baseline gap-x-3 gap-y-0 border-t border-border pt-4 text-sm">
+                <dt className="text-muted-foreground text-xs uppercase tracking-wide">
+                  First seen
+                </dt>
+                <dd className="text-sm text-muted-foreground">—</dd>
+                <dt className="text-muted-foreground text-xs uppercase tracking-wide">
+                  Last seen
+                </dt>
+                <dd className="text-sm">
+                  {entityLastSeen ? (
+                    <Time
+                      value={entityLastSeen}
+                      mode="absolute"
+                      precision="day"
+                    />
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </dd>
+              </dl>
 
               {/* Core dates — server-extracted date-kind facts with next
                   occurrence (entity v3; replaces client-side date matching). */}

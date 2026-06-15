@@ -89,6 +89,9 @@ vi.mock("@/hooks/use-entities", () => ({
   useRelationshipEntities: vi.fn(() => ({
     data: { items: [], total: 0, limit: 200, offset: 0 },
   })),
+  useRelationshipEntitiesByIds: vi.fn(() => ({
+    data: { items: [], total: 0, limit: 1, offset: 0 },
+  })),
   useArchiveRelationshipEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityFacts: vi.fn(() => ({
     data: { facts: [], total: 0, offset: 0, limit: 20, has_more: false },
