@@ -172,6 +172,13 @@ class PriorityContactEntry(BaseModel):
     (email addresses, Telegram handles, etc.) derived from active
     ``relationship.entity_facts`` triples (migration bead bu-hjo3i).
     Credential-bearing entries (secured triples) are excluded.
+
+    ``is_inert`` is True when the entry would silently match nothing at runtime.
+    For Gmail: the policy evaluator resolves senders via a 3-hop join
+    (priority_contacts → contacts.entity_id → entity_facts has-email); a contact
+    is inert when its entity_id is NULL or its entity carries no active has-email
+    fact.  For other butlers: only a missing entity_id makes the row inert (they
+    use has-handle or other predicates).  The UI surfaces this as a warning badge.
     """
 
     contact_id: UUID
@@ -180,6 +187,7 @@ class PriorityContactEntry(BaseModel):
     added_by: str | None = None
     name: str | None = None
     contact_info_values: list[str] = Field(default_factory=list)
+    is_inert: bool = False
 
 
 class PriorityContactAddRequest(BaseModel):

@@ -47,10 +47,30 @@ def _ef_display_value(predicate: str, obj: str) -> str:
     return obj
 
 
+class _EntityFactsResult:
+    """Combined result of a batch entity_facts fetch.
+
+    Attributes
+    ----------
+    values:
+        Map of contact_id → list of display-ready channel value strings.
+    has_email:
+        Set of contact_ids that have at least one active ``has-email`` fact.
+        The Gmail policy evaluator only resolves priority senders via ``has-email``
+        triples; contacts absent from this set will silently match nothing.
+    """
+
+    __slots__ = ("values", "has_email")
+
+    def __init__(self) -> None:
+        self.values: dict[UUID, list[str]] = {}
+        self.has_email: set[UUID] = set()
+
+
 async def _entity_facts_values_by_contact(
     pool: object,
     contact_entity_pairs: list[tuple[UUID, UUID]],
-) -> dict[UUID, list[str]]:
+) -> _EntityFactsResult:
     """Batch-fetch active channel values from relationship.entity_facts.
 
     Parameters
@@ -62,14 +82,19 @@ async def _entity_facts_values_by_contact(
 
     Returns
     -------
-    dict mapping contact_id → list of display-ready channel value strings.
-    Contacts with no linked entity or no facts map to an empty list.
+    ``_EntityFactsResult`` with:
+    - ``values``: contact_id → list of display-ready channel value strings.
+      Contacts with no linked entity or no facts map to an empty list.
+    - ``has_email``: set of contact_ids that have at least one active
+      ``has-email`` fact (the predicate the Gmail policy evaluator uses).
     """
+    out = _EntityFactsResult()
     if not contact_entity_pairs:
-        return {}
+        return out
 
     entity_to_contacts: dict[UUID, list[UUID]] = {}
     for cid, eid in contact_entity_pairs:
+        out.values[cid] = []
         entity_to_contacts.setdefault(eid, []).append(cid)
     entity_ids = list(entity_to_contacts)
 
@@ -87,9 +112,8 @@ async def _entity_facts_values_by_contact(
             entity_ids,
         )
     except Exception:  # noqa: BLE001
-        return {cid: [] for cid, _ in contact_entity_pairs}
+        return out
 
-    result: dict[UUID, list[str]] = {cid: [] for cid, _ in contact_entity_pairs}
     for r in rows:
         eid = r["entity_id"]
         cids = entity_to_contacts.get(eid)
@@ -97,8 +121,10 @@ async def _entity_facts_values_by_contact(
             continue
         display_val = _ef_display_value(r["predicate"], r["object"])
         for cid in cids:
-            result[cid].append(display_val)
-    return result
+            out.values[cid].append(display_val)
+            if r["predicate"] == "has-email":
+                out.has_email.add(cid)
+    return out
 
 
 logger = logging.getLogger(__name__)
@@ -175,7 +201,7 @@ async def list_priority_contacts(
     contact_entity_pairs: list[tuple[UUID, UUID]] = [
         (row["contact_id"], row["entity_id"]) for row in rows if row["entity_id"] is not None
     ]
-    ef_values_by_contact = await _entity_facts_values_by_contact(pool, contact_entity_pairs)
+    ef_result = await _entity_facts_values_by_contact(pool, contact_entity_pairs)
 
     entries = [
         PriorityContactEntry(
@@ -184,7 +210,16 @@ async def list_priority_contacts(
             added_at=row["added_at"],
             added_by=row["added_by"],
             name=row["contact_name"],
-            contact_info_values=ef_values_by_contact.get(row["contact_id"], []),
+            contact_info_values=ef_result.values.get(row["contact_id"], []),
+            # A contact is inert when it would silently match nothing at runtime.
+            # For Gmail: the 3-hop join requires both a linked entity_id and an
+            # active has-email fact; either absence means the row matches nothing.
+            # For other butlers: only a missing entity_id makes the row inert
+            # (they use has-handle or other predicates, not has-email).
+            is_inert=(
+                row["entity_id"] is None
+                or (row["butler"] == "gmail" and row["contact_id"] not in ef_result.has_email)
+            ),
         )
         for row in rows
     ]

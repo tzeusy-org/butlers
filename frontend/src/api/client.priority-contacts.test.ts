@@ -63,12 +63,14 @@ describe("getPriorityContacts", () => {
       added_by: "dashboard",
       name: "VIP",
       contact_info_values: ["vip@example.com"],
+      is_inert: false,
     };
     mockJsonResponse({ data: [entry], meta: { total: 1, offset: 0, limit: 100 } });
     const resp = await getPriorityContacts({ butler: "gmail" });
     expect(resp.data).toHaveLength(1);
     expect(resp.data[0].contact_id).toBe(entry.contact_id);
     expect(resp.data[0].contact_info_values).toEqual(["vip@example.com"]);
+    expect(resp.data[0].is_inert).toBe(false);
   });
 
   it("omits the butler param when not provided", async () => {

@@ -209,40 +209,60 @@ export function PrioritySendersBlock({
           {contacts.map((entry) => (
             <div
               key={`${entry.contact_id}:${entry.butler}`}
-              className="grid gap-3.5 py-3 border-b border-border/50 items-baseline"
-              style={{ gridTemplateColumns: '1.4fr 1fr 90px 24px' }}
+              className="py-3 border-b border-border/50"
               data-testid={`priority-sender-row-${entry.contact_id}`}
             >
-              {/* Name / handle */}
-              <div className="min-w-0">
-                <div className="text-[13.5px] font-medium tracking-[-0.005em] truncate">
-                  {entry.name ?? handleFromEntry(entry)}
-                </div>
-                <span className="block font-mono text-[10px] text-muted-foreground mt-0.5 truncate">
-                  {handleFromEntry(entry)}
-                </span>
-              </div>
-
-              {/* Routes to (butler) */}
-              <div className="font-mono text-[10.5px] text-muted-foreground truncate">
-                {entry.butler}
-              </div>
-
-              {/* Added */}
-              <span className="font-mono text-[10px] text-muted-foreground">
-                {formatDate(entry.added_at)}
-              </span>
-
-              {/* Remove */}
-              <button
-                type="button"
-                className="font-mono text-[12px] text-muted-foreground hover:text-[color:var(--filter-red,oklch(0.62_0.20_25))]"
-                onClick={() => onRemove?.(entry.contact_id)}
-                aria-label={`Remove priority sender ${entry.name ?? entry.contact_id}`}
-                data-testid={`priority-sender-remove-${entry.contact_id}`}
+              <div
+                className="grid gap-3.5 items-baseline"
+                style={{ gridTemplateColumns: '1.4fr 1fr 90px 24px' }}
               >
-                ×
-              </button>
+                {/* Name / handle */}
+                <div className="min-w-0">
+                  <div className="text-[13.5px] font-medium tracking-[-0.005em] truncate">
+                    {entry.name ?? handleFromEntry(entry)}
+                  </div>
+                  <span className="block font-mono text-[10px] text-muted-foreground mt-0.5 truncate">
+                    {handleFromEntry(entry)}
+                  </span>
+                </div>
+
+                {/* Routes to (butler) */}
+                <div className="font-mono text-[10.5px] text-muted-foreground truncate">
+                  {entry.butler}
+                </div>
+
+                {/* Added */}
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {formatDate(entry.added_at)}
+                </span>
+
+                {/* Remove */}
+                <button
+                  type="button"
+                  className="font-mono text-[12px] text-muted-foreground hover:text-[color:var(--filter-red,oklch(0.62_0.20_25))]"
+                  onClick={() => onRemove?.(entry.contact_id)}
+                  aria-label={`Remove priority sender ${entry.name ?? entry.contact_id}`}
+                  data-testid={`priority-sender-remove-${entry.contact_id}`}
+                >
+                  ×
+                </button>
+              </div>
+
+              {/* Inert warning badge — shown only when this entry would match nothing at runtime */}
+              {entry.is_inert && (
+                <div
+                  className="mt-1.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--filter-amber,oklch(0.72_0.15_85))] border border-[color:var(--filter-amber,oklch(0.72_0.15_85))]/40 px-2 py-0.5 inline-flex items-center gap-1.5"
+                  data-testid={`priority-sender-inert-${entry.contact_id}`}
+                  title={
+                    entry.butler === 'gmail'
+                      ? "This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact — without one, this entry matches nothing."
+                      : "This contact has no linked entity in the system. Priority senders require a linked entity to resolve channel handles and match incoming messages."
+                  }
+                >
+                  <span aria-hidden="true">⚠</span>
+                  {entry.butler === 'gmail' ? 'no email fact — entry matches nothing' : 'no linked entity — entry matches nothing'}
+                </div>
+              )}
             </div>
           ))}
         </div>
