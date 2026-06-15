@@ -547,7 +547,11 @@ describe("EntityFinder", () => {
     expect(footer).toContain("open");
   });
 
-  it("shows a preview pane for the active entity with its canned gloss", async () => {
+  it("shows a preview pane for the active entity with name and type — but NO fabricated gloss", async () => {
+    // The search payload does not carry tier or curation state. The preview pane
+    // must NOT display a gloss synthesized from neutral defaults (tier=150,
+    // state=healthy) that look authoritative but are fabricated. Honest-UI
+    // precedent: omit the field rather than show plausible fakes.
     mockSearchResults({
       results: [
         {
@@ -592,17 +596,26 @@ describe("EntityFinder", () => {
       await flush();
     });
 
-    // cmdk auto-selects the first item; the preview pane mirrors it.
+    // Preview pane must exist and show the entity name.
     const preview = document.body.querySelector(
       "[data-testid='entity-finder-preview']",
     );
     expect(preview).not.toBeNull();
     expect(preview?.textContent).toContain("Dana Scully");
-    // The gloss is a non-empty canned string from entity-glosses.ts.
+
+    // The gloss element must be ABSENT — no fabricated tier/state text.
     const gloss = document.body.querySelector(
       "[data-testid='entity-finder-preview-gloss']",
     );
-    expect((gloss?.textContent ?? "").length).toBeGreaterThan(0);
+    expect(gloss).toBeNull();
+
+    // Specifically: the neutral-default gloss texts that used to appear must not
+    // show up anywhere in the preview pane.
+    const previewText = preview?.textContent ?? "";
+    expect(previewText).not.toContain("Meaningful contact");
+    expect(previewText).not.toContain("Active in the network");
+    expect(previewText).not.toContain("Support clique");
+    expect(previewText).not.toContain("Acquaintance");
   });
 
   it("hops (navigates to /entities/hop?center=) when Tab is pressed on an active result", async () => {
