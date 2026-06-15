@@ -114,7 +114,7 @@ v3 touches the six shipped routes (`/entities`, `/entities/hop`, `/entities/colu
 | Hop graph (wedges, trail, reset) | partial | HopPage.tsx:134–191, 253–275 | Predicate-grouped fan-out + reset pill; no trail visualization, no weight ranking, no truncation |
 | Columns cascade | partial | ColumnsPage.tsx:66–139 | Cascade works (?path= CSV); no keyboard nav, no top-6-by-weight, no "+N more" |
 | Concentration | partial | ConcentrationPage.tsx | Tabs (46), rollup top-3 (106–112); weight as `w=123` text not bars (154); no footer KPI strip; rows not clickable; provenance fields fetched but unrendered |
-| Detail-Editorial | partial | EntityDetailPage.tsx:2072– | Hero + contacts + timeline + facts grid + curation rail (2203–2330) shipped; NO sparkline render; NO k/j stepping |
+| Detail-Editorial | partial | EntityDetailPage.tsx:2072– | Hero + contacts + timeline + facts grid + 3×2 serif-gloss curation rail built in editorial branch (bu-q9ikf); NO sparkline render; NO k/j stepping |
 | Detail-Workbench | missing (stub) | EntityDetailPage.tsx:101, 1864, 1892, 2075 | Mode toggle wired but renders generic "overview" archetype; no 3-rail, no triples view, no confidence inspector, no merge hints, no duplicate panel, no KPI strip |
 | Finder | partial | EntityFinder.tsx | Cmd-K + backend fuzzy scoring live; NO preview pane, NO Tab-to-hop, entity kind only |
 | Keyboard maps (all views) | missing/partial | — | No k/j on detail, no ↑↓→← on columns, no list keyboard on index |

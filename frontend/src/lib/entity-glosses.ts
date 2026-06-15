@@ -281,3 +281,34 @@ const _exhaustivenessCheck: Record<DunbarTier, Record<EntityState, string>> =
   GLOSSES_BASE
 // Suppress unused-variable lint warning (the point is the type check, not the value).
 void _exhaustivenessCheck
+
+// ---------------------------------------------------------------------------
+// Editorial curation rail glosses (bu-q9ikf).
+//
+// One short serif voice line per action — canned, not generated.
+// Voice contract: clinical, present tense, no em-dashes, ≤8 words.
+// Used below each button in the 3×2 editorial curation rail.
+// ---------------------------------------------------------------------------
+
+export type CurationRailAction =
+  | "merge"
+  | "promote"
+  | "demote"
+  | "archive"
+  | "forget"
+  | "edit-aliases"
+
+/**
+ * Canned serif gloss for each editorial curation rail action.
+ *
+ * Clinical, terse, present-tense voice. No em-dashes.
+ * Displayed in Source Serif 4 below each action button.
+ */
+export const CURATION_RAIL_GLOSSES: Record<CurationRailAction, string> = {
+  merge: "Collapse a duplicate into this record.",
+  promote: "Shift one tier inward on the Dunbar ramp.",
+  demote: "Shift one tier outward on the Dunbar ramp.",
+  archive: "Tombstone the source; record is preserved.",
+  forget: "Hard-delete. Retracts all active facts.",
+  "edit-aliases": "Add or remove known names for this entity.",
+}

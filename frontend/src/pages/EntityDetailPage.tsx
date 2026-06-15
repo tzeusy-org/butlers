@@ -21,8 +21,8 @@ import {
 import { toast } from "sonner";
 import { Time } from "@/components/ui/time";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES } from "@/lib/entity-glosses";
-import type { DunbarTier, EntityState, EntityType } from "@/lib/entity-glosses";
+import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_GLOSSES } from "@/lib/entity-glosses";
+import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
 
 import type {
   ContactSummary,
@@ -2261,6 +2261,127 @@ function CurationAction({
 }
 
 /**
+ * One cell in the editorial curation 3×2 grid.
+ *
+ * Label sits above a short serif voice gloss (Source Serif 4, 12px, italic).
+ * Forget is red per the design language; all others are quiet muted text with
+ * border-hover. Wired to the SAME backend mutations as WorkbenchActionRail.
+ */
+function EditorialCurationCell({
+  action,
+  onClick,
+  disabled = false,
+}: {
+  action: CurationRailAction;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  const gloss = CURATION_RAIL_GLOSSES[action];
+  const isDestructive = action === "forget";
+  const label =
+    action === "edit-aliases"
+      ? "Edit aliases"
+      : action.charAt(0).toUpperCase() + action.slice(1);
+
+  return (
+    <button
+      type="button"
+      data-testid={`editorial-curation-${action}`}
+      onClick={onClick}
+      disabled={disabled}
+      className={[
+        "group flex flex-col gap-1 rounded border px-3 py-2.5 text-left transition-colors",
+        "disabled:cursor-not-allowed disabled:opacity-40",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        isDestructive
+          ? "border-border text-destructive hover:border-destructive hover:bg-destructive/5"
+          : "border-border text-foreground hover:border-foreground/40 hover:bg-muted/20",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <span className="text-[11px] font-medium leading-none tracking-wide">
+        {label}
+      </span>
+      <span
+        className={[
+          "font-serif text-[11px] italic leading-snug",
+          isDestructive ? "text-destructive/70" : "text-[var(--mfg)]",
+        ].join(" ")}
+      >
+        {gloss}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Editorial-mode curation rail — 3×2 serif-gloss grid.
+ *
+ * Brief §1 (L80): "curation rail 3×2 (merge/promote/demote/archive/forget(red)/
+ * edit-aliases) with serif gloss" on the EDITORIAL page.
+ *
+ * "promote" = step Dunbar tier inward (closer), same as WorkbenchActionRail's
+ * "Promote tier" button.
+ * "demote"  = step Dunbar tier outward, same as "Demote tier".
+ * merge is gated: disabled when no duplicate peer exists.
+ *
+ * All six actions delegate to the SAME handlers that power WorkbenchActionRail.
+ * No dead buttons — every onClick traces to a real mutation or state transition.
+ */
+function EditorialCurationRail({
+  duplicatePeerId,
+  onOpenMergeReview,
+  onPromoteTier,
+  onDemoteTier,
+  onEditAliases,
+  onArchive,
+  onForget,
+}: {
+  duplicatePeerId: string | null;
+  onOpenMergeReview: () => void;
+  onPromoteTier: () => void;
+  onDemoteTier: () => void;
+  onEditAliases: () => void;
+  onArchive: () => void;
+  onForget: () => void;
+}) {
+  return (
+    <section data-testid="editorial-curation-rail" aria-label="Curation">
+      <Eyebrow className="mb-3">curation</Eyebrow>
+      {/* 3×2 grid: merge/promote/demote on row 1, archive/forget/edit-aliases on row 2 */}
+      <div className="grid grid-cols-3 gap-2">
+        <EditorialCurationCell
+          action="merge"
+          onClick={onOpenMergeReview}
+          disabled={!duplicatePeerId}
+        />
+        <EditorialCurationCell
+          action="promote"
+          onClick={onPromoteTier}
+        />
+        <EditorialCurationCell
+          action="demote"
+          onClick={onDemoteTier}
+        />
+        <EditorialCurationCell
+          action="archive"
+          onClick={onArchive}
+        />
+        <EditorialCurationCell
+          action="forget"
+          onClick={onForget}
+        />
+        <EditorialCurationCell
+          action="edit-aliases"
+          onClick={onEditAliases}
+        />
+      </div>
+    </section>
+  );
+}
+
+/**
  * Per-fact confidence/staleness inspector row. Renders the two axes side by
  * side — conf bar (amber when < 0.85) and staleness band (dim when stale) —
  * plus source/verified marks. NEVER a single blended score.
@@ -3152,6 +3273,22 @@ export default function EntityDetailPage() {
                 onLoadMore={() =>
                   setFactsLimit((current) => current + FACTS_PAGE_SIZE)
                 }
+              />
+
+              {/* Editorial curation rail — 3×2 serif-gloss grid.
+                  Brief §1 (L80): merge/promote/demote/archive/forget(red)/edit-aliases.
+                  Every action wired to the real mutation; no dead buttons. */}
+              <EditorialCurationRail
+                duplicatePeerId={duplicatePeerId}
+                onOpenMergeReview={openMergeReview}
+                onPromoteTier={() => stepDunbarTier("promote")}
+                onDemoteTier={() => stepDunbarTier("demote")}
+                onEditAliases={handleEditAliases}
+                onArchive={handleArchiveEntity}
+                onForget={() => {
+                  setForgetError(null);
+                  setForgetDialogOpen(true);
+                }}
               />
             </>
           ) : (
