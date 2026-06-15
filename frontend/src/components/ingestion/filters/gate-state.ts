@@ -138,6 +138,14 @@ export interface GateCount {
   preserved: number
   /** Hard drops (filtered out). */
   dropped: number
+  /**
+   * True when the count is a passthrough estimate, not a measured value.
+   * Applies to gates where the backend exposes no real per-gate count
+   * (dedupe: no dedup-window visibility; tier: tiering doesn't drop).
+   * The diagram renders these with a "~" prefix so the UI doesn't imply
+   * a measurement it doesn't have.
+   */
+  estimated?: boolean
 }
 
 export function deriveGateCounts(stats: PipelineStats): GateCount[] {
@@ -163,6 +171,7 @@ export function deriveGateCounts(stats: PipelineStats): GateCount[] {
     out: stats.ingested,  // no visibility into dedup counts from this endpoint
     preserved: 0,
     dropped: 0,
+    estimated: true,  // passthrough estimate — backend has no per-gate dedup count
   }
   const tier: GateCount = {
     key: 'tier',
@@ -170,6 +179,7 @@ export function deriveGateCounts(stats: PipelineStats): GateCount[] {
     out: stats.ingested,  // all pass tier; tiering just changes processing priority
     preserved: 0,
     dropped: 0,
+    estimated: true,  // passthrough estimate — tiering changes priority, not count
   }
   const route: GateCount = {
     key: 'route',
