@@ -7,6 +7,7 @@
  *   - Enable toggle backed by PUT /api/settings/models/{id}
  *   - Test / Edit / Delete row actions
  *   - State and tier filter chips
+ *   - "New model" button backed by POST /api/settings/models
  *   - "Verify All" button backed by POST /api/settings/models/verify-all
  *   - Dev-mode ApiWireFooter showing endpoints this page hits (§4.5)
  *
@@ -42,6 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
   useModelCatalog,
   useTestModelCatalogEntry,
@@ -73,6 +75,12 @@ const TIER_LABEL: Record<ComplexityTier, string> = {
   local: "Local",
   legacy: "Legacy",
 };
+
+/** Known runtime backends a catalog entry can dispatch to (seed-derived). */
+const RUNTIME_TYPES = ["claude", "codex", "gemini", "opencode"] as const;
+
+/** Default per-session timeout (seconds) for a brand-new catalog entry. */
+const DEFAULT_SESSION_TIMEOUT_S = 1800;
 
 type StateFilter = "all" | "verified" | "attention" | "offline" | "deprecated";
 
@@ -375,6 +383,318 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Add model dialog
+// ---------------------------------------------------------------------------
+
+/**
+ * Inner form for creating a brand-new catalog entry. Mounted only when the
+ * dialog is open so `useState` initializes once from the defaults below.
+ *
+ * Unlike {@link EditModelForm} this also exposes `runtime_type` (required by
+ * POST /api/settings/models but immutable via the edit surface) and seeds
+ * sensible defaults for the optional fields.
+ */
+function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
+  const createEntry = useCreateModelCatalogEntry();
+
+  const [alias, setAlias] = useState("");
+  const [runtimeType, setRuntimeType] = useState<string>(RUNTIME_TYPES[0]);
+  const [modelId, setModelId] = useState("");
+  const [complexityTier, setComplexityTier] = useState<ComplexityTier>("workhorse");
+  const [priority, setPriority] = useState("0");
+  const [sessionTimeoutS, setSessionTimeoutS] = useState(String(DEFAULT_SESSION_TIMEOUT_S));
+  const [enabled, setEnabled] = useState(true);
+  const [args, setArgs] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const validate = (): boolean => {
+    const errors: Record<string, string> = {};
+    if (!alias.trim()) errors.alias = "Alias is required";
+    if (!runtimeType.trim()) errors.runtime_type = "Runtime type is required";
+    if (!modelId.trim()) errors.model_id = "Model ID is required";
+    if (!TIER_ORDER.includes(complexityTier))
+      errors.complexity_tier = "Must be one of the six canonical tiers";
+    const parsedPriority = parseInt(priority, 10);
+    if (isNaN(parsedPriority) || parsedPriority < 0)
+      errors.priority = "Priority must be a non-negative integer";
+    const parsedTimeout = parseInt(sessionTimeoutS, 10);
+    if (isNaN(parsedTimeout) || parsedTimeout <= 0)
+      errors.session_timeout_s = "Session timeout must be a positive integer (seconds)";
+    if (args.trim()) {
+      try {
+        const parsed = JSON.parse(args);
+        if (!Array.isArray(parsed)) errors.args = "Must be a JSON array";
+      } catch {
+        errors.args = "Invalid JSON";
+      }
+    }
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleCreate = () => {
+    if (!validate()) return;
+
+    let extraArgs: string[] = [];
+    if (args.trim()) {
+      try {
+        extraArgs = JSON.parse(args) as string[];
+      } catch {
+        return;
+      }
+    }
+
+    createEntry.mutate(
+      {
+        alias: alias.trim(),
+        runtime_type: runtimeType.trim(),
+        model_id: modelId.trim(),
+        complexity_tier: complexityTier,
+        priority: parseInt(priority, 10),
+        session_timeout_s: parseInt(sessionTimeoutS, 10),
+        enabled,
+        extra_args: extraArgs,
+      },
+      {
+        onSuccess: () => {
+          toast.success(`Added ${alias.trim()}`);
+          onOpenChange(false);
+        },
+        onError: (err) => {
+          let msg: string;
+          if (err instanceof ApiError && err.status === 409) {
+            msg = `A model with alias "${alias.trim()}" already exists`;
+          } else if (err instanceof ApiError && err.status === 422) {
+            msg = "Validation error — check your inputs";
+          } else if (err instanceof Error) {
+            msg = err.message;
+          } else {
+            msg = "Failed to add model";
+          }
+          toast.error(msg);
+        },
+      },
+    );
+  };
+
+  return (
+    <>
+      <div className="grid gap-4 py-2">
+        {/* Alias */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-alias" className="font-mono text-[11px] uppercase tracking-widest">
+            Alias
+          </Label>
+          <Input
+            id="add-alias"
+            value={alias}
+            onChange={(e) => setAlias(e.target.value)}
+            placeholder="e.g. claude-sonnet"
+            aria-invalid={!!fieldErrors.alias}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.alias && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.alias}</p>
+          )}
+        </div>
+
+        {/* Runtime type */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="add-runtime"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Runtime type
+          </Label>
+          <Select value={runtimeType} onValueChange={setRuntimeType}>
+            <SelectTrigger id="add-runtime" className="font-mono text-sm w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {RUNTIME_TYPES.map((rt) => (
+                <SelectItem key={rt} value={rt} className="font-mono text-sm">
+                  {rt}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {fieldErrors.runtime_type && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.runtime_type}</p>
+          )}
+        </div>
+
+        {/* Model ID */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="add-model-id"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Model ID
+          </Label>
+          <Input
+            id="add-model-id"
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+            placeholder="e.g. claude-sonnet-4-6"
+            aria-invalid={!!fieldErrors.model_id}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.model_id && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.model_id}</p>
+          )}
+        </div>
+
+        {/* Complexity tier */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-tier" className="font-mono text-[11px] uppercase tracking-widest">
+            Complexity tier
+          </Label>
+          <Select
+            value={complexityTier}
+            onValueChange={(v) => setComplexityTier(v as ComplexityTier)}
+          >
+            <SelectTrigger id="add-tier" className="font-mono text-sm w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TIER_ORDER.map((t) => (
+                <SelectItem key={t} value={t} className="font-mono text-sm">
+                  {TIER_LABEL[t]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {fieldErrors.complexity_tier && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.complexity_tier}</p>
+          )}
+        </div>
+
+        {/* Priority */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-priority" className="font-mono text-[11px] uppercase tracking-widest">
+            Priority
+          </Label>
+          <Input
+            id="add-priority"
+            type="number"
+            min={0}
+            value={priority}
+            onChange={(e) => setPriority(e.target.value)}
+            aria-invalid={!!fieldErrors.priority}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.priority && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.priority}</p>
+          )}
+        </div>
+
+        {/* Session timeout (seconds) */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="add-session-timeout"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Per-session timeout (s)
+          </Label>
+          <Input
+            id="add-session-timeout"
+            type="number"
+            min={1}
+            step={1}
+            value={sessionTimeoutS}
+            onChange={(e) => setSessionTimeoutS(e.target.value)}
+            aria-invalid={!!fieldErrors.session_timeout_s}
+            className="font-mono text-sm"
+          />
+          {fieldErrors.session_timeout_s && (
+            <p className="font-mono text-[10px] text-destructive">
+              {fieldErrors.session_timeout_s}
+            </p>
+          )}
+        </div>
+
+        {/* Enabled toggle */}
+        <div className="flex items-center gap-3">
+          <Switch
+            id="add-enabled"
+            checked={enabled}
+            onCheckedChange={setEnabled}
+            aria-label="Enabled"
+          />
+          <Label
+            htmlFor="add-enabled"
+            className="font-mono text-[11px] uppercase tracking-widest cursor-pointer"
+          >
+            {enabled ? "Enabled" : "Disabled"}
+          </Label>
+        </div>
+
+        {/* Args (JSON array) */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-args" className="font-mono text-[11px] uppercase tracking-widest">
+            Args (JSON array)
+          </Label>
+          <Textarea
+            id="add-args"
+            value={args}
+            onChange={(e) => setArgs(e.target.value)}
+            placeholder='e.g. ["--max-turns", "10"]'
+            rows={3}
+            aria-invalid={!!fieldErrors.args}
+            className="font-mono text-xs resize-y"
+          />
+          {fieldErrors.args && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.args}</p>
+          )}
+        </div>
+      </div>
+
+      <DialogFooter>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onOpenChange(false)}
+          disabled={createEntry.isPending}
+          className="font-mono text-[10px] uppercase tracking-widest"
+        >
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          onClick={handleCreate}
+          disabled={createEntry.isPending}
+          className="font-mono text-[10px] uppercase tracking-widest"
+        >
+          {createEntry.isPending ? "Adding…" : "Add model →"}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+function AddModelDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle className="font-mono text-sm">Add model</DialogTitle>
+          <DialogDescription className="font-mono text-[11px]">
+            Register a new entry in the shared model catalog.
+          </DialogDescription>
+        </DialogHeader>
+        {open && <AddModelForm onOpenChange={onOpenChange} />}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Filter chip sub-component
 // ---------------------------------------------------------------------------
 
@@ -629,6 +949,7 @@ function ApiWireFooter() {
 
   const endpoints = [
     "GET /api/settings/models",
+    "POST /api/settings/models",
     "PUT /api/settings/models/{id}/priority",
     "PUT /api/settings/models/{id}",
     "POST /api/settings/models/{id}/test",
@@ -659,6 +980,7 @@ function ApiWireFooter() {
 export default function SettingsModelsPage() {
   const [tierFilter, setTierFilter] = useState<ComplexityTier | "all">("all");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+  const [addOpen, setAddOpen] = useState(false);
 
   const { data, isLoading, isError } = useModelCatalog();
   const verifyAll = useVerifyAllModels();
@@ -750,8 +1072,18 @@ export default function SettingsModelsPage() {
           >
             {verifyAll.isPending ? "Verifying…" : "Verify all →"}
           </Button>
+          <Button
+            size="sm"
+            onClick={() => setAddOpen(true)}
+            className="font-mono text-[10px] uppercase tracking-widest"
+          >
+            New model →
+          </Button>
         </div>
       </div>
+
+      {/* Add model dialog */}
+      <AddModelDialog open={addOpen} onOpenChange={setAddOpen} />
 
       {/* Filter bar */}
       <div className="px-7 py-2.5 border-b border-border flex items-center gap-4 flex-wrap font-mono text-[10px]">

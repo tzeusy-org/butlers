@@ -40,6 +40,7 @@ import type { ModelCatalogEntry } from "@/api/types";
 
 vi.mock("@/hooks/use-model-catalog", () => ({
   useModelCatalog: vi.fn(),
+  useCreateModelCatalogEntry: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useUpdateModelCatalogEntry: vi.fn(),
   useTestModelCatalogEntry: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteModelCatalogEntry: vi.fn(() => ({
@@ -64,6 +65,7 @@ vi.mock("sonner", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  useCreateModelCatalogEntry,
   useModelCatalog,
   useUpdateModelCatalogEntry,
 } from "@/hooks/use-model-catalog";
@@ -797,5 +799,128 @@ describe("SettingsModelsPage — EditModelDialog", () => {
     expect(toast.error).toHaveBeenCalled();
     // Dialog remains open
     expect(screen.getByText(/Edit model/)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AddModelDialog — open/close, validation, create payload, callbacks
+// ---------------------------------------------------------------------------
+
+describe("SettingsModelsPage — AddModelDialog", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useCreateModelCatalogEntry).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as AnyMock);
+    setHookState({ entries: [] });
+  });
+
+  it("renders the New model button in the page header", () => {
+    const html = renderPage();
+    expect(html).toContain("New model");
+  });
+
+  it("opens the add dialog when New model is clicked", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+    });
+    expect(screen.getByText(/Register a new entry/)).toBeTruthy();
+  });
+
+  it("closes the add dialog when Cancel is clicked", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+    });
+    expect(screen.getByText(/Register a new entry/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    });
+    expect(screen.queryByText(/Register a new entry/)).toBeNull();
+  });
+
+  it("blocks create and shows validation errors when required fields are empty", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useCreateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+    });
+
+    // Alias and model_id are empty by default
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /add model/i }));
+    });
+
+    expect(screen.getByText("Alias is required")).toBeTruthy();
+    expect(screen.getByText("Model ID is required")).toBeTruthy();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("sends a create payload with canonical defaults when valid", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useCreateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText(/^alias$/i), { target: { value: "my-new-model" } });
+      fireEvent.change(screen.getByLabelText(/model id/i), { target: { value: "claude-x-1" } });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /add model/i }));
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alias: "my-new-model",
+        model_id: "claude-x-1",
+        runtime_type: "claude",
+        complexity_tier: "workhorse",
+        priority: 0,
+        session_timeout_s: 1800,
+        enabled: true,
+        extra_args: [],
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("surfaces a duplicate-alias (409) error via toast and keeps dialog open", async () => {
+    const { toast } = await import("sonner");
+    const { ApiError } = await import("@/api/index.ts");
+    let savedCallbacks: { onSuccess?: () => void; onError?: (err: unknown) => void } = {};
+    const mutate = vi.fn((_payload, callbacks) => {
+      savedCallbacks = callbacks;
+    });
+    vi.mocked(useCreateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText(/^alias$/i), { target: { value: "claude-sonnet" } });
+      fireEvent.change(screen.getByLabelText(/model id/i), { target: { value: "claude-x-1" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /add model/i }));
+    });
+
+    await act(async () => {
+      savedCallbacks.onError?.(new ApiError("conflict", "alias exists", 409));
+    });
+
+    expect(toast.error).toHaveBeenCalled();
+    // Dialog remains open so the user can fix the alias
+    expect(screen.getByText(/Register a new entry/)).toBeTruthy();
   });
 });
