@@ -1027,7 +1027,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
         This is the SINGLE authoritative ingress point for all writes to
         ``relationship.entity_facts``.  Endpoints for contacts CRUD, entity merge,
-        archive, promote-tier, queue/dismiss, the dual-write shim, and the
+        archive, dunbar-tier, queue/dismiss, the dual-write shim, and the
         backfill job all go through this tool.
 
         Args:
