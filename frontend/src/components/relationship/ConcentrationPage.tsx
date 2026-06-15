@@ -61,7 +61,7 @@ function PredicateTabStrip({ tabs, activePredicate, onSelect }: PredicateTabStri
       className="flex flex-wrap gap-1 border-b border-border pb-0"
       data-testid="predicate-tab-strip"
     >
-      {tabs.map(({ predicate, label }) => {
+      {tabs.map(({ predicate, label, entity_count }) => {
         const isActive = predicate === activePredicate;
         return (
           <button
@@ -71,7 +71,7 @@ function PredicateTabStrip({ tabs, activePredicate, onSelect }: PredicateTabStri
             aria-pressed={isActive}
             data-predicate={predicate}
             className={[
-              "px-3 py-2 text-sm font-medium transition-colors",
+              "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors",
               "hover:text-foreground",
               isActive
                 ? "border-b-2 border-foreground text-foreground -mb-px"
@@ -79,6 +79,13 @@ function PredicateTabStrip({ tabs, activePredicate, onSelect }: PredicateTabStri
             ].join(" ")}
           >
             {label}
+            <span
+              className="inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-muted-foreground leading-none"
+              data-testid="predicate-tab-count"
+              aria-label={`${entity_count} entities`}
+            >
+              {entity_count}
+            </span>
           </button>
         );
       })}
@@ -99,24 +106,31 @@ interface RollupHeaderProps {
 function RollupHeader({ total, top3Share, predicate }: RollupHeaderProps) {
   return (
     <div
-      className="flex items-center gap-4 text-sm text-muted-foreground"
+      className="flex flex-wrap items-end gap-x-6 gap-y-2"
       data-testid="rollup-header"
     >
-      <span>
-        Predicate:{" "}
-        <span className="font-mono text-foreground font-medium">{predicate}</span>
-      </span>
-      <span>
-        Total weight:{" "}
-        <span className="tabular-nums text-foreground font-medium">{total}</span>
-      </span>
-      {top3Share != null && (
+      {/* Inline meta: predicate + total weight */}
+      <div className="flex items-center gap-4 text-sm text-muted-foreground">
         <span>
-          Top-3 share:{" "}
-          <span className="tabular-nums text-foreground font-medium">
+          Predicate:{" "}
+          <span className="font-mono text-foreground font-medium">{predicate}</span>
+        </span>
+        <span>
+          Total weight:{" "}
+          <span className="tabular-nums text-foreground font-medium">{total}</span>
+        </span>
+      </div>
+
+      {/* Top-3 share — 22px tnum headline (spec). */}
+      {top3Share != null && (
+        <div className="flex flex-col gap-0.5" data-testid="top3-share-kpi">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            top-3 share
+          </span>
+          <span className="text-[22px] font-medium tabular-nums leading-none text-foreground">
             {(top3Share * 100).toFixed(1)}%
           </span>
-        </span>
+        </div>
       )}
     </div>
   );

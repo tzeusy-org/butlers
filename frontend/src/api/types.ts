@@ -5905,6 +5905,8 @@ export interface PredicateTab {
   predicate: string;
   label: string;
   description: string | null;
+  /** Count of distinct entities with active facts for this predicate. */
+  entity_count: number;
 }
 
 /**
