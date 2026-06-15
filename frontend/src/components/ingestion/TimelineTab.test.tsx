@@ -1073,6 +1073,25 @@ describe("TimelineTab — §2.8 Saved Views", () => {
     expect(allBtn!.getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("Spend view is marked as a placeholder with '(soon)' hint", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const spendBtn = container.querySelector("[data-view='spend']");
+    expect(spendBtn).not.toBeNull();
+    // Placeholder hint visible to users
+    expect(spendBtn!.textContent).toContain("soon");
+    // Title attribute explains what is needed
+    expect(spendBtn!.getAttribute("title")).toContain("per-event cost");
+  });
+
   it("persists active view to localStorage on selection", () => {
     act(() => {
       root.render(
@@ -1084,12 +1103,12 @@ describe("TimelineTab — §2.8 Saved Views", () => {
       );
     });
 
-    const spendBtn = container.querySelector("[data-view='spend']") as HTMLButtonElement;
-    act(() => { spendBtn.click(); });
+    const errorsBtn = container.querySelector("[data-view='errors']") as HTMLButtonElement;
+    act(() => { errorsBtn.click(); });
 
     const stored = localStorage.getItem("ingestion-saved-views");
     expect(stored).not.toBeNull();
-    expect(JSON.parse(stored!).activeView).toBe("spend");
+    expect(JSON.parse(stored!).activeView).toBe("errors");
   });
 
   it("filters events by Errors view", () => {

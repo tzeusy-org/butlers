@@ -153,6 +153,8 @@ interface SavedView {
   id: BuiltInViewId;
   label: string;
   statuses: IngestionEventStatus[] | null;
+  /** Tooltip shown when statuses is null (disabled/placeholder). */
+  disabledTitle?: string;
 }
 
 const BUILT_IN_VIEWS: SavedView[] = [
@@ -172,11 +174,15 @@ const BUILT_IN_VIEWS: SavedView[] = [
     id: "priority",
     label: "Priority",
     statuses: null, // placeholder — no backend priority_contacts yet
+    disabledTitle: "Priority view available in Wave 2 (§3.3)",
   },
   {
     id: "spend",
     label: "Spend",
-    statuses: ["ingested", "replay_complete"],
+    // placeholder — cost is per-session (fan-out), not a per-event column;
+    // a cost sort requires per-event cost denormalization (see bu-dbhm0 follow-up)
+    statuses: null,
+    disabledTitle: "Spend sort requires per-event cost — coming soon",
   },
 ];
 
@@ -355,7 +361,7 @@ function Toolbar({
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 view.statuses === null ? "opacity-50 cursor-default" : "cursor-pointer",
               ].join(" ")}
-              title={view.statuses === null ? "Priority view available in Wave 2 (§3.3)" : undefined}
+              title={view.statuses === null ? view.disabledTitle : undefined}
               data-view={view.id}
               aria-pressed={activeViewId === view.id}
             >
