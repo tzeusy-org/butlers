@@ -2,7 +2,7 @@
  * ConnectorRosterRow — one row in the connectors roster table.
  *
  * Columns (left → right):
- *   health dot · channel name+kind · function description+meta · sparkline ·
+ *   liveness dot + state dot (stacked) · channel name+kind · function description+meta · sparkline ·
  *   auth pill · events (last 24h) · disclosure
  *
  * The auth pill uses the same status label and color as the AttentionStrip
@@ -11,8 +11,9 @@
  * A left-rail severity indicator appears for non-ok connectors: red for
  * needs_reauth, amber for degraded/expiring.
  *
- * Design: hairline-divided rows, no card chrome. Health dot is 6px circle.
- * Mono numeric cells. Serif function gloss. No animations beyond hover tint.
+ * Design: hairline-divided rows, no card chrome. Liveness and state are each
+ * rendered as a 6px dot (stacked vertically), giving distinct visibility for
+ * both axes. Mono numeric cells. Serif function gloss. No animations beyond hover tint.
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connectors Roster"
@@ -27,6 +28,8 @@ import {
   deriveConnectorDispatchInfo,
   authStatusLabel,
   authStatusColor,
+  livenessDotColor,
+  stateDotColor,
   healthDotColor,
 } from './connector-auth'
 import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
@@ -65,7 +68,9 @@ export function ConnectorRosterRow({
 
   const authLabel = authStatusLabel(info.authStatus)
   const authColorClass = authStatusColor(info.authStatus)
-  const dotColorClass = healthDotColor(info.health)
+  const livenessDotClass = livenessDotColor(c.liveness)
+  const stateDotClass = stateDotColor(c.state)
+  const healthDotClass = healthDotColor(info.health)
 
   // Left rail severity color for non-ok connectors
   const railColorClass =
@@ -92,11 +97,19 @@ export function ConnectorRosterRow({
         />
       )}
 
-      {/* Health dot */}
-      <span
-        className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColorClass}`}
-        aria-label={`health: ${info.health}`}
-      />
+      {/* Liveness + state indicators — two stacked dots, one per axis */}
+      <div className="flex flex-col items-center gap-[3px]">
+        <span
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${livenessDotClass}`}
+          aria-label={`liveness: ${c.liveness}`}
+          data-testid={`liveness-dot-${c.connector_type}`}
+        />
+        <span
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotClass}`}
+          aria-label={`state: ${c.state}`}
+          data-testid={`state-dot-${c.connector_type}`}
+        />
+      </div>
 
       {/* Channel name + kind */}
       <div className="min-w-0">
@@ -139,7 +152,7 @@ export function ConnectorRosterRow({
       <div>
         <div className="inline-flex items-center gap-1.5">
           <span
-            className={`w-1 h-1 rounded-full ${dotColorClass}`}
+            className={`w-1 h-1 rounded-full ${healthDotClass}`}
             aria-hidden="true"
           />
           <span

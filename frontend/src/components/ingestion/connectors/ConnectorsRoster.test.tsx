@@ -5,6 +5,8 @@
  * AC1: Connectors route is a roster, not a card grid
  * AC2: Auth issues appear consistently in attention strip, row, and detail
  *      (focus here: strip count matches auth-needed connectors; row shows same label)
+ * AC3: Roster rows render DISTINCT liveness and state indicators (two separate dots,
+ *      not collapsed into a single merged health dot)
  * Dormant section toggles open/closed (spec requirement)
  *
  * Uses mocked hooks to avoid QueryClient and network dependencies.
@@ -326,5 +328,78 @@ describe('Dormant section toggle', () => {
 
     const dormantSection = container.querySelector('[data-testid="dormant-section"]')
     expect(dormantSection).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §AC3: Distinct liveness + state badges (two separate dots per row)
+// ---------------------------------------------------------------------------
+
+describe('AC3: distinct liveness and state indicators per row', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders a liveness-dot and a state-dot as separate elements for a healthy online connector', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    const livenessDot = container.querySelector('[data-testid="liveness-dot-gmail"]')
+    const stateDot = container.querySelector('[data-testid="state-dot-gmail"]')
+
+    expect(livenessDot).not.toBeNull()
+    expect(stateDot).not.toBeNull()
+    // They must be distinct elements — not the same node
+    expect(livenessDot).not.toBe(stateDot)
+  })
+
+  it('liveness-dot aria-label reflects real liveness value (online)', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    const livenessDot = container.querySelector('[data-testid="liveness-dot-gmail"]')
+    expect(livenessDot?.getAttribute('aria-label')).toBe('liveness: online')
+  })
+
+  it('state-dot aria-label reflects real DB state value (healthy)', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    const stateDot = container.querySelector('[data-testid="state-dot-gmail"]')
+    expect(stateDot?.getAttribute('aria-label')).toBe('state: healthy')
+  })
+
+  it('stale connector: liveness-dot is amber while state-dot remains green (healthy state)', () => {
+    // STALE_CONNECTOR: liveness=stale, state=healthy
+    // Liveness dot → amber; state dot → green (they diverge)
+    mockHooks([STALE_CONNECTOR])
+    renderRoster(container, root)
+
+    const livenessDot = container.querySelector('[data-testid="liveness-dot-telegram"]')
+    const stateDot = container.querySelector('[data-testid="state-dot-telegram"]')
+
+    expect(livenessDot?.getAttribute('aria-label')).toBe('liveness: stale')
+    expect(stateDot?.getAttribute('aria-label')).toBe('state: healthy')
+
+    // The two dots must have DIFFERENT classes (diverged axes)
+    const livenessClass = livenessDot?.className ?? ''
+    const stateClass = stateDot?.className ?? ''
+    expect(livenessClass).not.toBe(stateClass)
+  })
+
+  it('error connector: both liveness-dot and state-dot reflect offline/error axes', () => {
+    // REAUTH_CONNECTOR: liveness=offline, state=error
+    mockHooks([REAUTH_CONNECTOR])
+    renderRoster(container, root)
+
+    const livenessDot = container.querySelector('[data-testid="liveness-dot-spotify"]')
+    const stateDot = container.querySelector('[data-testid="state-dot-spotify"]')
+
+    expect(livenessDot?.getAttribute('aria-label')).toBe('liveness: offline')
+    expect(stateDot?.getAttribute('aria-label')).toBe('state: error')
   })
 })

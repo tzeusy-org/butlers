@@ -177,6 +177,36 @@ export function healthDotColor(health: DerivedHealth): string {
   }
 }
 
+/**
+ * Maps raw connector liveness to a dot background color class.
+ *
+ * - online  → green
+ * - stale   → amber
+ * - offline → red
+ * - other   → muted
+ */
+export function livenessDotColor(liveness: string): string {
+  if (liveness === 'online') return 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
+  if (liveness === 'stale') return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+  if (liveness === 'offline') return 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
+  return 'bg-muted-foreground/40'
+}
+
+/**
+ * Maps raw connector DB state to a dot background color class.
+ *
+ * - healthy  → green
+ * - degraded → amber
+ * - error    → red
+ * - other    → muted
+ */
+export function stateDotColor(state: string): string {
+  if (state === 'healthy') return 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
+  if (state === 'degraded') return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+  if (state === 'error') return 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
+  return 'bg-muted-foreground/40'
+}
+
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s
 }
