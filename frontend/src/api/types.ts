@@ -2683,8 +2683,8 @@ export interface IngestionWindowRollup {
   /** Total sessions linked to matching events. */
   sessions: number;
   /**
-   * Aggregate cost in USD for the window. Always null until cost-per-event
-   * backend data is available (see follow-up bead).
+   * Aggregate cost in USD for the window. Populated live from the /rollup
+   * endpoint when pricing config is available; null when unavailable.
    */
   cost: number | null;
   /** The active filter window boundaries. */
