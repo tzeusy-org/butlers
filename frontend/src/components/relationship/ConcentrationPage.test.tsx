@@ -63,9 +63,9 @@ import ConcentrationPage from "./ConcentrationPage";
 // ---------------------------------------------------------------------------
 
 const PREDICATE_TABS = [
-  { predicate: "knows", label: "Knows", description: null },
-  { predicate: "family-of", label: "Family Of", description: "Family relationship" },
-  { predicate: "works-with", label: "Works With", description: null },
+  { predicate: "knows", label: "Knows", description: null, entity_count: 42 },
+  { predicate: "family-of", label: "Family Of", description: "Family relationship", entity_count: 7 },
+  { predicate: "works-with", label: "Works With", description: null, entity_count: 0 },
 ];
 
 const KNOWS_RESPONSE: ConcentrationResponse = {
@@ -241,6 +241,21 @@ describe("ConcentrationPage — predicate tab strip", () => {
     expect(familyBtn?.getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("renders per-tab entity_count badge on each predicate tab", () => {
+    renderPage("/entities/concentration");
+    const strip = container.querySelector("[data-testid='predicate-tab-strip']");
+    const countBadges = strip?.querySelectorAll("[data-testid='predicate-tab-count']") ?? [];
+    // One count badge per tab.
+    expect(countBadges.length).toBe(PREDICATE_TABS.length);
+    // Spot-check values from the fixture.
+    const knowsBtn = strip?.querySelector("[data-predicate='knows']");
+    expect(knowsBtn?.querySelector("[data-testid='predicate-tab-count']")?.textContent).toBe("42");
+    const familyBtn = strip?.querySelector("[data-predicate='family-of']");
+    expect(familyBtn?.querySelector("[data-testid='predicate-tab-count']")?.textContent).toBe("7");
+    const worksBtn = strip?.querySelector("[data-predicate='works-with']");
+    expect(worksBtn?.querySelector("[data-testid='predicate-tab-count']")?.textContent).toBe("0");
+  });
+
   it("clicking a tab updates ?predicate= in the URL (hook called with new predicate)", async () => {
     // First render with 'knows'
     vi.mocked(useEntityConcentration).mockReturnValue({
@@ -411,7 +426,20 @@ describe("ConcentrationPage — rollup header", () => {
 
     renderPage("/entities/concentration");
     const rollup = container.querySelector("[data-testid='rollup-header']");
-    expect(rollup?.textContent).not.toContain("Top-3 share");
+    expect(rollup?.querySelector("[data-testid='top3-share-kpi']")).toBeNull();
+  });
+
+  it("renders top-3 share as a 22px tabular-nums headline (not inline muted text)", () => {
+    renderPage("/entities/concentration");
+    const kpi = container.querySelector("[data-testid='top3-share-kpi']");
+    expect(kpi).toBeTruthy();
+    // The value element should carry the 22px and tabular-nums classes.
+    const valueEl = kpi?.querySelector("span:last-child") as HTMLElement | null;
+    expect(valueEl?.className).toContain("text-[22px]");
+    expect(valueEl?.className).toContain("tabular-nums");
+    // Eyebrow label should be present.
+    const eyebrow = kpi?.querySelector("span:first-child") as HTMLElement | null;
+    expect(eyebrow?.textContent?.toLowerCase()).toContain("top-3");
   });
 });
 

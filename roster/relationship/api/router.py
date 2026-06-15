@@ -3922,11 +3922,16 @@ async def get_entities_concentration(
     tab_rows = await pool.fetch(
         """
         SELECT
-            predicate,
-            initcap(replace(predicate, '-', ' ')) AS label,
-            description
-        FROM relationship.entity_predicate_registry
-        WHERE kind = 'relational'
+            reg.predicate,
+            initcap(replace(reg.predicate, '-', ' ')) AS label,
+            reg.description,
+            COUNT(DISTINCT f.subject)::int AS entity_count
+        FROM relationship.entity_predicate_registry reg
+        LEFT JOIN relationship.entity_facts f
+            ON f.predicate = reg.predicate
+            AND f.validity = 'active'
+        WHERE reg.kind = 'relational'
+        GROUP BY reg.predicate, reg.description
         ORDER BY label ASC
         """
     )
@@ -3935,6 +3940,7 @@ async def get_entities_concentration(
             predicate=r["predicate"],
             label=r["label"],
             description=r["description"],
+            entity_count=r["entity_count"],
         )
         for r in tab_rows
     ]

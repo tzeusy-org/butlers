@@ -53,9 +53,15 @@ def _make_tab_row(
     predicate: str = "knows",
     label: str = "Knows",
     description: str | None = None,
+    entity_count: int = 0,
 ) -> MagicMock:
     """Build a MagicMock simulating an asyncpg Record for predicate_registry rows."""
-    data = {"predicate": predicate, "label": label, "description": description}
+    data = {
+        "predicate": predicate,
+        "label": label,
+        "description": description,
+        "entity_count": entity_count,
+    }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
     return row

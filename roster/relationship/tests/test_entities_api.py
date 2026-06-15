@@ -1177,8 +1177,15 @@ class TestQueueDismiss:
 class TestEntityConcentration:
     """GET /entities/concentration — §9.11."""
 
-    def _make_tab_row(self, predicate: str = "knows", label: str = "Knows") -> MagicMock:
-        data = {"predicate": predicate, "label": label, "description": None}
+    def _make_tab_row(
+        self, predicate: str = "knows", label: str = "Knows", entity_count: int = 0
+    ) -> MagicMock:
+        data = {
+            "predicate": predicate,
+            "label": label,
+            "description": None,
+            "entity_count": entity_count,
+        }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
         return row
@@ -1231,6 +1238,23 @@ class TestEntityConcentration:
         assert "items" in body
         assert "rollup" in body
         assert "predicate_tabs" in body
+
+    async def test_predicate_tabs_include_entity_count(self):
+        """GET /entities/concentration predicate_tabs include entity_count per tab."""
+        tab_rows = [
+            self._make_tab_row("knows", "Knows", entity_count=3),
+            self._make_tab_row("family-of", "Family Of", entity_count=1),
+        ]
+        agg_rows = [self._make_agg_row(weight_sum=5, fact_count=2)]
+        app, _ = self._make_app(tab_rows=tab_rows, agg_rows=agg_rows)
+        resp = await _get(app, _CONCENTRATION_PATH)
+        assert resp.status_code == 200
+        tabs = resp.json()["predicate_tabs"]
+        assert len(tabs) == 2
+        knows_tab = next(t for t in tabs if t["predicate"] == "knows")
+        assert knows_tab["entity_count"] == 3
+        family_tab = next(t for t in tabs if t["predicate"] == "family-of")
+        assert family_tab["entity_count"] == 1
 
     async def test_owner_gate_returns_403(self):
         """GET /entities/concentration returns 403 without owner entity."""

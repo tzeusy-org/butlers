@@ -1032,11 +1032,15 @@ class PredicateTab(BaseModel):
     ``predicate`` is the stable identifier (e.g. ``'knows'``).
     ``label`` is the human-readable display label (e.g. ``'Knows'``).
     ``description`` is an optional long-form description from the registry.
+    ``entity_count`` is the number of distinct subject entities with at least
+    one active fact for this predicate.  Drives the per-tab population badge
+    in the concentration UI.
     """
 
     predicate: str
     label: str
     description: str | None = None
+    entity_count: int = 0
 
 
 class ConcentrationEntry(BaseModel):
