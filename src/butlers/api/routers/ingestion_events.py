@@ -86,6 +86,14 @@ def _get_db_manager() -> DatabaseManager:
     raise RuntimeError("DatabaseManager not initialized")
 
 
+def _get_pricing_optional() -> PricingConfig | None:
+    """Return the PricingConfig singleton, or None when not yet initialized."""
+    try:
+        return get_pricing()
+    except RuntimeError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/events
 # ---------------------------------------------------------------------------
@@ -337,14 +345,20 @@ async def get_ingestion_event(
 async def get_ingestion_event_sessions(
     request_id: str,
     db: DatabaseManager = Depends(_get_db_manager),
+    pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> ApiResponse[list[IngestionEventSession]]:
     """Return cross-butler sessions linked to this ingestion event.
 
     Fans out to all registered butler databases concurrently and collects
     sessions whose ``request_id`` matches.  Results are sorted by
     ``started_at`` ascending so the lineage reads chronologically.
+
+    Each session includes a ``cost_usd`` field: the estimated USD cost derived
+    from token counts and the pricing catalog when available, with a fallback to
+    the legacy ``cost`` JSONB column.  ``cost_usd`` is ``None`` when neither
+    source yields a value.
     """
-    sessions_data = await ingestion_event_sessions(db, request_id)
+    sessions_data = await ingestion_event_sessions(db, request_id, pricing=pricing)
     sessions = [IngestionEventSession(**s) for s in sessions_data]
     return ApiResponse[list[IngestionEventSession]](data=sessions)
 
@@ -1082,14 +1096,6 @@ def _get_rollup_db_manager() -> DatabaseManager:
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/rollup
 # ---------------------------------------------------------------------------
-
-
-def _get_pricing_optional() -> PricingConfig | None:
-    """Return the PricingConfig singleton, or None when not yet initialized."""
-    try:
-        return get_pricing()
-    except RuntimeError:
-        return None
 
 
 @rollup_router.get("", response_model=IngestionWindowRollup)

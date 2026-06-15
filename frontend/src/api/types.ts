@@ -2599,7 +2599,8 @@ export interface IngestionEventSession {
   success: boolean | null;
   input_tokens: number | null;
   output_tokens: number | null;
-  cost: Record<string, unknown> | null;
+  /** Estimated USD cost for this session. Null when pricing data is unavailable. */
+  cost_usd: number | null;
   trace_id: string | null;
   model: string | null;
 }

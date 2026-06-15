@@ -132,7 +132,7 @@ function makeSessions(n = 1): IngestionEventSession[] {
     success: true,
     input_tokens: 100,
     output_tokens: 50,
-    cost: null,
+    cost_usd: null,
     trace_id: null,
     model: "claude-sonnet",
   }));
@@ -738,7 +738,7 @@ describe("EventDrawer — flamegraph in-progress span clamping (bu-rncqs)", () =
       success: true,
       input_tokens: 100,
       output_tokens: 50,
-      cost: null,
+      cost_usd: null,
       trace_id: null,
       model: "claude-sonnet",
     };
@@ -751,7 +751,7 @@ describe("EventDrawer — flamegraph in-progress span clamping (bu-rncqs)", () =
       success: null,
       input_tokens: null,
       output_tokens: null,
-      cost: null,
+      cost_usd: null,
       trace_id: null,
       model: "claude-sonnet",
     };

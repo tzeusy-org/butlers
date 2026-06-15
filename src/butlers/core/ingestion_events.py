@@ -614,23 +614,74 @@ async def ingestion_event_replay_request(
     return {"outcome": "not_found"}
 
 
+def _compute_session_cost_usd(
+    session: dict[str, Any],
+    pricing: PricingConfig | None = None,
+) -> float | None:
+    """Compute the numeric USD cost for a single session dict.
+
+    Prefers pricing-based estimation from token counts and model when
+    ``pricing`` is supplied.  Falls back to the legacy ``cost`` JSONB column
+    (``cost["total_usd"]``).  Returns ``None`` when neither source yields a
+    value (pricing absent and no stored cost).
+
+    Args:
+        session: Session dict as returned by :func:`ingestion_event_sessions`
+            (includes ``model``, ``input_tokens``, ``output_tokens``, ``cost``).
+        pricing: Optional pricing config.  When provided, cost is estimated
+            from token counts and model via :func:`estimate_session_cost`.
+
+    Returns:
+        Numeric USD cost, or ``None`` when unavailable.
+    """
+    in_tok = session.get("input_tokens") or 0
+    out_tok = session.get("output_tokens") or 0
+
+    if pricing is not None:
+        model = session.get("model") or ""
+        if model and (in_tok or out_tok):
+            return estimate_session_cost(pricing, model, in_tok, out_tok)
+        # Pricing is available but we have no model/tokens — fall through to
+        # JSONB fallback rather than returning 0.0, which would mask a real
+        # stored value.
+
+    # Legacy fallback: read from the cost JSONB column
+    cost = session.get("cost")
+    if isinstance(cost, dict):
+        usd = cost.get("total_usd")
+        if usd is not None:
+            try:
+                return float(usd)
+            except (TypeError, ValueError):
+                pass
+
+    return None
+
+
 async def ingestion_event_sessions(
     db: DatabaseManager,
     request_id: str,
+    pricing: PricingConfig | None = None,
 ) -> list[dict[str, Any]]:
     """Fan-out across all butler schemas and return sessions matching request_id.
 
     Queries every registered butler pool concurrently (via
     :meth:`DatabaseManager.fan_out`) for sessions whose ``request_id`` equals
-    the given value.  Rows from each butler are augmented with ``butler_name``.
+    the given value.  Rows from each butler are augmented with ``butler_name``
+    and a computed ``cost_usd`` field (numeric USD cost, or ``None``).
 
     Args:
         db: DatabaseManager with all butler pools registered.
         request_id: The request_id (UUIDv7 string) to look up.
+        pricing: Optional pricing config.  When provided, ``cost_usd`` is
+            estimated from token counts and model.  Falls back to the legacy
+            ``cost`` JSONB column when pricing is absent or token data is
+            unavailable.
 
     Returns:
         List of session dicts sorted by ``started_at`` ascending.  Each dict
-        contains the fields listed in ``_SESSION_COLUMNS`` plus ``butler_name``.
+        contains the fields listed in ``_SESSION_COLUMNS`` plus ``butler_name``
+        and ``cost_usd``.
     """
     sql = f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE request_id = $1"
     fan_results: dict[str, list[asyncpg.Record]] = await db.fan_out(sql, (request_id,))
@@ -638,7 +689,9 @@ async def ingestion_event_sessions(
     sessions: list[dict[str, Any]] = []
     for butler_name, rows in fan_results.items():
         for row in rows:
-            sessions.append(_decode_session_row(row, butler_name))
+            session = _decode_session_row(row, butler_name)
+            session["cost_usd"] = _compute_session_cost_usd(session, pricing)
+            sessions.append(session)
 
     # Sort by started_at ascending so the timeline is chronological
     sessions.sort(key=lambda s: s.get("started_at") or "")

@@ -294,7 +294,7 @@ function DrawerSessionsTab({
             <div className="text-foreground">session total</div>
             <div className="text-right tabular-nums">{fmtNum(s.input_tokens)}</div>
             <div className="text-right tabular-nums">{fmtNum(s.output_tokens)}</div>
-            <div className="text-right tabular-nums">{formatCost(typeof s.cost === 'number' ? s.cost : null)}</div>
+            <div className="text-right tabular-nums">{formatCost(s.cost_usd)}</div>
             <div className="text-right tabular-nums">{formatDuration(s.started_at, s.completed_at)}</div>
           </div>
         </div>

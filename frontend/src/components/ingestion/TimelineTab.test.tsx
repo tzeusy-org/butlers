@@ -735,7 +735,7 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
       success: true,
       input_tokens: 100,
       output_tokens: 50,
-      cost: null,
+      cost_usd: null,
       trace_id: null,
       model: "claude-sonnet",
     }));
