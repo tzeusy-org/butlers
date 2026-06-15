@@ -71,6 +71,8 @@ function serialisePath(ids: string[]): string {
 
 interface ColumnPanelProps {
   entityId: string;
+  /** Human-readable name for the anchor entity, resolved from a parent column's neighbour data. */
+  canonicalName?: string;
   columnIndex: number;
   /** True when this column is the rightmost (currently active) one. */
   isActive: boolean;
@@ -81,12 +83,13 @@ interface ColumnPanelProps {
    * the page can drive the cursor against the live, flattened entry list.
    */
   cursoredEntityId?: string | null;
-  /** Reports the active column's flattened, cursor-orderable neighbour list. */
-  onEntriesChange?: (entries: NeighbourEntry[]) => void;
+  /** Reports this column's flattened neighbour list so the page can track canonical names and cursor entries. */
+  onEntriesChange?: (entityId: string, entries: NeighbourEntry[]) => void;
 }
 
 function ColumnPanel({
   entityId,
+  canonicalName,
   columnIndex,
   isActive,
   onSelect,
@@ -103,14 +106,15 @@ function ColumnPanel({
   const remainders = data?.remainders ?? {};
   const predicates = useMemo(() => Object.keys(neighbours).sort(), [neighbours]);
 
-  // Surface the active column's flattened entries so the page can cursor them.
+  // Surface this column's flattened entries so the page can:
+  //   (a) cursor the active column, and (b) build the canonical-name map.
   const flatEntries = useMemo<NeighbourEntry[]>(
     () => predicates.flatMap((p) => neighbours[p]),
     [predicates, neighbours],
   );
   useEffect(() => {
-    if (isActive) onEntriesChange?.(flatEntries);
-  }, [isActive, flatEntries, onEntriesChange]);
+    onEntriesChange?.(entityId, flatEntries);
+  }, [entityId, flatEntries, onEntriesChange]);
 
   return (
     <div
@@ -122,10 +126,10 @@ function ColumnPanel({
       data-testid={`column-panel-${columnIndex}`}
       aria-label={`Column ${columnIndex}: ${entityId}`}
     >
-      {/* Column header — entity ID */}
+      {/* Column header — canonical name with entity ID as tooltip fallback */}
       <div className="px-3 py-2 border-b border-border bg-muted/40 shrink-0">
         <p className="text-xs font-mono text-muted-foreground truncate" title={entityId}>
-          {entityId}
+          {canonicalName ?? entityId}
         </p>
       </div>
 
@@ -207,7 +211,11 @@ export default function ColumnsPage() {
   // The cascade is the full list of entity IDs to render as columns.
   // When no ?path= is given and owner is known, we show [anchorId].
   // When ?path= is given, we show pathIds directly.
-  const columnIds: string[] = pathIds.length > 0 ? pathIds : anchorId ? [anchorId] : [];
+  const columnIds = useMemo<string[]>(
+    () => (pathIds.length > 0 ? pathIds : anchorId ? [anchorId] : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pathIds.join(","), anchorId],
+  );
 
   // ---- Active-column cursor (view-local keyboard navigation) -------------
   // The cursor tracks a row in the rightmost (active) column. ColumnPanel
@@ -217,18 +225,51 @@ export default function ColumnsPage() {
   const [activeEntries, setActiveEntries] = useState<NeighbourEntry[]>([]);
   const cascadeRef = useRef<HTMLDivElement>(null);
 
-  const handleEntriesChange = useCallback((entries: NeighbourEntry[]) => {
-    setActiveEntries((prev) => {
-      // Avoid an update loop: only commit when the id list actually changed.
-      if (
-        prev.length === entries.length &&
-        prev.every((e, i) => e.entity_id === entries[i].entity_id)
-      ) {
-        return prev;
+  // ---- Canonical-name registry -----------------------------------------
+  // Every column reports its flat entries here so we can look up canonical
+  // names for column headers (each column's anchor entity appears as a
+  // NeighbourEntry in the previous column's data).
+  const [canonicalNames, setCanonicalNames] = useState<Record<string, string>>({});
+
+  const handleEntriesChange = useCallback(
+    (anchorEntityId: string, entries: NeighbourEntry[]) => {
+      // Update the active column's cursor entries.
+      const activeColumnId = columnIds[columnIds.length - 1];
+      if (anchorEntityId === activeColumnId) {
+        setActiveEntries((prev) => {
+          // Avoid an update loop: only commit when the id list actually changed.
+          if (
+            prev.length === entries.length &&
+            prev.every((e, i) => e.entity_id === entries[i].entity_id)
+          ) {
+            return prev;
+          }
+          return entries;
+        });
       }
-      return entries;
-    });
-  }, []);
+      // Build the canonical-name map from every column's neighbour list.
+      if (entries.length === 0) return;
+      setCanonicalNames((prev) => {
+        const patch: Record<string, string> = {};
+        for (const e of entries) {
+          if (e.canonical_name && !prev[e.entity_id]) {
+            patch[e.entity_id] = e.canonical_name;
+          }
+        }
+        return Object.keys(patch).length === 0 ? prev : { ...prev, ...patch };
+      });
+    },
+    [columnIds],
+  );
+
+  // ---- Auto-scroll: reveal the newly-opened column ---------------------
+  // When the column count grows, scroll the cascade container so the last
+  // (active) column is visible. cascadeRef points at the overflow-x-auto div.
+  useEffect(() => {
+    if (cascadeRef.current) {
+      cascadeRef.current.scrollLeft = cascadeRef.current.scrollWidth;
+    }
+  }, [columnIds.length]);
 
   // Clamp the cursor to the live entry list at read-time (deriving it during
   // render avoids a setState-in-effect cascade).
@@ -402,11 +443,12 @@ export default function ColumnsPage() {
             <ColumnPanel
               key={`${entityId}-${index}`}
               entityId={entityId}
+              canonicalName={canonicalNames[entityId]}
               columnIndex={index}
               isActive={index === columnIds.length - 1}
               onSelect={handleSelect}
               cursoredEntityId={index === columnIds.length - 1 ? cursoredId : null}
-              onEntriesChange={index === columnIds.length - 1 ? handleEntriesChange : undefined}
+              onEntriesChange={handleEntriesChange}
             />
           ))}
         </div>

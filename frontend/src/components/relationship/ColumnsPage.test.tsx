@@ -580,3 +580,93 @@ describe("ColumnsPage — reset path button", () => {
     expect(clearBtn).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Canonical-name header (fix: header shows name, not raw UUID)
+// ---------------------------------------------------------------------------
+
+describe("ColumnsPage — canonical name in column header", () => {
+  it("column 1 header shows canonical_name of the selected neighbour, not raw UUID", () => {
+    // Two-column path: owner (col 0) → Bob (col 1).
+    // KNOWS_NEIGHBOURS contains Bob with canonical_name "Bob Friend".
+    // The owner column (col 0) will report Bob as a neighbour → registry picks
+    // up "Bob Friend" → col 1 header should show "Bob Friend".
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage(`/entities/columns?path=${OWNER_ENTITY_ID},${BOB_ENTITY_ID}`);
+
+    // The column-panel-1 header should contain "Bob Friend", not the raw UUID.
+    const col1 = container.querySelector("[data-testid='column-panel-1']");
+    expect(col1).toBeTruthy();
+    const header = col1?.querySelector("p.truncate");
+    expect(header?.textContent).toBe("Bob Friend");
+    // The raw UUID should NOT be displayed as visible text in the header.
+    expect(header?.textContent).not.toBe(BOB_ENTITY_ID);
+  });
+
+  it("column 0 header falls back to entity ID when no canonical name is known", () => {
+    // Column 0 is the anchor — no prior column reports its canonical name.
+    // The header should fall back to the raw entity ID.
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    renderPage(`/entities/columns?path=${OWNER_ENTITY_ID}`);
+
+    const col0 = container.querySelector("[data-testid='column-panel-0']");
+    const header = col0?.querySelector("p.truncate");
+    // Should show the entity ID (no canonical name available for column 0's anchor).
+    expect(header?.textContent).toBe(OWNER_ENTITY_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auto-scroll on deepen (fix: cascadeRef.scrollLeft updated when columns grow)
+// ---------------------------------------------------------------------------
+
+describe("ColumnsPage — auto-scroll on column deepen", () => {
+  it("sets cascadeRef.scrollLeft to scrollWidth when a new column is added", async () => {
+    vi.mocked(useEntityNeighbours).mockReturnValue({
+      data: KNOWS_NEIGHBOURS,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityNeighbours>);
+
+    // Start with a single column.
+    renderPage(`/entities/columns?path=${OWNER_ENTITY_ID}`);
+
+    const cascade = container.querySelector(
+      "[data-testid='columns-cascade']",
+    ) as HTMLElement | null;
+    expect(cascade).toBeTruthy();
+
+    // Simulate a non-zero scrollWidth so we can detect the assignment.
+    Object.defineProperty(cascade, "scrollWidth", { value: 512, writable: true });
+    cascade!.scrollLeft = 0;
+
+    // Click Bob to append a second column.
+    const bobBtn = container.querySelector(
+      `[data-entity-id='${BOB_ENTITY_ID}']`,
+    ) as HTMLButtonElement | null;
+    expect(bobBtn).toBeTruthy();
+
+    await act(async () => {
+      bobBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // After deepen, the auto-scroll effect should have set scrollLeft = scrollWidth.
+    expect(cascade!.scrollLeft).toBe(512);
+  });
+});
