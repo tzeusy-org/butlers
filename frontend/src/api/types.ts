@@ -4760,6 +4760,13 @@ export interface PromoteRelationshipEntityRequest {
   }>;
 }
 
+/** Request body for POST /api/butlers/relationship/entities (create path — entity_id omitted). */
+export interface CreateRelationshipEntityRequest {
+  canonical_name: string;
+  entity_type: string;
+  roles?: string[] | null;
+}
+
 /** Request body for POST /api/butlers/relationship/entities/{id}/merge. */
 export interface MergeRelationshipEntitiesRequest {
   entityA: string;
