@@ -846,11 +846,12 @@ test.describe("entity-v3: Cmd-K finder", () => {
     await expect(input).toBeVisible({ timeout: TIMEOUT_MS });
 
     await input.fill("ali");
-    // The active result drives the preview pane (gloss + top relations).
+    // The active result drives the preview pane (name/mark/type + top relations).
+    // The misleading neutral-default gloss was intentionally removed (#2385) —
+    // the authoritative gloss lives on the entity detail page, not the finder.
     await expect(page.getByTestId("entity-finder-preview")).toBeVisible({
       timeout: TIMEOUT_MS,
     });
-    await expect(page.getByTestId("entity-finder-preview-gloss")).toBeVisible();
     await expect(
       page.getByTestId("entity-finder-preview-relation").first(),
     ).toBeVisible({ timeout: TIMEOUT_MS });
