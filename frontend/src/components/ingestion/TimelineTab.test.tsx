@@ -1465,3 +1465,154 @@ describe("TimelineTab — BulkActionBar", () => {
     expect(toast.error).toHaveBeenCalledWith("1 event failed to queue");
   });
 });
+
+// ---------------------------------------------------------------------------
+// TimelineTab — ineligible-status row selection guard (bu-7r2ev)
+//
+// Rows whose status makes them ineligible for bulk retry must:
+//   1. render a disabled checkbox (data-testid="row-checkbox-disabled")
+//   2. expose the ineligibility reason via aria-label or title
+//   3. NOT be selectable — clicking their checkbox must not add them to the
+//      selection, and the BulkActionBar must not appear after the click
+//
+// Ineligible statuses (mirrors backend ingestion_event_replay_request):
+//   - replay_pending: already queued — backend returns "conflict"
+//   - skipped:        skip-triaged — backend returns "conflict"
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — ineligible-status rows are non-selectable", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderEvent(event: IngestionEventSummary) {
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([event]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab
+              isActive={true}
+              defaultStatuses={[
+                "ingested", "filtered", "error",
+                "replay_pending", "replay_complete", "replay_failed", "skipped",
+              ]}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("replay_pending row has a disabled checkbox (data-testid=row-checkbox-disabled)", () => {
+    renderEvent(makeEvent({ status: "replay_pending" }));
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']");
+    expect(disabledCb).not.toBeNull();
+    // Should NOT have an enabled checkbox
+    const enabledCb = container.querySelector("[data-testid='row-checkbox']");
+    expect(enabledCb).toBeNull();
+  });
+
+  it("skipped row has a disabled checkbox (data-testid=row-checkbox-disabled)", () => {
+    renderEvent(makeEvent({ status: "skipped" }));
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']");
+    expect(disabledCb).not.toBeNull();
+  });
+
+  it("replay_pending row disabled checkbox has aria-disabled=true", () => {
+    renderEvent(makeEvent({ status: "replay_pending" }));
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']");
+    expect(disabledCb!.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("skipped row disabled checkbox has aria-disabled=true", () => {
+    renderEvent(makeEvent({ status: "skipped" }));
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']");
+    expect(disabledCb!.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("replay_pending row checkbox surfaces ineligibility reason in aria-label", () => {
+    renderEvent(makeEvent({ status: "replay_pending" }));
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']");
+    const label = disabledCb!.getAttribute("aria-label") ?? "";
+    expect(label.length).toBeGreaterThan(0);
+    // Should explain the reason (not a generic empty string)
+    expect(label).not.toBe("Select event");
+  });
+
+  it("skipped row checkbox surfaces ineligibility reason in aria-label", () => {
+    renderEvent(makeEvent({ status: "skipped" }));
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']");
+    const label = disabledCb!.getAttribute("aria-label") ?? "";
+    expect(label.length).toBeGreaterThan(0);
+    expect(label).not.toBe("Select event");
+  });
+
+  it("clicking a replay_pending row checkbox does NOT add it to selection (bar stays hidden)", () => {
+    renderEvent(makeEvent({ id: "replay-pending-evt", status: "replay_pending" }));
+
+    // Before click: bar hidden
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).toBeNull();
+
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']") as HTMLElement;
+    act(() => { disabledCb.click(); });
+
+    // After click: bar still hidden — event was not added to selection
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).toBeNull();
+  });
+
+  it("clicking a skipped row checkbox does NOT add it to selection (bar stays hidden)", () => {
+    renderEvent(makeEvent({ id: "skipped-evt", status: "skipped" }));
+
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).toBeNull();
+
+    const disabledCb = container.querySelector("[data-testid='row-checkbox-disabled']") as HTMLElement;
+    act(() => { disabledCb.click(); });
+
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).toBeNull();
+  });
+
+  it("eligible rows still have enabled checkboxes when mixed with ineligible ones", () => {
+    const eligibleEvent = makeEvent({ id: "eligible-evt", status: "error" });
+    const ineligibleEvent = makeEvent({ id: "ineligible-evt", status: "replay_pending" });
+
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([eligibleEvent, ineligibleEvent]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab
+              isActive={true}
+              defaultStatuses={["error", "replay_pending"]}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const enabledCbs = container.querySelectorAll("[data-testid='row-checkbox']");
+    const disabledCbs = container.querySelectorAll("[data-testid='row-checkbox-disabled']");
+    expect(enabledCbs.length).toBe(1);
+    expect(disabledCbs.length).toBe(1);
+  });
+});
