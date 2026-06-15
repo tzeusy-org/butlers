@@ -148,8 +148,8 @@ class IngestionEventPayload(BaseModel):
     Returned by ``GET /api/ingestion/events/{id}/payload``.
 
     Access is audit-gated: the backend records an audit entry on every read.
-    The endpoint returns HTTP 403 when the event exists but the caller lacks
-    payload-access grant, and HTTP 404 when no event with that id exists.
+    The endpoint returns HTTP 404 when no event with that id exists, and
+    HTTP 503 when a required database pool (shared or switchboard) is unavailable.
     """
 
     content: str

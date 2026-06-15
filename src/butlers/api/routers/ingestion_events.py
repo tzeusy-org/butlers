@@ -1023,7 +1023,8 @@ async def get_ingestion_event_payload(
     Returns:
         200 — ``{content, bytes, truncated, channel}``
         404 — event not found (not in public.ingestion_events or filtered_events)
-        503 — shared database pool unavailable
+        422 — invalid event_id format
+        503 — shared or switchboard database pool unavailable
     """
     request_path = f"/api/ingestion/events/{event_id}/payload"
 
