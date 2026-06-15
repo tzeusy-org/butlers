@@ -1,10 +1,10 @@
 /**
  * BatchSettingsCard — editable flush_interval_s for batch connectors.
  *
- * Rendered only for telegram_user_client and whatsapp_user_client connector
- * types. Changes are submitted via PATCH /connectors/:type/:identity/settings
- * and take effect on the connector's next flush scanner cycle (no restart
- * required).
+ * Rendered on ConnectorDetailPage for connector types in BATCH_CONNECTOR_TYPES
+ * (telegram_user_client, whatsapp_user_client). Changes are submitted via
+ * PATCH /connectors/:type/:identity/settings and take effect on the
+ * connector's next flush scanner cycle (no restart required).
  */
 
 import { useState } from "react";

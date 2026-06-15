@@ -773,3 +773,86 @@ async def test_update_connector_cursor_validates_empty_string(app):
             "/api/switchboard/connectors/telegram_bot/bot-123/cursor", json={"cursor": ""}
         )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# PATCH /connectors/{type}/{identity}/settings — flush_interval_s validation
+# ---------------------------------------------------------------------------
+
+
+async def test_update_connector_settings_valid_flush_interval(app):
+    """flush_interval_s within [60, 7200] is accepted (200 when row found)."""
+    _app_with_mock(app, fetchrow_result=_make_row(_SAMPLE_CONNECTOR))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
+            json={"settings": {"flush_interval_s": 300}},
+        )
+    assert resp.status_code == 200
+
+
+async def test_update_connector_settings_flush_interval_too_low(app):
+    """flush_interval_s < 60 must be rejected with 422."""
+    _app_with_mock(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
+            json={"settings": {"flush_interval_s": 30}},
+        )
+    assert resp.status_code == 422
+
+
+async def test_update_connector_settings_flush_interval_too_high(app):
+    """flush_interval_s > 7200 must be rejected with 422."""
+    _app_with_mock(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
+            json={"settings": {"flush_interval_s": 9999}},
+        )
+    assert resp.status_code == 422
+
+
+async def test_update_connector_settings_flush_interval_at_boundary_min(app):
+    """flush_interval_s == 60 (boundary minimum) is accepted."""
+    _app_with_mock(app, fetchrow_result=_make_row(_SAMPLE_CONNECTOR))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
+            json={"settings": {"flush_interval_s": 60}},
+        )
+    assert resp.status_code == 200
+
+
+async def test_update_connector_settings_flush_interval_at_boundary_max(app):
+    """flush_interval_s == 7200 (boundary maximum) is accepted."""
+    _app_with_mock(app, fetchrow_result=_make_row(_SAMPLE_CONNECTOR))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
+            json={"settings": {"flush_interval_s": 7200}},
+        )
+    assert resp.status_code == 200
+
+
+async def test_update_connector_settings_non_flush_keys_not_validated(app):
+    """Arbitrary keys not named flush_interval_s pass through without range check."""
+    _app_with_mock(app, fetchrow_result=_make_row(_SAMPLE_CONNECTOR))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch(
+            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
+            json={"settings": {"some_other_key": 99999}},
+        )
+    assert resp.status_code == 200

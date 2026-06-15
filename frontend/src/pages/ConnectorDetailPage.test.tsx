@@ -8,6 +8,8 @@
  * - Error and not-found states render explicit messages
  * - Loading state renders skeleton (no H1)
  * - Reauth callout renders when auth is broken
+ * - BatchSettingsCard mounts for batch-capable connectors (telegram_user_client,
+ *   whatsapp_user_client) and is absent for others (e.g. gmail)
  *
  * Component-level tests for ConnectorDetailView (KPI strip, scope list, etc.)
  * live in ConnectorDetailView.test.tsx.
@@ -15,7 +17,7 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ConnectorDetailPage from "@/pages/ConnectorDetailPage";
@@ -24,6 +26,8 @@ import {
   useConnectorStats,
 } from "@/hooks/use-ingestion";
 import type { ConnectorDetail } from "@/api/types";
+
+const mockMutate = vi.fn();
 
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
@@ -44,6 +48,16 @@ vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorEvents: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
   useConnectorIncidents: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
   useConnectorRoutingRules: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useUpdateConnectorSettings: vi.fn(() => ({
+    mutate: mockMutate,
+    isPending: false,
+    isError: false,
+    isSuccess: false,
+    isIdle: true,
+    error: null,
+    data: undefined,
+    status: "idle",
+  })),
 }));
 
 type UseConnectorDetailResult = ReturnType<typeof useConnectorDetail>;
@@ -328,5 +342,59 @@ describe("ConnectorDetailPage — error state", () => {
     const html = renderPage();
     expect(html).toContain("detail-not-found");
     expect(html).toContain("Connector not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BatchSettingsCard gate
+// ---------------------------------------------------------------------------
+
+describe("ConnectorDetailPage — BatchSettingsCard mount gate", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setStatsState();
+  });
+
+  it("renders batch-settings-section for telegram_user_client", () => {
+    vi.mocked(useParams).mockReturnValue({
+      connectorType: "telegram_user_client",
+      endpointIdentity: "test-user",
+    });
+    setConnectorState({ ...BASE_CONNECTOR, connector_type: "telegram_user_client" });
+    const html = renderPage();
+    expect(html).toContain("batch-settings-section");
+    expect(html).toContain("Batch Settings");
+  });
+
+  it("renders batch-settings-section for whatsapp_user_client", () => {
+    vi.mocked(useParams).mockReturnValue({
+      connectorType: "whatsapp_user_client",
+      endpointIdentity: "test-user",
+    });
+    setConnectorState({ ...BASE_CONNECTOR, connector_type: "whatsapp_user_client" });
+    const html = renderPage();
+    expect(html).toContain("batch-settings-section");
+    expect(html).toContain("Batch Settings");
+  });
+
+  it("does NOT render batch-settings-section for gmail", () => {
+    vi.mocked(useParams).mockReturnValue({
+      connectorType: "gmail",
+      endpointIdentity: "user@example.com",
+    });
+    setConnectorState({ ...BASE_CONNECTOR, connector_type: "gmail" });
+    const html = renderPage();
+    expect(html).not.toContain("batch-settings-section");
+    expect(html).not.toContain("Batch Settings");
+  });
+
+  it("does NOT render batch-settings-section for google_drive", () => {
+    vi.mocked(useParams).mockReturnValue({
+      connectorType: "google_drive",
+      endpointIdentity: "user@example.com",
+    });
+    setConnectorState({ ...BASE_CONNECTOR, connector_type: "google_drive" });
+    const html = renderPage();
+    expect(html).not.toContain("batch-settings-section");
   });
 });

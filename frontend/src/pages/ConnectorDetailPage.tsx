@@ -33,12 +33,15 @@ import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchSurface } from '@/components/ingestion/dispatch'
 import { ConnectorDetailView } from '@/components/ingestion/connectors/ConnectorDetailView'
 import type { OAuthScope } from '@/components/ingestion/connectors/ScopeList'
+import { BatchSettingsCard } from '@/components/ingestion/BatchSettingsCard'
+import { BATCH_CONNECTOR_TYPES } from '@/components/ingestion/BatchSettingsCard.constants'
 import {
   useConnectorDetail,
   useConnectorEvents,
   useConnectorIncidents,
   useConnectorRoutingRules,
   useConnectorStats,
+  useUpdateConnectorSettings,
 } from '@/hooks/use-ingestion'
 import type { ConnectorScopeEntry } from '@/api/types'
 import { getProviderOAuthStartUrl } from '@/api/client'
@@ -136,6 +139,14 @@ export default function ConnectorDetailPage() {
     }
   }, [oauthError, setSearchParams])
 
+  // Mutation for batch settings (flush_interval_s).  Only called when the
+  // connector type is in BATCH_CONNECTOR_TYPES, but the hook is always
+  // initialised here to keep hook call order unconditional.
+  const settingsMutation = useUpdateConnectorSettings(
+    connectorType ?? '',
+    endpointIdentity ?? '',
+  )
+
   // Build the onReauth handler: initiates OAuth reauth for this connector's
   // provider (derived from connector_type) and carries connector_detail_path
   // so the callback deep-links back to this specific detail page.
@@ -176,16 +187,26 @@ export default function ConnectorDetailPage() {
         ) : detailError ? (
           <ErrorState connectorType={connectorType} error={detailError} />
         ) : connector ? (
-          <ConnectorDetailView
-            connector={connector}
-            stats={stats}
-            oauthScopes={_toOAuthScopes(connector.scopes)}
-            recentEvents={eventsResp ?? null}
-            incidents={incidentsResp ?? null}
-            routingRules={routingRulesResp ?? null}
-            onReauth={handleReauth}
-            onSetPrimaryAccount={handleSetPrimaryAccount}
-          />
+          <>
+            <ConnectorDetailView
+              connector={connector}
+              stats={stats}
+              oauthScopes={_toOAuthScopes(connector.scopes)}
+              recentEvents={eventsResp ?? null}
+              incidents={incidentsResp ?? null}
+              routingRules={routingRulesResp ?? null}
+              onReauth={handleReauth}
+              onSetPrimaryAccount={handleSetPrimaryAccount}
+            />
+            {BATCH_CONNECTOR_TYPES.has(connector.connector_type) && (
+              <div className="mt-8" data-testid="batch-settings-section">
+                <BatchSettingsCard
+                  connector={connector}
+                  settingsMutation={settingsMutation}
+                />
+              </div>
+            )}
+          </>
         ) : (
           <NotFoundState connectorType={connectorType} endpointIdentity={endpointIdentity} />
         )}
