@@ -76,7 +76,15 @@ const TIER_LABEL: Record<ComplexityTier, string> = {
   legacy: "Legacy",
 };
 
-/** Known runtime backends a catalog entry can dispatch to (seed-derived). */
+/**
+ * Known runtime backends a catalog entry can dispatch to.
+ *
+ * This list is the frontend's single source of truth and mirrors the
+ * `runtime_type` values present in `model_catalog_defaults.toml`. When a new
+ * runtime backend is added to the toml, add it here too so the create/edit
+ * dropdowns stay in sync. `runtime_type` is a free string server-side (no
+ * enum), so the backend does not validate membership in this set.
+ */
 const RUNTIME_TYPES = ["claude", "codex", "gemini", "opencode"] as const;
 
 /** Default per-session timeout (seconds) for a brand-new catalog entry. */
@@ -109,6 +117,7 @@ function EditModelForm({
   const updateEntry = useUpdateModelCatalogEntry();
 
   const [alias, setAlias] = useState(model.alias);
+  const [runtimeType, setRuntimeType] = useState(model.runtime_type);
   const [modelId, setModelId] = useState(model.model_id);
   const [complexityTier, setComplexityTier] = useState<ComplexityTier>(model.complexity_tier);
   const [priority, setPriority] = useState(String(model.priority));
@@ -122,6 +131,7 @@ function EditModelForm({
   const validate = (): boolean => {
     const errors: Record<string, string> = {};
     if (!alias.trim()) errors.alias = "Alias is required";
+    if (!runtimeType.trim()) errors.runtime_type = "Runtime type is required";
     if (!modelId.trim()) errors.model_id = "Model ID is required";
     if (!TIER_ORDER.includes(complexityTier))
       errors.complexity_tier = "Must be one of the six canonical tiers";
@@ -162,6 +172,7 @@ function EditModelForm({
         id: model.id,
         body: {
           alias: alias.trim(),
+          runtime_type: runtimeType.trim(),
           model_id: modelId.trim(),
           complexity_tier: complexityTier,
           priority: parseInt(priority, 10),
@@ -206,6 +217,31 @@ function EditModelForm({
           />
           {fieldErrors.alias && (
             <p className="font-mono text-[10px] text-destructive">{fieldErrors.alias}</p>
+          )}
+        </div>
+
+        {/* Runtime type */}
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor="edit-runtime"
+            className="font-mono text-[11px] uppercase tracking-widest"
+          >
+            Runtime type
+          </Label>
+          <Select value={runtimeType} onValueChange={setRuntimeType}>
+            <SelectTrigger id="edit-runtime" className="font-mono text-sm w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {RUNTIME_TYPES.map((rt) => (
+                <SelectItem key={rt} value={rt} className="font-mono text-sm">
+                  {rt}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {fieldErrors.runtime_type && (
+            <p className="font-mono text-[10px] text-destructive">{fieldErrors.runtime_type}</p>
           )}
         </div>
 
@@ -390,8 +426,7 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
  * Inner form for creating a brand-new catalog entry. Mounted only when the
  * dialog is open so `useState` initializes once from the defaults below.
  *
- * Unlike {@link EditModelForm} this also exposes `runtime_type` (required by
- * POST /api/settings/models but immutable via the edit surface) and seeds
+ * Exposes `runtime_type` (required by POST /api/settings/models) and seeds
  * sensible defaults for the optional fields.
  */
 function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {

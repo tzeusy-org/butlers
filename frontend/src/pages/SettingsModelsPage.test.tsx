@@ -666,6 +666,7 @@ describe("SettingsModelsPage — EditModelDialog", () => {
         id: "model-1",
         body: expect.objectContaining({
           alias: "renamed-sonnet",
+          runtime_type: "claude",
           complexity_tier: "workhorse",
           priority: 10,
           session_timeout_s: 300,
@@ -744,6 +745,53 @@ describe("SettingsModelsPage — EditModelDialog", () => {
       screen.getByText("Session timeout must be a positive integer (seconds)"),
     ).toBeTruthy();
     expect(mutate).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Runtime type field (bu-o8m01)
+  // -------------------------------------------------------------------------
+
+  it("renders the runtime type select pre-populated from the catalog row", async () => {
+    setHookState({ entries: [makeModel({ runtime_type: "codex" })] });
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    // The SelectTrigger should display the current runtime_type value
+    expect(screen.getByText("codex")).toBeTruthy();
+  });
+
+  it("includes runtime_type in the save payload", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+    // Keep the catalog data for the model
+    vi.mocked(useModelCatalog).mockReturnValue({
+      data: { data: [makeModel({ runtime_type: "claude" })], meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+      isPending: false,
+      isSuccess: true,
+    } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const saveBtn = screen.getByRole("button", { name: /save/i });
+    await act(async () => {
+      fireEvent.click(saveBtn);
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "model-1",
+        body: expect.objectContaining({ runtime_type: "claude" }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it("calls onSuccess toast and closes dialog when mutate resolves", async () => {
