@@ -15,6 +15,7 @@
  * - selecting "route to butler" reveals a target field and emits route_to:<x>
  * - route_to with an empty target is blocked client-side (no API call)
  * - edit mode round-trips a stored route_to:<butler> action back into the form
+ * - DSL test panel sends full envelope shape: headers, mime_parts, raw_key (bu-95ido)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -273,5 +274,198 @@ describe('RuleEditor — runtime-valid verdict vocabulary (bu-4rt0h)', () => {
     }
     expect(arg.id).toBe('rule-001')
     expect(arg.body.action).toBe('route_to:finance')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// DSL test panel — full envelope shape (bu-95ido)
+// ---------------------------------------------------------------------------
+
+describe('RuleEditor DSL test panel — sends full envelope shape (bu-95ido)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    mockTestMutateAsync.mockClear()
+    mockTestMutateAsync.mockResolvedValue({
+      data: {
+        matched: false,
+        decision: null,
+        target_butler: null,
+        matched_rule_id: null,
+        matched_rule_type: null,
+        reason: 'no match',
+      },
+    })
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders header, mime_parts, and raw_key input fields in the DSL panel', () => {
+    act(() => {
+      root.render(<RuleEditor mode="dsl" onClose={() => {}} />)
+    })
+
+    expect(
+      container.querySelector('[data-testid="rule-editor-dsl-panel"]'),
+      'DSL panel should be visible in dsl mode',
+    ).not.toBeNull()
+
+    expect(
+      container.querySelector('[data-testid="rule-editor-test-headers"]'),
+      'headers textarea missing from DSL panel',
+    ).not.toBeNull()
+
+    expect(
+      container.querySelector('[data-testid="rule-editor-test-mime-parts"]'),
+      'mime_parts field missing from DSL panel',
+    ).not.toBeNull()
+
+    expect(
+      container.querySelector('[data-testid="rule-editor-test-raw-key"]'),
+      'raw_key field missing from DSL panel',
+    ).not.toBeNull()
+  })
+
+  it('sends headers parsed from "Key: Value" lines in the envelope', async () => {
+    act(() => {
+      root.render(<RuleEditor mode="dsl" onClose={() => {}} />)
+    })
+
+    const headersTextarea = container.querySelector(
+      '[data-testid="rule-editor-test-headers"]',
+    ) as HTMLTextAreaElement
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(headersTextarea, 'List-Unsubscribe: <mailto:unsub@example.com>\nX-Priority: high')
+      headersTextarea.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    await act(async () => {
+      ;(
+        container.querySelector('[data-testid="rule-editor-test-run"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockTestMutateAsync).toHaveBeenCalledTimes(1)
+    const call = (mockTestMutateAsync.mock.calls[0] as unknown[])[0] as {
+      envelope: Record<string, unknown>
+    }
+    expect(call.envelope.headers).toEqual({
+      'List-Unsubscribe': '<mailto:unsub@example.com>',
+      'X-Priority': 'high',
+    })
+  })
+
+  it('sends mime_parts as a parsed array in the envelope', async () => {
+    act(() => {
+      root.render(<RuleEditor mode="dsl" onClose={() => {}} />)
+    })
+
+    const mimeInput = container.querySelector(
+      '[data-testid="rule-editor-test-mime-parts"]',
+    ) as HTMLInputElement
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(mimeInput, 'text/calendar, image/png')
+      mimeInput.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    await act(async () => {
+      ;(
+        container.querySelector('[data-testid="rule-editor-test-run"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockTestMutateAsync).toHaveBeenCalledTimes(1)
+    const call = (mockTestMutateAsync.mock.calls[0] as unknown[])[0] as {
+      envelope: Record<string, unknown>
+    }
+    expect(call.envelope.mime_parts).toEqual(['text/calendar', 'image/png'])
+  })
+
+  it('sends raw_key in the envelope', async () => {
+    act(() => {
+      root.render(<RuleEditor mode="dsl" onClose={() => {}} />)
+    })
+
+    const rawKeyInput = container.querySelector(
+      '[data-testid="rule-editor-test-raw-key"]',
+    ) as HTMLInputElement
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(rawKeyInput, 'uid-abc-123')
+      rawKeyInput.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    await act(async () => {
+      ;(
+        container.querySelector('[data-testid="rule-editor-test-run"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockTestMutateAsync).toHaveBeenCalledTimes(1)
+    const call = (mockTestMutateAsync.mock.calls[0] as unknown[])[0] as {
+      envelope: Record<string, unknown>
+    }
+    expect(call.envelope.raw_key).toBe('uid-abc-123')
+  })
+
+  it('sends all envelope fields together when all are populated', async () => {
+    act(() => {
+      root.render(<RuleEditor mode="dsl" onClose={() => {}} />)
+    })
+
+    const senderInput = container.querySelector(
+      '[data-testid="rule-editor-test-sender"]',
+    ) as HTMLInputElement
+    const channelInput = container.querySelector(
+      '[data-testid="rule-editor-test-channel"]',
+    ) as HTMLInputElement
+    const headersTextarea = container.querySelector(
+      '[data-testid="rule-editor-test-headers"]',
+    ) as HTMLTextAreaElement
+    const mimeInput = container.querySelector(
+      '[data-testid="rule-editor-test-mime-parts"]',
+    ) as HTMLInputElement
+    const rawKeyInput = container.querySelector(
+      '[data-testid="rule-editor-test-raw-key"]',
+    ) as HTMLInputElement
+
+    act(() => {
+      const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      const textareaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+
+      inputSetter?.call(senderInput, 'alerts@example.com')
+      senderInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      inputSetter?.call(channelInput, 'gmail')
+      channelInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      textareaSetter?.call(headersTextarea, 'X-Custom: yes')
+      headersTextarea.dispatchEvent(new Event('change', { bubbles: true }))
+
+      inputSetter?.call(mimeInput, 'text/calendar')
+      mimeInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      inputSetter?.call(rawKeyInput, 'uid-xyz')
+      rawKeyInput.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    await act(async () => {
+      ;(
+        container.querySelector('[data-testid="rule-editor-test-run"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockTestMutateAsync).toHaveBeenCalledTimes(1)
+    const call = (mockTestMutateAsync.mock.calls[0] as unknown[])[0] as {
+      envelope: Record<string, unknown>
+    }
+    expect(call.envelope.sender_address).toBe('alerts@example.com')
+    expect(call.envelope.source_channel).toBe('gmail')
+    expect(call.envelope.headers).toEqual({ 'X-Custom': 'yes' })
+    expect(call.envelope.mime_parts).toEqual(['text/calendar'])
+    expect(call.envelope.raw_key).toBe('uid-xyz')
   })
 })

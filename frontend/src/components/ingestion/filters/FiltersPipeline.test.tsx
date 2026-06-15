@@ -425,6 +425,81 @@ describe('gate-state: deriveGateCounts', () => {
     expect(route.out).toBe(800)
     expect(route.preserved).toBe(200) // 1000 - 800
   })
+
+  // bu-95ido: dedupe and tier gates are passthrough estimates — mark them
+  // so the diagram does not imply a measurement the backend doesn't provide.
+  it('dedupe gate is marked estimated (no per-gate dedup count from API)', () => {
+    const counts = deriveGateCounts(makeStats())
+    const dedupe = counts.find((c) => c.key === 'dedupe')!
+    expect(dedupe.estimated, 'dedupe gate should be marked estimated').toBe(true)
+  })
+
+  it('tier gate is marked estimated (tiering changes priority, not count)', () => {
+    const counts = deriveGateCounts(makeStats())
+    const tier = counts.find((c) => c.key === 'tier')!
+    expect(tier.estimated, 'tier gate should be marked estimated').toBe(true)
+  })
+
+  it('accept, route, execute gates are NOT marked estimated', () => {
+    const counts = deriveGateCounts(makeStats())
+    for (const key of ['accept', 'route', 'execute'] as const) {
+      const gate = counts.find((c) => c.key === key)!
+      expect(gate.estimated, `${key} gate should not be marked estimated`).toBeFalsy()
+    }
+  })
+})
+
+describe('PipelineGateDiagram — estimated gate badges render (bu-95ido)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => { ;({ container, root } = makeRoot()) })
+  afterEach(() => cleanup(root, container))
+
+  it('renders estimated badge on dedupe gate node', () => {
+    const counts = deriveGateCounts(makeStats())
+    renderComponent(container, root, (
+      <PipelineGateDiagram counts={counts} available={true} />
+    ))
+
+    const badge = container.querySelector('[data-testid="gate-estimated-badge-dedupe"]')
+    expect(badge, 'estimated badge missing on dedupe gate').not.toBeNull()
+    expect(badge?.textContent).toContain('est.')
+  })
+
+  it('renders estimated badge on tier gate node', () => {
+    const counts = deriveGateCounts(makeStats())
+    renderComponent(container, root, (
+      <PipelineGateDiagram counts={counts} available={true} />
+    ))
+
+    const badge = container.querySelector('[data-testid="gate-estimated-badge-tier"]')
+    expect(badge, 'estimated badge missing on tier gate').not.toBeNull()
+    expect(badge?.textContent).toContain('est.')
+  })
+
+  it('does NOT render estimated badge on accept, route, execute gates', () => {
+    const counts = deriveGateCounts(makeStats())
+    renderComponent(container, root, (
+      <PipelineGateDiagram counts={counts} available={true} />
+    ))
+
+    for (const key of ['accept', 'route', 'execute']) {
+      const badge = container.querySelector(`[data-testid="gate-estimated-badge-${key}"]`)
+      expect(badge, `unexpected estimated badge on ${key} gate`).toBeNull()
+    }
+  })
+
+  it('renders "~" prefix on estimated gate count display', () => {
+    const counts = deriveGateCounts(makeStats())
+    renderComponent(container, root, (
+      <PipelineGateDiagram counts={counts} available={true} />
+    ))
+
+    const dedupeCountEl = container.querySelector('[data-testid="gate-count-estimated-dedupe"]')
+    expect(dedupeCountEl, 'estimated count span missing on dedupe gate').not.toBeNull()
+    expect(dedupeCountEl?.textContent).toMatch(/^~/)
+  })
 })
 
 // ============================================================================

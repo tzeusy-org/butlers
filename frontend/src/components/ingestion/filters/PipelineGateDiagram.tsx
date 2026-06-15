@@ -60,8 +60,12 @@ function GateNode({ def, count, index }: GateNodeProps) {
 
       {/* Count + delta */}
       <div className="flex items-baseline gap-2">
-        <span className="font-mono text-2xl font-medium tracking-[-0.02em] tabular-nums">
-          {fmt(count.out)}
+        <span
+          className="font-mono text-2xl font-medium tracking-[-0.02em] tabular-nums"
+          title={count.estimated ? 'Estimated — no per-gate measurement available from this endpoint' : undefined}
+          data-testid={count.estimated ? `gate-count-estimated-${def.key}` : undefined}
+        >
+          {count.estimated ? '~' : ''}{fmt(count.out)}
         </span>
         {hasDrop && (
           <span
@@ -77,6 +81,15 @@ function GateNode({ def, count, index }: GateNodeProps) {
             data-testid={`gate-preserved-${def.key}`}
           >
             −{fmt(count.preserved)} pres.
+          </span>
+        )}
+        {count.estimated && (
+          <span
+            className="font-mono text-[9px] tracking-[0.04em] text-muted-foreground/50 self-center"
+            data-testid={`gate-estimated-badge-${def.key}`}
+            title="Estimated — no per-gate measurement available from this endpoint"
+          >
+            est.
           </span>
         )}
       </div>

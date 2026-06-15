@@ -332,10 +332,43 @@ function ConditionFields({
 // DSL test panel — evaluates a sample envelope against active rules
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse a "Key: Value\nKey2: Value2" header string into a dict.
+ * Lines without a colon are ignored.
+ */
+function parseHeadersText(raw: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const line of raw.split('\n')) {
+    const idx = line.indexOf(':')
+    if (idx < 1) continue
+    const key = line.slice(0, idx).trim()
+    const value = line.slice(idx + 1).trim()
+    if (key) result[key] = value
+  }
+  return result
+}
+
+/**
+ * Parse a comma-separated list of MIME types into an array.
+ * e.g. "text/calendar, image/png" → ["text/calendar", "image/png"]
+ */
+function parseMimeParts(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 function DslTestPanel() {
   const testRule = useTestIngestionRule()
   const [senderAddress, setSenderAddress] = useState('')
   const [sourceChannel, setSourceChannel] = useState('')
+  // headers: free-form "Key: Value" text — one per line
+  const [headersText, setHeadersText] = useState('')
+  // mime_parts: comma-separated MIME type list
+  const [mimePartsText, setMimePartsText] = useState('')
+  // raw_key: opaque envelope key (e.g. message-id, calendar UID)
+  const [rawKey, setRawKey] = useState('')
   const [result, setResult] = useState<IngestionRuleTestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -345,6 +378,11 @@ function DslTestPanel() {
     const envelope: IngestionRuleTestEnvelope = {}
     if (senderAddress.trim()) envelope.sender_address = senderAddress.trim()
     if (sourceChannel.trim()) envelope.source_channel = sourceChannel.trim()
+    const headers = parseHeadersText(headersText)
+    if (Object.keys(headers).length > 0) envelope.headers = headers
+    const mimeParts = parseMimeParts(mimePartsText)
+    if (mimeParts.length > 0) envelope.mime_parts = mimeParts
+    if (rawKey.trim()) envelope.raw_key = rawKey.trim()
     try {
       const resp = await testRule.mutateAsync({ envelope })
       setResult(resp.data)
@@ -380,6 +418,31 @@ function DslTestPanel() {
           placeholder="gmail"
           testid="rule-editor-test-channel"
           lowercase
+        />
+        <label className="block col-span-2">
+          <span className={labelCls}>headers (one per line: Key: Value)</span>
+          <textarea
+            className={`${inputCls} resize-y min-h-[56px]`}
+            placeholder={"List-Unsubscribe: <mailto:unsub@example.com>\nX-Mailer: Outlook"}
+            value={headersText}
+            onChange={(e) => setHeadersText(e.target.value)}
+            data-testid="rule-editor-test-headers"
+          />
+        </label>
+        <TextField
+          label="mime parts (comma-separated)"
+          value={mimePartsText}
+          onChange={setMimePartsText}
+          placeholder="text/calendar, image/png"
+          testid="rule-editor-test-mime-parts"
+          lowercase
+        />
+        <TextField
+          label="raw key (optional)"
+          value={rawKey}
+          onChange={setRawKey}
+          placeholder="e.g. message-id or calendar UID"
+          testid="rule-editor-test-raw-key"
         />
       </div>
       <button
