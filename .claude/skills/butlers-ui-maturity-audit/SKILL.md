@@ -86,12 +86,24 @@ is the exemplar: it surfaced far more than a control-by-control sweep of the sam
    button, because the user believes it took effect. Prove the reader with `grep`.
 3. **Judge from the user's seat** using the five questions above. A defect is anything that makes
    the flow unpleasant, dishonest, or incomplete — not just a crash.
-4. **Prefer live verification over static inference.** When the dev stack is up, *drive the flow*
-   and follow the request through logs and DB rather than only reading code — see
-   [references/runtime-verification.md](references/runtime-verification.md). Static-only findings
-   are "suspected"; live-confirmed findings are "confirmed."
+4. **Prefer live verification over static inference — but only ever drive reads.** When the dev
+   stack is up, *drive the flow* and follow the request through logs and DB rather than only
+   reading code — see [references/runtime-verification.md](references/runtime-verification.md).
+   **Live verification is GET/read-side only: never trigger a mutation (merge, archive, forget,
+   delete, any POST/PATCH/PUT that writes) against the shared dev database** — verify mutation
+   paths by static trace, not by firing them. Grade every finding on a **three-level confidence
+   scale**, not a binary: `live-confirmed` (reproduced against the running stack) > `source-confirmed`
+   (you read the exact mechanism — the SQL/handler/consumer — that proves it, statically) >
+   `inferred` (static reasoning without reading the decisive line). "I read the write site *and*
+   every reader" is `source-confirmed`, not a guess — distinguish it from `inferred` in the report.
 5. **Cite `file:line` for every claim, and verify against current `main`.** Active branches move
-   fast; re-read the live file before calling a control dead. Separate confirmed from suspected.
+   fast; re-read the live file before calling a control dead. **Grade against the *binding* doc:**
+   the openspec `spec.md` is binding; redesign-brief prose (and especially any dated
+   "classification/Phase-B" table in a brief) is **point-in-time and often aspirational** — a
+   brief-only affordance that isn't built is *scope*, not *drift*, and a brief table calling
+   something "missing/stub" may have shipped since. Never confirm a finding the code may already
+   have fixed (a false positive is the worst audit output). Note brief-only items separately from
+   binding-spec gaps.
 6. **One subagent per flow** (clean context each; orchestrator stays small and only synthesises).
 
 ## Workflow
@@ -111,11 +123,32 @@ and feature-flag gating. **You** cluster those surfaces into user flows (judgmen
 drifts). See [references/user-flows.md](references/user-flows.md) for how to derive flows from
 project shape, the experiential rubric in full, and the living flow catalog.
 
+**Date-stamp the inputs.** A redesign brief or openspec `tasks.md` is a snapshot — the surface
+moves on after it's written. Before clustering flows, `git log --since=<brief/spec date> --oneline`
+the surface's files so you know what shipped *after* the brief, and treat every dated
+"classification / Phase-B / component-impact" table and every `tasks.md` checkbox as a
+point-in-time claim to re-verify, **not** as status. (This run: a brief table marked
+workbench/merge/concentration "missing/stub" that had all shipped since, and a `tasks.md` reading
+0/42 for work that was ~entirely done — agents that trust either will emit false positives.) Carry
+this warning into every agent prompt.
+
+### Phase 0.5 — Resolve the live target once (orchestrator)
+
+Do the stack probe **once, here**, not 10× inside the agents. Determine whether the dev stack is
+up and, if so, the **exact API base path that returns JSON** (the tailnet/proxy URL often serves
+the SPA shell or 404s on `/api/*` even when the stack is healthy — see
+[references/runtime-verification.md](references/runtime-verification.md) for the URL→API mapping
+and how to resolve it). Pass the resolved base path (or an explicit "static-only, stack not
+reachable") down to every agent so none of them re-discover the dead end. If the stack is mid-boot,
+either wait for readiness before fan-out or tell agents to retry a known-good path — don't let each
+agent guess three wrong paths.
+
 ### Phase 1 — Walk each flow end to end (fan out, parallel)
 
 One `general-purpose` agent per flow, all dispatched in one message. Pass each agent
 [references/audit-agent-prompt.md](references/audit-agent-prompt.md) verbatim (fill the
-placeholders), append the trace-layer + topology pointers from
+placeholders, **including the resolved API base from Phase 0.5 and the Phase 0 staleness warning**),
+append the trace-layer + topology pointers from
 [references/file-location-map.md](references/file-location-map.md), and — if verifying live —
 [references/runtime-verification.md](references/runtime-verification.md). Agents hunt the shapes
 in [references/failure-taxonomy.md](references/failure-taxonomy.md).

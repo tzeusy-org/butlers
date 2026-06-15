@@ -1,8 +1,11 @@
 # Fan-out Agent Prompt (verbatim)
 
 Phase 1 hands one `general-purpose` agent per flow this prompt. Fill `{FLOW}`, `{GOAL}`,
-`{STEPS}`, `{SURFACES}`, `{SPEC/BRIEF}`. Append `references/file-location-map.md`, and (if the dev
-stack is up) `references/runtime-verification.md`. Keep the "investigate only" hard stop intact.
+`{STEPS}`, `{SURFACES}`, `{SPEC/BRIEF}`, `{LIVE_BASE}` (the JSON-returning API base the orchestrator
+resolved in Phase 0.5, or "static-only — stack not reachable"), and `{STALE_INPUTS}` (the Phase 0
+note on which brief tables / `tasks.md` are point-in-time and shipped past). Append
+`references/file-location-map.md`, and (if a live base exists) `references/runtime-verification.md`.
+Keep the "investigate only" hard stop intact.
 
 ---
 
@@ -14,6 +17,15 @@ stack is up) `references/runtime-verification.md`. Keep the "investigate only" h
 > **User goal (happy-path):** {GOAL}
 > **Happy-path steps:** {STEPS}
 > **Surfaces it spans:** {SURFACES}   **Intended end-state:** {SPEC/BRIEF}
+> **Live API base:** {LIVE_BASE}   **Point-in-time inputs (re-verify, don't trust as status):** {STALE_INPUTS}
+>
+> **Grade against the binding doc.** The openspec `spec.md` is binding; redesign-brief prose — and
+> *especially* any dated classification / Phase-B / component-impact table in a brief, or a
+> `tasks.md` checkbox — is point-in-time and often aspirational. A brief-only affordance that isn't
+> built is **scope, not drift**; a brief table calling something "missing/stub" may have **shipped
+> since** (verify against current `main` before reporting it). **Never confirm a finding the code
+> may already have fixed — a false positive is the worst audit output.** Separate brief-only gaps
+> from binding-spec gaps in your report.
 >
 > Walk this flow end to end as a real user would. For the flow as a whole AND for **each step**,
 > answer the five-question rubric:
@@ -35,11 +47,18 @@ stack is up) `references/runtime-verification.md`. Keep the "investigate only" h
 > **Method.** For every interactive step, trace handler → API client fn (`frontend/src/api/client.ts`)
 > → hook (`frontend/src/hooks/use-*.ts`) → backend route (`src/butlers/api/routers/*.py` or
 > `roster/*/api/router.py`) → then **`grep` the written table/column across `src/` to prove a
-> runtime reader exists.** "Endpoint exists" ≠ "feature works"; "persists" ≠ "consumed." If the dev
-> stack is up, *drive the step live* (curl the endpoint, query the DB, follow the request in
-> `docker logs`) and label findings "confirmed"; static-only findings are "suspected." Verify
-> against current `main` — re-read the live file before calling a control dead. Note any
-> feature-flag gating and its prod default.
+> runtime reader exists.** "Endpoint exists" ≠ "feature works"; "persists" ≠ "consumed." If a live
+> API base was given, *drive read-side steps live* (curl the endpoint, query the DB, follow the
+> request in `docker logs`) — but **never fire a mutation (merge/archive/forget/delete/any writing
+> POST/PATCH/PUT) against the shared dev database; trace those statically.** Verify against current
+> `main` — re-read the live file before calling a control dead. Note any feature-flag gating and its
+> prod default.
+>
+> **Grade confidence on three levels, not a binary:** `live-confirmed` (reproduced against the
+> running stack) > `source-confirmed` (you read the exact decisive mechanism — the SQL clause /
+> handler body / writer *and* every reader) > `inferred` (static reasoning without reading the
+> proving line). "I read the write site and confirmed no consumer" is `source-confirmed`, not a
+> guess.
 >
 > Hunt the failure taxonomy you were given (decorative persistence; the lie/overpromise;
 > data-contract break; fake/placeholder data; backend-ready-but-unwired; FE-wired-but-stub/404;
@@ -50,7 +69,8 @@ stack is up) `references/runtime-verification.md`. Keep the "investigate only" h
 > 2. **Step-by-step verdict** — for each step: Mature / Mostly / Partial / Skin-deep + one line.
 > 3. **Findings table** — Severity (Critical/High/Med/Low, by user-trust damage) | Step | Element
 >    (file:line) | What the user expects | What actually happens | Evidence (handler→client→route→
->    consumer trace; live evidence if any) | Confirmed/Suspected.
+>    consumer trace; live evidence if any) | Confidence (live-confirmed / source-confirmed /
+>    inferred) | Binding-spec gap or brief-only scope?
 > 4. **Does the backend comprehensively support the happy-path?** — yes/no + the gaps, including
 >    unhappy branches.
 > 5. **Dead/decorative/misleading controls** and **orphaned routes/hooks** — explicit lists.

@@ -66,3 +66,18 @@ path moves). Rules for consuming and maintaining it:
    success/failure feedback. Includes treating a degraded envelope (`aggregates_available:false`)
    as an error instead of "metrics unavailable." *Tell:* the component renders `data?.x` with no
    branch for pending/error/empty.
+
+9. **Invariant-data control** — a control/affordance is honestly wired to a real column, but that
+   column is structurally constant at every write site, so the control's signalling range is dead
+   and its derived states are unreachable. Distinct from shape 4 (fake/placeholder *literal* in
+   JSX): here the binding is truthful — the deadness is in the data layer, not the render. The UI
+   implies an axis of information the system never populates. *Tell:* `grep` the column's write
+   sites — every writer hardcodes/defaults the same value (no path computes a varying one); then a
+   conditional branch keyed on a threshold of that value is never taken. *e.g.* (2026-06, entities)
+   the per-fact confidence bar reads a real `conf` column and has an `amber < 0.85` low-confidence
+   branch, but `store_fact`/`relationship_assert_fact` write `conf=1.0` at every call site
+   (`src/butlers/modules/memory/storage.py:767`; no ingest path calibrates), so the bar is always
+   100% and the amber branch can never fire — the "confidence axis" carries zero information.
+   Likewise `verified=true` is reachable only for the prefers-channel predicate, so the green
+   verified `✓` is near-constant on ordinary facts. *Fix posture:* either populate the column with
+   real variance, or descope the control so it stops implying calibration that doesn't exist.

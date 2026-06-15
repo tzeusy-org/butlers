@@ -2,8 +2,39 @@
 
 Load when the Docker Compose dev stack is up and you want to **confirm** a flow rather than infer
 it from code. Static FE→BE tracing tells you what *should* happen; driving the flow tells you what
-*does*. A finding you reproduced live is "confirmed"; a finding from reading code alone is
-"suspected" — label them differently in the report.
+*does*.
+
+## Confidence is three levels, not a binary
+
+Grade every finding: `live-confirmed` (reproduced against the running stack) > `source-confirmed`
+(you read the *exact* decisive mechanism statically — the SQL clause, the handler body, the writer
+*and* every reader) > `inferred` (static reasoning without reading the line that proves it).
+Collapsing "I read the SQL that proves no consumer exists" into the same "suspected" bucket as a
+guess undersells solid findings — keep them distinct so the reader can triage.
+
+## Drive reads only — never fire a mutation on shared dev
+
+Live verification is **GET/read-side only**. The dev stack is a shared database; do **not** trigger
+a mutation (any merge / archive / forget / delete / POST / PATCH / PUT that writes) to "confirm" it
+— you would corrupt shared state and possibly destroy real entities/rows. Verify mutation paths by
+static trace (handler → client → route → does a reader consume the write). A read-only compare/diff
+endpoint *is* safe to drive; the merge it precedes is not. When in doubt, treat it as a write and
+trace it statically.
+
+## Resolve the API base once (orchestrator, Phase 0.5)
+
+The public/tailnet URL (e.g. `https://<host>.ts.net/butlers-dev/`) routes `/` to the Vite SPA and
+frequently returns the **SPA `index.html` (or a bare `404 page not found`) for `/api/*`** even when
+the backend is perfectly healthy — so a naive `curl .../butlers-dev/api/relationship/...` "fails"
+misleadingly. Resolve the real JSON-returning base **once** in the orchestrator and hand it to every
+agent (don't make N agents each try three wrong prefixes):
+
+1. Read `about/lay-and-land/deployment.md` + `docs/getting_started/dev-environment.md` for the
+   dashboard-API container name and **host port** (source of truth — don't hardcode).
+2. Confirm the container is `Up` (not `Created`/`Restarting`): `docker ps --format '{{.Names}}\t{{.Status}}' | grep dashboard-api`. If app containers are still `Created`, the stack is mid-boot — wait for readiness before fan-out.
+3. Probe the **direct host port** for JSON (e.g. `curl -s localhost:<port>/api/relationship/entities?limit=1`), not only the proxy. Pin whichever base returns JSON as the agents' live base; if none does, declare **static-only** explicitly.
+
+## This builds on `/butler-dev-debug`
 
 ## This builds on `/butler-dev-debug`
 
@@ -38,8 +69,8 @@ For each step where the user clicks something or expects real data:
 
 ## When the stack is NOT up
 
-Say so in the report and mark all findings "suspected (static only)." Do not fabricate live
-evidence. Static tracing — handler → client fn → route → `grep` for the runtime reader — is still
-the backbone and catches most shapes; live driving is what upgrades a finding from plausible to
-proven and is the only reliable way to catch fake-but-shaped-correct responses (shape 4) and
-silent watchdog deferral (shape 2).
+Say so in the report and grade findings `source-confirmed` (you read the decisive mechanism) or
+`inferred` (you didn't) — never `live-confirmed`. Do not fabricate live evidence. Static tracing —
+handler → client fn → route → `grep` for the runtime reader — is still the backbone and catches
+most shapes; live driving is what upgrades a finding to `live-confirmed` and is the only reliable
+way to catch fake-but-shaped-correct responses (shape 4) and silent watchdog deferral (shape 2).
