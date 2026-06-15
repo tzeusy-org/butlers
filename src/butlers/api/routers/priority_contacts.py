@@ -211,10 +211,15 @@ async def list_priority_contacts(
             added_by=row["added_by"],
             name=row["contact_name"],
             contact_info_values=ef_result.values.get(row["contact_id"], []),
-            # A contact is inert when the Gmail 3-hop join would match nothing:
-            # either the contact has no linked entity, or its entity carries no
-            # active has-email fact (the only predicate the policy evaluator uses).
-            is_inert=(row["entity_id"] is None or row["contact_id"] not in ef_result.has_email),
+            # A contact is inert when it would silently match nothing at runtime.
+            # For Gmail: the 3-hop join requires both a linked entity_id and an
+            # active has-email fact; either absence means the row matches nothing.
+            # For other butlers: only a missing entity_id makes the row inert
+            # (they use has-handle or other predicates, not has-email).
+            is_inert=(
+                row["entity_id"] is None
+                or (row["butler"] == "gmail" and row["contact_id"] not in ef_result.has_email)
+            ),
         )
         for row in rows
     ]

@@ -248,15 +248,19 @@ export function PrioritySendersBlock({
                 </button>
               </div>
 
-              {/* Inert warning badge — shown only when the 3-hop Gmail join would match nothing */}
+              {/* Inert warning badge — shown only when this entry would match nothing at runtime */}
               {entry.is_inert && (
                 <div
                   className="mt-1.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--filter-amber,oklch(0.72_0.15_85))] border border-[color:var(--filter-amber,oklch(0.72_0.15_85))]/40 px-2 py-0.5 inline-flex items-center gap-1.5"
                   data-testid={`priority-sender-inert-${entry.contact_id}`}
-                  title="This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact — without one, this entry matches nothing."
+                  title={
+                    entry.butler === 'gmail'
+                      ? "This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact — without one, this entry matches nothing."
+                      : "This contact has no linked entity in the system. Priority senders require a linked entity to resolve channel handles and match incoming messages."
+                  }
                 >
                   <span aria-hidden="true">⚠</span>
-                  no email fact — entry matches nothing
+                  {entry.butler === 'gmail' ? 'no email fact — entry matches nothing' : 'no linked entity — entry matches nothing'}
                 </div>
               )}
             </div>

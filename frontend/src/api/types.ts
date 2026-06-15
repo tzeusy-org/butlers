@@ -3015,10 +3015,13 @@ export interface PriorityContactEntry {
   contact_info_values: string[];
   /**
    * True when this entry would silently match nothing at runtime.
-   * The Gmail policy evaluator resolves priority senders via a 3-hop join
-   * (priority_contacts → contacts.entity_id → entity_facts has-email).
-   * A contact is inert when it has no linked entity_id or its entity carries
-   * no active has-email fact — the row saves OK but never matches any sender.
+   * For Gmail: the policy evaluator resolves senders via a 3-hop join
+   * (priority_contacts → contacts.entity_id → entity_facts has-email);
+   * a contact is inert when it has no linked entity_id or its entity carries
+   * no active has-email fact.
+   * For other butlers: a contact is inert only when it has no linked entity_id
+   * (they use has-handle or other predicates, not has-email).
+   * In all cases the row saves OK but never matches any incoming sender.
    */
   is_inert: boolean;
 }

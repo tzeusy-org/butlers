@@ -11,8 +11,9 @@ Covers:
 - list endpoint: contact with no entity_id → empty contact_info_values.
 - list endpoint: entity_facts DB error → empty contact_info_values (graceful).
 - list endpoint: is_inert=True when contact has no entity_id.
-- list endpoint: is_inert=True when entity exists but has no has-email fact.
+- list endpoint: is_inert=True when entity exists but has no has-email fact (Gmail only).
 - list endpoint: is_inert=False when entity has an active has-email fact.
+- list endpoint: is_inert=False for non-Gmail contact with entity + has-handle fact (no has-email).
 """
 
 from __future__ import annotations
@@ -472,3 +473,58 @@ async def test_list_is_inert_false_when_entity_has_email_fact(app: FastAPI) -> N
     data = resp.json()["data"]
     assert len(data) == 1
     assert data[0]["is_inert"] is False
+
+
+async def test_list_is_inert_false_for_non_gmail_with_handle_fact(app: FastAPI) -> None:
+    """Non-Gmail contact with entity + has-handle fact (no has-email) → is_inert=False.
+
+    The has-email check is scoped to butler='gmail' only; other butlers use
+    has-handle or similar predicates, so the absence of has-email must not
+    produce a false-positive inert badge.
+    """
+    contact_id = uuid4()
+    entity_id = uuid4()
+
+    pc_row = _make_record(
+        {
+            "contact_id": contact_id,
+            "butler": "telegram",
+            "added_at": _NOW,
+            "added_by": "dashboard",
+            "contact_name": "Telegram VIP",
+            "entity_id": entity_id,
+        }
+    )
+    ef_row = _make_record(
+        {
+            "entity_id": entity_id,
+            "predicate": "has-handle",
+            "object": "telegram:99887766",
+        }
+    )
+
+    pool = AsyncMock()
+
+    async def _fetch(sql, *args, **kwargs):
+        if "priority_contacts" in sql:
+            return [pc_row]
+        if "entity_facts" in sql:
+            return [ef_row]
+        return []
+
+    pool.fetchval = AsyncMock(return_value=1)
+    pool.fetch = AsyncMock(side_effect=_fetch)
+    _wire_app(app, pool=pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/priority-contacts")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) == 1
+    assert data[0]["is_inert"] is False, (
+        "Non-Gmail contact with a linked entity should not be inert "
+        "even when it has no has-email fact"
+    )

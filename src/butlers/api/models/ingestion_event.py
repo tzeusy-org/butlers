@@ -174,11 +174,11 @@ class PriorityContactEntry(BaseModel):
     Credential-bearing entries (secured triples) are excluded.
 
     ``is_inert`` is True when the entry would silently match nothing at runtime.
-    The Gmail policy evaluator resolves priority senders via a 3-hop join:
-    priority_contacts → contacts.entity_id → relationship.entity_facts (has-email).
-    A contact is inert when its entity_id is NULL or its entity carries no active
-    has-email fact — the row saves OK but the Gmail policy evaluator will never
-    match it.  The UI surfaces this as a warning badge so users can act on it.
+    For Gmail: the policy evaluator resolves senders via a 3-hop join
+    (priority_contacts → contacts.entity_id → entity_facts has-email); a contact
+    is inert when its entity_id is NULL or its entity carries no active has-email
+    fact.  For other butlers: only a missing entity_id makes the row inert (they
+    use has-handle or other predicates).  The UI surfaces this as a warning badge.
     """
 
     contact_id: UUID
