@@ -1286,8 +1286,8 @@ async def update_connector_settings(
     The body ``settings`` object is shallow-merged with the existing
     settings (top-level keys are replaced, not deep-merged).
 
-    Note: settings are read on connector startup — changes take effect
-    on the next connector restart.
+    Note: ``flush_interval_s`` is live-reloaded by the connector's flush
+    scanner on its next wake cycle (no restart required).
     """
     pool = _pool(db)
 

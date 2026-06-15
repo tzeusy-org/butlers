@@ -966,7 +966,7 @@ function FooterRollupBand({ events, sessions, cost, isLoading }: FooterRollupBan
       <div className="w-px h-4 bg-border/60" aria-hidden />
       {cell("sessions", sessions !== undefined ? sessions.toLocaleString() : "—")}
       <div className="w-px h-4 bg-border/60" aria-hidden />
-      {/* cost is always null until cost-per-event backend lands; render em dash */}
+      {/* cost is populated live from /rollup when pricing is available; render em dash when null */}
       {cell("cost", cost !== null && cost !== undefined ? formatCost(cost) : "—")}
     </div>
   );
