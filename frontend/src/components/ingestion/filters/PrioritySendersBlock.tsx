@@ -97,7 +97,7 @@ export function PrioritySendersBlock({
           priority · senders
         </span>
         <span className="font-mono text-[10px] text-muted-foreground/60">
-          {loaded ? `${contacts.length} contacts · bypass batching` : '…'}
+          {loaded ? `${contacts.length} contacts · high-priority tag` : '…'}
         </span>
         <span className="ml-auto" />
         <button
@@ -146,9 +146,11 @@ export function PrioritySendersBlock({
 
       {/* Gloss */}
       <p className="font-serif text-sm text-muted-foreground leading-[1.5] mt-3.5 max-w-[60ch]">
-        Messages from these contacts skip the default tier. The system pings
-        the named butler immediately rather than waiting for the next batch.
-        This is the only place a person is first-class in filtering.
+        Mail from these contacts is tagged with a <code className="font-mono text-[11px]">high_priority</code> policy
+        tier as it enters the ingestion pipeline. That tag surfaces in
+        observability (metrics and trace spans) so you can see priority-sender
+        activity. It does not currently bypass label or global filter rules, and
+        dispatch timing is the same as for other mail.
       </p>
 
       {/* Mutation error */}
