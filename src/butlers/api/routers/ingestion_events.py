@@ -11,7 +11,6 @@ GET  /api/ingestion/events               — cursor-paginated unified timeline (
 GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
-POST /api/ingestion/events/replay/bulk   — bulk replay handler (max 50 events, email blocked)
 POST /api/ingestion/events/retry/bulk    — bulk retry for both ingestion + filtered tables (max 100)
 POST /api/ingestion/events/{id}/replay   — request replay of a filtered event
 GET  /api/ingestion/events/{id}/replays  — replay attempt history from public.audit_log
@@ -29,7 +28,6 @@ from datetime import datetime as _datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from prometheus_client import Counter
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -64,21 +62,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/events", tags=["ingestion"])
 rollup_router = APIRouter(prefix="/api/ingestion/rollup", tags=["ingestion"])
-
-
-# ---------------------------------------------------------------------------
-# Prometheus counters — bulk_replay 5xx error observability.
-# Without these, structural DB errors (e.g. FOR UPDATE + LEFT JOIN) silently
-# returned 503s in production for an entire day before being noticed through
-# a different channel.  Counter names follow the pattern:
-# ingestion_bulk_replay_<class>_total (labels: code=<http_status_code>).
-# ---------------------------------------------------------------------------
-
-ingestion_bulk_replay_errors_total = Counter(
-    "ingestion_bulk_replay_errors_total",
-    "Number of 5xx error responses from POST /api/ingestion/events/replay/bulk.",
-    ["code"],
-)
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -388,232 +371,15 @@ async def get_ingestion_event_rollup(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/ingestion/events/replay/bulk
-# ---------------------------------------------------------------------------
-
-_MAX_BULK_REPLAY_BATCH = 50
-
-# Channels that are classified as replay-unsafe per the
-# connector-replay-idempotency-policy spec.
-_UNSAFE_CHANNELS: frozenset[str] = frozenset({"email"})
-
-
-@router.post("/replay/bulk")
-async def bulk_replay_ingestion_events(
-    request: Request,
-    body: Annotated[dict, Body(...)],
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> dict:
-    """Bulk-replay up to 50 filtered events.
-
-    Accepts ``{"event_ids": [...], "reason": "..."}`` where ``event_ids`` is a
-    list of UUID strings (max 50).  Events with ``source_channel = 'email'`` (or
-    whose ``connector_registry.replay_safe = false``) are rejected with HTTP 409.
-
-    Uses ``SELECT ... FOR UPDATE SKIP LOCKED`` to avoid racing against the
-    connector drain loop.
-
-    Returns:
-        200 — ``{"accepted": [...], "capped": [...]}``
-        400 — missing or malformed ``event_ids``
-        409 — batch contains replay-unsafe events (email or replay_safe=false)
-        503 — shared database pool unavailable
-    """
-    event_ids_raw: list = body.get("event_ids", [])
-    reason: str = str(body.get("reason", "")).strip() or "bulk replay"
-
-    if not isinstance(event_ids_raw, list) or not event_ids_raw:
-        raise HTTPException(status_code=400, detail="event_ids must be a non-empty list")
-
-    # Cap at max batch size; track overflow
-    capped: list[str] = []
-    if len(event_ids_raw) > _MAX_BULK_REPLAY_BATCH:
-        capped = [str(e) for e in event_ids_raw[_MAX_BULK_REPLAY_BATCH:]]
-        event_ids_raw = event_ids_raw[:_MAX_BULK_REPLAY_BATCH]
-
-    # Validate UUID format
-    from uuid import UUID
-
-    try:
-        event_ids: list[UUID] = [UUID(str(e)) for e in event_ids_raw]
-    except (ValueError, AttributeError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid UUID in event_ids: {exc}") from exc
-
-    try:
-        pool = db.credential_shared_pool()
-    except KeyError as exc:
-        ingestion_bulk_replay_errors_total.labels(code="503").inc()
-        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
-
-    client_host = getattr(request.client, "host", None) if request.client else None
-
-    # Acquire a single connection and run the entire lock → update → audit sequence
-    # inside one explicit transaction.  This ensures the FOR UPDATE lock is held until
-    # commit (§6.2 mandate-5 concurrency guarantee) and the audit insert is atomic with
-    # the state mutation (§6.2 mandate-1 audit-on-mutation semantics).
-    #
-    # ingestion_bulk_replay_errors_total counter is incremented on every 5xx return path
-    # to provide Prometheus-queryable observability over structural failures (e.g. SQL bugs).
-    #
-    # Previously each pool.fetch() ran in its own implicit transaction, so the FOR UPDATE
-    # lock was released the moment the SELECT completed — the UPDATE then had no lock
-    # protection, and the audit append was entirely non-atomic.  See Gemini review on
-    # PR #1803 lines 136 and 186.
-    accepted_ids: list[str] = []
-    locked_ids: set = set()
-    locked_rows: list = []
-
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                # Phase 1: Lock candidate rows inside the open transaction.
-                # FOR UPDATE SKIP LOCKED holds the row locks until the transaction commits.
-                try:
-                    locked_rows = await conn.fetch(
-                        """
-                        SELECT fe.id, fe.source_channel,
-                               COALESCE(cr.replay_safe, TRUE) AS replay_safe
-                        FROM connectors.filtered_events fe
-                        LEFT JOIN connector_registry cr
-                          ON cr.connector_type = fe.connector_type
-                         AND cr.endpoint_identity = fe.endpoint_identity
-                        WHERE fe.id = ANY($1::uuid[])
-                          AND fe.status IN ('filtered', 'error', 'replay_failed', 'replay_complete')
-                        FOR UPDATE OF fe SKIP LOCKED
-                        """,
-                        event_ids,
-                    )
-                except Exception:
-                    logger.warning(
-                        "bulk_replay: failed to lock filtered_events rows", exc_info=True
-                    )
-                    ingestion_bulk_replay_errors_total.labels(code="503").inc()
-                    raise HTTPException(
-                        status_code=503, detail="Database error while locking events"
-                    )
-
-                locked_ids = {row["id"] for row in locked_rows}
-
-                # Phase 2: Channel safety gate — reject the ENTIRE batch if any event is unsafe.
-                # Per spec: "The handler SHALL NOT partially process the batch when at least one
-                # event is unsafe — the entire batch is rejected to preserve atomic semantics."
-                # Raising HTTPException here aborts the transaction and releases all row locks.
-                unsafe_events: list[dict] = []
-                for row in locked_rows:
-                    channel = row["source_channel"]
-                    replay_safe = row["replay_safe"]
-                    if channel in _UNSAFE_CHANNELS or not replay_safe:
-                        unsafe_events.append(
-                            {
-                                "id": str(row["id"]),
-                                "source_channel": channel,
-                                "reason": (
-                                    f"source_channel='{channel}' is not replay-safe"
-                                    if channel in _UNSAFE_CHANNELS
-                                    else "connector_registry.replay_safe=false"
-                                ),
-                            }
-                        )
-
-                if unsafe_events:
-                    # Emit rejection audit entry on pool (outside the transaction) so the
-                    # audit record is committed even when HTTPException rolls back the tx.
-                    # Fail-closed auditing: the rejection must be persisted regardless of
-                    # whether the surrounding transaction succeeds or is aborted.
-                    try:
-                        await _audit_append(
-                            pool,
-                            actor="dashboard",
-                            action="ingestion.replay.bulk_reject",
-                            target=json.dumps([str(e) for e in event_ids]),
-                            note=json.dumps(
-                                {
-                                    "reason": "unsafe_channel",
-                                    "unsafe_events": unsafe_events,
-                                    "submitted_reason": reason,
-                                }
-                            ),
-                            ip=client_host,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "bulk_replay: failed to write bulk_reject audit entry", exc_info=True
-                        )
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "error": "Batch contains replay-unsafe events",
-                            "unsafe_events": unsafe_events,
-                        },
-                    )
-
-                # Phase 3: Mark locked events as replay_pending (same connection, same tx).
-                if locked_rows:
-                    try:
-                        updated = await conn.fetch(
-                            """
-                            UPDATE connectors.filtered_events
-                            SET status = 'replay_pending',
-                                replay_requested_at = now(),
-                                error_detail = NULL
-                            WHERE id = ANY($1::uuid[])
-                              AND status IN (
-                                  'filtered', 'error', 'replay_failed', 'replay_complete'
-                              )
-                            RETURNING id
-                            """,
-                            list(locked_ids),
-                        )
-                        accepted_ids = [str(row["id"]) for row in updated]
-                    except Exception:
-                        logger.warning(
-                            "bulk_replay: failed to update filtered_events", exc_info=True
-                        )
-                        ingestion_bulk_replay_errors_total.labels(code="503").inc()
-                        raise HTTPException(
-                            status_code=503, detail="Database error during replay marking"
-                        )
-
-                # Phase 4: Audit successful batch (same connection, same tx — atomic with update).
-                try:
-                    await _audit_append(
-                        conn,
-                        actor="dashboard",
-                        action="ingestion.replay.bulk_submit",
-                        target=json.dumps(accepted_ids),
-                        note=json.dumps(
-                            {
-                                "reason": reason,
-                                "accepted_count": len(accepted_ids),
-                                "capped_count": len(capped),
-                                "skipped_locked": len(event_ids) - len(locked_ids),
-                            }
-                        ),
-                        ip=client_host,
-                    )
-                except Exception:
-                    logger.warning(
-                        "bulk_replay: failed to write bulk_submit audit entry", exc_info=True
-                    )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.warning("bulk_replay: unexpected error during transaction", exc_info=True)
-        ingestion_bulk_replay_errors_total.labels(code="503").inc()
-        raise HTTPException(status_code=503, detail="Database error during bulk replay")
-
-    return {
-        "accepted": accepted_ids,
-        "capped": capped,
-        "skipped_locked": [str(e) for e in event_ids if e not in locked_ids],
-    }
-
-
-# ---------------------------------------------------------------------------
 # POST /api/ingestion/events/retry/bulk
 # ---------------------------------------------------------------------------
 
 _MAX_BULK_RETRY_BATCH = 100
+
+# Channels that are classified as replay-unsafe per the
+# connector-replay-idempotency-policy spec.  Referenced by both /retry/bulk
+# (safety gate added in PR #2357) and kept here after /replay/bulk removal.
+_UNSAFE_CHANNELS: frozenset[str] = frozenset({"email"})
 
 
 @router.post("/retry/bulk")
@@ -624,9 +390,7 @@ async def bulk_retry_ingestion_events(
 ) -> dict:
     """Bulk retry/replay up to 100 events across both ingestion and filtered tables.
 
-    Unlike ``POST /api/ingestion/events/replay/bulk`` (which targets only
-    ``connectors.filtered_events`` and uses SELECT … FOR UPDATE SKIP LOCKED),
-    this endpoint calls the same per-event replay logic as
+    Calls the same per-event replay logic as
     ``POST /api/ingestion/events/{id}/replay`` for each event.  This allows
     retrying events from both ``public.ingestion_events`` and
     ``connectors.filtered_events`` in a single request.
@@ -639,8 +403,7 @@ async def bulk_retry_ingestion_events(
     strings (max 100).
 
     Email events and events with ``connector_registry.replay_safe = false`` are
-    rejected with HTTP 409 before any replay is attempted (same safety gate as
-    ``POST /api/ingestion/events/replay/bulk``).
+    rejected with HTTP 409 before any replay is attempted.
 
     Returns:
         200 — ``{"results": [{event_id, status, error?}], "succeeded": N, "failed": N}``
@@ -676,12 +439,12 @@ async def bulk_retry_ingestion_events(
     client_host = getattr(request.client, "host", None) if request.client else None
 
     # ---------------------------------------------------------------------------
-    # Pre-flight safety gate — mirror the _UNSAFE_CHANNELS check from /replay/bulk.
+    # Pre-flight safety gate: reject the entire batch if any event is unsafe.
     #
     # /retry/bulk covers both public.ingestion_events and connectors.filtered_events,
     # so we query BOTH tables to identify any email (or replay_safe=false) events
     # before touching any rows.  A single unsafe event rejects the entire batch with
-    # HTTP 409 — same fail-closed semantics as /replay/bulk.
+    # HTTP 409 — fail-closed semantics ensures no partial unsafe replay.
     # ---------------------------------------------------------------------------
     try:
         # Collect (id, source_channel, replay_safe) from both tables in one query.
