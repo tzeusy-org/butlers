@@ -142,9 +142,6 @@ if _models_path.exists():
         UpdateContactResponse = _models_module.UpdateContactResponse
         MergeEntitiesRequest = _models_module.MergeEntitiesRequest
         MergeEntitiesResponse = _models_module.MergeEntitiesResponse
-        PromoteTierRequest = _models_module.PromoteTierRequest
-        PromoteTierResponse = _models_module.PromoteTierResponse
-        _VALID_PROMOTE_TIERS = _models_module._VALID_PROMOTE_TIERS
         DismissQueueRequest = _models_module.DismissQueueRequest
         DismissQueueItemResult = _models_module.DismissQueueItemResult
         DismissQueueResponse = _models_module.DismissQueueResponse
@@ -5128,13 +5125,19 @@ async def patch_entity_dunbar_tier(
     """Pin or clear an entity's Dunbar tier.
 
     Accepts ``tier`` ∈ {5, 15, 50, 150, 500, 1500} to pin, or ``null`` to clear.
-    Resolves the entity to any one of its linked contacts, then delegates to
-    the canonical ``dunbar_tier_set`` engine. The override is stored as a fact
-    keyed by entity_id, so the choice of contact is irrelevant beyond
-    satisfying the engine's contract.
 
-    Returns 404 if the entity has no linked contact (override storage requires
-    one for the engine's bookkeeping).
+    When the entity has a linked contact, delegates to the canonical
+    ``dunbar_tier_set`` engine (which writes to the memory ``facts`` table,
+    keyed by entity_id).
+
+    When the entity has NO linked contact (contactless entity), the override is
+    written directly to the memory ``facts`` table, keyed by entity_id alone,
+    with a synthetic ``subject`` of ``entity:<entity_id>``. This allows
+    contactless entities to be pinned to a tier without first requiring a contact
+    to be linked.
+
+    Returns 404 if the entity does not exist.
+    Returns 422 if ``tier`` is not a valid Dunbar layer value.
     """
     from butlers.tools.relationship import dunbar as _dunbar
 
@@ -5150,27 +5153,87 @@ async def patch_entity_dunbar_tier(
         """,
         entity_id,
     )
-    if contact_row is None:
+
+    if contact_row is not None:
+        # Entity has a linked contact — use the canonical engine.
+        contact_id = contact_row["id"]
+        try:
+            result = await _dunbar.dunbar_tier_set(pool, contact_id, body.tier)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return DunbarTierOverrideResponse(
+            entity_id=entity_id,
+            contact_id=contact_id,
+            tier=result.get("tier"),
+            action=result["action"],
+            message=result["message"],
+        )
+
+    # Contactless entity: write the override directly without a contact row.
+    if body.tier is not None and body.tier not in _dunbar.VALID_TIERS:
+        valid_str = ", ".join(str(t) for t in sorted(_dunbar.VALID_TIERS))
         raise HTTPException(
-            status_code=404,
+            status_code=422,
             detail=(
-                f"Entity '{entity_id}' has no linked contact. "
-                "Link a contact before pinning a Dunbar tier."
+                f"Invalid tier value {body.tier!r}. "
+                f"Valid Dunbar tier values are: {valid_str}. "
+                "Pass tier=null to clear the override."
             ),
         )
-    contact_id = contact_row["id"]
 
-    try:
-        result = await _dunbar.dunbar_tier_set(pool, contact_id, body.tier)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    entity_id_str = str(entity_id)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Retract any existing active override for this entity.
+            await conn.execute(
+                """
+                UPDATE facts
+                SET validity = 'retracted'
+                WHERE predicate = 'dunbar_tier_override'
+                  AND scope = 'relationship'
+                  AND validity = 'active'
+                  AND entity_id = $1::uuid
+                """,
+                entity_id_str,
+            )
+            if body.tier is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO facts (
+                        subject,
+                        predicate,
+                        content,
+                        scope,
+                        entity_id,
+                        validity,
+                        permanence
+                    ) VALUES (
+                        $1, 'dunbar_tier_override', $2, 'relationship',
+                        $3::uuid, 'active', 'permanent'
+                    )
+                    """,
+                    f"entity:{entity_id_str}",
+                    str(body.tier),
+                    entity_id_str,
+                )
 
+    if body.tier is None:
+        return DunbarTierOverrideResponse(
+            entity_id=entity_id,
+            contact_id=None,
+            tier=None,
+            action="cleared",
+            message="Dunbar tier override cleared. Entity will use rank-based tier assignment.",
+        )
     return DunbarTierOverrideResponse(
         entity_id=entity_id,
-        contact_id=contact_id,
-        tier=result.get("tier"),
-        action=result["action"],
-        message=result["message"],
+        contact_id=None,
+        tier=body.tier,
+        action="set",
+        message=(
+            f"Dunbar tier override set to {body.tier}. "
+            f"Entity is pinned to tier {body.tier} regardless of computed rank."
+        ),
     )
 
 
@@ -6560,100 +6623,6 @@ async def forget_entity(
                 entity_id,
             )
     return Response(status_code=204)
-
-
-# ---------------------------------------------------------------------------
-# POST /entities/{entity_id}/promote-tier — write dunbar_tier_override fact
-# (entity-redesign Phase 2, bu-wmigz)
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/entities/{entity_id}/promote-tier",
-    response_model=PromoteTierResponse,
-    status_code=201,
-)
-async def promote_entity_tier(
-    entity_id: UUID,
-    body: PromoteTierRequest,
-    fastapi_response: Response,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> PromoteTierResponse:
-    """Pin an entity to a Dunbar tier by writing a ``dunbar_tier_override`` fact.
-
-    Calls the central writer ``relationship_assert_fact()`` with
-    ``predicate='dunbar_tier_override'`` and ``object=str(tier)`` so that
-    tier promotion is stored as a triple in ``relationship.entity_facts``, NOT as a
-    column write to ``public.entities.tier`` (Amendment 6).
-
-    The writer is idempotent on ``(subject, predicate, object)``: promoting to
-    the same tier a second time returns ``outcome='unchanged'`` with the
-    existing fact_id and HTTP 201.  Promoting to a different tier produces
-    ``outcome='superseded'``: the old override is marked superseded and a new
-    active row is inserted.
-
-    **Authorization**: owner-only write gate (Amendment 12a) — returns HTTP 403
-    with ``{"code": "owner_required"}`` when no owner entity is registered.
-
-    Returns 404 if the entity does not exist in ``public.entities``.
-
-    Returns 422 when ``tier`` is not one of the six valid Dunbar layer values
-    (5, 15, 50, 150, 500, 1500).
-
-    **Owner entity carve-out (RFC 0017 §2.3):** when the entity subject has role
-    ``'owner'``, the central writer parks the write as a ``pending_actions`` row.
-    The endpoint returns HTTP 202 with ``outcome='pending_approval'`` and
-    ``action_id`` set; ``fact_id`` is ``null``.
-    """
-    from butlers.tools.relationship.relationship_assert_fact import (
-        AssertOutcome,
-        relationship_assert_fact,
-    )
-
-    pool = _pool(db)
-
-    # Amendment 12a: owner-only write gate (roles-aware, see _assert_owner_role).
-    if (err := await _assert_owner_role(pool)) is not None:
-        return err
-
-    # Validate tier value before any DB access.
-    if body.tier not in _VALID_PROMOTE_TIERS:
-        valid_str = ", ".join(str(t) for t in sorted(_VALID_PROMOTE_TIERS))
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "invalid_tier",
-                "message": (
-                    f"Invalid tier value {body.tier!r}. Valid Dunbar tier values are: {valid_str}."
-                ),
-            },
-        )
-
-    # Entity existence check.
-    await _assert_entity_exists(pool, entity_id)
-
-    result = await relationship_assert_fact(
-        pool,
-        subject=entity_id,
-        predicate="dunbar_tier_override",
-        object=str(body.tier),
-        src="dashboard.promote-tier",
-        object_kind="literal",
-        conf=1.0,
-        verified=True,
-    )
-
-    if result.outcome == AssertOutcome.pending_approval:
-        # Owner carve-out: write parked for human approval → HTTP 202.
-        fastapi_response.status_code = 202
-
-    return PromoteTierResponse(
-        entity_id=entity_id,
-        tier=body.tier,
-        outcome=result.outcome.value,
-        fact_id=result.fact_id,
-        action_id=result.action_id,
-    )
 
 
 # ---------------------------------------------------------------------------
