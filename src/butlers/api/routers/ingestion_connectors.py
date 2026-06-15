@@ -30,6 +30,7 @@ Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 import os
@@ -42,9 +43,11 @@ from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
+from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.routers.audit import append as _audit_append
 
 logger = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/ingestion/connectors", tags=["ingestion"])
 
@@ -152,21 +155,6 @@ async def list_connector_summaries_with_aggregates(
             data={"connectors": [], "aggregates_available": aggregates_available}
         )
 
-    import datetime as dt
-
-    def _liveness(last_heartbeat_at: dt.datetime | None) -> str:
-        if last_heartbeat_at is None:
-            return "offline"
-        now = dt.datetime.now(dt.UTC)
-        age = (now - last_heartbeat_at).total_seconds()
-        if age < -300:
-            return "offline"
-        elif age <= 300:
-            return "online"
-        elif age <= 900:
-            return "stale"
-        return "offline"
-
     # Build per-connector hourly timeseries from ingestion_events in one query.
     # Returns a 24-element list (oldest hour first, newest last) — zero-filled for
     # missing buckets.  Sourced from public.ingestion_events (not Prometheus) so
@@ -174,10 +162,10 @@ async def list_connector_summaries_with_aggregates(
     hourly_map: dict[tuple[str, str], list[int]] = {}
     if rows:
         try:
-            now_utc = dt.datetime.now(dt.UTC)
+            now_utc = _dt.datetime.now(_dt.UTC)
             # Truncate to the start of the current hour so bucket 23 is the most recent
             # complete-or-in-progress hour.
-            window_start = now_utc.replace(minute=0, second=0, microsecond=0) - dt.timedelta(
+            window_start = now_utc.replace(minute=0, second=0, microsecond=0) - _dt.timedelta(
                 hours=23
             )
             hourly_rows = await pool.fetch(
@@ -278,60 +266,61 @@ async def get_cross_connector_summary_with_aggregates(
     except Exception:
         pass
 
+    _zero_summary = {
+        "total_connectors": 0,
+        "connectors_online": 0,
+        "connectors_stale": 0,
+        "connectors_offline": 0,
+        "total_messages_ingested": 0,
+        "total_messages_failed": 0,
+        "overall_error_rate_pct": 0.0,
+        "aggregates_available": aggregates_available,
+    }
+
     try:
-        row = await pool.fetchrow(
+        # Fetch per-connector heartbeat + message counters.
+        # Liveness (online/stale/offline) is computed in Python from
+        # last_heartbeat_at using the same thresholds as /summaries, so
+        # both endpoints always agree on per-connector liveness counts.
+        rows = await pool.fetch(
             """
             SELECT
-                count(*) AS total_connectors,
-                count(*) FILTER (WHERE state = 'healthy') AS online_count,
-                count(*) FILTER (WHERE state = 'degraded') AS stale_count,
-                count(*) FILTER (WHERE state = 'error') AS offline_count,
-                coalesce(sum(counter_messages_ingested), 0) AS total_messages_ingested,
-                coalesce(sum(counter_messages_failed), 0) AS total_messages_failed
+                last_heartbeat_at,
+                coalesce(counter_messages_ingested, 0) AS messages_ingested,
+                coalesce(counter_messages_failed, 0)   AS messages_failed
             FROM connector_registry
             WHERE deleted_at IS NULL
             """,
         )
     except Exception:
         logger.warning("cross-summary: failed to query connector_registry", exc_info=True)
-        return ApiResponse[dict](
-            data={
-                "total_connectors": 0,
-                "connectors_online": 0,
-                "connectors_stale": 0,
-                "connectors_offline": 0,
-                "total_messages_ingested": 0,
-                "total_messages_failed": 0,
-                "overall_error_rate_pct": 0.0,
-                "aggregates_available": aggregates_available,
-            }
-        )
+        return ApiResponse[dict](data=_zero_summary)
 
-    if row is None:
-        return ApiResponse[dict](
-            data={
-                "total_connectors": 0,
-                "connectors_online": 0,
-                "connectors_stale": 0,
-                "connectors_offline": 0,
-                "total_messages_ingested": 0,
-                "total_messages_failed": 0,
-                "overall_error_rate_pct": 0.0,
-                "aggregates_available": aggregates_available,
-            }
-        )
+    if rows is None:
+        return ApiResponse[dict](data=_zero_summary)
 
-    total_ingested = int(row["total_messages_ingested"] or 0)
-    total_failed = int(row["total_messages_failed"] or 0)
+    online = stale = offline = 0
+    total_ingested = total_failed = 0
+    for r in rows:
+        lv = _liveness(r["last_heartbeat_at"])
+        if lv == "online":
+            online += 1
+        elif lv == "stale":
+            stale += 1
+        else:
+            offline += 1
+        total_ingested += int(r["messages_ingested"] or 0)
+        total_failed += int(r["messages_failed"] or 0)
+
     total_attempts = total_ingested + total_failed
     error_rate_pct = (total_failed / total_attempts * 100.0) if total_attempts > 0 else 0.0
 
     return ApiResponse[dict](
         data={
-            "total_connectors": int(row["total_connectors"] or 0),
-            "connectors_online": int(row["online_count"] or 0),
-            "connectors_stale": int(row["stale_count"] or 0),
-            "connectors_offline": int(row["offline_count"] or 0),
+            "total_connectors": len(rows),
+            "connectors_online": online,
+            "connectors_stale": stale,
+            "connectors_offline": offline,
             "total_messages_ingested": total_ingested,
             "total_messages_failed": total_failed,
             "overall_error_rate_pct": round(error_rate_pct, 2),

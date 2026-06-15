@@ -32,6 +32,7 @@ from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.oauth_scope_registry import (
     build_scope_rows,
     compute_auth_status,
@@ -1005,18 +1006,17 @@ async def get_connectors_summary(
     pool = _pool(db)
 
     try:
-        row = await pool.fetchrow(
+        # Fetch per-connector heartbeat + message counters so liveness can be
+        # computed in Python, consistent with /api/ingestion/connectors/summaries
+        # and /cross-summary (all three now share the same liveness thresholds).
+        rows = await pool.fetch(
             """
             SELECT
-                count(*) AS total_connectors,
-                count(*) FILTER (WHERE state = 'healthy') AS online_count,
-                count(*) FILTER (WHERE state = 'degraded') AS stale_count,
-                count(*) FILTER (WHERE state = 'error') AS offline_count,
-                count(*) FILTER (WHERE state NOT IN ('healthy','degraded','error'))
-                    AS unknown_count,
-                coalesce(sum(counter_messages_ingested), 0) AS total_messages_ingested,
-                coalesce(sum(counter_messages_failed), 0) AS total_messages_failed
+                last_heartbeat_at,
+                coalesce(counter_messages_ingested, 0) AS messages_ingested,
+                coalesce(counter_messages_failed, 0)   AS messages_failed
             FROM connector_registry
+            WHERE deleted_at IS NULL
             """,
         )
     except Exception:
@@ -1025,20 +1025,30 @@ async def get_connectors_summary(
         )
         return ApiResponse[ConnectorSummary](data=ConnectorSummary())
 
-    if row is None:
+    if rows is None:
         return ApiResponse[ConnectorSummary](data=ConnectorSummary())
 
-    total_ingested = int(row["total_messages_ingested"] or 0)
-    total_failed = int(row["total_messages_failed"] or 0)
+    online = stale = offline = 0
+    total_ingested = total_failed = 0
+    for r in rows:
+        lv = _liveness(r["last_heartbeat_at"])
+        if lv == "online":
+            online += 1
+        elif lv == "stale":
+            stale += 1
+        else:
+            offline += 1
+        total_ingested += int(r["messages_ingested"] or 0)
+        total_failed += int(r["messages_failed"] or 0)
+
     total_attempts = total_ingested + total_failed
     error_rate_pct = (total_failed / total_attempts * 100.0) if total_attempts > 0 else 0.0
 
     summary = ConnectorSummary(
-        total_connectors=int(row["total_connectors"] or 0),
-        online_count=int(row["online_count"] or 0),
-        stale_count=int(row["stale_count"] or 0),
-        offline_count=int(row["offline_count"] or 0),
-        unknown_count=int(row["unknown_count"] or 0),
+        total_connectors=len(rows),
+        online_count=online,
+        stale_count=stale,
+        offline_count=offline,
         total_messages_ingested=total_ingested,
         total_messages_failed=total_failed,
         error_rate_pct=round(error_rate_pct, 2),

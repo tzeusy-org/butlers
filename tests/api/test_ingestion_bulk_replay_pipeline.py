@@ -1126,22 +1126,30 @@ async def test_connector_summaries_includes_aggregates_available_false_no_promet
     assert "connectors" in body["data"]
 
 
+def _cross_summary_row(last_heartbeat_at, messages_ingested=0, messages_failed=0):
+    """Build a mock asyncpg record for the cross-summary per-connector fetch."""
+    row = MagicMock()
+    data = {
+        "last_heartbeat_at": last_heartbeat_at,
+        "messages_ingested": messages_ingested,
+        "messages_failed": messages_failed,
+    }
+    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    return row
+
+
 async def test_cross_summary_includes_aggregates_available_false_no_prometheus(app):
     """GET /api/ingestion/connectors/cross-summary includes aggregates_available=false
     when PROMETHEUS_URL is not configured."""
+    import datetime as dt
+
+    now = dt.datetime.now(dt.UTC)
+    # Two connectors: one recently alive (online), one with no heartbeat (offline).
     pool = _make_shared_pool(
-        fetchrow_val=MagicMock(
-            __getitem__=MagicMock(
-                side_effect=lambda k: {
-                    "total_connectors": 2,
-                    "online_count": 1,
-                    "stale_count": 0,
-                    "offline_count": 1,
-                    "total_messages_ingested": 100,
-                    "total_messages_failed": 5,
-                }[k]
-            )
-        )
+        rows=[
+            _cross_summary_row(last_heartbeat_at=now, messages_ingested=100, messages_failed=5),
+            _cross_summary_row(last_heartbeat_at=None),
+        ]
     )
     _app_with_connectors_db(app, switchboard_pool=pool)
 
@@ -1166,20 +1174,10 @@ async def test_cross_summary_includes_aggregates_available_false_no_prometheus(a
 async def test_cross_summary_aggregates_available_true_with_prometheus(app):
     """GET /api/ingestion/connectors/cross-summary sets aggregates_available=true
     when PROMETHEUS_URL is configured (even without a cache hit)."""
-    pool = _make_shared_pool(
-        fetchrow_val=MagicMock(
-            __getitem__=MagicMock(
-                side_effect=lambda k: {
-                    "total_connectors": 1,
-                    "online_count": 1,
-                    "stale_count": 0,
-                    "offline_count": 0,
-                    "total_messages_ingested": 50,
-                    "total_messages_failed": 0,
-                }[k]
-            )
-        )
-    )
+    import datetime as dt
+
+    now = dt.datetime.now(dt.UTC)
+    pool = _make_shared_pool(rows=[_cross_summary_row(last_heartbeat_at=now, messages_ingested=50)])
     _app_with_connectors_db(app, switchboard_pool=pool)
 
     # Clear pipeline cache so we rely only on PROMETHEUS_URL presence
@@ -1196,6 +1194,60 @@ async def test_cross_summary_aggregates_available_true_with_prometheus(app):
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["aggregates_available"] is True
+
+
+async def test_cross_summary_counts_by_liveness_not_state(app):
+    """GET /api/ingestion/connectors/cross-summary online/stale/offline counts are
+    derived from heartbeat liveness, consistent with /summaries per-connector
+    liveness.
+
+    Regression: previous impl counted by connector state (healthy/degraded/error),
+    causing online:16 while /summaries showed >=4 connectors with liveness:'offline'.
+    bu-e0s9p.
+    """
+    import datetime as dt
+
+    now = dt.datetime.now(dt.UTC)
+
+    # Three connectors with distinct liveness outcomes:
+    # 1. Online:  heartbeat 30s ago  → liveness "online"
+    # 2. Stale:   heartbeat 400s ago → liveness "stale"
+    # 3. Offline: no heartbeat       → liveness "offline"
+    online_heartbeat = now - dt.timedelta(seconds=30)
+    stale_heartbeat = now - dt.timedelta(seconds=400)
+
+    pool = _make_shared_pool(
+        rows=[
+            _cross_summary_row(last_heartbeat_at=online_heartbeat, messages_ingested=10),
+            _cross_summary_row(last_heartbeat_at=stale_heartbeat, messages_ingested=5),
+            _cross_summary_row(last_heartbeat_at=None, messages_ingested=0),
+        ]
+    )
+    _app_with_connectors_db(app, switchboard_pool=pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/cross-summary")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+
+    assert data["total_connectors"] == 3
+    # Each bucket must reflect liveness, not state.
+    assert data["connectors_online"] == 1, "only the 30s-old heartbeat is online"
+    assert data["connectors_stale"] == 1, "only the 400s-old heartbeat is stale"
+    assert data["connectors_offline"] == 1, "the null-heartbeat connector is offline"
+    # Totals must sum correctly.
+    assert (
+        data["connectors_online"] + data["connectors_stale"] + data["connectors_offline"]
+        == data["total_connectors"]
+    )
 
 
 # ---------------------------------------------------------------------------
