@@ -292,6 +292,72 @@ async def test_hourly_events_fallback_to_zeros_on_query_failure(app: FastAPI) ->
     assert all(v == 0 for v in hourly)
 
 
+async def test_today_messages_ingested_reflects_24h_sum_not_lifetime_counter(
+    app: FastAPI,
+) -> None:
+    """today.messages_ingested must be the 24h sum from ingestion_events, not the cumulative counter.
+
+    The connector registry row carries counter_messages_ingested=10_000 (lifetime / cumulative
+    since process start).  The hourly_events window has only 3 events in one bucket.
+    The API must return today.messages_ingested == 3, not 10_000.
+
+    Regression guard for bu-1gufm: the ~1.78B "today" figure was produced by mapping the
+    lifetime counter directly onto today.messages_ingested.
+    """
+    now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
+    window_start = now - dt.timedelta(hours=23)
+
+    registry_rows = [
+        _make_row(
+            {
+                "connector_type": "owntracks",
+                "endpoint_identity": "phone",
+                "state": "healthy",
+                "error_message": None,
+                "version": "1.0",
+                "uptime_s": 3600,
+                "last_heartbeat_at": None,
+                "first_seen_at": dt.datetime(2024, 1, 1, tzinfo=dt.UTC),
+                # Simulates the real bug: a huge cumulative lifetime counter
+                "counter_messages_ingested": 1_781_451_647,
+                "counter_messages_failed": 0,
+            }
+        )
+    ]
+    # Only 3 real events in the last 24h window
+    hourly_rows = [
+        _hourly_row(
+            connector_type="owntracks",
+            endpoint_identity="phone",
+            hour_bucket=window_start + dt.timedelta(hours=12),
+            event_count=3,
+        ),
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, hourly_rows])
+    _wire_db(app, pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    connector = resp.json()["data"]["connectors"][0]
+
+    # The REAL 24h count is 3 (from ingestion_events hourly sum)
+    assert connector["today"]["messages_ingested"] == 3, (
+        f"today.messages_ingested should be the 24h sum (3), "
+        f"not the lifetime counter ({connector['today']['messages_ingested']})"
+    )
+    # The hourly array itself is unchanged
+    assert sum(connector["hourly_events"]) == 3
+
+
 async def test_hourly_events_empty_registry_returns_200(app: FastAPI) -> None:
     """Summaries endpoint with zero connectors still returns 200 with empty connectors list."""
     # Empty registry — the hourly fetch should NOT be made (no rows → skip)

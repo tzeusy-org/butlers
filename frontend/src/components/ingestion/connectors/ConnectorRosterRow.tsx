@@ -3,7 +3,7 @@
  *
  * Columns (left → right):
  *   health dot · channel name+kind · function description+meta · sparkline ·
- *   auth pill · events · sessions · cost · disclosure
+ *   auth pill · events (last 24h) · disclosure
  *
  * The auth pill uses the same status label and color as the AttentionStrip
  * and the connector detail ReauthCallout (per spec AC2: consistent treatment).
@@ -35,24 +35,14 @@ interface ConnectorRosterRowProps {
   connector: ConnectorSummary
   /** Pre-computed 24h hourly spark data (length-24 array). Absent → all zeros. */
   spark24h?: number[]
-  /** Pre-computed 24h event count. Falls back to today.messages_ingested. */
+  /** Pre-computed 24h event count. Falls back to sum of hourly_events. */
   events24h?: number
-  /** Pre-computed 24h session count. */
-  sessions24h?: number
-  /** Pre-computed 24h cost in USD. */
-  cost24h?: number
 }
 
 function formatNum(n: number): string {
   if (n >= 10_000) return Math.round(n / 1000) + 'k'
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
   return String(n)
-}
-
-function formatCost(n: number): string {
-  if (n === 0) return '—'
-  if (n < 0.01) return '<$0.01'
-  return `$${n.toFixed(2)}`
 }
 
 /**
@@ -64,17 +54,14 @@ export function ConnectorRosterRow({
   connector,
   spark24h,
   events24h,
-  sessions24h,
-  cost24h,
 }: ConnectorRosterRowProps) {
   const c = connector
   const info = deriveConnectorDispatchInfo(c)
   const detailPath = `/ingestion/connectors/${encodeURIComponent(c.connector_type)}/${encodeURIComponent(c.endpoint_identity)}`
 
   const bars = spark24h ?? Array(24).fill(0)
+  // today.messages_ingested is already the 24h sum on the backend (derived from hourly_events).
   const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
-  const sessionsCount = sessions24h ?? 0
-  const costValue = cost24h ?? 0
 
   const authLabel = authStatusLabel(info.authStatus)
   const authColorClass = authStatusColor(info.authStatus)
@@ -167,21 +154,9 @@ export function ConnectorRosterRow({
         </div>
       </div>
 
-      {/* Events */}
+      {/* Events (last 24h) */}
       <div className="font-mono text-[12px] tabular-nums text-right">
         {formatNum(eventsCount)}
-      </div>
-
-      {/* Sessions */}
-      <div className="font-mono text-[12px] tabular-nums text-right text-muted-foreground">
-        {sessionsCount > 0 ? sessionsCount : '—'}
-      </div>
-
-      {/* Cost */}
-      <div
-        className={`font-mono text-[12px] tabular-nums text-right ${costValue > 0 ? 'text-foreground' : 'text-muted-foreground/50'}`}
-      >
-        {formatCost(costValue)}
       </div>
 
       {/* Disclosure */}

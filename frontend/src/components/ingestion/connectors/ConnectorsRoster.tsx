@@ -27,7 +27,7 @@
 
 import { Link } from 'react-router'
 import {
-  useConnectorSummaries,
+  useConnectorSummariesWithAggregates,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorSummary } from '@/api/types'
@@ -48,8 +48,6 @@ const COLUMN_LABELS = [
   '24h activity',
   'auth',
   'events',
-  'sess',
-  'cost',
   '',          // disclosure
 ]
 
@@ -100,10 +98,12 @@ function formatNum(n: number): string {
  * does not add new backend endpoints.
  */
 export function ConnectorsRoster() {
-  const { data: connectorsResp, isLoading: connectorsLoading } = useConnectorSummaries()
+  const { data: connectorsResp, isLoading: connectorsLoading } =
+    useConnectorSummariesWithAggregates()
   const { data: availableResp } = useAvailableConnectors()
 
-  const allConnectors = connectorsResp?.data ?? []
+  // The new endpoint returns { connectors: [...], aggregates_available: bool }
+  const allConnectors: ConnectorSummary[] = connectorsResp?.data?.connectors ?? []
   const sorted = sortConnectors(allConnectors)
 
   // Available dormant profiles (catalog entries not yet registered)
@@ -120,6 +120,7 @@ export function ConnectorsRoster() {
   const authNeededCount = allConnectors.filter(
     (c) => deriveConnectorDispatchInfo(c).authStatus === 'needs_reauth',
   ).length
+  // today.messages_ingested is already the 24h sum on the backend (derived from hourly_events).
   const totalEvents24h = allConnectors.reduce(
     (s, c) => s + (c.today?.messages_ingested ?? 0),
     0,
@@ -148,7 +149,7 @@ export function ConnectorsRoster() {
         {COLUMN_LABELS.map((label, i) => (
           <span
             key={i}
-            className={`font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70 ${i >= 5 && i <= 7 ? 'text-right' : ''}`}
+            className={`font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70 ${i === 5 ? 'text-right' : ''}`}
           >
             {label}
           </span>
@@ -185,7 +186,7 @@ export function ConnectorsRoster() {
           { label: 'healthy', value: formatNum(healthyCount) },
           { label: 'needs attention', value: formatNum(totalConnectors - healthyCount) },
           { label: 'auth · error', value: formatNum(authNeededCount) },
-          { label: 'events · today', value: formatNum(totalEvents24h) },
+          { label: 'events · 24h', value: formatNum(totalEvents24h) },
         ].map(({ label, value }) => (
           <div key={label}>
             <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground">

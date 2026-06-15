@@ -24,12 +24,12 @@ import { MemoryRouter } from 'react-router'
 // ---------------------------------------------------------------------------
 
 vi.mock('@/hooks/use-ingestion', () => ({
-  useConnectorSummaries: vi.fn(),
+  useConnectorSummariesWithAggregates: vi.fn(),
   useAvailableConnectors: vi.fn(),
 }))
 
 import {
-  useConnectorSummaries,
+  useConnectorSummariesWithAggregates,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorSummary, ConnectorProfile } from '@/api/types'
@@ -118,8 +118,12 @@ function mockHooks(
   connectors: ConnectorSummary[],
   profiles: ConnectorProfile[] = [],
 ) {
-  vi.mocked(useConnectorSummaries).mockReturnValue(
-    makeResult({ data: connectors }) as ReturnType<typeof useConnectorSummaries>,
+  // The new endpoint returns { connectors: [...], aggregates_available: bool }
+  // wrapped in ApiResponse<ConnectorSummariesResponse>: { data: { connectors, aggregates_available } }
+  vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
+    makeResult({ data: { connectors, aggregates_available: true } }) as ReturnType<
+      typeof useConnectorSummariesWithAggregates
+    >,
   )
 
   vi.mocked(useAvailableConnectors).mockReturnValue(

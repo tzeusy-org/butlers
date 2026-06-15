@@ -101,6 +101,11 @@ async def list_connector_summaries_with_aggregates(
     last).  This is sourced from ``public.ingestion_events`` (not Prometheus)
     so it is always populated regardless of ``aggregates_available``.
 
+    ``today.messages_ingested`` is the **true last-24h count** derived by
+    summing ``hourly_events``.  The raw ``counter_messages_ingested`` column
+    is a cumulative lifetime counter (since process start) and is intentionally
+    not exposed here to avoid mislabeling lifetime volumes as "today".
+
     Always returns HTTP 200 — connector registry errors fall back to an empty list.
     Hourly timeseries errors fall back to all-zero ``hourly_events`` arrays per connector.
     """
@@ -208,6 +213,11 @@ async def list_connector_summaries_with_aggregates(
     for r in rows:
         liveness = _liveness(r["last_heartbeat_at"])
         key = (r["connector_type"], r["endpoint_identity"])
+        hourly = hourly_map.get(key, [0] * 24)
+        # Sum the hourly timeseries (already a real 24h window from public.ingestion_events)
+        # to produce a true last-24h ingestion count.  The raw counter_messages_ingested is
+        # cumulative since process start and must NOT be used as a "today" figure.
+        messages_ingested_24h = sum(hourly)
         connectors.append(
             {
                 "connector_type": r["connector_type"],
@@ -222,10 +232,10 @@ async def list_connector_summaries_with_aggregates(
                 ),
                 "first_seen_at": r["first_seen_at"].isoformat(),
                 "today": {
-                    "messages_ingested": r["counter_messages_ingested"] or 0,
+                    "messages_ingested": messages_ingested_24h,
                     "messages_failed": r["counter_messages_failed"] or 0,
                 },
-                "hourly_events": hourly_map.get(key, [0] * 24),
+                "hourly_events": hourly,
             }
         )
 
