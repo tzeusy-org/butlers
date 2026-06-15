@@ -48,6 +48,7 @@ import {
 import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
+import { sortChannelsPrimaryFirst } from "./contact-channel-utils";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -647,8 +648,11 @@ function ContactRow({
   const [expanded, setExpanded] = useState(false);
   const [addingInfo, setAddingInfo] = useState(false);
 
-  const nonSecuredChannels = contact.contact_info.filter((ci) => !ci.secured);
-  const securedChannels = contact.contact_info.filter((ci) => ci.secured);
+  // Primary-first ordering: is_primary=true entries come before is_primary=false
+  // entries; stable within each group (preserves server-side insertion order).
+  const sortedChannels = sortChannelsPrimaryFirst(contact.contact_info);
+  const nonSecuredChannels = sortedChannels.filter((ci) => !ci.secured);
+  const securedChannels = sortedChannels.filter((ci) => ci.secured);
   const hasChannels = contact.contact_info.length > 0;
 
   // Preferred channel chip text — use contactInfoTypeLabel for consistent
@@ -748,7 +752,7 @@ function ContactRow({
         <div className="pb-3 pl-6 pr-1 space-y-0.5">
           {hasChannels ? (
             <div className="space-y-0.5">
-              {contact.contact_info.map((ci) => (
+              {sortedChannels.map((ci) => (
                 <ExpandedContactInfoRow
                   key={ci.id}
                   entry={ci}

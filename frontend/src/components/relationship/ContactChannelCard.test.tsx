@@ -16,6 +16,10 @@
  * - ExpandedContactInfoRow: delete mutation wired to useDeleteEntityContact
  * - AddChannelInfoForm: add mutation wired to useAddEntityContact
  * - Secured reveal: source="entity_facts" entries → useRevealEntityContactSecret
+ * - sortChannelsPrimaryFirst: primary-first ordering unit tests (bu-dvquo)
+ * - ContactRow: primary-first rendering in collapsed + expanded views (bu-dvquo)
+ * - Amber unverified dot: degraded-honest (no dot — ContactInfoEntry lacks
+ *   per-channel verified field; follow-up required) (bu-dvquo)
  *
  * IMPORTANT: Secured reveal tests assert that the secret value does NOT appear
  * in the masked render. They DO NOT assert the actual secret value to prevent
@@ -28,6 +32,7 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ContactChannelCard, ExpandedContactInfoRow } from "@/components/relationship/ContactChannelCard";
+import { sortChannelsPrimaryFirst } from "@/components/relationship/contact-channel-utils";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
 import type { LinkedContactSummary, ContactInfoEntry } from "@/api/types";
 
@@ -750,5 +755,199 @@ describe("ContactChannelCard — secured entity_facts entry in collapsed view", 
     setLinkedContacts([SECURED_ENTITY_FACTS_CONTACT]);
     const html = renderCard();
     expect(html).toContain('data-testid="contact-row-contact-005"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: sortChannelsPrimaryFirst — unit tests (bu-dvquo)
+// ---------------------------------------------------------------------------
+
+describe("sortChannelsPrimaryFirst — primary-first ordering", () => {
+  const makeEntry = (id: string, isPrimary: boolean): ContactInfoEntry => ({
+    id,
+    type: "email",
+    value: `${id}@example.com`,
+    is_primary: isPrimary,
+    secured: false,
+    parent_id: null,
+    context: null,
+    source: "entity_facts",
+    predicate: "has-email",
+    value_hash: id,
+  });
+
+  it("returns empty array unchanged", () => {
+    expect(sortChannelsPrimaryFirst([])).toEqual([]);
+  });
+
+  it("returns single entry unchanged", () => {
+    const entry = makeEntry("a", false);
+    expect(sortChannelsPrimaryFirst([entry])).toEqual([entry]);
+  });
+
+  it("places is_primary=true entry before is_primary=false entry", () => {
+    const nonPrimary = makeEntry("a", false);
+    const primary = makeEntry("b", true);
+    const result = sortChannelsPrimaryFirst([nonPrimary, primary]);
+    expect(result[0].id).toBe("b"); // primary first
+    expect(result[1].id).toBe("a");
+  });
+
+  it("preserves relative order of non-primary entries (stable sort)", () => {
+    const a = makeEntry("a", false);
+    const b = makeEntry("b", false);
+    const c = makeEntry("c", false);
+    const result = sortChannelsPrimaryFirst([a, b, c]);
+    expect(result.map((e) => e.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("preserves relative order of primary entries (stable sort)", () => {
+    const p1 = makeEntry("p1", true);
+    const p2 = makeEntry("p2", true);
+    const result = sortChannelsPrimaryFirst([p1, p2]);
+    expect(result.map((e) => e.id)).toEqual(["p1", "p2"]);
+  });
+
+  it("groups all primary entries before all non-primary entries", () => {
+    const n1 = makeEntry("n1", false);
+    const p1 = makeEntry("p1", true);
+    const n2 = makeEntry("n2", false);
+    const p2 = makeEntry("p2", true);
+    const result = sortChannelsPrimaryFirst([n1, p1, n2, p2]);
+    expect(result[0].is_primary).toBe(true);
+    expect(result[1].is_primary).toBe(true);
+    expect(result[2].is_primary).toBe(false);
+    expect(result[3].is_primary).toBe(false);
+  });
+
+  it("does not mutate the input array", () => {
+    const a = makeEntry("a", false);
+    const b = makeEntry("b", true);
+    const input = [a, b];
+    const inputCopy = [...input];
+    sortChannelsPrimaryFirst(input);
+    expect(input).toEqual(inputCopy); // original untouched
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: ContactRow — primary-first rendering in collapsed + expanded views
+// (bu-dvquo)
+//
+// The collapsed view renders nonSecuredChannels chips; the test verifies that
+// the primary channel chip appears first by inspecting the order of channel
+// values in the rendered HTML string.
+//
+// The expanded view (via ExpandedContactInfoRow) renders entries in primary-first
+// order. Since renderToStaticMarkup renders the initial collapsed state, we
+// test ordering through the chip badge text positions in the HTML.
+// ---------------------------------------------------------------------------
+
+// Contact with a non-primary email followed by a primary phone (insertion order
+// is intentionally non-primary-first to assert reordering).
+const CI_NON_PRIMARY_EMAIL: ContactInfoEntry = {
+  id: "ci-ord-01",
+  type: "email",
+  value: "order-test@example.com",
+  is_primary: false,
+  secured: false,
+  parent_id: null,
+  context: null,
+  source: "entity_facts",
+  predicate: "has-email",
+  value_hash: "ord01",
+};
+
+const CI_PRIMARY_PHONE: ContactInfoEntry = {
+  id: "ci-ord-02",
+  type: "phone",
+  value: "555-ORDER",
+  is_primary: true,
+  secured: false,
+  parent_id: null,
+  context: null,
+  source: "entity_facts",
+  predicate: "has-phone",
+  value_hash: "ord02",
+};
+
+const ORDERING_CONTACT: LinkedContactSummary = {
+  id: "contact-ord",
+  full_name: "Order Tester",
+  email: null,
+  phone: null,
+  // insertion order: non-primary email first, primary phone second
+  contact_info: [CI_NON_PRIMARY_EMAIL, CI_PRIMARY_PHONE],
+  labels: [],
+  preferred_channel: null,
+  reachable_channels: [],
+};
+
+describe("ContactChannelCard — primary-first channel ordering (bu-dvquo)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
+  });
+
+  it("renders the primary phone chip before the non-primary email chip in collapsed view", () => {
+    setLinkedContacts([ORDERING_CONTACT]);
+    const html = renderCard();
+    // Both values must appear
+    expect(html).toContain("555-ORDER");
+    expect(html).toContain("order-test@example.com");
+    // Primary phone must appear BEFORE non-primary email in the HTML
+    const phonePos = html.indexOf("555-ORDER");
+    const emailPos = html.indexOf("order-test@example.com");
+    expect(phonePos).toBeGreaterThan(-1);
+    expect(emailPos).toBeGreaterThan(-1);
+    expect(phonePos).toBeLessThan(emailPos);
+  });
+
+  it("never collapses multi-valued channels — all non-secured chips visible (up to display cap)", () => {
+    setLinkedContacts([ORDERING_CONTACT]);
+    const html = renderCard();
+    // Both channels must be shown (only 2 entries; cap is 3)
+    expect(html).toContain("555-ORDER");
+    expect(html).toContain("order-test@example.com");
+    // The "+X more" overflow badge must NOT appear for 2 entries
+    expect(html).not.toContain("more");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Amber unverified dot — degraded-honest (bu-dvquo)
+//
+// ContactInfoEntry carries no per-channel `verified` field.
+// The amber dot treatment requires a backend schema addition (follow-up).
+// This test suite documents the degraded state: no amber dot is rendered.
+//
+// When the backend ships `verified: boolean` on ContactInfoEntry and the
+// frontend wires it, these tests should be replaced by positive amber-dot
+// assertions. See: bu-dvquo "ContactInfoEntry lacks verified field" follow-up.
+// ---------------------------------------------------------------------------
+
+describe("ContactChannelCard — no amber dot (ContactInfoEntry lacks verified field, bu-dvquo)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
+    vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
+  });
+
+  it("renders without amber dot indicators — no verified field in ContactInfoEntry", () => {
+    setLinkedContacts([CONTACT_ONE]);
+    const html = renderCard();
+    // No amber dot data attribute — verified field is absent from the data shape
+    expect(html).not.toContain('data-verified="false"');
+    expect(html).not.toContain('data-unverified');
+  });
+
+  it("renders all channel entries regardless of missing verified flag", () => {
+    setLinkedContacts([CONTACT_ONE]);
+    const html = renderCard();
+    // All channels still render; degraded display does not hide entries
+    expect(html).toContain("alice@example.com");
   });
 });
