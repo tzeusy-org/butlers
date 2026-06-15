@@ -69,7 +69,7 @@ vi.mock("@/hooks/use-entities", () => ({
     isFetching: false,
     error: null,
   })),
-  useRelationshipEntityQueue: (...args: unknown[]) => useRelationshipEntityQueue(...args),
+  useRelationshipEntityQueue: (...args: Parameters<typeof useRelationshipEntityQueue>) => useRelationshipEntityQueue(...args),
   useCompareEntities: vi.fn(() => ({
     mutateAsync: vi.fn().mockResolvedValue({
       a: { entity: { id: "entity-001", canonical_name: "A", entity_type: "person", aliases: [], tier: null, state: "active" }, identity_facts: [], narrative_facts: [] },

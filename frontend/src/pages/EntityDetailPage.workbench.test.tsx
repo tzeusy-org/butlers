@@ -73,12 +73,12 @@ vi.mock("@/hooks/use-entities", () => ({
   useMarkEntityView: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityCoreDates: vi.fn(() => ({ data: { items: [] }, isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useEntityNeighbours: (...args: unknown[]) => useEntityNeighbours(...args),
-  useRelationshipEntities: (...args: unknown[]) => useRelationshipEntities(...args),
-  useRelationshipEntitiesByIds: (...args: unknown[]) => useRelationshipEntitiesByIds(...args),
+  useEntityNeighbours: (...args: Parameters<typeof useEntityNeighbours>) => useEntityNeighbours(...args),
+  useRelationshipEntities: (...args: Parameters<typeof useRelationshipEntities>) => useRelationshipEntities(...args),
+  useRelationshipEntitiesByIds: (...args: Parameters<typeof useRelationshipEntitiesByIds>) => useRelationshipEntitiesByIds(...args),
   useArchiveRelationshipEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useEntityFacts: (...args: unknown[]) => useEntityFacts(...args),
-  useRelationshipEntityQueue: (...args: unknown[]) => useRelationshipEntityQueue(...args),
+  useEntityFacts: (...args: Parameters<typeof useEntityFacts>) => useEntityFacts(...args),
+  useRelationshipEntityQueue: (...args: Parameters<typeof useRelationshipEntityQueue>) => useRelationshipEntityQueue(...args),
   useCompareEntities: vi.fn(() => ({
     mutateAsync: vi.fn().mockResolvedValue({
       a: { entity: { id: "entity-001", canonical_name: "A", entity_type: "person", aliases: [], tier: null, state: "active" }, identity_facts: [], narrative_facts: [] },

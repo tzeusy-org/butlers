@@ -17,7 +17,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest"
 const mockGetSessions = vi.fn()
 
 vi.mock("@/api/index.ts", () => ({
-  getSessions: (...args: unknown[]) => mockGetSessions(...args),
+  getSessions: (...args: Parameters<typeof mockGetSessions>) => mockGetSessions(...args),
 }))
 
 // Must import after mock registration

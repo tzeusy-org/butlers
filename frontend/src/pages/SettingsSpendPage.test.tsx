@@ -28,7 +28,7 @@ import SettingsSpendPage from "@/pages/SettingsSpendPage"
 const apiFetchMock = vi.fn()
 
 vi.mock("@/api/client", () => ({
-  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
+  apiFetch: (...args: Parameters<typeof apiFetchMock>) => apiFetchMock(...args),
 }))
 
 vi.mock("@/hooks/use-spend-stream", () => ({

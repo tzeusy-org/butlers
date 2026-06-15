@@ -59,27 +59,27 @@ function setDefaults() {
 }
 
 vi.mock("@/hooks/use-butlers", () => ({
-  useButlers: (...args: unknown[]) => mockUseButlers(...args),
+  useButlers: (...args: Parameters<typeof mockUseButlers>) => mockUseButlers(...args),
 }))
 
 vi.mock("@/hooks/use-general", () => ({
-  useRegistry: (...args: unknown[]) => mockUseRegistry(...args),
+  useRegistry: (...args: Parameters<typeof mockUseRegistry>) => mockUseRegistry(...args),
 }))
 
 vi.mock("@/hooks/use-system", () => ({
-  useButlerHeartbeats: (...args: unknown[]) => mockUseButlerHeartbeats(...args),
+  useButlerHeartbeats: (...args: Parameters<typeof mockUseButlerHeartbeats>) => mockUseButlerHeartbeats(...args),
 }))
 
 vi.mock("@/hooks/use-spend", () => ({
-  useSpendSummary: (...args: unknown[]) => mockUseSpendSummary(...args),
+  useSpendSummary: (...args: Parameters<typeof mockUseSpendSummary>) => mockUseSpendSummary(...args),
 }))
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>()
   return {
     ...actual,
-    useQuery: (...args: unknown[]) => mockUseQuery(...args),
-    useQueries: (...args: unknown[]) => mockUseQueries(...args),
+    useQuery: (...args: Parameters<typeof mockUseQuery>) => mockUseQuery(...args),
+    useQueries: (...args: Parameters<typeof mockUseQueries>) => mockUseQueries(...args),
   }
 })
 
