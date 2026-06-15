@@ -794,6 +794,17 @@ describe("SettingsModelsPage — EditModelDialog", () => {
     );
   });
 
+  it("renders a custom runtime_type not in RUNTIME_TYPES as an option in the select", async () => {
+    setHookState({ entries: [makeModel({ runtime_type: "fable" })] });
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    // The custom value should appear in the dropdown options
+    expect(screen.getByText("fable")).toBeTruthy();
+  });
+
   it("calls onSuccess toast and closes dialog when mutate resolves", async () => {
     const { toast } = await import("sonner");
     let savedCallbacks: { onSuccess?: () => void; onError?: () => void } = {};

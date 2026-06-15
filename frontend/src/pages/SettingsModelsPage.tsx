@@ -233,7 +233,11 @@ function EditModelForm({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {RUNTIME_TYPES.map((rt) => (
+              {(
+                (RUNTIME_TYPES as readonly string[]).includes(model.runtime_type)
+                  ? RUNTIME_TYPES
+                  : [...RUNTIME_TYPES, model.runtime_type]
+              ).map((rt) => (
                 <SelectItem key={rt} value={rt} className="font-mono text-sm">
                   {rt}
                 </SelectItem>
