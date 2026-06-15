@@ -553,6 +553,39 @@ describe("EntityDetailPage — Editorial/Workbench mode toggle", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 90-day sparkline — editorial-only placement (bu-3rj2j, brief §1 L80)
+// ---------------------------------------------------------------------------
+
+describe("EntityDetailPage — 90-day sparkline editorial placement", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorageMock.clear();
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), vi.fn()]);
+  });
+
+  it("renders the sparkline empty-state in editorial mode", () => {
+    // useEntityActivityBins is mocked to return { bins: [] } → canned serif line
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "editorial" : null,
+    );
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    // ActivitySparkline renders its empty serif text when bins is empty
+    expect(html).toContain("No activity in the last 90 days");
+  });
+
+  it("does NOT render the sparkline in workbench mode", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === ENTITY_MODE_STORAGE_KEY ? "workbench" : null,
+    );
+    setEntityState(BASE_ENTITY);
+    const html = renderPage();
+    // Sparkline is gated to editorial mode; workbench must not surface it
+    expect(html).not.toContain("No activity in the last 90 days");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Entity gloss — Editorial mode renders gloss; Workbench does not
 // ---------------------------------------------------------------------------
 

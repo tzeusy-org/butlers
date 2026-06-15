@@ -3226,8 +3226,9 @@ export default function EntityDetailPage() {
               isPinned={dunbarPinned}
             />
 
-            {/* 90-day activity sparkline — quick-refresh affordance (entity v3) */}
-            <ActivitySparkline entityId={entityId} />
+            {/* 90-day activity sparkline — editorial-only quick-refresh affordance (entity v3, bu-3rj2j).
+                Brief §1 (L80): sparkline in Detail-Editorial hero; workbench does not surface it. */}
+            {mode === "editorial" && <ActivitySparkline entityId={entityId} />}
 
             {/* Delta-since-last-visit banner — reads delta, then advances the
                 view mark (entity v3). Renders nothing on a first visit. */}
