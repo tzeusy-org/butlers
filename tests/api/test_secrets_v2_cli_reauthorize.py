@@ -523,3 +523,67 @@ def test_reauthorize_cli_devicecode_envelope_conformance():
         body = resp.json()
         assert "data" in body, "Expected 'data' key in response envelope"
         assert "meta" in body, "Expected 'meta' key in response envelope"
+
+
+# ---------------------------------------------------------------------------
+# Tests: full credential id (cli-auth/<provider>) — regression for bu-afzzq
+#
+# CLI runtime tokens are persisted under the key convention
+# `cli-auth/<provider>` (butlers.cli_auth.persistence), so the secrets
+# inventory exposes them with id `cli-auth/codex`. The frontend posts that
+# full id, URL-encoded, to the reauthorize endpoint
+# (`/api/secrets/cli/cli-auth%2Fcodex/reauthorize`). The slash must survive
+# route matching AND the handler must resolve the bare provider name against
+# PROVIDERS (which is keyed on the bare name).
+# ---------------------------------------------------------------------------
+
+
+def test_reauthorize_cli_apikey_full_credential_id_encoded_slash():
+    """The frontend's exact payload (encoded slash) reaches the handler, not 404."""
+    mock_db = _make_db()
+    client = _build_app(mock_db)
+
+    # %2F is the encoded slash the frontend's encodeURIComponent produces.
+    resp = client.post("/api/secrets/cli/cli-auth%2Fclaude/reauthorize")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["auth_mode"] == "api_key"
+
+
+def test_reauthorize_cli_apikey_full_credential_id_literal_slash():
+    """A literal slash in the credential id is captured by the route param."""
+    mock_db = _make_db()
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/cli-auth/claude/reauthorize")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["provider"] == "claude"
+
+
+def test_reauthorize_cli_full_credential_id_audit_keeps_full_id(monkeypatch):
+    """Audit rows retain the full `cli-auth/<provider>` id, not the bare name."""
+    captured: dict[str, object] = {}
+
+    async def _fake_write_cli_audit(_pool, *, action, credential_id, note):
+        captured["action"] = action
+        captured["credential_id"] = credential_id
+
+    monkeypatch.setattr("butlers.api.routers.secrets_v2._write_cli_audit", _fake_write_cli_audit)
+
+    mock_db = _make_db()
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/cli-auth%2Fclaude/reauthorize")
+    assert resp.status_code == 200, resp.text
+    assert captured.get("credential_id") == "cli-auth/claude"
+    assert captured.get("action") == "attempted"
+
+
+def test_reauthorize_cli_404_detail_is_handler_not_routing():
+    """An unknown id reaches the handler (specific 404 detail), not a routing miss."""
+    mock_db = _make_db()
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/cli-auth%2Fnope/reauthorize")
+    assert resp.status_code == 404
+    # Handler 404 mentions 'provider'; a routing miss would be the bare "Not Found".
+    assert "provider" in resp.json().get("detail", "").lower()

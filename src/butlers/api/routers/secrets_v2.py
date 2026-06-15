@@ -1473,7 +1473,10 @@ async def get_system_credential(
 
 
 @router.get(
-    "/cli/{credential_id}",
+    # `:path` so credential ids containing a slash (the `cli-auth/<provider>`
+    # persistence-key convention) survive route matching — a plain
+    # `{credential_id}` only captures one path segment and 404s on the slash.
+    "/cli/{credential_id:path}",
     response_model=ApiResponse[CliRuntimeDetail],
 )
 async def get_cli_credential(
@@ -3965,7 +3968,8 @@ class CliRevokeResult(BaseModel):
 
 
 @router.post(
-    "/cli/{credential_id}/rotate",
+    # `:path` — see get_cli_credential; ids look like `cli-auth/<provider>`.
+    "/cli/{credential_id:path}/rotate",
     response_model=ApiResponse[CliRotateResult],
 )
 async def rotate_cli_credential(
@@ -4073,7 +4077,8 @@ async def rotate_cli_credential(
 
 
 @router.post(
-    "/cli/{credential_id}/revoke",
+    # `:path` — see get_cli_credential; ids look like `cli-auth/<provider>`.
+    "/cli/{credential_id:path}/revoke",
     response_model=ApiResponse[CliRevokeResult],
 )
 async def revoke_cli_credential(
@@ -4177,7 +4182,8 @@ class CliReauthorizeResponse(BaseModel):
 
 
 @router.post(
-    "/cli/{credential_id}/reauthorize",
+    # `:path` — see get_cli_credential; ids look like `cli-auth/<provider>`.
+    "/cli/{credential_id:path}/reauthorize",
     response_model=ApiResponse[CliReauthorizeResponse],
 )
 async def reauthorize_cli_credential(
@@ -4210,7 +4216,13 @@ async def reauthorize_cli_credential(
     -----------
     bu-ayp6v.10: Add backend reauthorize bridge for CLI runtime credentials.
     """
-    provider_def = PROVIDERS.get(credential_id)
+    # CLI tokens are persisted under the `cli-auth/<provider>` key convention
+    # (butlers.cli_auth.persistence), so the inventory — and therefore the
+    # frontend — addresses this credential as `cli-auth/codex`. PROVIDERS is
+    # keyed on the bare provider name, so resolve against the final path
+    # segment. `credential_id` itself is preserved for the audit trail below.
+    provider_name = credential_id.rsplit("/", 1)[-1]
+    provider_def = PROVIDERS.get(provider_name)
     if provider_def is None:
         raise HTTPException(
             status_code=404,
