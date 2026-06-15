@@ -17,6 +17,7 @@ import {
   compareRelationshipEntities,
   deleteEntityContact,
   dismissRelationshipEntityPair,
+  markEntityContactVerified,
   updateEntityContact,
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
@@ -528,6 +529,34 @@ export function useDeleteEntityContact() {
       void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+    },
+  });
+}
+
+/**
+ * Mark an active contact-fact triple as owner-verified.
+ *
+ * Used by ContactChannelCard.ExpandedContactInfoRow to set verified=true on an
+ * entity_facts row. `predicate` must start with "has-". `valueHash` is
+ * SHA-256[:16] of the object value (matches ContactInfoEntry.value_hash).
+ * Invalidates entity-linked-contacts and entity-facts on success so the
+ * amber dot clears immediately.
+ */
+export function useMarkEntityContactVerified() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      predicate,
+      valueHash,
+    }: {
+      entityId: string;
+      predicate: string;
+      valueHash: string;
+    }) => markEntityContactVerified(entityId, predicate, valueHash),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
     },
   });
 }

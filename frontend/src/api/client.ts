@@ -375,6 +375,7 @@ import type {
   AddEntityContactRequest,
   AddEntityContactResponse,
   DeleteEntityContactResponse,
+  MarkEntityContactVerifiedResponse,
   UpdateEntityContactRequest,
   UpdateEntityContactResponse,
   SetPreferredChannelRequest,
@@ -2164,6 +2165,25 @@ export function deleteEntityContact(
   return apiFetch<DeleteEntityContactResponse>(
     `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
     { method: "DELETE" },
+  );
+}
+
+/**
+ * Mark an active contact-fact triple as owner-verified.
+ *
+ * `predicate` must start with "has-". `valueHash` is SHA-256[:16] of the
+ * object value (matches `ContactInfoEntry.value_hash`). Returns 200 on
+ * success, 403 when no owner entity is registered, 404 when no active fact
+ * matches (entity_id, predicate, value_hash).
+ */
+export function markEntityContactVerified(
+  entityId: string,
+  predicate: string,
+  valueHash: string,
+): Promise<MarkEntityContactVerifiedResponse> {
+  return apiFetch<MarkEntityContactVerifiedResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}/verify`,
+    { method: "POST" },
   );
 }
 

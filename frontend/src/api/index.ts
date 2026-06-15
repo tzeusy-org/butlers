@@ -71,6 +71,7 @@ export {
   listEntityContacts,
   addEntityContact,
   deleteEntityContact,
+  markEntityContactVerified,
   updateEntityContact,
   setEntityPreferredChannel,
   clearEntityPreferredChannel,

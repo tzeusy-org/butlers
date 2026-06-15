@@ -55,6 +55,10 @@ class ContactInfoEntry(BaseModel):
     # to call DELETE /entities/{id}/contacts/{predicate}/{value_hash}.
     predicate: str | None = None
     value_hash: str | None = None
+    # Owner-confirmed flag from relationship.entity_facts.verified.
+    # False until the owner explicitly marks the channel verified.
+    # Drives the amber unverified-dot in ContactChannelCard.
+    verified: bool = False
 
 
 class ContactSummary(BaseModel):
@@ -1246,6 +1250,17 @@ class DeleteContactResponse(BaseModel):
     """
 
     deleted: bool
+    fact_id: UUID
+
+
+class MarkContactVerifiedResponse(BaseModel):
+    """Response for ``POST /entities/{id}/contacts/{pred}/{valueHash}/verify``.
+
+    ``verified`` is always True on success.
+    ``fact_id`` is the UUID of the now-verified entity_facts row.
+    """
+
+    verified: bool
     fact_id: UUID
 
 

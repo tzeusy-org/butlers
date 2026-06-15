@@ -33,7 +33,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ContactChannelCard, ExpandedContactInfoRow } from "@/components/relationship/ContactChannelCard";
 import { sortChannelsPrimaryFirst } from "@/components/relationship/contact-channel-utils";
-import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
+import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
 import type { LinkedContactSummary, ContactInfoEntry } from "@/api/types";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +44,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityLinkedContacts: vi.fn(),
   useAddEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDeleteEntityContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMarkEntityContactVerified: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useUpdateEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useRevealEntityContactSecret: vi.fn(() => ({ mutate: vi.fn() })),
   useSetPreferredChannel: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -917,37 +918,82 @@ describe("ContactChannelCard — primary-first channel ordering (bu-dvquo)", () 
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Amber unverified dot — degraded-honest (bu-dvquo)
+// Tests: amber unverified-dot (bu-e90i6)
 //
-// ContactInfoEntry carries no per-channel `verified` field.
-// The amber dot treatment requires a backend schema addition (follow-up).
-// This test suite documents the degraded state: no amber dot is rendered.
-//
-// When the backend ships `verified: boolean` on ContactInfoEntry and the
-// frontend wires it, these tests should be replaced by positive amber-dot
-// assertions. See: bu-dvquo "ContactInfoEntry lacks verified field" follow-up.
+// ExpandedContactInfoRow shows an amber dot (data-testid="unverified-dot") for
+// entity_facts entries where verified !== true (default for all new channels).
+// The dot is absent when verified=true. Legacy (source=null) entries never
+// show the dot.
 // ---------------------------------------------------------------------------
 
-describe("ContactChannelCard — no amber dot (ContactInfoEntry lacks verified field, bu-dvquo)", () => {
+describe("ExpandedContactInfoRow — amber unverified-dot (bu-e90i6)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(useAddEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useAddEntityContact>);
     vi.mocked(useDeleteEntityContact).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useDeleteEntityContact>);
+    vi.mocked(useMarkEntityContactVerified).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useMarkEntityContactVerified>);
     vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
   });
 
-  it("renders without amber dot indicators — no verified field in ContactInfoEntry", () => {
-    setLinkedContacts([CONTACT_ONE]);
-    const html = renderCard();
-    // No amber dot data attribute — verified field is absent from the data shape
-    expect(html).not.toContain('data-verified="false"');
-    expect(html).not.toContain('data-unverified');
+  it("renders amber dot when entry is entity_facts and verified is false", () => {
+    const entry: ContactInfoEntry = {
+      ...CI_ENTITY_FACTS_TELEGRAM,
+      verified: false,
+    };
+    const html = renderExpandedRow(entry);
+    expect(html).toContain('data-testid="unverified-dot"');
+    expect(html).toContain("var(--amber)");
   });
 
-  it("renders all channel entries regardless of missing verified flag", () => {
-    setLinkedContacts([CONTACT_ONE]);
-    const html = renderCard();
-    // All channels still render; degraded display does not hide entries
-    expect(html).toContain("alice@example.com");
+  it("renders amber dot when entry is entity_facts and verified is absent (undefined)", () => {
+    // verified is optional; absence is treated as unverified
+    const entry: ContactInfoEntry = {
+      ...CI_ENTITY_FACTS_TELEGRAM,
+      // verified intentionally omitted (undefined)
+    };
+    const html = renderExpandedRow(entry);
+    expect(html).toContain('data-testid="unverified-dot"');
+    expect(html).toContain("var(--amber)");
+  });
+
+  it("does NOT render amber dot when entry is entity_facts and verified is true", () => {
+    const entry: ContactInfoEntry = {
+      ...CI_ENTITY_FACTS_TELEGRAM,
+      verified: true,
+    };
+    const html = renderExpandedRow(entry);
+    expect(html).not.toContain('data-testid="unverified-dot"');
+  });
+
+  it("does NOT render amber dot for legacy (source=null) entries", () => {
+    const entry: ContactInfoEntry = {
+      ...CI_LEGACY_EMAIL,
+      // verified absent (undefined) — legacy entries never show the dot
+    };
+    const html = renderExpandedRow(entry);
+    expect(html).not.toContain('data-testid="unverified-dot"');
+  });
+
+  it("renders mark-verified button for unverified entity_facts entry", () => {
+    const entry: ContactInfoEntry = {
+      ...CI_ENTITY_FACTS_TELEGRAM,
+      verified: false,
+    };
+    const html = renderExpandedRow(entry);
+    expect(html).toContain('data-testid="mark-verified-btn"');
+  });
+
+  it("does NOT render mark-verified button when entry is already verified", () => {
+    const entry: ContactInfoEntry = {
+      ...CI_ENTITY_FACTS_TELEGRAM,
+      verified: true,
+    };
+    const html = renderExpandedRow(entry);
+    expect(html).not.toContain('data-testid="mark-verified-btn"');
+  });
+
+  it("calls useMarkEntityContactVerified hook", () => {
+    const entry: ContactInfoEntry = { ...CI_ENTITY_FACTS_TELEGRAM, verified: false };
+    renderExpandedRow(entry, "entity-001");
+    expect(vi.mocked(useMarkEntityContactVerified)).toHaveBeenCalled();
   });
 });

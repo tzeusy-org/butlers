@@ -800,6 +800,11 @@ export interface ContactInfoEntry {
   /** Populated only when source="entity_facts". SHA-256[:16] of the object value.
    * Used as the stable URL segment in the entity-keyed delete endpoint. */
   value_hash?: string | null;
+  /** Owner-confirmed flag from relationship.entity_facts.verified.
+   * False until the owner explicitly marks the channel verified via
+   * POST /entities/{id}/contacts/{predicate}/{value_hash}/verify.
+   * Drives the amber unverified-dot in ContactChannelCard. */
+  verified?: boolean;
 }
 
 /** Full contact detail with all fields including identity fields. */
@@ -6560,6 +6565,12 @@ export interface AddEntityContactResponse {
 /** Response for DELETE /entities/{id}/contacts/{predicate}/{value_hash}. */
 export interface DeleteEntityContactResponse {
   deleted: boolean;
+  fact_id: string;
+}
+
+/** Response for POST /entities/{id}/contacts/{predicate}/{value_hash}/verify. */
+export interface MarkEntityContactVerifiedResponse {
+  verified: boolean;
   fact_id: string;
 }
 

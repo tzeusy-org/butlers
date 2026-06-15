@@ -702,3 +702,144 @@ class TestGetContactsScopeFilter:
             assert fact["predicate"].startswith("has-"), (
                 f"Non-contact predicate {fact['predicate']!r} should not appear in response"
             )
+
+
+# ===========================================================================
+# POST /entities/{id}/contacts/{pred}/{valueHash}/verify  (bu-e90i6)
+# ===========================================================================
+
+
+async def _post_verify(app: FastAPI, path: str) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.post(path)
+
+
+_VERIFY_PATH = f"/api/relationship/entities/{_ENT_ID}/contacts/has-email/{_EMAIL_HASH}/verify"
+
+
+class TestVerifyEntityContactHappyPath:
+    """POST /verify marks an active fact as verified and returns 200."""
+
+    async def test_returns_200_with_verified_true_and_fact_id(self):
+        candidate = _make_delete_candidate_row(fact_id=_FACT_ID, object_val=_EMAIL)
+        app, mock_pool = _make_app(fetch_rows=[candidate])
+        mock_pool.execute = AsyncMock(return_value="UPDATE 1")
+
+        resp = await _post_verify(app, _VERIFY_PATH)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["verified"] is True
+        assert UUID(body["fact_id"]) == _FACT_ID
+
+    async def test_execute_called_with_verified_true(self):
+        candidate = _make_delete_candidate_row(fact_id=_FACT_ID, object_val=_EMAIL)
+        app, mock_pool = _make_app(fetch_rows=[candidate])
+        mock_pool.execute = AsyncMock(return_value="UPDATE 1")
+
+        await _post_verify(app, _VERIFY_PATH)
+
+        mock_pool.execute.assert_called_once()
+        call_args = mock_pool.execute.call_args[0]
+        sql = call_args[0]
+        assert "verified" in sql.lower()
+        assert "true" in sql.lower()
+        assert call_args[1] == _FACT_ID
+
+    async def test_hash_match_picks_correct_candidate(self):
+        email_a = "a@example.com"
+        email_b = "b@example.com"
+        hash_a = hashlib.sha256(email_a.encode("utf-8")).hexdigest()[:16]
+        fact_id_a = uuid4()
+        fact_id_b = uuid4()
+
+        candidate_a = _make_delete_candidate_row(fact_id=fact_id_a, object_val=email_a)
+        candidate_b = _make_delete_candidate_row(fact_id=fact_id_b, object_val=email_b)
+        app, mock_pool = _make_app(fetch_rows=[candidate_a, candidate_b])
+        mock_pool.execute = AsyncMock(return_value="UPDATE 1")
+
+        resp = await _post_verify(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/contacts/has-email/{hash_a}/verify",
+        )
+
+        assert resp.status_code == 200
+        assert UUID(resp.json()["fact_id"]) == fact_id_a
+
+
+class TestVerifyEntityContactNotFound:
+    """No active fact matching (entity_id, predicate, valueHash) → 404."""
+
+    async def test_returns_404_when_no_candidate_rows(self):
+        app, _ = _make_app(fetch_rows=[])
+
+        resp = await _post_verify(app, _VERIFY_PATH)
+
+        assert resp.status_code == 404
+        body = resp.json()
+        detail = body.get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("code") == "contact_fact_not_found"
+        else:
+            assert "not found" in str(detail).lower()
+
+    async def test_returns_404_when_hash_does_not_match_any_candidate(self):
+        candidate = _make_delete_candidate_row(object_val="different@example.com")
+        app, _ = _make_app(fetch_rows=[candidate])
+
+        resp = await _post_verify(app, _VERIFY_PATH)
+
+        assert resp.status_code == 404
+
+
+class TestVerifyEntityContactInvalidPredicate:
+    """POST /verify with a non-has-* predicate returns 400."""
+
+    async def test_returns_400_for_non_contact_predicate(self):
+        app, _ = _make_app(owner_exists=True)
+
+        resp = await _post_verify(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/contacts/knows/{_EMAIL_HASH}/verify",
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        detail = body.get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("code") == "invalid_predicate"
+        else:
+            assert "contact predicate" in str(detail).lower()
+
+
+class TestVerifyEntityContactOwnerGate:
+    """Clause 12a: POST /verify returns 403 when no owner entity registered."""
+
+    async def test_returns_403_when_no_owner_entity(self):
+        app, _ = _make_app(owner_exists=False)
+
+        resp = await _post_verify(app, _VERIFY_PATH)
+
+        assert resp.status_code == 403
+        body = resp.json()
+        detail = body.get("detail", body)
+        if isinstance(detail, dict):
+            assert detail.get("code") == "owner_required"
+        else:
+            assert "owner_required" in str(detail)
+
+
+class TestVerifyEntityContactEntityNotFound:
+    """Unknown entity UUID → 404 from entity existence check."""
+
+    async def test_returns_404_for_missing_entity(self):
+        app, _ = _make_app(owner_exists=True, entity_exists=False)
+
+        resp = await _post_verify(
+            app,
+            f"/api/relationship/entities/{_MISSING_ENT_ID}/contacts/has-email/{_EMAIL_HASH}/verify",
+        )
+
+        assert resp.status_code == 404

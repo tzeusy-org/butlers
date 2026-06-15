@@ -29,7 +29,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Pencil, Plus, ShieldCheck, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type { ContactInfoEntry, Label, LinkedContactSummary } from "@/api/types";
@@ -47,7 +47,7 @@ import {
 } from "@/components/ui/select";
 import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
-import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
+import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
 import { sortChannelsPrimaryFirst } from "./contact-channel-utils";
 
 // ---------------------------------------------------------------------------
@@ -267,6 +267,7 @@ export function ExpandedContactInfoRow({
   entityId: string;
 }) {
   const deleteEntityContact = useDeleteEntityContact();
+  const markVerified = useMarkEntityContactVerified();
   const updateEntityContact = useUpdateEntityContact();
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -274,6 +275,28 @@ export function ExpandedContactInfoRow({
   const isEntityFacts = entry.source === "entity_facts";
   const canEdit = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.secured;
   const canDelete = isEntityFacts && entry.predicate != null && entry.value_hash != null;
+  const canVerify = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.verified;
+
+  function handleMarkVerified() {
+    if (!canVerify || markVerified.isPending) return;
+    markVerified.mutate(
+      {
+        entityId,
+        predicate: entry.predicate!,
+        valueHash: entry.value_hash!,
+      },
+      {
+        onSuccess: () => {
+          toast.success(`Marked ${contactInfoTypeLabel(entry.type)} as verified.`);
+        },
+        onError: (err) => {
+          toast.error(
+            `Failed to verify: ${err instanceof Error ? err.message : "Unknown error"}`,
+          );
+        },
+      },
+    );
+  }
 
   function handleEditStart() {
     if (!canEdit) return;
@@ -386,10 +409,25 @@ export function ExpandedContactInfoRow({
 
   return (
     <div className="flex items-center gap-2 py-1">
-      <span className="text-muted-foreground text-xs w-32 shrink-0">
+      <span className="text-muted-foreground text-xs w-32 shrink-0 flex items-center gap-1">
         {contactInfoTypeLabel(entry.type)}
         {entry.is_primary && (
           <span className="ml-1 text-blue-500">(primary)</span>
+        )}
+        {/* Amber dot: unverified entity_facts channel */}
+        {isEntityFacts && !entry.verified && (
+          <span
+            data-testid="unverified-dot"
+            title="Unverified — owner has not confirmed this channel"
+            style={{
+              display: "inline-block",
+              width: "6px",
+              height: "6px",
+              borderRadius: "50%",
+              backgroundColor: "var(--amber)",
+              flexShrink: 0,
+            }}
+          />
         )}
       </span>
       <span className="flex-1">
@@ -399,9 +437,24 @@ export function ExpandedContactInfoRow({
           <ChannelValue entry={entry} />
         )}
       </span>
-      {/* Edit/Delete affordances — entity_facts rows only (non-secured) */}
+      {/* Edit/Delete/Verify affordances — entity_facts rows only (non-secured) */}
       {isEntityFacts && (
         <span className="flex items-center gap-1 shrink-0">
+          {/* Mark verified button — shown only when not yet verified */}
+          {canVerify && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0 text-muted-foreground"
+              style={{ color: "var(--amber)" }}
+              title="Mark as verified"
+              onClick={handleMarkVerified}
+              disabled={markVerified.isPending}
+              data-testid="mark-verified-btn"
+            >
+              <ShieldCheck className="h-3 w-3" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"

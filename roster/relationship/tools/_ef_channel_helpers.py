@@ -128,7 +128,7 @@ async def entity_facts_channels_by_entity(
         return {}
     rows = await pool.fetch(
         """
-        SELECT ef.subject AS entity_id, ef.id, ef.predicate, ef.object, ef."primary"
+        SELECT ef.subject AS entity_id, ef.id, ef.predicate, ef.object, ef."primary", ef.verified
         FROM relationship.entity_facts ef
         WHERE ef.subject = ANY($1)
           AND ef.predicate LIKE 'has-%'
