@@ -2559,6 +2559,14 @@ export interface IngestionEventSummary {
   error_detail: string | null;
 }
 
+/** Full ingestion event detail — augmented with lifecycle and decomposition fields from message_inbox. */
+export interface IngestionEventDetail extends IngestionEventSummary {
+  /** Lifecycle state from message_inbox (null if row pruned or switchboard unavailable). */
+  lifecycle_state: string | null;
+  /** Decomposition output JSONB from message_inbox (null if row pruned or unavailable). */
+  decomposition_output: Record<string, unknown> | null;
+}
+
 /** Response body from POST /api/ingestion/events/{id}/replay. */
 export interface IngestionEventReplayResponse {
   id: string;

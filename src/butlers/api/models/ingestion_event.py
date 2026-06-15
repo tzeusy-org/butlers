@@ -142,6 +142,26 @@ class IngestionWindowRollup(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class IngestionEventPayload(BaseModel):
+    """Raw inbound payload for an ingestion event.
+
+    Returned by ``GET /api/ingestion/events/{id}/payload``.
+
+    Access is audit-gated: the backend records an audit entry on every read.
+    The endpoint returns HTTP 403 when the event exists but the caller lacks
+    payload-access grant, and HTTP 404 when no event with that id exists.
+    """
+
+    content: str
+    """Pretty-printed JSON or raw text of the original inbound payload."""
+    bytes: int
+    """Byte size of the full payload (may exceed the truncated content length)."""
+    truncated: bool = False
+    """Whether the content was truncated due to size limits."""
+    channel: str | None = None
+    """Source channel/connector that produced this payload."""
+
+
 class PriorityContactEntry(BaseModel):
     """One row in public.priority_contacts, joined to public.contacts for display.
 

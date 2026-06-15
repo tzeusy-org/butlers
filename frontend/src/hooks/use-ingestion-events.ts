@@ -7,6 +7,7 @@
  * - ingestionEventKeys.rollup(requestId)       → cost/token rollup for a request_id
  * - ingestionEventKeys.replays(requestId)      → replay history from public.audit_log
  * - ingestionEventKeys.senderContact(requestId) → resolved contact name for sender_identity
+ * - ingestionEventKeys.detail(requestId)        → full event detail with lifecycle_state/decomposition_output
  * - ingestionEventKeys.payload(requestId)      → raw inbound payload (audit-gated)
  *
  * Stale time of 30s matches the spec for Timeline tab data freshness.
@@ -20,6 +21,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import {
   listIngestionEvents,
+  getIngestionEvent,
   getIngestionEventSessions,
   getIngestionEventRollup,
   getIngestionWindowRollup,
@@ -54,6 +56,8 @@ export const ingestionEventKeys = {
     [...ingestionEventKeys.all, requestId, "replays"] as const,
   senderContact: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "sender-contact"] as const,
+  detail: (requestId: string) =>
+    [...ingestionEventKeys.all, requestId, "detail"] as const,
   payload: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "payload"] as const,
   windowRollup: (params: IngestionWindowRollupParams) =>
@@ -210,6 +214,26 @@ export function useIngestionEventPayload(
     queryFn: () => getIngestionEventPayload(requestId),
     staleTime: 120_000, // payload rarely changes; longer stale time acceptable
     retry: false,       // don't retry 403 — the gated state is expected
+    enabled: !!requestId && options?.enabled !== false,
+  });
+}
+
+/**
+ * Full ingestion event detail — augments the list-row summary with lifecycle_state
+ * and decomposition_output from message_inbox (joined via the switchboard pool).
+ *
+ * Fetches from GET /api/ingestion/events/{requestId}.
+ * Both new fields are null when the switchboard pool is unavailable or the row
+ * has been pruned — callers should render gracefully in either case.
+ */
+export function useIngestionEventDetail(
+  requestId: string,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionEventKeys.detail(requestId),
+    queryFn: () => getIngestionEvent(requestId),
+    staleTime: 30_000,
     enabled: !!requestId && options?.enabled !== false,
   });
 }

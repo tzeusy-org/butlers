@@ -48,6 +48,7 @@ vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEventSenderContact: vi.fn(),
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
+  useIngestionEventDetail: vi.fn(),
   useIngestionWindowRollup: vi.fn(),
 }));
 
@@ -62,6 +63,7 @@ import {
   useIngestionEventSenderContact,
   useIngestionEventReplays,
   useIngestionEventPayload,
+  useIngestionEventDetail,
   useIngestionEventSessions,
   useIngestionWindowRollup,
 } from "@/hooks/use-ingestion-events";
@@ -173,6 +175,12 @@ function setupDefaultMocks() {
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useIngestionEventPayload>);
+
+  vi.mocked(useIngestionEventDetail).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useIngestionEventDetail>);
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
     data: { data: [] },

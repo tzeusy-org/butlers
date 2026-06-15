@@ -37,6 +37,7 @@ from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, CursorPaginatedResponse, CursorPaginationMeta
 from butlers.api.models.ingestion_event import (
     IngestionEventDetail,
+    IngestionEventPayload,
     IngestionEventRollup,
     IngestionEventSession,
     IngestionEventSummary,
@@ -49,6 +50,7 @@ from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
     ingestion_event_get,
     ingestion_event_get_inbox_lifecycle,
+    ingestion_event_get_payload,
     ingestion_event_replay_history,
     ingestion_event_replay_request,
     ingestion_event_rollup,
@@ -957,6 +959,87 @@ async def get_ingestion_event_sender_contact(
 
     return ApiResponse[SenderContactResolution](
         data=SenderContactResolution(resolved=True, name=contact.name, raw=raw_sender)
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/{id}/payload
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{event_id}/payload", response_model=ApiResponse[IngestionEventPayload])
+async def get_ingestion_event_payload(
+    event_id: str,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionEventPayload]:
+    """Return the raw inbound payload for an ingestion event.
+
+    Access is audit-gated: every successful payload read is recorded in the
+    dashboard audit log with ``operation='ingestion.event.payload_read'``.
+
+    Returns:
+        200 — ``{content, bytes, truncated, channel}``
+        404 — event not found (not in public.ingestion_events or filtered_events)
+        503 — shared database pool unavailable
+    """
+    request_path = f"/api/ingestion/events/{event_id}/payload"
+
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    # The switchboard pool is required to read message_inbox.raw_payload.
+    try:
+        switchboard_pool = db.pool("switchboard")
+    except (KeyError, Exception) as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Switchboard database unavailable: {exc}"
+        ) from exc
+
+    try:
+        result = await ingestion_event_get_payload(pool, switchboard_pool, event_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid event_id: {exc}") from exc
+
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Ingestion event '{event_id}' not found")
+
+    # Emit audit entry BEFORE returning payload data (fail-closed: audit is
+    # recorded before any PII-bearing data leaves the server).
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="ingestion.event.payload_read",
+        method="GET",
+        path=request_path,
+        path_params={"event_id": event_id},
+        body={"reason": "raw_payload_view"},
+        response_status=200,
+        request=request,
+    )
+
+    if result.get("missing"):
+        # Event exists but message_inbox row was pruned or never written
+        # (e.g. filtered event). Return a truthful empty payload rather than
+        # a misleading 404 — the event did exist.
+        return ApiResponse[IngestionEventPayload](
+            data=IngestionEventPayload(
+                content="",
+                bytes=0,
+                truncated=False,
+                channel=None,
+            )
+        )
+
+    return ApiResponse[IngestionEventPayload](
+        data=IngestionEventPayload(
+            content=result["content"],
+            bytes=result["bytes"],
+            truncated=result["truncated"],
+            channel=result["channel"],
+        )
     )
 
 

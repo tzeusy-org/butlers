@@ -870,6 +870,96 @@ async def ingestion_window_rollup(
     }
 
 
+_PAYLOAD_TRUNCATION_BYTES = 64 * 1024  # 64 KiB display cap
+
+
+async def ingestion_event_get_payload(
+    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
+    event_id: str | UUID,
+) -> dict[str, Any] | None:
+    """Fetch the raw inbound payload for an ingestion event.
+
+    The payload lives in ``switchboard.message_inbox.raw_payload`` (a JSONB
+    column with structure ``{"content": <text>, "metadata": {...}}``) keyed on
+    ``message_inbox.id == ingestion_event.id`` (both are UUID7).
+
+    The event must first be confirmed to exist in the shared credentials pool
+    (``public.ingestion_events`` or ``connectors.filtered_events``) — if the
+    event does not exist there, the caller should raise 404.  If the event
+    exists but has no ``message_inbox`` row (pruned, or a filtered event with no
+    inbox entry), returns a sentinel result with ``{"missing": True}``.
+
+    Args:
+        pool: asyncpg pool for the shared credentials database (used to confirm
+            the event exists before exposing the payload).
+        switchboard_pool: asyncpg pool scoped to the switchboard schema so that
+            ``message_inbox`` is visible without a schema prefix.
+        event_id: UUID of the ingestion event.
+
+    Returns:
+        A dict with keys ``content``, ``bytes``, ``truncated``, ``channel``,
+        or ``{"missing": True}`` when the inbox row has been pruned/never
+        written, or ``None`` when the event does not exist at all.
+    """
+    if isinstance(event_id, str):
+        event_id = UUID(event_id)
+
+    # Confirm the event exists in the canonical registry.
+    event = await ingestion_event_get(pool, event_id)
+    if event is None:
+        return None  # Caller raises 404.
+
+    # Retrieve the raw_payload from message_inbox (switchboard schema).
+    # source_channel is stored inside request_context JSONB, not as a top-level column.
+    row = await switchboard_pool.fetchrow(
+        """
+        SELECT raw_payload,
+               request_context ->> 'source_channel' AS source_channel
+        FROM message_inbox
+        WHERE id = $1
+        LIMIT 1
+        """,
+        event_id,
+    )
+    if row is None:
+        # Event exists but no inbox row — filtered event or pruned.
+        return {"missing": True}
+
+    raw = row["raw_payload"]
+    # raw_payload is stored as JSONB; asyncpg may return it as dict or str.
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+    # Extract the human-readable text content.
+    if isinstance(raw, dict):
+        content = raw.get("content") or ""
+    else:
+        content = str(raw) if raw is not None else ""
+
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False, indent=2)
+
+    full_bytes = len(content.encode())
+    truncated = full_bytes > _PAYLOAD_TRUNCATION_BYTES
+    if truncated:
+        content = content.encode()[:_PAYLOAD_TRUNCATION_BYTES].decode(errors="replace")
+
+    # Prefer source_channel from message_inbox (most authoritative); fall back
+    # to the ingestion_events row we already fetched.
+    source_channel = (row.get("source_channel") or event.get("source_channel")) or None
+
+    return {
+        "content": content,
+        "bytes": full_bytes,
+        "truncated": truncated,
+        "channel": source_channel,
+    }
+
+
 async def ingestion_event_replay_history(
     pool: asyncpg.Pool,
     event_id: str | UUID,

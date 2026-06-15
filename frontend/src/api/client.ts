@@ -158,6 +158,7 @@ import type {
   IngestionEventReplayHistoryEntry,
   BulkRetryEventsResponse,
   IngestionEventSenderContact,
+  IngestionEventDetail,
   IngestionEventPayload,
   IngestionEventsParams,
   IngestionWindowRollup,
@@ -4272,8 +4273,8 @@ export async function getIngestionWindowRollup(
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */
 export async function getIngestionEvent(
   requestId: string,
-): Promise<ApiResponse<IngestionEventSummary>> {
-  return apiFetch<ApiResponse<IngestionEventSummary>>(
+): Promise<ApiResponse<IngestionEventDetail>> {
+  return apiFetch<ApiResponse<IngestionEventDetail>>(
     `/ingestion/events/${encodeURIComponent(requestId)}`,
   );
 }

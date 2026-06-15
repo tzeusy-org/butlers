@@ -34,6 +34,7 @@ import {
   useIngestionEventLineage,
   useIngestionEventReplays,
   useIngestionEventPayload,
+  useIngestionEventDetail,
 } from '@/hooks/use-ingestion-events'
 import { replayIngestionEvent } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
@@ -524,6 +525,9 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
     if (tab === 'raw') setRawEnabled(true)
   }
 
+  const { data: detailData } = useIngestionEventDetail(event.id, { enabled: true })
+  const detail = detailData?.data ?? null
+
   const { sessions } = useIngestionEventLineage(event.id, { enabled: true })
   const sessionList = sessions.data?.data ?? []
   // Stable primitive: true once session data has loaded (avoids a new [] reference on each render
@@ -643,6 +647,9 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
             )}
             {event.error_detail && (
               <KVRow label="error" value={<span className="text-[var(--red,theme(colors.red.600))]">{event.error_detail}</span>} />
+            )}
+            {detail?.lifecycle_state && (
+              <KVRow label="lifecycle" value={detail.lifecycle_state} />
             )}
           </div>
 

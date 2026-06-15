@@ -777,3 +777,128 @@ async def test_rollup_missing_cost_returns_null(app):
 
     assert resp.status_code == 200
     assert resp.json()["cost"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/{id}/payload — raw payload endpoint (bu-9kn9t)
+# ---------------------------------------------------------------------------
+
+
+def _app_with_switchboard_pool(
+    app: FastAPI, *, main_pool=None, switchboard_pool=None, main_pool_error=None
+):
+    """Wire mock_db with both credential shared pool and switchboard pool."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    if main_pool_error is not None:
+        mock_db.credential_shared_pool.side_effect = main_pool_error
+    else:
+        if main_pool is None:
+            main_pool = AsyncMock()
+        mock_db.credential_shared_pool.return_value = main_pool
+    if switchboard_pool is not None:
+        mock_db.pool.side_effect = lambda name: (
+            switchboard_pool if name == "switchboard" else (_ for _ in ()).throw(KeyError(name))
+        )
+    else:
+        mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
+    mock_db.fan_out = AsyncMock(return_value={})
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
+    return mock_db
+
+
+async def test_payload_200_returns_content_and_emits_audit(app):
+    """GET /payload returns 200 with content + audit log entry when event and inbox row exist."""
+    event_id = str(uuid4())
+
+    main_pool = AsyncMock()
+    main_pool.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
+
+    import json as _json
+
+    inbox_row = MagicMock()
+    inbox_row.__getitem__ = MagicMock(
+        side_effect=lambda key: {
+            "raw_payload": _json.dumps({"content": "hello world", "metadata": {}}),
+            "source_channel": "telegram_bot",
+        }[key]
+    )
+    inbox_row.get = MagicMock(
+        side_effect=lambda key, default=None: {
+            "raw_payload": _json.dumps({"content": "hello world", "metadata": {}}),
+            "source_channel": "telegram_bot",
+        }.get(key, default)
+    )
+
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchrow = AsyncMock(return_value=inbox_row)
+
+    _app_with_switchboard_pool(app, main_pool=main_pool, switchboard_pool=switchboard_pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock
+    ) as mock_audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{event_id}/payload")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["content"] == "hello world"
+    assert body["data"]["truncated"] is False
+    assert body["data"]["bytes"] > 0
+    # Audit must have fired
+    mock_audit.assert_awaited_once()
+    call_kwargs = mock_audit.await_args.kwargs
+    assert call_kwargs["operation"] == "ingestion.event.payload_read"
+    assert call_kwargs["response_status"] == 200
+
+
+async def test_payload_404_when_event_missing(app):
+    """GET /payload returns 404 when the event does not exist in ingestion_events."""
+    main_pool = AsyncMock()
+    main_pool.fetchrow = AsyncMock(return_value=None)
+
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchrow = AsyncMock(return_value=None)
+
+    _app_with_switchboard_pool(app, main_pool=main_pool, switchboard_pool=switchboard_pool)
+
+    with patch("butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{uuid4()}/payload")
+
+    assert resp.status_code == 404
+
+
+async def test_payload_503_when_switchboard_unavailable(app):
+    """GET /payload returns 503 when the switchboard pool is not accessible."""
+    event_id = str(uuid4())
+    main_pool = AsyncMock()
+    main_pool.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
+
+    # No switchboard pool — pool() raises KeyError
+    _app_with_switchboard_pool(app, main_pool=main_pool, switchboard_pool=None)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/ingestion/events/{event_id}/payload")
+
+    assert resp.status_code == 503
+
+
+async def test_payload_503_when_main_pool_unavailable(app):
+    """GET /payload returns 503 when the credential shared pool is not accessible."""
+    event_id = str(uuid4())
+    _app_with_switchboard_pool(app, main_pool_error=KeyError("no shared pool"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/ingestion/events/{event_id}/payload")
+
+    assert resp.status_code == 503
