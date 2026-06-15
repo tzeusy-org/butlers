@@ -978,9 +978,15 @@ interface TimelineTabProps {
   defaultStatuses?: IngestionEventStatus[];
   /** Override the initial active view ID (for testing). */
   defaultViewId?: ViewId;
+  /**
+   * Called whenever the latest event's received_at changes.
+   * The parent page uses this to drive the live-status badge honestly.
+   * Passes null when no events have loaded yet.
+   */
+  onFreshnessChange?: (latestReceivedAt: string | null) => void;
 }
 
-export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: TimelineTabProps) {
+export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshnessChange }: TimelineTabProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // ?event=<id> — drawer URL state
@@ -1280,7 +1286,12 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     ...(debouncedQ ? { q: debouncedQ } : {}),
     ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
     ...(statusesCsv ? { statuses: statusesCsv } : {}),
-  }), [debouncedQ, activeChannels, statusesCsv]);
+    // Only apply a lower bound on received_at so the 30 s refetch can pick up
+    // events that arrived after the initial load.  Including an upper bound
+    // (rangeWindow.to) would freeze the query at the moment the range changed,
+    // causing the refetch to silently miss new events.
+    from: rangeWindow.from,
+  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from]);
 
   const {
     data: infiniteData,
@@ -1313,6 +1324,16 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId }: Timeli
     () => infiniteData?.pages.flatMap((page) => page.data) ?? [],
     [infiniteData?.pages],
   );
+
+  // Report the most-recent event's received_at to the parent for live-status.
+  // We use the first page's first event (newest-first ordering) so the badge
+  // reflects true pipeline freshness rather than the client-side filter view.
+  const latestReceivedAt = infiniteData?.pages[0]?.data[0]?.received_at ?? null;
+  useEffect(() => {
+    if (!isLoading && onFreshnessChange) {
+      onFreshnessChange(latestReceivedAt);
+    }
+  }, [latestReceivedAt, isLoading, onFreshnessChange]);
 
   // Evict stale overrides
   useEffect(() => {

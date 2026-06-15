@@ -2652,6 +2652,10 @@ export interface IngestionEventsParams {
    * and error_detail. Server-side; safe against injection.
    */
   q?: string;
+  /** ISO-8601 inclusive lower bound on received_at. Omit for no lower bound. */
+  from?: string;
+  /** ISO-8601 exclusive upper bound on received_at. Omit for no upper bound. */
+  to?: string;
 }
 
 /** Time window boundaries for GET /api/ingestion/rollup. */

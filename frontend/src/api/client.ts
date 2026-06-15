@@ -4244,6 +4244,8 @@ export async function listIngestionEvents(
   if (params?.status) sp.set("status", params.status);
   if (params?.statuses) sp.set("statuses", params.statuses);
   if (params?.q) sp.set("q", params.q);
+  if (params?.from) sp.set("from", params.from);
+  if (params?.to) sp.set("to", params.to);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,

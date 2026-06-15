@@ -150,6 +150,15 @@ async def list_ingestion_events(
             "Parameterized — safe against SQL injection."
         ),
     ),
+    from_: str | None = Query(
+        None,
+        alias="from",
+        description="ISO-8601 inclusive lower bound on received_at (e.g. '2026-01-01T00:00:00Z').",
+    ),
+    to: str | None = Query(
+        None,
+        description="ISO-8601 exclusive upper bound on received_at.",
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CursorPaginatedResponse[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
@@ -161,7 +170,8 @@ async def list_ingestion_events(
     Merges ``public.ingestion_events`` (status=ingested/skipped, filter_reason=null)
     with ``connectors.filtered_events`` (status/filter_reason from their own columns).
     Supports optional filtering by ``channels`` (CSV), ``source_channel`` (deprecated),
-    ``statuses`` (CSV), ``status`` (single), and freetext ``q``.
+    ``statuses`` (CSV), ``status`` (single), freetext ``q``, and ``from``/``to``
+    (ISO-8601 time bounds on received_at).
 
     Channel filter precedence: ``channels`` wins over ``source_channel``.
     Status filter precedence: ``statuses`` wins over ``status``.
@@ -191,6 +201,20 @@ async def list_ingestion_events(
     # Resolve status filter: statuses CSV wins; fall back to single status.
     status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
 
+    # Parse optional time-range bounds.
+    from_dt: _datetime | None = None
+    to_dt: _datetime | None = None
+    if from_ is not None:
+        try:
+            from_dt = _datetime.fromisoformat(from_).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'from' value: {exc}") from exc
+    if to is not None:
+        try:
+            to_dt = _datetime.fromisoformat(to).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'to' value: {exc}") from exc
+
     result = await ingestion_events_list(
         pool,
         limit=limit,
@@ -199,6 +223,8 @@ async def list_ingestion_events(
         status=status,
         statuses=status_list,
         q=q,
+        from_dt=from_dt,
+        to_dt=to_dt,
     )
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]

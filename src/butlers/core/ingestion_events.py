@@ -250,6 +250,8 @@ async def ingestion_events_list(
     status: str | None = None,
     statuses: list[str] | None = None,
     q: str | None = None,
+    from_dt: datetime | None = None,
+    to_dt: datetime | None = None,
 ) -> dict[str, Any]:
     """Return a keyset-paginated list of ingestion events (unified stream), newest first.
 
@@ -275,6 +277,8 @@ async def ingestion_events_list(
             ``status``.
         q: Optional freetext search (ILIKE %q%) against source_channel,
             source_sender_identity, and error_detail.
+        from_dt: Inclusive lower bound on ``received_at``.  ``None`` = no lower bound.
+        to_dt: Exclusive upper bound on ``received_at``.  ``None`` = no upper bound.
 
     Returns:
         A dict with:
@@ -302,6 +306,12 @@ async def ingestion_events_list(
             f"(source_channel ILIKE ${n} OR source_sender_identity ILIKE ${n}"
             f" OR error_detail ILIKE ${n})"
         )
+    if from_dt is not None:
+        args.append(from_dt)
+        where_parts.append(f"received_at >= ${len(args)}")
+    if to_dt is not None:
+        args.append(to_dt)
+        where_parts.append(f"received_at < ${len(args)}")
 
     if cursor is not None:
         cursor_received_at, cursor_id = decode_cursor(cursor)

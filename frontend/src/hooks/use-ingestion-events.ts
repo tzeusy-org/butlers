@@ -82,10 +82,12 @@ export const ingestionEventKeys = {
  * - isLoading / isError / error
  *
  * total is NOT available — the API no longer returns a count.
+ *
+ * Auto-refetches every 30s so the ledger and live-status badge stay honest.
  */
 export function useIngestionEvents(
   filters: IngestionEventsFilters = {},
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; refetchInterval?: number | false },
 ) {
   return useInfiniteQuery<
     CursorPaginatedResponse<IngestionEventSummary>,
@@ -101,6 +103,9 @@ export function useIngestionEvents(
     getNextPageParam: (lastPage) =>
       lastPage.meta.has_more ? (lastPage.meta.next_cursor ?? null) : null,
     staleTime: 30_000,
+    // Refetch only the first page at the interval; infinite queries refetch all
+    // loaded pages but we only need freshness from the newest (first) page.
+    refetchInterval: options?.refetchInterval !== undefined ? options.refetchInterval : 30_000,
     enabled: options?.enabled !== false,
   });
 }
