@@ -95,6 +95,8 @@ export interface StatusBoardCellProps {
   row: StatusBoardRow
   /** Called with the butler name when the user clicks the restore chip. */
   onRestore?: (name: string) => void
+  /** True while the restore mutation for this specific butler is in flight. */
+  isRestorePending?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +114,7 @@ export interface StatusBoardCellProps {
  * @example
  *   <StatusBoardCell row={row} onRestore={(name) => setEligibility(name, 'active')} />
  */
-export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
+export function StatusBoardCell({ row, onRestore, isRestorePending = false }: StatusBoardCellProps) {
   const {
     name,
     description,
@@ -174,17 +176,20 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
         {isRestorable && onRestore ? (
           <button
             type="button"
+            disabled={isRestorePending}
             onClick={(e) => {
               e.stopPropagation()
               onRestore(name)
             }}
             className={[
-              "font-mono text-[9px] uppercase tracking-wider cursor-pointer",
-              "underline underline-offset-2 decoration-current/50",
-              heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-amber-600 dark:text-amber-400" : activityChipClasses(activity),
-            ].join(" ")}
+              "font-mono text-[9px] uppercase tracking-wider",
+              isRestorePending
+                ? "cursor-not-allowed text-muted-foreground"
+                : "cursor-pointer underline underline-offset-2 decoration-current/50",
+              !isRestorePending && (heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-amber-600 dark:text-amber-400" : activityChipClasses(activity)),
+            ].filter(Boolean).join(" ")}
           >
-            {heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
+            {isRestorePending ? "RESTORING…" : heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
           </button>
         ) : (
           <span

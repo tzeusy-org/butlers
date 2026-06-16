@@ -474,6 +474,59 @@ describe("StatusBoardCell: onRestore callback", () => {
 })
 
 // ---------------------------------------------------------------------------
+// isRestorePending — disabled/pending chip state (bu-klxx6)
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: isRestorePending", () => {
+  it("button has disabled attribute when isRestorePending=true", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined" })}
+        onRestore={() => void 0}
+        isRestorePending={true}
+      />,
+    )
+    expect(html).toContain('disabled=""')
+  })
+
+  it("button shows RESTORING text when isRestorePending=true", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined" })}
+        onRestore={() => void 0}
+        isRestorePending={true}
+      />,
+    )
+    expect(html).toContain("RESTORING")
+    expect(html).not.toContain("QUARANTINED")
+  })
+
+  it("stale chip shows RESTORING and is disabled when isRestorePending=true", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "idle", eligibility: "stale" })}
+        onRestore={() => void 0}
+        isRestorePending={true}
+      />,
+    )
+    expect(html).toContain("RESTORING")
+    expect(html).toContain('disabled=""')
+    expect(html).not.toContain("STALE")
+  })
+
+  it("button is not disabled when isRestorePending=false (default)", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined" })}
+        onRestore={() => void 0}
+      />,
+    )
+    expect(html).not.toContain('disabled=""')
+    expect(html).toContain("QUARANTINED")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // heartbeatUnavailable display (bu-ywz06)
 // ---------------------------------------------------------------------------
 
