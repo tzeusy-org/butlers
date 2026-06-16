@@ -253,6 +253,7 @@ function formatRelative(date: Date): string {
  * same truthful text without duplicating the formatting logic.
  */
 export function formatRelativeCompact(date: Date): string {
+  if (Number.isNaN(date.getTime())) return "unknown"
   try {
     const diffMs = Date.now() - date.getTime()
     const absDiffSec = Math.floor(Math.abs(diffMs) / 1_000)
