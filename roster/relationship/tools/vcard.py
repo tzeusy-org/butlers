@@ -10,9 +10,13 @@ import asyncpg
 
 from butlers.tools.relationship.addresses import address_add, address_list
 from butlers.tools.relationship.contact_info import contact_info_add, contact_info_list
-from butlers.tools.relationship.contacts import _parse_contact, contact_create, contact_get
+from butlers.tools.relationship.contacts import (
+    _parse_contact,
+    contact_create,
+    contact_get,
+    contact_update,
+)
 from butlers.tools.relationship.dates import date_add, date_list
-from butlers.tools.relationship.facts import fact_list, fact_set
 from butlers.tools.relationship.notes import note_create, note_list
 
 logger = logging.getLogger(__name__)
@@ -146,18 +150,15 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
                     vcard.bday.value = f"--{date['month']:02d}-{date['day']:02d}"
                 break
 
-        # ORG (Organization) - from quick_facts.company
-        facts = await fact_list(pool, contact["id"])
-        facts_dict = {f["key"]: f["value"] for f in facts}
-
-        if "company" in facts_dict:
+        # ORG (Organization) - from contacts.company
+        if contact.get("company"):
             vcard.add("org")
-            vcard.org.value = [facts_dict["company"]]
+            vcard.org.value = [contact["company"]]
 
-        # TITLE (Job Title) - from quick_facts.job_title
-        if "job_title" in facts_dict:
+        # TITLE (Job Title) - from contacts.job_title
+        if contact.get("job_title"):
             vcard.add("title")
-            vcard.title.value = facts_dict["job_title"]
+            vcard.title.value = contact["job_title"]
 
         # NOTE - combine emotion notes if any
         notes = await note_list(pool, contact["id"])
@@ -180,8 +181,8 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
     - EMAIL -> contact_info(type=email)
     - ADR -> addresses
     - BDAY -> important_dates (birthday)
-    - ORG -> quick_facts (company)
-    - TITLE -> quick_facts (job_title)
+    - ORG -> contacts.company
+    - TITLE -> contacts.job_title
     - NOTE -> notes
 
     Args:
@@ -353,17 +354,20 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                 except Exception as e:
                     logger.warning(f"Failed to add birthday: {e}")
 
-        # ORG (Organization) -> quick_facts.company
+        # ORG/TITLE -> contacts.company / contacts.job_title
+        update_fields: dict[str, str] = {}
         if hasattr(vcard, "org"):
             org_value = vcard.org.value
             if isinstance(org_value, list) and org_value:
-                await fact_set(pool, contact["id"], "company", org_value[0])
-            elif isinstance(org_value, str):
-                await fact_set(pool, contact["id"], "company", org_value)
-
-        # TITLE (Job Title) -> quick_facts.job_title
-        if hasattr(vcard, "title"):
-            await fact_set(pool, contact["id"], "job_title", vcard.title.value)
+                val = org_value[0]
+                if val is not None and val.strip():
+                    update_fields["company"] = val
+            elif isinstance(org_value, str) and org_value.strip():
+                update_fields["company"] = org_value
+        if hasattr(vcard, "title") and vcard.title.value and vcard.title.value.strip():
+            update_fields["job_title"] = vcard.title.value
+        if update_fields:
+            await contact_update(pool, contact["id"], **update_fields)
 
         # NOTE -> notes
         if hasattr(vcard, "note"):

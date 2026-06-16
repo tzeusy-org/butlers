@@ -5,7 +5,7 @@ One phase per domain:
 
   - health:       measurements, symptoms, medication_doses, medications,
                   conditions, research
-  - relationship: quick_facts, life_events, tasks, reminders
+  - relationship: life_events, tasks, reminders
   - finance:      transactions, accounts, subscriptions, bills
   - home:         ha_entity_snapshot
 
@@ -520,50 +520,6 @@ async def backfill_health(pool: asyncpg.Pool, dry_run: bool = False) -> Stats:
 # ---------------------------------------------------------------------------
 
 
-async def _backfill_rel_quick_facts(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
-    rows = await pool.fetch(
-        """
-        SELECT qf.*, c.id AS contact_uuid,
-               COALESCE(
-                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS contact_name,
-               c.entity_id
-        FROM quick_facts qf
-        JOIN contacts c ON qf.contact_id = c.id
-        ORDER BY qf.updated_at ASC
-        """
-    )
-    for row in rows:
-        stats.processed += 1
-        key = _backfill_key("quick_facts", f"{row['contact_id']}:{row['key']}")
-        if await _fact_exists(pool, key):
-            stats.skipped += 1
-            continue
-        entity_id = row.get("entity_id")
-        if entity_id and isinstance(entity_id, str):
-            entity_id = uuid.UUID(entity_id)
-        content = f"{row['key']}: {row['value']}"
-        try:
-            await _insert_fact(
-                pool,
-                subject=row["contact_name"],
-                predicate="preference",
-                content=content,
-                entity_id=entity_id,
-                valid_at=None,
-                permanence="standard",
-                source_butler="relationship",
-                backfill_key=key,
-                tags=["relationship", "quick_fact"],
-                dry_run=dry_run,
-            )
-            stats.inserted += 1
-        except Exception as exc:
-            logger.error("quick_facts contact=%s key=%s: %s", row["contact_id"], row["key"], exc)
-            stats.errors += 1
-
 
 async def _backfill_rel_life_events(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
     # Handle both legacy (type column) and current (life_event_type_id) schema.
@@ -771,7 +727,6 @@ async def backfill_relationship(pool: asyncpg.Pool, dry_run: bool = False) -> St
     stats = Stats()
 
     for fn, label in [
-        (_backfill_rel_quick_facts, "quick_facts"),
         (_backfill_rel_life_events, "life_events"),
         (_backfill_rel_tasks, "tasks"),
         (_backfill_rel_reminders, "reminders"),

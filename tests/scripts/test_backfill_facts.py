@@ -255,36 +255,6 @@ async def test_backfill_health_medications_property_fact(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Relationship phase — quick_facts
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_backfill_rel_quick_facts_happy(monkeypatch):
-    monkeypatch.setattr(bf, "_load_embedding_engine", lambda: _make_fake_embedding_engine())
-    eid = uuid.uuid4()
-    rows = [
-        _row(
-            id=1,
-            contact_id=uuid.uuid4(),
-            key="favorite_food",
-            value="Pizza",
-            contact_name="Alice Smith",
-            entity_id=str(eid),
-            updated_at=datetime(2024, 2, 1, tzinfo=UTC),
-        )
-    ]
-    pool = _pool_with_rows(rows)
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
-
-    stats = bf.Stats()
-    await bf._backfill_rel_quick_facts(pool, stats, dry_run=False)
-
-    assert stats.inserted == 1
-
-
-# ---------------------------------------------------------------------------
 # Finance phase — transactions
 # ---------------------------------------------------------------------------
 

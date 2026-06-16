@@ -192,12 +192,11 @@ async def test_export_contact_with_birthday(pool):
 
 
 async def test_export_contact_with_org_title(pool):
-    """Test exporting a contact with organization and title."""
-    from butlers.tools.relationship import contact_create, contact_export_vcard, fact_set
+    """Test exporting a contact with organization and title via public.contacts."""
+    from butlers.tools.relationship import contact_create, contact_export_vcard, contact_update
 
     contact = await contact_create(pool, "Bob Brown")
-    await fact_set(pool, contact["id"], "company", "Acme Corp")
-    await fact_set(pool, contact["id"], "job_title", "Software Engineer")
+    await contact_update(pool, contact["id"], company="Acme Corp", job_title="Software Engineer")
 
     vcf = await contact_export_vcard(pool, contact["id"])
 
@@ -373,8 +372,8 @@ END:VCARD"""
 
 
 async def test_import_vcard_with_org_title(pool):
-    """Test importing a vCard with organization and title."""
-    from butlers.tools.relationship import contact_import_vcard, fact_list
+    """Test importing a vCard with organization and title stored in public.contacts."""
+    from butlers.tools.relationship import contact_get, contact_import_vcard
 
     vcf = """BEGIN:VCARD
 VERSION:3.0
@@ -387,11 +386,9 @@ END:VCARD"""
     contacts = await contact_import_vcard(pool, vcf)
 
     assert len(contacts) == 1
-    facts = await fact_list(pool, contacts[0]["id"])
-    facts_dict = {f["key"]: f["value"] for f in facts}
-
-    assert facts_dict["company"] == "Tech Innovations Inc."
-    assert facts_dict["job_title"] == "Product Manager"
+    contact = await contact_get(pool, contacts[0]["id"])
+    assert contact["company"] == "Tech Innovations Inc."
+    assert contact["job_title"] == "Product Manager"
 
 
 async def test_import_multiple_vcards(pool):
@@ -488,11 +485,11 @@ async def test_round_trip_full_contact(pool):
     from butlers.tools.relationship import (
         contact_create,
         contact_export_vcard,
+        contact_get,
         contact_import_vcard,
+        contact_update,
         date_add,
         date_list,
-        fact_list,
-        fact_set,
     )
 
     # Create comprehensive contact
@@ -512,8 +509,7 @@ async def test_round_trip_full_contact(pool):
     }
     original = await contact_create(pool, "Full Test", details)
     await date_add(pool, original["id"], "birthday", 5, 10, 1988)
-    await fact_set(pool, original["id"], "company", "Test Corp")
-    await fact_set(pool, original["id"], "job_title", "Test Engineer")
+    await contact_update(pool, original["id"], company="Test Corp", job_title="Test Engineer")
 
     # Export and import
     vcf = await contact_export_vcard(pool, original["id"])
@@ -539,10 +535,10 @@ async def test_round_trip_full_contact(pool):
     assert new_dates[0]["day"] == 10
     assert new_dates[0]["year"] == 1988
 
-    new_facts = await fact_list(pool, new_contact["id"])
-    new_facts_dict = {f["key"]: f["value"] for f in new_facts}
-    assert new_facts_dict["company"] == "Test Corp"
-    assert new_facts_dict["job_title"] == "Test Engineer"
+    # ORG/TITLE round-trip via public.contacts
+    new_contact_full = await contact_get(pool, new_contact["id"])
+    assert new_contact_full["company"] == "Test Corp"
+    assert new_contact_full["job_title"] == "Test Engineer"
 
 
 async def test_export_produces_valid_vcard_30(pool):
