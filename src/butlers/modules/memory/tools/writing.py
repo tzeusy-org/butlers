@@ -161,6 +161,112 @@ def is_identity_registry_predicate(
     return predicate in _IDENTITY_REGISTRY_PREDICATE_FLOOR
 
 
+# ---------------------------------------------------------------------------
+# Canonical fact-store layering — writer-side relational-edge boundary
+# ---------------------------------------------------------------------------
+#
+# ``module-memory`` (relational-edges-single-home delta) forbids edge-facts
+# with registry-relational predicates from landing in the memory-module
+# ``facts`` table.  Registry-relational edges (``works-at``, ``friend-of``,
+# ``knows``, ``family-of``, etc.) MUST be written through
+# ``relationship_assert_fact(object_kind='entity')`` into
+# ``relationship.entity_facts``.  Narrative edges (``planned_dinner_with``,
+# ``wake_coordination``, …) remain legal in ``{schema}.facts``.
+#
+# The guard fires ONLY when ``object_entity_id`` is set (i.e. the call is an
+# edge-fact, not a property-fact).  The rejection set is registry-driven
+# (``kind = 'relational'`` rows) with a static floor as the always-on
+# guarantee.  Floor includes both the canonical normalized forms and the known
+# underscore aliases from ``_PREDICATE_ALIAS_MAP`` in
+# ``relationship_assert_fact.py`` that have no exact canonical equivalent
+# (``sibling_of → family-of``, ``married_to → partner-of``).
+_RELATIONAL_REGISTRY_PREDICATE_FLOOR: frozenset[str] = frozenset(
+    {
+        # Canonical relational predicates (hyphen→snake after normalize_predicate)
+        "knows",
+        "family_of",
+        "partner_of",
+        "parent_of",
+        "child_of",
+        "colleague_of",
+        "friend_of",
+        "co_attended",
+        "purchased_from",
+        "subscribed_to",
+        "visited",
+        "works_at",
+        "member_of",
+        # Underscore aliases not covered by the canonical names above
+        "sibling_of",  # alias for family-of
+        "married_to",  # alias for partner-of
+    }
+)
+
+#: TTL for the cached registry relational-predicate snapshot, in seconds.
+_RELATIONAL_REGISTRY_PREDICATE_CACHE_TTL_S = 300.0
+
+#: Cache state: (expiry_monotonic, normalized predicate set). ``None`` until first read.
+_relational_predicate_cache: tuple[float, frozenset[str]] | None = None
+
+
+async def _load_registry_relational_predicates(pool: Pool) -> frozenset[str]:
+    """Read the registry's relational predicates, normalized to snake_case.
+
+    Returns the floor on any failure so the boundary check never fails open
+    and never raises into the write path.
+    """
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT predicate
+            FROM relationship.entity_predicate_registry
+            WHERE kind = 'relational'
+            """
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to floor, never fail open
+        logger.debug("registry relational-predicate read failed, using floor: %s", exc)
+        return _RELATIONAL_REGISTRY_PREDICATE_FLOOR
+    registry = {normalize_predicate(r["predicate"]) for r in rows}
+    return _RELATIONAL_REGISTRY_PREDICATE_FLOOR | registry
+
+
+async def refresh_relational_registry_predicates(pool: Pool) -> frozenset[str]:
+    """Refresh and return the cached relational-predicate set (TTL-cached)."""
+    global _relational_predicate_cache
+    now = time.monotonic()
+    cached = _relational_predicate_cache
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    predicates = await _load_registry_relational_predicates(pool)
+    _relational_predicate_cache = (now + _RELATIONAL_REGISTRY_PREDICATE_CACHE_TTL_S, predicates)
+    return predicates
+
+
+def _reset_relational_registry_cache() -> None:
+    """Clear the relational-predicate cache (test hook)."""
+    global _relational_predicate_cache
+    _relational_predicate_cache = None
+
+
+def is_relational_registry_predicate(
+    predicate: str, registry_predicates: frozenset[str] | None = None
+) -> bool:
+    """Return True if *predicate* is a registry relational predicate (or alias).
+
+    Expects the normalized (snake_case) predicate form produced by
+    :func:`normalize_predicate`. Registry-relational edge-facts MUST NOT be
+    written to the memory-module ``facts`` table; use
+    ``relationship_assert_fact(object_kind='entity')`` instead.
+
+    ``registry_predicates`` is the TTL-cached registry snapshot (see
+    :func:`refresh_relational_registry_predicates`); when omitted, only the
+    static floor is checked.
+    """
+    if registry_predicates is not None and predicate in registry_predicates:
+        return True
+    return predicate in _RELATIONAL_REGISTRY_PREDICATE_FLOOR
+
+
 def _extract_request_context(
     request_context: dict[str, Any] | None,
 ) -> tuple[str, str | None]:
@@ -323,6 +429,25 @@ async def memory_store_fact(
             "relationship.entity_facts (canonical identity store). Store only the "
             "narrative context (e.g. 'mentioned switching jobs') as a memory fact."
         )
+
+    # Writer-side relational-edge boundary (module-memory relational-edges-single-home
+    # delta): edge-facts with registry-relational predicates belong in
+    # relationship.entity_facts via relationship_assert_fact(object_kind='entity').
+    # This guard fires only when object_entity_id is set (i.e. this is an edge-fact).
+    # Narrative edge-facts (planned_dinner_with, wake_coordination, …) are unaffected.
+    if object_entity_id is not None:
+        relational_predicates = await refresh_relational_registry_predicates(pool)
+        if is_relational_registry_predicate(predicate, relational_predicates):
+            raise ValueError(
+                f"Registry-relational predicate {predicate!r} is out of scope for the "
+                "memory facts store when used as an edge-fact (object_entity_id set). "
+                "Registry-relational edges (knows, friend-of, works-at, member-of, "
+                "family-of, etc.) MUST be written through "
+                "relationship_assert_fact(object_kind='entity') into "
+                "relationship.entity_facts. Use a narrative predicate for episodic or "
+                "coordination edges that should remain in memory (e.g. "
+                "'planned_dinner_with')."
+            )
 
     parsed_entity_id = _uuid.UUID(entity_id) if entity_id is not None else None
     parsed_object_entity_id = _uuid.UUID(object_entity_id) if object_entity_id is not None else None

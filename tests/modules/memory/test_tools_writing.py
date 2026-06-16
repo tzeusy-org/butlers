@@ -27,9 +27,12 @@ from butlers.modules.memory.tools import (
 )
 from butlers.modules.memory.tools.writing import (
     _reset_identity_registry_cache,
+    _reset_relational_registry_cache,
     is_identity_registry_predicate,
+    is_relational_registry_predicate,
     normalize_predicate,
     refresh_identity_registry_predicates,
+    refresh_relational_registry_predicates,
 )
 
 pytestmark = pytest.mark.unit
@@ -37,10 +40,12 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def _clear_registry_cache():
-    """Reset the module-global registry-predicate cache around every test."""
+    """Reset the module-global registry-predicate caches around every test."""
     _reset_identity_registry_cache()
+    _reset_relational_registry_cache()
     yield
     _reset_identity_registry_cache()
+    _reset_relational_registry_cache()
 
 
 def _registry_pool(predicates: list[str]) -> AsyncMock:
@@ -371,3 +376,214 @@ class TestMemoryStoreRule:
             await memory_store_rule(pool, engine, "rule", scope="butler:x", tags=["safety"])
         kw = m.call_args.kwargs
         assert kw["scope"] == "butler:x" and kw["tags"] == ["safety"]
+
+
+# ---------------------------------------------------------------------------
+# Writer-side relational-edge boundary (B2 / relational-edges-single-home)
+# ---------------------------------------------------------------------------
+
+
+def _relational_pool(predicates: list[str] | None = None) -> AsyncMock:
+    """Pool mock whose relational registry fetch returns *predicates* (or nothing)."""
+    pool = AsyncMock()
+    if predicates is None:
+        pool.fetch = AsyncMock(return_value=[])
+    else:
+        # Both contact and relational queries share pool.fetch — return predicates
+        # for both (contact guard fires first, then relational guard).
+        pool.fetch = AsyncMock(return_value=[{"predicate": p} for p in predicates])
+    return pool
+
+
+class TestRelationalPredicateBoundary:
+    """Registry-relational edge-facts MUST NOT land in the memory facts store.
+
+    module-memory (relational-edges-single-home delta): a call to
+    memory_store_fact() with object_entity_id set and a registry-relational
+    predicate (or underscore alias) MUST raise a ValueError directing the
+    caller to relationship_assert_fact(). Narrative edges (planned_dinner_with,
+    wake_coordination, …) remain unaffected.
+    """
+
+    @pytest.mark.parametrize(
+        "predicate",
+        [
+            "friend-of",  # canonical hyphenated form → normalized to friend_of
+            "works-at",  # canonical hyphenated → works_at
+            "member-of",  # canonical hyphenated → member_of
+            "knows",
+            "family-of",
+            "partner-of",
+            "parent-of",
+            "child-of",
+            "colleague-of",
+            "co-attended",
+        ],
+    )
+    def test_is_relational_registry_predicate_true_for_floor(self, predicate: str) -> None:
+        normalized = normalize_predicate(predicate)
+        assert is_relational_registry_predicate(normalized), (
+            f"{predicate!r} (normalized: {normalized!r}) should be a relational floor predicate"
+        )
+
+    @pytest.mark.parametrize(
+        "alias",
+        ["sibling_of", "married_to"],
+    )
+    def test_is_relational_registry_predicate_true_for_aliases(self, alias: str) -> None:
+        assert is_relational_registry_predicate(alias)
+
+    @pytest.mark.parametrize(
+        "predicate",
+        [
+            "planned_dinner_with",
+            "wake_coordination",
+            "social_exchange_with",
+            "food_allergy",
+            "birthday",
+            "current_interest",
+        ],
+    )
+    def test_is_relational_registry_predicate_false_for_narrative(self, predicate: str) -> None:
+        assert not is_relational_registry_predicate(predicate)
+
+    async def test_relational_predicate_with_edge_rejected(
+        self, pool: AsyncMock, engine: MagicMock
+    ) -> None:
+        """A registry-relational predicate with object_entity_id raises ValueError."""
+        obj_id = str(uuid.uuid4())
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as store_fact:
+            with pytest.raises(ValueError) as excinfo:
+                await memory_store_fact(
+                    pool,
+                    engine,
+                    "Sarah",
+                    "friend-of",
+                    "close friends",
+                    object_entity_id=obj_id,
+                )
+        store_fact.assert_not_called()
+        msg = str(excinfo.value)
+        assert "out of scope for the memory facts store" in msg
+        assert "relationship_assert_fact" in msg
+
+    async def test_underscore_alias_with_edge_rejected(
+        self, pool: AsyncMock, engine: MagicMock
+    ) -> None:
+        """An underscore alias (works_at) with object_entity_id raises ValueError."""
+        obj_id = str(uuid.uuid4())
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as store_fact:
+            with pytest.raises(ValueError) as excinfo:
+                await memory_store_fact(
+                    pool,
+                    engine,
+                    "John",
+                    "works_at",
+                    "software engineer",
+                    object_entity_id=obj_id,
+                )
+        store_fact.assert_not_called()
+        assert "relationship_assert_fact" in str(excinfo.value)
+
+    async def test_underscore_alias_sibling_of_rejected(
+        self, pool: AsyncMock, engine: MagicMock
+    ) -> None:
+        """sibling_of alias (→ family-of) with object_entity_id raises ValueError."""
+        obj_id = str(uuid.uuid4())
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as store_fact:
+            with pytest.raises(ValueError):
+                await memory_store_fact(
+                    pool,
+                    engine,
+                    "Jake",
+                    "sibling_of",
+                    "brother",
+                    object_entity_id=obj_id,
+                )
+        store_fact.assert_not_called()
+
+    async def test_narrative_edge_still_stored(self, pool: AsyncMock, engine: MagicMock) -> None:
+        """A narrative predicate with object_entity_id is accepted and stored."""
+        fact_id = uuid.uuid4()
+        obj_id = str(uuid.uuid4())
+        with patch.object(
+            _helpers._storage,
+            "store_fact",
+            new_callable=AsyncMock,
+            return_value={"id": fact_id},
+        ) as store_fact:
+            result = await memory_store_fact(
+                pool,
+                engine,
+                "Alice",
+                "planned_dinner_with",
+                "dinner next Friday",
+                object_entity_id=obj_id,
+            )
+        store_fact.assert_awaited_once()
+        assert result == {"id": str(fact_id), "superseded_id": None}
+
+    async def test_relational_predicate_without_edge_allowed(
+        self, pool: AsyncMock, engine: MagicMock
+    ) -> None:
+        """A relational predicate WITHOUT object_entity_id (property-fact) is allowed.
+
+        The guard only fires on edge-facts. Property-facts with relational
+        predicate names are not ejected by this boundary.
+        """
+        fact_id = uuid.uuid4()
+        with patch.object(
+            _helpers._storage,
+            "store_fact",
+            new_callable=AsyncMock,
+            return_value={"id": fact_id},
+        ) as store_fact:
+            result = await memory_store_fact(
+                pool,
+                engine,
+                "user",
+                "works_at",
+                "mentioned switching jobs",
+                # no object_entity_id
+            )
+        store_fact.assert_awaited_once()
+        assert result == {"id": str(fact_id), "superseded_id": None}
+
+    async def test_registry_driven_relational_predicate_rejected(self, engine: MagicMock) -> None:
+        """A relational predicate seeded in the live registry (not in floor) is rejected."""
+        pool = AsyncMock()
+        # Contact registry returns nothing; relational registry returns a new predicate.
+        call_count = 0
+
+        async def fake_fetch(sql: str, *args, **kwargs):  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if "kind = 'contact'" in sql:
+                return []
+            if "kind = 'relational'" in sql:
+                return [{"predicate": "co-hosted"}]  # only in live registry
+            return []
+
+        pool.fetch = AsyncMock(side_effect=fake_fetch)
+        obj_id = str(uuid.uuid4())
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as store_fact:
+            with pytest.raises(ValueError) as excinfo:
+                await memory_store_fact(
+                    pool, engine, "Bob", "co-hosted", "podcast", object_entity_id=obj_id
+                )
+        store_fact.assert_not_called()
+        assert "relationship_assert_fact" in str(excinfo.value)
+
+    async def test_relational_snapshot_cached(self) -> None:
+        """refresh_relational_registry_predicates caches within the TTL."""
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+        await refresh_relational_registry_predicates(pool)
+        await refresh_relational_registry_predicates(pool)
+        assert pool.fetch.await_count == 1
+
+    def test_explicit_relational_snapshot_arg(self) -> None:
+        """is_relational_registry_predicate honors an explicit snapshot."""
+        snapshot = frozenset({"co_hosted", "works_at"})
+        assert is_relational_registry_predicate("co_hosted", snapshot)
+        assert not is_relational_registry_predicate("planned_dinner_with", snapshot)

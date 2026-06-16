@@ -1,7 +1,7 @@
 ---
 name: fact-extraction
-description: 7-step Conversational Fact Extraction Pipeline — resolve person mentions to entities, apply disambiguation policy, extract and store facts, log interactions, and update domain records. Includes question answering flow and 8 complete examples.
-version: 2.0.0
+description: 7-step Conversational Fact Extraction Pipeline — resolve person mentions to entities, apply disambiguation policy, extract and store facts, log interactions, and update domain records. Routes registry-relational edges to relationship_assert_fact(); reserves memory_store_fact() for narrative edges. Includes question answering flow and 8 complete examples.
+version: 3.0.0
 tags: [relationship, memory, extraction, entity-resolution]
 ---
 
@@ -59,14 +59,14 @@ When `memory_entity_resolve` returns zero candidates:
 The entity appears in the dashboard "Unidentified Entities" section for the owner to confirm,
 merge, or delete — especially useful for one-off mentions where full identity is unknown.
 
-## Step 4b: Handle New Organizations (for Edge-Facts)
+## Step 4b: Handle New Organizations (for Registry-Relational Edge-Facts)
 
-When storing an edge-fact where the object is an organization (employer, club, school, etc.)
-and that organization is not yet in the entity graph, apply the resolve-or-create transitory
-pattern before storing the fact:
+When storing a registry-relational edge-fact where the object is an organization (employer,
+club, school, etc.) and that organization is not yet in the entity graph, apply the
+resolve-or-create transitory pattern before calling `relationship_assert_fact()`:
 
 ```python
-# "Sarah just started at Figma"
+# "Sarah just started at Figma" — works-at is a registry-relational predicate
 # Step 1: resolve the organization
 candidates = memory_entity_resolve(name="Figma", entity_type="organization")
 # → zero candidates: create transitory entity with unidentified metadata
@@ -87,18 +87,20 @@ except ValueError:
     candidates = memory_entity_resolve(name="Figma", entity_type="organization")
     org_entity_id = candidates[0]["entity_id"]
 
-# Step 2: store the edge-fact
-memory_store_fact(
-    subject="Sarah",
-    predicate="works_at",
-    content="just started",
-    entity_id="<uuid-sarah>",
-    object_entity_id=org_entity_id,
-    permanence="stable",
-    importance=7.0,
-    tags=["work"]
+# Step 2: assert the registry-relational edge — NOT memory_store_fact
+relationship_assert_fact(
+    subject="<uuid-sarah>",
+    predicate="works-at",    # hyphenated canonical form
+    object=org_entity_id,    # object entity UUID as string
+    src="relationship",
+    object_kind="entity",
+    conf=0.9,
+    weight=5,
 )
 ```
+
+**Never store a registry-relational edge using `memory_store_fact()`.** See the
+"Canonical fact-store boundary" section below for the full discriminator.
 
 **Never store an edge-fact referencing an organization without first resolving or creating its
 entity.** A fact stored with only a raw string subject is invisible in `/entities` and cannot
@@ -137,116 +139,170 @@ Fact content is read later in isolation — on entity pages, in search results, 
 **Good:** `"Chloe suggested inviting Yu Han instead of [other person] because Yu Han is much further ahead in his career"`
 → Self-contained. Names the recommender, the subject, and the reason.
 
-### Canonical fact-store boundary: identity-contact data is NOT a memory fact
+### Canonical fact-store boundary: where each kind of fact lives
 
-Two stores, one rule for where a fact lives (`relationship-entity-lifecycle`
-"Canonical fact-store layering"; `module-memory` "Identity-contact data is out of
-scope for the memory facts store"):
+Three categories of facts, three destinations (`relationship-entity-lifecycle`
+"Canonical fact-store layering"; `module-memory` "Registry-relational edges are
+out of scope for the memory facts store"):
 
-- **Identity-contact triples** — channel identifiers and identity predicates
-  (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`,
-  `has-website`, and any future contact predicate in
-  `relationship.entity_predicate_registry`) live ONLY in `relationship.entity_facts`,
-  written through the central writer `relationship_assert_fact()`. The Relationship
-  butler's `contact_create` / `contact_update` / `date_add` tools route these for
-  you — you do not assert them by hand.
-- **Narrative facts, episodes, and non-registry edge-facts** (preferences,
-  interests, `works_at` context, life events, free-form relationship notes) live in
-  the memory-module `facts` table via `memory_store_fact()`.
+#### Category 1 — Identity-contact triples → relationship_assert_fact()
 
-**Do NOT call `memory_store_fact(predicate="has-email", ...)`** (or `has-phone`,
-`has-handle`, etc.). The writer rejects identity-contact predicates with a
-`ValueError` directing you to `relationship_assert_fact()`. Capture the surrounding
-*narrative* instead — e.g. store `predicate="works_at"` context, and let the
-contact's email/phone be recorded through the contact tools, which assert the
-`has-*` triple into the identity store.
+Channel identifiers and identity predicates (`has-email`, `has-phone`,
+`has-handle`, `has-address`, `has-birthday`, `has-website`) live ONLY in
+`relationship.entity_facts`, written through `relationship_assert_fact()`.
+The butler's `contact_create` / `contact_update` / `date_add` tools route
+these automatically — you do not assert them by hand.
+
+**Do NOT call `memory_store_fact(predicate="has-email", ...)`** The writer
+rejects identity-contact predicates with a `ValueError`.
+
+#### Category 2 — Registry-relational edges → relationship_assert_fact(object_kind="entity")
+
+An edge between two tracked entities is **registry-relational** when its
+predicate is a durable standing relationship type registered in
+`relationship.entity_predicate_registry` (relational family):
+
+| Predicate (canonical hyphenated) | Meaning |
+|---|---|
+| `knows` | general acquaintance |
+| `friend-of` | friendship |
+| `family-of` | kinship (siblings use this) |
+| `partner-of` | spousal / partner |
+| `parent-of` | parent → child |
+| `child-of` | child → parent |
+| `colleague-of` | professional peer |
+| `works-at` | person → organization (employment) |
+| `member-of` | person → organization (membership) |
+| `co-attended` | event co-attendance |
+| `purchased-from` | transactional |
+| `subscribed-to` | subscription |
+| `visited` | place visit |
+
+These MUST be written through `relationship_assert_fact(object_kind="entity")`.
+The memory writer rejects them with a `ValueError` if you try `memory_store_fact`.
+
+Underscore aliases (`works_at`, `friend_of`, `sibling_of`, `married_to`, etc.)
+are resolved automatically by `relationship_assert_fact()` — but always write
+the hyphenated canonical form in this skill to be explicit.
+
+#### Category 3 — Narrative and episodic edges → memory_store_fact(object_entity_id=...)
+
+An edge is **narrative** when it is episodic or coordination context that happens
+to reference two entities but is NOT a durable standing relationship type — for
+example `planned_dinner_with`, `wake_coordination`, `social_exchange_with`.
+These live in `{schema}.facts` via `memory_store_fact(object_entity_id=...)`.
+
+**Discriminator rule:**
+> If the predicate is in the registry relational family above → `relationship_assert_fact`.
+> Otherwise (episodic, one-off, coordination) → `memory_store_fact(object_entity_id=...)`.
+
+**Do NOT call `memory_store_fact(predicate="works-at", object_entity_id=..., ...)`**
+(or any other registry-relational predicate with `object_entity_id`). The writer
+rejects those with a `ValueError` directing you to `relationship_assert_fact()`.
 
 ## Step 5b: Extract and Store Edge-Facts (Relationship Between Entities)
 
-When the message references a relationship between two people (or a person and an organization), store an **edge-fact** by including `object_entity_id`:
+When the message references a relationship between two people (or a person and an
+organization), determine which store owns the edge using the **discriminator** in the
+"Canonical fact-store boundary" section above, then follow the appropriate path.
 
-1. Resolve both the subject entity and the object entity using `memory_entity_resolve`
-2. Store the edge-fact with both `entity_id` (subject) and `object_entity_id` (object)
+**When to use edge-facts vs property-facts:**
+- **Edge-fact (registry-relational)**: The fact is a durable standing relationship between two tracked entities with a registry predicate → use `relationship_assert_fact(object_kind="entity")`.
+- **Edge-fact (narrative)**: The fact is episodic, one-off, or coordination context referencing two entities → use `memory_store_fact(object_entity_id=...)`.
+- **Property-fact**: The fact describes an attribute of a single entity where the value is a plain string — e.g., `birthday`, `preference`, `current_interest`, `lives_in` (city as string) → use `memory_store_fact()` without `object_entity_id`.
+
+### Registry-relational edges → relationship_assert_fact
+
+Resolve both entities first; then assert the edge through the central writer.
 
 ```python
-# "Sarah works at Google"
-# Step 2: memory_entity_resolve("Sarah") → entity_id="uuid-sarah"
+# "Sarah works at Google" — works-at is a registry-relational predicate
+# Step 1: memory_entity_resolve("Sarah") → entity_id="uuid-sarah"
 # Step 2: memory_entity_resolve("Google", entity_type="organization") → entity_id="uuid-google"
-memory_store_fact(
-    subject="Sarah",
-    predicate="works_at",
-    content="software engineer",
-    entity_id="uuid-sarah",           # subject entity
-    object_entity_id="uuid-google",   # target entity (edge-fact)
-    permanence="stable",
-    importance=7.0,
-    tags=["work"]
+relationship_assert_fact(
+    subject="uuid-sarah",
+    predicate="works-at",     # canonical hyphenated form
+    object="uuid-google",     # object entity UUID as string
+    src="relationship",
+    object_kind="entity",
+    conf=0.9,
+    weight=5,
 )
 
-# "John and Lisa are siblings"
+# "John and Lisa are siblings" — family-of is a registry-relational predicate
 # Both already resolved: uuid-john, uuid-lisa
-memory_store_fact(
-    subject="John",
-    predicate="sibling_of",
-    content="brother",
-    entity_id="uuid-john",
-    object_entity_id="uuid-lisa",
-    permanence="permanent",
-    importance=8.0,
-    tags=["family"]
+relationship_assert_fact(
+    subject="uuid-john",
+    predicate="family-of",    # siblings use family-of
+    object="uuid-lisa",
+    src="relationship",
+    object_kind="entity",
+    conf=1.0,
+    weight=8,
 )
 
-# "Alex reports to Maria at work"
-memory_store_fact(
-    subject="Alex",
-    predicate="reports_to",
-    content="direct report",
-    entity_id="uuid-alex",
-    object_entity_id="uuid-maria",
-    permanence="stable",
-    importance=6.0,
-    tags=["work"]
+# "Alice is Bob's mother" — parent-of / child-of are registry-relational
+relationship_assert_fact(
+    subject="uuid-alice",
+    predicate="parent-of",
+    object="uuid-bob",
+    src="relationship",
+    object_kind="entity",
+    conf=1.0,
+    weight=9,
 )
 ```
 
-**When to use edge-facts vs property-facts:**
-- **Edge-fact** (include `object_entity_id`): The fact describes a typed relationship between two tracked entities — e.g., `works_at`, `friend_of`, `sibling_of`, `married_to`, `lives_with`, `reports_to`, `member_of`
-- **Property-fact** (omit `object_entity_id`): The fact describes an attribute of a single entity where the value is a plain string — e.g., `birthday`, `preference`, `current_interest`, `lives_in` (city as string)
+If the object entity doesn't exist yet (e.g., a new organization), create it with
+`memory_entity_create` first (see Step 4b), then assert the edge.
 
-If the object entity doesn't exist yet (e.g., a new organization), create it with `memory_entity_create` first, then store the edge-fact.
+### Narrative edges → memory_store_fact
 
-## Step 5c: Correct Existing Edge-Facts (Retract + Replace)
+Episodic or coordination context that references two entities but is NOT a registry
+predicate uses `memory_store_fact` with `object_entity_id`.
 
-When the user **corrects** an existing relationship — phrased as "X works at Y, not Z", "actually X moved to company Y", or "X no longer works at Z, they're at Y now" — this is a **correction workflow**, not a new-fact workflow. Do NOT simply append a new fact; retract the old edge-fact first.
+```python
+# "We're planning dinner with Alex next week" — episodic, not registry-relational
+# Both resolved: uuid-user (owner), uuid-alex
+memory_store_fact(
+    subject="owner",
+    predicate="planned_dinner_with",
+    content="planning dinner next week",
+    entity_id="uuid-user",
+    object_entity_id="uuid-alex",     # narrative edge — stays in memory
+    permanence="volatile",
+    importance=4.0,
+    tags=["social"]
+)
+```
 
-**Correction is signaled by language like:** "not", "actually", "instead", "correction", "no longer", "moved to", "now at".
+## Step 5c: Correct Existing Registry-Relational Edge-Facts (Retract + Re-assert)
+
+When the user **corrects** an existing relationship — phrased as "X works at Y, not Z",
+"actually X moved to company Y", or "X no longer works at Z, they're at Y now" — this is a
+**correction workflow**, not a new-fact workflow. Registry-relational edges live in
+`relationship.entity_facts` (via `relationship_assert_fact`), so the correction workflow
+also goes through `relationship_assert_fact`.
+
+**Correction is signaled by language like:** "not", "actually", "instead", "correction",
+"no longer", "moved to", "now at".
+
+The central writer supports automatic supersession: calling `relationship_assert_fact` with
+the same `(subject, predicate, object_kind='entity')` triple and updated provenance will
+supersede the old row atomically. For a changed *object* (different organization), you can
+simply assert the new fact — if the old and new objects differ, both rows remain active
+(there's no automatic retraction of the old relationship for a different object). Explicitly
+assert the retraction when needed; for new-object corrections, asserting the corrected edge
+via `relationship_assert_fact` is sufficient to record the new canonical value.
 
 ### Correction workflow for employment/workplace
 
 ```python
 # "Yousof works at Globex, not ACME"
 # Step 1: Resolve the person
-entity_id = memory_entity_resolve("Yousof", entity_type="person")["entity_id"]
+person_entity_id = memory_entity_resolve("Yousof", entity_type="person")[0]["entity_id"]
 
-# Step 2: Find the active works_at edge-fact(s) to retract
-old_facts = memory_search(
-    query="Yousof works_at",
-    types=["fact"],
-    filters={"entity_id": entity_id, "predicate": "works_at"}
-)
-# Also search for stale workplace property-facts
-old_props = memory_search(
-    query="Yousof workplace",
-    types=["fact"],
-    filters={"entity_id": entity_id, "predicate": "workplace"}
-)
-
-# Step 3: Retract each old active fact
-for fact in old_facts + old_props:
-    if fact.get("validity") == "active":
-        memory_forget(memory_type="fact", memory_id=fact["id"])
-
-# Step 4: Resolve or create the new organization entity
+# Step 2: Resolve or create the new organization entity
 candidates = memory_entity_resolve(name="Globex", entity_type="organization")
 if candidates:
     new_org_entity_id = candidates[0]["entity_id"]
@@ -254,29 +310,43 @@ else:
     result = memory_entity_create(
         canonical_name="Globex",
         entity_type="organization",
-        metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"}
+        metadata={"unidentified": True, "source": "fact_storage",
+                  "source_butler": "relationship", "source_scope": "relationship"}
     )
     new_org_entity_id = result["entity_id"]
 
-# Step 5: Store the new edge-fact with correction provenance in metadata
-memory_store_fact(
-    subject="Yousof",
-    predicate="works_at",
-    content="<role if known, else omit>",
-    entity_id=entity_id,
-    object_entity_id=new_org_entity_id,
-    permanence="stable",
-    importance=7.0,
-    tags=["work"],
-    metadata={"correction_source": "user", "corrected_from": "ACME"}
+# Step 3: Assert the corrected edge — the central writer supersedes
+# any existing active works-at row for this (subject, predicate, object) triple.
+relationship_assert_fact(
+    subject=person_entity_id,
+    predicate="works-at",
+    object=new_org_entity_id,
+    src="relationship",
+    object_kind="entity",
+    conf=0.95,
+    weight=5,
 )
+
+# Also retract stale workplace property-facts that are now superseded by the edge
+old_props = memory_search(
+    query="Yousof workplace",
+    types=["fact"],
+    filters={"entity_id": person_entity_id, "predicate": "workplace"}
+)
+for fact in old_props:
+    if fact.get("validity") == "active":
+        memory_forget(memory_type="fact", memory_id=fact["id"])
 ```
 
 **Critical rules for corrections:**
-- **Never** leave the old edge-fact active after a correction. The facts supersession system keys on `(entity_id, predicate, scope)` — a new `workplace` property-fact does NOT supersede a `works_at` edge-fact because they have different predicates.
-- **Never** store an audit predicate like `workplace_correction`. Use `metadata` on the new fact to record provenance.
-- **Always** resolve or create the new organization entity before storing the new edge-fact. A fact without `object_entity_id` is invisible in the relationship graph.
-- When in doubt about whether the user is correcting vs adding new info, use `memory_search` with `filters={"entity_id": ..., "predicate": "works_at"}` to check if a prior fact exists.
+- **Never** use `memory_store_fact` for `works-at` or other registry-relational predicates.
+  The writer will reject them with a `ValueError`.
+- **Never** store an audit predicate like `workplace_correction`. The corrected
+  `relationship_assert_fact` call already records the new authoritative value.
+- **Always** resolve or create the new organization entity before asserting the edge.
+- When in doubt about whether the user is correcting vs adding new info, assert
+  the new edge via `relationship_assert_fact` — the writer handles supersession
+  automatically, so re-asserting the same triple is safe and idempotent.
 
 ## Step 6: Log Interactions
 
@@ -318,16 +388,28 @@ When extracted facts map to structured fields, update both memory and domain rec
 - `children`: Names and ages
 - `nickname`: Preferred name or alias
 
-**Edge predicates** (require `object_entity_id` — relationship between two entities):
-- `works_at`: Employment relationship (person → organization)
-- `friend_of`: Friendship link (person → person)
-- `sibling_of`: Sibling relationship (person → person)
-- `married_to`: Spousal relationship (person → person)
-- `parent_of`: Parent-child relationship (person → person)
-- `child_of`: Child-parent relationship (person → person)
-- `reports_to`: Reporting line (person → person)
-- `member_of`: Group membership (person → organization)
-- `lives_with`: Cohabitation (person → person)
+**Registry-relational edge predicates** (require `object_entity_id`; use `relationship_assert_fact(object_kind="entity")` — hyphenated canonical names):
+- `works-at`: Employment relationship (person → organization)
+- `member-of`: Group/org membership (person → organization)
+- `friend-of`: Friendship link (person → person)
+- `family-of`: Kinship — siblings, cousins, etc. (person → person)
+- `partner-of`: Spousal / partner relationship (person → person)
+- `parent-of`: Parent → child (person → person)
+- `child-of`: Child → parent (person → person)
+- `colleague-of`: Professional peer (person → person)
+- `knows`: General acquaintance (person → person / entity)
+- `co-attended`: Event co-attendance (person → entity)
+- `purchased-from`: Transactional (person → organization)
+- `subscribed-to`: Subscription (person → entity)
+- `visited`: Place visit (person → place)
+
+**Narrative edge predicates** (require `object_entity_id`; use `memory_store_fact(object_entity_id=...)` — free-form, not in registry):
+- `planned_dinner_with`: Episodic coordination context
+- `wake_coordination`: Scheduling coordination
+- Any other episodic / one-off / coordination predicate not in the registry above
+
+**Note:** `reports_to` and `lives_with` have no registry entry — use `colleague-of` or a
+narrative predicate until a registry migration adds them.
 
 **Permanence levels**:
 - `permanent`: Identity facts unlikely to change (e.g., birthday, family relationships)
@@ -377,34 +459,48 @@ memory_store_fact(
 )
 ```
 
-### Example Edge-Facts (with object_entity_id)
+### Example Registry-Relational Edge-Facts → relationship_assert_fact
 
 ```python
 # From: "Sarah just started at Google as a designer"
-# Step 2: memory_entity_resolve("Sarah") → entity_id="uuid-sarah"
+# Step 1: memory_entity_resolve("Sarah") → entity_id="uuid-sarah"
 # Step 2: memory_entity_resolve("Google", entity_type="organization") → entity_id="uuid-google"
-memory_store_fact(
-    subject="Sarah",
-    predicate="works_at",
-    content="designer (just started)",
-    entity_id="uuid-sarah",
-    object_entity_id="uuid-google",  # edge-fact → Google entity
-    permanence="stable",
-    importance=7.0,
-    tags=["work"]
+relationship_assert_fact(
+    subject="uuid-sarah",
+    predicate="works-at",         # canonical hyphenated form
+    object="uuid-google",         # object entity UUID as string
+    src="relationship",
+    object_kind="entity",
+    conf=0.9,
+    weight=5,
 )
 
 # From: "Jake and Emma are engaged"
 # Both resolved: uuid-jake, uuid-emma
+relationship_assert_fact(
+    subject="uuid-jake",
+    predicate="partner-of",       # marriage/engagement → partner-of
+    object="uuid-emma",
+    src="relationship",
+    object_kind="entity",
+    conf=1.0,
+    weight=9,
+)
+```
+
+### Example Narrative Edge-Facts → memory_store_fact
+
+```python
+# From: "We're meeting Alex for dinner next Friday" — episodic coordination
 memory_store_fact(
-    subject="Jake",
-    predicate="married_to",
-    content="engaged",
-    entity_id="uuid-jake",
-    object_entity_id="uuid-emma",  # edge-fact → Emma entity
-    permanence="stable",
-    importance=8.0,
-    tags=["family", "major-change"]
+    subject="owner",
+    predicate="planned_dinner_with",
+    content="dinner next Friday",
+    entity_id="uuid-owner",
+    object_entity_id="uuid-alex",   # narrative edge — stays in memory
+    permanence="volatile",
+    importance=4.0,
+    tags=["social"]
 )
 ```
 
@@ -485,7 +581,7 @@ User: "What does Alice like?"
 3. `interaction_log(contact_id="<john_contact_id>", interaction_type="meal", summary="Dinner with Sarah. John moving to Seattle for Amazon job.")`
 4. `interaction_log(contact_id="<sarah_contact_id>", interaction_type="meal", summary="Dinner with John. Mentioned might visit.")`
 5. Resolve Amazon org: `memory_entity_resolve("Amazon", entity_type="organization")` → `entity_id="<uuid-amazon>"` (create if new)
-6. `memory_store_fact(subject="John", predicate="works_at", content="Amazon (starting next month)", entity_id="<uuid-john>", object_entity_id="<uuid-amazon>", permanence="stable", importance=8.0, tags=["work", "major-change"])` — edge-fact: John → Amazon
+6. `relationship_assert_fact(subject="<uuid-john>", predicate="works-at", object="<uuid-amazon>", src="relationship", object_kind="entity", conf=0.9, weight=5)` — registry-relational edge: John → Amazon
 7. `memory_store_fact(subject="John", predicate="lives_in", content="Seattle (moving next month)", entity_id="<uuid-john>", permanence="stable", importance=8.0, tags=["location", "major-change"])`
 8. `memory_store_fact(subject="Sarah", predicate="travel_intent", content="might visit (context: John's move)", entity_id="<uuid-sarah>", permanence="volatile", importance=4.0)`
 9. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
@@ -520,7 +616,7 @@ User: "What does Alice like?"
 2. Enough info (full name) → `memory_entity_create(canonical_name="Marcus Webb", entity_type="person", aliases=["Marcus"], metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → `entity_id="<uuid-marcus>"`
 3. `contact_create(first_name="Marcus", last_name="Webb", job_title="Product Designer", company="Figma")` → store returned `entity_id` on contact
 4. Resolve Figma: `memory_entity_resolve("Figma", entity_type="organization")` → zero candidates → `memory_entity_create(canonical_name="Figma", entity_type="organization", metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → `entity_id="<uuid-figma>"`
-5. `memory_store_fact(subject="Marcus Webb", predicate="works_at", content="Product designer at Figma", entity_id="<uuid-marcus>", object_entity_id="<uuid-figma>", permanence="stable", importance=6.0, tags=["work"])`
+5. `relationship_assert_fact(subject="<uuid-marcus>", predicate="works-at", object="<uuid-figma>", src="relationship", object_kind="entity", conf=0.9, weight=5)` — registry-relational edge: Marcus → Figma
 6. `notify(channel="telegram", message="Added Marcus Webb to your contacts — product designer at Figma.", intent="reply", request_context=...)`
 
 ### Example 9: Edge-Facts — Relationship Between People
@@ -531,9 +627,9 @@ User: "What does Alice like?"
 1. `memory_entity_resolve("Jake", entity_type="person", context_hints={"topic": "brother, Stripe, hired"})` → `entity_id="<uuid-jake>"`, single match
 2. `memory_entity_resolve("Sarah", entity_type="person", context_hints={"topic": "Stripe", "mentioned_with": ["Jake"]})` → `entity_id="<uuid-sarah>"`, single match
 3. `memory_entity_resolve("Stripe", entity_type="organization")` → `entity_id="<uuid-stripe>"` (create if new: `memory_entity_create(canonical_name="Stripe", entity_type="organization", metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})`)
-4. `memory_store_fact(subject="Jake", predicate="sibling_of", content="brother", entity_id="<uuid-jake>", object_entity_id="<uuid-user>", permanence="permanent", importance=9.0, tags=["family"])` — edge-fact: Jake → user
-5. `memory_store_fact(subject="Jake", predicate="works_at", content="recently hired", entity_id="<uuid-jake>", object_entity_id="<uuid-stripe>", permanence="stable", importance=7.0, tags=["work"])` — edge-fact: Jake → Stripe
-6. `memory_store_fact(subject="Sarah", predicate="works_at", content="currently employed", entity_id="<uuid-sarah>", object_entity_id="<uuid-stripe>", permanence="stable", importance=7.0, tags=["work"])` — edge-fact: Sarah → Stripe
+4. `relationship_assert_fact(subject="<uuid-jake>", predicate="family-of", object="<uuid-user>", src="relationship", object_kind="entity", conf=1.0, weight=9)` — registry-relational edge: Jake → owner (siblings use family-of)
+5. `relationship_assert_fact(subject="<uuid-jake>", predicate="works-at", object="<uuid-stripe>", src="relationship", object_kind="entity", conf=0.9, weight=5)` — registry-relational edge: Jake → Stripe
+6. `relationship_assert_fact(subject="<uuid-sarah>", predicate="works-at", object="<uuid-stripe>", src="relationship", object_kind="entity", conf=0.9, weight=5)` — registry-relational edge: Sarah → Stripe
 7. `notify(channel="telegram", message="Noted! Jake and Sarah are both at Stripe now. I've recorded Jake as your brother.", intent="reply", request_context=...)`
 
 ## Third-Party Sender Attribution
@@ -589,26 +685,25 @@ You should still run Steps 1–3 for any *other* people mentioned in the message
 5. `interaction_log(contact_id="<uuid-jake>", interaction_type="text", summary="Mentioned colleague Dan's trip to Japan")`
 6. `notify(channel="telegram", intent="react", emoji="🌸", request_context=...)`
 
-### Example 12: Workplace Correction — Retract + Replace
+### Example 12: Workplace Correction — Re-assert via Central Writer
 
 **User message**: "Yousof works at Globex, not ACME"
 
 **Actions:**
 1. `memory_entity_resolve("Yousof", entity_type="person", context_hints={"topic": "workplace, ACME, Globex"})` → `entity_id="<uuid-yousof>"`, single match
-2. Find old `works_at` facts: `memory_search(query="Yousof works_at employment", types=["fact"], filters={"entity_id": "<uuid-yousof>", "predicate": "works_at"})` → returns fact `id="<old-fact-id>"` (ACME edge-fact)
-3. Find old `workplace` property-facts: `memory_search(query="Yousof workplace", types=["fact"], filters={"entity_id": "<uuid-yousof>", "predicate": "workplace"})` → may return additional stale entries
-4. Retract each active old fact: `memory_forget(memory_type="fact", memory_id="<old-fact-id>")` for ACME works_at and any workplace property-facts
-5. Resolve new org: `memory_entity_resolve("Globex", entity_type="organization")` → existing or create with `memory_entity_create(canonical_name="Globex", entity_type="organization", metadata={"unidentified": True, "source": "fact_storage", "source_butler": "relationship", "source_scope": "relationship"})` → `entity_id="<uuid-globex>"`
-6. `memory_store_fact(subject="Yousof", predicate="works_at", content="currently employed", entity_id="<uuid-yousof>", object_entity_id="<uuid-globex>", permanence="stable", importance=7.0, tags=["work"], metadata={"correction_source": "user", "corrected_from": "ACME"})`
-7. `notify(channel="telegram", message="Updated: Yousof now works at Globex (corrected from ACME).", intent="reply", request_context=...)`
+2. Resolve new org: `memory_entity_resolve("Globex", entity_type="organization")` → existing or create with `memory_entity_create(canonical_name="Globex", ...)` → `entity_id="<uuid-globex>"`
+3. `relationship_assert_fact(subject="<uuid-yousof>", predicate="works-at", object="<uuid-globex>", src="relationship", object_kind="entity", conf=0.95, weight=5)` — asserts the new Globex edge (central writer supersedes if same object, otherwise new active row)
+4. Also retract stale `workplace` property-facts: `memory_search(query="Yousof workplace", types=["fact"], filters={"entity_id": "<uuid-yousof>", "predicate": "workplace"})` → retract each with `memory_forget`
+5. `notify(channel="telegram", message="Updated: Yousof now works at Globex (corrected from ACME).", intent="reply", request_context=...)`
 
-**Wrong:** Storing `fact_set(contact_id, "workplace", "Globex")` or `memory_store_fact(predicate="workplace_correction", ...)`. These do not retract the old `works_at` edge-fact and leave the dashboard showing the wrong employer.
+**Wrong:** `memory_store_fact(predicate="works_at", object_entity_id=..., ...)` — the writer rejects registry-relational predicates with `object_entity_id` set. Use `relationship_assert_fact` for all `works-at` edges.
 
 ## Guidelines
 
 - **Always respond** when `request_context` is present — silence feels like failure
 - **Be concise** — users are on mobile devices
-- **Resolve before storing** — always call memory_entity_resolve before memory_store_fact; never store facts with only a raw subject string
+- **Resolve before storing** — always call memory_entity_resolve before any write; never store facts with only a raw subject string
+- **Route edges correctly** — registry-relational edges (works-at, friend-of, family-of, …) → `relationship_assert_fact(object_kind="entity")`; narrative edges → `memory_store_fact(object_entity_id=...)`; see "Canonical fact-store boundary" section
 - **Attribute to the right person** — when the sender is not the owner, facts about the sender's preferences/interests belong on the sender's entity, not the owner's
 - **Self-contained content** — fact content is read in isolation; never use "the sender", "the user", or bare pronouns — always name the actual person so the fact makes sense on an entity page without the original message
 - **Extract liberally** — capture facts even if tangential to the main request
