@@ -104,6 +104,7 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
     status: "ingested",
     filter_reason: null,
     error_detail: null,
+    cost_usd: null,
     ...overrides,
   };
 }

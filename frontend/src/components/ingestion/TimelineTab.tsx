@@ -1318,7 +1318,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
   }, [enabledStatuses]);
 
   // Spend view activates cost sort (core_126): sort by cost_usd DESC NULLS LAST.
-  const activeSort = activeViewId === "spend" ? "cost" : undefined;
+  const activeSort = activeViewId === "spend" ? ("cost" as const) : undefined;
 
   const eventsFilters = useMemo(() => ({
     limit: PAGE_SIZE,
