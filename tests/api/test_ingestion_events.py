@@ -902,3 +902,169 @@ async def test_payload_503_when_main_pool_unavailable(app):
         resp = await client.get(f"/api/ingestion/events/{event_id}/payload")
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# sort=cost parameter — GET /api/ingestion/events (core_126)
+# ---------------------------------------------------------------------------
+
+
+async def test_sort_cost_forwarded_to_core(app):
+    """GET /api/ingestion/events?sort=cost passes sort='cost' to ingestion_events_list."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?sort=cost")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("sort") == "cost"
+
+
+async def test_sort_absent_passes_none_to_core(app):
+    """GET /api/ingestion/events without sort passes sort=None (default keyset order)."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ) as mock_list:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("sort") is None
+
+
+async def test_sort_cost_invalid_cursor_returns_422(app):
+    """GET /api/ingestion/events?sort=cost with a keyset cursor returns 422."""
+    _app_with_mock_db(app)
+
+    # A valid keyset cursor (wrong type for cost sort)
+    import base64
+    import json
+
+    keyset_cursor = base64.urlsafe_b64encode(
+        json.dumps({"ra": "2026-01-01T00:00:00+00:00", "id": str(uuid4())}).encode()
+    ).decode()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/ingestion/events?sort=cost&cursor={keyset_cursor}")
+
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# cost_usd write-back — GET /api/ingestion/events/{id}/rollup (core_126)
+# ---------------------------------------------------------------------------
+
+
+async def test_event_rollup_writes_cost_usd_back(app):
+    """GET /api/ingestion/events/{id}/rollup writes cost_usd to ingestion_events when
+    sessions are found (lazy write-through, core_126)."""
+    from uuid import uuid4 as _uuid4
+
+    request_id = str(_uuid4())
+    shared_pool = AsyncMock()
+    shared_pool.execute = AsyncMock(return_value="UPDATE 1")
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    mock_db.fan_out = AsyncMock(return_value={})
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
+
+    rollup_with_sessions = {
+        "request_id": request_id,
+        "total_sessions": 2,
+        "total_input_tokens": 100,
+        "total_output_tokens": 50,
+        "total_cost": 0.0042,
+        "by_butler": {
+            "atlas": {"sessions": 2, "input_tokens": 100, "output_tokens": 50, "cost": 0.0042}
+        },
+    }
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_sessions",
+            new_callable=AsyncMock,
+            return_value=[{"id": str(_uuid4()), "butler_name": "atlas", "cost_usd": 0.0042}],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_rollup",
+            return_value=rollup_with_sessions,
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_set_cost_usd",
+            new_callable=AsyncMock,
+        ) as mock_set_cost,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{request_id}/rollup")
+
+    assert resp.status_code == 200
+    # cost_usd write-back must have been called with the total cost
+    mock_set_cost.assert_awaited_once()
+    call_args = mock_set_cost.await_args
+    assert call_args.args[1] == request_id
+    assert abs(call_args.args[2] - 0.0042) < 1e-9
+
+
+async def test_event_rollup_skips_write_when_no_sessions(app):
+    """GET /api/ingestion/events/{id}/rollup does NOT write cost_usd when no sessions found."""
+    from uuid import uuid4 as _uuid4
+
+    request_id = str(_uuid4())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = AsyncMock()
+    mock_db.fan_out = AsyncMock(return_value={})
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
+
+    rollup_empty = {
+        "request_id": request_id,
+        "total_sessions": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost": 0.0,
+        "by_butler": {},
+    }
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_sessions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_rollup",
+            return_value=rollup_empty,
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_set_cost_usd",
+            new_callable=AsyncMock,
+        ) as mock_set_cost,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{request_id}/rollup")
+
+    assert resp.status_code == 200
+    # No write-back when total_sessions == 0
+    mock_set_cost.assert_not_awaited()

@@ -53,6 +53,7 @@ from butlers.core.ingestion_events import (
     ingestion_event_replay_request,
     ingestion_event_rollup,
     ingestion_event_sessions,
+    ingestion_event_set_cost_usd,
     ingestion_events_list,
     ingestion_window_rollup,
 )
@@ -152,6 +153,15 @@ async def list_ingestion_events(
         None,
         description="ISO-8601 exclusive upper bound on received_at.",
     ),
+    sort: Literal["recent", "cost"] | None = Query(
+        None,
+        description=(
+            "Sort order. Omit or 'recent' → newest first (keyset pagination). "
+            "'cost' → highest cost_usd first (offset pagination, NULLS LAST). "
+            "When sort='cost', the cursor encodes a page offset rather than a "
+            "keyset position — do not mix cursor types across sort modes."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CursorPaginatedResponse[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
@@ -159,6 +169,10 @@ async def list_ingestion_events(
     Uses keyset (cursor) pagination via ``(received_at DESC, id DESC)`` — no ``total``
     count is computed per request.  Pass the ``next_cursor`` from a previous response
     as the ``cursor`` query param to fetch the next page.
+
+    When ``sort=cost``, results are ordered by ``cost_usd DESC NULLS LAST`` and
+    the cursor encodes a page offset (not a keyset position).  Switch between sort
+    modes by dropping the cursor (start a fresh first page).
 
     Merges ``public.ingestion_events`` (status=ingested/skipped, filter_reason=null)
     with ``connectors.filtered_events`` (status/filter_reason from their own columns).
@@ -176,9 +190,14 @@ async def list_ingestion_events(
 
     if cursor is not None:
         try:
-            from butlers.core.ingestion_events import decode_cursor
+            if sort == "cost":
+                from butlers.core.ingestion_events import decode_cost_cursor
 
-            decode_cursor(cursor)  # Validate the cursor early; raises ValueError if malformed.
+                decode_cost_cursor(cursor)
+            else:
+                from butlers.core.ingestion_events import decode_cursor
+
+                decode_cursor(cursor)  # Validate the cursor early; raises ValueError if malformed.
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
@@ -218,6 +237,7 @@ async def list_ingestion_events(
         q=q,
         from_dt=from_dt,
         to_dt=to_dt,
+        sort=sort,
     )
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]
@@ -364,9 +384,23 @@ async def get_ingestion_event_rollup(
     Fetches the cross-butler session lineage, then aggregates input/output
     token counts and USD costs broken down by butler.  Costs are estimated
     from token counts and model via the pricing config.
+
+    Side effect: writes ``total_cost`` back to ``public.ingestion_events.cost_usd``
+    (lazy write-through, core_126) when at least one session is found.  This
+    populates the denormalized cost column used by the Spend sort view.
     """
     sessions_data = await ingestion_event_sessions(db, request_id)
     rollup_data = ingestion_event_rollup(request_id, sessions_data, pricing=pricing)
+
+    if rollup_data["total_sessions"] > 0:
+        try:
+            pool = db.credential_shared_pool()
+            await ingestion_event_set_cost_usd(pool, request_id, rollup_data["total_cost"])
+        except Exception:
+            logger.debug(
+                "cost_usd write-back failed for event %s (non-fatal)", request_id, exc_info=True
+            )
+
     return ApiResponse[IngestionEventRollup](data=IngestionEventRollup(**rollup_data))
 
 

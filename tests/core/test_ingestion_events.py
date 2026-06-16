@@ -5,6 +5,9 @@ Covers:
 - ingestion_event_get: get / unified lookup (ingested + filtered fallback)
 - ingestion_events_list: cursor-paginated list with filters and has_more detection
 - encode_cursor / decode_cursor: round-trip and error cases
+- encode_cost_cursor / decode_cost_cursor: cost-sort cursor round-trip (core_126)
+- ingestion_events_list sort=cost: offset-based pagination (core_126)
+- ingestion_event_set_cost_usd: lazy write-through UPDATE (core_126)
 - ingestion_event_sessions: fan-out, merge, field mapping
 - ingestion_event_rollup: pure-function aggregation
 - ingestion_event_replay_request: atomic update + conflict/not-found outcomes
@@ -47,6 +50,7 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         "status": "ingested",
         "filter_reason": None,
         "error_detail": None,
+        "cost_usd": None,  # core_126: denormalized cost; NULL until rollup fetched
     }
     defaults.update(kwargs)
     return _FakeRecord(defaults)
@@ -71,6 +75,7 @@ def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
         "status": "filtered",
         "filter_reason": "rate_limit",
         "error_detail": None,
+        "cost_usd": None,  # core_126: filtered events have no sessions, always null
     }
     defaults.update(kwargs)
     return _FakeRecord(defaults)
@@ -115,6 +120,10 @@ class _FakePool:
         self.calls.append(("fetchval", sql, args))
         return self._fetchval_result
 
+    async def execute(self, sql, *args):
+        self.calls.append(("execute", sql, args))
+        return "UPDATE 1"
+
 
 class _FakeDatabaseManager:
     def __init__(self, results=None):
@@ -150,6 +159,7 @@ _EXPECTED_EVENT_FIELDS = (
     "status",
     "filter_reason",
     "error_detail",
+    "cost_usd",  # core_126: denormalized cost column
 )
 
 
@@ -170,7 +180,8 @@ def test_column_spec_contract() -> None:
         "CASE WHEN status = 'ingested' AND triage_decision = 'skip' "
         "THEN 'skipped' ELSE status END AS status, "
         "NULL::text AS filter_reason, "
-        "error_detail"
+        "error_detail, "
+        "cost_usd"  # core_126: denormalized cost column
     )
     n = len(_UNION_COLUMN_SPEC)
     assert len(_INGESTED_COLS.split(",")) == n
@@ -353,6 +364,75 @@ async def test_ingestion_events_list_and_sessions() -> None:
         and abs(rollup_result["by_butler"]["atlas"]["cost"] - 0.015) < 1e-9
     )
     assert rollup_result["by_butler"]["herald"]["cost"] == 0.0
+
+
+async def test_cost_cursor_and_cost_sort() -> None:
+    """Cost cursor round-trips correctly; sort=cost uses offset pagination (core_126)."""
+    import uuid as _uuid
+
+    from butlers.core.ingestion_events import (
+        decode_cost_cursor,
+        encode_cost_cursor,
+        ingestion_event_set_cost_usd,
+        ingestion_events_list,
+    )
+
+    # encode_cost_cursor / decode_cost_cursor round-trip
+    assert decode_cost_cursor(encode_cost_cursor(0)) == 0
+    assert decode_cost_cursor(encode_cost_cursor(40)) == 40
+    assert decode_cost_cursor(encode_cost_cursor(100)) == 100
+
+    # decode_cost_cursor raises ValueError on garbage input
+    with pytest.raises(ValueError):
+        decode_cost_cursor("not-a-cursor")
+
+    # decode_cost_cursor raises ValueError on a keyset cursor (wrong type)
+    from datetime import UTC, datetime
+
+    from butlers.core.ingestion_events import encode_cursor
+
+    keyset_cursor = encode_cursor(datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4())
+    with pytest.raises(ValueError):
+        decode_cost_cursor(keyset_cursor)
+
+    # sort=cost: SQL uses ORDER BY cost_usd DESC NULLS LAST + OFFSET
+    pool = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool, sort="cost", limit=5)
+    _, sql, args = pool.calls[0]
+    assert "cost_usd DESC NULLS LAST" in sql
+    assert "OFFSET" in sql
+    assert 6 in args  # limit+1 sentinel
+    assert 0 in args  # initial offset
+
+    # sort=cost, first page → has_more=False, next_cursor=None when ≤limit rows
+    rows = [_make_event_record(cost_usd=0.05), _make_event_record(cost_usd=0.01)]
+    result = await ingestion_events_list(_FakePool(fetch_results=rows), sort="cost", limit=5)
+    assert not result["has_more"] and result["next_cursor"] is None
+    assert len(result["items"]) == 2
+
+    # sort=cost, limit+1 rows returned → has_more=True, cursor encodes offset=limit
+    three = [_make_event_record(cost_usd=x) for x in [0.05, 0.02, 0.01]]
+    result2 = await ingestion_events_list(_FakePool(fetch_results=three), sort="cost", limit=2)
+    assert result2["has_more"] and result2["next_cursor"] is not None
+    assert decode_cost_cursor(result2["next_cursor"]) == 2  # next offset = limit
+
+    # sort=cost with cursor → offset sent to SQL
+    cursor_val = encode_cost_cursor(20)
+    pool2 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool2, sort="cost", cursor=cursor_val, limit=10)
+    _, sql2, args2 = pool2.calls[0]
+    assert 20 in args2  # decoded offset
+
+    # ingestion_event_set_cost_usd writes UPDATE to pool
+    event_uuid = _uuid.uuid4()
+    pool3 = _FakePool()
+    await ingestion_event_set_cost_usd(pool3, event_uuid, 0.0123)
+    assert len(pool3.calls) == 1
+    kind, sql3, sql_args3 = pool3.calls[0]
+    assert kind == "execute"
+    assert "UPDATE public.ingestion_events" in sql3
+    assert "cost_usd" in sql3
+    assert 0.0123 in sql_args3
 
 
 async def test_ingestion_events_list_q_search_coverage() -> None:

@@ -11,9 +11,12 @@ ingestion_window_rollup         — aggregate event/session counts for a filter 
 Functions
 ---------
 ingestion_event_get             — fetch a single event by id
-ingestion_events_list           — keyset-paginated list, newest first, optional filters
+ingestion_events_list           — paginated list; sort="recent" keyset, sort="cost" offset
 encode_cursor                   — encode (received_at, id) tuple to opaque cursor string
 decode_cursor                   — decode opaque cursor string to (received_at, id) tuple
+encode_cost_cursor              — encode page offset for cost-sort cursor
+decode_cost_cursor              — decode cost-sort cursor back to page offset
+ingestion_event_set_cost_usd    — write computed cost_usd back to public.ingestion_events
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
 ingestion_event_mark_replay_complete — transition replay_pending → ingested on success
@@ -92,6 +95,10 @@ _UNION_COLUMN_SPEC: tuple[tuple[str, str, str], ...] = (
     ("status", _SKIP_AWARE_STATUS, "status"),
     ("filter_reason", "NULL::text", "filter_reason"),
     ("error_detail", "error_detail", "error_detail"),
+    # ── cost denormalization (core_126) ─────────────────────────────────────
+    # cost_usd is written lazily by the rollup endpoint; NULL until first fetched.
+    # filtered_events have no sessions and therefore no cost.
+    ("cost_usd", "cost_usd", "NULL::numeric"),
 )
 
 
@@ -220,6 +227,36 @@ def encode_cursor(received_at: datetime, row_id: UUID | str) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
 
+def encode_cost_cursor(offset: int) -> str:
+    """Encode an offset-based cursor for cost-sorted pagination.
+
+    Cost sort uses offset pagination (not keyset) because the ORDER BY
+    includes a nullable column (cost_usd) where keyset comparisons with
+    NULLs are complex and the issue brief explicitly permits offset for
+    this view.
+
+    The payload type sentinel ``"c"`` distinguishes cost cursors from the
+    default keyset cursors (which carry ``"ra"`` and ``"id"``).
+    """
+    return base64.urlsafe_b64encode(json.dumps({"t": "c", "o": offset}).encode()).decode()
+
+
+def decode_cost_cursor(cursor: str) -> int:
+    """Decode a cost cursor back to its page offset.
+
+    Raises:
+        ValueError: If the cursor is not a valid cost cursor.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        if payload.get("t") != "c":
+            raise ValueError("not a cost cursor")
+        return int(payload["o"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid cost cursor: {exc}") from exc
+
+
 def decode_cursor(cursor: str) -> tuple[datetime, str]:
     """Decode an opaque cursor string back to ``(received_at, id)``.
 
@@ -242,6 +279,32 @@ def decode_cursor(cursor: str) -> tuple[datetime, str]:
         raise ValueError(f"Invalid cursor: {exc}") from exc
 
 
+async def ingestion_event_set_cost_usd(
+    pool: asyncpg.Pool,
+    event_id: str | UUID,
+    cost_usd: float,
+) -> None:
+    """Write a computed cost_usd back to public.ingestion_events (lazy write-through).
+
+    Called by the rollup endpoint after aggregating cross-butler session costs.
+    Only updates ingestion_events rows (not connectors.filtered_events, which
+    have no sessions and no cost).  Safe to call multiple times — the latest
+    value overwrites the previous one.
+
+    Args:
+        pool: asyncpg pool with write access to public.ingestion_events.
+        event_id: The ingestion event UUID (must exist in public.ingestion_events).
+        cost_usd: Computed total cost in USD across all butler sessions.
+    """
+    if isinstance(event_id, str):
+        event_id = UUID(event_id)
+    await pool.execute(
+        "UPDATE public.ingestion_events SET cost_usd = $1 WHERE id = $2",
+        cost_usd,
+        event_id,
+    )
+
+
 async def ingestion_events_list(
     pool: asyncpg.Pool,
     limit: int = 20,
@@ -252,8 +315,17 @@ async def ingestion_events_list(
     q: str | None = None,
     from_dt: datetime | None = None,
     to_dt: datetime | None = None,
+    sort: str | None = None,
 ) -> dict[str, Any]:
-    """Return a keyset-paginated list of ingestion events (unified stream), newest first.
+    """Return a paginated list of ingestion events (unified stream).
+
+    Default sort (sort=None or sort="recent") uses keyset pagination ordered
+    ``received_at DESC, id DESC``.
+
+    Cost sort (sort="cost") orders by ``cost_usd DESC NULLS LAST, received_at
+    DESC, id DESC`` and uses offset-based pagination (the issue brief explicitly
+    permits offset for the cost view; keyset pagination with a nullable sort key
+    is non-trivial and offers little benefit for a read-heavy admin analytics view).
 
     Replaces the old offset/total approach with cursor pagination using an indexed
     ``(received_at DESC, id DESC)`` keyset.  The cursor encodes the ``(received_at, id)``
@@ -282,6 +354,9 @@ async def ingestion_events_list(
             visible event ID prefix always returns that row.
         from_dt: Inclusive lower bound on ``received_at``.  ``None`` = no lower bound.
         to_dt: Exclusive upper bound on ``received_at``.  ``None`` = no upper bound.
+        sort: Sort mode.  ``None`` or ``"recent"`` → keyset pagination on
+            ``(received_at DESC, id DESC)``.  ``"cost"`` → offset pagination on
+            ``(cost_usd DESC NULLS LAST, received_at DESC, id DESC)``.
 
     Returns:
         A dict with:
@@ -323,6 +398,46 @@ async def ingestion_events_list(
         args.append(to_dt)
         where_parts.append(f"received_at < ${len(args)}")
 
+    if sort == "cost":
+        # ── cost sort: offset-based pagination ───────────────────────────────
+        # Offset pagination is used for the cost view because ORDER BY on a
+        # nullable column makes keyset comparisons complex, and the issue brief
+        # explicitly permits offset for this view.  The cursor encodes the page
+        # offset so callers see a consistent opaque cursor interface.
+        page_offset = 0
+        if cursor is not None:
+            page_offset = decode_cost_cursor(cursor)
+
+        where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        args.append(limit + 1)
+        n_limit = len(args)
+        args.append(page_offset)
+        n_offset = len(args)
+
+        sql = (
+            f"SELECT * FROM ("
+            f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
+            f"UNION ALL "
+            f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
+            f") AS combined"
+            f"{where_clause} "
+            f"ORDER BY cost_usd DESC NULLS LAST, received_at DESC, id DESC "
+            f"LIMIT ${n_limit} OFFSET ${n_offset}"
+        )
+
+        rows = await pool.fetch(sql, *args)
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        items = [_decode_event_row(row) for row in page_rows]
+
+        next_cursor: str | None = None
+        if has_more:
+            next_cursor = encode_cost_cursor(page_offset + limit)
+
+        return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+
+    # ── default sort: keyset pagination on (received_at DESC, id DESC) ───────
     if cursor is not None:
         cursor_received_at, cursor_id = decode_cursor(cursor)
         args.append(cursor_received_at)
@@ -355,7 +470,7 @@ async def ingestion_events_list(
 
     items = [_decode_event_row(row) for row in page_rows]
 
-    next_cursor: str | None = None
+    next_cursor_out: str | None = None
     if has_more and page_rows:
         last = page_rows[-1]
         last_id = last["id"]
@@ -368,9 +483,9 @@ async def ingestion_events_list(
             last_ra_dt = datetime.fromisoformat(last_ra)
         else:
             last_ra_dt = last_ra
-        next_cursor = encode_cursor(last_ra_dt, last_id_uuid)
+        next_cursor_out = encode_cursor(last_ra_dt, last_id_uuid)
 
-    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+    return {"items": items, "next_cursor": next_cursor_out, "has_more": has_more}
 
 
 async def ingestion_event_get_inbox_lifecycle(
