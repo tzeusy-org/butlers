@@ -28,6 +28,7 @@ import asyncpg
 import pytest
 
 from butlers.tools.relationship.relationship_assert_fact import (
+    _PREDICATE_ALIAS_MAP,
     AssertOutcome,
     _insert_active_fact,
     relationship_assert_fact,
@@ -980,3 +981,180 @@ class TestConcurrentWriterRace:
             active = next(r for r in rows if r["validity"] == "active")
             expected_active_conf = 0.9 if active["observed_at"] == obs_a else 0.4
             assert abs(float(active["conf"]) - expected_active_conf) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Fixture: pool seeded with relational predicates needed for alias tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pool_with_relational_predicates(pool: asyncpg.Pool) -> asyncpg.Pool:
+    """Extend the base pool fixture with relational predicates for alias resolution tests."""
+    await pool.execute("""
+        INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
+        VALUES
+            ('works-at',     'relational', 'entity', 'Employment relationship.'),
+            ('child-of',     'relational', 'entity', 'Child-parent relationship.'),
+            ('parent-of',    'relational', 'entity', 'Parent-child relationship.'),
+            ('colleague-of', 'relational', 'entity', 'Colleague relationship.'),
+            ('family-of',    'relational', 'entity', 'Family relationship.'),
+            ('partner-of',   'relational', 'entity', 'Partnership or marriage relationship.'),
+            ('member-of',    'relational', 'entity', 'Membership relationship.')
+        ON CONFLICT (predicate) DO NOTHING
+    """)
+    return pool
+
+
+# ---------------------------------------------------------------------------
+# Tests: predicate alias resolution (bu-i0pgi)
+# ---------------------------------------------------------------------------
+
+
+class TestPredicateAliasResolution:
+    """Underscore alias names are normalised to canonical hyphenated forms at assert time.
+
+    The registry stays hyphenated; only inbound names are normalised.
+    """
+
+    async def test_all_aliases_resolve_to_canonical_predicate(
+        self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
+    ) -> None:
+        """Every alias in _PREDICATE_ALIAS_MAP inserts via its canonical hyphenated predicate."""
+        for alias, canonical in _PREDICATE_ALIAS_MAP.items():
+            result = await relationship_assert_fact(
+                pool_with_relational_predicates,
+                entity,
+                alias,
+                str(uuid.uuid4()),
+                src="test",
+                object_kind="entity",
+            )
+            assert result.outcome == AssertOutcome.inserted, (
+                f"alias {alias!r} → canonical {canonical!r}: expected inserted"
+            )
+            row = await pool_with_relational_predicates.fetchrow(
+                "SELECT predicate FROM relationship.entity_facts WHERE id = $1",
+                result.fact_id,
+            )
+            assert row["predicate"] == canonical, (
+                f"alias {alias!r} stored as {row['predicate']!r}, want {canonical!r}"
+            )
+
+    async def test_sibling_of_maps_to_family_of(
+        self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
+    ) -> None:
+        """sibling_of (many-to-one) resolves to family-of, not a distinct predicate."""
+        result = await relationship_assert_fact(
+            pool_with_relational_predicates,
+            entity,
+            "sibling_of",
+            str(uuid.uuid4()),
+            src="test",
+            object_kind="entity",
+        )
+        assert result.outcome == AssertOutcome.inserted
+        row = await pool_with_relational_predicates.fetchrow(
+            "SELECT predicate FROM relationship.entity_facts WHERE id = $1",
+            result.fact_id,
+        )
+        assert row["predicate"] == "family-of"
+
+    async def test_married_to_maps_to_partner_of(
+        self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
+    ) -> None:
+        """married_to (many-to-one) resolves to partner-of, not a distinct predicate."""
+        result = await relationship_assert_fact(
+            pool_with_relational_predicates,
+            entity,
+            "married_to",
+            str(uuid.uuid4()),
+            src="test",
+            object_kind="entity",
+        )
+        assert result.outcome == AssertOutcome.inserted
+        row = await pool_with_relational_predicates.fetchrow(
+            "SELECT predicate FROM relationship.entity_facts WHERE id = $1",
+            result.fact_id,
+        )
+        assert row["predicate"] == "partner-of"
+
+    async def test_family_of_and_sibling_of_share_canonical_predicate(
+        self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
+    ) -> None:
+        """family_of and sibling_of both map to family-of — they are distinct aliases for one canonical."""
+        other_a = str(uuid.uuid4())
+        other_b = str(uuid.uuid4())
+
+        r_family = await relationship_assert_fact(
+            pool_with_relational_predicates,
+            entity,
+            "family_of",
+            other_a,
+            src="test",
+            object_kind="entity",
+        )
+        r_sibling = await relationship_assert_fact(
+            pool_with_relational_predicates,
+            entity,
+            "sibling_of",
+            other_b,
+            src="test",
+            object_kind="entity",
+        )
+
+        row_family = await pool_with_relational_predicates.fetchrow(
+            "SELECT predicate FROM relationship.entity_facts WHERE id = $1", r_family.fact_id
+        )
+        row_sibling = await pool_with_relational_predicates.fetchrow(
+            "SELECT predicate FROM relationship.entity_facts WHERE id = $1", r_sibling.fact_id
+        )
+        assert row_family["predicate"] == "family-of"
+        assert row_sibling["predicate"] == "family-of"
+
+    async def test_partner_of_and_married_to_share_canonical_predicate(
+        self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
+    ) -> None:
+        """partner_of and married_to both map to partner-of — distinct aliases for one canonical."""
+        other_a = str(uuid.uuid4())
+        other_b = str(uuid.uuid4())
+
+        r_partner = await relationship_assert_fact(
+            pool_with_relational_predicates,
+            entity,
+            "partner_of",
+            other_a,
+            src="test",
+            object_kind="entity",
+        )
+        r_married = await relationship_assert_fact(
+            pool_with_relational_predicates,
+            entity,
+            "married_to",
+            other_b,
+            src="test",
+            object_kind="entity",
+        )
+
+        row_partner = await pool_with_relational_predicates.fetchrow(
+            "SELECT predicate FROM relationship.entity_facts WHERE id = $1", r_partner.fact_id
+        )
+        row_married = await pool_with_relational_predicates.fetchrow(
+            "SELECT predicate FROM relationship.entity_facts WHERE id = $1", r_married.fact_id
+        )
+        assert row_partner["predicate"] == "partner-of"
+        assert row_married["predicate"] == "partner-of"
+
+    async def test_unrecognised_underscore_name_raises_value_error(
+        self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
+    ) -> None:
+        """A name that looks like an alias but is absent from _PREDICATE_ALIAS_MAP fails registry lookup."""
+        with pytest.raises(ValueError, match="Unknown predicate.*not registered"):
+            await relationship_assert_fact(
+                pool_with_relational_predicates,
+                entity,
+                "drinks_with",
+                str(uuid.uuid4()),
+                src="test",
+                object_kind="entity",
+            )

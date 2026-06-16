@@ -85,6 +85,29 @@ _CI_TYPE_TO_PREDICATE: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Predicate alias map — normalises legacy underscore names to canonical
+# hyphenated forms before registry lookup.  The registry stays hyphenated;
+# this only normalises inbound names at the assert boundary.
+# ---------------------------------------------------------------------------
+#
+# Two many-to-one mappings:
+#   sibling_of  → family-of    (sibling is a family relationship)
+#   married_to  → partner-of   (marriage is a partner relationship)
+_PREDICATE_ALIAS_MAP: dict[str, str] = {
+    "works_at": "works-at",
+    "friend_of": "friend-of",
+    "child_of": "child-of",
+    "parent_of": "parent-of",
+    "colleague_of": "colleague-of",
+    "family_of": "family-of",
+    "partner_of": "partner-of",
+    "member_of": "member-of",
+    "sibling_of": "family-of",
+    "married_to": "partner-of",
+}
+
+
 def contact_info_type_to_predicate(ci_type: str) -> str | None:
     """Return the contact predicate for *ci_type*, or ``None`` when unmapped.
 
@@ -650,6 +673,9 @@ async def relationship_assert_fact(
         raise ValueError(f"Invalid object_kind {object_kind!r}: must be 'literal' or 'entity'.")
     if not (0.0 <= conf <= 1.0):
         raise ValueError(f"conf must be in [0.0, 1.0]; got {conf!r}.")
+
+    # Normalise legacy underscore predicate aliases to canonical hyphenated names.
+    predicate = _PREDICATE_ALIAS_MAP.get(predicate, predicate)
 
     # Default observed_at to assertion time when the caller did not supply it.
     # An explicit value (e.g. a backdated import) is honoured verbatim.
