@@ -520,7 +520,6 @@ async def backfill_health(pool: asyncpg.Pool, dry_run: bool = False) -> Stats:
 # ---------------------------------------------------------------------------
 
 
-
 async def _backfill_rel_life_events(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
     # Handle both legacy (type column) and current (life_event_type_id) schema.
     try:
