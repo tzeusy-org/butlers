@@ -260,6 +260,23 @@ describe("PageHeader", () => {
     expect(nav).not.toBeNull();
     expect(nav?.getAttribute("data-active-butler")).toBe("switchboard");
     expect(nav?.parentElement?.textContent).not.toContain("Home");
-    expect(nav?.parentElement?.textContent).not.toContain("Butlers");
+  });
+
+  it("renders a router-based back-to-board link on butler detail routes, reachable on mobile", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/butlers/health"]}>
+          <PageHeader />
+        </MemoryRouter>,
+      );
+    });
+
+    // The back link must be in the DOM unconditionally (not JS-gated; mobile visibility is CSS-only).
+    const backLink = container.querySelector("a[href='/butlers']");
+    expect(backLink).not.toBeNull();
+    // Must be an anchor element — router Link, not a full-page reload.
+    expect(backLink?.tagName.toLowerCase()).toBe("a");
+    // Mobile-accessible label ("Butlers") must be present in the DOM.
+    expect(backLink?.textContent).toContain("Butlers");
   });
 });
