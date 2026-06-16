@@ -86,6 +86,11 @@ beforeEach(() => {
         loadPct: null,
         lastRunISO: "2026-05-13T12:00:00Z",
         hourlyStripe: [0, 0, 1, 0, 2, 0, 3, 0, 0, 1, 0, 4, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 1, 0],
+        hourlyTotal: 7,
+        hourlyStripeLoading: false,
+        hourlyStripeError: false,
+        schemaUnreachable: false,
+        heartbeatUnavailable: false,
       },
     ],
     aggregates: {
@@ -102,6 +107,11 @@ beforeEach(() => {
       isError: false,
       error: null,
       refetch: vi.fn(),
+      heartbeatSourceError: false,
+      registrySourceError: false,
+      eligibilityUnavailable: 0,
+      hasPerEntryErrors: false,
+      sourcesPartiallyDegraded: false,
     },
   })
 
