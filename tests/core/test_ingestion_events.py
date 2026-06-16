@@ -395,6 +395,18 @@ async def test_cost_cursor_and_cost_sort() -> None:
     with pytest.raises(ValueError):
         decode_cost_cursor(keyset_cursor)
 
+    # decode_cost_cursor raises ValueError on negative offset
+    with pytest.raises(ValueError):
+        decode_cost_cursor(encode_cost_cursor(-10))
+
+    # decode_cost_cursor raises ValueError on non-dict payload
+    import base64 as _b64
+    import json as _json
+
+    non_dict_cursor = _b64.urlsafe_b64encode(_json.dumps([1, 2, 3]).encode()).decode()
+    with pytest.raises(ValueError):
+        decode_cost_cursor(non_dict_cursor)
+
     # sort=cost: SQL uses ORDER BY cost_usd DESC NULLS LAST + OFFSET
     pool = _FakePool(fetch_results=[])
     await ingestion_events_list(pool, sort="cost", limit=5)

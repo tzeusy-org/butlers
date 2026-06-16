@@ -250,10 +250,13 @@ def decode_cost_cursor(cursor: str) -> int:
     try:
         raw = base64.urlsafe_b64decode(cursor.encode())
         payload = json.loads(raw)
-        if payload.get("t") != "c":
+        if not isinstance(payload, dict) or payload.get("t") != "c":
             raise ValueError("not a cost cursor")
-        return int(payload["o"])
-    except (KeyError, ValueError, TypeError) as exc:
+        offset = int(payload["o"])
+        if offset < 0:
+            raise ValueError("offset cannot be negative")
+        return offset
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
         raise ValueError(f"Invalid cost cursor: {exc}") from exc
 
 
