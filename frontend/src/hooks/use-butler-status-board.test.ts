@@ -173,14 +173,14 @@ function registryQueryResult(entries: Array<{ name: string; eligibility_state: s
   return { data: apiResponse(entries), isLoading: false, isError: false, error: null }
 }
 
-function makeHeartbeats(entries: Array<{ name: string; active_session_count?: number; last_session_at?: string | null }>) {
+function makeHeartbeats(entries: Array<{ name: string; active_session_count?: number; last_session_at?: string | null; error?: string | null }>) {
   return {
     butlers: entries.map((e) => ({
       name: e.name,
       active_session_count: e.active_session_count ?? 0,
       last_session_at: e.last_session_at ?? null,
       heartbeat_age_seconds: 5,
-      error: null,
+      error: e.error ?? null,
     })),
   }
 }
@@ -190,7 +190,7 @@ function makeHeartbeats(entries: Array<{ name: string; active_session_count?: nu
  * Wraps the HeartbeatFacts in an ApiResponse envelope.
  */
 function heartbeatsQueryResult(
-  entries: Array<{ name: string; active_session_count?: number; last_session_at?: string | null }>,
+  entries: Array<{ name: string; active_session_count?: number; last_session_at?: string | null; error?: string | null }>,
   overrides: { isError?: boolean; error?: Error | null } = {},
 ) {
   return {
@@ -887,5 +887,229 @@ describe("lastRunISO", () => {
 
     const { rows } = useButlerStatusBoard()
     expect(rows[0].lastRunISO).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Per-entry schema_unreachable consumption (bu-ywz06)
+// ---------------------------------------------------------------------------
+
+describe("per-entry schema_unreachable error field", () => {
+  it("row.schemaUnreachable=true when backend reports error='schema_unreachable'", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([
+      { name: "a", active_session_count: 0, error: "schema_unreachable" },
+    ]))
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].schemaUnreachable).toBe(true)
+  })
+
+  it("row.schemaUnreachable=false when backend reports error=null", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([
+      { name: "a", active_session_count: 1, error: null },
+    ]))
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].schemaUnreachable).toBe(false)
+  })
+
+  it("row.heartbeatUnavailable=true when per-entry error is schema_unreachable", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([
+      { name: "a", active_session_count: 0, error: "schema_unreachable" },
+    ]))
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].heartbeatUnavailable).toBe(true)
+  })
+
+  it("loadPct is null (not 0%) when per-entry schema_unreachable", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    // active_session_count=0 with known max_concurrent: without schema_unreachable fix,
+    // this would return loadPct=0 (0%). With the fix it must return null.
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([
+      { name: "a", active_session_count: 0, error: "schema_unreachable" },
+    ]))
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].loadPct).toBeNull()
+  })
+
+  it("hasPerEntryErrors=true and sourcesPartiallyDegraded=true when any row has schema_unreachable", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+    ]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([
+      { name: "a", active_session_count: 0, error: "schema_unreachable" },
+      { name: "b", active_session_count: 1, error: null },
+    ]))
+    mockUseQueries.mockReturnValue(runtimeResults(2, 4))
+
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.hasPerEntryErrors).toBe(true)
+    expect(aggregates.sourcesPartiallyDegraded).toBe(true)
+  })
+
+  it("only the affected butler gets heartbeatUnavailable=true; healthy butler is unaffected", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+    ]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([
+      { name: "a", active_session_count: 0, error: "schema_unreachable" },
+      { name: "b", active_session_count: 2, error: null },
+    ]))
+    mockUseQueries.mockReturnValue(runtimeResults(2, 4))
+
+    const { rows } = useButlerStatusBoard()
+    const rowA = rows.find((r) => r.name === "a")!
+    const rowB = rows.find((r) => r.name === "b")!
+    expect(rowA.heartbeatUnavailable).toBe(true)
+    expect(rowB.heartbeatUnavailable).toBe(false)
+    // healthy butler keeps its loadPct
+    expect(rowB.loadPct).toBe(50) // 2/4 * 100
+  })
+})
+
+// ---------------------------------------------------------------------------
+// sourcesPartiallyDegraded and source-error aggregates (bu-ywz06)
+// ---------------------------------------------------------------------------
+
+describe("sourcesPartiallyDegraded — union of secondary source errors", () => {
+  it("heartbeat source error → heartbeatSourceError=true, sourcesPartiallyDegraded=true", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("hb failed"),
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.heartbeatSourceError).toBe(true)
+    expect(aggregates.sourcesPartiallyDegraded).toBe(true)
+  })
+
+  it("registry source error → registrySourceError=true, sourcesPartiallyDegraded=true", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseRegistry.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("registry failed"),
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.registrySourceError).toBe(true)
+    expect(aggregates.sourcesPartiallyDegraded).toBe(true)
+  })
+
+  it("sourcesPartiallyDegraded=false when all sources are healthy", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "active" }]))
+    mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 1 }]))
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.sourcesPartiallyDegraded).toBe(false)
+    expect(aggregates.heartbeatSourceError).toBe(false)
+    expect(aggregates.registrySourceError).toBe(false)
+  })
+
+  it("heartbeat source error → loadPct=null for all rows (not 0%)", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+    ]))
+    mockUseButlerHeartbeats.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("hb failed"),
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(2, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows.every((r) => r.loadPct === null)).toBe(true)
+  })
+
+  it("heartbeat source error → all rows get heartbeatUnavailable=true", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+    ]))
+    mockUseButlerHeartbeats.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("hb failed"),
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(2, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows.every((r) => r.heartbeatUnavailable)).toBe(true)
+  })
+
+  it("registry failure → eligibilityUnavailable counts all butlers (registryMap is empty)", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+    ]))
+    mockUseRegistry.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("registry failed"),
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(2, 4))
+
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.eligibilityUnavailable).toBe(2)
+    expect(aggregates.registrySourceError).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// heartbeat query loading state — isPending → heartbeatUnavailable (bu-vommf)
+// ---------------------------------------------------------------------------
+
+describe("heartbeat query isPending: no false 0%/IDLE during initial load", () => {
+  it("heartbeatUnavailable=true when heartbeatsQuery.isPending=true", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isPending: true,
+      isError: false,
+      error: null,
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].heartbeatUnavailable).toBe(true)
+  })
+
+  it("loadPct=null (not 0%) when heartbeatsQuery.isPending=true", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseButlerHeartbeats.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isPending: true,
+      isError: false,
+      error: null,
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].loadPct).toBeNull()
   })
 })

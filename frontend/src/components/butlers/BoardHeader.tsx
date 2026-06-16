@@ -39,12 +39,17 @@ function healthyCount(aggregates: StatusBoardAggregates): number {
 
 /**
  * Pill dot color:
- *   green  — all butlers are healthy (healthy === total)
- *   amber  — some are healthy (healthy > 0)
+ *   green  — all butlers healthy and all sources operational
+ *   amber  — some unhealthy, OR all healthy but a secondary source has degraded
  *   red    — none are healthy (healthy === 0)
+ *
+ * When sourcesPartiallyDegraded is true and the fleet otherwise looks fully
+ * healthy, the pill shows amber rather than green: data is incomplete so a
+ * confident "all-green" signal would be misleading.
  */
-function pillDotClass(healthy: number, total: number): string {
-  if (total === 0 || healthy === total) return "bg-green-500"
+function pillDotClass(healthy: number, total: number, sourcesPartiallyDegraded: boolean): string {
+  if (total === 0) return "bg-green-500"
+  if (healthy === total && !sourcesPartiallyDegraded) return "bg-green-500"
   if (healthy > 0) return "bg-amber-500"
   return "bg-red-500"
 }
@@ -69,7 +74,7 @@ function pillDotClass(healthy: number, total: number): string {
 export function BoardHeader({ aggregates, refreshIntervalMs }: BoardHeaderProps) {
   const healthy = healthyCount(aggregates)
   const total = aggregates.total
-  const dotClass = pillDotClass(healthy, total)
+  const dotClass = pillDotClass(healthy, total, aggregates.sourcesPartiallyDegraded)
 
   const refreshSec = Math.round(refreshIntervalMs / 1_000)
   const refreshLabel =

@@ -50,7 +50,7 @@ export interface StatusBoardRow {
   sessions24h: number
   /** Cost in USD today; null when data is unavailable or all sessions are free/unpriced. */
   costToday: number | null
-  /** active_session_count / max_concurrent * 100, rounded; null when max_concurrent unknown. */
+  /** active_session_count / max_concurrent * 100, rounded; null when max_concurrent or heartbeat unavailable. */
   loadPct: number | null
   /** ISO timestamp of the last session; null when no session or heartbeat unavailable. */
   lastRunISO: string | null
@@ -62,6 +62,10 @@ export interface StatusBoardRow {
   hourlyStripeLoading: boolean
   /** True when the per-butler hourly-activity endpoint has errored. */
   hourlyStripeError: boolean
+  /** True when the backend reported schema_unreachable for this butler's heartbeat entry. */
+  schemaUnreachable: boolean
+  /** True when heartbeat data is unavailable for this butler (fleet-wide error or per-entry schema_unreachable). */
+  heartbeatUnavailable: boolean
 }
 
 /** Fleet-wide aggregates and loading state for the status board. */
@@ -85,6 +89,16 @@ export interface StatusBoardAggregates {
   isError: boolean
   error: Error | null
   refetch: () => void
+  /** True when the heartbeat source has errored fleet-wide. */
+  heartbeatSourceError: boolean
+  /** True when the registry source has errored fleet-wide. */
+  registrySourceError: boolean
+  /** Count of butlers with eligibility='unavailable' (unregistered or registry source error). */
+  eligibilityUnavailable: number
+  /** True when at least one row has a per-entry schema_unreachable error from the backend. */
+  hasPerEntryErrors: boolean
+  /** True when any secondary source (heartbeat, registry, per-entry errors) has degraded. */
+  sourcesPartiallyDegraded: boolean
 }
 
 /** Return value of useButlerStatusBoard. */
@@ -207,13 +221,14 @@ export function useButlerStatusBoard(): StatusBoardResult {
 
     const heartbeatMap: Record<
       string,
-      { last_session_at: string | null; active_session_count: number }
+      { last_session_at: string | null; active_session_count: number; error: string | null }
     > = {}
     if (!heartbeatsQuery.isError && heartbeatsQuery.data?.data) {
       for (const hb of heartbeatsQuery.data.data.butlers) {
         heartbeatMap[hb.name] = {
           last_session_at: hb.last_session_at,
           active_session_count: hb.active_session_count,
+          error: hb.error ?? null,
         }
       }
     }
@@ -237,15 +252,22 @@ export function useButlerStatusBoard(): StatusBoardResult {
 
       // --- heartbeat data ---
       const hb = heartbeatMap[butler.name]
-      const activeSessionCount = hb?.active_session_count ?? 0
+      // Consume the backend per-entry error field: schema_unreachable means this
+      // butler's session DB was unreachable when the heartbeat endpoint ran.
+      const schemaUnreachable = hb?.error === "schema_unreachable"
+      // heartbeatUnavailable is true for fleet-wide source failure, pending load, OR per-entry error.
+      const heartbeatUnavailable = heartbeatsQuery.isError || heartbeatsQuery.isPending || schemaUnreachable
+      // Only use active_session_count when the heartbeat data is reliable.
+      const activeSessionCount = heartbeatUnavailable ? 0 : (hb?.active_session_count ?? 0)
       const lastRunISO = hb?.last_session_at ?? null
 
       // --- activity verb ---
       const { activity, cellTone } = deriveActivity(butler.status, eligibility, activeSessionCount)
 
       // --- load pct ---
+      // null when heartbeat is unavailable so the LOAD KPI shows '—' not '0%'.
       const maxConcurrent = runtimeConfigMap[butler.name] ?? null
-      const loadPct = deriveLoadPct(activeSessionCount, maxConcurrent)
+      const loadPct = heartbeatUnavailable ? null : deriveLoadPct(activeSessionCount, maxConcurrent)
 
       // --- cost ---
       const costToday = byButlerCost[butler.name] ?? null
@@ -282,6 +304,8 @@ export function useButlerStatusBoard(): StatusBoardResult {
         hourlyTotal,
         hourlyStripeLoading,
         hourlyStripeError,
+        schemaUnreachable,
+        heartbeatUnavailable,
       }
     })
 
@@ -294,12 +318,9 @@ export function useButlerStatusBoard(): StatusBoardResult {
     return derived
   }, [
     butlers,
-    registryQuery.isError,
-    registryQuery.data,
-    heartbeatsQuery.isError,
-    heartbeatsQuery.data,
-    costQuery.isError,
-    costQuery.data,
+    registryQuery,
+    heartbeatsQuery,
+    costQuery,
     runtimeConfigMap,
     hourlyActivityResults,
   ])
@@ -323,6 +344,12 @@ export function useButlerStatusBoard(): StatusBoardResult {
           )
         : null
 
+    const heartbeatSourceError = heartbeatsQuery.isError
+    const registrySourceError = registryQuery.isError
+    const eligibilityUnavailable = rows.filter((r) => r.eligibility === "unavailable").length
+    const hasPerEntryErrors = rows.some((r) => r.schemaUnreachable)
+    const sourcesPartiallyDegraded = heartbeatSourceError || registrySourceError || hasPerEntryErrors
+
     return {
       total,
       butlerCount,
@@ -337,8 +364,14 @@ export function useButlerStatusBoard(): StatusBoardResult {
       isError: butlersQuery.isError && !butlersQuery.data,
       error: butlersQuery.error ?? null,
       refetch: butlersQuery.refetch,
+      heartbeatSourceError,
+      registrySourceError,
+      eligibilityUnavailable,
+      hasPerEntryErrors,
+      sourcesPartiallyDegraded,
     }
-  }, [rows, butlersQuery.isLoading, butlersQuery.data, butlersQuery.isError, butlersQuery.error, butlersQuery.refetch])
+  }, [rows, butlersQuery.isLoading, butlersQuery.data, butlersQuery.isError, butlersQuery.error, butlersQuery.refetch,
+      heartbeatsQuery.isError, registryQuery.isError])
 
   return { rows, aggregates }
 }

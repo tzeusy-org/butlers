@@ -43,6 +43,8 @@ function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
     hourlyTotal: 7,
     hourlyStripeLoading: false,
     hourlyStripeError: false,
+    schemaUnreachable: false,
+    heartbeatUnavailable: false,
     ...overrides,
   }
 }
@@ -405,5 +407,68 @@ describe("StatusBoardCell: onRestore callback", () => {
     fireEvent.click(btn)
     expect(onRestore).toHaveBeenCalledOnce()
     expect(onRestore).toHaveBeenCalledWith("qa")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// heartbeatUnavailable display (bu-ywz06)
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: heartbeatUnavailable=true renders honest state", () => {
+  it("shows '—' for activity chip when heartbeatUnavailable=true instead of 'IDLE'", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "idle", heartbeatUnavailable: true })}
+      />,
+    )
+    // The activity chip must show the dash, not the activity verb.
+    expect(html).toContain("—")
+    expect(html).not.toContain("IDLE")
+  })
+
+  it("does not show '—' for activity chip when heartbeatUnavailable=false", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "idle", heartbeatUnavailable: false })}
+      />,
+    )
+    expect(html).toContain("IDLE")
+  })
+
+  it("aria-label includes 'heartbeat unavailable' when heartbeatUnavailable=true", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ heartbeatUnavailable: true })} />,
+    )
+    expect(html).toContain("heartbeat unavailable")
+  })
+
+  it("aria-label includes activity verb when heartbeatUnavailable=false", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ activity: "running", heartbeatUnavailable: false })} />,
+    )
+    expect(html).toContain("running")
+    expect(html).not.toContain("heartbeat unavailable")
+  })
+
+  it("schemaUnreachable=true row still renders without crashing", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ schemaUnreachable: true, heartbeatUnavailable: true, loadPct: null })}
+      />,
+    )
+    // The LOAD KPI should show '—' (loadPct=null)
+    expect(html).toContain("—")
+  })
+
+  it("restorable button chip shows '—' (not activity label) when heartbeatUnavailable=true", () => {
+    const onRestore = vi.fn()
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined", heartbeatUnavailable: true })}
+        onRestore={onRestore}
+      />,
+    )
+    expect(html).toContain("—")
+    expect(html).not.toContain("QUARANTINED")
   })
 })

@@ -126,6 +126,7 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
     hourlyTotal,
     hourlyStripeLoading,
     hourlyStripeError,
+    heartbeatUnavailable,
   } = row
 
   const isRestorable = activity === "quarantined" || eligibility === "stale"
@@ -137,7 +138,7 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
   const basePath = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "")
   const href = `${basePath}/butlers/${name}`
 
-  const ariaLabel = `${name}, ${activity}, last run ${lastRunISO ? "recently" : "unknown"}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
+  const ariaLabel = `${name}, ${heartbeatUnavailable ? "heartbeat unavailable" : activity}, last run ${lastRunISO ? "recently" : "unknown"}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
 
   const containerClass = [
     "group relative flex flex-col",
@@ -169,7 +170,9 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
           {name}
         </span>
 
-        {/* Activity chip — plain span when not restorable */}
+        {/* Activity chip — plain span when not restorable.
+            When heartbeat data is unavailable (source down or schema_unreachable),
+            the activity verdict is unreliable: show '—' instead of a false 'IDLE'. */}
         {isRestorable && onRestore ? (
           <button
             type="button"
@@ -180,19 +183,19 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
             className={[
               "font-mono text-[9px] uppercase tracking-wider cursor-pointer",
               "underline underline-offset-2 decoration-current/50",
-              activityChipClasses(activity),
+              heartbeatUnavailable ? "text-muted-foreground" : activityChipClasses(activity),
             ].join(" ")}
           >
-            {activityLabel(activity)}
+            {heartbeatUnavailable ? "—" : activityLabel(activity)}
           </button>
         ) : (
           <span
             className={[
               "font-mono text-[9px] uppercase tracking-wider",
-              activityChipClasses(activity),
+              heartbeatUnavailable ? "text-muted-foreground" : activityChipClasses(activity),
             ].join(" ")}
           >
-            {activityLabel(activity)}
+            {heartbeatUnavailable ? "—" : activityLabel(activity)}
           </span>
         )}
       </div>

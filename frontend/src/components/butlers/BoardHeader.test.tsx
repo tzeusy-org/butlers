@@ -39,6 +39,11 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     isError: false,
     error: null,
     refetch: () => {},
+    heartbeatSourceError: false,
+    registrySourceError: false,
+    eligibilityUnavailable: 0,
+    hasPerEntryErrors: false,
+    sourcesPartiallyDegraded: false,
     ...overrides,
   }
 }
@@ -144,6 +149,41 @@ describe("BoardHeader", () => {
       )
       // healthy = 10 - 0 - 2 = 8
       expect(html).toContain("bg-amber-500")
+    })
+
+    it("dents pill to amber when sourcesPartiallyDegraded=true even if all butlers appear healthy", () => {
+      // Without sourcesPartiallyDegraded: total=10, offline=0, quarantined=0 → green.
+      // With sourcesPartiallyDegraded: fleet looks healthy from status alone, but a
+      // secondary source (e.g. registry) has failed so eligibility is unconfirmed → amber.
+      const html = render(
+        makeAggregates({ total: 10, offline: 0, quarantined: 0, sourcesPartiallyDegraded: true }),
+      )
+      expect(html).toContain("bg-amber-500")
+      expect(html).not.toContain("bg-green-500")
+    })
+
+    it("remains green when sourcesPartiallyDegraded=false and all healthy", () => {
+      const html = render(
+        makeAggregates({ total: 10, offline: 0, quarantined: 0, sourcesPartiallyDegraded: false }),
+      )
+      expect(html).toContain("bg-green-500")
+      expect(html).not.toContain("bg-amber-500")
+    })
+
+    it("pill stays amber (not red) when sourcesPartiallyDegraded=true and some are offline", () => {
+      const html = render(
+        makeAggregates({ total: 10, offline: 2, quarantined: 0, sourcesPartiallyDegraded: true }),
+      )
+      // healthy = 8, total = 10, healthy > 0 → amber regardless of degraded flag
+      expect(html).toContain("bg-amber-500")
+    })
+
+    it("pill shows red when all unhealthy even with sourcesPartiallyDegraded=true", () => {
+      const html = render(
+        makeAggregates({ total: 4, offline: 4, quarantined: 0, sourcesPartiallyDegraded: true }),
+      )
+      // healthy = 0 → red
+      expect(html).toContain("bg-red-500")
     })
   })
 
