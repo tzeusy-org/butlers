@@ -37,8 +37,8 @@ interface ActivityStripeProps {
  *
  * @param counts - 24 hourly session counts, oldest first. Length MUST be 24.
  * @param windowEnd - UTC-aligned window end for peak-hour label computation.
- *   Pass the same `endAt` reference used by `bucketSessionsByHour` for exact
- *   timezone alignment. Defaults to `new Date()` when omitted.
+ *   Pass the same `endAt` reference used by `bucketSessionsByHour` for alignment.
+ *   Defaults to `new Date()` when omitted.
  * @param className - Optional className forwarded to the container element.
  *
  * @example

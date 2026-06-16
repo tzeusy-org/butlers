@@ -37,7 +37,6 @@ function utcHourFloor(d: Date): number {
  *
  * @param sessions - Array of sessions (any butler, any time)
  * @param butlerName - Only sessions where session.butler === butlerName are counted
- * @param tz - Owner timezone (reserved; bucket assignment uses UTC)
  * @param endAt - Window end reference (defaults to now). The actual window end is
  *   aligned to the next UTC-hour boundary: `utcHourFloor(endAt) + 1h`. The window
  *   therefore covers `[windowEnd - 24h, windowEnd)` where `windowEnd` is that
@@ -46,12 +45,8 @@ function utcHourFloor(d: Date): number {
 export function bucketSessionsByHour(
   sessions: BucketableSession[],
   butlerName: string,
-  tz: string = "UTC",
   endAt: Date = new Date(),
 ): number[] {
-  // Suppress unused-var lint while tz is reserved for future display use.
-  void tz
-
   const stripe = new Array<number>(24).fill(0)
   const windowEndMs = utcHourFloor(endAt) + 60 * 60 * 1000 // inclusive current hour
   const windowStartMs = windowEndMs - 24 * 60 * 60 * 1000 // 24 h before

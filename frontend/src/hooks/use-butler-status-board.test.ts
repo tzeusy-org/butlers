@@ -772,7 +772,7 @@ describe("bucketSessionsByHour", () => {
       { butler: "b", started_at: slot0Time.toISOString() },
       { butler: "b", started_at: slot23Time.toISOString() },
     ]
-    const stripe = bucketSessionsByHour(sessions, "b", "UTC", now)
+    const stripe = bucketSessionsByHour(sessions, "b", now)
     expect(stripe[0]).toBe(1)
     expect(stripe[23]).toBe(1)
     // All other slots are 0
@@ -785,7 +785,7 @@ describe("bucketSessionsByHour", () => {
     const now = new Date()
     const old = new Date(now.getTime() - 25 * 60 * 60 * 1000)
     const sessions = [{ butler: "b", started_at: old.toISOString() }]
-    const stripe = bucketSessionsByHour(sessions, "b", "UTC", now)
+    const stripe = bucketSessionsByHour(sessions, "b", now)
     expect(stripe.reduce((s, v) => s + v, 0)).toBe(0)
   })
 
