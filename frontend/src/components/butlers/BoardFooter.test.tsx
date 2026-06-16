@@ -40,6 +40,11 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     isError: false,
     error: null,
     refetch: () => {},
+    heartbeatSourceError: false,
+    registrySourceError: false,
+    eligibilityUnavailable: 0,
+    hasPerEntryErrors: false,
+    sourcesPartiallyDegraded: false,
     ...overrides,
   }
 }

@@ -70,6 +70,11 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     isError: false,
     error: null,
     refetch: NO_OP_REFETCH,
+    heartbeatSourceError: false,
+    registrySourceError: false,
+    eligibilityUnavailable: 0,
+    hasPerEntryErrors: false,
+    sourcesPartiallyDegraded: false,
     ...overrides,
   }
 }
@@ -91,6 +96,11 @@ function makeRow(
     loadPct: null,
     lastRunISO: null,
     hourlyStripe: Array(24).fill(0),
+    hourlyTotal: 0,
+    hourlyStripeLoading: false,
+    hourlyStripeError: false,
+    schemaUnreachable: false,
+    heartbeatUnavailable: false,
     ...overrides,
   }
 }

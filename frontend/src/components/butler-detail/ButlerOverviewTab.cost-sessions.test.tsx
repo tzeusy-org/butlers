@@ -187,6 +187,11 @@ function setupDefaultMocks({
         loadPct: null,
         lastRunISO: "2026-05-10T08:00:00Z",
         hourlyStripe: Array(24).fill(0),
+        hourlyTotal: 0,
+        hourlyStripeLoading: false,
+        hourlyStripeError: false,
+        schemaUnreachable: false,
+        heartbeatUnavailable: false,
       },
     ],
     aggregates: {
@@ -203,6 +208,11 @@ function setupDefaultMocks({
       isError: false,
       error: null,
       refetch: vi.fn(),
+      heartbeatSourceError: false,
+      registrySourceError: false,
+      eligibilityUnavailable: 0,
+      hasPerEntryErrors: false,
+      sourcesPartiallyDegraded: false,
     },
   });
 
