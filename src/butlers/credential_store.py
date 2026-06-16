@@ -384,6 +384,49 @@ class CredentialStore:
         )
         return True
 
+    async def record_test_result(
+        self,
+        key: str,
+        ok: bool,
+        message: str | None = None,
+    ) -> None:
+        """Record a credential probe/spawn result without touching the stored value.
+
+        Updates ``last_test_ok``, ``last_verified = now()``, and
+        ``last_test_message`` on the row identified by *key*.  No-op when
+        *key* does not exist in the store (the UPDATE matches zero rows and
+        no error is raised).
+
+        Parameters
+        ----------
+        key:
+            The secret key to update (e.g. ``"cli-auth/codex"``).
+        ok:
+            ``True`` → probe succeeded; ``False`` → probe failed.
+        message:
+            Optional error detail (truncated to 512 chars).  Pass ``None``
+            to clear any previously stored message on a successful probe.
+        """
+        truncated = message[:512] if message else None
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                UPDATE {_TABLE}
+                SET last_test_ok      = $1,
+                    last_verified     = now(),
+                    last_test_message = $2
+                WHERE secret_key = $3
+                """,
+                ok,
+                truncated,
+                key,
+            )
+        logger.debug(
+            "Credential test result recorded: key=%r ok=%r",
+            key,
+            ok,
+        )
+
     # ------------------------------------------------------------------
     # Read operations
     # ------------------------------------------------------------------

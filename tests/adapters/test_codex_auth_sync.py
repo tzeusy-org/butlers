@@ -9,6 +9,12 @@ Covers:
 - CodexAdapter._schedule_auth_sync: no-op when no store; fires task when store present
 - CodexAdapter.invoke: schedules auth sync after subprocess success and failure
 - CodexAdapter.create_worker: propagates credential_store and butler_name
+- _looks_like_auth_refresh_failure: positive + negative matcher tests
+- CredentialStore.record_test_result: updates last_test_ok/last_verified/last_test_message
+- CodexAdapter._schedule_record_test_result: fire-and-forget; no-op without store
+- CodexAdapter.invoke: writes last_test_ok=false on refresh-reuse error (regression)
+- CodexAdapter.invoke: writes last_test_ok=true on success (clear-on-success)
+- CodexAdapter.invoke: does NOT write last_test_ok for unrelated exit-1 errors
 """
 
 from __future__ import annotations
@@ -27,7 +33,11 @@ from butlers.core.runtimes._codex_auth_sync import (
     check_and_persist_rotation,
     record_auth_baseline,
 )
-from butlers.core.runtimes.codex import CodexAdapter
+from butlers.core.runtimes.codex import (
+    _CODEX_REFRESH_TOKEN_REUSED_MARKER,
+    CodexAdapter,
+    _looks_like_auth_refresh_failure,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -523,6 +533,303 @@ def test_create_worker_propagates_credential_store_and_butler_name() -> None:
     assert worker._credential_store is store
     assert worker._butler_name == "chronicler"
     assert worker._codex_binary == "/usr/bin/codex"
+
+
+# ---------------------------------------------------------------------------
+# _looks_like_auth_refresh_failure — narrowness guarantee (bias 6)
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_auth_refresh_failure_positive() -> None:
+    """Real Codex CLI refresh-reuse message must trip the matcher."""
+    # Exact phrasing from Codex CLI (see _CODEX_REFRESH_TOKEN_REUSED_MARKER)
+    real_message = (
+        "Your access token could not be refreshed because "
+        "your refresh token was already used. "
+        "Please log out and sign in again."
+    )
+    assert _looks_like_auth_refresh_failure(real_message) is True
+    # Also matches when embedded in a longer error_detail string
+    assert _looks_like_auth_refresh_failure(f"Codex CLI exited with code 1: {real_message}") is True
+    # Case-insensitive
+    assert _looks_like_auth_refresh_failure(real_message.upper()) is True
+
+
+def test_looks_like_auth_refresh_failure_negative() -> None:
+    """An unrelated exit-1 error must NOT trip the auth-refresh matcher."""
+    unrelated = [
+        "model is at capacity",
+        "MCP tool discovery failed",
+        "connection refused",
+        "Error: network timeout",
+        "codex_core::compact_remote",
+        "",
+    ]
+    assert len(unrelated) == 6  # guard against vacuous pass if list shrinks
+    for msg in unrelated:
+        assert _looks_like_auth_refresh_failure(msg) is False, (
+            f"Expected False for {msg!r} but got True"
+        )
+
+
+def test_refresh_token_reused_marker_is_present_in_constant() -> None:
+    """Smoke-test: the named constant contains the expected trigger phrase."""
+    assert "refresh token" in _CODEX_REFRESH_TOKEN_REUSED_MARKER
+    assert "already used" in _CODEX_REFRESH_TOKEN_REUSED_MARKER
+
+
+# ---------------------------------------------------------------------------
+# CredentialStore.record_test_result
+# ---------------------------------------------------------------------------
+
+
+async def test_record_test_result_updates_last_test_ok() -> None:
+    """record_test_result issues an UPDATE with the correct parameters."""
+    from unittest.mock import AsyncMock as AM
+    from unittest.mock import MagicMock as MM
+
+    # Build a minimal asyncpg-pool mock that lets us inspect the execute call.
+    conn = MM()
+    conn.execute = AM(return_value="UPDATE 1")
+    conn.__aenter__ = AM(return_value=conn)
+    conn.__aexit__ = AM(return_value=False)
+
+    pool = MM()
+    pool.acquire = MM(return_value=conn)
+
+    from butlers.credential_store import CredentialStore
+
+    store = CredentialStore(pool)
+    await store.record_test_result("cli-auth/codex", ok=False, message="token already used")
+
+    conn.execute.assert_awaited_once()
+    call_args = conn.execute.await_args
+    # First positional arg is the SQL; params are $1=ok, $2=message, $3=key
+    assert call_args.args[1] is False  # ok
+    assert "token already used" in call_args.args[2]
+    assert call_args.args[3] == "cli-auth/codex"
+
+
+async def test_record_test_result_clears_message_on_success() -> None:
+    """Passing ok=True with no message sends None for last_test_message."""
+    from unittest.mock import AsyncMock as AM
+    from unittest.mock import MagicMock as MM
+
+    conn = MM()
+    conn.execute = AM(return_value="UPDATE 1")
+    conn.__aenter__ = AM(return_value=conn)
+    conn.__aexit__ = AM(return_value=False)
+
+    pool = MM()
+    pool.acquire = MM(return_value=conn)
+
+    from butlers.credential_store import CredentialStore
+
+    store = CredentialStore(pool)
+    await store.record_test_result("cli-auth/codex", ok=True)
+
+    call_args = conn.execute.await_args
+    assert call_args.args[1] is True  # ok
+    assert call_args.args[2] is None  # message cleared
+    assert call_args.args[3] == "cli-auth/codex"
+
+
+async def test_record_test_result_truncates_long_message() -> None:
+    """Messages longer than 512 chars are truncated before storage."""
+    from unittest.mock import AsyncMock as AM
+    from unittest.mock import MagicMock as MM
+
+    conn = MM()
+    conn.execute = AM(return_value="UPDATE 1")
+    conn.__aenter__ = AM(return_value=conn)
+    conn.__aexit__ = AM(return_value=False)
+
+    pool = MM()
+    pool.acquire = MM(return_value=conn)
+
+    from butlers.credential_store import CredentialStore
+
+    store = CredentialStore(pool)
+    long_msg = "x" * 1000
+    await store.record_test_result("cli-auth/codex", ok=False, message=long_msg)
+
+    call_args = conn.execute.await_args
+    stored_msg = call_args.args[2]
+    assert stored_msg is not None and len(stored_msg) == 512
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter._schedule_record_test_result
+# ---------------------------------------------------------------------------
+
+
+async def test_schedule_record_test_result_noop_without_store() -> None:
+    """Without a credential store, no task is scheduled."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")  # no store
+    tasks_before = len(asyncio.all_tasks())
+    adapter._schedule_record_test_result("cli-auth/codex", ok=False)
+    await asyncio.sleep(0)
+    assert len(asyncio.all_tasks()) == tasks_before
+
+
+async def test_schedule_record_test_result_fires_task_with_store() -> None:
+    """With a store, a background task is scheduled and calls record_test_result."""
+    store = _mock_store()
+    store.record_test_result = AsyncMock(return_value=None)
+
+    adapter = CodexAdapter(
+        codex_binary="/usr/bin/codex",
+        credential_store=store,
+        butler_name="qa",
+    )
+    adapter._schedule_record_test_result("cli-auth/codex", ok=False, message="test failure")
+    await asyncio.sleep(0.05)
+
+    store.record_test_result.assert_awaited_once_with("cli-auth/codex", False, "test failure")
+
+
+async def test_schedule_record_test_result_swallows_store_exception() -> None:
+    """Exceptions from record_test_result are logged and not re-raised."""
+    store = _mock_store()
+    store.record_test_result = AsyncMock(side_effect=RuntimeError("DB failure"))
+
+    adapter = CodexAdapter(
+        codex_binary="/usr/bin/codex",
+        credential_store=store,
+        butler_name="qa",
+    )
+    adapter._schedule_record_test_result("cli-auth/codex", ok=False)
+    # Must not raise
+    await asyncio.sleep(0.05)
+
+
+# ---------------------------------------------------------------------------
+# Regression: refresh-reuse error drives last_test_ok → banner goes red
+#
+# This test verifies the fix: before this change, a Codex spawn failure with
+# a refresh-reuse error would be silently logged but never persisted to
+# credential state, leaving the banner green/healthy during a real auth outage.
+# ---------------------------------------------------------------------------
+
+_RECORD_TEST = "butlers.credential_store.CredentialStore.record_test_result"
+
+
+async def test_invoke_writes_test_result_false_on_refresh_reuse_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REGRESSION: refresh-token-reuse error must set last_test_ok=false on the
+    cli-auth/codex credential row so the secrets passport banner turns red.
+
+    Before the fix: the error was logged + raised but credential state was never
+    updated → banner stayed green during a real auth outage (silent failure).
+    """
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    _write_auth(codex_dir / "auth.json")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    store = _mock_store()
+    store.record_test_result = AsyncMock(return_value=None)
+
+    adapter = CodexAdapter(
+        codex_binary="/usr/bin/codex",
+        credential_store=store,
+        butler_name="qa",
+    )
+
+    # Simulate a Codex CLI exit-1 with the exact refresh-reuse phrase
+    refresh_error_stderr = (
+        "Your access token could not be refreshed because "
+        "your refresh token was already used. "
+        "Please log out and sign in again."
+    )
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", refresh_error_stderr.encode()))
+    mock_proc.returncode = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError, match="Codex CLI exited with code 1"):
+            await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
+        await asyncio.sleep(0.1)
+
+    # The fix: credential state must be updated to failing
+    store.record_test_result.assert_awaited_once()
+    call_args = store.record_test_result.await_args
+    assert call_args.args[0] == "cli-auth/codex"
+    assert call_args.args[1] is False  # ok=False → state 'failing'
+
+
+async def test_invoke_does_not_write_test_result_for_unrelated_exit1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unrelated exit-1 (e.g. model capacity) must NOT set last_test_ok=false.
+
+    Only the refresh-token-reuse error triggers the credential state update.
+    """
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    _write_auth(codex_dir / "auth.json")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    store = _mock_store()
+    store.record_test_result = AsyncMock(return_value=None)
+
+    adapter = CodexAdapter(
+        codex_binary="/usr/bin/codex",
+        credential_store=store,
+        butler_name="qa",
+    )
+
+    unrelated_stderr = b"Error: model is at capacity. Please try again later."
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", unrelated_stderr))
+    mock_proc.returncode = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError):
+            await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
+        await asyncio.sleep(0.1)
+
+    # record_test_result must NOT have been called at all: neither the
+    # auth-refresh path (wrong error) nor the success path (exit-1) fires here.
+    store.record_test_result.assert_not_called()
+
+
+async def test_invoke_writes_test_result_true_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful spawn must clear any prior auth-failure state (ok=True).
+
+    This is decoupled from token rotation — a non-rotating success must still
+    clear last_test_ok=false so the banner self-heals after re-authentication.
+    """
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    _write_auth(codex_dir / "auth.json")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    store = _mock_store()
+    store.record_test_result = AsyncMock(return_value=None)
+
+    adapter = CodexAdapter(
+        codex_binary="/usr/bin/codex",
+        credential_store=store,
+        butler_name="qa",
+    )
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(_make_ok_stdout(), b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc):
+        await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
+        await asyncio.sleep(0.1)
+
+    # ok=True must have been recorded (clear-on-success)
+    success_calls = [c for c in store.record_test_result.await_args_list if c.args[1] is True]
+    assert len(success_calls) >= 1, (
+        "Expected at least one record_test_result(ok=True) call on successful spawn"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -927,6 +927,7 @@ make test-qg
 - Codex CLI no longer supports `--instructions`; butler/system prompt content must be embedded into the `exec` initial prompt payload, and MCP endpoints should be passed via `-c mcp_servers.<name>.url="..."`.
 - `CodexAdapter.invoke()` must insert a `--` option delimiter before the positional prompt argument so user prompts beginning with `-`/`--` are not parsed as Codex CLI flags.
 - `CodexAdapter.invoke()` must forward configured model via CLI `--model <id>` when `model` is non-empty, so roster model pins (for example `gpt-5.3-codex-spark`) are actually enforced at launch time.
+- Codex spawn failure now drives `last_test_ok` on the `cli-auth/codex` credential row. When the Codex CLI exits non-zero with a refresh-token-reuse error (`_looks_like_auth_refresh_failure`), `CodexAdapter._schedule_record_test_result` writes `last_test_ok=false` → `_derive_state` returns `'failing'` and the secrets passport banner turns red. A successful spawn always clears the field (`last_test_ok=true`) even without a token rotation, so the banner self-heals after re-auth.
 
 ### Butler MCP debug surface contract
 - Butler detail now includes an always-available `MCP` tab (`frontend/src/pages/ButlerDetailPage.tsx`) for per-butler debug tool calls.

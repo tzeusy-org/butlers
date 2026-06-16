@@ -225,6 +225,22 @@ def _looks_like_transient_cli_failure(error_detail: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+# Codex CLI error phrase for a refresh-token-reuse failure (OAuth code:
+# refresh_token_reused). Exact wording from Codex CLI: "Your access token could
+# not be refreshed because your refresh token was already used. Please log out
+# and sign in again."
+_CODEX_REFRESH_TOKEN_REUSED_MARKER = "refresh token was already used"
+
+
+def _looks_like_auth_refresh_failure(error_detail: str) -> bool:
+    """Return True when error_detail signals a Codex refresh-token-reuse failure.
+
+    Narrow matcher — only the phrase in _CODEX_REFRESH_TOKEN_REUSED_MARKER trips
+    it.  An unrelated exit-1 (e.g. model capacity, MCP failure) must NOT match.
+    """
+    return _CODEX_REFRESH_TOKEN_REUSED_MARKER in error_detail.lower()
+
+
 def _resolve_transport_details(
     server_cfg: dict[str, Any], url: str
 ) -> tuple[str | None, str | None]:
@@ -1838,8 +1854,21 @@ class CodexAdapter(RuntimeAdapter):
                     else logger.error
                 )
                 log("Codex CLI exited with code %d: %s", returncode, error_detail)
+                if _looks_like_auth_refresh_failure(error_detail):
+                    # An auth-refresh failure means the stored refresh token is dead.
+                    # Write last_test_ok=false → state 'failing' (not 'expired' —
+                    # expires_at means token expiry; a dead refresh token is a distinct
+                    # failure mode that must not corrupt the expiry column).
+                    self._schedule_record_test_result(
+                        "cli-auth/codex", ok=False, message=error_detail[:512]
+                    )
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
 
+            # Clear any prior auth-failure test state on a successful spawn.
+            # Decoupled from _schedule_auth_sync / check_and_persist_rotation, which
+            # only fire when auth.json has rotated — a non-rotating success would
+            # never clear a stale last_test_ok=false → the banner would stick red.
+            self._schedule_record_test_result("cli-auth/codex", ok=True)
             return _parse_codex_output(stdout, stderr, returncode)
 
         except TimeoutError:
@@ -1879,6 +1908,42 @@ class CodexAdapter(RuntimeAdapter):
                 butler_name=self._butler_name,
             )
         )
+
+    def _schedule_record_test_result(
+        self,
+        key: str,
+        ok: bool,
+        message: str | None = None,
+    ) -> None:
+        """Fire-and-forget: write last_test_ok + last_verified to the credential store.
+
+        No-op when no credential store is wired.  Exceptions are logged with
+        butler + key context and never propagate to the caller.
+
+        # Concurrent spawns across butlers write to the same shared credential
+        # row (last_test_ok, last_verified). Last-writer-wins on the boolean;
+        # a stale false racing a true clear could momentarily flip the banner
+        # back to failing. This is a known, non-blocking race.
+        """
+        if self._credential_store is None:
+            return
+
+        store = self._credential_store
+        butler_name = self._butler_name
+
+        async def _run() -> None:
+            try:
+                await store.record_test_result(key, ok, message)
+            except Exception:
+                logger.warning(
+                    "codex: failed to record test result for butler=%r key=%r ok=%r",
+                    butler_name,
+                    key,
+                    ok,
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_run())
 
     @staticmethod
     def _write_mcp_config_toml(
