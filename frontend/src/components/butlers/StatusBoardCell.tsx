@@ -117,6 +117,7 @@ export interface StatusBoardCellProps {
 export function StatusBoardCell({ row, onRestore, isRestorePending = false }: StatusBoardCellProps) {
   const {
     name,
+    type,
     description,
     activity,
     eligibility,
@@ -164,7 +165,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
 
       {/* Top row: ButlerMark + name + activity chip */}
       <div className="flex items-center gap-3">
-        <ButlerMark name={name} size={28} tone={markTone} />
+        <ButlerMark name={name} size={28} tone={markTone} type={type} />
 
         <span className="text-base font-medium capitalize flex-1 min-w-0 truncate">
           {name}

@@ -127,6 +127,37 @@ describe("ButlerMark: tone=neutral (default)", () => {
   })
 })
 
+describe("ButlerMark: type=staffer vs type=butler", () => {
+  it("renders full circle (border-radius:50%) for type=staffer", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="switchboard" type="staffer" />)
+    expect(html).toContain("border-radius:50%")
+  })
+
+  it("renders squircle (border-radius:4px) for type=butler", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" type="butler" />)
+    expect(html).not.toContain("border-radius:50%")
+    expect(html).toContain("border-radius:4px")
+  })
+
+  it("renders squircle when type is omitted (backwards-compatible)", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" />)
+    expect(html).not.toContain("border-radius:50%")
+    expect(html).toContain("border-radius:4px")
+  })
+
+  it("exposes type=staffer in aria-label and title for screen readers", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="switchboard" type="staffer" />)
+    expect(html).toContain('aria-label="switchboard (staffer)"')
+    expect(html).toContain('title="switchboard (staffer)"')
+  })
+
+  it("does not append type qualifier for butler (backwards-compatible aria-label)", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" type="butler" />)
+    expect(html).toContain('aria-label="general"')
+    expect(html).toContain('title="general"')
+  })
+})
+
 describe("ButlerMark: className forwarding", () => {
   it("forwards className to the root span", () => {
     const html = renderToStaticMarkup(

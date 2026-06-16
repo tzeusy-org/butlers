@@ -126,6 +126,11 @@ export interface ButlerMarkProps {
   size?: number
   /** Optional className forwarded to the root element. */
   className?: string
+  /**
+   * Agent type. "staffer" renders as a full circle (50% border-radius) to visually
+   * distinguish infrastructure roles from user-facing butlers (squircle). Defaults to "butler".
+   */
+  type?: "butler" | "staffer"
 }
 
 /**
@@ -136,14 +141,14 @@ export interface ButlerMarkProps {
  *   <ButlerMark name="health" tone="fill" />
  *   <ButlerMark name="qa" tone="neutral" />
  */
-export function ButlerMark({ name, tone = "neutral", size = 16, className }: ButlerMarkProps) {
+export function ButlerMark({ name, tone = "neutral", size = 16, className, type = "butler" }: ButlerMarkProps) {
   const hue = butlerHueVar(name)
   const initial = (name[0] ?? "?").toUpperCase()
 
   const baseStyle: React.CSSProperties = {
     width: size,
     height: size,
-    borderRadius: Math.round(size * 0.25),
+    borderRadius: type === "staffer" ? "50%" : Math.round(size * 0.25),
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
@@ -171,8 +176,8 @@ export function ButlerMark({ name, tone = "neutral", size = 16, className }: But
     <span
       style={{ ...baseStyle, ...toneStyle }}
       className={className}
-      title={name}
-      aria-label={name}
+      title={type === "staffer" ? `${name} (staffer)` : name}
+      aria-label={type === "staffer" ? `${name} (staffer)` : name}
     >
       {initial}
     </span>

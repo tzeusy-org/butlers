@@ -527,6 +527,26 @@ describe("StatusBoardCell: isRestorePending", () => {
 })
 
 // ---------------------------------------------------------------------------
+// staffer type affordance (bu-f2tcy)
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: staffer type affordance", () => {
+  it("renders circular ButlerMark (border-radius:50%) for type=staffer", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ name: "switchboard", type: "staffer" })} />,
+    )
+    expect(html).toContain("border-radius:50%")
+  })
+
+  it("renders squircle ButlerMark for type=butler", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ name: "general", type: "butler" })} />,
+    )
+    expect(html).not.toContain("border-radius:50%")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // heartbeatUnavailable display (bu-ywz06)
 // ---------------------------------------------------------------------------
 
