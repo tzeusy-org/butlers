@@ -16,6 +16,8 @@
 //   - onRestore wired to useSetEligibility mutation.
 // ---------------------------------------------------------------------------
 
+import { toast } from "sonner";
+
 import { Card, CardContent } from "@/components/ui/card";
 import { Page } from "@/components/ui/page";
 import { BoardFooter } from "@/components/butlers/BoardFooter";
@@ -51,8 +53,19 @@ export default function ButlersPage() {
   // survive from cache the error object is still populated but isError is false.
   const showStaleBanner = error != null && hasRows;
 
+  const pendingRestoreName = setEligibility.isPending ? setEligibility.variables?.name : undefined;
+
   function handleRestore(name: string) {
-    setEligibility.mutate({ name, state: "active" });
+    setEligibility.mutate(
+      { name, state: "active" },
+      {
+        onSuccess: () => toast.success(`${name} restored`),
+        onError: (err) =>
+          toast.error(`Failed to restore ${name}`, {
+            description: err instanceof Error ? err.message : undefined,
+          }),
+      },
+    );
   }
 
   return (
@@ -95,6 +108,7 @@ export default function ButlersPage() {
               key={row.name}
               row={row}
               onRestore={handleRestore}
+              isRestorePending={pendingRestoreName === row.name}
             />
           ))}
         </div>

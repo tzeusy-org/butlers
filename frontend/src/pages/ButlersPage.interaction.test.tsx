@@ -18,6 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { toast } from "sonner";
 
 import ButlersPage from "@/pages/ButlersPage";
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board";
@@ -25,6 +26,8 @@ import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-s
 // ---------------------------------------------------------------------------
 // Mocks — same modules as ButlersPage.test.tsx
 // ---------------------------------------------------------------------------
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/hooks/use-butler-status-board", () => ({
   useButlerStatusBoard: vi.fn(),
@@ -181,7 +184,10 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
     fireEvent.click(chip);
 
     expect(mockMutate).toHaveBeenCalledOnce();
-    expect(mockMutate).toHaveBeenCalledWith({ name: "quarant", state: "active" });
+    expect(mockMutate).toHaveBeenCalledWith(
+      { name: "quarant", state: "active" },
+      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+    );
   });
 
   it("does not navigate when the quarantined restore chip is clicked (stopPropagation)", () => {
@@ -215,14 +221,17 @@ describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
 
     renderPage();
 
-    // Stale row: activity is 'idle' so the chip label is IDLE
-    const chip = screen.getByRole("button", { name: /idle/i });
+    // Stale row: chip label is STALE (eligibility takes precedence over activity label).
+    const chip = screen.getByRole("button", { name: /stale/i });
     expect(chip).toBeDefined();
 
     fireEvent.click(chip);
 
     expect(mockMutate).toHaveBeenCalledOnce();
-    expect(mockMutate).toHaveBeenCalledWith({ name: "stale-butler", state: "active" });
+    expect(mockMutate).toHaveBeenCalledWith(
+      { name: "stale-butler", state: "active" },
+      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+    );
   });
 
   it("does not navigate when the stale restore chip is clicked (stopPropagation)", () => {
@@ -233,9 +242,127 @@ describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
 
     renderPage();
 
-    const chip = screen.getByRole("button", { name: /idle/i });
+    const chip = screen.getByRole("button", { name: /stale/i });
     fireEvent.click(chip);
 
     expect(locationHref).toBe("http://localhost/");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Toast feedback — success and error (bu-klxx6)
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — restore toast feedback", () => {
+  it("shows a success toast when the mutate onSuccess callback fires", () => {
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+
+    mockMutate.mockImplementation((_vars: unknown, callbacks: { onSuccess?: () => void }) => {
+      callbacks?.onSuccess?.();
+    });
+
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+
+    expect(toast.success).toHaveBeenCalledWith("quarant restored");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("shows an error toast when the mutate onError callback fires", () => {
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+
+    mockMutate.mockImplementation((_vars: unknown, callbacks: { onError?: (err: Error) => void }) => {
+      callbacks?.onError?.(new Error("server unavailable"));
+    });
+
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+
+    expect(toast.error).toHaveBeenCalledWith(
+      "Failed to restore quarant",
+      expect.objectContaining({ description: "server unavailable" }),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pending state — chip disabled while mutation is in flight (bu-klxx6)
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — restore chip pending/disabled state", () => {
+  it("disables the restore chip for the specific butler whose mutation is pending", () => {
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+
+    vi.mocked(useSetEligibility).mockReturnValue({
+      mutate: mockMutate,
+      mutateAsync: vi.fn(),
+      isPending: true,
+      isSuccess: false,
+      isError: false,
+      isIdle: false,
+      error: null,
+      data: undefined,
+      reset: vi.fn(),
+      context: undefined,
+      failureCount: 0,
+      failureReason: null,
+      status: "pending",
+      submittedAt: Date.now(),
+      variables: { name: "quarant", state: "active" },
+    } as unknown as ReturnType<typeof useSetEligibility>);
+
+    renderPage();
+
+    // The chip label changes to RESTORING… while pending; find it by that text.
+    const chip = screen.getByRole("button", { name: /restoring/i });
+    expect(chip).toBeDefined();
+    // HTMLButtonElement.disabled is true when the disabled attribute is present.
+    expect((chip as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("does not disable the chip for a different butler while another is pending", () => {
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+      makeRow({ name: "other", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 2, butlerCount: 2, quarantined: 2 }));
+
+    vi.mocked(useSetEligibility).mockReturnValue({
+      mutate: mockMutate,
+      mutateAsync: vi.fn(),
+      isPending: true,
+      isSuccess: false,
+      isError: false,
+      isIdle: false,
+      error: null,
+      data: undefined,
+      reset: vi.fn(),
+      context: undefined,
+      failureCount: 0,
+      failureReason: null,
+      status: "pending",
+      submittedAt: Date.now(),
+      variables: { name: "quarant", state: "active" },
+    } as unknown as ReturnType<typeof useSetEligibility>);
+
+    renderPage();
+
+    // "quarant" chip is pending → disabled.
+    const pendingChip = screen.getByRole("button", { name: /restoring/i });
+    expect((pendingChip as HTMLButtonElement).disabled).toBe(true);
+
+    // "other" chip is still enabled with its normal label.
+    const otherChip = screen.getByRole("button", { name: /quarantined/i });
+    expect((otherChip as HTMLButtonElement).disabled).toBe(false);
   });
 });

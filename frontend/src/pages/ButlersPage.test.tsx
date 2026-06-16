@@ -330,7 +330,8 @@ describe("ButlersPage — quarantine restore", () => {
     const rows = [makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" })];
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
     const html = renderPage();
-    expect(html).toMatch(/<button[^>]*>IDLE<\/button>/);
+    // Stale chip shows "STALE" label (eligibility takes precedence over activity label)
+    expect(html).toMatch(/<button[^>]*>STALE<\/button>/);
   });
 });
 
