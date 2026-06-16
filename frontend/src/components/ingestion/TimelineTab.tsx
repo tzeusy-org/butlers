@@ -725,7 +725,7 @@ function LedgerRow({
   return (
     <div
       className={[
-        "grid items-center px-3 py-2 border-b border-border/50 text-[13px] transition-colors",
+        "grid items-center gap-x-3 px-3 py-2 border-b border-border/50 text-[13px] transition-colors",
         canExpand ? "cursor-pointer" : "",
         isExpanded ? "bg-muted/20" : "hover:bg-muted/10",
       ].join(" ")}
@@ -945,7 +945,7 @@ function LedgerSkeleton() {
 function LedgerColumnHeaders() {
   return (
     <div
-      className="grid items-center px-3 py-1 border-b border-border bg-muted/5"
+      className="grid items-center gap-x-3 px-3 py-1 border-b border-border bg-muted/5"
       style={{ gridTemplateColumns: LEDGER_GRID_COLUMNS }}
     >
       <div />
