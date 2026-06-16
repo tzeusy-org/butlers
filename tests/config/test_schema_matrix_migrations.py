@@ -68,7 +68,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "life_event_categories",
         "life_event_types",
         "life_events",
-        "quick_facts",
+        # quick_facts dropped by rel_025 (bu-6d5v2); ORG/TITLE now in public.contacts
         "relationship_types",
         "relationships",
         # reminders renamed to _reminders_backup by rel_007, then dropped by rel_020

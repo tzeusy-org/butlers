@@ -33,8 +33,8 @@ pytestmark = [
 _TRUNCATE_TABLES = [
     # children first (FK → public.contacts)
     # activity_feed, notes, gifts, loans, interactions dropped by rel_009
+    # quick_facts dropped by rel_025 (bu-6d5v2)
     "public.important_dates",
-    "public.quick_facts",
     "public.addresses",
     "public.relationships",
     "public.group_members",
@@ -87,7 +87,7 @@ def migrated_db_url(postgres_container) -> str:
     - ``relationship`` — relationship tables (no schema override; all land in public)
 
     The ``relationship`` chain intentionally runs **without** a schema override so
-    that unqualified table names (contacts, quick_facts, etc.) land in ``public``,
+    that unqualified table names (contacts, etc.) land in ``public``,
     matching the original hand-rolled DDL behaviour.  The rel_003 migration detects
     that ``relationship.contacts`` does not exist and skips the consolidation step
     (correct for this flat-schema test topology).
