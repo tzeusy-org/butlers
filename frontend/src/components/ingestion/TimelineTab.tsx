@@ -674,7 +674,7 @@ function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
 // Shared layout constant — keep LedgerRow and LedgerColumnHeaders in sync
 // ---------------------------------------------------------------------------
 
-const LEDGER_GRID_COLUMNS = "20px 80px auto 1fr 80px 60px 60px 80px 32px"
+const LEDGER_GRID_COLUMNS = "20px 80px 160px 1fr 80px 60px 60px 80px 32px"
 
 // ---------------------------------------------------------------------------
 // LedgerRow — one row in the event ledger
@@ -775,7 +775,7 @@ function LedgerRow({
       </span>
 
       {/* Channel glyph + name */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 min-w-0">
         <span
           className="inline-flex size-5 items-center justify-center rounded text-[10px] font-medium text-white shrink-0"
           style={{ backgroundColor: "var(--muted-foreground)" }}
@@ -783,7 +783,10 @@ function LedgerRow({
         >
           {(event.source_channel ?? "?").charAt(0).toUpperCase()}
         </span>
-        <span className="font-mono text-[11px] text-muted-foreground">
+        <span
+          className="font-mono text-[11px] text-muted-foreground truncate"
+          title={event.source_channel ?? undefined}
+        >
           {event.source_channel ?? "—"}
         </span>
       </div>
