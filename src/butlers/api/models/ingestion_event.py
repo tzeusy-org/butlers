@@ -58,6 +58,9 @@ class IngestionEventSummary(BaseModel):
     status: str = "ingested"
     filter_reason: str | None = None
     error_detail: str | None = None
+    # Denormalized cost (core_126). NULL until the event's rollup is first fetched.
+    # filtered_events rows always have NULL here (no sessions = no cost).
+    cost_usd: float | None = None
 
 
 class IngestionEventDetail(IngestionEventSummary):

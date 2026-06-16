@@ -111,6 +111,7 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
     status: "ingested",
     filter_reason: null,
     error_detail: null,
+    cost_usd: null,
     ...overrides,
   };
 }
@@ -1073,7 +1074,7 @@ describe("TimelineTab — §2.8 Saved Views", () => {
     expect(allBtn!.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("Spend view is marked as a placeholder with '(soon)' hint", () => {
+  it("Spend view is enabled (cost_usd now denormalized via core_126)", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -1086,10 +1087,10 @@ describe("TimelineTab — §2.8 Saved Views", () => {
 
     const spendBtn = container.querySelector("[data-view='spend']");
     expect(spendBtn).not.toBeNull();
-    // Placeholder hint visible to users
-    expect(spendBtn!.textContent).toContain("soon");
-    // Title attribute explains what is needed
-    expect(spendBtn!.getAttribute("title")).toContain("per-event cost");
+    // No longer a placeholder — cost_usd is now a real column (core_126)
+    expect(spendBtn!.textContent).not.toContain("soon");
+    // No disabled title
+    expect(spendBtn!.getAttribute("title")).toBeNull();
   });
 
   it("persists active view to localStorage on selection", () => {

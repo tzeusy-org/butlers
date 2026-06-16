@@ -181,10 +181,9 @@ const BUILT_IN_VIEWS: SavedView[] = [
   {
     id: "spend",
     label: "Spend",
-    // placeholder — cost is per-session (fan-out), not a per-event column;
-    // a cost sort requires per-event cost denormalization (see bu-dbhm0 follow-up)
-    statuses: null,
-    disabledTitle: "Spend sort requires per-event cost — coming soon",
+    // Same statuses as "All" — cost sort applies to dispatched events.
+    // Enabled by core_126: cost_usd is now denormalized onto ingestion_events.
+    statuses: ["ingested", "error", "replay_pending", "replay_complete", "replay_failed"],
   },
 ];
 
@@ -1318,6 +1317,9 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
     return ALL_STATUSES.filter((s) => enabledStatuses.has(s)).join(",");
   }, [enabledStatuses]);
 
+  // Spend view activates cost sort (core_126): sort by cost_usd DESC NULLS LAST.
+  const activeSort = activeViewId === "spend" ? ("cost" as const) : undefined;
+
   const eventsFilters = useMemo(() => ({
     limit: PAGE_SIZE,
     ...(debouncedQ ? { q: debouncedQ } : {}),
@@ -1328,7 +1330,8 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
     // (rangeWindow.to) would freeze the query at the moment the range changed,
     // causing the refetch to silently miss new events.
     from: rangeWindow.from,
-  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from]);
+    ...(activeSort ? { sort: activeSort } : {}),
+  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from, activeSort]);
 
   const {
     data: infiniteData,

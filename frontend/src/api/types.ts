@@ -2557,6 +2557,12 @@ export interface IngestionEventSummary {
   filter_reason: string | null;
   /** Detailed error context for error-status events (e.g. exception message). */
   error_detail: string | null;
+  /**
+   * Denormalized total cost in USD across all butler sessions for this event.
+   * Null until the event's rollup is first fetched (lazy write-through, core_126).
+   * filtered_events always have null (no sessions = no cost).
+   */
+  cost_usd: number | null;
 }
 
 /** Full ingestion event detail — augmented with lifecycle and decomposition fields from message_inbox. */
@@ -2657,6 +2663,12 @@ export interface IngestionEventsParams {
   from?: string;
   /** ISO-8601 exclusive upper bound on received_at. Omit for no upper bound. */
   to?: string;
+  /**
+   * Sort order. Omit or "recent" for newest-first (keyset cursor).
+   * "cost" for highest-cost-first (offset cursor, NULLS LAST).
+   * Do not mix cursor values across sort modes — start a fresh first page when switching.
+   */
+  sort?: "recent" | "cost";
 }
 
 /** Time window boundaries for GET /api/ingestion/rollup. */
