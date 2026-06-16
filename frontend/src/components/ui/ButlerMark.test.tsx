@@ -144,6 +144,18 @@ describe("ButlerMark: type=staffer vs type=butler", () => {
     expect(html).not.toContain("border-radius:50%")
     expect(html).toContain("border-radius:4px")
   })
+
+  it("exposes type=staffer in aria-label and title for screen readers", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="switchboard" type="staffer" />)
+    expect(html).toContain('aria-label="switchboard (staffer)"')
+    expect(html).toContain('title="switchboard (staffer)"')
+  })
+
+  it("does not append type qualifier for butler (backwards-compatible aria-label)", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" type="butler" />)
+    expect(html).toContain('aria-label="general"')
+    expect(html).toContain('title="general"')
+  })
 })
 
 describe("ButlerMark: className forwarding", () => {
