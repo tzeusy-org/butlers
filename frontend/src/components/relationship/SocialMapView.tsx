@@ -69,6 +69,38 @@ function useElementSize() {
   return { ref, size };
 }
 
+// Bottom gutter (px) preserved below the view so the canvas doesn't butt against
+// the viewport edge -- matches the dashboard shell's p-6 (24px) content padding.
+const FILL_BOTTOM_GUTTER = 24;
+
+/**
+ * useFillViewportHeight -- gives the view's root an explicit pixel height that
+ * fills from its top to the bottom of the viewport.
+ *
+ * The social map lives inside the Page "overview" archetype, whose wrapper is a
+ * plain `space-y-6` block (height: auto). A child `h-full` therefore collapses,
+ * leaving the flex-1 canvas stage at its 300px min-height floor (only the top
+ * ~1/3 of the screen fills). Measuring the root's viewport-relative top and
+ * setting an explicit height restores the intended full-height layout; the
+ * inner `flex-1` stage then handles controls-bar wrapping on its own.
+ */
+function useFillViewportHeight() {
+  const [height, setHeight] = useState<number | null>(null);
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const ref = useCallback((node: HTMLElement | null) => setEl(node), []);
+  useLayoutEffect(() => {
+    if (!el) return;
+    const measure = () => {
+      const top = el.getBoundingClientRect().top;
+      setHeight(Math.max(300, window.innerHeight - top - FILL_BOTTOM_GUTTER));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [el]);
+  return { ref, height };
+}
+
 // ---------------------------------------------------------------------------
 // Tier legend
 // ---------------------------------------------------------------------------
@@ -211,6 +243,10 @@ export function SocialMapView() {
   // Canvas size
   const { ref: stageRef, size: stageSize } = useElementSize();
 
+  // Root fill height -- the "overview" archetype wrapper has auto height, so an
+  // explicit pixel height is needed for the inner flex-1 stage to fill the page.
+  const { ref: fillRef, height: fillHeight } = useFillViewportHeight();
+
   // Data
   const { data, isLoading, isError } = useDunbarRanking(true);
   const entries = data?.entries ?? [];
@@ -348,7 +384,11 @@ export function SocialMapView() {
   const canvasKey = `${stageSize.width}x${stageSize.height}`;
 
   return (
-    <div className="flex flex-col h-full space-y-4">
+    <div
+      ref={fillRef}
+      className="flex flex-col space-y-4"
+      style={{ height: fillHeight ?? undefined }}
+    >
       {/* Controls bar: search, jump-to-tier, legend, and pin note */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
