@@ -1318,6 +1318,53 @@ async def test_nonzero_exit_with_completed_json_response_recovers():
     assert info["result_source"] == "nonzero_exit_stdout"
 
 
+async def test_openai_style_token_fields_are_recorded():
+    """Codex CLI emits prompt_tokens/completion_tokens for GPT models (e.g. gpt-5.4-mini).
+
+    The parser must accept those OpenAI-style field names and surface them as
+    input_tokens/output_tokens so cost calculation works.  Without the fallback
+    both values are None and usage is never set, causing $0 cost records.
+    """
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    # Simulate a gpt-5.4-mini turn.completed with OpenAI-style token field names
+    openai_style_stdout = (
+        json.dumps({"type": "thread.started", "thread_id": "thread-gpt"})
+        + "\n"
+        + json.dumps({"type": "turn.started"})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"id": "msg1", "type": "agent_message", "text": "GPT answer"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {"type": "turn.completed", "usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        )
+    ).encode()
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 99
+        proc.communicate = AsyncMock(return_value=(openai_style_stdout, b""))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "GPT answer"
+    assert tool_calls == []
+    assert usage == {"input_tokens": 100, "output_tokens": 50}
+
+
 async def test_nonzero_exit_with_structured_stdout_uses_error_message():
     """Structured stdout failures should surface their message, not raw JSON events."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")

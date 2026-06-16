@@ -1073,8 +1073,16 @@ def _parse_codex_output_payload(
                     if isinstance(usage_obj, dict):
                         raw_usage = usage_obj
             if isinstance(raw_usage, dict):
-                input_tokens = raw_usage.get("input_tokens")
-                output_tokens = raw_usage.get("output_tokens")
+                # Accept both Anthropic (input_tokens/output_tokens) and OpenAI
+                # (prompt_tokens/completion_tokens) field names.  The Codex CLI
+                # emits OpenAI-style names when routing to GPT models, so we
+                # must fall back or gpt-5.4-mini sessions record zero tokens.
+                _raw_in = raw_usage.get("input_tokens")
+                input_tokens = _raw_in if _raw_in is not None else raw_usage.get("prompt_tokens")
+                _raw_out = raw_usage.get("output_tokens")
+                output_tokens = (
+                    _raw_out if _raw_out is not None else raw_usage.get("completion_tokens")
+                )
                 # Token reporting contract: return ints when available, or None
                 # for usage entirely when token counts cannot be determined.
                 if isinstance(input_tokens, int) or isinstance(output_tokens, int):
