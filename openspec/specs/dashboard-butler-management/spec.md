@@ -66,7 +66,7 @@ Implementation source constraints:
   - An eyebrow label (e.g., "Fleet status")
   - An `h1` reading "The staff, at a glance" styled `text-2xl font-bold tracking-tight`
   - A healthy/total pill (count of healthy butlers over total registered count,
-    where healthy = total minus paused, awaiting, and quarantined counts,
+    where healthy = total minus offline and quarantined counts,
     derived from `StatusBoardAggregates`)
   - A clock and date display rendered via `<Time mode="clock-24h-mono">` that
     updates every minute (aligned to minute boundaries via a 60-second interval)
@@ -109,12 +109,12 @@ band composition addendum and visually in each cell's `ButlerMark` component.
 - **WHEN** the activity chip is rendered for a butler cell
 - **THEN** the activity verb and chip color SHALL be derived client-side from
   existing signals using this priority order:
-  1. If `status = degraded`: verb is `paused`, rail color is red
-  2. If `status = waiting` OR `eligibility_state = quarantined`: verb is
-     `awaiting` or `quarantined` (prefer `quarantined` when eligibility is
-     explicitly quarantined), rail color is amber (awaiting) or red (quarantined)
+  1. If `status = down`: verb is `offline`, chip color is red
+  2. If `eligibility_state = quarantined`: verb is `quarantined`, chip color is red
   3. If `active_session_count > 0`: verb is `running`, chip is green
   4. Otherwise: verb is `idle`, chip is dim
+- **AND** the backend `_probe_butler` emits only `ok` and `down`; no `degraded`
+  or `waiting` status values are produced by the current implementation.
 - **AND** the mockup verbs `patrol`, `consolidating`, and `ingesting` MUST NOT
   be used. These verbs imply butler-specific semantic knowledge not carried by
   `ButlerSummary` and are explicitly rejected.
@@ -149,8 +149,8 @@ band composition addendum and visually in each cell's `ButlerMark` component.
 - **WHEN** the butler list page renders
 - **THEN** a footer KPI band SHALL be displayed below the cell grid containing:
   - Active butler count (with emerald status-tone dot, shown only when count > 0)
-  - Paused butler count (with amber status-tone dot, shown only when count > 0)
-  - Awaiting butler count (with red status-tone dot, shown only when count > 0)
+  - Offline butler count (with red status-tone dot, shown only when count > 0)
+  - Quarantined butler count (with red status-tone dot, shown only when count > 0)
   - Fleet sessions in the last 24h
   - Fleet spend today (from `useSpendSummary('today')`)
   - Fleet average load% (mean of all per-butler load% values where
@@ -439,8 +439,8 @@ the whole tab behind a single combined flag.
 
 - **WHEN** the Overview tab loads for a butler
 - **THEN** the "status" panel SHALL show a status dot and label derived from the
-  butler status (`ok`/`healthy` → green "online"; `degraded`/`waiting` → amber;
-  `error`/`down` → red; otherwise dim), optionally suffixed with the activity
+  butler status (`ok`/`healthy` → green "online"; `error`/`down` → red; otherwise dim),
+  optionally suffixed with the activity
   verb from the status-board row
 - **AND** the panel SHALL show a "last run" relative timestamp from the
   status-board row's `lastRunISO`, rendering "--" when unavailable

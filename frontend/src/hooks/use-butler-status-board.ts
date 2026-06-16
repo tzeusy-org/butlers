@@ -30,7 +30,7 @@ import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 // Public types
 // ---------------------------------------------------------------------------
 
-export type ActivityVerb = "running" | "idle" | "paused" | "awaiting" | "quarantined"
+export type ActivityVerb = "running" | "idle" | "offline" | "quarantined"
 export type CellTone = "neutral" | "green" | "amber" | "red"
 export type EligibilityState = "active" | "quarantined" | "stale" | "unavailable"
 
@@ -67,10 +67,8 @@ export interface StatusBoardAggregates {
   stafferCount: number
   /** Butlers whose activity is "running". */
   active: number
-  /** Butlers whose activity is "paused". */
-  paused: number
-  /** Butlers whose activity is "awaiting" (excludes quarantined). */
-  awaiting: number
+  /** Butlers whose activity is "offline" (status === 'down'). */
+  offline: number
   /** Butlers whose activity is "quarantined". */
   quarantined: number
   totalSessions24h: number
@@ -99,25 +97,24 @@ export interface StatusBoardResult {
  * Derive the activity verb and cell tone for one butler row.
  *
  * Rules applied IN ORDER (first match wins):
- *   1. status === 'degraded'                    → paused / red
- *   2. status === 'waiting'
- *      OR eligibility === 'quarantined'          → quarantined (red) or awaiting (amber)
+ *   1. status === 'down'                        → offline / red
+ *   2. eligibility === 'quarantined'            → quarantined / red
  *   3. active_session_count > 0                 → running / green
  *   4. else                                     → idle / neutral
+ *
+ * Backend _probe_butler emits only 'ok' and 'down'; no 'degraded' or 'waiting'
+ * state exists in the current implementation.
  */
 function deriveActivity(
   status: string,
   eligibility: EligibilityState,
   activeSessionCount: number,
 ): { activity: ActivityVerb; cellTone: CellTone } {
-  if (status === "degraded") {
-    return { activity: "paused", cellTone: "red" }
+  if (status === "down") {
+    return { activity: "offline", cellTone: "red" }
   }
-  if (status === "waiting" || eligibility === "quarantined") {
-    if (eligibility === "quarantined") {
-      return { activity: "quarantined", cellTone: "red" }
-    }
-    return { activity: "awaiting", cellTone: "amber" }
+  if (eligibility === "quarantined") {
+    return { activity: "quarantined", cellTone: "red" }
   }
   if (activeSessionCount > 0) {
     return { activity: "running", cellTone: "green" }
@@ -300,8 +297,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
     const butlerCount = rows.filter((r) => r.type === "butler").length
     const stafferCount = rows.filter((r) => r.type === "staffer").length
     const active = rows.filter((r) => r.activity === "running").length
-    const paused = rows.filter((r) => r.activity === "paused").length
-    const awaiting = rows.filter((r) => r.activity === "awaiting").length
+    const offline = rows.filter((r) => r.activity === "offline").length
     const quarantined = rows.filter((r) => r.activity === "quarantined").length
     const totalSessions24h = rows.reduce((sum, r) => sum + r.sessions24h, 0)
     const totalSpendToday = rows.reduce((sum, r) => sum + (r.costToday ?? 0), 0)
@@ -320,8 +316,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
       butlerCount,
       stafferCount,
       active,
-      paused,
-      awaiting,
+      offline,
       quarantined,
       totalSessions24h,
       totalSpendToday,

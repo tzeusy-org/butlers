@@ -31,8 +31,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     butlerCount: 8,
     stafferCount: 2,
     active: 3,
-    paused: 1,
-    awaiting: 1,
+    offline: 1,
     quarantined: 0,
     totalSessions24h: 42,
     totalSpendToday: 1.23,
@@ -77,17 +76,16 @@ describe("BoardFooter", () => {
       expect(html).toContain("7")
     })
 
-    it("renders the PAUSED count", () => {
-      const html = render(makeAggregates({ paused: 3 }))
-      expect(html.toLowerCase()).toContain("paused")
+    it("renders the OFFLINE count", () => {
+      const html = render(makeAggregates({ offline: 3 }))
+      expect(html.toLowerCase()).toContain("offline")
       expect(html).toContain("3")
     })
 
-    it("renders the AWAITING count (awaiting + quarantined)", () => {
-      const html = render(makeAggregates({ awaiting: 2, quarantined: 1 }))
-      expect(html.toLowerCase()).toContain("awaiting")
-      // awaiting + quarantined = 3
-      expect(html).toContain("3")
+    it("renders the QUARANTINED count", () => {
+      const html = render(makeAggregates({ quarantined: 2 }))
+      expect(html.toLowerCase()).toContain("quarantined")
+      expect(html).toContain("2")
     })
 
     it("renders SESSIONS 24H with localized number", () => {
@@ -132,37 +130,26 @@ describe("BoardFooter", () => {
       expect(html).not.toContain("bg-emerald-500")
     })
 
-    it("renders amber dot when paused > 0", () => {
-      const html = render(makeAggregates({ paused: 2 }))
-      expect(html).toContain("bg-amber-500")
-    })
-
-    it("does NOT render amber dot when paused === 0 and awaiting === 0 and quarantined === 0", () => {
-      const html = render(makeAggregates({ paused: 0, awaiting: 0, quarantined: 0 }))
-      expect(html).not.toContain("bg-amber-500")
-    })
-
-    it("renders destructive dot when awaiting > 0", () => {
-      const html = render(makeAggregates({ awaiting: 1, quarantined: 0 }))
+    it("renders destructive dot when offline > 0", () => {
+      const html = render(makeAggregates({ offline: 2, quarantined: 0 }))
       expect(html).toContain("bg-destructive")
     })
 
-    it("renders destructive dot when quarantined > 0 (counted in awaiting cell)", () => {
-      const html = render(makeAggregates({ awaiting: 0, quarantined: 1 }))
+    it("renders destructive dot when quarantined > 0", () => {
+      const html = render(makeAggregates({ offline: 0, quarantined: 1 }))
       expect(html).toContain("bg-destructive")
     })
 
-    it("does NOT render destructive dot when awaiting === 0 and quarantined === 0", () => {
-      const html = render(makeAggregates({ awaiting: 0, quarantined: 0 }))
+    it("does NOT render destructive dot when offline === 0 and quarantined === 0", () => {
+      const html = render(makeAggregates({ offline: 0, quarantined: 0 }))
       expect(html).not.toContain("bg-destructive")
     })
 
     it("renders no dots at all when all counts are zero", () => {
       const html = render(
-        makeAggregates({ active: 0, paused: 0, awaiting: 0, quarantined: 0 }),
+        makeAggregates({ active: 0, offline: 0, quarantined: 0 }),
       )
       expect(html).not.toContain("bg-emerald-500")
-      expect(html).not.toContain("bg-amber-500")
       expect(html).not.toContain("bg-destructive")
     })
   })

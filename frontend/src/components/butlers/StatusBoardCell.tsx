@@ -36,8 +36,7 @@ function activityLabel(activity: ActivityVerb): string {
   switch (activity) {
     case "running":     return "RUNNING"
     case "idle":        return "IDLE"
-    case "paused":      return "PAUSED"
-    case "awaiting":    return "AWAITING"
+    case "offline":     return "OFFLINE"
     case "quarantined": return "QUARANTINED"
   }
 }
@@ -49,10 +48,8 @@ function activityChipClasses(activity: ActivityVerb): string {
       return "text-emerald-600 dark:text-emerald-400"
     case "idle":
       return "text-muted-foreground"
-    case "paused":
+    case "offline":
       return "text-destructive"
-    case "awaiting":
-      return "text-amber-500"
     case "quarantined":
       return "text-destructive"
   }

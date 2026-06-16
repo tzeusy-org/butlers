@@ -4,8 +4,7 @@
 //
 // Coverage:
 //   - Renders for activity='running' (green chip, no state rail).
-//   - Renders for activity='paused' (red rail, red chip).
-//   - Renders for activity='awaiting' (amber rail, amber chip).
+//   - Renders for activity='offline' (red rail, red chip).
 //   - Renders for activity='quarantined' (red rail, clickable chip; click invokes onRestore).
 //   - Missing data: lastRunISO=null shows '—'; loadPct=null shows '—'; costToday=0 shows '$0.00'.
 //   - Hover state surfaces 'open →'.
@@ -68,42 +67,22 @@ describe("StatusBoardCell: activity=running", () => {
 })
 
 // ---------------------------------------------------------------------------
-// activity='paused'
+// activity='offline'
 // ---------------------------------------------------------------------------
 
-describe("StatusBoardCell: activity=paused", () => {
-  it("renders PAUSED chip", () => {
+describe("StatusBoardCell: activity=offline", () => {
+  it("renders OFFLINE chip", () => {
     const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ activity: "paused", cellTone: "red" })} />,
+      <StatusBoardCell row={makeRow({ activity: "offline", cellTone: "red", status: "down" })} />,
     )
-    expect(html).toContain("PAUSED")
+    expect(html).toContain("OFFLINE")
   })
 
   it("renders red state rail for tone=red", () => {
     const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ activity: "paused", cellTone: "red" })} />,
+      <StatusBoardCell row={makeRow({ activity: "offline", cellTone: "red", status: "down" })} />,
     )
     expect(html).toContain("bg-destructive")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// activity='awaiting'
-// ---------------------------------------------------------------------------
-
-describe("StatusBoardCell: activity=awaiting", () => {
-  it("renders AWAITING chip", () => {
-    const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ activity: "awaiting", cellTone: "amber" })} />,
-    )
-    expect(html).toContain("AWAITING")
-  })
-
-  it("renders amber state rail for tone=amber", () => {
-    const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ activity: "awaiting", cellTone: "amber" })} />,
-    )
-    expect(html).toContain("bg-amber-500")
   })
 })
 
@@ -278,7 +257,7 @@ describe("StatusBoardCell: no illegal inline style", () => {
     // The state rail (absolute div) must not have an inline style.
     const html = renderToStaticMarkup(
       <StatusBoardCell
-        row={makeRow({ activity: "paused", cellTone: "red" })}
+        row={makeRow({ activity: "offline", cellTone: "red", status: "down" })}
       />,
     )
     // Rail contains bg-destructive and absolute. Check no style= on it.

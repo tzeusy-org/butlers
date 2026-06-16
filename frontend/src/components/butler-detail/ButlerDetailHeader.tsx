@@ -57,9 +57,7 @@ function activityToneClass(activity: string): string {
   switch (activity) {
     case "running":
       return "text-emerald-500"
-    case "awaiting":
-      return "text-amber-500"
-    case "paused":
+    case "offline":
     case "quarantined":
       return "text-destructive"
     default:

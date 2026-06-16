@@ -194,25 +194,15 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("activity verb derivation", () => {
-  it("maps degraded status → paused, cellTone=red", () => {
-    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "degraded" })]))
+  it("maps status=down → offline, cellTone=red (even with active sessions)", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "down" })]))
     mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "active" }]))
     mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 2 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
-    expect(rows[0].activity).toBe("paused")
+    expect(rows[0].activity).toBe("offline")
     expect(rows[0].cellTone).toBe("red")
-  })
-
-  it("maps status=waiting → awaiting, cellTone=amber", () => {
-    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "waiting" })]))
-    mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "active" }]))
-    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
-
-    const { rows } = useButlerStatusBoard()
-    expect(rows[0].activity).toBe("awaiting")
-    expect(rows[0].cellTone).toBe("amber")
   })
 
   it("quarantined eligibility → quarantined activity, cellTone=red (even with active sessions)", () => {
@@ -509,22 +499,22 @@ describe("aggregate correctness", () => {
     expect(aggregates.avgLoadPct).toBeNull()
   })
 
-  it("counts awaiting separately from quarantined in aggregates", () => {
+  it("counts offline and quarantined separately in aggregates", () => {
     mockUseButlers.mockReturnValue(butlersQueryResult([
       makeButler({ name: "q", status: "healthy" }),   // quarantined
-      makeButler({ name: "w", status: "waiting" }),   // awaiting
+      makeButler({ name: "d", status: "down" }),      // offline
       makeButler({ name: "h", status: "healthy" }),   // idle
     ]))
     mockUseRegistry.mockReturnValue(registryQueryResult([
       { name: "q", eligibility_state: "quarantined" },
-      { name: "w", eligibility_state: "active" },
+      { name: "d", eligibility_state: "active" },
       { name: "h", eligibility_state: "active" },
     ]))
     mockUseQueries.mockReturnValue(runtimeResults(3, 4))
 
     const { aggregates } = useButlerStatusBoard()
     expect(aggregates.quarantined).toBe(1)
-    expect(aggregates.awaiting).toBe(1)
+    expect(aggregates.offline).toBe(1)
   })
 })
 
@@ -693,7 +683,7 @@ describe("empty state", () => {
 
 describe("quarantined activity dominates running", () => {
   it("butler with active sessions AND quarantined eligibility gets quarantined activity", () => {
-    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "healthy" })]))
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "ok" })]))
     mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "quarantined" }]))
     mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([{ name: "a", active_session_count: 5 }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
@@ -705,17 +695,17 @@ describe("quarantined activity dominates running", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Rule ordering: degraded wins over quarantined
+// Rule ordering: down wins over quarantined
 // ---------------------------------------------------------------------------
 
 describe("rule ordering", () => {
-  it("degraded status wins over quarantined eligibility (rule 1 fires before rule 2)", () => {
-    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "degraded" })]))
+  it("down status wins over quarantined eligibility (rule 1 fires before rule 2)", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a", status: "down" })]))
     mockUseRegistry.mockReturnValue(registryQueryResult([{ name: "a", eligibility_state: "quarantined" }]))
     mockUseQueries.mockReturnValue(runtimeResults(1, 4))
 
     const { rows } = useButlerStatusBoard()
-    expect(rows[0].activity).toBe("paused")
+    expect(rows[0].activity).toBe("offline")
     expect(rows[0].cellTone).toBe("red")
   })
 })

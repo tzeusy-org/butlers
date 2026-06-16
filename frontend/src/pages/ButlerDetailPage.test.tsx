@@ -1649,8 +1649,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     butlerCount: 0,
     stafferCount: 0,
     active: 0,
-    paused: 0,
-    awaiting: 0,
+    offline: 0,
     quarantined: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
@@ -1862,7 +1861,7 @@ describe("Spec scenario 5 -- sibling nav availability is delegated to PageHeader
       rows: [
         makeRow("general", { activity: "idle" }),
         makeRow("health", { activity: "quarantined", eligibility: "quarantined" }),
-        makeRow("finance", { activity: "paused", status: "degraded" }),
+        makeRow("finance", { activity: "offline", status: "down" }),
       ],
       aggregates: makeAggregates({ total: 3 }),
     });
@@ -1874,7 +1873,7 @@ describe("Spec scenario 5 -- sibling nav availability is delegated to PageHeader
     expect(html).not.toContain("aria-disabled");
   });
 
-  it("keeps degraded sibling rows out of the detail header body", () => {
+  it("keeps offline sibling rows out of the detail header body", () => {
     const html = renderPage();
     expect(html).not.toContain('aria-label="Navigate to butler"');
     expect(html).not.toContain(">finance<");

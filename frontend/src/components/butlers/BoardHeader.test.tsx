@@ -30,8 +30,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     butlerCount: 8,
     stafferCount: 2,
     active: 5,
-    paused: 0,
-    awaiting: 0,
+    offline: 0,
     quarantined: 0,
     totalSessions24h: 42,
     totalSpendToday: 1.23,
@@ -107,33 +106,33 @@ describe("BoardHeader", () => {
 
   describe("healthy/total pill", () => {
     it("renders N/T reporting text with correct counts", () => {
-      const html = render(makeAggregates({ total: 14, paused: 0, awaiting: 0, quarantined: 0 }))
-      // healthy = 14 - 0 - 0 - 0 = 14; total = 14
+      const html = render(makeAggregates({ total: 14, offline: 0, quarantined: 0 }))
+      // healthy = 14 - 0 - 0 = 14; total = 14
       expect(html).toContain("14/14 reporting")
     })
 
-    it("renders correct unhealthy counts in pill", () => {
-      const html = render(makeAggregates({ total: 14, paused: 2, awaiting: 0, quarantined: 0 }))
+    it("renders correct unhealthy counts in pill (offline reduces healthy)", () => {
+      const html = render(makeAggregates({ total: 14, offline: 2, quarantined: 0 }))
       // healthy = 14 - 2 = 12
       expect(html).toContain("12/14 reporting")
     })
 
     it("uses green dot class when all butlers healthy (healthy === total)", () => {
-      const html = render(makeAggregates({ total: 10, paused: 0, awaiting: 0, quarantined: 0 }))
+      const html = render(makeAggregates({ total: 10, offline: 0, quarantined: 0 }))
       expect(html).toContain("bg-green-500")
     })
 
     it("uses amber dot class when some butlers are unhealthy (healthy > 0 but < total)", () => {
-      const html = render(makeAggregates({ total: 10, paused: 3, awaiting: 0, quarantined: 0 }))
+      const html = render(makeAggregates({ total: 10, offline: 3, quarantined: 0 }))
       expect(html).toContain("bg-amber-500")
       expect(html).not.toContain("bg-green-500")
     })
 
     it("uses red dot class when no butlers are healthy (healthy === 0)", () => {
       const html = render(
-        makeAggregates({ total: 4, active: 0, paused: 2, awaiting: 2, quarantined: 0 }),
+        makeAggregates({ total: 4, active: 0, offline: 2, quarantined: 2 }),
       )
-      // healthy = 4 - 2 - 2 - 0 = 0
+      // healthy = 4 - 2 - 2 = 0
       expect(html).toContain("bg-red-500")
       expect(html).not.toContain("bg-green-500")
       expect(html).not.toContain("bg-amber-500")
@@ -141,9 +140,9 @@ describe("BoardHeader", () => {
 
     it("uses amber dot when quarantined reduces health below total", () => {
       const html = render(
-        makeAggregates({ total: 10, paused: 0, awaiting: 0, quarantined: 2 }),
+        makeAggregates({ total: 10, offline: 0, quarantined: 2 }),
       )
-      // healthy = 10 - 0 - 0 - 2 = 8
+      // healthy = 10 - 0 - 2 = 8
       expect(html).toContain("bg-amber-500")
     })
   })

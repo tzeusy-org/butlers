@@ -49,8 +49,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     butlerCount: 0,
     stafferCount: 0,
     active: 0,
-    paused: 0,
-    awaiting: 0,
+    offline: 0,
     quarantined: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
@@ -261,17 +260,17 @@ describe("ButlersPage — grid render", () => {
 // ---------------------------------------------------------------------------
 
 describe("ButlersPage — BoardHeader healthy/total pill", () => {
-  it("reflects healthy and total counts from aggregates", () => {
-    // healthy = total - paused - awaiting - quarantined
-    // 3 total, 1 paused, 0 awaiting, 0 quarantined → 2 healthy
+  it("reflects healthy and total counts from aggregates (offline reduces healthy)", () => {
+    // healthy = total - offline - quarantined
+    // 3 total, 1 offline, 0 quarantined → 2 healthy
     const rows = [
       makeRow({ name: "a" }),
       makeRow({ name: "b" }),
-      makeRow({ name: "c", activity: "paused", cellTone: "red" }),
+      makeRow({ name: "c", activity: "offline", cellTone: "red", status: "down" }),
     ];
     setHookState(
       rows,
-      makeAggregates({ total: 3, butlerCount: 3, paused: 1 }),
+      makeAggregates({ total: 3, butlerCount: 3, offline: 1 }),
     );
     const html = renderPage();
     // BoardHeader renders "healthy/total reporting"

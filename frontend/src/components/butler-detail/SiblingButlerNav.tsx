@@ -48,17 +48,15 @@ export interface SiblingButlerNavProps {
  * restricted to <ButlerMark>.
  */
 function toneDotClass(
-  activity: "running" | "idle" | "paused" | "awaiting" | "quarantined",
+  activity: "running" | "idle" | "offline" | "quarantined",
 ): string {
   switch (activity) {
     case "running":
       return "bg-emerald-500"
     case "idle":
       return "bg-muted-foreground/40"
-    case "paused":
+    case "offline":
       return "bg-destructive"
-    case "awaiting":
-      return "bg-amber-500"
     case "quarantined":
       return "bg-destructive"
   }

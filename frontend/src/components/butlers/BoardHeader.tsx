@@ -30,11 +30,11 @@ export interface BoardHeaderProps {
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the "healthy" count: rows that are not paused, awaiting, or quarantined.
- * healthy = total - paused - awaiting - quarantined
+ * Compute the "healthy" count: rows that are online and not quarantined.
+ * healthy = total - offline - quarantined
  */
 function healthyCount(aggregates: StatusBoardAggregates): number {
-  return aggregates.total - aggregates.paused - aggregates.awaiting - aggregates.quarantined
+  return aggregates.total - aggregates.offline - aggregates.quarantined
 }
 
 /**

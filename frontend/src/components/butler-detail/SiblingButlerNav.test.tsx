@@ -80,8 +80,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     butlerCount: 0,
     stafferCount: 0,
     active: 0,
-    paused: 0,
-    awaiting: 0,
+    offline: 0,
     quarantined: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
@@ -312,7 +311,7 @@ describe("Scenario 4 — skeleton while loading or errored", () => {
 // Scenario 5: Paused or quarantined butler remains navigable
 // ---------------------------------------------------------------------------
 
-describe("Scenario 5 — paused or quarantined butler stays navigable", () => {
+describe("Scenario 5 — offline or quarantined butler stays navigable", () => {
   it("quarantined butler is still a Link and has no aria-disabled", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       rows: [
@@ -329,10 +328,10 @@ describe("Scenario 5 — paused or quarantined butler stays navigable", () => {
     expect(healthLink.getAttribute("aria-disabled")).toBeNull()
   })
 
-  it("paused butler is still a Link and has no aria-disabled", () => {
+  it("offline butler is still a Link and has no aria-disabled", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       rows: [
-        makeRow("finance", { activity: "paused", status: "degraded" }),
+        makeRow("finance", { activity: "offline", status: "down" }),
         makeRow("health"),
       ],
       aggregates: makeAggregates({ total: 2 }),

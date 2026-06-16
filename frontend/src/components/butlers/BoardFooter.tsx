@@ -65,7 +65,7 @@ function StatCell({ label, value, dotClass, showDot = false, ariaLabel }: StatCe
  * Footer KPI band for the /butlers/ status-board page.
  *
  * Renders six equal-width stat cells in a horizontal grid:
- *   ACTIVE | PAUSED | AWAITING | SESSIONS 24H | SPEND TODAY | AVG LOAD
+ *   ACTIVE | OFFLINE | QUARANTINED | SESSIONS 24H | SPEND TODAY | AVG LOAD
  *
  * Followed by a composition addendum: "N butlers, S staffers".
  *
@@ -78,8 +78,7 @@ function StatCell({ label, value, dotClass, showDot = false, ariaLabel }: StatCe
 export function BoardFooter({ aggregates }: BoardFooterProps) {
   const {
     active,
-    paused,
-    awaiting,
+    offline,
     quarantined,
     totalSessions24h,
     totalSpendToday,
@@ -87,8 +86,6 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
     butlerCount,
     stafferCount,
   } = aggregates
-
-  const awaitingPlusQuarantined = awaiting + quarantined
 
   const avgLoadValue = avgLoadPct == null ? "—" : `${avgLoadPct}%`
   const spendValue = `$${totalSpendToday.toFixed(2)}`
@@ -107,18 +104,18 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
           ariaLabel={`Active: ${active}`}
         />
         <StatCell
-          label="Paused"
-          value={String(paused)}
-          dotClass="bg-amber-500"
-          showDot={paused > 0}
-          ariaLabel={`Paused: ${paused}`}
+          label="Offline"
+          value={String(offline)}
+          dotClass="bg-destructive"
+          showDot={offline > 0}
+          ariaLabel={`Offline: ${offline}`}
         />
         <StatCell
-          label="Awaiting"
-          value={String(awaitingPlusQuarantined)}
+          label="Quarantined"
+          value={String(quarantined)}
           dotClass="bg-destructive"
-          showDot={awaitingPlusQuarantined > 0}
-          ariaLabel={`Awaiting: ${awaitingPlusQuarantined}`}
+          showDot={quarantined > 0}
+          ariaLabel={`Quarantined: ${quarantined}`}
         />
         <StatCell
           label="Sessions·24h"
