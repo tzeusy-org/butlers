@@ -581,16 +581,20 @@ describe("aggregate correctness", () => {
     expect(aggregates.stafferCount).toBe(1)
   })
 
-  it("sums totalSessions24h across all rows", () => {
+  it("sums totalSessions24h from hourlyTotal (footer matches per-row cell values)", () => {
     mockUseButlers.mockReturnValue(butlersQueryResult([
       makeButler({ name: "a", sessions_24h: 10 }),
       makeButler({ name: "b", sessions_24h: 5 }),
       makeButler({ name: "c", sessions_24h: 2 }),
     ]))
-    mockUseQueries.mockReturnValue(runtimeResults(3, 4))
+    mockUseQueries
+      .mockReturnValueOnce(runtimeResults(3, 4))
+      .mockReturnValue(hourlyResults([10, 5, 2]))
 
-    const { aggregates } = useButlerStatusBoard()
+    const { rows, aggregates } = useButlerStatusBoard()
+    // footer total equals exact sum of per-row hourlyTotal (not the rolling sessions_24h)
     expect(aggregates.totalSessions24h).toBe(17)
+    expect(aggregates.totalSessions24h).toBe(rows.reduce((s, r) => s + r.hourlyTotal, 0))
   })
 
   it("sums totalSpendToday from by_butler cost data", () => {

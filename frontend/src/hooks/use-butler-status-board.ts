@@ -332,7 +332,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
     const active = rows.filter((r) => r.activity === "running").length
     const offline = rows.filter((r) => r.activity === "offline").length
     const quarantined = rows.filter((r) => r.activity === "quarantined").length
-    const totalSessions24h = rows.reduce((sum, r) => sum + r.sessions24h, 0)
+    const totalSessions24h = rows.reduce((sum, r) => sum + r.hourlyTotal, 0)
     const totalSpendToday = rows.reduce((sum, r) => sum + (r.costToday ?? 0), 0)
 
     const knownLoadRows = rows.filter((r) => r.loadPct !== null)
