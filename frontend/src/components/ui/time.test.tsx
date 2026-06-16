@@ -1012,3 +1012,58 @@ describe("mode=clock-24h-mono — minute-boundary alignment (bu-n38t8)", () => {
     // Test passes without React warnings about setState on an unmounted component.
   })
 })
+
+// ---------------------------------------------------------------------------
+// 16. mode=relative-compact live tick (bu-3dvwb)
+//     The relative-compact label must self-update every 60 s so it does not
+//     stay frozen between page refetches. A 60 s setInterval drives re-renders.
+// ---------------------------------------------------------------------------
+
+describe("mode=relative-compact live tick (bu-3dvwb)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it("updates the label after a 60 s tick crosses a minute boundary", async () => {
+    // Start: "now" is 59 minutes after FIXED_ISO → label is "59m ago"
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 59 * 60_000))
+
+    const { getByRole } = rtlRender(
+      <ChroniclesTimezoneProvider timezone="UTC">
+        <Time value={FIXED_ISO} mode="relative-compact" />
+      </ChroniclesTimezoneProvider>,
+    )
+    await act(async () => {})
+    expect(getByRole("time").textContent).toBe("59m ago")
+
+    // Advance 60 s — now 60 minutes later → crosses into "1h ago"
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 60 * 60_000))
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(getByRole("time").textContent).toBe("1h ago")
+  })
+
+  it("unmounting clears the interval (no setState-after-unmount)", async () => {
+    vi.setSystemTime(new Date(FIXED_DATE.getTime() + 10 * 60_000))
+
+    const { unmount } = rtlRender(
+      <ChroniclesTimezoneProvider timezone="UTC">
+        <Time value={FIXED_ISO} mode="relative-compact" />
+      </ChroniclesTimezoneProvider>,
+    )
+    await act(async () => {})
+
+    act(() => { unmount() })
+
+    // Advancing past the interval after unmount must not throw.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+  })
+})

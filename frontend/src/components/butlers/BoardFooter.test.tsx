@@ -195,4 +195,13 @@ describe("BoardFooter", () => {
     expect(html).not.toContain("—")
     expect(html).not.toContain("&mdash;")
   })
+
+  it("SPEND TODAY formats totalSpendToday raw value directly (sum-of-raw convention, bu-3dvwb)", () => {
+    // totalSpendToday is the raw sum from the hook; format it once rather than
+    // summing pre-rounded per-cell values. Verifies the authoritative figure is used.
+    // $2.469 rounds to $2.47 (not $2.48 which would result from summing rounded cells).
+    const html = render(makeAggregates({ totalSpendToday: 2.469 }))
+    expect(html).toContain("$2.47")
+    expect(html).not.toContain("$2.48")
+  })
 })

@@ -22,9 +22,11 @@
 //   - All timestamps via <Time>; never new Date().toLocaleString().
 // ---------------------------------------------------------------------------
 
+import { Link, useNavigate } from "react-router"
+
 import { ButlerMark } from "@/components/ui/ButlerMark"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Time } from "@/components/ui/time"
+import { Time, formatRelativeCompact } from "@/components/ui/time"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import type { StatusBoardRow, ActivityVerb, EligibilityState } from "@/hooks/use-butler-status-board"
 
@@ -135,13 +137,15 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
   const isRestorable = activity === "quarantined" || eligibility === "stale"
   const railClass = eligibilityRailClass(eligibility)
   const markTone = activity === "running" ? "fill" : "neutral"
-  // Prepend Vite's BASE_URL so the link resolves correctly when the app is
-  // mounted under a path prefix (e.g. /butlers-dev/). Without this, a raw
-  // /butlers/{name} bypasses the prefix and 404s on the bare /butlers/ path.
-  const basePath = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "")
-  const href = `${basePath}/butlers/${name}`
+  // The router is configured with basename=BASE_URL (router-config.tsx), so
+  // react-router Link/navigate handle the path prefix automatically.
+  const navigate = useNavigate()
+  const routePath = `/butlers/${name}`
 
-  const ariaLabel = `${name}, ${heartbeatUnavailable ? "heartbeat unavailable" : activity}, last run ${lastRunISO ? "recently" : "unknown"}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
+  // Use the same formatRelativeCompact helper that <Time mode="relative-compact">
+  // renders so screen-reader users get the same truthful relative label.
+  const lastRunLabel = lastRunISO ? formatRelativeCompact(new Date(lastRunISO)) : "unknown"
+  const ariaLabel = `${name}, ${heartbeatUnavailable ? "heartbeat unavailable" : activity}, last run ${lastRunLabel}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
 
   const containerClass = [
     "group relative flex flex-col",
@@ -280,7 +284,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
 
   // When a restore chip is present, switch to div+role="link" so the <button>
   // is not nested inside an <a> (invalid HTML: interactive content inside
-  // interactive content). Navigation is handled imperatively.
+  // interactive content). Navigation is handled imperatively via useNavigate().
   if (isRestorable && onRestore) {
     return (
       <div
@@ -288,8 +292,8 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
         tabIndex={0}
         aria-label={ariaLabel}
         className={containerClass}
-        onClick={() => { window.location.href = href }}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") window.location.href = href }}
+        onClick={() => { navigate(routePath) }}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") navigate(routePath) }}
       >
         {innerContent}
       </div>
@@ -297,12 +301,12 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
   }
 
   return (
-    <a
-      href={href}
+    <Link
+      to={routePath}
       aria-label={ariaLabel}
       className={containerClass}
     >
       {innerContent}
-    </a>
+    </Link>
   )
 }

@@ -248,8 +248,11 @@ function formatRelative(date: Date): string {
  *
  * Owner-timezone-agnostic — computed purely from the wall-clock difference.
  * The precision and compact props have no effect on this mode.
+ *
+ * Exported so consumers (e.g. StatusBoardCell aria-labels) can derive the
+ * same truthful text without duplicating the formatting logic.
  */
-function formatRelativeCompact(date: Date): string {
+export function formatRelativeCompact(date: Date): string {
   try {
     const diffMs = Date.now() - date.getTime()
     const absDiffSec = Math.floor(Math.abs(diffMs) / 1_000)
@@ -365,7 +368,15 @@ export function Time({
   // that first fire. This eliminates display lag at mount time.
   const [clockTick, setClockTick] = useState(0)
   useEffect(() => {
-    if (mode !== "clock-24h-mono") return
+    if (mode !== "clock-24h-mono" && mode !== "relative-compact") return
+
+    // relative-compact: simple 60s interval (precision is minutes; no alignment needed).
+    if (mode === "relative-compact") {
+      const id = setInterval(() => setClockTick((t) => t + 1), 60_000)
+      return () => clearInterval(id)
+    }
+
+    // clock-24h-mono: minute-aligned tick to avoid up-to-59 s display lag at mount.
     const msUntilNextMinute = 60_000 - (Date.now() % 60_000)
     let intervalId: ReturnType<typeof setInterval> | undefined
     const timeoutId = setTimeout(() => {
@@ -417,6 +428,7 @@ export function Time({
 
   let text: string
   if (mode === "relative-compact") {
+    void clockTick  // drives re-renders when the 60s interval fires
     text = formatRelativeCompact(date)
   } else if (mode === "relative") {
     text = formatRelative(date)
