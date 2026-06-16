@@ -17,6 +17,20 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import { render, fireEvent, cleanup } from "@testing-library/react"
 
+// StatusBoardCell now uses Link and useNavigate from react-router. Mock them so
+// tests don't require a full router context: Link renders as a plain <a> and
+// useNavigate returns a no-op to avoid context errors.
+const mockNavigate = vi.fn()
+vi.mock("react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>()
+  return {
+    ...actual,
+    Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) =>
+      <a href={to as string} {...props as Record<string, unknown>}>{children}</a>,
+    useNavigate: vi.fn(() => mockNavigate),
+  }
+})
+
 import { StatusBoardCell } from "./StatusBoardCell"
 import type { StatusBoardRow } from "@/hooks/use-butler-status-board"
 
@@ -300,6 +314,37 @@ describe("StatusBoardCell: a11y", () => {
       <StatusBoardCell row={makeRow({ hourlyTotal: 42, hourlyStripeLoading: false })} />,
     )
     expect(html).toContain("42 sessions in 24h")
+  })
+
+  it("aria-label uses truthful relative time for lastRunISO — not hardcoded 'recently' (bu-3dvwb)", () => {
+    // 3 days ago should produce "3d ago", not "recently"
+    vi.useFakeTimers()
+    const now = new Date("2026-06-16T12:00:00.000Z")
+    vi.setSystemTime(now)
+    const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1_000).toISOString()
+
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ lastRunISO: threeDaysAgo })} />,
+    )
+    expect(html).toContain("3d ago")
+    expect(html).not.toContain("recently")
+
+    vi.useRealTimers()
+  })
+
+  it("aria-label uses 'now' for very recent lastRunISO (bu-3dvwb)", () => {
+    vi.useFakeTimers()
+    const now = new Date("2026-06-16T12:00:00.000Z")
+    vi.setSystemTime(now)
+    const thirtySecsAgo = new Date(now.getTime() - 30_000).toISOString()
+
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ lastRunISO: thirtySecsAgo })} />,
+    )
+    expect(html).toContain("now")
+    expect(html).not.toContain("recently")
+
+    vi.useRealTimers()
   })
 })
 

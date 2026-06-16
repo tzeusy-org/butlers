@@ -88,6 +88,10 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
   } = aggregates
 
   const avgLoadValue = avgLoadPct == null ? "—" : `${avgLoadPct}%`
+  // totalSpendToday is the sum of raw per-butler values formatted once — the
+  // authoritative figure. Per-cell displayed values also use .toFixed(2) on
+  // their own raw input, so the visual sum of cells may differ from this total
+  // by at most $0.01 per cell due to rounding. This is expected and acceptable.
   const spendValue = `$${totalSpendToday.toFixed(2)}`
   const sessionsValue = totalSessions24h.toLocaleString()
 

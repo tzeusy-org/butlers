@@ -38,7 +38,7 @@ export interface StatusBoardRow {
   /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
   type: "butler" | "staffer"
   description: string | null
-  /** Raw API status string (e.g. "healthy", "degraded", "waiting"). */
+  /** Raw API status string: 'ok' (healthy) or 'down'. Backend emits no other values. */
   status: string
   /** Derived activity state — see derivation rules in the issue spec. */
   activity: ActivityVerb
