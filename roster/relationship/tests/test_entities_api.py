@@ -2421,6 +2421,23 @@ class TestCompareEntities:
         # Narrative rows omit last_seen (no such column).
         assert a_narr["last_seen"] is None
 
+    async def test_narrative_facts_exclude_interaction_log(self):
+        """Compare narrative SQL excludes interaction-log facts (bu-xzxw4).
+
+        Interaction rows are an unbounded temporal log that floods the merge
+        dialog and never conflicts on merge; the compare narrative fetch must
+        filter ``predicate NOT LIKE 'interaction_%'``.
+        """
+        app, pool = _wire_compare_app()
+        resp = await _post(
+            app, _COMPARE_PATH, {"entity_a": str(_ENT_ID), "entity_b": str(_ENT_ID_B)}
+        )
+        assert resp.status_code == 200
+        # fetch order: identity_a, identity_b, narrative_a, narrative_b, preds.
+        narrative_sql = pool.fetch.await_args_list[2][0][0]
+        assert "FROM facts" in narrative_sql
+        assert "NOT LIKE 'interaction_%'" in narrative_sql
+
     async def test_shared_holds_identical_identity_pairs_only(self):
         """shared = identity rows with identical (predicate, object) on BOTH; no narrative."""
         ident_a = [

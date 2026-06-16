@@ -7149,6 +7149,12 @@ async def _fetch_narrative_facts_for_compare(pool, entity_id: UUID) -> list[Any]
     Scope-filtered per the canonical narrative read rule
     (``staleness.narrative_scope_sql`` — ``scope IN ('relationship', 'global')``)
     so compare matches the drill, delta, and lookup surfaces (bu-3jrq3).
+
+    Interaction-log facts (``predicate LIKE 'interaction_%'``) are excluded: they
+    are an unbounded temporal log (one row per logged Telegram/meeting/etc.) with
+    their own dedicated surfaces, they never conflict on merge (multi-valued,
+    union semantics), and dumping them all floods the compare dialog (bu-xzxw4).
+    The merge decision rests on descriptive narrative facts, not the contact log.
     """
     from butlers.tools.relationship.staleness import (
         narrative_scope_sql,
@@ -7173,6 +7179,7 @@ async def _fetch_narrative_facts_for_compare(pool, entity_id: UUID) -> list[Any]
         WHERE f.entity_id = $1
           AND {narrative_scope_sql("f")}
           AND f.validity = 'active'
+          AND f.predicate NOT LIKE 'interaction_%'
         ORDER BY f.predicate, f.created_at DESC, f.id DESC
         """,
         entity_id,

@@ -330,7 +330,10 @@ export function MergeCompareDialog({
         )}
 
         {diff && (
-          <div className="space-y-4">
+          <div
+            className="max-h-[60vh] space-y-4 overflow-y-auto pr-1"
+            data-testid="compare-body"
+          >
             <div className="flex gap-3">
               <EntityColumn
                 block={diff.a}
