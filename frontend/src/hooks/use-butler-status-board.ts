@@ -16,15 +16,13 @@
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react"
-import { useQueries, useQuery } from "@tanstack/react-query"
+import { useQueries } from "@tanstack/react-query"
 
-import { getRuntimeConfig, getSessions } from "@/api/index.ts"
+import { getRuntimeConfig, getButlerHourlyActivity } from "@/api/index.ts"
 import { useButlers } from "@/hooks/use-butlers"
 import { useRegistry } from "@/hooks/use-general"
 import { useButlerHeartbeats } from "@/hooks/use-system"
 import { useSpendSummary } from "@/hooks/use-spend"
-import { bucketSessionsByHour } from "@/lib/session-buckets"
-import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -58,6 +56,12 @@ export interface StatusBoardRow {
   lastRunISO: string | null
   /** 24 hourly session counts, oldest first (slot 0 = oldest). */
   hourlyStripe: number[]
+  /** Sum of hourlyStripe buckets — shown as the SESS·24H KPI (agrees with stripe total). */
+  hourlyTotal: number
+  /** True while the per-butler hourly-activity endpoint is loading. */
+  hourlyStripeLoading: boolean
+  /** True when the per-butler hourly-activity endpoint has errored. */
+  hourlyStripeError: boolean
 }
 
 /** Fleet-wide aggregates and loading state for the status board. */
@@ -149,21 +153,6 @@ export function useButlerStatusBoard(): StatusBoardResult {
   const heartbeatsQuery = useButlerHeartbeats()
   const costQuery = useSpendSummary("today")
 
-  // Fetch sessions for the past 24h for hourly bucketing.
-  // The query key is stable ("sessions-24h") while queryFn recomputes the ISO
-  // since timestamp on each refetch, so the rolling window advances without
-  // polluting the query key or causing excess re-renders.
-  const sessionsQuery = useQuery({
-    queryKey: ["sessions-24h"],
-    queryFn: () =>
-      getSessions({
-        since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-        limit: 1000,
-        offset: 0,
-      }),
-    refetchInterval: 60_000,
-  })
-
   // Stable reference: prevents `butlers` from appearing as a new array on every
   // render, which would otherwise trigger unnecessary useMemo re-runs.
   // useButlers returns ApiResponse<ButlerSummary[]>; unwrap with .data.
@@ -176,6 +165,20 @@ export function useButlerStatusBoard(): StatusBoardResult {
       queryKey: ["butlers", b.name, "runtime-config"],
       queryFn: () => getRuntimeConfig(b.name),
       // Tolerate failures — a failed config just means loadPct=null for that row.
+      retry: 1,
+    })),
+  })
+
+  // Per-butler hourly-activity queries so the stripe and SESS·24H KPI draw from
+  // one authoritative server-side source (same SQL, same window).  This also
+  // removes the getSessions limit:1000 silent-drop hazard that existed when the
+  // fleet exceeded 1000 sessions/24h.
+  const hourlyActivityResults = useQueries({
+    queries: butlers.map((b) => ({
+      queryKey: ["butlers", b.name, "analytics", "hourly-activity", 24],
+      queryFn: () => getButlerHourlyActivity(b.name, { window_hours: 24 }),
+      staleTime: 60_000,
+      refetchInterval: 60_000,
       retry: 1,
     })),
   })
@@ -218,13 +221,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
     const byButlerCost: Record<string, number> =
       !costQuery.isError && costQuery.data?.data ? costQuery.data.data.by_butler : {}
 
-    const sessionList = !sessionsQuery.isError && sessionsQuery.data ? sessionsQuery.data.data : []
-
-    // Compute a single endAt for all bucketSessionsByHour calls so that all
-    // per-butler hourly stripes use a consistent 24h window boundary.
-    const stripeEndAt = new Date()
-
-    const derived: StatusBoardRow[] = butlers.map((butler) => {
+    const derived: StatusBoardRow[] = butlers.map((butler, butlerIndex) => {
       // --- eligibility ---
       const rawEligibility = registryMap[butler.name]
       let eligibility: EligibilityState
@@ -253,8 +250,21 @@ export function useButlerStatusBoard(): StatusBoardResult {
       // --- cost ---
       const costToday = byButlerCost[butler.name] ?? null
 
-      // --- hourly stripe ---
-      const hourlyStripe = bucketSessionsByHour(sessionList, butler.name, OWNER_TZ_DEFAULT, stripeEndAt)
+      // --- hourly stripe (from server hourly-activity endpoint) ---
+      // The stripe and SESS·24H KPI both derive from the same per-butler
+      // server query so they always display the same window.
+      // API returns buckets newest-first (hour_index 0 = current hour);
+      // convert to oldest-first (slot 0 = oldest) for ActivityStripe.
+      const hourlyResult = hourlyActivityResults[butlerIndex]
+      const buckets = hourlyResult?.data?.data?.buckets ?? []
+      const hourlyStripe = new Array<number>(24).fill(0)
+      for (const bucket of buckets) {
+        const slot = 23 - bucket.hour_index
+        if (slot >= 0 && slot < 24) hourlyStripe[slot] = bucket.sessions_count
+      }
+      const hourlyTotal = hourlyStripe.reduce((s, n) => s + n, 0)
+      const hourlyStripeLoading = hourlyResult?.isLoading ?? false
+      const hourlyStripeError = !hourlyResult?.isLoading && (hourlyResult?.isError ?? false)
 
       return {
         name: butler.name,
@@ -269,6 +279,9 @@ export function useButlerStatusBoard(): StatusBoardResult {
         loadPct,
         lastRunISO,
         hourlyStripe,
+        hourlyTotal,
+        hourlyStripeLoading,
+        hourlyStripeError,
       }
     })
 
@@ -287,9 +300,8 @@ export function useButlerStatusBoard(): StatusBoardResult {
     heartbeatsQuery.data,
     costQuery.isError,
     costQuery.data,
-    sessionsQuery.isError,
-    sessionsQuery.data,
     runtimeConfigMap,
+    hourlyActivityResults,
   ])
 
   const aggregates = useMemo<StatusBoardAggregates>(() => {

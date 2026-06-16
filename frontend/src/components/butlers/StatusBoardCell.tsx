@@ -23,6 +23,7 @@
 // ---------------------------------------------------------------------------
 
 import { ButlerMark } from "@/components/ui/ButlerMark"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import type { StatusBoardRow, ActivityVerb, CellTone } from "@/hooks/use-butler-status-board"
@@ -122,6 +123,9 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
     loadPct,
     lastRunISO,
     hourlyStripe,
+    hourlyTotal,
+    hourlyStripeLoading,
+    hourlyStripeError,
   } = row
 
   const isRestorable = activity === "quarantined" || eligibility === "stale"
@@ -133,7 +137,7 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
   const basePath = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "")
   const href = `${basePath}/butlers/${name}`
 
-  const ariaLabel = `${name}, ${activity}, last run ${lastRunISO ? "recently" : "unknown"}, ${sessions24h} sessions in 24h`
+  const ariaLabel = `${name}, ${activity}, last run ${lastRunISO ? "recently" : "unknown"}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
 
   const containerClass = [
     "group relative flex flex-col",
@@ -202,7 +206,18 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
 
       {/* KPI quartet */}
       <div className="grid grid-cols-4 gap-2 border-t border-border/40 pt-3 mt-3">
-        <KpiCell label="SESS 24H" value={sessions24h} />
+        <KpiCell
+          label="SESS 24H"
+          value={
+            hourlyStripeLoading ? (
+              <Skeleton className="h-3 w-8 mt-0.5" />
+            ) : hourlyStripeError ? (
+              "—"
+            ) : (
+              hourlyTotal
+            )
+          }
+        />
         <KpiCell label="SPEND" value={costToday !== null ? `$${costToday.toFixed(2)}` : "—"} />
         <KpiCell label="LOAD" value={loadPct != null ? `${loadPct}%` : "—"} />
         <KpiCell
@@ -237,7 +252,21 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
             </span>
           </span>
         </div>
-        <ActivityStripe counts={hourlyStripe} windowEnd={new Date()} />
+        {hourlyStripeLoading ? (
+          <Skeleton className="h-[22px] w-full" />
+        ) : hourlyStripeError ? (
+          <div
+            className="h-[22px] flex items-center"
+            aria-label="Activity data unavailable"
+            role="img"
+          >
+            <span className="font-mono text-[9px] text-muted-foreground uppercase tracking-wider">
+              data unavailable
+            </span>
+          </div>
+        ) : (
+          <ActivityStripe counts={hourlyStripe} />
+        )}
       </div>
     </>
   )

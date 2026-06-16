@@ -20,15 +20,16 @@ const mockUseButlers = vi.fn()
 const mockUseRegistry = vi.fn()
 const mockUseButlerHeartbeats = vi.fn()
 const mockUseSpendSummary = vi.fn()
-// mockUseQuery handles the sessions-24h query (and any other direct useQuery calls).
-const mockUseQuery = vi.fn()
-// useQueries returns an array of query-result objects; one per butler.
+// useQueries handles two separate per-butler query sets:
+//   call 0 → runtime-config (max_concurrent per butler)
+//   call 1 → hourly-activity (24 hourly session buckets per butler)
+// mockUseQueries tracks call count per test so the two calls return different shapes.
 const mockUseQueries = vi.fn()
 
 // A shared "loading, no data" default for secondary hooks.
 const loadingNoData = { data: undefined, isLoading: true, isError: false, error: null }
 
-/** Build a useQueries result array where every butler has max_concurrent = maxC. */
+/** Build a runtime-config useQueries result array where every butler has max_concurrent = maxC. */
 function runtimeResults(count: number, maxC: number | null): { data: { max_concurrent: number } | undefined; isLoading: boolean; isError: boolean }[] {
   return Array.from({ length: count }, () =>
     maxC === null
@@ -37,7 +38,7 @@ function runtimeResults(count: number, maxC: number | null): { data: { max_concu
   )
 }
 
-/** Build a useQueries result array with per-index max_concurrent values (null = error). */
+/** Build a runtime-config useQueries result array with per-index max_concurrent values (null = error). */
 function runtimeResultsPerIndex(values: Array<number | null>): { data: { max_concurrent: number } | undefined; isLoading: boolean; isError: boolean }[] {
   return values.map((v) =>
     v === null
@@ -46,15 +47,45 @@ function runtimeResultsPerIndex(values: Array<number | null>): { data: { max_con
   )
 }
 
+/** Build a hourly-activity useQueries result array.
+ *
+ * Each entry in `totals` is the total session count for one butler; the total
+ * is placed entirely in the newest bucket (hour_index=0) for simplicity.
+ * Pass `null` to simulate an error for that butler.
+ */
+function hourlyResults(totals: Array<number | null>): { data: { data: { buckets: { hour_index: number; sessions_count: number; hour_start: string }[] } } | undefined; isLoading: boolean; isError: boolean }[] {
+  return totals.map((total) =>
+    total === null
+      ? { data: undefined, isLoading: false, isError: true }
+      : {
+          data: {
+            data: {
+              buckets: total > 0
+                ? [{ hour_index: 0, sessions_count: total, hour_start: "2026-01-01T00:00:00Z" }]
+                : [],
+            },
+          },
+          isLoading: false,
+          isError: false,
+        },
+  )
+}
+
+/** Build hourly-activity loading results (all loading, no data). */
+function hourlyLoadingResults(count: number): { data: undefined; isLoading: boolean; isError: boolean }[] {
+  return Array.from({ length: count }, () => ({ data: undefined, isLoading: true, isError: false }))
+}
+
 // Default mocks — each test can override as needed.
 function setDefaults() {
   mockUseButlers.mockReturnValue(butlersQueryResult([]))
   mockUseRegistry.mockReturnValue(registryQueryResult([]))
   mockUseButlerHeartbeats.mockReturnValue(heartbeatsQueryResult([]))
   mockUseSpendSummary.mockReturnValue(costQueryResult({}))
-  // useQuery intercepts the sessions-24h query (PaginatedResponse, not ApiResponse)
-  mockUseQuery.mockReturnValue({ data: { data: [], meta: { total: 0 } }, isLoading: false, isError: false, error: null })
-  // useQueries returns an empty array when no butlers are present
+  // useQueries is called twice per hook invocation:
+  //   1st call → runtime-config results
+  //   2nd call → hourly-activity results
+  // Default: empty arrays (no butlers present).
   mockUseQueries.mockReturnValue([])
 }
 
@@ -78,7 +109,6 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>()
   return {
     ...actual,
-    useQuery: (...args: Parameters<typeof mockUseQuery>) => mockUseQuery(...args),
     useQueries: (...args: Parameters<typeof mockUseQueries>) => mockUseQueries(...args),
   }
 })
@@ -351,15 +381,18 @@ describe("partial failure — secondary sources do not drop rows", () => {
     expect(rows[0].lastRunISO).toBeNull()
   })
 
-  it("sessions fetch failure: rows render with hourlyStripe=Array(24).fill(0)", () => {
+  it("hourly-activity fetch failure: rows render with hourlyStripe=zeros and hourlyStripeError=true", () => {
     mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
-    // Override the useQuery mock to simulate sessions-24h fetch failure
-    mockUseQuery.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("sessions failed") })
-    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+    // First call (runtime-config): success; second call (hourly-activity): error
+    mockUseQueries
+      .mockReturnValueOnce(runtimeResults(1, 4))
+      .mockReturnValue(hourlyResults([null]))
 
     const { rows } = useButlerStatusBoard()
     expect(rows).toHaveLength(1)
     expect(rows[0].hourlyStripe).toEqual(Array(24).fill(0))
+    expect(rows[0].hourlyStripeError).toBe(true)
+    expect(rows[0].hourlyTotal).toBe(0)
   })
 
   it("registry fetch failure: eligibility falls back to 'unavailable'", () => {
@@ -377,7 +410,7 @@ describe("partial failure — secondary sources do not drop rows", () => {
     mockUseRegistry.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseButlerHeartbeats.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
     mockUseSpendSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
-    mockUseQuery.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("x") })
+    // Both useQueries calls (runtime + hourly-activity) return error results
     mockUseQueries.mockReturnValue(runtimeResults(2, null))
 
     const { rows, aggregates } = useButlerStatusBoard()
@@ -390,6 +423,107 @@ describe("partial failure — secondary sources do not drop rows", () => {
     // aggregates must still be usable
     expect(aggregates.isError).toBe(false) // butlers list succeeded
     expect(aggregates.total).toBe(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// hourlyTotal / hourlyStripe agreement (bu-9ddw4)
+// ---------------------------------------------------------------------------
+
+describe("hourlyStripe and hourlyTotal come from the same source", () => {
+  it("hourlyTotal equals the sum of hourlyStripe counts", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    // 7 sessions in newest bucket + 3 in second-newest
+    mockUseQueries
+      .mockReturnValueOnce(runtimeResults(1, 4))
+      .mockReturnValue([{
+        data: {
+          data: {
+            buckets: [
+              { hour_index: 0, sessions_count: 7, hour_start: "2026-01-01T12:00:00Z" },
+              { hour_index: 1, sessions_count: 3, hour_start: "2026-01-01T11:00:00Z" },
+            ],
+          },
+        },
+        isLoading: false,
+        isError: false,
+      }])
+
+    const { rows } = useButlerStatusBoard()
+    const row = rows[0]
+    // stripe slot 23 (newest) = hour_index 0 → 7
+    expect(row.hourlyStripe[23]).toBe(7)
+    // stripe slot 22 = hour_index 1 → 3
+    expect(row.hourlyStripe[22]).toBe(3)
+    // all other slots 0
+    for (let i = 0; i < 22; i++) expect(row.hourlyStripe[i]).toBe(0)
+    // hourlyTotal = stripe total = same source
+    expect(row.hourlyTotal).toBe(row.hourlyStripe.reduce((s, n) => s + n, 0))
+    expect(row.hourlyTotal).toBe(10)
+  })
+
+  it("multiple butlers each get independent hourly-activity results", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a", sessions_24h: 5 }),
+      makeButler({ name: "b", sessions_24h: 2 }),
+    ]))
+    mockUseQueries
+      .mockReturnValueOnce(runtimeResults(2, 4))
+      .mockReturnValue(hourlyResults([5, 2]))
+
+    const { rows } = useButlerStatusBoard()
+    // Both butlers keep server sessions_24h for sort
+    expect(rows[0].name).toBe("a")
+    expect(rows[1].name).toBe("b")
+    // hourlyTotal reflects per-butler hourly data
+    expect(rows[0].hourlyTotal).toBe(5)
+    expect(rows[1].hourlyTotal).toBe(2)
+    // hourlyTotal == stripe sum for each row
+    expect(rows[0].hourlyTotal).toBe(rows[0].hourlyStripe.reduce((s, n) => s + n, 0))
+    expect(rows[1].hourlyTotal).toBe(rows[1].hourlyStripe.reduce((s, n) => s + n, 0))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// hourlyStripeLoading / hourlyStripeError states (bu-9ddw4)
+// ---------------------------------------------------------------------------
+
+describe("hourlyStripe loading and error states", () => {
+  it("hourlyStripeLoading=true while hourly-activity query is in flight", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseQueries
+      .mockReturnValueOnce(runtimeResults(1, 4))
+      .mockReturnValue(hourlyLoadingResults(1))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].hourlyStripeLoading).toBe(true)
+    expect(rows[0].hourlyStripeError).toBe(false)
+    expect(rows[0].hourlyStripe).toEqual(Array(24).fill(0))
+  })
+
+  it("hourlyStripeError=true and stripe is zeros when hourly-activity errors", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseQueries
+      .mockReturnValueOnce(runtimeResults(1, 4))
+      .mockReturnValue(hourlyResults([null]))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].hourlyStripeError).toBe(true)
+    expect(rows[0].hourlyStripeLoading).toBe(false)
+    expect(rows[0].hourlyStripe).toEqual(Array(24).fill(0))
+    expect(rows[0].hourlyTotal).toBe(0)
+  })
+
+  it("hourlyStripeLoading=false and hourlyStripeError=false when data is available", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseQueries
+      .mockReturnValueOnce(runtimeResults(1, 4))
+      .mockReturnValue(hourlyResults([3]))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].hourlyStripeLoading).toBe(false)
+    expect(rows[0].hourlyStripeError).toBe(false)
+    expect(rows[0].hourlyTotal).toBe(3)
   })
 })
 

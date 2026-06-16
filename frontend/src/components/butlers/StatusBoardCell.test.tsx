@@ -40,6 +40,9 @@ function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
     loadPct: 50,
     lastRunISO: "2026-05-10T06:00:00.000Z",
     hourlyStripe: Array(24).fill(0),
+    hourlyTotal: 7,
+    hourlyStripeLoading: false,
+    hourlyStripeError: false,
     ...overrides,
   }
 }
@@ -228,9 +231,9 @@ describe("StatusBoardCell: a11y", () => {
     expect(html).toContain("running")
   })
 
-  it("aria-label includes sessions24h count", () => {
+  it("aria-label includes hourlyTotal count when loaded", () => {
     const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ sessions24h: 42 })} />,
+      <StatusBoardCell row={makeRow({ hourlyTotal: 42, hourlyStripeLoading: false })} />,
     )
     expect(html).toContain("42 sessions in 24h")
   })
@@ -290,9 +293,9 @@ describe("StatusBoardCell: no illegal inline style", () => {
 // ---------------------------------------------------------------------------
 
 describe("StatusBoardCell: KPI values", () => {
-  it("renders sessions24h count", () => {
+  it("renders hourlyTotal as the SESS 24H KPI value", () => {
     const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ sessions24h: 13 })} />,
+      <StatusBoardCell row={makeRow({ hourlyTotal: 13, hourlyStripeLoading: false })} />,
     )
     expect(html).toContain(">13<")
   })
@@ -336,6 +339,27 @@ describe("StatusBoardCell: ActivityStripe embedded", () => {
     const stripeSection = html.slice(stripeStart)
     const matches = stripeSection.match(/flex-1/g) ?? []
     expect(matches.length).toBe(24)
+  })
+
+  it("renders a skeleton while hourly-activity is loading", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ hourlyStripeLoading: true })} />,
+    )
+    // Skeleton replaces both the SESS·24H number and the stripe bars
+    expect(html).toContain("animate-pulse")
+    // The 24 bar cells should NOT appear — stripe is hidden during load
+    expect(html).not.toContain("flex gap-px h-[22px]")
+  })
+
+  it("renders an error indicator when hourly-activity has errored", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ hourlyStripeError: true, hourlyStripeLoading: false })} />,
+    )
+    expect(html).toContain("data unavailable")
+    // SESS 24H KPI should show the dash fallback instead of 0
+    expect(html).toContain(">—<")
+    // The 24 bar cells should NOT appear — stripe is replaced by error message
+    expect(html).not.toContain("flex gap-px h-[22px]")
   })
 })
 
