@@ -61,11 +61,11 @@ describe("StatusBoardCell: activity=running", () => {
     expect(html).toContain("RUNNING")
   })
 
-  it("does not render a state rail for neutral/green tone", () => {
+  it("renders emerald state rail for active eligibility", () => {
     const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ activity: "running", cellTone: "green" })} />,
+      <StatusBoardCell row={makeRow({ activity: "running", cellTone: "green", eligibility: "active" })} />,
     )
-    // Rail only appears for red/amber. bg-destructive and bg-amber-500 should be absent.
+    expect(html).toContain("bg-emerald-500")
     expect(html).not.toContain("bg-destructive")
     expect(html).not.toContain("bg-amber-500")
   })
@@ -83,11 +83,13 @@ describe("StatusBoardCell: activity=offline", () => {
     expect(html).toContain("OFFLINE")
   })
 
-  it("renders red state rail for tone=red", () => {
+  it("renders emerald rail for offline butler with active eligibility", () => {
+    // Rail is keyed off eligibility, not activity: an active-registered offline butler gets emerald.
     const html = renderToStaticMarkup(
-      <StatusBoardCell row={makeRow({ activity: "offline", cellTone: "red", status: "down" })} />,
+      <StatusBoardCell row={makeRow({ activity: "offline", cellTone: "red", status: "down", eligibility: "active" })} />,
     )
-    expect(html).toContain("bg-destructive")
+    expect(html).toContain("bg-emerald-500")
+    expect(html).not.toContain("bg-destructive")
   })
 })
 
@@ -106,7 +108,7 @@ describe("StatusBoardCell: activity=quarantined", () => {
     expect(html).toContain("QUARANTINED")
   })
 
-  it("renders red state rail for quarantined activity", () => {
+  it("renders red state rail for quarantined eligibility", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell
         row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined" })}
@@ -137,7 +139,7 @@ describe("StatusBoardCell: activity=quarantined", () => {
 })
 
 // ---------------------------------------------------------------------------
-// eligibility='stale' — also triggers clickable chip
+// eligibility='stale' — amber rail + honest STALE chip label
 // ---------------------------------------------------------------------------
 
 describe("StatusBoardCell: eligibility=stale", () => {
@@ -149,6 +151,66 @@ describe("StatusBoardCell: eligibility=stale", () => {
       />,
     )
     expect(html).toContain("<button")
+  })
+
+  it("renders amber state rail for stale eligibility", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ activity: "idle", eligibility: "stale" })} />,
+    )
+    expect(html).toContain("bg-amber-500")
+    expect(html).not.toContain("bg-destructive")
+    expect(html).not.toContain("bg-emerald-500")
+  })
+
+  it("renders STALE chip label (not IDLE) for stale eligibility", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "idle", eligibility: "stale" })}
+        onRestore={() => void 0}
+      />,
+    )
+    expect(html).toContain("STALE")
+    expect(html).toContain("text-amber-600")
+    expect(html).not.toContain("IDLE")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Eligibility rail mapping — all four states
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: eligibility rail colors", () => {
+  it("active eligibility → emerald rail", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ eligibility: "active" })} />,
+    )
+    expect(html).toContain("bg-emerald-500")
+  })
+
+  it("stale eligibility → amber rail", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ eligibility: "stale" })} />,
+    )
+    expect(html).toContain("bg-amber-500")
+  })
+
+  it("quarantined eligibility → red rail", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "quarantined", eligibility: "quarantined" })}
+      />,
+    )
+    expect(html).toContain("bg-destructive")
+  })
+
+  it("unavailable eligibility → dim rail", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ eligibility: "unavailable" })} />,
+    )
+    expect(html).toContain("bg-muted-foreground/30")
+    expect(html).not.toContain("bg-emerald-500")
+    expect(html).not.toContain("bg-amber-500")
+    expect(html).not.toContain("bg-destructive")
   })
 })
 
@@ -259,10 +321,11 @@ describe("StatusBoardCell: no illegal inline style", () => {
   })
 
   it("does not render style= on the state rail element", () => {
-    // The state rail (absolute div) must not have an inline style.
+    // The state rail must not have an inline style. Use quarantined eligibility for the red rail.
     const html = renderToStaticMarkup(
       <StatusBoardCell
-        row={makeRow({ activity: "offline", cellTone: "red", status: "down" })}
+        row={makeRow({ activity: "quarantined", eligibility: "quarantined", cellTone: "red" })}
+        onRestore={() => void 0}
       />,
     )
     // Rail contains bg-destructive and absolute. Check no style= on it.

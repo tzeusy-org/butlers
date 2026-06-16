@@ -4,7 +4,7 @@
 //
 // Renders a single butler tile in the status-board grid. Each cell is a link
 // to the butler detail page and includes:
-//   - left-edge state rail (only for 'red' and 'amber' tones)
+//   - left-edge state rail (colored by eligibility: emerald/amber/red/dim)
 //   - top row: ButlerMark + name + activity chip
 //   - role tagline (butler description)
 //   - KPI quartet: SESS 24H / SPEND / LOAD / LAST
@@ -26,7 +26,7 @@ import { ButlerMark } from "@/components/ui/ButlerMark"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
-import type { StatusBoardRow, ActivityVerb, CellTone } from "@/hooks/use-butler-status-board"
+import type { StatusBoardRow, ActivityVerb, EligibilityState } from "@/hooks/use-butler-status-board"
 
 // ---------------------------------------------------------------------------
 // Activity chip
@@ -60,12 +60,13 @@ function activityChipClasses(activity: ActivityVerb): string {
 // State rail
 // ---------------------------------------------------------------------------
 
-/** Color class for the left-edge state rail, or null to suppress the rail. */
-function railColorClass(tone: CellTone): string | null {
-  switch (tone) {
-    case "red":   return "bg-destructive"
-    case "amber": return "bg-amber-500"
-    default:      return null
+/** Color class for the left-edge state rail, keyed off eligibility per spec. */
+function eligibilityRailClass(eligibility: EligibilityState): string {
+  switch (eligibility) {
+    case "active":      return "bg-emerald-500"
+    case "stale":       return "bg-amber-500"
+    case "quarantined": return "bg-destructive"
+    case "unavailable": return "bg-muted-foreground/30"
   }
 }
 
@@ -116,7 +117,6 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
     name,
     description,
     activity,
-    cellTone,
     eligibility,
     sessions24h,
     costToday,
@@ -130,7 +130,7 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
   } = row
 
   const isRestorable = activity === "quarantined" || eligibility === "stale"
-  const railClass = railColorClass(cellTone)
+  const railClass = eligibilityRailClass(eligibility)
   const markTone = activity === "running" ? "fill" : "neutral"
   // Prepend Vite's BASE_URL so the link resolves correctly when the app is
   // mounted under a path prefix (e.g. /butlers-dev/). Without this, a raw
@@ -151,16 +151,14 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
 
   const innerContent = (
     <>
-      {/* Left-edge state rail — only for red and amber tones */}
-      {railClass ? (
-        <div
-          className={[
-            "absolute left-0 top-0 w-0.5 h-full",
-            railClass,
-          ].join(" ")}
-          aria-hidden="true"
-        />
-      ) : null}
+      {/* Left-edge state rail — colored by eligibility per spec */}
+      <div
+        className={[
+          "absolute left-0 top-0 w-0.5 h-full",
+          railClass,
+        ].join(" ")}
+        aria-hidden="true"
+      />
 
       {/* Top row: ButlerMark + name + activity chip */}
       <div className="flex items-center gap-3">
@@ -183,19 +181,19 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
             className={[
               "font-mono text-[9px] uppercase tracking-wider cursor-pointer",
               "underline underline-offset-2 decoration-current/50",
-              heartbeatUnavailable ? "text-muted-foreground" : activityChipClasses(activity),
+              heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-amber-600 dark:text-amber-400" : activityChipClasses(activity),
             ].join(" ")}
           >
-            {heartbeatUnavailable ? "—" : activityLabel(activity)}
+            {heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
           </button>
         ) : (
           <span
             className={[
               "font-mono text-[9px] uppercase tracking-wider",
-              heartbeatUnavailable ? "text-muted-foreground" : activityChipClasses(activity),
+              heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-amber-600 dark:text-amber-400" : activityChipClasses(activity),
             ].join(" ")}
           >
-            {heartbeatUnavailable ? "—" : activityLabel(activity)}
+            {heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
           </span>
         )}
       </div>
