@@ -127,6 +127,25 @@ describe("ButlerMark: tone=neutral (default)", () => {
   })
 })
 
+describe("ButlerMark: type=staffer vs type=butler", () => {
+  it("renders full circle (border-radius:50%) for type=staffer", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="switchboard" type="staffer" />)
+    expect(html).toContain("border-radius:50%")
+  })
+
+  it("renders squircle (border-radius:4px) for type=butler", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" type="butler" />)
+    expect(html).not.toContain("border-radius:50%")
+    expect(html).toContain("border-radius:4px")
+  })
+
+  it("renders squircle when type is omitted (backwards-compatible)", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" />)
+    expect(html).not.toContain("border-radius:50%")
+    expect(html).toContain("border-radius:4px")
+  })
+})
+
 describe("ButlerMark: className forwarding", () => {
   it("forwards className to the root span", () => {
     const html = renderToStaticMarkup(
