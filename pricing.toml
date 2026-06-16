@@ -145,6 +145,10 @@ output_price_per_token = 0.000003   # $3.00 / 1M tokens
 input_price_per_token = 0.0000002   # $0.20 / 1M tokens
 output_price_per_token = 0.0000012  # $1.20 / 1M tokens
 
+[models."opencode-go/deepseek-v4-pro"]
+input_price_per_token = 0.00000055  # $0.55 / 1M tokens (sourced from opencode.ai/docs/zen, 2026-06-16)
+output_price_per_token = 0.0000022  # $2.20 / 1M tokens
+
 # Ollama (local/self-hosted) — zero cost
 # Model IDs match the ollama/ prefix used in model_catalog_defaults.toml
 

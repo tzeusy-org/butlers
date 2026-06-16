@@ -50,8 +50,8 @@ export interface StatusBoardRow {
   eligibility: EligibilityState
   /** Sessions started in the last 24 hours (from the butlers list). */
   sessions24h: number
-  /** Cost in USD today; 0 when the cost source is unavailable. */
-  costToday: number
+  /** Cost in USD today; null when data is unavailable or all sessions are free/unpriced. */
+  costToday: number | null
   /** active_session_count / max_concurrent * 100, rounded; null when max_concurrent unknown. */
   loadPct: number | null
   /** ISO timestamp of the last session; null when no session or heartbeat unavailable. */
@@ -254,7 +254,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
       const loadPct = deriveLoadPct(activeSessionCount, maxConcurrent)
 
       // --- cost ---
-      const costToday = byButlerCost[butler.name] ?? 0
+      const costToday = byButlerCost[butler.name] ?? null
 
       // --- hourly stripe ---
       const hourlyStripe = bucketSessionsByHour(sessionList, butler.name, OWNER_TZ_DEFAULT, stripeEndAt)
@@ -304,7 +304,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
     const awaiting = rows.filter((r) => r.activity === "awaiting").length
     const quarantined = rows.filter((r) => r.activity === "quarantined").length
     const totalSessions24h = rows.reduce((sum, r) => sum + r.sessions24h, 0)
-    const totalSpendToday = rows.reduce((sum, r) => sum + r.costToday, 0)
+    const totalSpendToday = rows.reduce((sum, r) => sum + (r.costToday ?? 0), 0)
 
     const knownLoadRows = rows.filter((r) => r.loadPct !== null)
     const avgLoadPct =

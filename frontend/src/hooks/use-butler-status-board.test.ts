@@ -341,14 +341,14 @@ describe("sort order", () => {
 // ---------------------------------------------------------------------------
 
 describe("partial failure — secondary sources do not drop rows", () => {
-  it("cost fetch failure: rows still render with costToday=0", () => {
+  it("cost fetch failure: rows still render with costToday=null", () => {
     mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" }), makeButler({ name: "b" })]))
     mockUseSpendSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("cost failed") })
     mockUseQueries.mockReturnValue(runtimeResults(2, 4))
 
     const { rows } = useButlerStatusBoard()
     expect(rows).toHaveLength(2)
-    expect(rows.every((r) => r.costToday === 0)).toBe(true)
+    expect(rows.every((r) => r.costToday === null)).toBe(true)
   })
 
   it("heartbeat fetch failure: rows render with lastRunISO=null", () => {
@@ -392,7 +392,7 @@ describe("partial failure — secondary sources do not drop rows", () => {
 
     const { rows, aggregates } = useButlerStatusBoard()
     expect(rows).toHaveLength(2)
-    expect(rows.every((r) => r.costToday === 0)).toBe(true)
+    expect(rows.every((r) => r.costToday === null)).toBe(true)
     expect(rows.every((r) => r.loadPct === null)).toBe(true)
     expect(rows.every((r) => r.lastRunISO === null)).toBe(true)
     expect(rows.every((r) => r.hourlyStripe.every((v) => v === 0))).toBe(true)
@@ -525,6 +525,48 @@ describe("aggregate correctness", () => {
     const { aggregates } = useButlerStatusBoard()
     expect(aggregates.quarantined).toBe(1)
     expect(aggregates.awaiting).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// costToday: null vs real value
+// ---------------------------------------------------------------------------
+
+describe("costToday: null for missing, real value when present", () => {
+  it("butler absent from by_butler map → costToday is null", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    // No entry for "a" in by_butler (backend only includes butlers with cost > 0)
+    mockUseSpendSummary.mockReturnValue(costQueryResult({}))
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].costToday).toBeNull()
+  })
+
+  it("butler present in by_butler map → costToday is the mapped value", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([makeButler({ name: "a" })]))
+    mockUseSpendSummary.mockReturnValue(costQueryResult({ a: 3.75 }))
+    mockUseQueries.mockReturnValue(runtimeResults(1, 4))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].costToday).toBeCloseTo(3.75)
+  })
+
+  it("totalSpendToday sums only known costs (null treated as 0)", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+      makeButler({ name: "c" }),
+    ]))
+    // "a" has known cost; "b" and "c" absent from by_butler (unpriced/no sessions)
+    mockUseSpendSummary.mockReturnValue(costQueryResult({ a: 2.50 }))
+    mockUseQueries.mockReturnValue(runtimeResults(3, 4))
+
+    const { rows, aggregates } = useButlerStatusBoard()
+    expect(rows.find((r) => r.name === "a")?.costToday).toBeCloseTo(2.50)
+    expect(rows.find((r) => r.name === "b")?.costToday).toBeNull()
+    expect(rows.find((r) => r.name === "c")?.costToday).toBeNull()
+    expect(aggregates.totalSpendToday).toBeCloseTo(2.50)
   })
 })
 

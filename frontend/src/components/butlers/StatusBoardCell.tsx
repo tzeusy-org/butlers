@@ -206,7 +206,7 @@ export function StatusBoardCell({ row, onRestore }: StatusBoardCellProps) {
       {/* KPI quartet */}
       <div className="grid grid-cols-4 gap-2 border-t border-border/40 pt-3 mt-3">
         <KpiCell label="SESS 24H" value={sessions24h} />
-        <KpiCell label="SPEND" value={`$${costToday.toFixed(2)}`} />
+        <KpiCell label="SPEND" value={costToday !== null ? `$${costToday.toFixed(2)}` : "—"} />
         <KpiCell label="LOAD" value={loadPct != null ? `${loadPct}%` : "—"} />
         <KpiCell
           label="LAST"
