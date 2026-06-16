@@ -93,12 +93,13 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         {activeButlerName && (
           <div className="flex min-w-0 items-center gap-4">
-            <div className="hidden shrink-0 items-center gap-2 font-mono text-[11px] tracking-[0.06em] text-muted-foreground md:flex">
+            <div className="flex shrink-0 items-center gap-2 font-mono text-[11px] tracking-[0.06em] text-muted-foreground">
               <Link to="/butlers" className="transition-colors hover:text-foreground">
-                &larr; /butlers
+                &larr;<span className="md:hidden"> Butlers</span>
+                <span className="hidden md:inline"> /butlers</span>
               </Link>
-              <span>/</span>
-              <span className="text-foreground">{titleizeSegment(activeButlerName)}</span>
+              <span className="hidden md:inline">/</span>
+              <span className="hidden md:inline text-foreground">{titleizeSegment(activeButlerName)}</span>
             </div>
             <div className="min-w-0 flex-1">
               <SiblingButlerNav activeButlerName={activeButlerName} />
