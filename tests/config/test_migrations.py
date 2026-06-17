@@ -50,6 +50,33 @@ def _quote_ident(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _get_table_columns_sql(db_url: str) -> dict[str, set[str]]:
+    """Return ``{schema.table → {column, ...}}`` for all user tables via information_schema.
+
+    Excludes system schemas (pg_catalog, information_schema, pg_toast).  Used to
+    compare schema structure between two databases without relying on alembic
+    version strings.
+    """
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT table_schema, table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                    ORDER BY table_schema, table_name, column_name
+                """)
+            )
+            result: dict[str, set[str]] = {}
+            for row in rows:
+                key = f"{row[0]}.{row[1]}"
+                result.setdefault(key, set()).add(row[2])
+        return result
+    finally:
+        engine.dispose()
+
+
 def _schema_exists(db_url: str, schema_name: str) -> bool:
     engine = create_engine(db_url)
     with engine.connect() as conn:
@@ -768,4 +795,24 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
     assert expected_head in versions, (
         f"alembic_version should record the core head revision {expected_head!r} "
         f"after down/up round-trip; recorded: {versions}"
+    )
+
+    # Verify schema equivalence: the round-tripped DB must have an identical
+    # table/column inventory to a fresh empty→head migration.  This catches
+    # migrations whose downgrade path drops a column or table that upgrade
+    # never recreates, leaving the schema in a state the alembic_version alone
+    # cannot detect.
+    fresh_db_name = migration_db_name()
+    fresh_db_url = create_migration_db(postgres_container, fresh_db_name)
+    asyncio.run(run_migrations(fresh_db_url, chain="core"))
+
+    round_trip_tables = _get_table_columns_sql(db_url)
+    fresh_tables = _get_table_columns_sql(fresh_db_url)
+    only_round_trip = set(round_trip_tables) - set(fresh_tables)
+    only_fresh = set(fresh_tables) - set(round_trip_tables)
+    assert round_trip_tables == fresh_tables, (
+        "Schema after round-trip must be equivalent to a direct empty→head migration. "
+        f"Tables only in round-trip DB: {only_round_trip!r}. "
+        f"Tables only in fresh DB: {only_fresh!r}. "
+        "Check that the most recent migration's downgrade() is symmetric with its upgrade()."
     )
