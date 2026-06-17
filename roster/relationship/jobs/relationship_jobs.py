@@ -23,6 +23,166 @@ from butlers.core.state import state_get, state_set
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Memory curation constants
+# ---------------------------------------------------------------------------
+
+# State key for recording the last backfill run timestamp (observability only;
+# the backfill is idempotent so re-running is safe even without the checkpoint).
+_CURATION_STATE_KEY = "memory_curation.last_backfill_at"
+
+# Alias predicate names (underscore / legacy forms) that relationship_assert_fact
+# already normalises via its internal _PREDICATE_ALIAS_MAP.  We include them here
+# so that prose facts stored with the legacy name are also picked up by the sweep.
+_ALIAS_PREDICATES: frozenset[str] = frozenset(
+    {
+        "works_at",
+        "friend_of",
+        "child_of",
+        "parent_of",
+        "colleague_of",
+        "family_of",
+        "partner_of",
+        "member_of",
+        "sibling_of",
+        "married_to",
+        "managed_by",
+        "manages_property",
+        "participant_of",
+        "invited_by",
+        "rental_agent",
+        "rental_location",
+    }
+)
+
+# Canonical relational predicates registered in entity_predicate_registry.
+_DIRECT_RELATIONAL_PREDICATES: frozenset[str] = frozenset(
+    {
+        "partner-of",
+        "child-of",
+        "parent-of",
+        "family-of",
+        "friend-of",
+        "colleague-of",
+        "knows",
+        "works-at",
+        "member-of",
+        "managed-by",
+        "manages-property",
+        "participant-of",
+        "invited-by",
+        "rental-agent",
+        "rental-location",
+    }
+)
+
+# All predicates (direct + alias) that can be passed directly to
+# relationship_assert_fact without any content analysis.  The writer normalises
+# aliases itself, so we just forward them.
+_DIRECT_OR_ALIAS_PREDICATES: frozenset[str] = _DIRECT_RELATIONAL_PREDICATES | _ALIAS_PREDICATES
+
+# Prose predicates that carry relational meaning in their *content* text.
+# These require keyword analysis to determine the target edge predicate.
+_PROSE_PREDICATE_SET: frozenset[str] = frozenset(
+    {
+        "living_arrangement",
+        "relationship_status",
+        "relationship_type",
+        "family_relationship",
+    }
+)
+
+# Keyword sets for content analysis — matched case-insensitively.
+_PARTNER_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "partner",
+        "cohabit",
+        "spouse",
+        "married",
+        "wife",
+        "husband",
+        "boyfriend",
+        "girlfriend",
+        "dating",
+        "fiancé",
+        "fiancée",
+        "fiance",
+        "engaged",
+    }
+)
+_PARENT_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "mother",
+        "mom",
+        "mum",
+        "mummy",
+        "mommy",
+        "father",
+        "dad",
+        "daddy",
+        "papa",
+        "parent",
+        "parents",
+    }
+)
+_CHILD_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "son",
+        "daughter",
+        "child",
+        "kid",
+    }
+)
+_SIBLING_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "sibling",
+        "sister",
+        "brother",
+    }
+)
+
+
+def _infer_predicate_from_prose(predicate: str, content: str) -> tuple[str, float] | None:
+    """Infer a registry predicate from a prose fact predicate + content.
+
+    Returns ``(registry_predicate, confidence)`` or ``None`` if no safe mapping
+    can be determined.
+
+    Confidence is set conservatively:
+    - ``partner-of``: 0.9 — explicit partner/cohabiting content (NOT a kinship
+      predicate, so the family confidence gate does not apply).
+    - Kinship predicates (``parent-of``, ``child-of``, ``family-of``): 0.7 —
+      deliberately below the 0.8 family-gate threshold so they are always routed
+      to ``pending_approval`` for owner review before any hard edge is written.
+    """
+    content_lower = content.lower()
+
+    if predicate in ("living_arrangement", "relationship_status", "relationship_type"):
+        for kw in _PARTNER_KEYWORDS:
+            if kw in content_lower:
+                return ("partner-of", 0.9)
+        return None  # Cannot safely determine the edge type without more context
+
+    if predicate == "family_relationship":
+        # Parent keywords — the subject is likely the *child* (child-of the object).
+        for kw in _PARENT_KEYWORDS:
+            if kw in content_lower:
+                # Low confidence: the directionality may be wrong; route to review.
+                return ("child-of", 0.7)
+        # Child keywords — the subject is likely the *parent* (parent-of the object).
+        for kw in _CHILD_KEYWORDS:
+            if kw in content_lower:
+                return ("parent-of", 0.7)
+        # Sibling keywords — undirected family relationship.
+        for kw in _SIBLING_KEYWORDS:
+            if kw in content_lower:
+                return ("family-of", 0.7)
+        # Generic family relationship — undirected, conservative confidence.
+        return ("family-of", 0.7)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Upcoming date insight constants
 # ---------------------------------------------------------------------------
 
@@ -1759,3 +1919,280 @@ async def run_contact_info_reconciler(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["rows_skipped_empty_value"],
     )
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Memory curation job (behavior #1: backfill structured edges from prose facts)
+# ---------------------------------------------------------------------------
+
+
+async def run_memory_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Backfill structured entity edges from existing prose facts.
+
+    Scans ``relationship.facts`` for active rows that have a non-NULL
+    ``object_entity_id`` and a predicate that can be mapped to a registered
+    relational predicate in ``relationship.entity_predicate_registry``.  For
+    each fact that has no corresponding active triple in
+    ``relationship.entity_facts``, the job proposes the edge via
+    :func:`~butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact`.
+
+    **Mutation policy**: every edge is proposed through ``relationship_assert_fact``.
+    This means:
+    - Owner-entity subjects: always routed to ``pending_actions`` for approval
+      (RFC 0017 §2.3 owner carve-out).
+    - Non-owner kinship edges (``parent-of``, ``child-of``, ``family-of``) with
+      ``conf < 0.8``: also routed to ``pending_actions`` (family confidence gate).
+    - All other non-owner edges with ``conf ≥ 0.8``: written directly.
+
+    The job is idempotent: repeated runs skip edges that are already active.
+
+    Behavior #1 of the memory-curation task (bead bu-34dvk).  Deferred
+    behaviors (entity dedup/merge, fact retraction, RFC-0017 surfacing,
+    episodic predicate detection) are tracked as separate follow-up beads.
+
+    Args:
+        db_pool: Database connection pool.
+
+    Returns:
+        Dictionary with keys: facts_scanned, edges_proposed, edges_inserted,
+        edges_pending_approval, edges_unchanged, edges_skipped_no_mapping,
+        edges_skipped_already_exists, errors.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import (
+        AssertOutcome,
+        relationship_assert_fact,
+    )
+
+    logger.info("Running memory_curation job (backfill structured edges from prose facts)")
+
+    stats: dict[str, Any] = {
+        "facts_scanned": 0,
+        "edges_proposed": 0,
+        "edges_inserted": 0,
+        "edges_pending_approval": 0,
+        "edges_unchanged": 0,
+        "edges_skipped_no_mapping": 0,
+        "edges_skipped_already_exists": 0,
+        "errors": 0,
+    }
+
+    # -----------------------------------------------------------------------
+    # Step 1: Fetch candidate prose facts that carry an object_entity_id.
+    #
+    # Scope to: validity='active', object_entity_id IS NOT NULL, predicate in
+    # our known set (_DIRECT_OR_ALIAS_PREDICATES | _PROSE_PREDICATE_SET).
+    # We include both the direct/alias predicates and the prose predicates so
+    # a single query fetches everything we need.
+    # -----------------------------------------------------------------------
+    candidate_predicates = sorted(_DIRECT_OR_ALIAS_PREDICATES | _PROSE_PREDICATE_SET)
+
+    try:
+        rows = await db_pool.fetch(
+            """
+            SELECT
+                f.id            AS fact_id,
+                f.entity_id     AS subject_entity_id,
+                f.object_entity_id,
+                f.predicate,
+                f.content,
+                f.scope
+            FROM facts f
+            WHERE f.validity = 'active'
+              AND f.object_entity_id IS NOT NULL
+              AND f.predicate = ANY($1::text[])
+            ORDER BY f.created_at ASC NULLS LAST
+            """,
+            candidate_predicates,
+        )
+    except Exception:
+        logger.exception("memory_curation: failed to query candidate facts")
+        stats["errors"] += 1
+        return stats
+
+    stats["facts_scanned"] = len(rows)
+    logger.info("memory_curation: found %d candidate facts to inspect", len(rows))
+
+    if not rows:
+        logger.info("memory_curation: no candidate facts found — nothing to backfill")
+        _stamp_checkpoint(db_pool)
+        return stats
+
+    # -----------------------------------------------------------------------
+    # Step 2: For each candidate fact, determine the target edge predicate.
+    #
+    # Predicates in _DIRECT_OR_ALIAS_PREDICATES are forwarded to
+    # relationship_assert_fact directly (it handles alias normalisation).
+    # Predicates in _PROSE_PREDICATE_SET require content keyword analysis.
+    # -----------------------------------------------------------------------
+    for row in rows:
+        subject_entity_id: uuid.UUID | None = row["subject_entity_id"]
+        object_entity_id: uuid.UUID = row["object_entity_id"]
+        predicate: str = row["predicate"]
+        content: str = row["content"] or ""
+        fact_id = row["fact_id"]
+
+        if subject_entity_id is None:
+            # No subject entity — cannot assert a triple without a subject.
+            logger.debug(
+                "memory_curation: skipping fact %s — subject_entity_id is NULL",
+                fact_id,
+            )
+            stats["edges_skipped_no_mapping"] += 1
+            continue
+
+        # Determine target predicate and confidence.
+        if predicate in _DIRECT_OR_ALIAS_PREDICATES:
+            # Pass through; relationship_assert_fact normalises aliases internally.
+            target_predicate = predicate
+            conf = 1.0
+        elif predicate in _PROSE_PREDICATE_SET:
+            inferred = _infer_predicate_from_prose(predicate, content)
+            if inferred is None:
+                logger.debug(
+                    "memory_curation: no mapping for prose predicate=%r content=%r — skipping",
+                    predicate,
+                    content[:80],
+                )
+                stats["edges_skipped_no_mapping"] += 1
+                continue
+            target_predicate, conf = inferred
+        else:
+            # Unreachable because of the SQL filter, but defensive.
+            stats["edges_skipped_no_mapping"] += 1
+            continue
+
+        # -----------------------------------------------------------------------
+        # Step 3: Propose the edge through the central writer.
+        #
+        # relationship_assert_fact handles:
+        # - Predicate validation against entity_predicate_registry
+        # - Idempotency (unchanged outcome if the triple already exists)
+        # - Owner carve-out (pending_approval for owner-entity subjects)
+        # - Family confidence gate (pending_approval for kinship at low conf)
+        # -----------------------------------------------------------------------
+        stats["edges_proposed"] += 1
+        why = (
+            f"Memory curation backfill: found an active `{predicate}` prose fact "
+            f"(id={fact_id}) with a linked entity but no corresponding structured "
+            f"edge in `relationship.entity_facts`. Approve to create the "
+            f"`{target_predicate}` edge so the entity graph reflects this "
+            f"relationship. Rejecting will cause this proposal to recur on the "
+            f"next curation run until a matching active edge exists."
+        )
+        evidence = [
+            "source=memory_curation_backfill",
+            f"prose_fact.id={fact_id}",
+            f"prose_predicate={predicate}",
+            f"inferred_edge_predicate={target_predicate}",
+            f"conf={conf}",
+            f"content_preview={content[:120]}",
+        ]
+
+        try:
+            result = await relationship_assert_fact(
+                db_pool,
+                subject_entity_id,
+                target_predicate,
+                str(object_entity_id),
+                src="memory_curation",
+                object_kind="entity",
+                conf=conf,
+                verified=False,
+                why=why,
+                evidence=evidence,
+            )
+
+            if result.outcome == AssertOutcome.pending_approval:
+                stats["edges_pending_approval"] += 1
+                logger.debug(
+                    "memory_curation: pending_approval for subject=%s predicate=%s object=%s",
+                    subject_entity_id,
+                    target_predicate,
+                    object_entity_id,
+                )
+            elif result.outcome in (AssertOutcome.inserted, AssertOutcome.superseded):
+                stats["edges_inserted"] += 1
+                logger.debug(
+                    "memory_curation: %s subject=%s predicate=%s object=%s fact_id=%s",
+                    result.outcome.value,
+                    subject_entity_id,
+                    target_predicate,
+                    object_entity_id,
+                    result.fact_id,
+                )
+            elif result.outcome == AssertOutcome.unchanged:
+                stats["edges_unchanged"] += 1
+                logger.debug(
+                    "memory_curation: unchanged (already active) subject=%s predicate=%s object=%s",
+                    subject_entity_id,
+                    target_predicate,
+                    object_entity_id,
+                )
+            else:
+                logger.warning(
+                    "memory_curation: unexpected outcome=%s for fact %s",
+                    result.outcome,
+                    fact_id,
+                )
+        except ValueError as exc:
+            # Unregistered predicate or invalid conf — log and skip.
+            logger.warning(
+                "memory_curation: skipping fact %s — relationship_assert_fact rejected: %s",
+                fact_id,
+                exc,
+            )
+            stats["edges_skipped_no_mapping"] += 1
+        except Exception:
+            logger.exception(
+                "memory_curation: error proposing edge for fact %s subject=%s predicate=%s",
+                fact_id,
+                subject_entity_id,
+                target_predicate,
+            )
+            stats["errors"] += 1
+
+    # Persist checkpoint timestamp (best-effort).
+    try:
+        await state_set(db_pool, _CURATION_STATE_KEY, datetime.now(UTC).isoformat())
+    except Exception:
+        logger.warning(
+            "memory_curation: failed to write checkpoint key=%s",
+            _CURATION_STATE_KEY,
+            exc_info=True,
+        )
+
+    logger.info(
+        "memory_curation complete: scanned=%d proposed=%d inserted=%d "
+        "pending_approval=%d unchanged=%d skipped_no_mapping=%d "
+        "skipped_already_exists=%d errors=%d",
+        stats["facts_scanned"],
+        stats["edges_proposed"],
+        stats["edges_inserted"],
+        stats["edges_pending_approval"],
+        stats["edges_unchanged"],
+        stats["edges_skipped_no_mapping"],
+        stats["edges_skipped_already_exists"],
+        stats["errors"],
+    )
+    return stats
+
+
+def _stamp_checkpoint(db_pool: asyncpg.Pool) -> None:  # pragma: no cover
+    """Fire-and-forget checkpoint stamp via asyncio.create_task when pool is live.
+
+    Used on the early-exit (no rows found) path where we do not need to await.
+    Not called from test paths; excluded from coverage.
+    """
+    import asyncio
+
+    async def _write() -> None:
+        try:
+            await state_set(db_pool, _CURATION_STATE_KEY, datetime.now(UTC).isoformat())
+        except Exception:
+            logger.debug("memory_curation: checkpoint write failed (no-rows path)", exc_info=True)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_write())
+    except RuntimeError:
+        pass  # No running loop in sync context (e.g. tests that call synchronously)

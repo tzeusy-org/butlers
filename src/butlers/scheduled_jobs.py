@@ -555,6 +555,24 @@ async def _run_relationship_interaction_sync_job(
     return await mod.run_interaction_sync(pool)
 
 
+async def _run_relationship_memory_curation_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler memory curation job (backfill structured edges).
+
+    Behavior #1: backfills structured entity edges from existing prose facts
+    (living_arrangement/family_relationship/etc. → partner-of/child-of/...).
+    Every proposed mutation routes through relationship_assert_fact so
+    owner-scoped edges land in pending_actions for owner approval.
+    """
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_memory_curation(pool)
+
+
 # NOTE: _run_relationship_contact_info_reconciler_job was retired in migration
 # bead 10 (bu-e2ja9 / core_115). public.contact_info is dropped, so the
 # dual-write reconciler has nothing to sweep and is no longer dispatched.
@@ -928,6 +946,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "daily_briefing_contribution": _run_relationship_briefing_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
+            "memory_curation": _run_relationship_memory_curation_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
         },
         "travel": {
