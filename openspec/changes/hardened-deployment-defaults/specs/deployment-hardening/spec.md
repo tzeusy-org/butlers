@@ -124,12 +124,13 @@ posture signal.
 
 ### Requirement: Strict DB-Role Enforcement Under Hardened Posture
 
-Under the hardened posture, butler DB role-enforcement and permission-gate
-failures SHALL be **fail-closed**: a missing or unverifiable PostgreSQL runtime
-role SHALL cause startup (or the affected connection acquire) to fail loudly
-rather than silently downgrade to the connecting user's privileges. Under `dev`,
-the existing graceful fallback SHALL be retained but the degraded state SHALL be
-reported by the degraded-safety indicator.
+Under the hardened posture, DB role-enforcement and permission-gate failures SHALL fail closed rather than silently downgrade privileges.
+
+A missing or unverifiable PostgreSQL runtime role SHALL cause startup (or the
+affected connection acquire) to fail loudly instead of proceeding with the
+connecting user's privileges. Under `dev`, the existing graceful fallback SHALL
+be retained but the degraded state SHALL be reported by the degraded-safety
+indicator.
 
 This adds an opt-in strict mode bound to the hardened posture; it does not change
 the `database-security` graceful-fallback policy for `dev`. Today the policy is
