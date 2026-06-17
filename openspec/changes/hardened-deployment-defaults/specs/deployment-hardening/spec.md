@@ -122,6 +122,52 @@ posture signal.
   known-default credentials and anonymous metrics access disabled
 - **THEN** the degraded-safety indicator reports a secure/clear state
 
+### Requirement: Strict DB-Role Enforcement Under Hardened Posture
+
+`about/heart-and-soul/security.md` and the `database-security` capability define
+a **graceful fallback policy**: when a butler's PostgreSQL runtime role cannot be
+verified or does not exist, `SET ROLE` enforcement is disabled and the connection
+proceeds with the connecting user's privileges (observed: `src/butlers/db.py`
+logs "Could not verify role … SET ROLE enforcement disabled" and "Role … not
+found; SET ROLE enforcement disabled"). This fail-open behavior is acceptable for
+`dev` convenience but is a silent loss of schema isolation for an always-on
+deployment.
+
+Under the hardened posture, role-enforcement and permission-gate failures SHALL
+be **fail-closed**: a missing/unverifiable runtime role SHALL cause startup (or
+the affected connection acquire) to fail loudly rather than silently downgrade to
+the connecting user's privileges. Under `dev`, the existing graceful fallback is
+retained but the degraded state SHALL be reported by the degraded-safety
+indicator. This does not change the `database-security` graceful-fallback policy
+for `dev`; it adds an opt-in strict mode bound to the hardened posture.
+
+#### Scenario: Missing role fails closed under hardened posture
+- **WHEN** the deployment runs under the hardened posture and a butler's runtime
+  role cannot be verified or does not exist
+- **THEN** the daemon fails loudly (startup or connection acquire) instead of
+  silently disabling `SET ROLE` enforcement
+
+#### Scenario: Graceful fallback retained in dev but surfaced
+- **WHEN** the deployment runs under `dev` and a runtime role cannot be verified
+- **THEN** the existing graceful fallback applies (enforcement disabled, daemon
+  continues) AND the degraded-safety indicator reports that role enforcement is
+  disabled
+
+### Requirement: Backup And Restore Verification Path
+
+An always-on personal-data deployment SHALL have a documented, executable
+backup-and-restore path for the PostgreSQL data plane, and that path SHALL be
+verifiable (a restore drill that proves a backup can be restored to a working
+state). The system currently ships no backup/restore tooling (no `pg_dump`/
+`pg_restore` script or documented drill). Restore verification protects the
+owner's irreplaceable personal data against corruption or accidental loss.
+
+#### Scenario: Documented restore drill exists and is verifiable
+- **WHEN** an operator follows the documented backup-and-restore procedure
+- **THEN** a backup of the PostgreSQL data plane can be produced and restored to a
+  working instance, and the procedure includes a verification step proving the
+  restored data is intact
+
 ## Source References
 - Non-Negotiable Rule 1 (User-federated: one user, one instance, full
   sovereignty) — protecting the owner's always-on personal-data deployment from

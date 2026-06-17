@@ -29,6 +29,14 @@ surfaces when the running stack is relying on insecure defaults.
 - Require a **degraded-safety indicator**: the deployment SHALL be able to
   surface (via metrics/dashboard) when it is running with known-insecure
   infrastructure defaults.
+- Add **strict DB-role enforcement under the hardened posture**: the
+  `database-security` graceful fallback (silently disabling `SET ROLE` when a
+  runtime role is missing/unverifiable — observed in `src/butlers/db.py`) becomes
+  fail-closed under hardened posture, while `dev` retains graceful fallback with
+  the degraded state surfaced.
+- Add a **backup-and-restore verification path**: a documented, executable, and
+  verifiable backup/restore drill for the PostgreSQL data plane (none ships
+  today).
 - **Non-goals (explicitly out of scope for this change):**
   - **Non-root runtime/connector containers.** Runtime and connector containers
     run as root by deliberate, documented design — the LLM spawner needs
