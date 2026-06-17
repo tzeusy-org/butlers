@@ -18,7 +18,6 @@ import type {
   SystemCredential,
   CliCredential,
   ProviderInfo,
-  RevealMode,
 } from "./types.ts";
 import { STATE_CATALOG } from "./constants.ts";
 import {
@@ -66,7 +65,6 @@ import {
   useSetSystemSecret,
   useProbeSystemSecret,
   useDeleteSystemSecret,
-  useRevealSystemSecret,
   useRotateCliRuntime,
   useRevokeCliRuntime,
   useCreateUserSecret,
@@ -1483,20 +1481,16 @@ export function PageUser({
  *   set value / rotate  — value-entry inline panel → useSetSystemSecret target="shared"
  *   override · per butler — butler-picker inline panel → useSetSystemSecret target="<butler>"
  *   test                — useProbeSystemSecret; 429 rate-limit surfaced as non-blocking hint
- *   reveal value        — useRevealSystemSecret; honors revealMode prop
  *   delete              — danger confirm inline panel → useDeleteSystemSecret (correct target)
  */
 export function PageSystem({
   credential,
   showVerifyCmd = false,
   voiceParagraph = true,
-  revealMode = "eye",
 }: {
   credential: SystemCredential;
   showVerifyCmd?: boolean;
   voiceParagraph?: boolean;
-  /** Controls the reveal-value eye button. "never" hides it. */
-  revealMode?: RevealMode;
 }) {
   const isMissing = credential.rowState === "missing";
   const isLocal = credential.rowState === "local";
@@ -1632,31 +1626,6 @@ export function PageSystem({
     }
     return credential.test;
   })();
-
-  // ── Reveal value ───────────────────────────────────────────────────────────
-  // System secrets CAN be revealed (unlike user secrets).
-  // Plain-value credentials skip the eye button — the value is already shown.
-  const revealMutation = useRevealSystemSecret();
-  const [revealedValue, setRevealedValue] = React.useState<string | null>(null);
-
-  function handleReveal() {
-    if (revealMutation.isPending) return;
-    // The old /butlers/{name}/secrets/{key}/reveal endpoint treats both
-    // "shared" and "shared-public" as the shared credential pool.
-    // Map "shared-public" → "shared" for reveal-path compatibility.
-    const revealButler = (credential.target === "shared-public")
-      ? "shared"
-      : (credential.target || "shared");
-    revealMutation.mutate(
-      { butler: revealButler, key: credential.key },
-      {
-        onSuccess: (data) => {
-          const val = (data as { data?: { value?: string } })?.data?.value ?? null;
-          setRevealedValue(val);
-        },
-      },
-    );
-  }
 
   // ── Delete ─────────────────────────────────────────────────────────────────
   // Passes the correct ?target= depending on whether this is a shared or local row.
@@ -2018,19 +1987,6 @@ export function PageSystem({
         </div>
       )}
 
-      {/* Revealed value display */}
-      {revealedValue !== null && (
-        <div
-          className="flex flex-col gap-2 p-3.5"
-          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
-          data-revealed-value="true"
-        >
-          <Mono size={9} upper tracking="0.14em" color="var(--dim)">revealed value</Mono>
-          <Mono size={12}>{revealedValue}</Mono>
-          <PillBtn onClick={() => setRevealedValue(null)}>dismiss</PillBtn>
-        </div>
-      )}
-
       {/* Rate-limit hint for probe */}
       {probeRateLimited && (
         <Mono size={11} color="var(--dim)" className="mt-1" data-probe-rate-limited="true">
@@ -2104,14 +2060,6 @@ export function PageSystem({
           }
           right={
             <>
-              {credential.fingerprint && !isPlain && revealMode !== "never" && (
-                <PillBtn
-                  onClick={handleReveal}
-                  disabled={revealMutation.isPending || revealedValue !== null}
-                >
-                  {revealMutation.isPending ? "revealing…" : "reveal value"}
-                </PillBtn>
-              )}
               {!isMissing && (
                 <PillBtn
                   variant="danger"
@@ -2231,7 +2179,6 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
  * Wired actions [bu-ayp6v.5]:
  *   rotate         — useRotateCliRuntime; returned value shown once in copy-once panel
  *   revoke         — danger confirm → useRevokeCliRuntime
- *   reveal token   — useRevealSystemSecret (switchboard pool); honors revealMode
  *   test           — useTestCLIAuthApiKey (works for all auth modes via /cli-auth/{p}/test)
  *   set token      — value-entry panel → useRotateCliRuntime (token-mode) OR
  *                    useSaveCLIAuthApiKey (api-key mode, e.g. Claude)
@@ -2250,13 +2197,10 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
 export function PageCli({
   credential,
   showVerifyCmd = false,
-  revealMode = "eye",
   deviceAuth,
 }: {
   credential: CliCredential;
   showVerifyCmd?: boolean;
-  /** Controls the reveal-token eye button. "never" hides it. */
-  revealMode?: RevealMode;
   /** Device-code reauth state; omit to disable the flow (e.g. in unit tests). */
   deviceAuth?: CliDeviceAuthState;
 }) {
@@ -2335,25 +2279,6 @@ export function PageCli({
   function handleRevokeCancel() {
     setRevokeConfirm(false);
     revokeMutation.reset();
-  }
-
-  // ── Reveal token ──────────────────────────────────────────────────────────
-  // CLI tokens are stored in the shared butler_secrets pool (switchboard schema).
-  // revealSecret("switchboard", key) is the read path; display once until dismissed.
-  const revealMutation = useRevealSystemSecret();
-  const [revealedToken, setRevealedToken] = React.useState<string | null>(null);
-
-  function handleReveal() {
-    if (revealMutation.isPending) return;
-    revealMutation.mutate(
-      { butler: "switchboard", key: credential.id },
-      {
-        onSuccess: (data) => {
-          const val = (data as { data?: { value?: string } })?.data?.value ?? null;
-          setRevealedToken(val);
-        },
-      },
-    );
   }
 
   // ── Test ──────────────────────────────────────────────────────────────────
@@ -2678,20 +2603,7 @@ export function PageCli({
         </div>
       )}
 
-      {/* Revealed token display */}
-      {revealedToken !== null && (
-        <div
-          className="flex flex-col gap-2 p-3.5"
-          style={{ border: "1px solid var(--border-soft)", background: "var(--bg-elev)" }}
-          data-revealed-token="true"
-        >
-          <Mono size={9} upper tracking="0.14em" color="var(--dim)">revealed token</Mono>
-          <Mono size={12}>{revealedToken}</Mono>
-          <PillBtn onClick={() => setRevealedToken(null)}>dismiss</PillBtn>
-        </div>
-      )}
-
-      {/* Footer — device-code flow when supported, else rotate-with-reveal */}
+      {/* Footer — device-code flow when supported, else rotate-and-revoke */}
       <CommitFooter
         left={
           deviceAuth?.supported ? (
@@ -2767,14 +2679,6 @@ export function PageCli({
         }
         right={
           <>
-            {credential.fingerprint && revealMode !== "never" && (
-              <PillBtn
-                onClick={handleReveal}
-                disabled={revealMutation.isPending || revealedToken !== null}
-              >
-                {revealMutation.isPending ? "revealing…" : "reveal token"}
-              </PillBtn>
-            )}
             {!isMissing && !isApiKeyMode && (
               <PillBtn
                 variant="danger"
@@ -2809,18 +2713,15 @@ export function PageCli({
 export function PageCliConnected({
   credential,
   showVerifyCmd = false,
-  revealMode = "eye",
 }: {
   credential: CliCredential;
   showVerifyCmd?: boolean;
-  revealMode?: RevealMode;
 }) {
   const deviceAuth = useCliDeviceAuth(credential.id);
   return (
     <PageCli
       credential={credential}
       showVerifyCmd={showVerifyCmd}
-      revealMode={revealMode}
       deviceAuth={deviceAuth}
     />
   );

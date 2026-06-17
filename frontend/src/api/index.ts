@@ -500,7 +500,6 @@ export {
   deleteSecret,
   getSecretMeta,
   listSecrets,
-  revealSecret,
   upsertSecret,
 } from "./client.ts";
 

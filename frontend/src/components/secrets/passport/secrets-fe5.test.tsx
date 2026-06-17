@@ -36,7 +36,6 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     setSystemCredential: vi.fn(),
     probeSystemCredential: vi.fn(),
     deleteSystemCredential: vi.fn(),
-    revealSecret: vi.fn(),
     rotateCliCredential: vi.fn(),
     revokeCliCredential: vi.fn(),
     listCLIAuthProviders: vi.fn().mockResolvedValue([]),
@@ -129,7 +128,6 @@ vi.mock("@/hooks/use-whatsapp.ts", () => ({
 }))
 
 import { Spine } from "./Spine.tsx";
-import { PageCli } from "./pages.tsx";
 import { DirectionPassport } from "./DirectionPassport.tsx";
 import {
   MOCK_INVENTORY,
@@ -356,33 +354,6 @@ describe("DirectionPassport: removed tweaks chrome", () => {
    * rendered passport surface after the panel is removed.
    */
 
-  const claudeCred = MOCK_CLI_CREDENTIALS.find((c) => c.id === "claude-cli")!;
-
-  it("revealMode=eye (default): reveal token button IS present when fingerprint exists", () => {
-    // PageCli uses mutation hooks; wrap with QueryClientProvider via renderInRouter.
-    const html = renderInRouter(<PageCli credential={claudeCred} revealMode="eye" />);
-    // Claude CLI has a fingerprint, so reveal token button shows by default
-    expect(html).toContain("reveal token");
-  });
-
-  it("revealMode=hover: reveal token button IS present (hover mode does not suppress)", () => {
-    const html = renderInRouter(<PageCli credential={claudeCred} revealMode="hover" />);
-    expect(html).toContain("reveal token");
-  });
-
-  it("revealMode=never: reveal token button is ABSENT", () => {
-    const html = renderInRouter(<PageCli credential={claudeCred} revealMode="never" />);
-    // Eye button suppressed when revealMode="never"
-    expect(html).not.toContain("reveal token");
-  });
-
-  it("revealMode=never, no fingerprint: button already absent (never_set cred)", () => {
-    const gemini = MOCK_CLI_CREDENTIALS.find((c) => c.id === "gemini-cli")!;
-    // gemini has no fingerprint — button is absent regardless of revealMode
-    const html = renderInRouter(<PageCli credential={gemini} revealMode="never" />);
-    expect(html).not.toContain("reveal token");
-  });
-
   it("ignores stale secrets.tweaks.revealMode localStorage", () => {
     try {
       localStorage.setItem("secrets.tweaks.revealMode", "never");
@@ -394,7 +365,8 @@ describe("DirectionPassport: removed tweaks chrome", () => {
     );
     // CLI page rendered (claude-cli has fingerprint and is navigated to)
     expect(html).toContain('data-page="cli"');
-    expect(html).toContain("reveal token");
+    // Reveal token button is removed — legacy reveal endpoint deleted (bu-dl98i.1.1)
+    expect(html).not.toContain("reveal token");
     expect(html).not.toContain('data-tweaks-trigger="true"');
 
     try {

@@ -22,7 +22,6 @@ import {
   disconnectUserCredential,
   probeSystemCredential,
   probeUserCredential,
-  revealSecret,
   rotateCliCredential,
   rotateUserCredential,
   revokeCliCredential,
@@ -251,41 +250,6 @@ export function useRevokeCliRuntime() {
     onError: (error: Error) => {
       toast.error(`Revoke failed: ${error.message}`);
     },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Reveal helper
-//
-// secrets_v2 does NOT return raw values. The legacy revealSecret(butlerName, key)
-// client function is used here, piping butler from SecretsSystemDetail.butler
-// for system secrets.
-//
-// User-secret reveal: there is no backend endpoint that returns the raw OAuth
-// token for a user credential. This is intentional — OAuth refresh tokens are
-// never surfaced to the UI. There is no reveal path for user secrets.
-//
-// Note for .3/.4/.5 (button-wiring beads): the reveal action for system
-// secrets requires knowing the butler name at call time. Callers must pass
-// the `butler` field from SecretsSystemDetail (or use "shared" as the
-// default). The hook result includes `data.data.value` which is the raw value.
-// ---------------------------------------------------------------------------
-
-/**
- * Reveal the raw value of a system credential.
- *
- * @param butler - The butler schema that owns the row (SecretsSystemDetail.butler).
- *                 Use "shared" for switchboard-owned rows.
- *
- * User-secret reveal gap: OAuth tokens are intentionally never returned by any
- * GET/POST endpoint. There is no reveal path for user secrets via the existing
- * backend. The button-wiring beads (.3/.4/.5) should omit or hide the reveal
- * action for user credentials.
- */
-export function useRevealSystemSecret() {
-  return useMutation({
-    mutationFn: ({ butler, key }: { butler: string; key: string }) =>
-      revealSecret(butler, key),
   });
 }
 

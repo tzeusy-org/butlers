@@ -34,7 +34,6 @@ export type {
   CredentialState,
   CredentialFamily,
   SpineSortMode,
-  RevealMode,
   SpineEntry,
   StateMeta,
   AuditEvent,

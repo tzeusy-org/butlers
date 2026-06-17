@@ -36,7 +36,6 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     setSystemCredential: vi.fn(),
     probeSystemCredential: vi.fn(),
     deleteSystemCredential: vi.fn(),
-    revealSecret: vi.fn(),
     rotateCliCredential: vi.fn(),
     revokeCliCredential: vi.fn(),
     listCLIAuthProviders: vi.fn().mockResolvedValue([]),

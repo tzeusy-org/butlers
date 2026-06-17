@@ -33,7 +33,6 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     testCLIAuthApiKey: vi.fn(),
     saveCLIAuthApiKey: vi.fn(),
     deleteCLIAuthApiKey: vi.fn(),
-    revealSecret: vi.fn(),
     listCLIAuthProviders: vi.fn().mockResolvedValue([]),
   };
 });

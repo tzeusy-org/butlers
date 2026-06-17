@@ -10,8 +10,6 @@
 //   - delete on local override passes per-butler target
 //   - test button calls useProbeSystemSecret
 //   - 429 rate-limit handled gracefully (non-blocking hint, no crash)
-//   - reveal value button calls useRevealSystemSecret; revealMode="never" suppresses it
-//   - reveal value button absent for plain-value credentials
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, afterEach } from "vitest"
@@ -30,7 +28,6 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     setSystemCredential: vi.fn(),
     probeSystemCredential: vi.fn(),
     deleteSystemCredential: vi.fn(),
-    revealSecret: vi.fn(),
   }
 })
 
@@ -52,13 +49,11 @@ import {
   setSystemCredential,
   probeSystemCredential,
   deleteSystemCredential,
-  revealSecret,
   ApiError,
 } from "@/api/client.ts"
 const mockSet = vi.mocked(setSystemCredential)
 const mockProbe = vi.mocked(probeSystemCredential)
 const mockDelete = vi.mocked(deleteSystemCredential)
-const mockReveal = vi.mocked(revealSecret)
 
 // ---------------------------------------------------------------------------
 // Component + mock data
@@ -446,58 +441,6 @@ describe("PageSystem: delete button", () => {
   })
 })
 
-// ── Reveal value ──────────────────────────────────────────────────────────────
-
-describe("PageSystem: reveal value button", () => {
-  it("renders 'reveal value' button when fingerprint present and not plain value", () => {
-    renderTelegram()
-    // TELEGRAM has fingerprint set and no plainValue
-    expect(getBtn("reveal value")).toBeTruthy()
-  })
-
-  it("calls revealSecret with the correct butler and key", async () => {
-    mockReveal.mockReturnValue(new Promise(() => {}))
-    renderTelegram()
-
-    await act(async () => {
-      fireEvent.click(getBtn("reveal value"))
-    })
-
-    expect(mockReveal).toHaveBeenCalledOnce()
-    expect(mockReveal).toHaveBeenCalledWith("shared", "BUTLER_TELEGRAM_TOKEN")
-  })
-
-  it("reveals the value in the UI after success", async () => {
-    mockReveal.mockResolvedValue({ data: { value: "the-secret-value" } } as never)
-    renderTelegram()
-
-    await act(async () => {
-      fireEvent.click(getBtn("reveal value"))
-    })
-
-    await waitFor(() => {
-      expect(screen.getByText("the-secret-value")).toBeTruthy()
-    })
-  })
-
-  it("revealMode='never' hides the reveal value button", () => {
-    renderInProvider(<PageSystem credential={TELEGRAM} revealMode="never" />)
-    expect(queryBtn("reveal value")).toBeNull()
-  })
-
-  it("reveal value button absent when credential has no fingerprint (missing cred)", () => {
-    renderMissing()
-    // MISSING has fingerprint=null
-    expect(queryBtn("reveal value")).toBeNull()
-  })
-
-  it("reveal value button absent for plain-value credentials", () => {
-    renderInProvider(<PageSystem credential={PLAIN} />)
-    // PLAIN has plainValue set — button is suppressed
-    expect(queryBtn("reveal value")).toBeNull()
-  })
-})
-
 // ── shared-public target routing [bu-91noc] ─────────────────────────────────
 
 /** A shared-public credential (public.butler_secrets pool, not switchboard). */
@@ -550,18 +493,5 @@ describe("PageSystem: shared-public routing [bu-91noc]", () => {
 
     expect(mockDelete).toHaveBeenCalledOnce()
     expect(mockDelete).toHaveBeenCalledWith("TELEGRAM_TOKEN", "shared-public")
-  })
-
-  it("calls revealSecret with butler='shared' (not 'shared-public') for reveal", async () => {
-    mockReveal.mockReturnValue(new Promise(() => {}))
-    renderSharedPublic()
-
-    await act(async () => {
-      fireEvent.click(getBtn("reveal value"))
-    })
-
-    expect(mockReveal).toHaveBeenCalledOnce()
-    // reveal routes through the old endpoint which treats "shared" = public pool
-    expect(mockReveal).toHaveBeenCalledWith("shared", "TELEGRAM_TOKEN")
   })
 })

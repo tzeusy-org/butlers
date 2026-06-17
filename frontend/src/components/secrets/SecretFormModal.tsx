@@ -6,10 +6,9 @@
  * empty and must be re-entered if you want to change it.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type { SecretEntry } from "@/api/types.ts";
-import { revealSecret } from "@/api/index.ts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -114,20 +113,6 @@ export function SecretFormModal({
     setError(null);
     setSuccess(false);
   }
-
-  // Pre-fill value when editing by fetching from the reveal endpoint
-  useEffect(() => {
-    if (open && isEditing && editSecret) {
-      revealSecret(butlerName, editSecret.key)
-        .then((resp) => {
-          setForm((prev) => ({ ...prev, value: resp.data.value }));
-        })
-        .catch(() => {
-          // Silently fail — user can still type a new value
-        });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, isEditing, editSecret?.key, butlerName]);
 
   const upsertMutation = useUpsertSecret(butlerName);
 

@@ -27,6 +27,9 @@ Security contract
 - Secret values are **never** included in any response.
 - ``SecretEntry`` Pydantic model has no ``value`` field.
 - ``CredentialStore`` is used for all DB operations — no raw SQL.
+- Raw-secret reveal is intentionally absent from this router.  Reveal
+  functionality, if ever reintroduced, belongs exclusively on the
+  secrets_v2 / passport surface (openspec dashboard-admin-gateway).
 """
 
 from __future__ import annotations
@@ -148,32 +151,6 @@ async def get_secret(
     if match is None:
         raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
     return ApiResponse[SecretEntry](data=_to_secret_entry(match))
-
-
-# ---------------------------------------------------------------------------
-# Reveal endpoint
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/{name}/secrets/{key}/reveal",
-    response_model=ApiResponse[dict],
-)
-async def reveal_secret(
-    name: str,
-    key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
-    """Return the raw value of a single secret.
-
-    Returns the actual stored value for inspection/debugging.
-    404 if the key does not exist.
-    """
-    store = _credential_store_for(db, name)
-    value = await store.load(key)
-    if value is None:
-        raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
-    return ApiResponse[dict](data={"key": key, "value": value})
 
 
 # ---------------------------------------------------------------------------

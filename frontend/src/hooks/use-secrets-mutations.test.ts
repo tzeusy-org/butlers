@@ -66,7 +66,6 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     deleteSystemCredential: vi.fn(),
     rotateCliCredential: vi.fn(),
     revokeCliCredential: vi.fn(),
-    revealSecret: vi.fn(),
   };
 });
 
@@ -85,7 +84,6 @@ import {
   useDeleteSystemSecret,
   useRotateCliRuntime,
   useRevokeCliRuntime,
-  useRevealSystemSecret,
   secretsUserKeys,
   secretsSystemKeys,
   secretsCliKeys,
@@ -435,24 +433,6 @@ describe("useRevokeCliRuntime", () => {
     onError(new Error("already revoked"));
 
     expect(mockToastError).toHaveBeenCalledWith("Revoke failed: already revoked");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// useRevealSystemSecret
-// ---------------------------------------------------------------------------
-
-describe("useRevealSystemSecret", () => {
-  beforeEach(() => {
-    mockUseMutation.mockClear();
-  });
-
-  it("is registered as a mutation (no cache invalidation or toast — caller responsibility)", () => {
-    useRevealSystemSecret();
-    const calls = mockUseMutation.mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    const opts = calls[calls.length - 1][0] as { mutationFn: unknown };
-    expect(typeof opts.mutationFn).toBe("function");
   });
 });
 

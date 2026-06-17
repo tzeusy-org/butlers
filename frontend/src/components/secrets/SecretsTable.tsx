@@ -8,7 +8,6 @@
 import { useState } from "react";
 
 import type { SecretEntry } from "@/api/types.ts";
-import { revealSecret } from "@/api/index.ts";
 import { buildSecretRows, type SecretDisplayRow, type SecretRowState } from "@/lib/secrets-rows";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -138,15 +137,11 @@ function StatusBadge({ rowState, source }: { rowState: SecretRowState; source: s
 
 function MaskedValue({
   rowState,
-  butlerName,
-  secretKey,
   onReveal,
   plainValue,
 }: {
   rowState: SecretRowState;
-  butlerName: string;
-  secretKey: string;
-  /** Custom reveal callback (user mode). When provided, overrides the default revealSecret API call. */
+  /** Reveal callback (user mode only). When absent, value is write-only with no reveal path. */
   onReveal?: () => Promise<string | null>;
   /** Non-secured value to display directly (no reveal needed). */
   plainValue?: string | null;
@@ -164,6 +159,11 @@ function MaskedValue({
     return <span className="font-mono text-sm max-w-[200px] truncate" title={plainValue}>{plainValue}</span>;
   }
 
+  // When no reveal callback is available, show masked placeholder only (write-only semantics).
+  if (!onReveal) {
+    return <span className="font-mono text-sm text-muted-foreground">••••••••</span>;
+  }
+
   async function handleReveal() {
     if (revealed) {
       setRevealed(false);
@@ -171,13 +171,8 @@ function MaskedValue({
     }
     setLoading(true);
     try {
-      if (onReveal) {
-        const val = await onReveal();
-        setValue(val ?? "(empty)");
-      } else {
-        const resp = await revealSecret(butlerName, secretKey);
-        setValue(resp.data.value);
-      }
+      const val = await onReveal!();
+      setValue(val ?? "(empty)");
       setRevealed(true);
     } catch {
       setValue("(failed to load)");
@@ -430,8 +425,6 @@ function SecretRow({
         <TableCell>
           <MaskedValue
             rowState={secret.rowState}
-            butlerName={butlerName}
-            secretKey={secret.key}
             plainValue={plainValue}
             onReveal={isUser && onRevealEntry ? () => onRevealEntry(secret) : undefined}
           />

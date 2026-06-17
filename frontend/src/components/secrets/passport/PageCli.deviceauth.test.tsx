@@ -42,7 +42,6 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     testCLIAuthApiKey: vi.fn(),
     saveCLIAuthApiKey: vi.fn(),
     deleteCLIAuthApiKey: vi.fn(),
-    revealSecret: vi.fn(),
   };
 });
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));

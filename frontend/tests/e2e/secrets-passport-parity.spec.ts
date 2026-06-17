@@ -16,7 +16,6 @@
 //   POST /api/secrets/user/{p}/reauthorize   - redirect_url mock
 //   POST /api/secrets/system/{key}           - success (set/override)
 //   POST /api/secrets/system/{key}/probe     - success probe result
-//   GET  /api/butlers/{b}/secrets/{k}/reveal - revealed value mock
 //   DELETE /api/secrets/system/{key}         - success
 //   POST /api/secrets/cli/{id}/rotate        - success with new token value
 //   POST /api/secrets/cli/{id}/revoke        - success
@@ -193,10 +192,6 @@ async function mockAllSecretRoutes(page: Page) {
     }
     route.continue();
   });
-  // Reveal -- matches /api/butlers/<name>/secrets/<key>/reveal
-  await page.route("**/api/butlers/*/secrets/*/reveal**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { key: "BUTLER_TELEGRAM_TOKEN", value: "secret-value-revealed" }, meta: {} }) })
-  );
   // CLI mutations
   await page.route("**/api/secrets/cli/*/rotate**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { fingerprint: "sha256:new1234", value: "new-rotated-token-value" }, meta: {} }) })
@@ -559,17 +554,14 @@ test.describe("PageSystem (C16–C21)", () => {
     }).toPass({ timeout: 5_000 });
   });
 
-  test("C20: system reveal -- reveal button triggers reveal mutation, shows value panel", async ({ page }) => {
-    // Covers C20 -- reveal value
+  test("C20: system reveal -- reveal button is absent (endpoint removed bu-dl98i.1.1)", async ({ page }) => {
+    // C20 (reveal value) is intentionally removed: the legacy plaintext-reveal
+    // endpoint was deleted in bu-dl98i.1.1. No reveal path exists on PageSystem.
     await gotoPassport(page, "/secrets?focus=s:BUTLER_TELEGRAM_TOKEN");
     await page.locator('[data-page="system"]').waitFor({ timeout: 5_000 });
 
     const revealBtn = page.locator('[data-page="system"] button', { hasText: /reveal value/ });
-    await expect(revealBtn).toBeAttached({ timeout: 5_000 });
-    await revealBtn.click();
-
-    // Revealed value panel should appear
-    await expect(page.locator('[data-revealed-value="true"]')).toBeAttached({ timeout: 5_000 });
+    await expect(revealBtn).not.toBeAttached({ timeout: 2_000 });
   });
 
   test("C21: system delete -- opens confirm, fires delete mutation", async ({ page }) => {
@@ -605,17 +597,14 @@ test.describe("PageCli (C22–C28)", () => {
     await expect(page.locator('[data-cli-id="claude-cli"]')).toBeAttached({ timeout: 3_000 });
   });
 
-  test("C25: CLI reveal token -- reveal button shows revealed token panel", async ({ page }) => {
-    // Covers C25 -- reveal token
+  test("C25: CLI reveal token -- reveal button is absent (endpoint removed bu-dl98i.1.1)", async ({ page }) => {
+    // C25 (reveal token) is intentionally removed: the legacy plaintext-reveal
+    // endpoint was deleted in bu-dl98i.1.1. No reveal path exists on PageCli.
     await gotoPassport(page, "/secrets?focus=c:claude-cli");
     await page.locator('[data-page="cli"]').waitFor({ timeout: 5_000 });
 
     const revealBtn = page.locator('[data-page="cli"] button', { hasText: /reveal token/ });
-    await expect(revealBtn).toBeAttached({ timeout: 5_000 });
-    await revealBtn.click();
-
-    // Revealed token panel appears
-    await expect(page.locator('[data-revealed-token="true"]')).toBeAttached({ timeout: 5_000 });
+    await expect(revealBtn).not.toBeAttached({ timeout: 2_000 });
   });
 
   test("C23: CLI rotate -- fires rotate mutation, shows copy-once panel with new token", async ({ page }) => {

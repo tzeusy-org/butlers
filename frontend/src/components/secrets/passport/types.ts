@@ -20,9 +20,6 @@ export type CredentialFamily = "user" | "system" | "cli";
 /** Sort mode for the spine. */
 export type SpineSortMode = "severity" | "recency" | "alpha";
 
-/** Reveal mode tweak. */
-export type RevealMode = "eye" | "hover" | "never";
-
 /** A single spine entry — one row in the left-hand index. */
 export interface SpineEntry {
   /** Focus key: `u:<provider>`, `s:<KEY>`, `c:<id>` */

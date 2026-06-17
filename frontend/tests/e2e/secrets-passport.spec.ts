@@ -240,8 +240,10 @@ test("secrets OAuth error: ?oauth_error=invalid_grant renders without crash", as
 // 6. Stale reveal-mode localStorage is ignored
 // ---------------------------------------------------------------------------
 
-test("secrets: stale revealMode=never localStorage does not hide reveal button on CLI page", async ({ page }) => {
-  // Install mocks before the first navigation so all API calls are intercepted.
+test("secrets: stale revealMode=never localStorage — reveal token button is absent (removed bu-dl98i.1.1)", async ({ page }) => {
+  // The legacy reveal endpoint was deleted in bu-dl98i.1.1; the reveal token
+  // button is gone from PageCli entirely. Stale secrets.tweaks.revealMode
+  // localStorage is irrelevant — there is no reveal button to show or hide.
   await mockSecretsRoutes(page);
 
   // First goto establishes the page origin so we can write to localStorage.
@@ -261,8 +263,8 @@ test("secrets: stale revealMode=never localStorage does not hide reveal button o
   // CLI page must be rendered for the claude-cli credential
   await expect(page.locator('[data-page="cli"]')).toBeAttached({ timeout: 5_000 });
 
-  // Removed tweaks chrome no longer reads stale secrets.tweaks.* values.
-  await expect(page.locator("button", { hasText: /reveal token/i })).toBeAttached();
+  // Reveal token button is removed — no reveal path on CLI page.
+  await expect(page.locator("button", { hasText: /reveal token/i })).not.toBeAttached();
 
   // Cleanup
   await page.evaluate(() => localStorage.removeItem("secrets.tweaks.revealMode"));
