@@ -76,9 +76,16 @@ async def validate_module_credentials_async(
 ) -> dict[str, list[str]]:
     """Check module credentials via DB-first resolution and return per-module missing vars.
 
-    Uses ``CredentialStore.resolve()`` for each declared credential key so that
-    secrets stored in the database are visible at validation time.  Environment
-    variables remain as a fallback (the ``CredentialStore`` default behaviour).
+    Uses ``CredentialStore.resolve()`` (with ``env_fallback=False``, the default)
+    for each declared credential key, so only secrets stored in the database are
+    visible.  Environment variables are **not** consulted.  For the authoritative
+    description of fallback semantics and the three-tier credential model, see
+    ``CredentialStore.resolve()`` in ``butlers.credential_store``.
+
+    Module credentials are Tier 1 (system) secrets managed via the dashboard
+    ``/secrets`` System tab.  If a required credential is missing from the DB,
+    the calling butler should surface an actionable error to the owner rather
+    than silently falling back to the environment.
 
     Unlike ``validate_credentials``, this function does **not** raise.
     It returns a dict mapping module name to the list of missing credential

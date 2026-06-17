@@ -113,6 +113,11 @@ the **System tab** on the dashboard `/secrets` page. Examples:
 `BLOB_S3_*`, LLM API keys (`cli-auth/*`), `owntracks_webhook_token`.
 
 Accessed at runtime via `CredentialStore.resolve()` or `CredentialStore.load()`.
+`CredentialStore.resolve()` is the **canonical implementation of Tier 1 credential-fallback
+semantics**: it queries the local `butler_secrets` table first, then any configured fallback
+pools, and only reads `os.environ` when `env_fallback=True` is explicitly passed (disabled
+by default). See `src/butlers/credential_store.py → CredentialStore.resolve()` for the
+authoritative docstring.
 
 ### Tier 2: User (entity_info on owner entity)
 
@@ -127,8 +132,9 @@ credentials, or direct SQL on companion entity UUIDs for per-account tokens.
 
 ### Resolution Rules
 
-- Env vars MAY override any tier for development/testing, but the authoritative
-  source is what the dashboard writes to and connectors read from.
+- Env vars are NOT automatic overrides. For Tier 1, `CredentialStore.resolve()` only
+  reads `os.environ` when `env_fallback=True` is explicitly passed (disabled by default).
+  Tier 0 is the only tier where `os.environ` is the authoritative source.
 - When a connector needs a credential, it MUST read from the authoritative tier.
 - New credentials MUST be classified into a tier when added.
 
