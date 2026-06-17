@@ -131,3 +131,31 @@ def test_tier1_env_fallback_off_by_default():
         f"CredentialStore.resolve(env_fallback=...) has default={param.default!r}. "
         f"The safe default must be False."
     )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 4: credential-store.md must not claim env_fallback=True is the default
+# ---------------------------------------------------------------------------
+
+
+def test_credential_store_doc_does_not_claim_env_fallback_true_is_default():
+    """docs/data_and_storage/credential-store.md must not claim env_fallback=True is the default.
+
+    The doc previously contained the false claim: 'if env_fallback=True (the default)'.
+    The actual default is False — callers must explicitly opt in (security.md,
+    CredentialStore.resolve() signature).
+
+    This test prevents this exact doc drift from recurring.  Paired with
+    test_tier1_env_fallback_off_by_default (Invariant 3) which checks the code side,
+    together they guard both ends of the doc↔code contract.
+    """
+    doc_path = _REPO_ROOT / "docs" / "data_and_storage" / "credential-store.md"
+    assert doc_path.exists(), f"credential-store.md not found at {doc_path}"
+
+    text = doc_path.read_text()
+
+    assert "env_fallback=True (the default)" not in text, (
+        "docs/data_and_storage/credential-store.md falsely claims env_fallback=True is the "
+        "default.  The actual default is False — callers must explicitly opt in.  "
+        "See CredentialStore.resolve() signature and about/heart-and-soul/security.md."
+    )
