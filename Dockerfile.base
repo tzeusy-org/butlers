@@ -10,7 +10,10 @@
 # The main Dockerfile uses this as its base, so app rebuilds only
 # re-run Python dependency install and source copy (~30s vs ~5min).
 
-FROM python:3.12-slim
+# Digest-pinned for full reproducibility (resolves to 3.12.13-slim-trixie).
+# To update: run `docker buildx imagetools inspect python:3.12-slim` and
+# replace the sha256 below.
+FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
 
 # System dependencies (single layer, sorted for readability)
 RUN apt-get update && apt-get install -y --no-install-recommends \
