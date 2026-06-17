@@ -194,8 +194,18 @@ export interface NotificationSummary {
 }
 
 /** Health-check response. */
+/** Security-posture booleans from GET /api/health. Values are NEVER secret material. */
+export interface HealthAuthPosture {
+  /** True when ApiKeyMiddleware is active (DASHBOARD_API_KEY is configured). */
+  api_key_auth_enabled: boolean;
+  /** True when DASHBOARD_EXPORT_SECRET is absent (export signer uses insecure fallback or refuses). */
+  export_secret_insecure_default: boolean;
+}
+
 export interface HealthResponse {
   status: string;
+  /** Security-posture indicators. Present in successful (200) responses. */
+  auth?: HealthAuthPosture;
 }
 
 // ---------------------------------------------------------------------------

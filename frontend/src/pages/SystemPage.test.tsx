@@ -16,6 +16,7 @@ import {
   useButlerHeartbeats,
   useDatabaseFacts,
   useEgressFacts,
+  useHealthPosture,
   useInstanceFacts,
 } from "@/hooks/use-system";
 import { useButlers } from "@/hooks/use-butlers";
@@ -45,6 +46,7 @@ vi.mock("@/hooks/use-system", () => ({
   useBackupFacts: vi.fn(),
   useEgressFacts: vi.fn(),
   useButlerHeartbeats: vi.fn(),
+  useHealthPosture: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -100,6 +102,13 @@ function setAllLoading() {
     isLoading: true,
     error: null,
   } as AnyMock);
+
+  vi.mocked(useHealthPosture).mockReturnValue({
+    data: undefined,
+    isPending: true,
+    isError: false,
+    error: null,
+  } as AnyMock);
 }
 
 function setAllSuccess() {
@@ -146,6 +155,13 @@ function setAllSuccess() {
   vi.mocked(useButlerHeartbeats).mockReturnValue({
     data: { data: { butlers: [{ name: "general", last_heartbeat_at: "2026-01-01T00:00:00Z", last_session_at: null, active_session_count: 0, heartbeat_age_seconds: 120 }] }, meta: {} },
     isLoading: false,
+    error: null,
+  } as AnyMock);
+
+  vi.mocked(useHealthPosture).mockReturnValue({
+    data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
+    isPending: false,
+    isError: false,
     error: null,
   } as AnyMock);
 }

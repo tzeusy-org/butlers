@@ -14,6 +14,7 @@ import {
   getButlerHeartbeats,
   getDatabaseFacts,
   getEgressCatalog,
+  getHealth,
   getInstanceFacts,
 } from "@/api/index.ts";
 
@@ -74,5 +75,21 @@ export function useButlerHeartbeats() {
     queryKey: ["system-butler-heartbeats"],
     queryFn: () => getButlerHeartbeats(),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Fetch the dashboard security-posture booleans from GET /api/health.
+ *
+ * Returns `api_key_auth_enabled` and `export_secret_insecure_default`.
+ * Values are booleans only — never secret material.  The endpoint is
+ * public (no X-API-Key required) so this hook always works.
+ */
+export function useHealthPosture() {
+  return useQuery({
+    queryKey: ["system-health-posture"],
+    queryFn: () => getHealth(),
+    // Posture is static across a process lifetime; check infrequently.
+    refetchInterval: 120_000,
   });
 }

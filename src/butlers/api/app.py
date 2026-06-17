@@ -354,7 +354,25 @@ def create_app(
     async def health():
         if not app.state.ready:
             return JSONResponse(status_code=503, content={"status": "starting"})
-        return {"status": "ok"}
+        # Security-posture booleans — NEVER include secret values here.
+        #
+        # api_key_auth_enabled: True when ApiKeyMiddleware is active.
+        #   _effective_api_key is resolved once at create_app() time and
+        #   captured via closure, matching exactly what the middleware uses.
+        #
+        # export_secret_insecure_default: True when DASHBOARD_EXPORT_SECRET is
+        #   absent.  In dev the signer falls back to a known constant (forgeable
+        #   tokens); in production it refuses to sign.  Either way the posture
+        #   is insecure.  Read from env each call so live changes are reflected.
+        return {
+            "status": "ok",
+            "auth": {
+                "api_key_auth_enabled": bool(_effective_api_key),
+                "export_secret_insecure_default": not bool(
+                    os.environ.get("DASHBOARD_EXPORT_SECRET")
+                ),
+            },
+        }
 
     # --- Static file serving (production) ---
     # Mount AFTER all API routes so /api/* always takes precedence.

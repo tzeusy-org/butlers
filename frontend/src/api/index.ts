@@ -339,6 +339,7 @@ export type {
   ResearchUpdateRequest,
   Fact,
   FactParams,
+  HealthAuthPosture,
   HealthResponse,
   Issue,
   Meal,
