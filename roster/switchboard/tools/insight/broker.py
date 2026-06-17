@@ -918,11 +918,17 @@ async def delivery_cycle(
             """,
             selected_ids,
         )
-        # Filter candidates that have now failed 3 or more times
+        # Filter candidates that have now failed 3 or more times; record the
+        # delivery failure in metadata so callers can discriminate this path.
         await pool.execute(
             """
             UPDATE insight_candidates
-            SET status = 'filtered'
+            SET status = 'filtered',
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object(
+                               'delivery_failure', true,
+                               'failed_attempts', delivery_attempt_count
+                           )
             WHERE id = ANY($1::uuid[]) AND delivery_attempt_count >= 3
             """,
             selected_ids,

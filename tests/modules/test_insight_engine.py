@@ -1818,7 +1818,7 @@ class TestInsightDeliveryPathsSpec:
         await delivery_cycle(insight_pool, notify_fn=_failing_notify)
 
         row = await insight_pool.fetchrow(
-            "SELECT status, delivery_attempt_count FROM insight_candidates "
+            "SELECT status, delivery_attempt_count, metadata FROM insight_candidates "
             "WHERE dedup_key = 'health:triple-fail:user:2026'"
         )
         # Spec: SHALL be marked status='filtered'
@@ -1826,6 +1826,18 @@ class TestInsightDeliveryPathsSpec:
             "spec (Repeated delivery failure): 3 consecutive failures must set status='filtered'"
         )
         assert row["delivery_attempt_count"] == 3
+
+        # Spec: SHALL include metadata indicating delivery failure
+        meta = row["metadata"]
+        assert meta is not None, (
+            "spec (Repeated delivery failure): filtered row must have metadata indicating delivery failure"
+        )
+        assert meta.get("delivery_failure") is True, (
+            "spec: metadata['delivery_failure'] must be True when filtered due to repeated failures"
+        )
+        assert meta.get("failed_attempts") == 3, (
+            "spec: metadata['failed_attempts'] must equal delivery_attempt_count (3)"
+        )
 
         # Spec: no cooldown SHALL be recorded (insight was never delivered)
         cooldown = await insight_pool.fetchrow(
