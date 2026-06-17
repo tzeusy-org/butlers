@@ -53,6 +53,74 @@ jobs:
       - name: Unit tests
         run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
 
+      - name: Smoke tests (fast gate + release evidence)
+        id: smoke
+        run: |
+          mkdir -p .tmp/smoke
+          SMOKE_CMD="uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short"
+
+          START_TS=$(date +%s)
+          set +e
+          $SMOKE_CMD --junit-xml=.tmp/smoke/junit.xml 2>&1 | tee .tmp/smoke/smoke.log
+          SMOKE_EXIT=${PIPESTATUS[0]}
+          set -e
+          END_TS=$(date +%s)
+          DURATION_S=$((END_TS - START_TS))
+          [ "$SMOKE_EXIT" -eq 0 ] && STATUS=PASS || STATUS=FAIL
+
+          # Write release-evidence JSON and emit a clearly-formatted log line.
+          SMOKE_EXIT_VAL=$SMOKE_EXIT \
+          SMOKE_SHA="${{ github.sha }}" \
+          SMOKE_DURATION=$DURATION_S \
+          SMOKE_STATUS=$STATUS \
+          SMOKE_CMD_VAL="$SMOKE_CMD" \
+          python3 << 'PYEOF'
+          import json, os, xml.etree.ElementTree as ET
+
+          sha = os.environ["SMOKE_SHA"]
+          duration_s = int(os.environ["SMOKE_DURATION"])
+          exit_code = int(os.environ["SMOKE_EXIT_VAL"])
+          status = os.environ["SMOKE_STATUS"]
+          cmd = os.environ["SMOKE_CMD_VAL"]
+
+          try:
+              root = ET.parse(".tmp/smoke/junit.xml").getroot()
+              skipped_classes = sorted({
+                  tc.get("classname") or tc.get("name", "unknown")
+                  for tc in root.findall(".//testcase")
+                  if tc.find("skipped") is not None
+              })
+          except Exception as exc:
+              skipped_classes = [f"parse-error:{exc}"]
+
+          evidence = {
+              "cmd": cmd,
+              "sha": sha,
+              "duration_s": duration_s,
+              "status": status,
+              "exit_code": exit_code,
+              "skipped_classes": skipped_classes,
+          }
+          with open(".tmp/smoke/release-evidence.json", "w") as f:
+              json.dump(evidence, f, indent=2)
+
+          print(f"SMOKE-RELEASE-EVIDENCE cmd={cmd!r} sha={sha!r} duration={duration_s}s status={status!r} skipped_classes={skipped_classes!r}")
+          print()
+          print(json.dumps(evidence, indent=2))
+          PYEOF
+
+          exit $SMOKE_EXIT
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+
+      - name: Upload smoke release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-release-evidence
+          path: .tmp/smoke/
+          retention-days: 30
+
       - name: Free disk space before testcontainers
         # ubuntu-latest runners arrive with ~14 GB free. Testcontainers pulls
         # pgvector/pgvector:pg17 (~442 MB compressed) and multiple modules spin
