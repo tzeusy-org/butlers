@@ -879,6 +879,113 @@ class TestDigestFormatting:
         # They should all be equal (set within the same delivery_cycle call)
         assert all(t == timestamps[0] for t in timestamps)
 
+        # Verify notify_fn called exactly once with the correct delivery envelope.
+        # No channel was specified on any candidate, so delivery_channel must be None
+        # (resolved by notify_fn from the owner's primary channel).
+        notify_mock.assert_called_once()
+        call_message, call_metadata = notify_mock.call_args.args
+        assert call_message == digest_msg
+        assert call_metadata["insight_count"] == 3
+        assert set(call_metadata["insight_ids"]) == set(result["delivered"])
+        assert call_metadata["intent"] == "insight"
+        assert call_metadata["channel"] is None
+
+    @pytest.mark.skipif(not _docker_available, reason="Docker not available")
+    @pytest.mark.integration
+    async def test_digest_channel_majority_vote(self, insight_pool):
+        """Majority channel (2 telegram, 1 email) is resolved as the delivery channel."""
+        from butlers.tools.switchboard.insight.broker import (
+            delivery_cycle,
+            propose_insight_candidate,
+        )
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'normal'
+        """)
+
+        # 2 telegram candidates, 1 email → majority channel must be telegram
+        for butler, dedup, msg, priority, channel in [
+            ("relationship", "birthday:alice:maj", "Alice's birthday", 85, "telegram"),
+            ("health", "health:bp:maj", "Log BP", 70, "telegram"),
+            ("finance", "finance:spend:maj", "Unusual spending", 60, "email"),
+        ]:
+            r = await propose_insight_candidate(
+                insight_pool,
+                origin_butler=butler,
+                priority=priority,
+                category=butler,
+                dedup_key=dedup,
+                message=msg,
+                expires_at=_future(),
+                channel=channel,
+            )
+            assert r["status"] == "accepted"
+
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert len(result["delivered"]) == 3
+        notify_mock.assert_called_once()
+        _, call_metadata = notify_mock.call_args.args
+        assert call_metadata["channel"] == "telegram"
+        assert call_metadata["insight_count"] == 3
+        assert call_metadata["intent"] == "insight"
+
+    @pytest.mark.skipif(not _docker_available, reason="Docker not available")
+    @pytest.mark.integration
+    async def test_digest_channel_tie_break_first_candidate_wins(self, insight_pool):
+        """On a channel count tie, the highest-priority candidate's channel wins.
+
+        Implementation uses Counter.most_common(1) which delegates to max() for n=1.
+        Because Counter preserves insertion order (CPython 3.7+) and max() returns
+        the first maximum seen, the candidate processed first (highest priority,
+        earliest created_at) determines the winner.  This matches the spec comment
+        in broker.py lines 860-861.
+        """
+        from butlers.tools.switchboard.insight.broker import (
+            delivery_cycle,
+            propose_insight_candidate,
+        )
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'normal'
+        """)
+
+        # 1 telegram (priority=85, highest), 1 email (priority=70), 1 no channel (priority=60).
+        # candidate_channels list = ['telegram', 'email'] after filtering None.
+        # Tie: telegram:1 vs email:1 → first-inserted wins → telegram.
+        for butler, dedup, msg, priority, channel in [
+            ("relationship", "birthday:alice:tie", "Alice's birthday", 85, "telegram"),
+            ("health", "health:bp:tie", "Log BP", 70, "email"),
+            ("finance", "finance:spend:tie", "Unusual spending", 60, None),
+        ]:
+            r = await propose_insight_candidate(
+                insight_pool,
+                origin_butler=butler,
+                priority=priority,
+                category=butler,
+                dedup_key=dedup,
+                message=msg,
+                expires_at=_future(),
+                channel=channel,
+            )
+            assert r["status"] == "accepted"
+
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert len(result["delivered"]) == 3
+        notify_mock.assert_called_once()
+        _, call_metadata = notify_mock.call_args.args
+        # Highest-priority candidate (priority=85) specified "telegram"; it is the
+        # first element in candidate_channels so Counter.most_common returns it.
+        assert call_metadata["channel"] == "telegram"
+        assert call_metadata["insight_count"] == 3
+
 
 # ===========================================================================
 # Category 10: Budget enforcement (requires Docker)
