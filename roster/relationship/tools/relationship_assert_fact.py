@@ -118,6 +118,32 @@ _PREDICATE_ALIAS_MAP: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Family confidence gate (bu-u0m00)
+# ---------------------------------------------------------------------------
+#
+# Kinship predicates (parent-of, child-of, family-of) are prone to LLM
+# mis-extraction when the model *infers* a relationship from context rather
+# than reading an explicit statement.  Live example: "has a son" was
+# extracted as a parent-of edge when the owner has no son.
+#
+# Gate: for non-owner entities, if the predicate is a kinship type and
+# ``conf < _FAMILY_GATE_CONF``, the call is routed to ``pending_approval``
+# (same mechanism as the owner carve-out) so the owner can confirm before a
+# hard entity-to-entity edge is written.
+#
+# Threshold of 0.8 divides:
+#   conf ≥ 0.8  — explicit statement ("X is Y's mother") → direct write
+#   conf < 0.8  — inferred / ambiguous mention → pending for human review
+#
+# Owner-entity subjects are already gated by the owner carve-out (RFC 0017
+# §2.3) regardless of predicate or conf, so this gate only fires on the
+# non-owner path.
+
+_FAMILY_GATE_PREDICATES: frozenset[str] = frozenset({"parent-of", "child-of", "family-of"})
+_FAMILY_GATE_CONF: float = 0.8
+
+
 def contact_info_type_to_predicate(ci_type: str) -> str | None:
     """Return the contact predicate for *ci_type*, or ``None`` when unmapped.
 
@@ -574,6 +600,80 @@ async def _assert_on_conn(
         )
 
     # Non-owner path.
+
+    # Family confidence gate (bu-u0m00): low-confidence kinship assertions are
+    # routed to pending_approval rather than writing a hard entity-to-entity edge.
+    # This prevents inferred mis-extractions (e.g. "has a son" when untrue) from
+    # silently writing incorrect parent-of/child-of/family-of edges.
+    # High-confidence (conf ≥ 0.8) kinship assertions from explicit statements
+    # proceed through the normal upsert path below.
+    if predicate in _FAMILY_GATE_PREDICATES and conf < _FAMILY_GATE_CONF:
+        tool_args_gate: dict[str, Any] = {
+            "subject": str(subject),
+            "predicate": predicate,
+            "object": object,
+            "object_kind": object_kind,
+            "src": src,
+            "conf": conf,
+            "verified": verified,
+        }
+        if last_seen is not None:
+            tool_args_gate["last_seen"] = last_seen.isoformat()
+        tool_args_gate["observed_at"] = observed_at.isoformat()
+        if weight is not None:
+            tool_args_gate["weight"] = weight
+        if primary is not None:
+            tool_args_gate["primary"] = primary
+
+        dedup_match_gate: dict[str, Any] = {
+            "subject": str(subject),
+            "predicate": predicate,
+            "object": object,
+            "object_kind": object_kind,
+        }
+        gate_why = why or (
+            f"Low-confidence kinship claim: `{predicate}` (conf={conf:g}) must be "
+            "confirmed before a hard entity edge is written. Approve if the relationship "
+            "is correct; reject if this was a mis-extraction."
+        )
+        gate_evidence: list[str] = (
+            list(evidence)
+            if evidence
+            else [
+                f"subject={subject}",
+                f"predicate={predicate}",
+                f"object={object}",
+                f"conf={conf:g} (threshold={_FAMILY_GATE_CONF:g})",
+                f"src={src}",
+            ]
+        )
+        gate_summary = (
+            f"relationship_assert_fact: low-confidence kinship {predicate!r} "
+            f"(conf={conf:g}) on entity {subject} — gated for confirmation"
+        )
+        action_id = await _create_pending_action(
+            conn,
+            "relationship_assert_fact",
+            tool_args_gate,
+            gate_summary,
+            dedup_match=dedup_match_gate,
+            why=gate_why,
+            evidence=gate_evidence,
+        )
+        logger.warning(
+            "relationship_assert_fact: low-confidence kinship edge blocked by family gate; "
+            "parked as pending_action %s (subject=%s, predicate=%s, conf=%g)",
+            action_id,
+            subject,
+            predicate,
+            conf,
+        )
+        return AssertResult(
+            outcome=AssertOutcome.pending_approval,
+            fact_id=None,
+            action_id=action_id,
+        )
+
     kwargs: dict[str, Any] = dict(
         subject=subject,
         predicate=predicate,

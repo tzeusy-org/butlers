@@ -284,7 +284,129 @@ memory_store_fact(
 )
 ```
 
-## Step 5c: Correct Existing Registry-Relational Edge-Facts (Retract + Re-assert)
+## Step 5c: Dual-Emit Rule — Property Facts That Imply Standing Relationships
+
+Some property predicates describe **what a standing relationship IS** rather than
+being pure attribute facts. When you extract a property fact whose *content*
+names another person and describes a durable relationship, you MUST emit BOTH:
+
+1. The **property fact** via `memory_store_fact()` (for narrative record / search).
+2. The **registry-relational edge** via `relationship_assert_fact(object_kind='entity')` (for
+   the entity graph).
+
+Emitting only the property fact silently drops the structured edge and leaves the
+relationship graph impoverished (zero kinship/partner/colleague edges despite known
+relationships).
+
+### Property predicates that ALWAYS require a dual-emit
+
+| Property predicate | Implied relational edge | Example content |
+|---|---|---|
+| `living_arrangement` with partner/cohabiting content | `partner-of` | "Cohabiting partner with Chloe Wong" |
+| `relationship_status` with partner/spouse content | `partner-of` | "Married to [Name]" / "Dating [Name]" |
+| `relationship_to_user` with family value | see table below | "Mom" / "Brother" / "Son" |
+| `family_relationship` | see table below | "Mummy is Tze How Lee's mother" |
+| `children` with a named person | `parent-of` (subject → named child) | "Has a daughter, Emma" |
+| `parents` / `mother` / `father` | `child-of` (subject → named parent) | "Father is [Name]" |
+| `sibling` / `siblings` | `family-of` | "Sister is [Name]" |
+| `colleague` / `coworker` with named person | `colleague-of` | "Colleagues with [Name] at Acme" |
+| `manager` / `reports_to` | `managed-by` | "Reports to [Name]" |
+
+### Relationship-to-user value → edge predicate mapping
+
+| `relationship_to_user` value | Edge to emit (subject → object) | Notes |
+|---|---|---|
+| "Mom" / "Mother" / "Mum" | `parent-of` (contact → owner) | Owner is child; contact is parent |
+| "Dad" / "Father" | `parent-of` (contact → owner) | Owner is child; contact is parent |
+| "Son" / "Daughter" / "Child" | `child-of` (contact → owner) | Owner is parent; contact is child |
+| "Brother" / "Sister" / "Sibling" | `family-of` (bidirectional) | |
+| "Partner" / "Spouse" / "Wife" / "Husband" / "Boyfriend" / "Girlfriend" | `partner-of` (contact → owner) | |
+| "Boss" / "Manager" | `manages` (contact → owner) | |
+| "Colleague" / "Co-worker" | `colleague-of` (contact → owner) | |
+| "Friend" | `friend-of` (contact → owner) | |
+
+### Dual-emit code pattern
+
+```python
+# "Cohabiting partner with Chloe Wong" stored as living_arrangement —
+# must ALSO emit a partner-of edge.
+
+# Step 1: resolve the owner (always pre-resolved, skip entity_resolve for owner)
+# Step 2: resolve or create the object entity (Chloe Wong)
+candidates = memory_entity_resolve(name="Chloe Wong", entity_type="person")
+if candidates:
+    chloe_entity_id = candidates[0]["entity_id"]
+else:
+    chloe = memory_entity_create(
+        canonical_name="Chloe Wong",
+        entity_type="person",
+        metadata={"unidentified": True, "source": "fact_storage",
+                  "source_butler": "relationship", "source_scope": "relationship"}
+    )
+    chloe_entity_id = chloe["entity_id"]
+
+# Step 3: narrative property fact (self-contained description)
+memory_store_fact(
+    subject="owner",
+    predicate="living_arrangement",
+    content="Cohabiting partner with Chloe Wong",
+    entity_id="<owner-entity-id>",
+    permanence="stable",
+    importance=8.0,
+    tags=["relationship"],
+)
+
+# Step 4: registry-relational edge (MANDATORY dual-emit)
+relationship_assert_fact(
+    subject="<owner-entity-id>",
+    predicate="partner-of",
+    object=chloe_entity_id,
+    src="relationship",
+    object_kind="entity",
+    conf=1.0,    # explicitly stated — full confidence
+    weight=9,
+)
+```
+
+## Step 5d: Confidence Gate for Family Predicates
+
+Kinship edges (`parent-of`, `child-of`, `family-of`) are prone to LLM mis-extraction
+when the model *infers* a relationship from context rather than reading an explicit
+statement. A live mis-extraction: "has a son" was stored as a `parent-of` edge when
+the owner has no son.
+
+**The central writer (`relationship_assert_fact`) enforces a confidence gate:**
+- `conf ≥ 0.8` → writes the edge directly (explicit-assertion tier).
+- `conf < 0.8` → routes to `pending_approval` for human confirmation (no edge written).
+
+### When to use which confidence level
+
+| Scenario | conf to use |
+|---|---|
+| **Explicit statement**: "Mummy is X's mother" / "X and Y are siblings" | `conf=1.0` |
+| **Near-explicit**: name is mentioned in a clear relational context ("my brother Jake called") | `conf=0.9` |
+| **Reasonably confident inference**: prior facts corroborate the relationship | `conf=0.8` |
+| **Inferred / ambiguous**: implied by context without direct statement | `conf=0.5–0.7` → gated |
+| **Speculative**: one possible interpretation among others | `conf < 0.5` → gated |
+
+### Practical rule
+
+**NEVER assert `parent-of`, `child-of`, or `family-of` with `conf < 0.8`.**
+
+At `conf < 0.8`, the central writer gates the assertion to pending approval automatically —
+you do NOT need to skip the call. But choosing `conf < 0.8` is the correct signal that you
+are not certain, and the owner will be prompted to confirm.
+
+If you cannot make a confident determination from the message, omit the kinship edge
+entirely (do not force-assert with an artificially high conf).
+
+### Non-kinship predicates are NOT gated
+
+`partner-of`, `friend-of`, `knows`, `colleague-of`, and all other non-kinship predicates
+follow the normal upsert path at any confidence level. Only the three kinship predicates
+(`parent-of`, `child-of`, `family-of`) trigger the gate.
+
+## Step 5e: Correct Existing Registry-Relational Edge-Facts (Retract + Re-assert)
 
 When the user **corrects** an existing relationship — phrased as "X works at Y, not Z",
 "actually X moved to company Y", or "X no longer works at Z, they're at Y now" — this is a
@@ -725,12 +847,42 @@ You should still run Steps 1–3 for any *other* people mentioned in the message
 
 **Wrong:** `memory_store_fact(predicate="works_at", object_entity_id=..., ...)` — the writer rejects registry-relational predicates with `object_entity_id` set. Use `relationship_assert_fact` for all `works-at` edges.
 
+### Example 13: Dual-Emit — Property Fact That Implies a Relational Edge
+
+**User message**: "Chloe and I have been cohabiting partners for 3 years"
+
+**Context**: owner is sending (identified by preamble), Chloe Wong is already a contact.
+
+**Actions:**
+1. `memory_entity_resolve("Chloe", entity_type="person", context_hints={...})` → `entity_id="<uuid-chloe>"`, single match (HIGH conf)
+2. `memory_store_fact(subject="owner", predicate="living_arrangement", content="Cohabiting partner with Chloe Wong for 3 years", entity_id="<uuid-owner>", permanence="stable", importance=9.0, tags=["relationship", "family"])` — narrative property fact
+3. `relationship_assert_fact(subject="<uuid-owner>", predicate="partner-of", object="<uuid-chloe>", src="relationship", object_kind="entity", conf=1.0, weight=9)` — **MANDATORY dual-emit**: explicit partnership → full confidence registry-relational edge (owner entity → pending_approval via RFC 0017 §2.3, not written directly)
+4. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
+
+**Why dual-emit?** The `living_arrangement` property fact alone leaves the entity graph with zero partner-of edges. Searching for "who is the owner's partner?" finds nothing. The registry-relational edge is what populates `/entities/concentration` and makes the relationship graph useful.
+
+### Example 14: Inferred Family Claim — Low-Confidence Gate
+
+**User message**: "Someone in the office mentioned I look like I could have kids"
+
+**Actions:**
+1. No named person mentioned. No explicit kinship statement.
+2. This is ambiguous / speculative — do NOT emit any kinship edge.
+3. No `relationship_assert_fact` call for `parent-of` / `child-of`.
+4. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)` — react silently or acknowledge.
+
+**Why not assert a kinship edge?** The statement is a vague comment, not a relationship claim. Asserting `parent-of` here would be a mis-extraction (conf would be ~0.2–0.3, well below the 0.8 gate). Even if you called `relationship_assert_fact(conf=0.3)`, the central writer would gate it to pending_approval — but do not manufacture kinship edges from non-relational prose.
+
+**Contrast**: "My son Jake called today" → `parent-of(owner → Jake)` with `conf=0.9` — explicit statement, bypass gate, write edge.
+
 ## Guidelines
 
 - **Always respond** when `request_context` is present — silence feels like failure
 - **Be concise** — users are on mobile devices
 - **Resolve before storing** — always call memory_entity_resolve before any write; never store facts with only a raw subject string
 - **Route edges correctly** — registry-relational edges (works-at, friend-of, family-of, …) → `relationship_assert_fact(object_kind="entity")`; narrative edges → `memory_store_fact(object_entity_id=...)`; see "Canonical fact-store boundary" section
+- **Dual-emit standing relationships** — when a property fact's content asserts a durable relationship (living_arrangement/partner, family_relationship/parent, relationship_status/spouse, children, siblings), ALSO emit the registry-relational edge via `relationship_assert_fact(object_kind='entity')`; see Step 5c
+- **Gate inferred kinship** — `parent-of`, `child-of`, `family-of` require `conf ≥ 0.8` to write a direct edge; lower-confidence inferences are gated to pending approval by the central writer; never force-assert kinship you cannot confirm; see Step 5d
 - **Attribute to the right person** — when the sender is not the owner, facts about the sender's preferences/interests belong on the sender's entity, not the owner's
 - **Self-contained content** — fact content is read in isolation; never use "the sender", "the user", or bare pronouns — always name the actual person so the fact makes sense on an entity page without the original message
 - **Extract liberally** — capture facts even if tangential to the main request
