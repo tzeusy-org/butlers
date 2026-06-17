@@ -214,7 +214,7 @@ phases of the RFC 0011 pipeline are wired end-to-end: butler-side insight
 generation, Switchboard brokering (dedup, budget, adaptive ratchet, anti-spam),
 and durable delivery via Messenger. The dashboard surfaces live delivery state.
 A gen-1 spec-to-code reconciliation confirmed faithful implementation across
-81 tests. Field-proven delivery cadence at scale is not yet attested.
+88 tests. Field-proven delivery cadence at scale is not yet attested.
 
 | Evidence | Detail |
 |----------|--------|
