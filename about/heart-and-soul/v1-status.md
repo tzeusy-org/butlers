@@ -100,7 +100,7 @@ cron entries.
 | Evidence | Location |
 |----------|----------|
 | Cron scheduler | `src/butlers/core/scheduler.py` |
-| Tick-based retry | `scheduler.py` lines 1521, 1547 — "Keep status=pending for next-tick retry" |
+| Tick-based retry | `scheduler.py::_tick_deferred_notification_pass()` — "Keep status=pending for next-tick retry" |
 | Butler schedule declarations | All `roster/*/butler.toml` — `[[butler.schedule]]` blocks with cron strings |
 | Scheduler tests | `tests/core/` — scheduler unit tests |
 | Smoke test — daemon lifecycle | `tests/smoke/test_daemon_lifecycle.py` (PR #2431) |
@@ -214,7 +214,7 @@ phases of the RFC 0011 pipeline are wired end-to-end: butler-side insight
 generation, Switchboard brokering (dedup, budget, adaptive ratchet, anti-spam),
 and durable delivery via Messenger. The dashboard surfaces live delivery state.
 A gen-1 spec-to-code reconciliation confirmed faithful implementation across
-88 tests. Field-proven delivery cadence at scale is not yet attested.
+98 tests. Field-proven delivery cadence at scale is not yet attested.
 
 | Evidence | Detail |
 |----------|--------|
@@ -225,7 +225,7 @@ A gen-1 spec-to-code reconciliation confirmed faithful implementation across
 | Scheduled delivery cron | `roster/switchboard/butler.toml` — `cron = "0 8 * * *"`, job `insight_delivery_cycle` |
 | API endpoint | `GET /api/system/insights/delivery-state` (`src/butlers/api/routers/system.py`) |
 | Dashboard tile | `frontend/src/components/system/InsightDeliveryTile.tsx` |
-| Test coverage | `tests/modules/test_module_insight_broker.py` (11 tests), `tests/modules/test_insight_engine.py` (53 tests), `tests/contracts/test_insight_delivery.py` (6 tests), `tests/api/test_system_insight_delivery.py` (8 tests), `tests/jobs/test_insight_delivery_job.py` (10 tests) — **88 tests total** |
+| Test coverage | `tests/modules/test_module_insight_broker.py` (11 tests), `tests/modules/test_insight_engine.py` (69 tests), `tests/api/test_system_insight_delivery.py` (8 tests), `tests/jobs/test_insight_delivery_job.py` (10 tests) — **98 tests total** |
 | Adaptive ratchet | `broker.py::compute_effective_budget()` — one-way ratchet; `check_total_disengagement_auto_off()` — auto-off on sustained disengagement |
 | Global budget + cooldowns | `broker.py` — `public.insight_candidates`, `public.insight_cooldowns`, per-key cooldown enforcement |
 
