@@ -51,9 +51,9 @@ COPY src/ src/
 ENV UV_TORCH_BACKEND=cpu
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -n "$EXTRAS" ]; then \
-      uv sync --no-dev --extra whatsapp --extra "$EXTRAS"; \
+      uv sync --frozen --no-dev --extra whatsapp --extra "$EXTRAS"; \
     else \
-      uv sync --no-dev --extra whatsapp; \
+      uv sync --frozen --no-dev --extra whatsapp; \
     fi
 
 # 4. Supporting files (alembic, scripts — change rarely)
