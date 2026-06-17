@@ -247,7 +247,14 @@ dynamically from interaction facts using exponential decay scoring. Tiers are
 
 ```
 score(contact) = Σ exp(-λ × days_since_interaction_i)
+                   × direction_weight
+                   × type_weight
+                   × (1 / group_size)
 λ = ln(2) / 30   (30-day half-life)
+
+direction_weight: outgoing=10.0, mutual=5.0, incoming/NULL=1.0  (RFC 0013 D1)
+type_weight:      calendar_event/interview/email=0.2, others=1.0
+group_size:       from fact metadata; defaults to 1.0 when absent (RFC 0013 D2)
 ```
 
 Contacts are ranked by score. Top 5 → tier 5, ranks 6-15 → tier 15, etc.
@@ -259,51 +266,79 @@ Source: `roster/relationship/tools/dunbar.py`
 ### Interaction facts
 
 The scoring engine queries only facts matching:
-- `subject = 'contact:{contact_uuid}'`
-- `predicate = 'interaction'`
+- `entity_id = c.entity_id` (joined through `public.contacts`)
+- `predicate LIKE 'interaction_%'` (e.g., `interaction_telegram_user_client`,
+  `interaction_email`, `interaction_calendar_event`, `interaction_meeting`)
 - `scope = 'relationship'`
 - `validity = 'active'`
 
 These facts are created by `interaction_log()` in
-`roster/relationship/tools/interactions.py`, which deduplicates by
-(contact_id, type, date) when `occurred_at` is explicitly provided.
+`roster/relationship/tools/interactions.py`. Facts use subject
+`entity:{entity_id}` (subject key changed from `contact:{contact_id}` to
+`entity:{entity_id}` in migration rel_018). The function deduplicates by
+(entity_id, predicate, valid_at::date, direction) when `occurred_at` is
+explicitly provided. Including `direction` allows an incoming and an outgoing
+fact for the same contact on the same day to coexist (RFC 0013 D4).
 
-### Current gap: no passive interaction detection
+### Passive interaction sync job
 
 ```mermaid
 graph LR
     A["User chats with<br/>Chloe on Telegram"] -->|"messages stored in"| B["switchboard.message_inbox"]
-    B -.-x|"❌ NO pipeline exists"| C["interaction_log()"]
-    C -->|"creates"| D["facts table<br/>(predicate=interaction)"]
+    B -->|"interaction_sync job<br/>(daily 06:30 UTC)"| C["interaction_log()"]
+    C -->|"creates"| D["facts table<br/>(predicate=interaction_{type})"]
     D -->|"feeds"| E["Dunbar score<br/>computation"]
 
     F["User tells butler<br/>'I met Chloe today'"] -->|"fact-extraction skill"| C
 
-    G["Calendar event<br/>'Dinner with Chloe'"] -.-x|"❌ NO pipeline exists"| C
+    G["Calendar event<br/>'Dinner with Chloe'"] -->|"interaction_sync job<br/>(calendar scan)"| C
 ```
 
-**Today, interactions are only logged when the user explicitly narrates them**
-via the fact-extraction pipeline ("I had coffee with Chloe"). Passive
-communication (Telegram messages, WhatsApp chats, emails) and calendar events
-(dinners with friends) are NOT detected.
+The `interaction_sync` background job runs daily at 06:30 UTC
+(`cron = "30 6 * * *"`, `dispatch_mode = "job"` — no LLM spawned). It closes
+the loop between communication data already in the system and the relationship
+butler's tier computation.
 
-This means a contact like a user's partner can have zero interaction facts
-despite constant daily communication, leaving them stranded at tier 1500.
+#### Message-based sync (group-aware)
 
-### Planned: passive interaction sync job
+Queries `switchboard.message_inbox` grouped by
+`(source_thread_identity, source_channel, DATE(received_at))` — a chat-centric
+view per RFC 0013 D4. Monitored channels: `telegram_user_client`,
+`whatsapp_user_client`, `email`.
 
-A background job (`interaction_sync`) owned by the relationship butler will:
+Key behaviors:
+- Messages where `request_context->>'interaction_eligible'` is `'false'` are
+  skipped before grouping.
+- Groups with `participant_count > 20` are skipped entirely (D3 gate).
+  `participant_count` is read from `request_context` when available; otherwise
+  falls back to the count of distinct senders in the group.
+- Owner presence is detected via `public.entities.roles`. If the owner sent at
+  least one message in the chat on that day, each non-owner contact receives
+  both an **incoming** fact and an **outgoing** fact. Otherwise only incoming.
+- For DM chats (`participant_count ≤ 2`), `group_size = 1` (full weight).
+  Group chats use `group_size = participant_count`.
+- Identity resolution uses `relationship.entity_facts` (has-email / has-handle
+  predicates) to map sender identifiers to `entity_id` values.
+  (`public.contact_info` was dropped in migration core_115 / bead bu-e2ja9.)
+- Incoming and outgoing facts for the same contact on the same day use
+  distinct `occurred_at` hour offsets so that the fact store's timestamp-level
+  idempotency key is unique per (entity, channel, direction, day):
+  incoming (telegram=0, whatsapp=1, email=2) and outgoing (+12 each).
 
-1. **Scan `switchboard.message_inbox`** for recent messages on user-to-person
-   channels (`telegram_user_client`, `whatsapp_user_client`, `email`)
-2. **Scan `calendar_events`** for past social events with attendees
-3. **Resolve identifiers → contact_id** via `public.contact_info` reverse-lookup
-   (email, telegram_user_id, phone number)
-4. **Call `interaction_log()`** with `occurred_at` set (enabling date-based dedup)
-   to create the facts that feed Dunbar scoring
+#### Calendar-based sync
 
-This closes the loop between communication data already in the system and the
-relationship butler's tier computation.
+Queries `public.calendar_events` for confirmed events (`status = 'confirmed'`)
+within the scan window. Declined events (owner's `responseStatus = 'declined'`)
+are skipped. Attendee emails are resolved to `entity_id` via
+`relationship.entity_facts` (has-email predicate). Each resolved attendee
+receives an interaction fact with `type='calendar_event'`, `direction='mutual'`.
+
+#### Scan window
+
+Checkpoint-based: start is read from state key `interaction_sync.last_scan_at`.
+First run defaults to `now() - 30 days`. Window is capped at 30 days to prevent
+unbounded backfill after long outages. On completion, the job writes the scan
+end time back to the state store.
 
 ---
 
