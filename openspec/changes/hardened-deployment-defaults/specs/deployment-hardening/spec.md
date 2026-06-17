@@ -124,22 +124,19 @@ posture signal.
 
 ### Requirement: Strict DB-Role Enforcement Under Hardened Posture
 
-`about/heart-and-soul/security.md` and the `database-security` capability define
-a **graceful fallback policy**: when a butler's PostgreSQL runtime role cannot be
-verified or does not exist, `SET ROLE` enforcement is disabled and the connection
-proceeds with the connecting user's privileges (observed: `src/butlers/db.py`
-logs "Could not verify role … SET ROLE enforcement disabled" and "Role … not
-found; SET ROLE enforcement disabled"). This fail-open behavior is acceptable for
-`dev` convenience but is a silent loss of schema isolation for an always-on
-deployment.
+Under the hardened posture, butler DB role-enforcement and permission-gate
+failures SHALL be **fail-closed**: a missing or unverifiable PostgreSQL runtime
+role SHALL cause startup (or the affected connection acquire) to fail loudly
+rather than silently downgrade to the connecting user's privileges. Under `dev`,
+the existing graceful fallback SHALL be retained but the degraded state SHALL be
+reported by the degraded-safety indicator.
 
-Under the hardened posture, role-enforcement and permission-gate failures SHALL
-be **fail-closed**: a missing/unverifiable runtime role SHALL cause startup (or
-the affected connection acquire) to fail loudly rather than silently downgrade to
-the connecting user's privileges. Under `dev`, the existing graceful fallback is
-retained but the degraded state SHALL be reported by the degraded-safety
-indicator. This does not change the `database-security` graceful-fallback policy
-for `dev`; it adds an opt-in strict mode bound to the hardened posture.
+This adds an opt-in strict mode bound to the hardened posture; it does not change
+the `database-security` graceful-fallback policy for `dev`. Today the policy is
+fail-open in all postures: `src/butlers/db.py` logs "Could not verify role … SET
+ROLE enforcement disabled" and "Role … not found; SET ROLE enforcement disabled"
+and proceeds with the connecting user's privileges, which is a silent loss of
+schema isolation for an always-on deployment.
 
 #### Scenario: Missing role fails closed under hardened posture
 - **WHEN** the deployment runs under the hardened posture and a butler's runtime
