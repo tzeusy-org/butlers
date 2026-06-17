@@ -80,6 +80,80 @@ async def _run_switchboard_eligibility_sweep_job(
     return await run_eligibility_sweep_job(pool)
 
 
+def _build_switchboard_insight_notify_fn(
+    pool: asyncpg.Pool,
+) -> Any:
+    """Build the production notify_fn for the insight delivery cycle.
+
+    Returns an async callable ``notify_fn(message, metadata) -> dict`` that:
+    1. Reads ``metadata["channel"]`` to determine the delivery channel
+       (falls back to ``"telegram"`` when not set, per spec default).
+    2. Resolves the owner's recipient identifier for that channel from
+       ``public.entity_info``.
+    3. Dispatches via the Switchboard's ``deliver()`` path (direct channel
+       routing — no MCP round-trip through the Switchboard itself).
+    4. Translates ``deliver()``'s ``status="failed"`` to ``status="error"`` so
+       the broker's failure-detection check (``status == "error"``) fires
+       correctly on delivery failure.
+
+    Parameters
+    ----------
+    pool:
+        The shared asyncpg connection pool (captured in the closure).
+    """
+
+    async def _notify_fn(message: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        from butlers.credential_store import resolve_owner_entity_info
+        from butlers.tools.switchboard.notification.deliver import deliver
+
+        channel: str = metadata.get("channel") or "telegram"
+
+        if channel == "telegram":
+            recipient = await resolve_owner_entity_info(pool, "telegram")
+            if not recipient:
+                logger.error(
+                    "insight-delivery-cycle: no telegram recipient configured for owner — "
+                    "cannot deliver insight"
+                )
+                return {"status": "error", "error": "No telegram chat ID configured for owner"}
+        elif channel == "email":
+            recipient = await resolve_owner_entity_info(pool, "email")
+            if not recipient:
+                logger.error(
+                    "insight-delivery-cycle: no email address configured for owner — "
+                    "cannot deliver insight via email"
+                )
+                return {"status": "error", "error": "No email address configured for owner"}
+        else:
+            logger.warning(
+                "insight-delivery-cycle: unsupported channel %r; falling back to telegram",
+                channel,
+            )
+            channel = "telegram"
+            recipient = await resolve_owner_entity_info(pool, "telegram")
+            if not recipient:
+                return {"status": "error", "error": "No telegram chat ID configured for owner"}
+
+        deliver_result = await deliver(
+            pool,
+            channel=channel,
+            message=message,
+            recipient=recipient,
+            source_butler="switchboard",
+            metadata=metadata,
+        )
+        # Translate deliver()'s "failed" status to "error" so the broker's
+        # failure-detection check (notify_result.get("status") == "error") fires.
+        if isinstance(deliver_result, dict) and deliver_result.get("status") == "failed":
+            return {
+                "status": "error",
+                "error": deliver_result.get("error", "delivery failed"),
+            }
+        return deliver_result
+
+    return _notify_fn
+
+
 async def _run_switchboard_insight_delivery_cycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -91,14 +165,14 @@ async def _run_switchboard_insight_delivery_cycle_job(
     top-B selection, delivery, cooldown recording, engagement tracking,
     and cleanup.
 
-    Passes ``notify_fn=None`` — delivery_cycle will skip the actual delivery
-    step and return ``skipped=True`` until the Switchboard notify path is
-    fully integrated. No candidates are consumed or marked delivered.
+    Builds the production notify_fn from the pool so that delivery_cycle
+    actually dispatches candidates via the Switchboard's notification path.
     """
     del job_args
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-    return await delivery_cycle(pool, notify_fn=None)
+    notify_fn = _build_switchboard_insight_notify_fn(pool)
+    return await delivery_cycle(pool, notify_fn=notify_fn)
 
 
 async def _run_switchboard_spend_rule_savings_job(

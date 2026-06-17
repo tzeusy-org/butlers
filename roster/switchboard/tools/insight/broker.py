@@ -855,11 +855,24 @@ async def delivery_cycle(
 
     result["delivery_message"] = delivery_message
 
+    # Compute delivery channel: majority vote from candidates that specify one.
+    # NULL channel means "use the owner's primary channel" (resolved by notify_fn).
+    # Per spec: for a digest, the most common channel wins; ties broken by the
+    # first candidate's channel (highest-priority candidate, earliest created_at).
+    from collections import Counter
+
+    candidate_channels = [c.get("channel") for c in selected if c.get("channel")]
+    if candidate_channels:
+        delivery_channel: str | None = Counter(candidate_channels).most_common(1)[0][0]
+    else:
+        delivery_channel = None  # notify_fn resolves from owner's primary channel
+
     delivered_at = now
     notify_metadata: dict[str, Any] = {
         "insight_count": deliver_count,
         "insight_ids": selected_ids,
         "intent": "insight",
+        "channel": delivery_channel,
     }
 
     # notify_fn is guaranteed non-None here (None case returns early above)
