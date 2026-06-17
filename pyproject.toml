@@ -115,6 +115,7 @@ testpaths = ["tests", "roster"]
 addopts = "--import-mode=importlib -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
+    "smoke: Fast operational smoke gate — no real LLM spawned; Docker allowed for DB-backed assertions",
     "integration: Integration tests — require Docker (testcontainers)",
     "e2e: End-to-end tests — require authenticated CLI runtime, claude binary, and Docker",
     "benchmark: Benchmark mode tests — iterate over models, accumulate results, generate scorecards",
