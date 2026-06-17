@@ -11,7 +11,10 @@
 # --- Optional: Go builder (whatsapp-bridge) --------------------------------
 # Only runs when whatsapp-bridge/ exists in context. The binary is small (~15MB)
 # so we always include it rather than maintaining a separate Dockerfile.
-FROM golang:1.25-bookworm AS go-builder
+# Digest-pinned for full reproducibility (resolves to 1.25.11-bookworm).
+# To update: run `docker buildx imagetools inspect golang:1.25-bookworm` and
+# replace the sha256 below.
+FROM golang:1.25-bookworm@sha256:bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24 AS go-builder
 
 WORKDIR /build
 
@@ -26,6 +29,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     ./cmd/bridge
 
 # --- App image --------------------------------------------------------------
+# butlers-base:latest is a locally-built artifact (built from Dockerfile.base).
+# Digest-pinning is not applicable here — the local tag is set at build time and
+# has no registry-assigned digest until pushed. Reproducibility is achieved by
+# pinning the upstream python base in Dockerfile.base.
 FROM butlers-base:latest
 
 COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
