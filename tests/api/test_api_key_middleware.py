@@ -85,6 +85,7 @@ async def test_health_endpoints_bypass_auth(path):
     X-API-Key header even when DASHBOARD_API_KEY is configured.
     Covers both /api/health and /health (both are registered as public)."""
     app = create_app(api_key="super-secret")
+    app.state.ready = True  # simulate completed lifespan startup so health returns 200
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

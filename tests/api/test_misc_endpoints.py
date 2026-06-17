@@ -46,6 +46,7 @@ _roster_root = Path(__file__).resolve().parents[2] / "roster"
 
 async def test_health_returns_ok():
     app = create_app()
+    app.state.ready = True  # simulate completed lifespan startup
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -65,6 +66,7 @@ async def test_health_returns_ok():
 )
 async def test_auth_gate(api_key, headers, path, expected):
     app = create_app(api_key=api_key)
+    app.state.ready = True  # simulate completed lifespan startup so health returns 200
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

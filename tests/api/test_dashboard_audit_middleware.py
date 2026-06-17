@@ -287,6 +287,7 @@ class TestDashboardAuditMiddleware:
     async def test_middleware_skips_health(self):
         """GET /api/health is not audited."""
         app, mock_db, mock_pool = self._make_app_with_mock_db()
+        app.state.ready = True  # simulate completed lifespan startup so health returns 200
 
         with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
             async with httpx.AsyncClient(

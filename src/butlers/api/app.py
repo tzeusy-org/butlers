@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
@@ -178,9 +179,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
+    # Signal that lifespan startup has completed.  The health endpoints check
+    # this flag and return 503 until startup finishes.
+    app.state.ready = True
+
     yield
 
     # Shutdown
+    app.state.ready = False
     await shutdown_db_manager()
     await shutdown_dependencies()
 
@@ -219,6 +225,8 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    # Health endpoints return 503 until lifespan startup sets this True.
+    app.state.ready = False
     app.router.redirect_slashes = False
 
     # OTel instrumentation (only when OTLP endpoint is configured)
@@ -344,6 +352,8 @@ def create_app(
     @app.get("/api/health")
     @app.get("/health")
     async def health():
+        if not app.state.ready:
+            return JSONResponse(status_code=503, content={"status": "starting"})
         return {"status": "ok"}
 
     # --- Static file serving (production) ---
