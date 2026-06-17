@@ -38,7 +38,7 @@ jobs:
         uses: astral-sh/setup-uv@v8.1.0
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --frozen --dev
 
       - name: Nightly schema-matrix and migration tests
         run: uv run pytest tests/config/test_schema_matrix_migrations.py tests/migrations/ -q --tb=short -m "nightly or integration" -n auto
