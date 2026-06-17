@@ -237,7 +237,17 @@ class TestListEntities:
     ) -> tuple[FastAPI, AsyncMock]:
         mock_pool = AsyncMock()
         mock_pool.fetchval = AsyncMock(return_value=total)
-        mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
+
+        # list_entities also calls compute_tier_ranking (Dunbar scoring), which
+        # issues its own pool.fetch calls against contacts/facts. Route only the
+        # entity data query to fetch_rows; the scoring/override queries return []
+        # (empty ranking → no computed-tier enrichment in these unit tests).
+        async def _route_fetch(query, *args, **kwargs):
+            if "FROM public.entities" in query:
+                return fetch_rows or []
+            return []
+
+        mock_pool.fetch = AsyncMock(side_effect=_route_fetch)
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_200_with_items(self):
@@ -327,6 +337,28 @@ class TestListEntities:
         assert "CASE WHEN entity_type = 'person' THEN last_seen END ASC NULLS LAST" in data_sql
         # tier ASC must come before the entity_type grouping in the ORDER BY.
         assert data_sql.index("tier ASC NULLS LAST") < data_sql.index("CASE entity_type")
+
+    async def test_computed_dunbar_tiers_are_joined_into_the_query(self):
+        """The rank-based tier ranking is forwarded into the data query so the
+        computed tier (not just manual pins) drives the displayed value and sort."""
+        ranked_entity = uuid4()
+        fake_ranking = [{"entity_id": ranked_entity, "dunbar_tier": 50}]
+        app, pool = self._make_app(total=0, fetch_rows=[])
+        with patch(
+            "butlers.tools.relationship.dunbar.compute_tier_ranking",
+            new=AsyncMock(return_value=fake_ranking),
+        ) as mock_rank:
+            resp = await _get(app, _LIST_PATH)
+        assert resp.status_code == 200
+        mock_rank.assert_awaited_once()
+        data_sql = pool.fetch.call_args[0][0]
+        # The computed tiers are unnest-joined and coalesced with the override.
+        assert "unnest(" in data_sql
+        assert "computed_tier" in data_sql
+        assert "COALESCE(" in data_sql
+        # The ranking's entity ids and tier values are forwarded as arrays.
+        assert [ranked_entity] in pool.fetch.call_args[0]
+        assert [50] in pool.fetch.call_args[0]
 
 
 # ===========================================================================

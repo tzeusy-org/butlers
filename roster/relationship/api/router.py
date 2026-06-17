@@ -3006,6 +3006,26 @@ async def list_entities(
 
     where_clause = "WHERE " + " AND ".join(conditions)
 
+    # Rank-based Dunbar tiers. compute_tier_ranking scores every listed,
+    # entity-linked contact and buckets it into a Dunbar circle (5/15/50/150/
+    # 500/1500), defaulting zero-interaction contacts to 1500 (Familiar Faces)
+    # and honouring manual overrides. We forward the result into the data query
+    # as two parallel arrays joined via unnest so the *computed* tier drives both
+    # the displayed value and the tier-primary sort — not just manual pins.
+    # Entities absent from the ranking (no linked contact, unlisted, or a
+    # non-person type) fall back to any pinned override, else NULL ('—').
+    from butlers.tools.relationship import dunbar as _dunbar
+
+    ranking = await _dunbar.compute_tier_ranking(pool)
+    tier_entity_ids = [entry["entity_id"] for entry in ranking]
+    tier_values = [int(entry["dunbar_tier"]) for entry in ranking]
+
+    # Argument slots for the data query: the two tier arrays, then offset/limit.
+    tier_ids_idx = arg_idx
+    tier_vals_idx = arg_idx + 1
+    offset_idx = arg_idx + 2
+    limit_idx = arg_idx + 3
+
     # Count query (no pagination)
     count_sql = f"SELECT count(*) FROM public.entities e {where_clause}"
 
@@ -3013,7 +3033,13 @@ async def list_entities(
     # People are sorted as a relationship working set: closest tier first, then
     # oldest last_seen first for re-engagement; other types remain alphabetical.
     data_sql = f"""
-        WITH annotated AS (
+        WITH computed_tiers AS (
+            -- Rank-based Dunbar tiers computed in Python, forwarded as arrays.
+            SELECT entity_id, computed_tier
+            FROM unnest(${tier_ids_idx}::uuid[], ${tier_vals_idx}::int[])
+                AS t(entity_id, computed_tier)
+        ),
+        annotated AS (
             SELECT
                 e.id,
                 e.canonical_name,
@@ -3023,15 +3049,20 @@ async def list_entities(
                 e.metadata,
                 e.created_at,
                 e.updated_at,
-                -- Pinned Dunbar tier override from relationship.entity_facts
-                (
-                    SELECT (rf.object)::int
-                    FROM relationship.entity_facts rf
-                    WHERE rf.subject = e.id
-                      AND rf.predicate = 'dunbar_tier_override'
-                      AND rf.validity = 'active'
-                    ORDER BY rf.created_at DESC
-                    LIMIT 1
+                -- Effective Dunbar tier: the rank-based computed tier when the
+                -- entity is in the ranking (which already folds in overrides),
+                -- else any standalone pinned override (covers contactless pins).
+                COALESCE(
+                    ct.computed_tier,
+                    (
+                        SELECT (rf.object)::int
+                        FROM relationship.entity_facts rf
+                        WHERE rf.subject = e.id
+                          AND rf.predicate = 'dunbar_tier_override'
+                          AND rf.validity = 'active'
+                        ORDER BY rf.created_at DESC
+                        LIMIT 1
+                    )
                 ) AS tier,
                 -- Most-recent last_seen across all active relationship facts
                 (
@@ -3056,6 +3087,7 @@ async def list_entities(
                       AND rf.validity = 'active'
                 ) AS contact_fact_count
             FROM public.entities e
+            LEFT JOIN computed_tiers ct ON ct.entity_id = e.id
             {where_clause}
         )
         SELECT
@@ -3086,10 +3118,10 @@ async def list_entities(
             END,
             CASE WHEN entity_type = 'person' THEN last_seen END ASC NULLS LAST,
             canonical_name ASC
-        OFFSET ${arg_idx} LIMIT ${arg_idx + 1}
+        OFFSET ${offset_idx} LIMIT ${limit_idx}
     """
     count_args = list(args)
-    data_args = [*args, offset, limit]
+    data_args = [*args, tier_entity_ids, tier_values, offset, limit]
 
     total_raw, rows = await asyncio.gather(
         pool.fetchval(count_sql, *count_args),

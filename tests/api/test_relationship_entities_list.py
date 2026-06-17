@@ -93,7 +93,17 @@ def _app_with_pool(
         mock_pool.fetchval = AsyncMock(side_effect=fetchval_side_effect)
     else:
         mock_pool.fetchval = AsyncMock(return_value=total)
-    mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
+
+    # list_entities also calls compute_tier_ranking (Dunbar scoring), which
+    # issues its own pool.fetch calls against contacts/facts. Route only the
+    # entity data query to fetch_rows; the scoring/override queries return []
+    # (empty ranking → no computed-tier enrichment in these unit tests).
+    async def _route_fetch(query, *args, **kwargs):
+        if "FROM public.entities" in query:
+            return fetch_rows or []
+        return []
+
+    mock_pool.fetch = AsyncMock(side_effect=_route_fetch)
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool

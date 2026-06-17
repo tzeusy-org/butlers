@@ -819,8 +819,12 @@ class OverdueContactsResponse(BaseModel):
 class EntitySummary(BaseModel):
     """Compact entity representation for the index list view.
 
-    ``tier`` is the pinned Dunbar tier override (from a ``dunbar_tier_override``
-    fact), or ``None`` when the entity has no pinned tier (rank-based assignment).
+    ``tier`` is the effective Dunbar tier: the rank-based computed tier for
+    listed, entity-linked contacts (scored by interaction recency/frequency and
+    bucketed into 5/15/50/150/500/1500, defaulting to 1500 with no interactions),
+    with manual ``dunbar_tier_override`` facts taking priority. ``None`` only for
+    entities outside the ranking with no pinned override (e.g. organizations,
+    locations, or persons with no linked contact).
     ``last_seen`` is the most-recent ``last_seen`` timestamp across all of the
     entity's facts in ``relationship.entity_facts``, or ``None`` when no facts exist.
     ``first_seen`` is the earliest ``last_seen`` timestamp across all of the
