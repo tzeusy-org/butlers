@@ -1,17 +1,34 @@
 """Generic credential store service backed by the butler_secrets table.
 
-Provides a DB-first resolution layer for arbitrary named secrets, replacing
-direct ``os.environ.get()`` calls scattered across modules and connectors.
+Implements the **Tier 1 (system)** layer of the three-tier credential model
+defined in ``about/heart-and-soul/security.md`` (see "Credential Management").
+Provides a DB-first resolution layer for ecosystem-wide secrets, replacing
+direct ``os.environ.get()`` calls in modules and connectors.
 
-Resolution order (``resolve()``):
-1. Database (``butler_secrets`` table, written by ``store()``).
-2. Environment variable (when *env_fallback* is True, the default).
+Tier summary (full definitions in security.md):
+- **Tier 0 (bootstrap):** Infrastructure env vars (``POSTGRES_*``, ``SWITCHBOARD_MCP_URL``,
+  ``OTEL_*``). Read directly via ``os.environ``; required before the DB is available.
+- **Tier 1 (system):** Ecosystem-wide secrets in ``butler_secrets`` (this module).
+  Canonical access: ``await store.resolve(key)``.
+- **Tier 2 (user/identity):** Owner-bound credentials in ``public.entity_info``.
+  Canonical access: ``await resolve_owner_entity_info(pool, info_type)``.
+  Never use ``CredentialStore`` for Tier 2 credentials.
+
+Resolution order for ``resolve()`` — **see ``resolve()`` for the canonical
+description of credential-fallback semantics**:
+
+1. Local database (``butler_secrets`` table via ``load()``).
+2. Fallback database pool(s), in configured order.
+3. ``os.environ[key]`` — only when *env_fallback* is explicitly set to ``True``
+   (disabled by default).  Reserve for Tier 0 bootstrap credentials only.
+
+API keys, OAuth tokens, and integration secrets MUST NOT pass ``env_fallback=True``.
 
 Usage — storing a secret::
 
     await store.store("telegram_bot_token", "1234:ABCD...", category="telegram")
 
-Usage — resolving a secret (DB-first, then env)::
+Usage — resolving a secret (DB-first; env fallback disabled by default)::
 
     token = await store.resolve("TELEGRAM_BOT_TOKEN")
     if token is None:
@@ -472,28 +489,39 @@ class CredentialStore:
         return None
 
     async def resolve(self, key: str, *, env_fallback: bool = False) -> str | None:
-        """Resolve a secret — DB only by default.
+        """Resolve a Tier 1 (system) secret — DB only by default.
 
-        Resolution order:
-        1. Local database (``butler_secrets`` table via ``load()``).
-        2. Fallback database(s), in configured order.
-        3. ``os.environ[key]`` only if *env_fallback* is ``True``.
+        **Canonical credential-fallback semantics** for the three-tier model
+        (``about/heart-and-soul/security.md`` → "Credential Management"):
 
-        Environment fallback is disabled by default. It should only be
-        enabled for infrastructure bootstrap credentials (database
-        connection, OTEL endpoint) that must be available before the DB
-        is reachable. API keys, OAuth tokens, and integration credentials
-        MUST NOT use env fallback.
+        - **Tier 0 (bootstrap):** ``POSTGRES_*``, ``SWITCHBOARD_MCP_URL``, ``OTEL_*`` —
+          read directly via ``os.environ`` before the DB is available.
+        - **Tier 1 (system):** Ecosystem-wide API keys, OAuth client creds, tokens —
+          stored in ``butler_secrets``.  Canonical access: ``await store.resolve(key)``
+          (this function).
+        - **Tier 2 (user/identity):** Owner-bound credentials in ``public.entity_info`` —
+          use ``resolve_owner_entity_info(pool, info_type)`` instead, never this function.
+
+        Resolution order within this function:
+
+        1. **Local database** — ``butler_secrets`` table (via ``load()``).
+        2. **Fallback database pool(s)** — in configured order (e.g. shared pool).
+        3. **Environment variable** — ``os.environ[key]`` only if *env_fallback* is
+           explicitly ``True``.  This step is **disabled by default** (``False``).
+
+        Environment fallback must only be enabled for Tier 0 bootstrap credentials
+        (database connection strings, OTEL endpoint) that must be available before
+        the DB is reachable.  API keys, OAuth tokens, and integration credentials
+        are Tier 1 and MUST NOT use ``env_fallback=True``.
 
         Parameters
         ----------
         key:
-            The secret key.  When falling back to env vars, the same
-            key is looked up in ``os.environ`` (exact match, case-
-            sensitive).
+            The secret key.  When env fallback is active, the same key is looked
+            up in ``os.environ`` (exact match, case-sensitive).
         env_fallback:
-            Whether to fall back to environment variables if the DB
-            has no value.  Defaults to ``False``.
+            When ``True``, fall back to ``os.environ[key]`` if the DB has no
+            value.  Defaults to ``False`` — callers must explicitly opt in.
 
         Returns
         -------
