@@ -49,7 +49,7 @@ def _started_app(api_key: str = "") -> object:
 
 @pytest.mark.parametrize("path", _HEALTH_PATHS)
 async def test_health_returns_ok_after_startup(path):
-    """Both health routes return 200 {\"status\": \"ok\"} after startup completes."""
+    """Both health routes return 200 with status 'ok' and security-posture booleans."""
     app = _started_app()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -58,7 +58,10 @@ async def test_health_returns_ok_after_startup(path):
     assert resp.status_code == 200, (
         f"Expected 200 from {path} after startup, got {resp.status_code}"
     )
-    assert resp.json() == {"status": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert isinstance(body.get("auth", {}).get("api_key_auth_enabled"), bool)
+    assert isinstance(body.get("auth", {}).get("export_secret_insecure_default"), bool)
 
 
 # ---------------------------------------------------------------------------

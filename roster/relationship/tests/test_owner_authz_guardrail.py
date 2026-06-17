@@ -418,6 +418,11 @@ class TestClause12cStartupGate:
 
         # Should NOT raise — dev mode is exempt from the fatal key check.
         app = create_app(api_key=None)
+        # ASGITransport does not trigger the ASGI lifespan (see class-level note).
+        # Simulate a fully-started app so the health endpoint returns 200 instead
+        # of the pre-startup 503.  The core assertion is that create_app() succeeds
+        # without raising — the 200 is just structural confirmation.
+        app.state.ready = True
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
