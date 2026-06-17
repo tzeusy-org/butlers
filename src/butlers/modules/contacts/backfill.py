@@ -271,12 +271,25 @@ class ContactBackfillWriter:
         """Return True if the named table was found during init probe."""
         return self._table_flags is not None and self._table_flags.get(name, False)
 
-    async def create_contact(self, contact: CanonicalContact) -> uuid.UUID:
+    async def create_contact(
+        self,
+        contact: CanonicalContact,
+        *,
+        executor: Any | None = None,
+    ) -> uuid.UUID:
         """Create a new CRM contact linked to an entity.
 
         Resolves or creates an entity before the contact INSERT so that
         ``entity_id`` is always set when the schema supports it.
+
+        ``executor`` lets the caller run every statement on a specific
+        connection/transaction (asyncpg Pool and Connection share the
+        ``fetchrow``/``execute`` interface). The engine passes a transactional
+        connection so the contact INSERT and its provenance source-link commit
+        atomically — otherwise an interrupted sync can leave a link-less
+        contact that the next sync cannot find and re-creates as a duplicate.
         """
+        db = executor or self._pool
         display = _build_display_name(contact)
         first = contact.first_name
         last = contact.last_name
@@ -294,11 +307,11 @@ class ContactBackfillWriter:
         metadata: dict[str, Any] = {}
         self._stamp_provenance(metadata, contact)
 
-        entity_id = await self._ensure_entity(first, last, nickname, company)
+        entity_id = await self._ensure_entity(first, last, nickname, company, executor=db)
 
         if entity_id is not None:
             try:
-                row = await self._pool.fetchrow(
+                row = await db.fetchrow(
                     """
                     INSERT INTO public.contacts (
                         name, first_name, last_name, nickname,
@@ -321,7 +334,7 @@ class ContactBackfillWriter:
                 entity_id = None
 
         if entity_id is None:
-            row = await self._pool.fetchrow(
+            row = await db.fetchrow(
                 """
                 INSERT INTO public.contacts (
                     name, first_name, last_name, nickname,
@@ -355,8 +368,11 @@ class ContactBackfillWriter:
         last_name: str | None,
         nickname: str | None,
         company: str | None,
+        *,
+        executor: Any | None = None,
     ) -> uuid.UUID | None:
         """Resolve or create an entity for a backfilled contact."""
+        db = executor or self._pool
         canonical = " ".join(p.strip() for p in (first_name, last_name) if p and p.strip())
         if not canonical:
             canonical = nickname or company or "Unknown"
@@ -371,7 +387,7 @@ class ContactBackfillWriter:
             if c and c.strip() and c.strip().lower() != canonical.lower()
         ]
         try:
-            row = await self._pool.fetchrow(
+            row = await db.fetchrow(
                 "INSERT INTO public.entities (canonical_name, entity_type, "
                 "aliases, metadata, roles) VALUES ($1, $2, $3, "
                 "'{}'::jsonb, '{}') RETURNING id",
@@ -381,7 +397,7 @@ class ContactBackfillWriter:
             )
             return row["id"] if row else None
         except asyncpg.UniqueViolationError:
-            row = await self._pool.fetchrow(
+            row = await db.fetchrow(
                 "SELECT id FROM public.entities WHERE LOWER(canonical_name) = LOWER($1) "
                 "AND entity_type = $2 "
                 "AND (metadata->>'merged_into') IS NULL LIMIT 1",
@@ -753,11 +769,19 @@ class ContactBackfillWriter:
         self,
         local_id: uuid.UUID | None,
         contact: CanonicalContact,
+        *,
+        executor: Any | None = None,
     ) -> None:
-        """Create or update the contacts_source_links provenance row."""
+        """Create or update the contacts_source_links provenance row.
+
+        ``executor`` lets the engine run this on the same transaction as the
+        contact INSERT (see ``create_contact``) so the provenance link is never
+        orphaned from its contact.
+        """
+        db = executor or self._pool
         if contact.deleted:
             # Tombstone: mark existing link as deleted, do not create new
-            await self._pool.execute(
+            await db.execute(
                 """
                 UPDATE contacts_source_links
                 SET deleted_at = now(), last_seen_at = now()
@@ -773,7 +797,7 @@ class ContactBackfillWriter:
             # No local contact to link; skip creating the source link.
             return
 
-        await self._pool.execute(
+        await db.execute(
             """
             INSERT INTO contacts_source_links (
                 provider, account_id, external_contact_id,
@@ -890,9 +914,19 @@ class ContactBackfillEngine:
                 local_id = None
 
         if local_id is None:
-            # New contact — create CRM record
-            local_id = await self._writer.create_contact(contact)
-            await self._writer.upsert_source_link(local_id, contact)
+            # New contact — create CRM record. The contact INSERT and its
+            # provenance source-link MUST commit atomically: if the contact
+            # lands without a source link, the next sync cannot resolve it by
+            # external_id and re-creates it, fanning out duplicate contacts for
+            # the same person (the historical Ang-Zhi-Yuan duplication). Run
+            # both on one transactional connection so they succeed or fail as a
+            # unit. The remaining child-table upserts are best-effort and stay
+            # outside the transaction — their failure must not block the
+            # idempotency anchor or strand a half-written contact.
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    local_id = await self._writer.create_contact(contact, executor=conn)
+                    await self._writer.upsert_source_link(local_id, contact, executor=conn)
             await self._writer.upsert_contact_info(local_id, contact)
             await self._writer.upsert_addresses(local_id, contact)
             await self._writer.upsert_important_dates(local_id, contact)
