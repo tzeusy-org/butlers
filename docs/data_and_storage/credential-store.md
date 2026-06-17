@@ -14,7 +14,7 @@ When a module calls `store.resolve("TELEGRAM_BOT_TOKEN")`:
 
 1. **Local database** -- Queries the `butler_secrets` table in the butler's own schema.
 2. **Shared database** -- Queries `butler_secrets` in configured fallback pools (the shared `butlers` database).
-3. **Environment variable** -- Falls back to `os.environ["TELEGRAM_BOT_TOKEN"]` if `env_fallback=True` (the default).
+3. **Environment variable** -- Falls back to `os.environ["TELEGRAM_BOT_TOKEN"]` only when `env_fallback=True` is explicitly passed. This step is **disabled by default** — callers must opt in.
 
 This layered approach means credentials stored via the dashboard (which writes to DB) always take precedence over environment variables.
 
@@ -56,7 +56,7 @@ await store.store_shared("GOOGLE_OAUTH_CLIENT_ID", "...", category="google")
 # DB-only lookup (local + fallback pools)
 value = await store.load("GOOGLE_OAUTH_CLIENT_ID")
 
-# DB + env fallback
+# DB-only by default; pass env_fallback=True to also check os.environ
 value = await store.resolve("TELEGRAM_BOT_TOKEN")
 
 # Check existence
