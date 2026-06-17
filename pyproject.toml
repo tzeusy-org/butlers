@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "butlers"
 version = "0.1.0"
-description = "AI agent framework — long-running MCP server daemons with pluggable modules"
+description = "Single-user personal butler system — autonomous AI daemons managing daily life domains"
 requires-python = ">= 3.12"
 dependencies = [
     "fastmcp",
