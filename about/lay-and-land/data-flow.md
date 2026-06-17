@@ -276,7 +276,9 @@ These facts are created by `interaction_log()` in
 `roster/relationship/tools/interactions.py`. Facts use subject
 `entity:{entity_id}` (subject key changed from `contact:{contact_id}` to
 `entity:{entity_id}` in migration rel_018). The function deduplicates by
-(entity_id, predicate, valid_at) when `occurred_at` is explicitly provided.
+(entity_id, predicate, valid_at::date, direction) when `occurred_at` is
+explicitly provided. Including `direction` allows an incoming and an outgoing
+fact for the same contact on the same day to coexist (RFC 0013 D4).
 
 ### Passive interaction sync job
 
@@ -319,7 +321,8 @@ Key behaviors:
   predicates) to map sender identifiers to `entity_id` values.
   (`public.contact_info` was dropped in migration core_115 / bead bu-e2ja9.)
 - Incoming and outgoing facts for the same contact on the same day use
-  distinct `occurred_at` hour offsets to prevent dedup collision:
+  distinct `occurred_at` hour offsets so that the fact store's timestamp-level
+  idempotency key is unique per (entity, channel, direction, day):
   incoming (telegram=0, whatsapp=1, email=2) and outgoing (+12 each).
 
 #### Calendar-based sync
