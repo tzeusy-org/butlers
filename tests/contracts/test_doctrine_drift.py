@@ -111,10 +111,11 @@ def test_tier1_env_fallback_off_by_default():
     Doctrine: about/heart-and-soul/security.md — "only reads os.environ when
     env_fallback=True is explicitly passed (disabled by default)."
 
-    The sister test in test_credential_tier_resolution.py confirms the parameter
-    *exists*.  This test confirms the *default value is False*, ensuring that a
-    future refactor cannot accidentally flip the safe default to True without
-    this guard catching it.
+    test_credential_tier_resolution.py::test_env_fallback_opt_in_and_security
+    confirms the parameter *exists*.  test_db_first_resolution_before_env_fallback
+    in the same file also asserts ``default is False`` from an RFC 0006 angle;
+    this test captures the same constraint from the doctrine-drift angle so
+    security.md and the code cannot silently diverge.
     """
     from butlers.credential_store import CredentialStore
 
