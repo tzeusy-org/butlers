@@ -366,19 +366,26 @@ fi
 docker builder prune --keep-storage=20g -f 2>/dev/null || true
 
 # ── Build shared app image (used by all services) ────────────────────
-# All services reference butlers-app:latest — includes Go whatsapp-bridge
-# binary and whatsapp extra (just qrcode). One image for everything.
-echo "Building butlers-app image (existing stack stays up)..."
-DOCKER_BUILDKIT=1 docker build -t butlers-app:latest . || {
+# All services reference butlers-app:${BUTLERS_APP_TAG:-latest} — includes
+# Go whatsapp-bridge binary and whatsapp extra (just qrcode). One image
+# for everything.
+#
+# Override BUTLERS_APP_TAG to pin to a specific build (e.g. a git SHA):
+#   BUTLERS_APP_TAG=$(git rev-parse --short HEAD) ./scripts/compose.sh
+# See docs/operations/image-bump-procedure.md for the full bump process.
+BUTLERS_APP_TAG="${BUTLERS_APP_TAG:-latest}"
+export BUTLERS_APP_TAG
+echo "Building butlers-app image (tag: ${BUTLERS_APP_TAG})..."
+DOCKER_BUILDKIT=1 docker build -t "butlers-app:${BUTLERS_APP_TAG}" . || {
   echo "ERROR: Failed to build butlers-app image" >&2
   exit 1
 }
 
 # Build profile-specific images (live-listener if audio profile active)
 if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
-  echo "Building butlers-app-audio image (live-listener)..."
+  echo "Building butlers-app-audio image (tag: ${BUTLERS_APP_TAG})..."
   DOCKER_BUILDKIT=1 docker build --build-arg EXTRAS=live-listener \
-    -t butlers-app-audio:latest . || {
+    -t "butlers-app-audio:${BUTLERS_APP_TAG}" . || {
     echo "ERROR: Failed to build butlers-app-audio image" >&2
     exit 1
   }
