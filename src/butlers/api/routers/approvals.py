@@ -19,6 +19,7 @@ import logging
 import os
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -47,6 +48,7 @@ from butlers.api.models.approval import (
     ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
+    EntityRef,
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
     TargetContact,
@@ -262,6 +264,7 @@ def _pending_action_to_detail(
     action: PendingAction,
     butler_name: str,
     target_contact: TargetContact | None = None,
+    referenced_entities: list[EntityRef] | None = None,
 ) -> ApprovalDetail:
     """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
@@ -283,6 +286,7 @@ def _pending_action_to_detail(
         decided_by=action.decided_by,
         decided_at=action.decided_at,
         target_contact=target_contact,
+        referenced_entities=referenced_entities or [],
     )
 
 
@@ -348,6 +352,73 @@ async def _resolve_target_contact(
             continue
 
     return None
+
+
+async def _resolve_referenced_entities(
+    db_mgr: DatabaseManager,
+    tool_args: dict[str, Any],
+) -> list[EntityRef]:
+    """Resolve any entity UUIDs in *tool_args* to public.entities canonical names.
+
+    Scans the top-level tool_args values for strings that parse as UUIDs and
+    looks them up in ``public.entities`` (a shared-schema table reachable from
+    any butler pool). Returns one EntityRef per UUID that resolves, preserving
+    the order in which the UUIDs appear in tool_args. UUIDs that do not name an
+    entity (e.g. a ``contact_id``, which lives in public.contacts) are silently
+    skipped — this is generic across tools, not specific to any one of them.
+
+    Fails open (returns whatever resolved so far) so a DB hiccup never blocks
+    rendering an approval dossier.
+    """
+    # Collect candidate UUIDs in stable first-seen order.
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for value in tool_args.values():
+        if not isinstance(value, str):
+            continue
+        try:
+            normalized = str(UUID(value))
+        except (ValueError, AttributeError):
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            candidates.append(normalized)
+
+    if not candidates:
+        return []
+
+    for butler_name in db_mgr.butler_names:
+        try:
+            pool = db_mgr.pool(butler_name)
+            rows = await pool.fetch(
+                """
+                SELECT id, canonical_name, entity_type, COALESCE(roles, '{}') AS roles
+                FROM public.entities
+                WHERE id = ANY($1)
+                """,
+                [UUID(c) for c in candidates],
+            )
+        except Exception:  # noqa: BLE001
+            continue
+
+        by_id = {str(row["id"]): row for row in rows}
+        resolved: list[EntityRef] = []
+        for uuid_str in candidates:
+            row = by_id.get(uuid_str)
+            if row is None:
+                continue
+            raw_roles = row["roles"]
+            resolved.append(
+                EntityRef(
+                    id=uuid_str,
+                    name=row["canonical_name"] or "",
+                    entity_type=row["entity_type"],
+                    roles=list(raw_roles) if raw_roles else [],
+                )
+            )
+        return resolved
+
+    return []
 
 
 def _approval_rule_to_api(rule: ApprovalRuleModel) -> ApprovalRule:
@@ -1906,7 +1977,12 @@ async def get_approval_detail(
             if row is not None:
                 pa = PendingAction.from_row(row)
                 target_contact = await _resolve_target_contact(db_mgr, pa)
-                return ApiResponse(data=_pending_action_to_detail(pa, butler_name, target_contact))
+                referenced_entities = await _resolve_referenced_entities(db_mgr, pa.tool_args)
+                return ApiResponse(
+                    data=_pending_action_to_detail(
+                        pa, butler_name, target_contact, referenced_entities
+                    )
+                )
         except Exception:
             continue
 

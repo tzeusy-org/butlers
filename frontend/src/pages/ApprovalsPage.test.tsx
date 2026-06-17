@@ -424,4 +424,56 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(retryApproval).toHaveBeenCalledWith("h-approved");
     expect(toast.success).toHaveBeenCalledWith("Dispatched");
   });
+
+  it("renders resolved entity names in a 'Referenced Entities' block (bu-4ni21)", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a3")]) as AnyMock,
+    );
+    const detail = makeApiResponse({
+      id: "a3",
+      title: "Relationship Assert Fact (relationship)",
+      butler: "relationship",
+      created_at: "2026-05-17T10:00:00Z",
+      expires_at: null,
+      why: null,
+      evidence: [],
+      proposed_action: {
+        tool_name: "relationship_assert_fact",
+        tool_args: {
+          subject: "c64f5aed-9b1f-492e-bab2-86c986c31ebd",
+          predicate: "works-at",
+          object: "9510c225-4764-4ef5-8a0f-3d62be654b28",
+        },
+        agent_summary: null,
+      },
+      status: "pending",
+      decided_by: null,
+      decided_at: null,
+      target_contact: null,
+      referenced_entities: [
+        {
+          id: "c64f5aed-9b1f-492e-bab2-86c986c31ebd",
+          name: "Tze How Lee",
+          entity_type: "person",
+          roles: ["owner"],
+        },
+        {
+          id: "9510c225-4764-4ef5-8a0f-3d62be654b28",
+          name: "Acme Research & Technologies",
+          entity_type: "organization",
+          roles: [],
+        },
+      ],
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(detail as AnyMock);
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("Referenced Entities") ?? false);
+
+    expect(container.textContent).toContain("Referenced Entities");
+    expect(container.textContent).toContain("Acme Research & Technologies");
+    expect(container.textContent).toContain("Tze How Lee");
+    // Object UUID is no longer presented bare — the name resolves it.
+    expect(container.textContent).toContain("organization");
+  });
 });

@@ -1254,3 +1254,179 @@ async def test_detail_resolves_target_contact_from_contact_id(app):
     assert detail["target_contact"]["id"] == str(contact_id)
     assert detail["target_contact"]["name"] == "Ada Lovelace"
     assert detail["target_contact"]["roles"] == ["owner"]
+
+
+# ---------------------------------------------------------------------------
+# Detail dossier resolves entity UUIDs to canonical names (bu-4ni21)
+# ---------------------------------------------------------------------------
+
+
+async def test_detail_resolves_referenced_entities_from_tool_args(app):
+    """GET /api/approvals/{id} resolves entity UUIDs in tool_args (e.g. the
+    subject/object of relationship_assert_fact) into named referenced_entities
+    so the dossier explains who/what a fact references instead of bare UUIDs."""
+    subject_id = uuid4()
+    object_id = uuid4()
+    action_id = uuid4()
+    action_row = {
+        "id": action_id,
+        "tool_name": "relationship_assert_fact",
+        "tool_args": {
+            "subject": str(subject_id),
+            "predicate": "works-at",
+            "object": str(object_id),
+            "object_kind": "entity",
+            "src": "backfill",
+        },
+        "status": "pending",
+        "requested_at": _NOW,
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": None,
+        "decided_at": None,
+        "execution_result": None,
+        "approval_rule_id": None,
+        "why": None,
+        "evidence": [],
+    }
+    entity_rows = [
+        {
+            "id": subject_id,
+            "canonical_name": "Tze How Lee",
+            "entity_type": "person",
+            "roles": ["owner"],
+        },
+        {
+            "id": object_id,
+            "canonical_name": "Acme Research & Technologies",
+            "entity_type": "organization",
+            "roles": [],
+        },
+    ]
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.fetchrow = AsyncMock(return_value=action_row)
+
+    def fetchval_mock(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return None
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_mock)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    # _resolve_target_contact -> no contact_id, returns None.
+    mock_pool.fetchrow = AsyncMock(return_value=None)
+    # _resolve_referenced_entities queries public.entities via pool.fetch.
+    mock_pool.fetch = AsyncMock(return_value=entity_rows)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+    mock_db.butler_names = ["general"]
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    refs = resp.json()["data"]["referenced_entities"]
+    by_id = {r["id"]: r for r in refs}
+    assert by_id[str(subject_id)]["name"] == "Tze How Lee"
+    assert by_id[str(subject_id)]["entity_type"] == "person"
+    assert by_id[str(subject_id)]["roles"] == ["owner"]
+    assert by_id[str(object_id)]["name"] == "Acme Research & Technologies"
+    assert by_id[str(object_id)]["entity_type"] == "organization"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_referenced_entities helper — unit coverage (bu-4ni21)
+# ---------------------------------------------------------------------------
+
+
+def _entity_db(fetch_return=None, *, fetch_raises=False):
+    pool = AsyncMock()
+    if fetch_raises:
+        pool.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+    else:
+        pool.fetch = AsyncMock(return_value=fetch_return or [])
+    db = MagicMock(spec=DatabaseManager)
+    db.butler_names = ["general"]
+    db.pool = MagicMock(return_value=pool)
+    return db, pool
+
+
+async def test_resolve_referenced_entities_skips_non_uuid_and_preserves_order():
+    from butlers.api.routers.approvals import _resolve_referenced_entities
+
+    subject_id = uuid4()
+    object_id = uuid4()
+    db, pool = _entity_db(
+        fetch_return=[
+            {"id": object_id, "canonical_name": "Org", "entity_type": "organization", "roles": []},
+            {"id": subject_id, "canonical_name": "Person", "entity_type": "person", "roles": []},
+        ]
+    )
+    tool_args = {
+        "subject": str(subject_id),
+        "predicate": "works-at",  # not a UUID -> skipped
+        "object": str(object_id),
+        "conf": 1,  # not a string -> skipped
+    }
+    refs = await _resolve_referenced_entities(db, tool_args)
+    # Order follows first-seen order in tool_args (subject before object),
+    # not the DB row order.
+    assert [r.id for r in refs] == [str(subject_id), str(object_id)]
+    # Only the subject/object UUIDs are queried.
+    assert sorted(str(u) for u in pool.fetch.call_args.args[1]) == sorted(
+        [str(subject_id), str(object_id)]
+    )
+
+
+async def test_resolve_referenced_entities_drops_unknown_uuids():
+    from butlers.api.routers.approvals import _resolve_referenced_entities
+
+    known_id = uuid4()
+    unknown_id = uuid4()
+    db, _ = _entity_db(
+        fetch_return=[
+            {"id": known_id, "canonical_name": "Known", "entity_type": "person", "roles": []},
+        ]
+    )
+    refs = await _resolve_referenced_entities(
+        db, {"subject": str(known_id), "object": str(unknown_id)}
+    )
+    assert [r.id for r in refs] == [str(known_id)]
+
+
+async def test_resolve_referenced_entities_no_uuids_returns_empty():
+    from butlers.api.routers.approvals import _resolve_referenced_entities
+
+    db, pool = _entity_db()
+    refs = await _resolve_referenced_entities(db, {"text": "hello", "n": 3})
+    assert refs == []
+    pool.fetch.assert_not_called()
+
+
+async def test_resolve_referenced_entities_fails_open_on_db_error():
+    from butlers.api.routers.approvals import _resolve_referenced_entities
+
+    db, _ = _entity_db(fetch_raises=True)
+    refs = await _resolve_referenced_entities(db, {"subject": str(uuid4())})
+    assert refs == []

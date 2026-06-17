@@ -1816,6 +1816,18 @@ export interface TargetContact {
   roles: string[];
 }
 
+/**
+ * A public.entities UUID found in a pending action's tool_args, resolved to its
+ * canonical name. Lets the dossier name who/what a fact references (e.g. the
+ * subject/object of relationship_assert_fact) instead of showing bare UUIDs.
+ */
+export interface EntityRef {
+  id: string;
+  name: string;
+  entity_type?: string | null;
+  roles: string[];
+}
+
 export interface ApprovalAction {
   id: string;
   butler: string;
@@ -1872,6 +1884,11 @@ export interface ApprovalDetail {
   decided_by?: string | null;
   decided_at?: string | null;
   target_contact?: TargetContact | null;
+  /**
+   * Entity UUIDs from proposed_action.tool_args resolved to canonical names.
+   * Empty when the action references no known entities or resolution failed.
+   */
+  referenced_entities?: EntityRef[];
 }
 
 /** Quiet-hours policy singleton. */

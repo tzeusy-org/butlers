@@ -23,6 +23,21 @@ class TargetContact(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
+class EntityRef(BaseModel):
+    """Human-readable resolution of an entity UUID referenced by a pending action.
+
+    Pending actions such as ``relationship_assert_fact`` carry raw
+    ``public.entities`` UUIDs in their ``tool_args`` (e.g. ``subject``,
+    ``object``). Resolving those to ``canonical_name`` lets the Dispatch
+    dossier explain *who/what* a fact references instead of showing bare UUIDs.
+    """
+
+    id: str
+    name: str
+    entity_type: str | None = None
+    roles: list[str] = Field(default_factory=list)
+
+
 class ApprovalAction(BaseModel):
     """Approval action representation for dashboard API.
 
@@ -78,6 +93,14 @@ class ApprovalDetail(BaseModel):
     decided_by: str | None = None
     decided_at: datetime | None = None
     target_contact: TargetContact | None = None
+    referenced_entities: list[EntityRef] = Field(
+        default_factory=list,
+        description=(
+            "Entity UUIDs found in the proposed action's tool_args, resolved to "
+            "public.entities canonical names. Lets the dossier name who/what a "
+            "fact references (e.g. subject/object of relationship_assert_fact)."
+        ),
+    )
 
 
 class ApprovalSummary(BaseModel):

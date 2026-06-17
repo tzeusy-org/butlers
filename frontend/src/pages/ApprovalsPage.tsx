@@ -250,6 +250,33 @@ function Dossier({
         )}
       </div>
 
+      {/* Referenced entities — resolve UUIDs in the action to canonical names */}
+      {detail.referenced_entities && detail.referenced_entities.length > 0 && (
+        <div className="border-t border-border pt-4">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
+            Referenced Entities
+          </div>
+          <div>
+            {detail.referenced_entities.map((ent, i) => (
+              <div
+                key={ent.id}
+                className={[
+                  "flex items-baseline gap-2 py-1.5",
+                  i > 0 ? "border-t border-border/50" : "",
+                ].join(" ")}
+              >
+                <span className="text-sm text-foreground font-medium">{ent.name}</span>
+                <span className="text-[11px] font-mono text-muted-foreground">
+                  {[ent.entity_type, ...(ent.roles ?? [])].filter(Boolean).join(" · ")}
+                  {ent.entity_type || (ent.roles && ent.roles.length > 0) ? " · " : ""}
+                  {ent.id.slice(0, 8)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Evidence — mono lines, rule-separated */}
       {detail.evidence && detail.evidence.length > 0 && (
         <div className="border-t border-border pt-4">
