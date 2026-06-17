@@ -876,6 +876,7 @@ export {
   getBackupFacts,
   getEgressCatalog,
   getButlerHeartbeats,
+  getInsightDeliveryState,
 } from "./client.ts";
 
 export type {
@@ -886,6 +887,7 @@ export type {
   EgressActor,
   EgressCatalog,
   HeartbeatFacts,
+  InsightDeliveryState,
   InstanceFacts,
   SchemaSize,
   TableSize,

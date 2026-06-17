@@ -4977,6 +4977,21 @@ export interface HeartbeatFacts {
   butlers: ButlerHeartbeat[];
 }
 
+/** Aggregated state of the proactive insight delivery pipeline. */
+export interface InsightDeliveryState {
+  /** Candidates with status='pending', waiting to be delivered. */
+  queued: number;
+  /** Candidates successfully delivered (status='delivered'). */
+  delivered: number;
+  /**
+   * Candidates permanently blocked after 3 consecutive delivery failures.
+   * Excludes cooldown-filtered and dedup-filtered candidates.
+   */
+  failed: number;
+  /** ISO 8601 timestamp of the most recent successful delivery, or null. */
+  last_delivery_at: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard briefing (GET /api/dashboard/briefing)
 //

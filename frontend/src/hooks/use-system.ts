@@ -15,6 +15,7 @@ import {
   getDatabaseFacts,
   getEgressCatalog,
   getHealth,
+  getInsightDeliveryState,
   getInstanceFacts,
 } from "@/api/index.ts";
 
@@ -91,5 +92,21 @@ export function useHealthPosture() {
     queryFn: () => getHealth(),
     // Posture is static across a process lifetime; check infrequently.
     refetchInterval: 120_000,
+  });
+}
+
+/**
+ * Fetch the current state of the proactive insight delivery pipeline.
+ *
+ * Returns queued / delivered / failed counts and the last-delivery timestamp
+ * from GET /api/system/insights/delivery-state.  The endpoint degrades
+ * gracefully: all-zero counts with null last_delivery_at is an honest empty
+ * state (no delivery activity yet), not an error.
+ */
+export function useInsightDeliveryState() {
+  return useQuery({
+    queryKey: ["system-insight-delivery"],
+    queryFn: () => getInsightDeliveryState(),
+    refetchInterval: 60_000,
   });
 }

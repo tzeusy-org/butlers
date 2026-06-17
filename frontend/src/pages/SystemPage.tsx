@@ -10,6 +10,7 @@ import { BackupTile } from "@/components/system/BackupTile";
 import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { DbSizeTile } from "@/components/system/DbSizeTile";
 import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
+import { InsightDeliveryTile } from "@/components/system/InsightDeliveryTile";
 import { SecurityPostureTile } from "@/components/system/SecurityPostureTile";
 import { UptimeTile } from "@/components/system/UptimeTile";
 import { VersionTile } from "@/components/system/VersionTile";
@@ -94,6 +95,7 @@ export function SystemPage() {
         <UptimeTile />
         <DbSizeTile />
         <SecurityPostureTile />
+        <InsightDeliveryTile />
         <div className="lg:col-span-2 h-full">
           <BackupTile />
         </div>
