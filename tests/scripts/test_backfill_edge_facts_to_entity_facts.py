@@ -9,8 +9,10 @@ Covers:
    is retracted exactly once.
 6. idempotency — re-running after apply finds zero active rows → no-op.
 7. narrative edge — predicate not in registry; fact is left in memory unchanged.
+8. loader — _load_assert_fact_fn() registers the module in sys.modules BEFORE
+   exec_module so @dataclass KW_ONLY resolution succeeds.
 
-Issue: bu-1fu8c
+Issue: bu-1fu8c, bu-hzz09
 """
 
 from __future__ import annotations
@@ -297,3 +299,40 @@ async def test_mixed_batch_migrates_only_mappable() -> None:
     assert per["works_at"]["migrated"] == 1
     assert per["member_of"]["migrated"] == 1
     assert per["planned_dinner_with"]["left_narrative"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Loader: sys.modules registration before exec_module (regression for bu-hzz09)
+# ---------------------------------------------------------------------------
+
+
+def test_load_assert_fact_fn_registers_module_before_exec() -> None:
+    """_load_assert_fact_fn() must succeed when the roster file contains @dataclass.
+
+    Regression guard for bu-hzz09: without ``sys.modules[spec.name] = mod``
+    BEFORE ``exec_module``, Python's @dataclass decorator cannot resolve KW_ONLY
+    via ``sys.modules.get(cls.__module__).__dict__`` and raises
+    ``AttributeError: 'NoneType' object has no attribute '__dict__'``.
+
+    All other tests in this file inject ``_assert_fact``, so the loader is never
+    exercised there.  This test calls the loader directly.
+    """
+    _MODULE_SENTINEL = "_roster_assert_fact"
+    # Remove any prior cached load so the loader runs from scratch.
+    prior_cached = _mod._cached_assert_fact
+    prior_module = sys.modules.pop(_MODULE_SENTINEL, None)
+    _mod._cached_assert_fact = None
+    try:
+        fn = _mod._load_assert_fact_fn()
+        assert callable(fn), (
+            "_load_assert_fact_fn() must return the relationship_assert_fact callable"
+        )
+        # The module must now be registered.
+        assert _MODULE_SENTINEL in sys.modules
+    finally:
+        # Restore prior state so module-level cache is not polluted across tests.
+        _mod._cached_assert_fact = prior_cached
+        if prior_module is not None:
+            sys.modules[_MODULE_SENTINEL] = prior_module
+        else:
+            sys.modules.pop(_MODULE_SENTINEL, None)
