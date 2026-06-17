@@ -177,11 +177,18 @@ predicate is a durable standing relationship type registered in
 | `purchased-from` | transactional |
 | `subscribed-to` | subscription |
 | `visited` | place visit |
+| `manages` | person manages another person or organization |
+| `managed-by` | person is managed by another person (inverse of manages) |
+| `manages-property` | person manages a place or organization |
+| `participant-of` | durable participation in a group, org, or recurring event |
+| `invited-by` | person was invited or referred by another person |
+| `rental-agent` | person acts as rental agent for an organization or place |
+| `rental-location` | person has a rental relationship with a place |
 
 These MUST be written through `relationship_assert_fact(object_kind="entity")`.
 The memory writer rejects them with a `ValueError` if you try `memory_store_fact`.
 
-Underscore aliases (`works_at`, `friend_of`, `sibling_of`, `married_to`, etc.)
+Underscore aliases (`works_at`, `friend_of`, `managed_by`, `rental_agent`, etc.)
 are resolved automatically by `relationship_assert_fact()` — but always write
 the hyphenated canonical form in this skill to be explicit.
 
@@ -189,7 +196,8 @@ the hyphenated canonical form in this skill to be explicit.
 
 An edge is **narrative** when it is episodic or coordination context that happens
 to reference two entities but is NOT a durable standing relationship type — for
-example `planned_dinner_with`, `wake_coordination`, `social_exchange_with`.
+example `planned_dinner_with`, `wake_coordination`, `social_exchange_with`,
+`job_opportunity`, `talked_to`, `meetup_coordination`.
 These live in `{schema}.facts` via `memory_store_fact(object_entity_id=...)`.
 
 **Discriminator rule:**
@@ -402,14 +410,33 @@ When extracted facts map to structured fields, update both memory and domain rec
 - `purchased-from`: Transactional (person → organization)
 - `subscribed-to`: Subscription (person → entity)
 - `visited`: Place visit (person → place)
+- `manages`: Person manages another person or org (person → person/org)
+- `managed-by`: Person is managed by another person (person → person)
+- `manages-property`: Person manages a place or organization (person → entity)
+- `participant-of`: Durable participation in a group, org, or recurring event (person → entity)
+- `invited-by`: Person was invited or referred by another person (person → person)
+- `rental-agent`: Person acts as rental agent for an org or place (person → entity)
+- `rental-location`: Person has a rental relationship with a place (person → entity)
 
 **Narrative edge predicates** (require `object_entity_id`; use `memory_store_fact(object_entity_id=...)` — free-form, not in registry):
 - `planned_dinner_with`: Episodic coordination context
 - `wake_coordination`: Scheduling coordination
+- `social_exchange_with`: Episodic social interaction
+- `job_opportunity`: Episodic job lead — not a standing relationship
+- `invited_to`: One-time event invitation — episodic
+- `outreach_replied`: Interaction response — episodic
+- `party_location`: Event context detail — episodic
+- `likes`: Property-like preference with an entity object — not a durable standing type
+- `announced_by`: Episodic event attribution
+- `surprise_meeting_point`: Episodic coordination detail
+- `move_coordination`: Logistics for a one-time move event
+- `talked_to`: Interaction context — not a durable standing relationship
+- `dinner_invitation`: Episodic dinner invitation
+- `meetup_coordination`: Episodic meetup logistics
 - Any other episodic / one-off / coordination predicate not in the registry above
 
-**Note:** `reports_to` and `lives_with` have no registry entry — use `colleague-of` or a
-narrative predicate until a registry migration adds them.
+**Note:** `reports_to` and `lives_with` have no registry entry — use `colleague-of`/`managed-by`
+or a narrative predicate until a registry migration adds them.
 
 **Permanence levels**:
 - `permanent`: Identity facts unlikely to change (e.g., birthday, family relationships)

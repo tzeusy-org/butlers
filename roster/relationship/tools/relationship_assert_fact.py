@@ -95,6 +95,7 @@ _CI_TYPE_TO_PREDICATE: dict[str, str] = {
 #   sibling_of  → family-of    (sibling is a family relationship)
 #   married_to  → partner-of   (marriage is a partner relationship)
 _PREDICATE_ALIAS_MAP: dict[str, str] = {
+    # Original underscore→hyphen aliases (relational-edges-single-home, bu-i0pgi).
     "works_at": "works-at",
     "friend_of": "friend-of",
     "child_of": "child-of",
@@ -103,8 +104,17 @@ _PREDICATE_ALIAS_MAP: dict[str, str] = {
     "family_of": "family-of",
     "partner_of": "partner-of",
     "member_of": "member-of",
+    # Many-to-one aliases: collapsed into broader categories.
     "sibling_of": "family-of",
     "married_to": "partner-of",
+    # Long-tail relational predicates (bu-kgh8g; seeded in rel_026).
+    # "manages" has no word-separator and maps to itself — no alias entry needed.
+    "managed_by": "managed-by",
+    "manages_property": "manages-property",
+    "participant_of": "participant-of",
+    "invited_by": "invited-by",
+    "rental_agent": "rental-agent",
+    "rental_location": "rental-location",
 }
 
 

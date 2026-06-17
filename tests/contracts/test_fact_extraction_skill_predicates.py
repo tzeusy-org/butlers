@@ -39,6 +39,7 @@ _SKILL_MD = (
 
 _RELATIONAL_REGISTRY_PREDICATES: frozenset[str] = frozenset(
     {
+        # Original seed (rel_014).
         "knows",
         "family-of",
         "partner-of",
@@ -50,8 +51,17 @@ _RELATIONAL_REGISTRY_PREDICATES: frozenset[str] = frozenset(
         "purchased-from",
         "subscribed-to",
         "visited",
+        # Long-tail relational seed (rel_024 — relational-edges-single-home, bu-i3sps).
         "works-at",
         "member-of",
+        # Long-tail relational triage (rel_026 — bu-kgh8g).
+        "manages",
+        "managed-by",
+        "manages-property",
+        "participant-of",
+        "invited-by",
+        "rental-agent",
+        "rental-location",
     }
 )
 
@@ -61,6 +71,7 @@ _RELATIONAL_REGISTRY_PREDICATES: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 _PREDICATE_ALIAS_MAP: dict[str, str] = {
+    # Must mirror _PREDICATE_ALIAS_MAP in relationship_assert_fact.py exactly.
     "works_at": "works-at",
     "friend_of": "friend-of",
     "child_of": "child-of",
@@ -71,6 +82,13 @@ _PREDICATE_ALIAS_MAP: dict[str, str] = {
     "member_of": "member-of",
     "sibling_of": "family-of",
     "married_to": "partner-of",
+    # Long-tail relational aliases (bu-kgh8g; rel_026).
+    "managed_by": "managed-by",
+    "manages_property": "manages-property",
+    "participant_of": "participant-of",
+    "invited_by": "invited-by",
+    "rental_agent": "rental-agent",
+    "rental_location": "rental-location",
 }
 
 # ---------------------------------------------------------------------------
@@ -84,9 +102,24 @@ _PREDICATE_ALIAS_MAP: dict[str, str] = {
 
 _NARRATIVE_ALLOWLIST: frozenset[str] = frozenset(
     {
+        # Original narrative predicates (bu-hkwpo / Track B).
         "planned_dinner_with",
         "wake_coordination",
         "social_exchange_with",
+        # Long-tail narrative predicates (bu-kgh8g): episodic / coordination /
+        # property-like edges that are NOT durable standing relationship types
+        # and therefore belong in memory_store_fact(), not relationship_assert_fact().
+        "job_opportunity",  # episodic job lead — not a standing relationship
+        "invited_to",  # one-time event invitation — episodic
+        "outreach_replied",  # interaction response — episodic
+        "party_location",  # event detail — episodic context
+        "likes",  # property-like preference — no entity-to-entity standing type
+        "announced_by",  # episodic event attribution
+        "surprise_meeting_point",  # episodic coordination detail
+        "move_coordination",  # logistics for a one-time move event
+        "talked_to",  # interaction — not a durable standing relationship
+        "dinner_invitation",  # episodic invitation
+        "meetup_coordination",  # episodic meetup logistics
     }
 )
 

@@ -990,17 +990,30 @@ class TestConcurrentWriterRace:
 
 @pytest.fixture
 async def pool_with_relational_predicates(pool: asyncpg.Pool) -> asyncpg.Pool:
-    """Extend the base pool fixture with relational predicates for alias resolution tests."""
+    """Extend the base pool fixture with relational predicates for alias resolution tests.
+
+    Seeds:
+    - Original relational predicates from rel_024 (works-at, member-of) and other
+      alias targets from rel_014 that may not be in the base fixture.
+    - Long-tail relational predicates from rel_026 (bu-kgh8g).
+    """
     await pool.execute("""
         INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
         VALUES
-            ('works-at',     'relational', 'entity', 'Employment relationship.'),
-            ('child-of',     'relational', 'entity', 'Child-parent relationship.'),
-            ('parent-of',    'relational', 'entity', 'Parent-child relationship.'),
-            ('colleague-of', 'relational', 'entity', 'Colleague relationship.'),
-            ('family-of',    'relational', 'entity', 'Family relationship.'),
-            ('partner-of',   'relational', 'entity', 'Partnership or marriage relationship.'),
-            ('member-of',    'relational', 'entity', 'Membership relationship.')
+            ('works-at',         'relational', 'entity', 'Employment relationship.'),
+            ('child-of',         'relational', 'entity', 'Child-parent relationship.'),
+            ('parent-of',        'relational', 'entity', 'Parent-child relationship.'),
+            ('colleague-of',     'relational', 'entity', 'Colleague relationship.'),
+            ('family-of',        'relational', 'entity', 'Family relationship.'),
+            ('partner-of',       'relational', 'entity', 'Partnership or marriage relationship.'),
+            ('member-of',        'relational', 'entity', 'Membership relationship.'),
+            ('manages',          'relational', 'entity', 'Management role.'),
+            ('managed-by',       'relational', 'entity', 'Inverse of manages.'),
+            ('manages-property', 'relational', 'entity', 'Property management role.'),
+            ('participant-of',   'relational', 'entity', 'Durable participation.'),
+            ('invited-by',       'relational', 'entity', 'Referral or sponsorship.'),
+            ('rental-agent',     'relational', 'entity', 'Rental agent role.'),
+            ('rental-location',  'relational', 'entity', 'Rental relationship.')
         ON CONFLICT (predicate) DO NOTHING
     """)
     return pool
