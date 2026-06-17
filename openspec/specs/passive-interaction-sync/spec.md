@@ -12,7 +12,7 @@ and events in `public.calendar_events`.
 ## Context
 
 The Dunbar tier engine (`roster/relationship/tools/dunbar.py`) ranks contacts by
-exponential-decay scoring over interaction facts (`predicate='interaction'`,
+exponential-decay scoring over interaction facts (`predicate LIKE 'interaction_%'`,
 `scope='relationship'`). Contacts with zero interaction facts are hard-assigned
 to tier 1500 regardless of actual communication frequency. This creates a
 systematic blind spot: the user's most-contacted people (partner, family, close
@@ -67,25 +67,25 @@ The relationship butler SHALL run a scheduled job (`interaction_sync`) that scan
 #### Scenario: Detect email conversations
 - **WHEN** `interaction_sync` runs
 - **THEN** it SHALL apply the same scan-and-resolve logic for messages where `request_context->>'source_channel'` is `'email'`
-- **AND** sender resolution SHALL match the sender email address against `public.contact_info` entries of type `'email'`
+- **AND** sender resolution SHALL match the sender email address against `relationship.entity_facts` rows with `predicate = 'has-email'`
 
 #### Scenario: Interaction fact creation
-- **WHEN** a (contact_id, date, channel, direction) group is resolved
+- **WHEN** a (entity_id, date, channel, direction) group is resolved
 - **THEN** the job SHALL call `interaction_log()` with:
-  - `contact_id` = the resolved contact UUID
+  - `entity_id` = the resolved entity UUID
   - `type` = the source channel name (e.g., `'telegram_user_client'`)
   - `direction` = `'incoming'` or `'outgoing'` as determined by owner presence
   - `occurred_at` = the date with direction-appropriate hour offset
   - `metadata` = `{"source": "interaction_sync", "message_count": N, "group_size": G}`
 
 #### Scenario: Unresolved senders are skipped
-- **WHEN** `source_sender_identity` does not match any row in `public.contact_info` for the expected type
+- **WHEN** `source_sender_identity` does not resolve to an active `relationship.entity_facts` triple for the expected predicate
 - **THEN** the job SHALL skip that sender without error
-- **AND** it SHALL increment an `unresolved_senders` counter in the return stats
+- **AND** it SHALL increment a `skipped_unresolved` counter in the return stats
 
 #### Scenario: Owner messages are excluded from contact resolution
-- **WHEN** the resolved contact has role `'owner'` in `public.contacts.roles`
-- **THEN** the job SHALL skip that contact for contact resolution (no self-interaction)
+- **WHEN** the resolved entity has role `'owner'` in `public.entities.roles`
+- **THEN** the job SHALL skip that entity for contact resolution (no self-interaction)
 - **AND** the owner's presence as a sender SHALL be used solely to determine direction for other participants
 
 ### Requirement: Calendar-based interaction detection
@@ -104,17 +104,17 @@ gatherings and log interactions with attendees who are known contacts.
 #### Scenario: Resolve attendees to contacts
 
 - **WHEN** a calendar event has attendees
-- **THEN** for each attendee email, the job SHALL attempt to resolve it to a
-  `contact_id` via `public.contact_info` where `type = 'email'` and
-  `value = attendee_email` (case-insensitive exact match)
-- **AND** attendees who are the owner (organizer or matching owner contact email)
+- **THEN** for each attendee email, the job SHALL attempt to resolve it to an
+  `entity_id` via `relationship.entity_facts` where `predicate = 'has-email'` and
+  `LOWER(object) = LOWER(attendee_email)` (case-insensitive exact match)
+- **AND** attendees who are the owner (identified via `public.entities.roles` containing `'owner'`)
   SHALL be excluded
 
 #### Scenario: Calendar interaction fact creation
 
-- **WHEN** an attendee email resolves to a contact_id
+- **WHEN** an attendee email resolves to an entity_id
 - **THEN** the job SHALL call `interaction_log()` with:
-  - `contact_id` = the resolved contact UUID
+  - `entity_id` = the resolved entity UUID
   - `type` = `'calendar_event'`
   - `summary` = the event title (e.g., "Dinner at Mario's")
   - `occurred_at` = the event's `starts_at` timestamp
@@ -161,7 +161,7 @@ on every run.
 
 - **WHEN** the relationship butler starts
 - **THEN** the `interaction_sync` job SHALL be registered with cron
-  `0 */4 * * *` (every 4 hours) and `dispatch_mode = "job"`
+  `30 6 * * *` (daily at 06:30 UTC) and `dispatch_mode = "job"`
 
 ### Requirement: Job return stats
 
@@ -169,14 +169,16 @@ on every run.
 
 - **WHEN** the job completes
 - **THEN** it SHALL return a dict containing:
-  - `messages_scanned` (int)
-  - `calendar_events_scanned` (int)
-  - `interactions_created` (int)
-  - `interactions_deduplicated` (int)
-  - `unresolved_senders` (int)
-  - `contacts_updated` (int) -- distinct contacts that received new interactions
   - `scan_window_start` (ISO8601 string)
   - `scan_window_end` (ISO8601 string)
+  - `processed` (int) — total sender-channel-date combinations examined
+  - `logged` (int) — interaction facts created (incoming + outgoing combined)
+  - `skipped_unresolved` (int) — senders or attendees not found in `relationship.entity_facts`
+  - `skipped_owner` (int) — owner's own sender or attendee entries excluded
+  - `skipped_ineligible` (int) — messages excluded by `interaction_eligible = 'false'` flag
+  - `skipped_group_too_large` (int) — chat groups exceeding the 20-participant gate
+  - `calendar_events_scanned` (int)
+  - `errors` (int) — checkpoint I/O failures and other non-fatal errors
 
 ## Design Notes
 
@@ -187,24 +189,33 @@ on every run.
    would slow down all message processing.
 2. **Batch efficiency** -- grouping messages by (sender, date) produces one fact
    per day per contact instead of one per message.
-3. **Idempotent** -- `interaction_log()` deduplicates by (contact_id, type, date),
+3. **Idempotent** -- `interaction_log()` deduplicates by (entity_id, predicate, valid_at),
    so the job is safe to re-run.
 4. **Channel-agnostic** -- new channels (Slack, Discord) can be added by
    extending the `SYNC_CHANNELS` list without touching the ingestion pipeline.
 
 ### Identity resolution strategy
 
-Message channels store sender identifiers differently:
-- `telegram_user_client`: numeric user ID (stored as `type='telegram_user_id'` in contact_info)
-- `whatsapp_user_client`: phone number (stored as `type='phone'` in contact_info)
-- `email`: email address (stored as `type='email'` in contact_info)
+Message channels store sender identifiers differently.  The job maps
+`source_channel` to the expected `relationship.entity_facts` predicate and
+lookup key for resolution (`public.contact_info` was dropped in migration
+core_115 / bead bu-e2ja9):
 
-The job maps `source_channel` to the expected `contact_info.type` for resolution.
-Exact match is used (not ILIKE partial match) to avoid false positives.
+| `source_channel`       | Lookup key type  | `entity_facts` predicate |
+|------------------------|------------------|--------------------------|
+| `telegram_user_client` | `telegram_chat_id` | `has-handle`           |
+| `whatsapp_user_client` | `whatsapp_jid`   | `has-handle`             |
+| `email`                | `email`          | `has-email`              |
+
+Sender identities are resolved by matching `entity_facts.object = sender_identity`
+(exact match, case-sensitive for handles; `LOWER()` equality for emails) to find
+the entity UUID. Unresolved senders are skipped without error.
 
 ### Calendar attendee resolution
 
 Calendar events store attendees as email addresses in the `metadata` JSONB field.
-Resolution uses exact case-insensitive match against `contact_info.type = 'email'`.
-This means contacts must have an email in `contact_info` to be detected from
-calendar events -- phone-only contacts will not match.
+Resolution uses case-insensitive exact match against `relationship.entity_facts`
+rows where `predicate = 'has-email'` and `object_kind = 'literal'`.
+(`public.contact_info` was dropped in migration core_115 / bead bu-e2ja9.)
+This means contacts must have a `has-email` triple in `entity_facts` to be
+detected from calendar events — contacts without an email fact will not match.
