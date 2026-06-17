@@ -88,6 +88,19 @@ async def test_scan_returns_accepted_and_processing_rows() -> None:
     assert accepted_id in returned_ids
     assert processing_id in returned_ids
 
+    # Each row must carry the full payload needed for recovery dispatch without
+    # a second DB round-trip: received_at (for age-gating) and route_envelope
+    # (for re-dispatching the original request).
+    for row in results:
+        assert "received_at" in row, (
+            "scan must return rows with 'received_at' so the recovery sweep can "
+            "verify the row age without an additional DB query"
+        )
+        assert "route_envelope" in row, (
+            "scan must return rows with 'route_envelope' so the recovery sweep can "
+            "re-dispatch the original request without a second DB read"
+        )
+
     # Verify the SQL query filters by both lifecycle states.
     sql_args = conn.fetch.call_args.args
     states_arg = sql_args[1]  # second positional arg: the states list $1

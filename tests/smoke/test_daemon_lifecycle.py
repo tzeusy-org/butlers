@@ -15,6 +15,7 @@ mocked so these tests run in milliseconds without Docker.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -300,10 +301,19 @@ async def test_daemon_shutdown_is_clean(tmp_path: Path) -> None:
     - ``_accepting_connections`` set to False (new triggers rejected).
     - ``spawner.stop_accepting()`` called before ``drain()``.
     - Background tasks (scheduler, liveness reporter) cleaned up.
+    - Database pool closed (``db.close()`` awaited).
+    - MCP server task awaited and cleared (``_server_task`` is None after shutdown).
     """
     config_dir = _write_butler_toml(tmp_path / "smoke-butler")
     daemon, _, mock_spawner = await _start_smoke_daemon(config_dir)
     assert daemon._accepting_connections is True  # precondition
+
+    # Inject a pre-completed Future as the MCP server task so that the shutdown
+    # sequence exercises the task-await-and-clear path without blocking.
+    loop = asyncio.get_running_loop()
+    mock_server_task: asyncio.Future[None] = loop.create_future()
+    mock_server_task.set_result(None)
+    daemon._server_task = mock_server_task
 
     await daemon.shutdown()
 
@@ -317,6 +327,14 @@ async def test_daemon_shutdown_is_clean(tmp_path: Path) -> None:
     )
     assert daemon._liveness_reporter_task is None, (
         "liveness_reporter_task must be cleaned up after shutdown"
+    )
+    # Verify database pool was closed — shutdown must await db.close() to release
+    # connections back to the pool and prevent resource leaks.
+    daemon.db.close.assert_awaited_once()
+    # Verify MCP server task was awaited and cleared — shutdown must set
+    # _server_task to None after awaiting it so no dangling task references remain.
+    assert daemon._server_task is None, (
+        "MCP server task (_server_task) must be cleared to None after shutdown"
     )
 
 
