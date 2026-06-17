@@ -695,3 +695,77 @@ def test_core_acl_and_relationship_chain(postgres_container):
     assert not _table_exists_in_schema(db_url, "public", "_reminders_backup"), (
         "_reminders_backup table should have been dropped by rel_020"
     )
+
+
+# ---------------------------------------------------------------------------
+# Smoke-tier tests
+# ---------------------------------------------------------------------------
+# These tests are also marked @pytest.mark.smoke so they are selected by
+# ``pytest -m smoke`` for the fast CI gate.  They are intentionally narrow —
+# they assert the migration machinery works end-to-end without re-asserting
+# table/schema presence already covered by the integration tests above.
+
+
+@pytest.mark.smoke
+def test_core_migration_smoke_empty_to_head(postgres_container):
+    """Smoke: core chain runs from empty DB to head and alembic_version records the head revision.
+
+    Confirms the migration entry-point works end-to-end.  Intentionally avoids
+    re-checking individual tables or schema layout — those assertions live in
+    ``test_core_migrations_tables_schemas_and_idempotency`` above.
+    """
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            versions = [
+                row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))
+            ]
+    finally:
+        engine.dispose()
+
+    expected_head = _latest_core_revision()
+    assert expected_head in versions, (
+        f"alembic_version should record the core head revision {expected_head!r} "
+        f"after empty-to-head run; recorded: {versions}"
+    )
+
+
+@pytest.mark.smoke
+def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
+    """Smoke: latest core revision survives a one-step downgrade/upgrade round-trip.
+
+    Confirms that the most recent migration has a coherent downgrade path and
+    that down-by-one followed by up-to-head leaves alembic_version at the
+    expected head revision.
+    """
+    from butlers.migrations import _build_alembic_config, run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    config = _build_alembic_config(db_url, chains=["core"])
+    # Step back one revision from head, then restore.
+    command.downgrade(config, "core@-1")
+    command.upgrade(config, "core@head")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            versions = [
+                row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))
+            ]
+    finally:
+        engine.dispose()
+
+    expected_head = _latest_core_revision()
+    assert expected_head in versions, (
+        f"alembic_version should record the core head revision {expected_head!r} "
+        f"after down/up round-trip; recorded: {versions}"
+    )
