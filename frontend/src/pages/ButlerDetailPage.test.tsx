@@ -57,6 +57,7 @@ vi.mock("@/hooks/use-system", () => ({
   useBackupFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
   useEgressFacts: vi.fn(() => ({ data: null, isLoading: false, error: null, isForbidden: false })),
   useHealthPosture: vi.fn(() => ({ data: undefined, isPending: false, isError: false, error: null })),
+  useInsightDeliveryState: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({
