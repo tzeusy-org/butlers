@@ -1621,3 +1621,288 @@ class TestDaemonInsightDeliveryJobHandler:
         switchboard_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
         assert "insight_delivery_cycle" in switchboard_jobs
         assert callable(switchboard_jobs["insight_delivery_cycle"])
+
+
+# ===========================================================================
+# Category: Delivery path spec coverage [bu-dl98i.3.2]
+# Verifies the five delivery paths against the spec's
+# "Failed Delivery Handling" + "Engagement Tracking" requirements.
+# ===========================================================================
+
+
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+@pytest.mark.integration
+class TestInsightDeliveryPathsSpec:
+    """Five spec-required delivery paths for Failed Delivery Handling + Engagement Tracking.
+
+    Derived from openspec/specs/insight-delivery/spec.md:
+      1. no-candidate  — cycle runs with no pending candidates → clean exit, no notify
+      2. duplicate     — already-delivered candidate is not re-selected as pending
+      3. delivery-failure — notify error → status stays 'pending'; eligible for next cycle
+      4. 3-consecutive-failure → candidate marked 'filtered'; no cooldown recorded
+      5. success       — full path: propose → deliver → engagement row (engaged=FALSE)
+    """
+
+    # -----------------------------------------------------------------------
+    # Case 1: no-candidate
+    # -----------------------------------------------------------------------
+
+    async def test_no_candidate_cycle_exits_cleanly(self, insight_pool):
+        """Case 1 (no-candidate): cycle with empty candidates table returns clean result.
+
+        No delivery, no error, notify_fn is never called.
+        """
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'minimal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
+        """)
+
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert result["delivered"] == [], "no candidates → nothing should be delivered"
+        assert result["skipped"] is False, "cycle should not report skipped (not quiet hours)"
+        assert not notify_mock.called, "notify_fn must not be called when there are no candidates"
+
+    # -----------------------------------------------------------------------
+    # Case 2: duplicate / already delivered
+    # -----------------------------------------------------------------------
+
+    async def test_already_delivered_candidate_not_redelivered(self, insight_pool):
+        """Case 2 (duplicate): a candidate with status='delivered' is excluded from delivery.
+
+        The cycle's candidate query filters for status='pending' only.
+        A previously-delivered row must never be re-selected or re-delivered.
+        """
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'minimal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
+        """)
+
+        # Insert a candidate that is already in the 'delivered' state
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message,
+                 status, delivered_at)
+            VALUES ('health', 80, 'health', 'health:dup-test:user:2026', $1,
+                    'Previously delivered insight', 'delivered', now())
+            """,
+            _future(),
+        )
+
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert result["delivered"] == [], (
+            "already-delivered candidate must not appear in delivered list"
+        )
+        assert not notify_mock.called, (
+            "notify_fn must not be called: there are no pending candidates"
+        )
+
+        # The row's status must be unchanged — still 'delivered'
+        row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:dup-test:user:2026'"
+        )
+        assert row["status"] == "delivered"
+
+    # -----------------------------------------------------------------------
+    # Case 3: delivery-failure
+    # -----------------------------------------------------------------------
+
+    async def test_delivery_failure_leaves_candidate_pending_and_retryable(self, insight_pool):
+        """Case 3 (delivery-failure): notify error → status stays 'pending'.
+
+        Spec (Failed Delivery Handling, Notify call failure):
+        - WHEN notify() returns status='error'
+        - THEN candidate status SHALL remain 'pending'
+        - AND candidate is eligible for delivery in the next cycle (subject to expiry)
+        """
+        from butlers.tools.switchboard.insight.broker import (
+            delivery_cycle,
+            propose_insight_candidate,
+        )
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'minimal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
+        """)
+
+        await propose_insight_candidate(
+            insight_pool,
+            origin_butler="health",
+            priority=80,
+            category="health",
+            dedup_key="health:delivery-fail:user:2026",
+            message="Blood pressure reminder",
+            expires_at=_future(),
+        )
+
+        async def _failing_notify(message, metadata):
+            return {"status": "error", "error": "channel unavailable"}
+
+        # First cycle: delivery attempt fails
+        result = await delivery_cycle(insight_pool, notify_fn=_failing_notify)
+
+        assert result["delivered"] == [], "failed delivery must not appear in delivered list"
+
+        row = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count FROM insight_candidates "
+            "WHERE dedup_key = 'health:delivery-fail:user:2026'"
+        )
+        # Spec: status SHALL remain 'pending'
+        assert row["status"] == "pending", (
+            "spec (Failed Delivery Handling): on notify error status must stay 'pending'"
+        )
+        # Count incremented → eligible for retry next cycle
+        assert row["delivery_attempt_count"] == 1, (
+            "delivery_attempt_count must be incremented on failure"
+        )
+
+        # Second cycle: still eligible (count < 3); another failure increments again
+        result2 = await delivery_cycle(insight_pool, notify_fn=_failing_notify)
+        assert result2["delivered"] == []
+
+        row2 = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count FROM insight_candidates "
+            "WHERE dedup_key = 'health:delivery-fail:user:2026'"
+        )
+        assert row2["status"] == "pending", "candidate must still be pending after second failure"
+        assert row2["delivery_attempt_count"] == 2
+
+    # -----------------------------------------------------------------------
+    # Case 4: 3-consecutive-failure → filtered
+    # -----------------------------------------------------------------------
+
+    async def test_three_consecutive_failures_mark_candidate_filtered_no_cooldown(
+        self, insight_pool
+    ):
+        """Case 4 (3-consecutive-failure): third failure marks candidate 'filtered'.
+
+        Spec (Failed Delivery Handling, Repeated delivery failure):
+        - WHEN a candidate fails delivery on 3 consecutive cycles
+        - THEN it SHALL be marked status='filtered' with metadata indicating delivery failure
+        - AND no cooldown SHALL be recorded (the insight was never delivered)
+        """
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'minimal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
+        """)
+
+        # Pre-seed with 2 prior failures so the next failure is the 3rd
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message,
+                 status, delivery_attempt_count)
+            VALUES ('health', 80, 'health', 'health:triple-fail:user:2026', $1,
+                    'Triple failure insight', 'pending', 2)
+            """,
+            _future(),
+        )
+
+        async def _failing_notify(message, metadata):
+            return {"status": "error", "error": "channel permanently unavailable"}
+
+        await delivery_cycle(insight_pool, notify_fn=_failing_notify)
+
+        row = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count FROM insight_candidates "
+            "WHERE dedup_key = 'health:triple-fail:user:2026'"
+        )
+        # Spec: SHALL be marked status='filtered'
+        assert row["status"] == "filtered", (
+            "spec (Repeated delivery failure): 3 consecutive failures must set status='filtered'"
+        )
+        assert row["delivery_attempt_count"] == 3
+
+        # Spec: no cooldown SHALL be recorded (insight was never delivered)
+        cooldown = await insight_pool.fetchrow(
+            "SELECT * FROM insight_cooldowns WHERE dedup_key = 'health:triple-fail:user:2026'"
+        )
+        assert cooldown is None, (
+            "spec: no cooldown must be recorded when a candidate is filtered due to delivery failure"
+        )
+
+    # -----------------------------------------------------------------------
+    # Case 5: success — full path with engagement tracking
+    # -----------------------------------------------------------------------
+
+    async def test_success_propose_queue_deliver_engagement_tracked(self, insight_pool):
+        """Case 5 (success): full delivery path — propose → queue → deliver → engage.
+
+        Spec (Engagement Tracking, Engagement row creation):
+        - WHEN an insight (standalone or digest) is delivered
+        - THEN one engagement tracking row SHALL be created per delivered candidate
+          in public.insight_engagement with insight_id, delivered_at, and engaged=FALSE
+        """
+        from butlers.tools.switchboard.insight.broker import (
+            delivery_cycle,
+            propose_insight_candidate,
+        )
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'minimal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
+        """)
+
+        # Step 1: Propose candidate (simulates butler insight-scan output)
+        propose_result = await propose_insight_candidate(
+            insight_pool,
+            origin_butler="relationship",
+            priority=85,
+            category="birthday",
+            dedup_key="birthday:spec-path:2026",
+            message="Alice's birthday is in 3 days",
+            expires_at=_future(),
+        )
+        assert propose_result["status"] == "accepted", (
+            "candidate must be accepted before it can enter the delivery queue"
+        )
+
+        # Step 2: Run delivery cycle with mock notify (no real notifications)
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+        cycle_result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        # Delivery must succeed
+        assert not cycle_result["skipped"], "cycle must not be skipped"
+        assert len(cycle_result["delivered"]) == 1, "exactly one candidate must be delivered"
+        assert notify_mock.called, "notify_fn must be called for the delivery"
+
+        # Candidate status → delivered
+        row = await insight_pool.fetchrow(
+            "SELECT status, delivered_at FROM insight_candidates "
+            "WHERE dedup_key = 'birthday:spec-path:2026'"
+        )
+        assert row["status"] == "delivered"
+        assert row["delivered_at"] is not None
+
+        # Step 3: Engagement tracking — spec requires one row per delivered candidate
+        delivered_id = cycle_result["delivered"][0]
+        engagement = await insight_pool.fetchrow(
+            "SELECT insight_id, delivered_at, engaged FROM insight_engagement "
+            "WHERE insight_id = $1::uuid",
+            delivered_id,
+        )
+        assert engagement is not None, (
+            "spec (Engagement Tracking): "
+            "one engagement row SHALL be created per delivered candidate"
+        )
+        assert engagement["engaged"] is False, (
+            "spec: engagement must be initial FALSE (user has not yet responded)"
+        )
+        assert engagement["delivered_at"] is not None, (
+            "spec: delivered_at must be set on the engagement row"
+        )
