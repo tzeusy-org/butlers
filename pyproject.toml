@@ -36,13 +36,13 @@ dependencies = [
 ]
 
 [tool.uv]
-# CI runs `uv sync --dev` on x86_64 Linux with NO committed lockfile, so the
-# resolver re-resolves fresh every run. Without this, uv picks the newest
-# cryptography (e.g. 49.0.0) which ships no x86_64-linux wheel and no sdist,
-# failing install before any test runs. Declaring x86_64-linux as a required
-# environment forces the resolver to backtrack to a cryptography version that
-# actually has an x86_64-linux wheel. When cryptography later publishes an
-# x86_64-linux wheel for a newer release, uv picks it up automatically.
+# uv.lock is committed; CI and Docker use `uv sync --frozen` to guarantee
+# reproducible installs. The required-environments declaration keeps the lockfile
+# resolvable on x86_64 Linux: without it, uv may select a cryptography release
+# (e.g. 49.0.0) that ships no x86_64-linux wheel and no sdist, breaking installs
+# before any test runs. The resolver backtracks to a version that does have a
+# wheel. When cryptography ships x86_64-linux wheels for newer versions, this
+# hint can be removed.
 required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [project.optional-dependencies]
