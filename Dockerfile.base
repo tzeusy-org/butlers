@@ -27,13 +27,20 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# LLM runtime CLIs — each butler can use any of these via butler.toml
+# LLM runtime CLIs — pinned to exact versions for reproducibility.
+# To update: bump versions here, verify with `npm view <pkg>@<ver>`, rebuild.
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g \
-    @anthropic-ai/claude-code \
-    @google/gemini-cli \
-    @openai/codex \
-    opencode-ai
+    @anthropic-ai/claude-code@2.1.179 \
+    @google/gemini-cli@0.46.0 \
+    @openai/codex@0.140.0 \
+    opencode-ai@1.17.7
+
+# Emit an auditable CLI version manifest — inspect with:
+#   docker run --rm <image> cat /opt/cli-versions.txt
+RUN mkdir -p /opt \
+    && node --version > /opt/cli-versions.txt \
+    && (npm list -g --depth=0 2>/dev/null || true) >> /opt/cli-versions.txt
 
 # uv package manager. Install into /usr/local/bin and assert the binary exists so
 # a transient installer/download problem cannot produce a broken base image.
