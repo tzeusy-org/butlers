@@ -81,7 +81,7 @@ All butler containers use the same Docker image, mount their roster directory as
 |---------|-------|
 | Profile | `dev` (must be explicitly activated) |
 | Port | `41173` |
-| Image | `node:22-slim` |
+| Image | `node:22.16.0-slim` |
 
 Start with: `docker compose --profile dev up`
 
@@ -115,3 +115,4 @@ Butlers in the roster not yet in `docker-compose.yml`: education, finance, home,
 - [Environment Config](environment-config.md) -- Full environment variable reference
 - [Grafana Monitoring](grafana-monitoring.md) -- Observability setup
 - [Troubleshooting](troubleshooting.md) -- Common deployment issues
+- [Image Bump Procedure](image-bump-procedure.md) -- How to update pinned service image tags
