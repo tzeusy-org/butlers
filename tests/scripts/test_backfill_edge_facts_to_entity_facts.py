@@ -11,8 +11,12 @@ Covers:
 7. narrative edge — predicate not in registry; fact is left in memory unchanged.
 8. loader — _load_assert_fact_fn() registers the module in sys.modules BEFORE
    exec_module so @dataclass KW_ONLY resolution succeeds.
+9. owner carve-out (pending_approval) — source row is NOT retracted and the
+   parked counter increments (bu-2ezvz).
+10. non-pending outcome (active write) — source row IS retracted and parked
+    counter stays zero (bu-2ezvz regression guard).
 
-Issue: bu-1fu8c, bu-hzz09
+Issue: bu-1fu8c, bu-hzz09, bu-2ezvz
 """
 
 from __future__ import annotations
@@ -299,6 +303,105 @@ async def test_mixed_batch_migrates_only_mappable() -> None:
     assert per["works_at"]["migrated"] == 1
     assert per["member_of"]["migrated"] == 1
     assert per["planned_dinner_with"]["left_narrative"] == 1
+
+
+# ---------------------------------------------------------------------------
+# owner carve-out (pending_approval) — source row must NOT be retracted
+# (regression guard for bu-2ezvz)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_pending_approval_does_not_retract_source() -> None:
+    """When assert_fact returns pending_approval, the source row MUST be left active.
+
+    RFC 0017 §2.3 owner carve-out: the write is parked for human approval;
+    entity_facts is NOT written yet.  Retracting the source before approval
+    means the edge is lost if the owner rejects or the pending_action expires.
+    """
+    fact_id = uuid.uuid4()
+    action_id = uuid.uuid4()
+
+    row = MagicMock()
+    row.__getitem__ = lambda self, key: {
+        "id": fact_id,
+        "entity_id": _ENTITY_ID,
+        "object_entity_id": _OBJECT_ID,
+        "predicate": "works_at",
+        "confidence": 0.9,
+        "last_confirmed_at": None,
+        "source_butler": "relationship",
+    }[key]
+
+    pool = _make_pool([row])
+
+    # Simulate the central writer returning pending_approval (owner carve-out).
+    pending_result = MagicMock()
+    pending_result.outcome = "pending_approval"  # StrEnum equality check in backfill
+    pending_result.action_id = action_id
+    assert_fact = AsyncMock(return_value=pending_result)
+
+    result = await run(pool, dry_run=False, _assert_fact=assert_fact)
+
+    # assert_fact was called (attempted the write).
+    assert_fact.assert_called_once()
+
+    # Source row must NOT have been retracted.
+    pool.execute.assert_not_called()
+
+    # Parked counter increments; migrated and retracted stay zero.
+    assert result["total_parked"] == 1
+    assert result["total_migrated"] == 0
+    assert result["total_retracted"] == 0
+    assert result["total_errors"] == 0
+    assert result["per_predicate"]["works_at"]["parked"] == 1
+    assert result["per_predicate"]["works_at"]["migrated"] == 0
+    assert result["per_predicate"]["works_at"]["retracted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_active_outcome_retracts_source() -> None:
+    """Non-pending_approval outcomes (inserted/superseded/unchanged) DO retract.
+
+    Regression guard: the parked check must not accidentally suppress retractions
+    for ordinary successful writes.
+    """
+    fact_id = uuid.uuid4()
+
+    row = MagicMock()
+    row.__getitem__ = lambda self, key: {
+        "id": fact_id,
+        "entity_id": _ENTITY_ID,
+        "object_entity_id": _OBJECT_ID,
+        "predicate": "works_at",
+        "confidence": 0.8,
+        "last_confirmed_at": None,
+        "source_butler": "relationship",
+    }[key]
+
+    pool = _make_pool([row])
+
+    for active_outcome in ("inserted", "superseded", "unchanged"):
+        # Reset call counts between sub-cases.
+        pool.execute.reset_mock()
+
+        active_result = MagicMock()
+        active_result.outcome = active_outcome
+        assert_fact = AsyncMock(return_value=active_result)
+
+        result = await run(pool, dry_run=False, _assert_fact=assert_fact)
+
+        # Source row MUST be retracted for every non-pending outcome.
+        pool.execute.assert_called_once()
+        assert "validity = 'retracted'" in pool.execute.call_args.args[0]
+        assert pool.execute.call_args.args[1] == fact_id
+
+        assert result["total_migrated"] == 1
+        assert result["total_retracted"] == 1
+        assert result["total_parked"] == 0, f"parked should be 0 for outcome={active_outcome!r}"
+
+        # Re-prime pool.fetch for the next iteration.
+        pool.fetch = AsyncMock(side_effect=[[_make_predicate_row(p) for p in _REGISTRY], [row]])
 
 
 # ---------------------------------------------------------------------------

@@ -197,6 +197,7 @@ class _PredicateStats:
         self.mappable = mappable
         self.migrated = 0
         self.retracted = 0
+        self.parked = 0
         self.left_narrative = 0
         self.errors = 0
 
@@ -271,7 +272,7 @@ async def run(
             continue
 
         try:
-            await assert_fact(
+            result = await assert_fact(
                 pool,
                 subject,
                 canonical,
@@ -281,14 +282,29 @@ async def run(
                 conf=conf,
                 last_seen=last_seen,
             )
-            # Retract the source only after a successful assertion.
-            await pool.execute(
-                "UPDATE relationship.facts"
-                " SET validity = 'retracted' WHERE id = $1 AND validity = 'active'",
-                row["id"],
-            )
-            stats.migrated += 1
-            stats.retracted += 1
+            if result.outcome == "pending_approval":
+                # Owner carve-out (RFC 0017 §2.3): the write was parked for human
+                # approval — entity_facts NOT written yet.  Leave the source row
+                # active so the edge survives if the owner rejects or the
+                # pending_action expires (72 h).
+                logger.info(
+                    "[PARKED] fact %s predicate=%r parked for owner approval "
+                    "(action_id=%s); source row left active",
+                    row["id"],
+                    raw_pred,
+                    result.action_id,
+                )
+                stats.parked += 1
+            else:
+                # Real active write (inserted / superseded / unchanged) — safe to
+                # retract the source memory copy.
+                await pool.execute(
+                    "UPDATE relationship.facts"
+                    " SET validity = 'retracted' WHERE id = $1 AND validity = 'active'",
+                    row["id"],
+                )
+                stats.migrated += 1
+                stats.retracted += 1
         except Exception:
             logger.exception("Failed to migrate fact %s (predicate=%r)", row["id"], raw_pred)
             stats.errors += 1
@@ -296,6 +312,7 @@ async def run(
     # Aggregate totals.
     total_migrated = sum(s.migrated for s in per_pred.values())
     total_retracted = sum(s.retracted for s in per_pred.values())
+    total_parked = sum(s.parked for s in per_pred.values())
     total_left_narrative = sum(s.left_narrative for s in per_pred.values())
     total_errors = sum(s.errors for s in per_pred.values())
 
@@ -308,6 +325,7 @@ async def run(
                 "mappable": s.mappable,
                 "migrated": s.migrated,
                 "retracted": s.retracted,
+                "parked": s.parked,
                 "left_narrative": s.left_narrative,
                 "errors": s.errors,
             }
@@ -316,6 +334,7 @@ async def run(
         "total_processed": len(rows),
         "total_migrated": total_migrated,
         "total_retracted": total_retracted,
+        "total_parked": total_parked,
         "total_left_narrative": total_left_narrative,
         "total_errors": total_errors,
     }
@@ -334,11 +353,12 @@ def _print_summary(per_pred: dict[str, _PredicateStats], dry_run: bool) -> None:
         logger.info("Mappable predicates (migrated to entity_facts):")
         for pred, s in mappable:
             logger.info(
-                "  %-30s → %-30s  migrated=%d  retracted=%d  errors=%d",
+                "  %-30s → %-30s  migrated=%d  retracted=%d  parked=%d  errors=%d",
                 pred,
                 s.canonical,
                 s.migrated,
                 s.retracted,
+                s.parked,
                 s.errors,
             )
     else:
@@ -352,16 +372,25 @@ def _print_summary(per_pred: dict[str, _PredicateStats], dry_run: bool) -> None:
         logger.info("  (no narrative predicates found)")
 
     total_migrated = sum(s.migrated for s in per_pred.values())
+    total_parked = sum(s.parked for s in per_pred.values())
     total_left_narrative = sum(s.left_narrative for s in per_pred.values())
     total_errors = sum(s.errors for s in per_pred.values())
     logger.info(
-        "Totals: migrated=%d  left_narrative=%d  errors=%d  [%s]",
+        "Totals: migrated=%d  parked=%d  left_narrative=%d  errors=%d  [%s]",
         total_migrated,
+        total_parked,
         total_left_narrative,
         total_errors,
         mode,
     )
 
+    if total_parked:
+        logger.warning(
+            "%d edge(s) parked for owner approval — source rows left active. "
+            "Approve or reject via the Dispatch dossier; on rejection the edge "
+            "remains in relationship.facts and can be re-run after approval.",
+            total_parked,
+        )
     if total_errors:
         logger.warning("%d edge(s) failed to migrate — check logs above.", total_errors)
 
