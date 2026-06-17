@@ -308,6 +308,7 @@ import type {
   BackupFacts,
   EgressCatalog,
   HeartbeatFacts,
+  InsightDeliveryState,
   ModuleStatus,
   Briefing,
   ChroniclesBriefing,
@@ -5352,6 +5353,19 @@ export function getEgressCatalog(): Promise<ApiResponse<EgressCatalog>> {
 /** Fetch per-butler liveness registry snapshots and session facts. */
 export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
   return apiFetch<ApiResponse<HeartbeatFacts>>("/system/butlers/heartbeat");
+}
+
+/**
+ * Fetch the current state of the proactive insight delivery pipeline.
+ *
+ * Returns queued / delivered / failed counts and the last-delivery timestamp.
+ * All counts reflect the last ~30 days (older non-pending rows are purged by
+ * the delivery cycle).  An all-zero response with null last_delivery_at means
+ * no delivery activity has occurred yet — that is an honest empty state, not
+ * an error.
+ */
+export function getInsightDeliveryState(): Promise<ApiResponse<InsightDeliveryState>> {
+  return apiFetch<ApiResponse<InsightDeliveryState>>("/system/insights/delivery-state");
 }
 
 // ---------------------------------------------------------------------------

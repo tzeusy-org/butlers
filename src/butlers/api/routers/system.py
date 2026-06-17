@@ -81,6 +81,11 @@ system_butlers_heartbeat_reads_total = Counter(
     "Number of GET /api/system/butlers/heartbeat requests.",
 )
 
+system_insight_delivery_reads_total = Counter(
+    "system_insight_delivery_reads_total",
+    "Number of GET /api/system/insights/delivery-state requests.",
+)
+
 
 # Module-level start time recorded when this module is first imported.
 # The lifespan startup imports all routers, so this approximates the
@@ -180,6 +185,34 @@ class HeartbeatFacts(BaseModel):
     """Collection of per-butler heartbeat entries."""
 
     butlers: list[ButlerHeartbeat]
+
+
+class InsightDeliveryState(BaseModel):
+    """Aggregated state of the proactive insight delivery pipeline.
+
+    Counts are drawn from public.insight_candidates and reflect the last 30
+    days of data (older non-pending rows are cleaned up by the delivery cycle).
+
+    Fields
+    ------
+    queued:
+        Candidates waiting to be delivered (status='pending').  Includes
+        candidates that failed delivery 1-2 times and are still retrying.
+    delivered:
+        Candidates successfully delivered (status='delivered').
+    failed:
+        Candidates permanently rejected after 3 consecutive delivery failures
+        (status='filtered' AND delivery_attempt_count >= 3).  Does not include
+        cooldown-filtered or dedup-filtered candidates.
+    last_delivery_at:
+        ISO 8601 timestamp of the most recent successful delivery, or null when
+        no delivery has occurred yet.
+    """
+
+    queued: int
+    delivered: int
+    failed: int
+    last_delivery_at: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -760,3 +793,89 @@ async def get_butlers_heartbeat(
         )
 
     return ApiResponse(data=HeartbeatFacts(butlers=entries))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/insights/delivery-state
+# ---------------------------------------------------------------------------
+
+
+@router.get("/insights/delivery-state", response_model=ApiResponse[InsightDeliveryState])
+async def get_insight_delivery_state(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[InsightDeliveryState]:
+    """Return the current state of the proactive insight delivery pipeline.
+
+    Computes queued / delivered / failed counts and the last-delivery timestamp
+    from the real delivery-state tables (public.insight_candidates).
+
+    - ``queued``   = candidates with status='pending' (awaiting delivery cycle)
+    - ``delivered`` = candidates successfully delivered (status='delivered')
+    - ``failed``   = candidates permanently blocked after 3 consecutive delivery
+                     failures (status='filtered' AND delivery_attempt_count >= 3)
+    - ``last_delivery_at`` = MAX(delivered_at) for delivered candidates, or null
+
+    Counts reflect the last ~30 days (the delivery cycle purges older non-pending
+    rows).  All zero counts with a null last_delivery_at represent an honest
+    empty state with no delivery activity.
+
+    Returns HTTP 503 when the switchboard database is unavailable.
+    Returns HTTP 200 with zero counts when the insight_candidates table does not
+    yet exist (pre-migration deployment); no error is raised.
+    """
+    system_insight_delivery_reads_total.inc()
+    try:
+        pool = db.pool("switchboard")
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'pending') AS queued,
+                COUNT(*) FILTER (WHERE status = 'delivered') AS delivered,
+                COUNT(*) FILTER (
+                    WHERE status = 'filtered' AND delivery_attempt_count >= 3
+                ) AS failed,
+                MAX(delivered_at) FILTER (
+                    WHERE status = 'delivered'
+                ) AS last_delivery_at
+            FROM public.insight_candidates
+            """
+        )
+    except Exception as exc:
+        # Degrade gracefully: table missing (pre-migration) or transient error.
+        logger.warning("insight_candidates query failed (degraded state returned): %s", exc)
+        return ApiResponse(
+            data=InsightDeliveryState(
+                queued=0,
+                delivered=0,
+                failed=0,
+                last_delivery_at=None,
+            )
+        )
+
+    if row is None:
+        # Empty result (should not happen for an aggregate with no WHERE, but guard anyway)
+        return ApiResponse(
+            data=InsightDeliveryState(
+                queued=0,
+                delivered=0,
+                failed=0,
+                last_delivery_at=None,
+            )
+        )
+
+    last_dt = row["last_delivery_at"]
+    if last_dt is not None and hasattr(last_dt, "tzinfo") and last_dt.tzinfo is None:
+        last_dt = last_dt.replace(tzinfo=UTC)
+
+    return ApiResponse(
+        data=InsightDeliveryState(
+            queued=int(row["queued"] or 0),
+            delivered=int(row["delivered"] or 0),
+            failed=int(row["failed"] or 0),
+            last_delivery_at=last_dt.isoformat() if last_dt is not None else None,
+        )
+    )
