@@ -69,6 +69,25 @@ Format: `Flow name` — user goal — surfaces spanned — last audited (YYYY-MM
   Ingestion timeline + event drawer + dispatch/replay actions — 2026-06.
 - **Tune what gets ingested** — "create/edit a filter rule, add a priority sender" — Ingestion
   filters pipeline + rule CRUD — 2026-06.
+- **Scan the live ingestion ledger** — "open /ingestion, see events newest-first with live
+  freshness, KPIs, and a time-range scope" — IngestionTimelinePage header band + range picker +
+  hour-grouped ledger — 2026-06.
+- **Search/filter/saved-views the ledger** — "narrow the ledger by freetext, channel chips, status
+  pills, and saved views (all/errors/priority/spend)" — TimelineTab toolbar + saved-views CRUD —
+  2026-06.
+- **Bulk replay ingested events** — "select failed/filtered rows and re-dispatch them" — Timeline
+  checkbox column + BulkActionBar → /events/retry|replay/bulk — 2026-06.
+- **Survey connector roster health** — "see every connector's liveness, state, volume, and what
+  needs attention" — IngestionConnectorsPage roster + summary + attention strip + dormant list —
+  2026-06.
+- **Drill into a connector** — "inspect one connector's recent events, incidents, routing rules,
+  scopes, histogram" — ConnectorDetailPage — 2026-06.
+- **Reconnect a degraded connector** — "see a broken connector, reauth it, return healthy" —
+  roster/detail ReauthCallout + connector-auth derivation + OAuth start/callback — 2026-06.
+  *Recovery path was invisible at audit time (callout gated on an unreachable `state==='error'`).*
+- **Tune connector batch settings** — "adjust a batch connector's flush window and have it take
+  effect" — BatchSettingsCard → /connectors/{id}/settings → connector flush scanner — 2026-06.
+  *Card built+backed end-to-end but mounted on no live page at audit time.*
 - **Understand what a butler remembers** — "browse memory, follow provenance fact→episode, judge
   confidence/decay, confirm/forget" — Memory ledger + fact/rule/episode detail — 2026-06.
 - **Operate a butler** — "force-run, pause/resume, edit its prompt, change its model/permissions"

@@ -108,3 +108,5 @@ docs/reports/
 
 # Per-bead verification/parity artifacts are point-in-time; not retained in-tree.
 .verification/
+# bd worktree
+bu-f2tcy/
