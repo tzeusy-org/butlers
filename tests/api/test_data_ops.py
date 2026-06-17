@@ -10,7 +10,11 @@ Covers:
 - DELETE /api/data/wipe: trailing whitespace fails.
 - DELETE /api/data/wipe: lowercase phrase fails.
 - DELETE /api/data/wipe: missing phrase field returns 422.
-- Startup warning for unset DASHBOARD_EXPORT_SECRET env var.
+- Startup warning/error for unset DASHBOARD_EXPORT_SECRET env var.
+- _sign_token refuses to sign in production without DASHBOARD_EXPORT_SECRET.
+- _sign_token uses dev-mode fallback (not 'dev-secret') when secret is unset in dev.
+- _sign_token signs correctly when DASHBOARD_EXPORT_SECRET is set explicitly.
+- Literal 'dev-secret' string is never used as the signing key.
 """
 
 from __future__ import annotations
@@ -24,7 +28,11 @@ from httpx import ASGITransport, AsyncClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.data_ops import _get_db_manager, _sign_token
+from butlers.api.routers.data_ops import (
+    _DEV_EXPORT_SECRET,
+    _get_db_manager,
+    _sign_token,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -381,29 +389,51 @@ async def test_wipe_leading_whitespace_fails(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_startup_warns_when_dashboard_export_secret_unset(caplog):
-    """Startup logs WARNING when DASHBOARD_EXPORT_SECRET env var is unset."""
+async def test_startup_warns_when_dashboard_export_secret_unset_in_dev(caplog):
+    """Startup logs WARNING (not ERROR) when DASHBOARD_EXPORT_SECRET is unset in dev mode."""
     import os
 
     from butlers.api.app import lifespan
 
     with patch.dict("os.environ", {}, clear=False):
-        # Explicitly remove the env var if it exists
+        # Explicitly remove both vars so we're in dev mode with no secret.
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+        os.environ.pop("ENV", None)
+
+        with caplog.at_level(logging.WARNING):
+            app = create_app()
+            async with lifespan(app):
+                pass
+
+    # Dev mode: expect WARNING about forgeable tokens, not an ERROR.
+    assert any(
+        "DASHBOARD_EXPORT_SECRET is not set" in record.message and record.levelname == "WARNING"
+        for record in caplog.records
+    ), f"Expected WARNING not found in logs: {[r.message for r in caplog.records]}"
+    assert any("dev-mode fallback" in record.message for record in caplog.records)
+    # Must NOT contain the literal 'dev-secret' string
+    assert not any("dev-secret" in record.message for record in caplog.records)
+
+
+async def test_startup_logs_error_when_dashboard_export_secret_unset_in_production(caplog):
+    """Startup logs ERROR (not just WARNING) when DASHBOARD_EXPORT_SECRET is unset in production."""
+    import os
+
+    from butlers.api.app import lifespan
+
+    with patch.dict("os.environ", {"ENV": "prod"}, clear=False):
         os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
 
         with caplog.at_level(logging.WARNING):
             app = create_app()
-            # Trigger the lifespan startup by using the lifespan context manager
             async with lifespan(app):
                 pass
 
-    # Check that the warning was emitted
     assert any(
-        "DASHBOARD_EXPORT_SECRET env var is not set" in record.message
-        and record.levelname == "WARNING"
+        "DASHBOARD_EXPORT_SECRET is not set" in record.message and record.levelname == "ERROR"
         for record in caplog.records
-    ), f"Expected warning not found in logs: {[r.message for r in caplog.records]}"
-    assert any("insecure 'dev-secret' fallback" in record.message for record in caplog.records)
+    ), f"Expected ERROR not found in logs: {[r.message for r in caplog.records]}"
+    assert any("REFUSED" in record.message for record in caplog.records)
 
 
 async def test_startup_no_warning_when_dashboard_export_secret_is_set(caplog):
@@ -419,5 +449,106 @@ async def test_startup_no_warning_when_dashboard_export_secret_is_set(caplog):
 
     # Check that the warning was NOT emitted for the env var
     assert not any(
-        "DASHBOARD_EXPORT_SECRET env var is not set" in record.message for record in caplog.records
+        "DASHBOARD_EXPORT_SECRET is not set" in record.message for record in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# _sign_token security contract tests
+# ---------------------------------------------------------------------------
+
+
+def test_sign_token_refuses_in_production_without_secret():
+    """_sign_token raises RuntimeError in production when DASHBOARD_EXPORT_SECRET is unset."""
+    import os
+
+    with patch.dict("os.environ", {"ENV": "prod"}, clear=False):
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+        with pytest.raises(RuntimeError, match="Refusing to sign export tokens"):
+            _sign_token("export-id", "all", 1234567890)
+
+
+def test_sign_token_refuses_in_production_variant():
+    """_sign_token refuses for ENV=production (full spelling)."""
+    import os
+
+    with patch.dict("os.environ", {"ENV": "production"}, clear=False):
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+        with pytest.raises(RuntimeError):
+            _sign_token("export-id", "all", 1234567890)
+
+
+def test_sign_token_uses_dev_fallback_outside_production():
+    """_sign_token succeeds in dev mode without DASHBOARD_EXPORT_SECRET (uses dev fallback)."""
+    import os
+
+    with patch.dict("os.environ", {}, clear=False):
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+        os.environ.pop("ENV", None)
+        result = _sign_token("export-id", "all", 1234567890)
+    # Returns a 32-char hex digest (valid HMAC output)
+    assert len(result) == 32
+    assert result.isalnum()
+
+
+def test_sign_token_with_explicit_secret_round_trips():
+    """_sign_token and _verify_token round-trip correctly with an explicit secret."""
+    import time
+
+    from butlers.api.routers.data_ops import _verify_token
+
+    with patch.dict("os.environ", {"DASHBOARD_EXPORT_SECRET": "explicit-test-secret-value"}):
+        export_id = "roundtrip-export-id"
+        scope = "all"
+        issued_at = int(time.time())
+        token = _sign_token(export_id, scope, issued_at)
+        # Verify must not raise for a freshly-signed token.
+        _verify_token(export_id, scope, issued_at, token)
+
+
+def test_sign_token_literal_dev_secret_never_used_in_production():
+    """The literal string 'dev-secret' is never used as the signing key in production."""
+    import hashlib as _hashlib
+    import hmac as _hmac
+    import os
+
+    with patch.dict("os.environ", {"ENV": "prod"}, clear=False):
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+        # In production without a secret, _sign_token MUST refuse (not fall back).
+        with pytest.raises(RuntimeError):
+            _sign_token("export-id", "all", 1234567890)
+
+    # Outside production: the dev fallback must NOT be the literal 'dev-secret'.
+    # Verify by computing what the literal 'dev-secret' would produce and
+    # confirming the function returns something different.
+    literal_dev_secret_output = _hmac.new(
+        b"dev-secret", b"export-id:all:1234567890", _hashlib.sha256
+    ).hexdigest()[:32]
+
+    with patch.dict("os.environ", {}, clear=False):
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+        os.environ.pop("ENV", None)
+        actual = _sign_token("export-id", "all", 1234567890)
+
+    assert actual != literal_dev_secret_output, (
+        "The literal 'dev-secret' is being used as the signing key outside dev. "
+        "Remove the 'dev-secret' fallback."
+    )
+
+
+def test_sign_token_dev_fallback_matches_dev_export_secret_constant():
+    """Dev-mode fallback uses _DEV_EXPORT_SECRET (not 'dev-secret')."""
+    import hashlib as _hashlib
+    import hmac as _hmac
+    import os
+
+    expected = _hmac.new(
+        _DEV_EXPORT_SECRET.encode(), b"export-id:contacts:1234567890", _hashlib.sha256
+    ).hexdigest()[:32]
+
+    with patch.dict("os.environ", {}, clear=False):
+        os.environ.pop("DASHBOARD_EXPORT_SECRET", None)
+        os.environ.pop("ENV", None)
+        actual = _sign_token("export-id", "contacts", 1234567890)
+
+    assert actual == expected

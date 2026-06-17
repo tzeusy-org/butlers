@@ -45,6 +45,7 @@ from butlers.api.routers.channel_defaults import router as channel_defaults_rout
 from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
+from butlers.api.routers.data_ops import _is_production
 from butlers.api.routers.data_ops import router as data_ops_router
 from butlers.api.routers.general_settings import router as general_settings_router
 from butlers.api.routers.google_health import router as google_health_router
@@ -114,12 +115,20 @@ async def lifespan(app: FastAPI):
     # Startup
     init_dependencies()
 
-    # Check for DASHBOARD_EXPORT_SECRET env var
+    # Check for DASHBOARD_EXPORT_SECRET env var (A4 indicator: export_secret_insecure_default).
     if os.environ.get("DASHBOARD_EXPORT_SECRET") in (None, ""):
-        logger.warning(
-            "DASHBOARD_EXPORT_SECRET env var is not set; using insecure 'dev-secret' fallback. "
-            "Download tokens are forgeable. Set this in production."
-        )
+        if _is_production():
+            logger.error(
+                "DASHBOARD_EXPORT_SECRET is not set (ENV=%r). "
+                "Export token signing will be REFUSED at runtime. "
+                "Set DASHBOARD_EXPORT_SECRET to a strong random secret before serving.",
+                os.environ.get("ENV", ""),
+            )
+        else:
+            logger.warning(
+                "DASHBOARD_EXPORT_SECRET is not set; using dev-mode fallback. "
+                "Export tokens are forgeable. Set DASHBOARD_EXPORT_SECRET in production."
+            )
 
     # INGESTION_DISPATCH_CONSOLE feature flag.
     # Controls the ingestion sub-route hierarchy (/ingestion/connectors,

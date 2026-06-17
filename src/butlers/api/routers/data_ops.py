@@ -94,14 +94,41 @@ def _get_db_manager() -> DatabaseManager:
 # Token helpers
 # ---------------------------------------------------------------------------
 
+# Dev-mode fallback used when DASHBOARD_EXPORT_SECRET is unset and the process
+# is NOT in production.  Tokens signed with this key are forgeable in dev/test,
+# which is acceptable.  The literal "dev-secret" string is never used.
+_DEV_EXPORT_SECRET = "dev-mode-export-secret-NOT-FOR-PRODUCTION"
+
+
+def _is_production() -> bool:
+    """Return True when the process is configured as production (ENV starts with 'prod')."""
+    return os.environ.get("ENV", "").strip().lower().startswith("prod")
+
 
 def _sign_token(export_id: str, scope: str, issued_at: int) -> str:
     """Return HMAC-SHA256 hex digest (32 chars) for the given export parameters.
 
     The secret is read from the ``DASHBOARD_EXPORT_SECRET`` environment
-    variable, falling back to ``"dev-secret"`` when not set.
+    variable.
+
+    When the variable is not set:
+
+    * **Production** (``ENV`` starts with ``"prod"``): raises ``RuntimeError``.
+      Signing is refused; using a known literal default would make all tokens
+      forgeable.
+    * **Dev/test** (any other ``ENV`` value, including unset): falls back to an
+      explicit non-literal dev secret.  Tokens are forgeable in dev, which is
+      acceptable, but the literal ``"dev-secret"`` string is never used.
     """
-    secret = os.environ.get("DASHBOARD_EXPORT_SECRET", "dev-secret")
+    secret = os.environ.get("DASHBOARD_EXPORT_SECRET")
+    if not secret:
+        if _is_production():
+            raise RuntimeError(
+                "DASHBOARD_EXPORT_SECRET is not set in production. "
+                "Refusing to sign export tokens with an insecure default. "
+                "Set DASHBOARD_EXPORT_SECRET to a strong random secret."
+            )
+        secret = _DEV_EXPORT_SECRET
     message = f"{export_id}:{scope}:{issued_at}"
     return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()[:32]
 
