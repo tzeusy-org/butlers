@@ -311,17 +311,22 @@ class TestListEntities:
         assert "e.id = ANY(" in data_sql
         assert [] in pool.fetch.call_args[0]
 
-    async def test_entity_list_sorts_people_by_tier_then_last_seen(self):
-        """List ordering keeps people first by tier ASC, then last_seen ASC."""
+    async def test_entity_list_sorts_by_tier_then_type_then_last_seen(self):
+        """List ordering leads with Dunbar tier ASC (innermost circle first),
+        then falls back to the person → org → other grouping and last_seen ASC."""
         app, pool = self._make_app(total=0, fetch_rows=[])
         resp = await _get(app, _LIST_PATH)
         assert resp.status_code == 200
         data_sql = pool.fetch.call_args[0][0]
+        # Tier is the primary sort key (untiered entities fall to the bottom).
+        assert "tier ASC NULLS LAST" in data_sql
+        # The type grouping still breaks ties within the untiered tail.
         assert "CASE entity_type" in data_sql
         assert "WHEN 'person' THEN 0" in data_sql
         assert "WHEN 'organization' THEN 1" in data_sql
-        assert "CASE WHEN entity_type = 'person' THEN tier END ASC NULLS LAST" in data_sql
         assert "CASE WHEN entity_type = 'person' THEN last_seen END ASC NULLS LAST" in data_sql
+        # tier ASC must come before the entity_type grouping in the ORDER BY.
+        assert data_sql.index("tier ASC NULLS LAST") < data_sql.index("CASE entity_type")
 
 
 # ===========================================================================

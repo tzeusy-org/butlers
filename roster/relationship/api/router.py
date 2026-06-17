@@ -3073,12 +3073,17 @@ async def list_entities(
             contact_fact_count
         FROM annotated
         ORDER BY
+            -- Dunbar tier is the primary sort: ascending tier number = innermost
+            -- circle (Support Clique = 5) first, so the user's closest people lead
+            -- the whole list regardless of entity type. Untiered entities (no
+            -- pinned override) fall to the bottom.
+            tier ASC NULLS LAST,
+            -- Within the untiered tail, preserve the persons → orgs → other grouping.
             CASE entity_type
                 WHEN 'person' THEN 0
                 WHEN 'organization' THEN 1
                 ELSE 2
             END,
-            CASE WHEN entity_type = 'person' THEN tier END ASC NULLS LAST,
             CASE WHEN entity_type = 'person' THEN last_seen END ASC NULLS LAST,
             canonical_name ASC
         OFFSET ${arg_idx} LIMIT ${arg_idx + 1}
