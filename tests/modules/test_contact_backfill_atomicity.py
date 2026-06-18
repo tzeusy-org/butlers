@@ -17,7 +17,7 @@ import uuid
 
 import pytest
 
-from butlers.modules.contacts.backfill import ContactBackfillEngine
+from butlers.modules.contacts.backfill import ContactBackfillEngine, ContactBackfillWriter
 from butlers.modules.contacts.sync import CanonicalContact
 
 pytestmark = pytest.mark.unit
@@ -163,3 +163,49 @@ async def test_source_link_failure_rolls_back_and_propagates():
     # back the contact INSERT in real asyncpg).
     txn_exit = next(e for e in conn.events if isinstance(e, tuple) and e[0] == "txn_exit")
     assert txn_exit[1] is RuntimeError
+
+
+# ---------------------------------------------------------------------------
+# Entity resolution must run on the POOL, not on the caller's transaction.
+#
+# _ensure_entity recovers from a duplicate canonical_name by catching
+# UniqueViolationError and re-SELECTing. In Postgres a raised error aborts the
+# enclosing transaction even when Python catches it, so that recovery SELECT
+# would fail if entity resolution shared create_contact's contact+source-link
+# transaction. This pins the contract: the entity INSERT goes to the pool, the
+# contact INSERT goes to the passed executor.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingExec:
+    """Minimal async executor that records the SQL it runs and returns an id."""
+
+    def __init__(self, return_id: uuid.UUID) -> None:
+        self.queries: list[str] = []
+        self._return_id = return_id
+
+    async def fetchrow(self, query: str, *args, **kwargs):
+        self.queries.append(query)
+        return {"id": self._return_id}
+
+    async def execute(self, *args, **kwargs):
+        return None
+
+
+async def test_entity_resolution_runs_on_pool_not_caller_transaction():
+    entity_id = uuid.uuid4()
+    contact_id = uuid.uuid4()
+
+    pool = _RecordingExec(entity_id)  # self._pool — entity resolution lands here
+    conn = _RecordingExec(contact_id)  # caller's transactional connection
+
+    writer = ContactBackfillWriter(pool, provider="google", account_id="default")
+
+    result = await writer.create_contact(_contact(), executor=conn)
+    assert result == contact_id
+
+    # Entity INSERT went to the pool; contact INSERT went to the executor.
+    assert any("INSERT INTO public.entities" in q for q in pool.queries)
+    assert not any("INSERT INTO public.contacts" in q for q in pool.queries)
+    assert any("INSERT INTO public.contacts" in q for q in conn.queries)
+    assert not any("INSERT INTO public.entities" in q for q in conn.queries)
