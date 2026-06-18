@@ -1695,3 +1695,89 @@ async def test_dispatch_approved_action_re_gate_without_action_id_still_fails():
     error_msg = captured["result"].get("error", "")
     assert "<unknown>" in error_msg or "gate" in error_msg
     assert result is not None
+
+
+async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_action_id():
+    """Re-gate guard: notify email-guard path keys the phantom id as pending_action_id.
+
+    The notify email-guard returns {status: pending_approval, pending_action_id: ...}
+    (NOT action_id). The re-gate guard must extract the phantom id from that key so
+    the error message names the phantom action correctly instead of falling back
+    to '<unknown>'.
+
+    Regression test for bu-2r332.
+    """
+    import json
+    from unittest.mock import patch
+
+    import butlers.modules.approvals.operations as approvals_ops
+    from butlers.api.routers.approvals import _dispatch_approved_action
+
+    action_id = uuid4()
+    phantom_action_id = uuid4()
+
+    # notify email-guard returns pending_approval with pending_action_id (not action_id)
+    notify_email_guard_payload = json.dumps(
+        {
+            "status": "pending_approval",
+            "error": (
+                "Delivery blocked: email target 'someone@example.com' is a "
+                "non-standing contact and no standing approval rule matches."
+            ),
+            "pending_action_id": str(phantom_action_id),
+        }
+    )
+
+    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="notify",
+        tool_args={"channel": "email", "message": "Hello", "recipient": "someone@example.com"},
+        mcp_text_payload=notify_email_guard_payload,
+        mcp_is_error=False,
+    )
+
+    captured: dict = {}
+
+    async def _capture(conn, *, action_id, execution_result, success):
+        captured["success"] = success
+        captured["result"] = execution_result
+        return {
+            "id": str(action_id),
+            "status": "executed",
+            "tool_name": "notify",
+            "tool_args": {},
+            "requested_at": _NOW.isoformat(),
+            "butler": "switchboard",
+            "agent_summary": None,
+            "session_id": None,
+            "expires_at": None,
+            "decided_by": None,
+            "decided_at": None,
+            "execution_result": execution_result,
+            "approval_rule_id": None,
+        }
+
+    with patch.object(approvals_ops, "mark_executed", side_effect=_capture):
+        result = await _dispatch_approved_action(
+            mock_mcp,
+            mock_db,
+            mock_pool,
+            str(action_id),
+            "notify",
+            {"channel": "email", "message": "Hello", "recipient": "someone@example.com"},
+        )
+
+    # Must be recorded as failure — the notify email-guard re-parked the action
+    assert captured["success"] is False, "Re-gate via notify email-guard must be a failure"
+
+    # Error must include the phantom id from pending_action_id (not fall back to <unknown>)
+    error_msg = captured["result"].get("error", "")
+    assert str(phantom_action_id) in error_msg, (
+        f"Error must reference the phantom action id from pending_action_id={phantom_action_id}; "
+        f"got: {error_msg!r}"
+    )
+    assert "<unknown>" not in error_msg, (
+        "Error must NOT fall back to '<unknown>' when pending_action_id is present"
+    )
+
+    assert result is not None
