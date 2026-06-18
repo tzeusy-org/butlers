@@ -75,12 +75,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Page } from "@/components/ui/page";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -356,24 +350,22 @@ function TelegramSessionSetup({
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader><CardTitle>Telegram User Session</CardTitle></CardHeader>
-        <CardContent><Skeleton className="h-8 w-48" /></CardContent>
-      </Card>
+      <section className="space-y-3">
+        <Eyebrow as="div">Telegram user session</Eyebrow>
+        <Skeleton className="h-8 w-48" />
+      </section>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>Telegram User Session</CardTitle>
-          {status?.ready && (
-            <Badge variant="outline" className="text-green-600 border-green-600">Connected</Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <section className="space-y-3">
+      <div className="flex items-center justify-between">
+        <Eyebrow as="div">Telegram user session</Eyebrow>
+        {status?.ready && (
+          <Badge variant="outline" className="text-green-600 border-green-600">Connected</Badge>
+        )}
+      </div>
+      <div className="space-y-3">
         {/* Status summary */}
         {status && step === "idle" && (
           <div className="flex flex-col gap-1.5 text-sm">
@@ -604,8 +596,8 @@ function TelegramSessionSetup({
         {error && (
           <p className="text-sm text-destructive">{error}</p>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -654,13 +646,9 @@ function LinkedContactSection({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>Linked Contact</CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent>
+    <section className="space-y-3">
+      <Eyebrow as="div">Linked contact</Eyebrow>
+      <div>
         {entity.linked_contact_id ? (
           <div className="flex items-center gap-3">
             <span className="text-sm">
@@ -730,8 +718,8 @@ function LinkedContactSection({
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -2895,6 +2883,40 @@ export default function EntityDetailPage() {
 
   const isOwner = entity?.roles?.includes("owner") ?? false;
   const ownerNeedsSetup = isOwner && entity ? !entity.linked_contact_id : false;
+
+  // Practical drawer — collapsed by default, owner setup forces it open.
+  // Defined once and rendered near the top of whichever view mode is active
+  // (editorial: below first/last seen; workbench: above the three-rail). The
+  // two modes are mutually exclusive, so the single ref is never duplicated.
+  const practicalDrawer =
+    entity && entityId ? (
+      <div ref={practicalDrawerRef}>
+        <PracticalDrawer entity={entity} forceOpen={ownerNeedsSetup}>
+          <OwnerSetupBanner entity={entity} />
+          <LinkedContactSection entityId={entity.id} entity={entity} />
+
+          {/* Credentials moved to the User tab of /secrets — link only. */}
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+            <span className="text-muted-foreground">
+              Credentials and identity-bound secrets are managed in{" "}
+            </span>
+            <Link to="/secrets" className="text-primary font-medium hover:underline">
+              Secrets → User
+            </Link>
+            <span className="text-muted-foreground">
+              . Switch identity there to view this entity's credentials.
+            </span>
+          </div>
+
+          {isOwner && (
+            <TelegramSessionSetup
+              entityId={entity.id}
+              entries={entity.entity_info ?? []}
+            />
+          )}
+        </PracticalDrawer>
+      </div>
+    ) : null;
   const dunbarPinned =
     entity?.recent_facts?.some(
       (f) => f.predicate === "dunbar_tier_override" && f.validity === "active",
@@ -3278,6 +3300,9 @@ export default function EntityDetailPage() {
                 </dd>
               </dl>
 
+              {/* Practical details — first data element below first/last seen. */}
+              {practicalDrawer}
+
               {/* Core dates — server-extracted date-kind facts with next
                   occurrence (entity v3; replaces client-side date matching). */}
               <CoreDatesBlock entityId={entityId} />
@@ -3347,6 +3372,9 @@ export default function EntityDetailPage() {
                   (entity v3); most-recent touch per channel. */}
               <LatestInteractionsBlock entityId={entityId} />
 
+              {/* Practical details — kept near the top in workbench mode too. */}
+              {practicalDrawer}
+
               {/* Workbench three-rail layout: context · workbench · curation.
                   No 44px Display here (the identity hero above carries the name). */}
               <div
@@ -3385,34 +3413,6 @@ export default function EntityDetailPage() {
               </div>
             </>
           )}
-
-          {/* Practical drawer — collapsed by default, owner setup forces it open */}
-          <div ref={practicalDrawerRef}>
-          <PracticalDrawer entity={entity} forceOpen={ownerNeedsSetup}>
-            <OwnerSetupBanner entity={entity} />
-            <LinkedContactSection entityId={entity.id} entity={entity} />
-
-            {/* Credentials moved to the User tab of /secrets — link only. */}
-            <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-              <span className="text-muted-foreground">
-                Credentials and identity-bound secrets are managed in{" "}
-              </span>
-              <Link to="/secrets" className="text-primary font-medium hover:underline">
-                Secrets → User
-              </Link>
-              <span className="text-muted-foreground">
-                . Switch identity there to view this entity's credentials.
-              </span>
-            </div>
-
-            {isOwner && (
-              <TelegramSessionSetup
-                entityId={entity.id}
-                entries={entity.entity_info ?? []}
-              />
-            )}
-          </PracticalDrawer>
-          </div>
         </div>
       )}
     </Page>
