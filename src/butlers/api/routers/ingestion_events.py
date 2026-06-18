@@ -493,7 +493,7 @@ async def bulk_retry_ingestion_events(
             SELECT fe.id::text, fe.source_channel,
                    COALESCE(cr.replay_safe, TRUE) AS replay_safe
             FROM connectors.filtered_events fe
-            LEFT JOIN connector_registry cr
+            LEFT JOIN switchboard.connector_registry cr
               ON cr.connector_type = fe.connector_type
              AND cr.endpoint_identity = fe.endpoint_identity
             WHERE fe.id = ANY($1::uuid[])

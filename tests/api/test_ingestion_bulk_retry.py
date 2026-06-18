@@ -528,6 +528,49 @@ async def test_bulk_retry_safe_batch_passes_guard_200(app):
     assert body["failed"] == 0
 
 
+async def test_bulk_retry_preflight_qualifies_connector_registry_schema(app):
+    """The pre-flight query must reference ``switchboard.connector_registry``.
+
+    Regression: ``connector_registry`` lives in the ``switchboard`` schema, but
+    the pre-flight join ran on the shared credential pool (whose search_path
+    excludes ``switchboard``).  Referencing the table unqualified raised
+    ``UndefinedTableError: relation "connector_registry" does not exist`` and
+    surfaced to the UI as "Database error during safety pre-flight check".
+    The mocked-pool tests cannot catch an unqualified-table error, so we assert
+    the SQL text is schema-qualified instead.
+    """
+    safe_id = str(uuid4())
+    pool = _make_shared_pool()
+    pool.fetch = AsyncMock(
+        return_value=[_make_db_row(id=safe_id, source_channel="telegram", replay_safe=True)]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+            return_value={"outcome": "ok", "id": safe_id, "source": "filtered_events"},
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/retry/bulk",
+                json={"event_ids": [safe_id]},
+            )
+
+    assert resp.status_code == 200
+    preflight_sql = pool.fetch.await_args_list[0].args[0]
+    assert "switchboard.connector_registry" in preflight_sql
+    assert "JOIN connector_registry" not in preflight_sql
+
+
 async def test_bulk_retry_preflight_db_error_503(app):
     """A DB error during the pre-flight channel check returns 503."""
     pool = _make_shared_pool()
