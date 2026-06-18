@@ -259,6 +259,23 @@ def discover_butlers(
 
 # ---------------------------------------------------------------------------
 # Module-level singleton for FastAPI dependency injection
+#
+# TEST-ISOLATION REQUIREMENT (enforced, see bu-ci857 / bu-0iq18):
+# These singletons are module-global state shared across tests that run in the
+# same Python process (xdist workers). Any test that mutates them MUST restore
+# them on teardown. The correct pattern is:
+#
+#   monkeypatch.setattr(deps_module, "_singleton_name", <new_value>)
+#
+# pytest then auto-restores the original value after the test, even on failure.
+# Do NOT use manual ``try/finally`` restores or bare assignment — they are
+# fragile under exceptions and miss xdist worker-lifetime isolation.
+#
+# Current mutation sites:
+#   - _db_manager: tests/api/test_utilities.py (monkeypatch ✓, hardened bu-ci857)
+#   - _pricing_config: tests/api/test_pricing.py (monkeypatch ✓, hardened bu-0iq18)
+#   - _mcp_manager, _butler_configs: never mutated directly — tests use
+#     app.dependency_overrides[get_mcp_manager/get_butler_configs] instead ✓
 # ---------------------------------------------------------------------------
 
 _mcp_manager: MCPClientManager | None = None
@@ -329,6 +346,7 @@ def get_butler_configs() -> list[ButlerConnectionInfo]:
 
 # ---------------------------------------------------------------------------
 # Pricing configuration singleton
+# (See test-isolation requirement note above for the full module-globals block)
 # ---------------------------------------------------------------------------
 
 
@@ -357,6 +375,7 @@ def get_pricing() -> PricingConfig:
 
 # ---------------------------------------------------------------------------
 # DatabaseManager singleton
+# (See test-isolation requirement note above for the full module-globals block)
 # ---------------------------------------------------------------------------
 
 _db_manager: DatabaseManager | None = None

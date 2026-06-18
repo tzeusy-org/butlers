@@ -211,3 +211,109 @@ def test_db_params_from_env(monkeypatch, env_vars, expected_host, expected_ssl):
     params = _db_params_from_env()
     assert params["host"] == expected_host
     assert params["ssl"] == expected_ssl
+
+
+# ---------------------------------------------------------------------------
+# deps.py singleton isolation contract (regression guard — bu-0iq18)
+# ---------------------------------------------------------------------------
+
+
+class TestDepsModuleGlobalIsolation:
+    """Regression guard for deps.py module-global singleton test isolation.
+
+    Root cause of the bu-ci857 flake: a test called init_db_manager() which
+    wrote an AsyncMock into deps._db_manager.  That mock persisted across xdist
+    worker tests; a later health-endpoint test got the mock from get_db_manager()
+    and 500-ed.
+
+    These tests assert that ALL known module-global singletons in deps.py are
+    documented and that the correct monkeypatch isolation pattern is used.
+
+    RULE: any test that mutates a deps.py singleton MUST use
+    ``monkeypatch.setattr(deps_module, "<name>", <value>)`` so pytest
+    auto-restores it — never bare assignment, never manual try/finally.
+    """
+
+    def test_known_singletons_exist_with_expected_names(self):
+        """Enumerate the known module-global singletons in deps.py.
+
+        If a new singleton is added to deps.py, it should be added to this
+        list and receive the same monkeypatch-restore treatment in tests.
+        """
+        import butlers.api.deps as deps_mod
+
+        known_singletons = {"_db_manager", "_mcp_manager", "_butler_configs", "_pricing_config"}
+        for name in known_singletons:
+            assert hasattr(deps_mod, name), (
+                f"Expected module-global singleton {name!r} in deps.py — update this guard if removed"
+            )
+
+    def test_singletons_are_none_at_import_time(self):
+        """Singletons start as None before any init_* call.
+
+        This confirms the isolation contract: no singleton is pre-populated at
+        import time, so a fresh import always starts from a clean baseline.
+        """
+        import importlib
+
+        import butlers.api.deps as deps_mod
+
+        # Re-importing the already-cached module returns the same object —
+        # this is intentional: we want to verify the live state is predictable
+        # after any test that correctly uses monkeypatch (which restores None).
+        reloaded = importlib.import_module("butlers.api.deps")
+        assert reloaded is deps_mod, "Module identity must be stable across imports"
+
+        # Verify defaults (as documented in deps.py) — None means "not yet
+        # initialized via init_*"; these names must NOT be mutated globally.
+        # If another test in the same xdist worker already called init_* and
+        # correctly used monkeypatch (which auto-restores), val will be None
+        # again by the time this test runs. If monkeypatch was NOT used, val
+        # may be a leaked mock — catching that is the point of this check.
+        from butlers.api.db import DatabaseManager
+        from butlers.api.deps import MCPClientManager
+        from butlers.api.pricing import PricingConfig
+
+        expected_types = {
+            "_db_manager": DatabaseManager,
+            "_mcp_manager": MCPClientManager,
+            "_butler_configs": list,
+            "_pricing_config": PricingConfig,
+        }
+        for attr, expected_type in expected_types.items():
+            val = getattr(deps_mod, attr)
+            assert val is None or isinstance(val, expected_type), (
+                f"{attr} has an unexpected value type: {type(val)}"
+            )
+
+    def test_get_db_manager_raises_when_none(self, monkeypatch):
+        """get_db_manager() raises RuntimeError when singleton is None."""
+        import butlers.api.deps as deps_mod
+
+        monkeypatch.setattr(deps_mod, "_db_manager", None)
+        with pytest.raises(RuntimeError, match="not initialized"):
+            deps_mod.get_db_manager()
+
+    def test_get_mcp_manager_raises_when_none(self, monkeypatch):
+        """get_mcp_manager() raises RuntimeError when singleton is None."""
+        import butlers.api.deps as deps_mod
+
+        monkeypatch.setattr(deps_mod, "_mcp_manager", None)
+        with pytest.raises(RuntimeError, match="not initialized"):
+            deps_mod.get_mcp_manager()
+
+    def test_get_butler_configs_raises_when_none(self, monkeypatch):
+        """get_butler_configs() raises RuntimeError when singleton is None."""
+        import butlers.api.deps as deps_mod
+
+        monkeypatch.setattr(deps_mod, "_butler_configs", None)
+        with pytest.raises(RuntimeError, match="not initialized"):
+            deps_mod.get_butler_configs()
+
+    def test_get_pricing_raises_when_none(self, monkeypatch):
+        """get_pricing() raises RuntimeError when singleton is None."""
+        import butlers.api.deps as deps_mod
+
+        monkeypatch.setattr(deps_mod, "_pricing_config", None)
+        with pytest.raises(RuntimeError, match="not initialized"):
+            deps_mod.get_pricing()

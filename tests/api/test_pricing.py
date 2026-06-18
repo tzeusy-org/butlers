@@ -192,27 +192,25 @@ class TestEstimateCost:
 
 
 class TestPricingDependency:
-    def test_get_pricing_raises_before_init(self):
+    def test_get_pricing_raises_before_init(self, monkeypatch):
         import butlers.api.deps as deps_mod
 
-        original = deps_mod._pricing_config
-        deps_mod._pricing_config = None
-        try:
-            with pytest.raises(RuntimeError, match="PricingConfig not initialized"):
-                deps_mod.get_pricing()
-        finally:
-            deps_mod._pricing_config = original
+        # Use monkeypatch so pytest auto-restores the singleton on teardown,
+        # preventing leaks to other tests running in the same xdist worker
+        # (mirrors the _db_manager isolation pattern from bu-ci857 / PR #2485).
+        monkeypatch.setattr(deps_mod, "_pricing_config", None)
+        with pytest.raises(RuntimeError, match="PricingConfig not initialized"):
+            deps_mod.get_pricing()
 
-    def test_init_and_get_pricing(self, pricing_file):
+    def test_init_and_get_pricing(self, pricing_file, monkeypatch):
         import butlers.api.deps as deps_mod
 
-        original = deps_mod._pricing_config
-        try:
-            result = deps_mod.init_pricing(pricing_file)
-            assert isinstance(result, PricingConfig)
-            assert deps_mod.get_pricing() is result
-        finally:
-            deps_mod._pricing_config = original
+        # Capture current value so monkeypatch restores it; init_pricing() will
+        # overwrite the singleton and must not persist past this test.
+        monkeypatch.setattr(deps_mod, "_pricing_config", deps_mod._pricing_config)
+        result = deps_mod.init_pricing(pricing_file)
+        assert isinstance(result, PricingConfig)
+        assert deps_mod.get_pricing() is result
 
     def test_loads_repo_default_pricing_toml(self):
         cfg = load_pricing()
