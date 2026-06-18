@@ -263,6 +263,18 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # Extract payload_type from control for decomposition branch
         _payload_type = control.get("payload_type") if control is not None else None
 
+        # Extract policy_tier from the envelope (connectors set it on control,
+        # matching the cold-path scanner's recovery in DurableBuffer). When
+        # absent, fall back to the default tier. DurableBuffer.enqueue also
+        # validates and falls back on unknown tiers.
+        from butlers.core.buffer import POLICY_TIER_DEFAULT
+
+        _policy_tier = (
+            control.get("policy_tier", POLICY_TIER_DEFAULT)
+            if control is not None
+            else POLICY_TIER_DEFAULT
+        )
+
         # Route accepted message via durable buffer (bounded queue)
         # or fall back to direct create_task if buffer is unavailable.
         if not result.duplicate and pipeline is not None:
@@ -287,6 +299,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                         triage_target=result.triage_target,
                         attachments=_attachments,
                         payload_type=_payload_type,
+                        policy_tier=_policy_tier,
                     )
                 else:
                     # Fallback: unbounded create_task (buffer not wired)
