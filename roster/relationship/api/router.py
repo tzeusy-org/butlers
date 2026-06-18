@@ -3016,9 +3016,24 @@ async def list_entities(
     # non-person type) fall back to any pinned override, else NULL ('—').
     from butlers.tools.relationship import dunbar as _dunbar
 
+    # compute_tier_ranking returns one entry per *contact*, so an entity with
+    # multiple linked contacts appears multiple times. Forwarding those repeats
+    # into the unnest() below fans out the LEFT JOIN and renders the same entity
+    # as N duplicate rows (and breaks entity-keyed checkbox selection). The list
+    # is entity-keyed, so collapse to one tier per entity here. Ranking is
+    # ordered by score DESC and higher score → innermost (smallest) tier, so the
+    # first occurrence is the closest tier — keep it.
     ranking = await _dunbar.compute_tier_ranking(pool)
-    tier_entity_ids = [entry["entity_id"] for entry in ranking]
-    tier_values = [int(entry["dunbar_tier"]) for entry in ranking]
+    tier_entity_ids: list[Any] = []
+    tier_values: list[int] = []
+    _seen_tier_entities: set[Any] = set()
+    for entry in ranking:
+        entity_id = entry["entity_id"]
+        if entity_id in _seen_tier_entities:
+            continue
+        _seen_tier_entities.add(entity_id)
+        tier_entity_ids.append(entity_id)
+        tier_values.append(int(entry["dunbar_tier"]))
 
     # Argument slots for the data query: the two tier arrays, then offset/limit.
     tier_ids_idx = arg_idx

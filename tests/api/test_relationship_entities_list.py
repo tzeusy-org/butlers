@@ -476,3 +476,80 @@ async def test_multiple_entities_returned():
     assert body["total"] == 3
     names = [item["canonical_name"] for item in body["items"]]
     assert names == ["Alice", "Bob", "Carol"]
+
+
+# ---------------------------------------------------------------------------
+# Scenario: Tier ranking with multiple contacts per entity must NOT fan out
+#
+# compute_tier_ranking() returns one entry per *contact*. An entity with N
+# linked contacts (e.g. duplicate Google-synced contacts) appears N times.
+# Forwarding those repeats into the unnest()-based computed_tiers CTE fans out
+# the LEFT JOIN and renders the same entity as N duplicate rows — which also
+# breaks the entity-id-keyed checkbox selection in the UI. The list is
+# entity-keyed, so the endpoint must collapse the ranking to one tier per
+# entity (closest tier wins) before building the data query.
+# ---------------------------------------------------------------------------
+
+
+async def test_tier_ranking_deduped_per_entity(monkeypatch):
+    """Duplicate entity_ids in the ranking are collapsed before the data query.
+
+    Regression for the entities list showing the same entity multiple times
+    (and one checkbox selecting all duplicates) when an entity had several
+    linked contacts.
+    """
+    from butlers.tools.relationship import dunbar as _dunbar
+
+    # E1 appears three times (three contacts) with descending closeness; the
+    # ranking is score-ordered DESC, so its first occurrence (tier 5) is the
+    # closest. E2 appears once.
+    ranking = [
+        {"entity_id": _ENTITY_ID_1, "dunbar_tier": 5},
+        {"entity_id": _ENTITY_ID_1, "dunbar_tier": 15},
+        {"entity_id": _ENTITY_ID_2, "dunbar_tier": 50},
+        {"entity_id": _ENTITY_ID_1, "dunbar_tier": 150},
+    ]
+
+    async def _fake_ranking(_pool):
+        return ranking
+
+    monkeypatch.setattr(_dunbar, "compute_tier_ranking", _fake_ranking)
+
+    # Capture the positional args passed to the entity data query so we can
+    # inspect the tier arrays the endpoint forwards into unnest().
+    captured: dict[str, tuple] = {}
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(return_value=0)
+
+    async def _route_fetch(query, *args, **kwargs):
+        if "FROM public.entities e" in query and "computed_tiers" in query:
+            captured["data_args"] = args
+            return []
+        return []
+
+    mock_pool.fetch = AsyncMock(side_effect=_route_fetch)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+
+    app = create_app()
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+
+    resp = await _get(app)
+    assert resp.status_code == 200
+
+    # data_args = (..., tier_entity_ids, tier_values, offset, limit)
+    data_args = captured["data_args"]
+    tier_entity_ids, tier_values = data_args[-4], data_args[-3]
+
+    # Each entity appears exactly once.
+    assert len(tier_entity_ids) == len(set(tier_entity_ids))
+    assert set(tier_entity_ids) == {_ENTITY_ID_1, _ENTITY_ID_2}
+    # Closest (smallest) tier wins for the duplicated entity.
+    tier_by_entity = dict(zip(tier_entity_ids, tier_values, strict=True))
+    assert tier_by_entity[_ENTITY_ID_1] == 5
+    assert tier_by_entity[_ENTITY_ID_2] == 50
