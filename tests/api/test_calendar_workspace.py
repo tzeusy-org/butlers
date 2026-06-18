@@ -56,6 +56,7 @@ def _workspace_event_row(
         "source_metadata": {"projection": "test"},
         "event_id": uuid4(),
         "origin_ref": str(uuid4()),
+        "origin_instance_ref": str(uuid4()),
         "title": "Calendar item",
         "description": "desc",
         "location": "loc",
@@ -197,7 +198,12 @@ async def test_workspace_returns_entries_and_source_freshness(app):
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert len(body["entries"]) == 1
-    assert body["entries"][0]["view"] == "user"
+    entry = body["entries"][0]
+    assert entry["view"] == "user"
+    # Regression guard (bu-99m0s): the v1 read-model strictly reads
+    # ``origin_instance_ref`` from every workspace row, so it must round-trip
+    # into the entry metadata rather than raising KeyError -> HTTP 500.
+    assert entry["metadata"]["origin_instance_ref"] == user_row["origin_instance_ref"]
     assert len(body["source_freshness"]) == 1
 
 
