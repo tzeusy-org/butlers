@@ -155,6 +155,52 @@ class TestIsPrimaryContact:
         assert args[1] == "has-handle"  # telegram → has-handle predicate
         assert args[2] == "chat-99"
 
+    async def test_at_prefixed_username_returns_true_when_stored_without_at(self) -> None:
+        """is_primary_contact normalises '@Tzeusy' → 'Tzeusy' for telegram channel.
+
+        Regression for bu-c4f7f: the primacy check must be consistent with
+        resolve_contact_by_channel's @-prefix normalisation so that an owner send
+        with chat_id='@Tzeusy' is not mis-classified as non-primary when the
+        stored fact uses bare 'Tzeusy'.
+        """
+        entity_id = uuid.uuid4()
+        stored = "Tzeusy"
+
+        # fetchrow returns the primary row only for the stored bare value
+        def _fetchrow(query: str, eid: Any, predicate: str, value: str) -> dict | None:
+            if value.lower() == stored.lower():
+                return {"primary": True}
+            return None
+
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+
+        result = await is_primary_contact(pool, entity_id, "telegram", "@Tzeusy")
+
+        assert result is True, (
+            "is_primary_contact must resolve '@Tzeusy' to stored 'Tzeusy' and return True"
+        )
+
+    async def test_at_prefixed_username_returns_false_when_not_stored(self) -> None:
+        """is_primary_contact returns False when no variant of the username is primary."""
+        entity_id = uuid.uuid4()
+        pool = _make_pool(fetchrow_return=None)
+
+        result = await is_primary_contact(pool, entity_id, "telegram", "@nobody")
+
+        assert result is False
+
+    async def test_non_telegram_channel_uses_exact_match_only(self) -> None:
+        """Non-telegram channels (e.g. email) are not subject to @-prefix normalization."""
+        entity_id = uuid.uuid4()
+        # Only one fetchrow call expected — email uses exact match, not candidate loop
+        pool = _make_pool(fetchrow_return={"primary": True})
+
+        result = await is_primary_contact(pool, entity_id, "email", "owner@example.com")
+
+        assert result is True
+        assert pool.fetchrow.await_count == 1, "email must use a single exact-match query"
+
 
 # ---------------------------------------------------------------------------
 # Gate wrapper: owner bypass requires is_primary

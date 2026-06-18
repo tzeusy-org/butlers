@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import asyncpg
 
+from butlers.identity import _TELEGRAM_USERNAME_CHANNEL_TYPES, _telegram_username_candidates
+
 logger = logging.getLogger(__name__)
 
 # Channel-type → predicate mapping (mirrors identity._CHANNEL_TYPE_TO_PREDICATE)
@@ -86,25 +88,36 @@ async def is_primary_contact(
         # Unknown channel type — treat as non-primary
         return False
 
+    # Build the ordered list of values to check.  For Telegram username channel
+    # types, outbound tools may supply '@Username' while the canonical storage
+    # form (from the contacts backfill) strips the leading '@'.  Apply the same
+    # normalisation as resolve_contact_by_channel so the primacy check stays
+    # consistent with resolution (bu-c4f7f).
+    if channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+        candidates = _telegram_username_candidates(channel_value)
+    else:
+        candidates = [channel_value]
+
     try:
-        row = await pool.fetchrow(
-            """
-            SELECT "primary"
-            FROM relationship.entity_facts
-            WHERE subject    = $1
-              AND predicate  = $2
-              AND object     = $3
-              AND object_kind = 'literal'
-              AND validity   = 'active'
-            LIMIT 1
-            """,
-            entity_id,
-            predicate,
-            channel_value,
-        )
-        if row is None:
-            return False
-        return bool(row["primary"])
+        for candidate in candidates:
+            row = await pool.fetchrow(
+                """
+                SELECT "primary"
+                FROM relationship.entity_facts
+                WHERE subject    = $1
+                  AND predicate  = $2
+                  AND object     = $3
+                  AND object_kind = 'literal'
+                  AND validity   = 'active'
+                LIMIT 1
+                """,
+                entity_id,
+                predicate,
+                candidate,
+            )
+            if row is not None:
+                return bool(row["primary"])
+        return False
     except Exception:  # noqa: BLE001
         logger.warning(
             "approvals: could not determine is_primary for entity %s %s=%r; "

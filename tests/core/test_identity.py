@@ -31,6 +31,7 @@ import pytest
 
 from butlers.identity import (
     ResolvedContact,
+    _telegram_username_candidates,
     build_identity_preamble,
     create_temp_contact,
     resolve_contact_by_channel,
@@ -535,3 +536,170 @@ async def test_second_message_from_new_sender_does_not_mint_duplicate_entity():
     second = await create_temp_contact(pool, channel_type, channel_value)
     assert second is not None
     assert second.entity_id == first_entity_id
+
+
+# ---------------------------------------------------------------------------
+# Telegram username normalization — bu-c4f7f
+# ---------------------------------------------------------------------------
+
+
+class TestTelegramUsernameCandidates:
+    """_telegram_username_candidates generates normalised variants in order.
+
+    The canonical storage form (contacts backfill) strips the leading '@'.
+    The outbound tool (telegram_send_message) may supply '@Username'.
+    Telegram usernames are case-insensitive on the platform.
+    """
+
+    def test_at_prefixed_input_produces_bare_as_second_candidate(self) -> None:
+        """'@Tzeusy' → first exact, then bare 'Tzeusy', then lowercase variants."""
+        candidates = _telegram_username_candidates("@Tzeusy")
+        assert candidates[0] == "@Tzeusy"  # exact first
+        assert "Tzeusy" in candidates  # @-stripped
+        assert "@tzeusy" in candidates  # lowercase with @
+        assert "tzeusy" in candidates  # lowercase bare
+
+    def test_bare_input_produces_at_prefixed_as_variant(self) -> None:
+        """'Tzeusy' → first exact, then '@Tzeusy', then lowercase variants."""
+        candidates = _telegram_username_candidates("Tzeusy")
+        assert candidates[0] == "Tzeusy"
+        assert "@Tzeusy" in candidates
+        assert "tzeusy" in candidates
+
+    def test_numeric_chat_id_is_first_and_only_unique_candidate(self) -> None:
+        """A numeric chat id (e.g. '206570151') should yield ONLY itself — no @-prefix."""
+        candidates = _telegram_username_candidates("206570151")
+        # Numeric chat IDs are not usernames; they must NOT expand to @-prefix variants
+        # so that resolve_contact_by_channel makes exactly one DB query and doesn't
+        # spuriously try '@206570151'.
+        assert candidates == ["206570151"]
+        assert "@206570151" not in candidates
+
+    def test_negative_numeric_chat_id_is_exact_match_only(self) -> None:
+        """Negative numeric chat IDs (group/supergroup) must also expand to only themselves."""
+        candidates = _telegram_username_candidates("-1001234567")
+        assert candidates == ["-1001234567"]
+        assert "@-1001234567" not in candidates
+
+    def test_no_duplicates(self) -> None:
+        """Candidate list must contain no duplicates."""
+        for value in ("@Tzeusy", "Tzeusy", "tzeusy", "206570151"):
+            candidates = _telegram_username_candidates(value)
+            assert len(candidates) == len(set(candidates)), (
+                f"Duplicates in candidates for {value!r}: {candidates}"
+            )
+
+    def test_lowercase_input_does_not_produce_duplicates(self) -> None:
+        """Already-lowercase input: '@tzeusy' normalised candidates have no dupes."""
+        candidates = _telegram_username_candidates("@tzeusy")
+        assert len(candidates) == len(set(candidates))
+        assert "tzeusy" in candidates
+
+
+class TestTelegramUsernameResolutionNormalization:
+    """resolve_contact_by_channel normalises Telegram username @-prefix and case.
+
+    Regression for bu-c4f7f: telegram_send_message with chat_id='@Tzeusy' must
+    resolve when the stored entity_facts triple uses bare 'Tzeusy'.
+    """
+
+    def _make_pool_for_telegram_storage(
+        self,
+        stored_value: str,
+        entity_id: uuid.UUID,
+        name: str = "Owner",
+        roles: list[str] | None = None,
+    ) -> AsyncMock:
+        """Pool that returns an entity row only for the stored (canonical) value.
+
+        Simulates how the DB behaves: exact-match on ``object = $2`` succeeds
+        only for the stored canonical value; all other variants return None.
+        """
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: {
+            "entity_id": entity_id,
+            "name": name,
+            "roles": roles or ["owner"],
+        }[k]
+
+        def _fetchrow(query: str, predicate: str, value: str) -> MagicMock | None:
+            if "entity_facts" in query and value.lower() == stored_value.lower():
+                return row
+            return None
+
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        return pool
+
+    async def test_at_prefixed_resolves_when_stored_without_at(self) -> None:
+        """'@Tzeusy' resolves when stored as 'Tzeusy' (canonical backfill form)."""
+        eid = uuid.uuid4()
+        pool = self._make_pool_for_telegram_storage("Tzeusy", eid, roles=["owner"])
+
+        result = await resolve_contact_by_channel(pool, "telegram", "@Tzeusy")
+
+        assert result is not None, "@-prefixed username must resolve to stored bare form"
+        assert result.entity_id == eid
+        assert result.roles == ["owner"]
+        assert result.contact_id is None
+
+    async def test_at_prefixed_uppercase_resolves_case_insensitively(self) -> None:
+        """'@TZEUSY' resolves when stored as 'Tzeusy' (case-insensitive)."""
+        eid = uuid.uuid4()
+        pool = self._make_pool_for_telegram_storage("Tzeusy", eid, roles=["owner"])
+
+        result = await resolve_contact_by_channel(pool, "telegram", "@TZEUSY")
+
+        assert result is not None, "@-prefixed uppercase username must resolve"
+        assert result.entity_id == eid
+
+    async def test_bare_username_resolves_directly(self) -> None:
+        """'Tzeusy' (no @) resolves on the first exact-match attempt."""
+        eid = uuid.uuid4()
+        pool = self._make_pool_for_telegram_storage("Tzeusy", eid)
+
+        result = await resolve_contact_by_channel(pool, "telegram", "Tzeusy")
+
+        assert result is not None
+        assert result.entity_id == eid
+
+    async def test_numeric_chat_id_resolves_directly(self) -> None:
+        """A numeric chat_id (e.g. '206570151') resolves on exact-match, not via username path."""
+        eid = uuid.uuid4()
+        # Numeric IDs are stored and queried exactly; the username normalisation loop
+        # does not interfere because the exact-match succeeds on the first try.
+        stored = "206570151"
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: {
+            "entity_id": eid,
+            "name": "Owner",
+            "roles": ["owner"],
+        }[k]
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=row)
+
+        result = await resolve_contact_by_channel(pool, "telegram", stored)
+
+        assert result is not None
+        assert result.entity_id == eid
+        # Exactly one fetchrow call — hit on first exact attempt
+        assert pool.fetchrow.await_count == 1
+
+    async def test_telegram_username_channel_type_normalizes_too(self) -> None:
+        """channel_type='telegram_username' also applies @-prefix normalization."""
+        eid = uuid.uuid4()
+        pool = self._make_pool_for_telegram_storage("tzeusy", eid, roles=["owner"])
+
+        result = await resolve_contact_by_channel(pool, "telegram_username", "@Tzeusy")
+
+        assert result is not None, "telegram_username channel type must normalize"
+        assert result.entity_id == eid
+
+    async def test_unknown_username_returns_none(self) -> None:
+        """An @-prefixed username with no matching entity returns None."""
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        result = await resolve_contact_by_channel(pool, "telegram", "@nobody")
+
+        assert result is None

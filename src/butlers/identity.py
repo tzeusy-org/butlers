@@ -31,6 +31,11 @@ _WHATSAPP_INDIVIDUAL_JID_SUFFIX = "@s.whatsapp.net"
 # Matches numeric prefixes like "1234567890" from "1234567890@s.whatsapp.net".
 _WHATSAPP_JID_PHONE_RE = re.compile(r"^(\d+)@s\.whatsapp\.net$")
 
+# Telegram channel types whose values may be usernames (with or without @-prefix).
+# Numeric chat IDs (e.g. "206570151") are stored as-is and will match on the
+# first exact-match attempt; only username lookups need normalization.
+_TELEGRAM_USERNAME_CHANNEL_TYPES: frozenset[str] = frozenset({"telegram", "telegram_username"})
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -70,6 +75,69 @@ def _extract_whatsapp_jid_phone(jid: str) -> str | None:
     """
     m = _WHATSAPP_JID_PHONE_RE.match(jid)
     return m.group(1) if m else None
+
+
+def _telegram_username_candidates(value: str) -> list[str]:
+    """Return the ordered list of username variants to try for a Telegram lookup.
+
+    The canonical storage form (set by the contacts backfill) strips the leading
+    ``@``.  However outbound tools (e.g. ``telegram_send_message``) accept
+    ``@Username`` (the user-facing form).  Telegram usernames are also
+    case-insensitive on the platform.
+
+    This function generates the candidate set that covers all practical
+    permutations so that ``resolve_contact_by_channel`` and
+    ``approvals._shared.is_primary_contact`` can normalise on the fly without
+    requiring the caller to know the canonical storage form.
+
+    The first entry is always the original value (exact-match wins) so that
+    numeric chat IDs (``"206570151"``) succeed on the first attempt and never
+    enter the username-variant loop.  Purely numeric bare values are NOT
+    expanded with @-prefix variants because Telegram usernames must begin with
+    a letter; only alphanumeric or @-prefixed values get the full candidate set.
+
+    Parameters
+    ----------
+    value:
+        The raw channel value (e.g. ``"@Tzeusy"``, ``"Tzeusy"``, ``"tzeusy"``,
+        ``"206570151"``).
+
+    Returns
+    -------
+    list[str]
+        Ordered candidate list.  Exact match first, then @-stripped, then
+        @-prefixed, then lowercase variants of each.  For numeric-only bare
+        values, only the exact value is returned (no username expansion).
+        Duplicates are removed while preserving order.
+    """
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    def _add(v: str) -> None:
+        if v and v not in seen:
+            seen.add(v)
+            candidates.append(v)
+
+    bare = value.lstrip("@")
+
+    # Numeric-only values are Telegram chat IDs (not usernames).  Telegram
+    # usernames must start with a letter.  Adding @-prefix variants for
+    # pure-numeric values would be incorrect and would add spurious DB queries.
+    # Negative IDs (supergroups) start with '-' followed by digits; handle both.
+    if bare.lstrip("-").isdigit() and bare:
+        _add(value)
+        return candidates
+
+    prefixed = f"@{bare}"
+
+    _add(value)  # exact (succeeds immediately when the caller knows the form)
+    _add(bare)  # without @ (canonical storage form from the backfill)
+    _add(prefixed)  # with @
+    _add(value.lower())
+    _add(bare.lower())
+    _add(prefixed.lower())
+
+    return candidates
 
 
 @dataclass(frozen=True)
@@ -195,6 +263,33 @@ async def resolve_contact_by_channel(
                 exc_info=True,
             )
             return None
+
+    if row is None and channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+        # Telegram username normalization fallback (bu-c4f7f).
+        # telegram_send_message accepts @Username (user-facing form); the backfill
+        # stores the bare username without @ (canonical form). Telegram usernames
+        # are also case-insensitive on the platform.  Try all normalised variants
+        # so that '@Tzeusy', 'Tzeusy', 'tzeusy' all resolve to the same entity.
+        # The exact-match attempt above (first candidate) has already run; start
+        # from the second candidate to avoid a redundant query.
+        for candidate in _telegram_username_candidates(channel_value)[1:]:
+            try:
+                row = await _resolve_entity_by_triple(pool, "has-handle", candidate)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "resolve_contact_by_channel: telegram username variant query failed "
+                    "(candidate=%r); returning None",
+                    candidate,
+                    exc_info=True,
+                )
+                return None
+            if row is not None:
+                logger.debug(
+                    "resolve_contact_by_channel: telegram username normalised from %r to %r",
+                    channel_value,
+                    candidate,
+                )
+                break
 
     if row is None:
         # WhatsApp JID fallback: if no direct match, try phone-number cross-reference.
@@ -588,4 +683,8 @@ __all__ = [
     "create_temp_contact",
     "resolve_contact_by_channel",
     "resolve_outbound_channel",
+    # Telegram username normalization helper — consumed by approvals._shared
+    # to keep is_primary_contact consistent with resolve_contact_by_channel.
+    "_telegram_username_candidates",
+    "_TELEGRAM_USERNAME_CHANNEL_TYPES",
 ]
