@@ -22,7 +22,7 @@ than `main`, switch it back to `main` before starting work.
 
 ## Project Overview
 
-Butlers is an AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself via a locked-down MCP config.
+Butlers is a personal AI agent system where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself via a locked-down MCP config.
 
 **Tech stack:** Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL (JSONB-heavy; one DB with per-butler schemas, cross-butler tables in `public`), Docker, asyncio
 

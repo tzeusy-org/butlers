@@ -1,12 +1,12 @@
 # What Is Butlers?
 
-> **Purpose:** Introduce the Butlers framework, its architecture, and core concepts at a high level.
+> **Purpose:** Introduce Butlers, its architecture, and core concepts at a high level.
 > **Audience:** Anyone evaluating or newly encountering the project.
 > **Prerequisites:** None.
 
 ## Overview
 
-Butlers is a personal AI agent framework. Each **butler** is a long-running MCP (Model Context Protocol) server daemon that handles recurring tasks, manages integrations, and acts on your behalf. Under the hood, butlers are powered by ephemeral LLM CLI sessions that reason and act through the butler's registered tools.
+Butlers is a personal AI agent system. Each **butler** is a long-running MCP (Model Context Protocol) server daemon that handles recurring tasks, manages integrations, and acts on your behalf. Under the hood, butlers are powered by ephemeral LLM CLI sessions that reason and act through the butler's registered tools.
 
 Think of it as a modular "Jarvis" system: you define specialized butlers for different life domains (health, relationships, general assistance), configure them with modules (email, Telegram, calendar), and let them run autonomously on schedules or respond to incoming messages.
 

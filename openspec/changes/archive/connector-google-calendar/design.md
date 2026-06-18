@@ -1,6 +1,6 @@
 ## Context
 
-The butler framework has a Calendar module (`src/butlers/modules/calendar.py`) that provides Google Calendar CRUD via MCP tools, but no connector to watch for external calendar changes and ingest them into the Switchboard. Butlers only learn about calendar changes when an LLM session explicitly calls calendar tools. The Gmail connector (`src/butlers/connectors/gmail.py`) already demonstrates the multi-account Google connector pattern: discover accounts from `shared.google_accounts`, resolve OAuth credentials from `butler_secrets` + `entity_info`, spawn per-account poll loops, checkpoint via `cursor_store`, submit `ingest.v1` envelopes to Switchboard.
+The Butlers system has a Calendar module (`src/butlers/modules/calendar.py`) that provides Google Calendar CRUD via MCP tools, but no connector to watch for external calendar changes and ingest them into the Switchboard. Butlers only learn about calendar changes when an LLM session explicitly calls calendar tools. The Gmail connector (`src/butlers/connectors/gmail.py`) already demonstrates the multi-account Google connector pattern: discover accounts from `shared.google_accounts`, resolve OAuth credentials from `butler_secrets` + `entity_info`, spawn per-account poll loops, checkpoint via `cursor_store`, submit `ingest.v1` envelopes to Switchboard.
 
 The Google Calendar API supports two change detection mechanisms:
 1. **Incremental sync** via `events.list` with `syncToken` — returns only changed events since the last sync. Polling-based, simple, reliable.

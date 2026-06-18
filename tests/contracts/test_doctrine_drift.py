@@ -10,7 +10,7 @@ Scope and non-overlap
 - These tests do NOT duplicate ``test_no_reveal_route_contract.py`` (bu-dl98i.1.2),
   which validates that no legacy raw-secret reveal route is mounted.
 
-This file checks three orthogonal invariants:
+This file checks five orthogonal invariants:
 
 1. ``pyproject.toml`` description does not contain the word "framework".
    Doctrine: ``about/heart-and-soul/vision.md`` — "Not a framework for building
@@ -26,6 +26,17 @@ This file checks three orthogonal invariants:
    explicitly passed (disabled by default)."
    Note: ``test_credential_tier_resolution.py`` checks that the parameter
    *exists*; this test checks that its *default value is False*.
+
+4. ``docs/data_and_storage/credential-store.md`` does not falsely claim
+   ``env_fallback=True`` is the default.
+
+5. User-facing doc surfaces do not describe Butlers as a "framework" for
+   building other products.  Doctrine: vision.md — "Not a framework for building
+   other products. Butlers is the product."
+   Covered surfaces: docs/index.md, docs/overview/what-is-butlers.md,
+   docs/architecture/system-topology.md, CLAUDE.md, frontend/README.md.
+   Allowed: legitimate third-party framework names (FastMCP, React, pytest, etc.)
+   and the ``about/heart-and-soul/vision.md`` "not a framework" statement itself.
 """
 
 from __future__ import annotations
@@ -159,3 +170,56 @@ def test_credential_store_doc_does_not_claim_env_fallback_true_is_default():
         "default.  The actual default is False — callers must explicitly opt in.  "
         "See CredentialStore.resolve() signature and about/heart-and-soul/security.md."
     )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 5: user-facing doc surfaces must not describe Butlers as a "framework"
+# ---------------------------------------------------------------------------
+
+#: Phrases that flag a doctrine violation — Butlers describing *itself* as a framework.
+#: Each is a lowercase substring; checked case-insensitively.
+_FORBIDDEN_FRAMEWORK_PHRASES: tuple[str, ...] = (
+    "butlers is a personal ai agent framework",
+    "butlers is an ai agent framework",
+    "butlers ai agent framework",
+    "butlers framework",
+    "the butler framework",
+)
+
+#: User-facing surfaces that must not contain the forbidden phrases.
+#: Paths are relative to the repo root.
+_USER_FACING_SURFACES: tuple[str, ...] = (
+    "docs/index.md",
+    "docs/overview/what-is-butlers.md",
+    "docs/architecture/system-topology.md",
+    "CLAUDE.md",
+    "frontend/README.md",
+)
+
+
+@pytest.mark.parametrize("rel_path", _USER_FACING_SURFACES)
+def test_user_facing_surface_not_framework(rel_path: str) -> None:
+    """User-facing doc surfaces must not describe Butlers as a 'framework'.
+
+    Doctrine: about/heart-and-soul/vision.md — "Not a framework for building
+    other products. Butlers is the product. It is not a library, not a toolkit,
+    not a platform for third-party developers."
+
+    This test catches regressions where Butlers' own identity description drifts
+    back to 'AI agent framework' phrasing in user-facing documentation.  It does
+    NOT flag legitimate uses of the word 'framework' for third-party tools
+    (React, FastMCP, pytest, etc.) because the forbidden phrases are specific to
+    Butlers describing *itself* as a framework.
+    """
+    surface_path = _REPO_ROOT / rel_path
+    assert surface_path.exists(), f"User-facing surface not found: {surface_path}"
+
+    text = surface_path.read_text(encoding="utf-8").lower()
+
+    for phrase in _FORBIDDEN_FRAMEWORK_PHRASES:
+        assert phrase not in text, (
+            f"{rel_path} contains the forbidden phrase {phrase!r}, which contradicts "
+            f"vision.md doctrine: 'Not a framework for building other products. "
+            f"Butlers is the product.'  Reword to describe Butlers as a "
+            f"'personal AI agent system' or similar product-first framing."
+        )

@@ -9,7 +9,7 @@ The Butlers dashboard is a single-pane-of-glass interface built with a FastAPI b
 
 ## Motivation
 
-A personal AI agent framework with multiple specialist butlers, connectors, scheduled tasks, and approval workflows requires a unified operational surface. Without it, operators must SSH into servers and query databases directly to understand system state. The dashboard consolidates butler health, session history, routing logs, contact management, memory inspection, and approval workflows into a single browser-based interface. Auto-discovery of butler-specific routes allows new butlers to add dashboard capabilities without modifying core API code.
+A personal AI agent system with multiple specialist butlers, connectors, scheduled tasks, and approval workflows requires a unified operational surface. Without it, operators must SSH into servers and query databases directly to understand system state. The dashboard consolidates butler health, session history, routing logs, contact management, memory inspection, and approval workflows into a single browser-based interface. Auto-discovery of butler-specific routes allows new butlers to add dashboard capabilities without modifying core API code.
 
 ## Design
 

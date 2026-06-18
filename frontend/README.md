@@ -1,6 +1,6 @@
 # Butlers Dashboard
 
-A modern web dashboard for monitoring and managing Butlers AI agent framework. Built as a single-page application (SPA) that provides real-time visibility into butler operations, sessions, health metrics, relationships, and system telemetry.
+A modern web dashboard for monitoring and managing the Butlers personal AI agent system. Built as a single-page application (SPA) that provides real-time visibility into butler operations, sessions, health metrics, relationships, and system telemetry.
 
 ## Tech Stack
 

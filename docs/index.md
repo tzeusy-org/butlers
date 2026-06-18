@@ -1,6 +1,6 @@
 # Butlers Documentation
 
-> Your guide to the Butlers AI agent framework — from first run to production operation.
+> Your guide to Butlers — your personal AI agent system — from first run to production operation.
 
 ## Reading Path
 
