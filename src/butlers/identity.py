@@ -43,6 +43,12 @@ logger = logging.getLogger(__name__)
 # Must stay in sync with
 # relationship_assert_fact._CI_TYPE_TO_PREDICATE
 # relationship_jobs._CI_TYPE_TO_PREDICATE (and its SQL CASE expression)
+#
+# Seam law (RFC 0004 Amendment 3, bu-oluyt.1): relationship.entity_facts is
+# the single source of truth for ALL non-secret facts / identifiers /
+# relationships.  public.entity_info holds ONLY secured=True credentials.
+# telegram_chat_id is a non-secret routing handle — its canonical home is a
+# has-handle triple (prefixed 'telegram:<id>') in entity_facts, NOT entity_info.
 # ---------------------------------------------------------------------------
 _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "email": "has-email",
@@ -51,6 +57,7 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "telegram_user_id": "has-handle",
     "telegram_user_client": "has-handle",
     "telegram_username": "has-handle",
+    "telegram_chat_id": "has-handle",  # non-secret routing handle → entity_facts
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",

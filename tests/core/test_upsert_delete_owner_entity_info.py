@@ -48,9 +48,9 @@ async def test_upsert_owner_entity_info():
     assert insert_call[0][1] == "owner-uuid-1" and insert_call[0][3] == "token-value"
     assert insert_call[0][4] is True  # secured=True
 
-    # secured=False passed through
+    # secured=False passed through for a whitelisted non-secret type (telegram_api_id)
     pool2, conn2 = _make_pool(owner_id="owner-uuid-1")
-    await upsert_owner_entity_info(pool2, "google_oauth_refresh", "token", secured=False)
+    await upsert_owner_entity_info(pool2, "telegram_api_id", "12345", secured=False)
     assert conn2.execute.call_args_list[0][0][4] is False
 
     # No owner → False, no execute

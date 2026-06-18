@@ -63,13 +63,20 @@ _PENDING_ACTION_EXPIRY_HOURS = 72
 #     telegram          → has-handle   (scoped handle)
 #     telegram_user_id  → has-handle   (numeric Telegram user ID, same predicate)
 #     telegram_username → has-handle   (Telegram @username, same predicate)
+#     telegram_chat_id  → has-handle   (group/channel routing key — non-secret handle)
 #     linkedin          → has-handle
 #     twitter           → has-handle
 #     website           → has-website
 #     other             → has-handle
 #
+# RFC 0004 Amendment 3 (bu-oluyt.1): telegram_chat_id is a non-secret routing
+# handle whose canonical home is a has-handle triple in entity_facts (prefixed
+# 'telegram:<id>').  It was previously documented as "intentionally unmapped"
+# on the incorrect grounds that it was a group key rather than a contact
+# identifier.  The split axis is SENSITIVITY, not TYPE — non-secret identifiers
+# belong in entity_facts regardless of whether they identify a person or a group.
+#
 # Intentionally unmapped (no triple predicate home):
-#     telegram_chat_id   — group/channel routing key, not a contact identifier
 #     google_health      — OAuth routing/credential identifier (bu-k9ylx note)
 #     home_assistant_url — service URL, not a personal contact channel
 _CI_TYPE_TO_PREDICATE: dict[str, str] = {
@@ -78,6 +85,7 @@ _CI_TYPE_TO_PREDICATE: dict[str, str] = {
     "telegram": "has-handle",
     "telegram_user_id": "has-handle",
     "telegram_username": "has-handle",
+    "telegram_chat_id": "has-handle",  # non-secret routing handle → entity_facts
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",

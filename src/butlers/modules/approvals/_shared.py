@@ -30,12 +30,15 @@ from butlers.identity import _TELEGRAM_USERNAME_CHANNEL_TYPES, _telegram_usernam
 logger = logging.getLogger(__name__)
 
 # Channel-type → predicate mapping (mirrors identity._CHANNEL_TYPE_TO_PREDICATE)
+# telegram_chat_id maps to has-handle per RFC 0004 Amendment 3 (bu-oluyt.1):
+# non-secret routing handles belong in entity_facts, not entity_info.
 _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "email": "has-email",
     "phone": "has-phone",
     "telegram": "has-handle",
     "telegram_user_id": "has-handle",
     "telegram_user_client": "has-handle",
+    "telegram_chat_id": "has-handle",  # non-secret routing handle → entity_facts
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",

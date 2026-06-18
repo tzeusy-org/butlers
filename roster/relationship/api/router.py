@@ -36,6 +36,7 @@ from butlers.contact_info_write_guard import (
     ContactInfoWriteBlockedError,
     assert_contact_info_writes_blocked,
 )
+from butlers.credential_store import assert_entity_info_secured
 from butlers.tools.relationship._ef_channel_helpers import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
 )
@@ -4200,6 +4201,13 @@ async def create_entity_info(
 ) -> CreateEntityInfoResponse:
     """Add an entity_info entry to an entity."""
     pool = _pool(db)
+
+    # Seam-law guard (RFC 0004 Amendment 3, bu-oluyt.1): entity_info is a
+    # secrets store.  Non-secret channel handles must go to entity_facts.
+    try:
+        assert_entity_info_secured(request.type, request.secured)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Verify entity exists and is not tombstoned
     existing = await pool.fetchrow(

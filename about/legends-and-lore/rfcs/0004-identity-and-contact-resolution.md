@@ -4,6 +4,7 @@
 **Date:** 2026-03-24
 **Amended:** 2026-04-29 — added contact_info context tagging and context-aware notify() routing (bu-uv4b4)
 **Amended:** 2026-05-19 — contacts collapsed to RDF triples per Amendment 2 (bu-u8xq2)
+**Amended:** 2026-06-18 — declared entity_info/entity_facts seam law; telegram_chat_id mapped to has-handle predicate; write-guard added (bu-oluyt.1)
 
 ## Summary
 
@@ -51,6 +52,22 @@ For implementation details of the new triple-based model, consult `openspec/spec
 
 #### public.entity_info
 
+**Seam law (Amendment 3):** `public.entity_info` is a **credentials-only** store.
+The split axis is SENSITIVITY, not TYPE.
+
+- **`relationship.entity_facts`** is the single source of truth for ALL non-secret
+  facts, identifiers, and relationships (channel handles, email, phone, telegram
+  chat IDs, websites, …).
+- **`public.entity_info`** holds ONLY `secured=True` credentials (OAuth tokens,
+  API hashes, session strings) plus a narrow whitelist of non-secret technical
+  configuration entries that have no predicate home in entity_facts
+  (`telegram_api_id`, `home_assistant_url`).
+
+A write-time guard (`credential_store.assert_entity_info_secured()`) enforces
+this rule at every `public.entity_info` write surface and raises `ValueError`
+when a non-secret, non-whitelisted type is passed. The long-term intent is to
+rename this table to `public.entity_secrets` (later phase of epic bu-oluyt).
+
 Extended identity-bound data linked to entities. Used for credentials that belong to a specific identity (see RFC 0006 for credential store details).
 
 | Column | Type | Description |
@@ -59,15 +76,29 @@ Extended identity-bound data linked to entities. Used for credentials that belon
 | `info_type` | TEXT | Type identifier (e.g., `"google_oauth_refresh"`, `"telegram_api_id"`) |
 | `value` | TEXT | The stored value |
 | `is_primary` | BOOLEAN | Preferred entry when multiple exist |
+| `secured` | BOOLEAN | Must be `true` except for whitelisted technical identifiers |
 
 **Registered `info_type` values:**
 
-| `info_type` | Description | Secured |
-|-------------|-------------|---------|
-| `google_oauth_refresh` | Google OAuth 2.0 refresh token | yes |
-| `telegram_api_id` | Telegram user-client API ID | no |
-| `telegram_api_hash` | Telegram user-client API hash | yes |
-| `steam_api_key` | Steam Web API key for the gaming butler | yes |
+| `info_type` | Description | Secured | Notes |
+|-------------|-------------|---------|-------|
+| `google_oauth_refresh` | Google OAuth 2.0 refresh token | yes | |
+| `telegram_api_id` | Telegram user-client API ID | no | Technical credential component; no predicate home in entity_facts |
+| `telegram_api_hash` | Telegram user-client API hash | yes | |
+| `steam_api_key` | Steam Web API key for the gaming butler | yes | |
+| `telegram_user_session` | Telegram user-client StringSession | yes | |
+| `home_assistant_url` | Home Assistant service base URL | no | Service URL config entry; no predicate home in entity_facts |
+
+**Mapping of previously misrouted types:**
+
+The following types were written to `entity_info` with `secured=False` before
+Amendment 3.  They are non-secret routing handles and must now go to
+`relationship.entity_facts` instead:
+
+| Old `info_type` | New entity_facts predicate | Object format |
+|-----------------|---------------------------|---------------|
+| `telegram` | `has-handle` | `telegram:<id>` |
+| `telegram_chat_id` | `has-handle` | `telegram:<id>` |
 
 ### resolve_contact_by_channel()
 
@@ -207,6 +238,47 @@ Applied per `openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/r
 - §"build_identity_preamble" updated to emit `entity_id` only (removed `contact_id`)
 - §"Unknown Sender Handling" updated to reference `create_temp_entity()` and `relationship_assert_fact()` instead of the deprecated contact creation path
 - `public.entity_info` remains unchanged and out of scope for this amendment
+
+### Amendment 3 (2026-06-18) — entity_info/entity_facts Seam Law (bu-oluyt.1)
+
+**Summary:** Formally declares the sensitivity-based seam between the two identity stores.
+The split axis is **SENSITIVITY**, not TYPE.
+
+- **`relationship.entity_facts`** is the single source of truth for ALL non-secret facts,
+  identifiers, and relationships — including channel routing handles such as `telegram_chat_id`.
+- **`public.entity_info`** is a **credentials-only** store. It holds ONLY `secured=True`
+  credential entries (OAuth tokens, API hashes, session strings) plus a narrow whitelist of
+  non-secret technical configuration entries that have no predicate home in entity_facts
+  (`telegram_api_id` — Telegram client API credential component; `home_assistant_url` —
+  service URL config entry).
+
+**Changes made:**
+
+- `telegram_chat_id` added to all four predicate-mirror constants mapping it to `"has-handle"`:
+  - `src/butlers/identity.py` — `_CHANNEL_TYPE_TO_PREDICATE`
+  - `src/butlers/modules/approvals/_shared.py` — `_CHANNEL_TYPE_TO_PREDICATE`
+  - `roster/relationship/tools/relationship_assert_fact.py` — `_CI_TYPE_TO_PREDICATE`
+  - `roster/relationship/jobs/relationship_jobs.py` — `_CI_TYPE_TO_PREDICATE`
+- Write-time guard `assert_entity_info_secured(info_type, secured)` added to
+  `src/butlers/credential_store.py`; raises `ValueError` when a non-secret, non-whitelisted
+  type is passed. Guard wired at:
+  - `upsert_owner_entity_info()` — function-call level enforcement
+  - `POST /api/relationship/entity-info` — HTTP API level enforcement (HTTP 422 on violation)
+- `public.entity_info` table documentation updated to reflect the seam law, add a `secured`
+  column note, add whitelisted non-secret types (`telegram_api_id`, `home_assistant_url`),
+  and show the migration table for previously misrouted types.
+
+**Previously misrouted types** (were written to `entity_info` with `secured=False`; must now
+go to `relationship.entity_facts`):
+
+| Old `info_type` | New entity_facts predicate | Object format |
+|-----------------|---------------------------|---------------|
+| `telegram` | `has-handle` | `telegram:<id>` |
+| `telegram_chat_id` | `has-handle` | `telegram:<id>` |
+
+**Not in scope:** This phase is declaration + write-guard + predicate-mirror consistency only.
+No destructive Alembic migration, no table rename, no data backfill. Those are later phases
+of epic bu-oluyt.
 
 ## Alternatives Considered
 

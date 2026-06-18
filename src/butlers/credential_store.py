@@ -59,6 +59,63 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TABLE = "butler_secrets"
+
+# ---------------------------------------------------------------------------
+# entity_info write-time guard (RFC 0004 Amendment 3, bu-oluyt.1)
+# ---------------------------------------------------------------------------
+#
+# Seam law: public.entity_info holds ONLY secured=True credentials.
+# Non-secret facts / identifiers / routing handles belong in
+# relationship.entity_facts via relationship_assert_fact() instead.
+#
+# Approved non-secured types are technical configuration entries that have no
+# predicate home in entity_facts (they are not contact-channel triples about a
+# person/entity).  All channel handles (telegram, telegram_chat_id, email,
+# phone, etc.) are non-secret and must NOT be written here — they belong in
+# entity_facts as has-handle / has-email / has-phone triples.
+_ENTITY_INFO_NON_SECRET_ALLOWED_TYPES: frozenset[str] = frozenset(
+    {
+        "telegram_api_id",  # technical API credential component, not a channel handle
+        "home_assistant_url",  # service URL config entry; no predicate home in entity_facts
+    }
+)
+
+
+def assert_entity_info_secured(info_type: str, secured: bool) -> None:
+    """Raise ValueError when a non-secret type is about to be written to entity_info.
+
+    This is the write-time enforcement of the seam law declared in RFC 0004
+    Amendment 3: ``public.entity_info`` is a secrets store.  Non-secret
+    identifiers and channel handles must go to ``relationship.entity_facts``
+    via ``relationship_assert_fact()`` instead.  The only permitted
+    ``secured=False`` types are technical configuration entries that have no
+    predicate home in entity_facts (see
+    ``_ENTITY_INFO_NON_SECRET_ALLOWED_TYPES``).
+
+    Parameters
+    ----------
+    info_type:
+        The ``type`` field about to be written.
+    secured:
+        The ``secured`` flag about to be written.
+
+    Raises
+    ------
+    ValueError
+        When ``secured`` is ``False`` and ``info_type`` is not in the approved
+        whitelist of non-secret technical identifiers
+        (``_ENTITY_INFO_NON_SECRET_ALLOWED_TYPES``).
+    """
+    if not secured and info_type not in _ENTITY_INFO_NON_SECRET_ALLOWED_TYPES:
+        raise ValueError(
+            f"entity_info write rejected: type={info_type!r} with secured=False is not allowed. "
+            f"Non-secret identifiers belong in relationship.entity_facts (has-handle / has-email "
+            f"/ has-phone triples), not in the entity_info credential store. "
+            f"Approved non-secret types: {sorted(_ENTITY_INFO_NON_SECRET_ALLOWED_TYPES)!r}. "
+            f"See RFC 0004 Amendment 3."
+        )
+
+
 _DEFAULT_SHARED_DB_NAME = "butlers"
 _ENV_SHARED_DB_NAME = "BUTLER_SHARED_DB_NAME"
 
@@ -778,7 +835,15 @@ async def upsert_owner_entity_info(
     bool
         ``True`` if the row was upserted, ``False`` if the owner entity
         or required tables do not exist.
+
+    Raises
+    ------
+    ValueError
+        When ``secured`` is ``False`` and ``info_type`` is not in the approved
+        whitelist of non-secret technical identifiers.  Non-secret channel
+        handles must go to ``relationship.entity_facts`` instead.
     """
+    assert_entity_info_secured(info_type, secured)
     try:
         async with _acquire_conn(pool) as conn:
             owner = await conn.fetchrow(

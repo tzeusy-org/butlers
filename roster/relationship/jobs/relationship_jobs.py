@@ -1537,6 +1537,7 @@ _CI_TYPE_TO_PREDICATE: dict[str, str] = {
     "telegram": "has-handle",
     "telegram_user_id": "has-handle",
     "telegram_username": "has-handle",
+    "telegram_chat_id": "has-handle",  # non-secret routing handle → entity_facts (bu-oluyt.1)
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",
