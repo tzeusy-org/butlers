@@ -573,6 +573,41 @@ async def _run_relationship_memory_curation_job(
     return await mod.run_memory_curation(pool)
 
 
+async def _run_relationship_pending_actions_curation_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler pending-actions curation job.
+
+    Scans pending_actions for entries approaching expiry and surfaces them
+    as insight candidates so the owner is prompted to act before the window
+    closes.
+    """
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_pending_actions_curation(pool)
+
+
+async def _run_relationship_fact_retraction_curation_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler fact-retraction curation job (behavior #3).
+
+    Scans relationship.facts for contradicted facts (two active rows on the
+    same entity+predicate with different content) and low-confidence facts
+    (confidence below threshold).  Flags each for owner review via
+    pending_actions — nothing is auto-retracted.
+    """
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_fact_retraction_curation(pool)
+
+
 # NOTE: _run_relationship_contact_info_reconciler_job was retired in migration
 # bead 10 (bu-e2ja9 / core_115). public.contact_info is dropped, so the
 # dual-write reconciler has nothing to sweep and is no longer dispatched.
@@ -947,6 +982,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "insight_scan": _run_relationship_insight_scan_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
             "memory_curation": _run_relationship_memory_curation_job,
+            "pending_actions_curation": _run_relationship_pending_actions_curation_job,
+            "fact_retraction_curation": _run_relationship_fact_retraction_curation_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
         },
         "travel": {

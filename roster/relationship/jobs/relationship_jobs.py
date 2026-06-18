@@ -2393,6 +2393,379 @@ async def run_pending_actions_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Fact retraction curation job (behavior #3: contradicted + low-confidence facts)
+# ---------------------------------------------------------------------------
+
+# Facts with confidence below this threshold are flagged for owner review.
+# Deliberately conservative (0.6) — genuine uncertainty, not "needs cleanup".
+_RETRACTION_LOW_CONF_THRESHOLD: float = 0.6
+
+# State key for the checkpoint timestamp (observability; job is idempotent via
+# pending_actions dedup — re-running is safe).
+_RETRACTION_CURATION_STATE_KEY = "memory_curation.last_retraction_curation_at"
+
+# Priority for retraction-review insights (lower than pending-action expiry but
+# higher than stale-contact, since contradictions imply data integrity issues).
+_RETRACTION_PRIORITY_CONTRADICTION = 75
+_RETRACTION_PRIORITY_LOW_CONF = 50
+
+# Insight expires after this many days (owner has a week to review).
+_RETRACTION_INSIGHT_EXPIRES_DAYS = 7
+
+
+async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Flag contradicted and low-confidence facts for owner review.
+
+    Scans ``relationship.facts`` (the prose-fact / property-fact store) for:
+
+    **Contradictions:** Two or more active rows for the same ``(entity_id,
+    predicate)`` pair but with differing ``content``.  When multiple active
+    facts disagree on what is true, one or more of them should be retracted.
+
+    **Low confidence:** Active rows whose ``confidence`` column is below
+    :data:`_RETRACTION_LOW_CONF_THRESHOLD` (0.6 by default).  Such facts
+    were flagged as uncertain at extraction time and may represent
+    mis-extractions (the live example: 'has a son' inferred as a parent-of
+    edge when the owner has no son).
+
+    **Mutation policy — conservative and owner-approved:**
+
+    * For EVERY flagged fact (contradiction candidate or low-confidence),
+      this job creates a ``pending_actions`` row with
+      ``tool_name='memory_forget'`` and the ``fact_id`` as the argument.  The
+      owner must explicitly approve the retraction; nothing is auto-retracted.
+    * Owner-entity facts receive the same treatment as any other fact — they
+      are NEVER silently dropped.  The owner-approval loop is the *only* path
+      to retraction.
+    * Dedup: before inserting a new ``pending_actions`` row the writer checks
+      whether a ``status='pending'`` row already exists for the same
+      ``fact_id``.  If one exists the flagging is skipped (the first proposal
+      is still outstanding).
+    * Alongside each ``pending_actions`` row, an insight candidate is
+      submitted via :func:`~butlers.tools.switchboard.insight.broker.propose_insight_candidate`
+      so the owner receives a Telegram notification prompting them to
+      act.
+
+    Args:
+        db_pool: Database connection pool (relationship butler schema context).
+
+    Returns:
+        Dictionary with keys: facts_scanned_contradiction, facts_scanned_low_conf,
+        contradictions_found, low_conf_found, flagged_new, skipped_already_pending,
+        skipped_owner_no_auto_retract (always 0 — owner facts go through the
+        same pending_actions path), errors.
+    """
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    logger.info(
+        "Running fact_retraction_curation job "
+        "(contradiction + low-confidence facts, threshold=%.2f)",
+        _RETRACTION_LOW_CONF_THRESHOLD,
+    )
+
+    stats: dict[str, Any] = {
+        "facts_scanned_contradiction": 0,
+        "facts_scanned_low_conf": 0,
+        "contradictions_found": 0,
+        "low_conf_found": 0,
+        "flagged_new": 0,
+        "skipped_already_pending": 0,
+        "errors": 0,
+    }
+
+    now_utc = datetime.now(UTC)
+    expires_at = now_utc + timedelta(days=_RETRACTION_INSIGHT_EXPIRES_DAYS)
+
+    # -----------------------------------------------------------------------
+    # Step 1: Detect contradictions.
+    #
+    # A contradiction is: two or more active rows on the same (entity_id,
+    # predicate) with different content.  We flag ALL active rows in such
+    # groups — the owner decides which (if any) to retract.  Rows without an
+    # entity_id are ignored (they cannot be reliably deduped across contacts).
+    # -----------------------------------------------------------------------
+    try:
+        contradiction_rows = await db_pool.fetch(
+            """
+            SELECT
+                f.id        AS fact_id,
+                f.entity_id,
+                f.predicate,
+                f.content,
+                f.confidence,
+                f.metadata,
+                COUNT(*) OVER (
+                    PARTITION BY f.entity_id, f.predicate
+                ) AS group_size
+            FROM facts f
+            WHERE f.validity  = 'active'
+              AND f.scope     = 'relationship'
+              AND f.entity_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM facts f2
+                  WHERE f2.entity_id  = f.entity_id
+                    AND f2.predicate  = f.predicate
+                    AND f2.validity   = 'active'
+                    AND f2.scope      = 'relationship'
+                    AND f2.content   <> f.content
+                    AND f2.id        <> f.id
+              )
+            ORDER BY f.entity_id, f.predicate, f.confidence ASC NULLS LAST
+            """
+        )
+    except Exception:
+        logger.exception("fact_retraction_curation: failed to query contradiction facts")
+        stats["errors"] += 1
+        return stats
+
+    stats["facts_scanned_contradiction"] = len(contradiction_rows)
+    stats["contradictions_found"] = len(contradiction_rows)
+    logger.info(
+        "fact_retraction_curation: found %d contradiction-group rows",
+        len(contradiction_rows),
+    )
+
+    # -----------------------------------------------------------------------
+    # Step 2: Detect low-confidence facts.
+    #
+    # Active facts whose confidence is below the threshold but are NOT already
+    # in a contradiction group (to avoid double-flagging the same row).
+    # -----------------------------------------------------------------------
+    # Collect the UUIDs already surfaced by the contradiction query so we can
+    # avoid issuing duplicate pending_actions for the same fact.
+    contradiction_fact_ids: set[uuid.UUID] = {row["fact_id"] for row in contradiction_rows}
+
+    try:
+        low_conf_rows = await db_pool.fetch(
+            """
+            SELECT
+                f.id        AS fact_id,
+                f.entity_id,
+                f.predicate,
+                f.content,
+                f.confidence,
+                f.metadata
+            FROM facts f
+            WHERE f.validity   = 'active'
+              AND f.scope      = 'relationship'
+              AND f.confidence IS NOT NULL
+              AND f.confidence  < $1
+            ORDER BY f.confidence ASC NULLS LAST
+            """,
+            _RETRACTION_LOW_CONF_THRESHOLD,
+        )
+    except Exception:
+        logger.exception("fact_retraction_curation: failed to query low-confidence facts")
+        stats["errors"] += 1
+        return stats
+
+    # Exclude facts already picked up by the contradiction scan.
+    low_conf_rows = [row for row in low_conf_rows if row["fact_id"] not in contradiction_fact_ids]
+
+    stats["facts_scanned_low_conf"] = len(low_conf_rows)
+    stats["low_conf_found"] = len(low_conf_rows)
+    logger.info(
+        "fact_retraction_curation: found %d low-confidence facts (threshold=%.2f)",
+        len(low_conf_rows),
+        _RETRACTION_LOW_CONF_THRESHOLD,
+    )
+
+    # -----------------------------------------------------------------------
+    # Step 3: For each flagged fact, create a pending_actions row (deduped)
+    # and submit an insight candidate.
+    #
+    # CRITICAL POLICY: NEVER auto-retract.  All paths go through pending_actions
+    # for owner approval — including owner-entity facts.
+    # -----------------------------------------------------------------------
+    all_flagged = [("contradiction", row) for row in contradiction_rows] + [
+        ("low_confidence", row) for row in low_conf_rows
+    ]
+
+    async def _ensure_pending_action(
+        fact_id: uuid.UUID,
+        predicate: str,
+        content: str,
+        confidence: float | None,
+        flag_reason: str,
+    ) -> str:
+        """Create or return existing pending_actions row for this fact.
+
+        Returns 'new', 'existing', or 'error'.
+        """
+        try:
+            async with db_pool.acquire() as conn:
+                # Dedup check: pending row already exists for this fact_id?
+                # Pass the dict directly so asyncpg uses the jsonb codec (same pattern
+                # as _create_pending_action in relationship_assert_fact.py).
+                existing = await conn.fetchval(
+                    """
+                    SELECT id FROM pending_actions
+                     WHERE tool_name = 'memory_forget'
+                       AND status    = 'pending'
+                       AND (tool_args ->> 'memory_id') = $1
+                     LIMIT 1
+                    """,
+                    str(fact_id),
+                )
+                if existing is not None:
+                    return "existing"
+
+                action_id = uuid.uuid4()
+                pending_now = datetime.now(UTC)
+                action_expires_at = pending_now + timedelta(hours=72)
+
+                conf_display = f"{confidence:.3f}" if confidence is not None else "null"
+                why = (
+                    f"Memory curation flagged this fact for owner review "
+                    f"(reason: {flag_reason}). "
+                    f"Predicate: {predicate!r}. "
+                    f"Confidence: {conf_display}. "
+                    f"Content preview: {content[:120]}. "
+                    "Approving will retract this fact (mark validity='retracted'). "
+                    "Rejecting keeps the fact active."
+                )
+                evidence = [
+                    "source=fact_retraction_curation",
+                    f"flag_reason={flag_reason}",
+                    f"fact_id={fact_id}",
+                    f"predicate={predicate}",
+                    f"confidence={conf_display}",
+                    f"content_preview={content[:120]}",
+                ]
+
+                await conn.execute(
+                    "INSERT INTO pending_actions "
+                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                    "requested_at, expires_at, why, evidence) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    action_id,
+                    "memory_forget",
+                    {"memory_type": "fact", "memory_id": str(fact_id)},
+                    f"Retract fact {fact_id} ({flag_reason}): {predicate!r} — {content[:60]}",
+                    None,
+                    "pending",
+                    pending_now,
+                    action_expires_at,
+                    why,
+                    evidence,
+                )
+                return "new"
+        except Exception:
+            logger.exception(
+                "fact_retraction_curation: error creating pending_action for fact %s",
+                fact_id,
+            )
+            return "error"
+
+    for flag_reason, row in all_flagged:
+        fact_id: uuid.UUID = row["fact_id"]
+        entity_id: uuid.UUID | None = row.get("entity_id")
+        predicate: str = row["predicate"]
+        content: str = row["content"] or ""
+        confidence: float | None = row["confidence"]
+
+        outcome = await _ensure_pending_action(
+            fact_id=fact_id,
+            predicate=predicate,
+            content=content,
+            confidence=confidence,
+            flag_reason=flag_reason,
+        )
+
+        if outcome == "error":
+            stats["errors"] += 1
+            continue
+        if outcome == "existing":
+            stats["skipped_already_pending"] += 1
+            logger.debug(
+                "fact_retraction_curation: skipping fact %s — pending_action already exists",
+                fact_id,
+            )
+            continue
+
+        # New pending_action created; also surface an insight candidate.
+        stats["flagged_new"] += 1
+
+        entity_display = str(entity_id) if entity_id is not None else "(no entity)"
+        conf_display = f"{confidence:.3f}" if confidence is not None else "unknown"
+
+        if flag_reason == "contradiction":
+            insight_message = (
+                f"Contradicted fact flagged for review:\n"
+                f"Entity: {entity_display}\n"
+                f"Predicate: {predicate!r}\n"
+                f"Content: {content[:120]}\n"
+                f"Confidence: {conf_display}\n"
+                f"Fact ID: {fact_id}\n\n"
+                "Multiple active facts on this entity+predicate have conflicting content. "
+                "Review and approve retraction of incorrect facts via pending_actions."
+            )
+            dedup_key = f"relationship:fact-contradiction:{fact_id}"
+            priority = _RETRACTION_PRIORITY_CONTRADICTION
+        else:
+            insight_message = (
+                f"Low-confidence fact flagged for review:\n"
+                f"Entity: {entity_display}\n"
+                f"Predicate: {predicate!r}\n"
+                f"Content: {content[:120]}\n"
+                f"Confidence: {conf_display} (below threshold {_RETRACTION_LOW_CONF_THRESHOLD})\n"
+                f"Fact ID: {fact_id}\n\n"
+                "This fact was extracted with low confidence and may be incorrect. "
+                "Review and approve retraction if the fact is wrong via pending_actions."
+            )
+            dedup_key = f"relationship:fact-low-conf:{fact_id}"
+            priority = _RETRACTION_PRIORITY_LOW_CONF
+
+        try:
+            result = await propose_insight_candidate(
+                db_pool,
+                origin_butler="relationship",
+                priority=priority,
+                category=f"fact-retraction-{flag_reason}",
+                dedup_key=dedup_key,
+                message=insight_message,
+                expires_at=expires_at,
+                cooldown_days=7,  # Re-surface at most once a week per fact
+            )
+            status = result.get("status", "error")
+            if status not in ("accepted", "filtered"):
+                logger.warning(
+                    "fact_retraction_curation: propose_insight_candidate error for fact %s: %s",
+                    fact_id,
+                    result.get("reason", "unknown"),
+                )
+                stats["errors"] += 1
+        except Exception:
+            logger.exception(
+                "fact_retraction_curation: error surfacing insight for fact %s",
+                fact_id,
+            )
+            stats["errors"] += 1
+
+    # Persist checkpoint timestamp (best-effort).
+    try:
+        await state_set(db_pool, _RETRACTION_CURATION_STATE_KEY, now_utc.isoformat())
+    except Exception:
+        logger.warning(
+            "fact_retraction_curation: failed to write checkpoint key=%s",
+            _RETRACTION_CURATION_STATE_KEY,
+            exc_info=True,
+        )
+
+    logger.info(
+        "fact_retraction_curation complete: "
+        "contradiction_rows=%d low_conf_rows=%d flagged_new=%d "
+        "skipped_already_pending=%d errors=%d",
+        stats["contradictions_found"],
+        stats["low_conf_found"],
+        stats["flagged_new"],
+        stats["skipped_already_pending"],
+        stats["errors"],
+    )
+    return stats
+
+
 def _stamp_checkpoint(db_pool: asyncpg.Pool) -> None:  # pragma: no cover
     """Fire-and-forget checkpoint stamp via asyncio.create_task when pool is live.
 
