@@ -933,7 +933,11 @@ async def assert_sender_channel_fact(
     # Resolve the predicate from the shared channel-type mapping at the identity
     # resolution layer so reads (resolve_contact_by_channel) and this write stay
     # keyed identically.
-    from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE
+    from butlers.identity import (
+        _CHANNEL_TYPE_TO_PREDICATE,
+        _TELEGRAM_PREFIX_CHANNEL_TYPES,
+        _telegram_prefixed_value,
+    )
 
     predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
     if predicate is None:
@@ -945,12 +949,23 @@ async def assert_sender_channel_fact(
         )
         return None
 
+    # Store telegram handles in the canonical ``telegram:<bare>`` form. The
+    # delivery read path (daemon._resolve_contact_channel_identifier) filters
+    # has-handle objects on ``LIKE 'telegram:%'``, so an unprefixed object is
+    # NON-deliverable via notify(contact_id). Normalising here — keyed identically
+    # to the read fallback (resolve_contact_by_channel's _telegram_prefixed_value)
+    # — keeps recognition, delivery, and ingress dedup on ONE stored format and
+    # removes the need for the read-side prefix tolerance bridge (PR #2465).
+    stored_value = channel_value
+    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        stored_value = _telegram_prefixed_value(channel_value)
+
     try:
         return await relationship_assert_fact(
             pool,
             entity_id,
             predicate,
-            channel_value,
+            stored_value,
             src="identity",
             object_kind="literal",
             primary=True,
