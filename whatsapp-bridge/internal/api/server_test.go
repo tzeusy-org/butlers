@@ -530,5 +530,89 @@ func TestResponseContentType(t *testing.T) {
 	}
 }
 
+// TestServer_Status_LivenessProbe verifies /status reports the live link state
+// from the injected probe rather than only the event-driven `state` field. This
+// is the guard against the StreamReplaced false-green: the event-driven state can
+// say "connected" while the actual whatsmeow link is down.
+func TestServer_Status_LivenessProbe(t *testing.T) {
+	sockPath := "/tmp/test-wa-bridge-liveness.sock"
+	srv := api.NewServer(sockPath, func() {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		srv.Stop(shutCtx)
+	}()
+
+	// Event-driven state says connected, but the live probe reports a dead link
+	// (as happens after a StreamReplaced that never produced a Disconnected event).
+	srv.SetState(api.StateConnected, "+15551234567")
+	srv.SetLivenessFn(func() (bool, bool) { return false, true })
+
+	client := dialUnix(sockPath)
+	resp, err := client.Get("http://localhost/status")
+	if err != nil {
+		t.Fatalf("GET /status: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+
+	if body["connected"] != false {
+		t.Errorf("connected: got %v want false (live probe wins over state)", body["connected"])
+	}
+	if body["logged_in"] != true {
+		t.Errorf("logged_in: got %v want true", body["logged_in"])
+	}
+	// The event-driven state field is unchanged — it is no longer the liveness source.
+	if body["state"] != "connected" {
+		t.Errorf("state: got %v want connected", body["state"])
+	}
+}
+
+// TestServer_Status_LivenessFallback verifies that without an injected probe,
+// /status falls back to deriving connected/logged_in from the event-driven state.
+func TestServer_Status_LivenessFallback(t *testing.T) {
+	sockPath := "/tmp/test-wa-bridge-liveness-fb.sock"
+	srv := api.NewServer(sockPath, func() {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		srv.Stop(shutCtx)
+	}()
+
+	srv.SetState(api.StateConnected, "+15551234567")
+
+	client := dialUnix(sockPath)
+	resp, err := client.Get("http://localhost/status")
+	if err != nil {
+		t.Fatalf("GET /status: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["connected"] != true || body["logged_in"] != true {
+		t.Errorf("fallback liveness: got connected=%v logged_in=%v want true/true",
+			body["connected"], body["logged_in"])
+	}
+}
+
 // Ensure httptest is used (compile check).
 var _ = httptest.NewRecorder

@@ -69,6 +69,14 @@ type Server struct {
 	// Signature: (ctx, recipient JID string, text string, replyTo message ID) -> (msgID, unixTs, error)
 	sendFn func(ctx context.Context, recipient, text, replyTo string) (string, int64, error)
 
+	// livenessFn reports the live whatsmeow link state at request time
+	// (connected = websocket up, loggedIn = session valid). It is injected by
+	// the bridge and queried by /status so liveness reflects the actual client
+	// rather than the last connection event we happened to handle. A missed or
+	// unhandled event (e.g. StreamReplaced) can leave the event-driven `state`
+	// field stale; this callback cannot.
+	livenessFn func() (connected bool, loggedIn bool)
+
 	// lastQRData holds the most recently received QR code string.
 	lastQRData string
 }
@@ -151,6 +159,19 @@ func (s *Server) PublishEvent(evt *bridgeEvents.BridgeEvent) {
 	s.lastEventAt = &now
 	s.mu.Unlock()
 
+	s.fanout(evt)
+}
+
+// publishKeepalive fans a keepalive frame out to subscribers WITHOUT advancing
+// last_event_at. Keepalives keep the SSE pipe warm on a fixed timer regardless
+// of the WhatsApp link, so counting them as activity would mask a dead link —
+// last_event_at must mean "last real WhatsApp event".
+func (s *Server) publishKeepalive(evt *bridgeEvents.BridgeEvent) {
+	s.fanout(evt)
+}
+
+// fanout delivers an event to all SSE subscribers, dropping for slow consumers.
+func (s *Server) fanout(evt *bridgeEvents.BridgeEvent) {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
 	for ch := range s.subscribers {
@@ -196,6 +217,11 @@ func (s *Server) SetQRCode(qrData string, expiry time.Time) {
 // SetSendFn injects the outbound message send function.
 func (s *Server) SetSendFn(fn func(ctx context.Context, recipient, text, replyTo string) (string, int64, error)) {
 	s.sendFn = fn
+}
+
+// SetLivenessFn injects the live link-state probe queried by /status.
+func (s *Server) SetLivenessFn(fn func() (connected bool, loggedIn bool)) {
+	s.livenessFn = fn
 }
 
 // ------------------------------------------------------------------
@@ -309,12 +335,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		phonePtr = &phone
 	}
 
+	// Probe the live whatsmeow link state. This is the authoritative liveness
+	// signal: the event-driven `state` field can go stale if a connection event
+	// is never delivered (e.g. StreamReplaced), but IsConnected/IsLoggedIn query
+	// the client directly. When no probe is injected, fall back to the
+	// event-driven state so older callers keep working.
+	connected := state == StateConnected
+	loggedIn := state == StateConnected
+	if s.livenessFn != nil {
+		connected, loggedIn = s.livenessFn()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"state":         string(state),
 		"phone":         phonePtr,
 		"uptime_s":      int(uptime),
 		"last_event_at": lastEvtStr,
+		"connected":     connected,
+		"logged_in":     loggedIn,
 	})
 }
 
@@ -413,7 +452,7 @@ func (s *Server) keepalivePump(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.PublishEvent(bridgeEvents.MapKeepalive())
+			s.publishKeepalive(bridgeEvents.MapKeepalive())
 		}
 	}
 }

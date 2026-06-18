@@ -107,6 +107,7 @@ def _detect_addressed_in_events(
 # ---------------------------------------------------------------------------
 
 _FLUSH_SCANNER_INTERVAL_S = 60  # How often the flush scanner wakes up
+_LINK_WATCHDOG_INTERVAL_S = 60  # How often the stale-link watchdog checks the bridge
 _BRIDGE_STARTUP_TIMEOUT_S = 60.0  # Bridge startup timeout (longer for QR re-pair)
 _SSE_RECONNECT_DELAY_S = 5.0  # Delay before reconnecting SSE after failure
 _SSE_KEEPALIVE_TIMEOUT_S = 90.0  # Max silence from SSE stream before treating as stale
@@ -168,6 +169,14 @@ class WhatsAppUserClientConnectorConfig:
     # Health port
     health_port: int = 40082
 
+    # Stale-link watchdog: if the bridge link stays down (e.g. session taken over
+    # by another device via StreamReplaced — whatsmeow does not auto-reconnect)
+    # for longer than this, the connector exits so Docker restarts it, which
+    # re-claims the WhatsApp session on a fresh Connect(). 0 disables the watchdog.
+    # The threshold is deliberately long (~1h) to avoid a reconnect war with a
+    # genuinely-competing session.
+    stale_restart_threshold_s: int = 3600
+
     # Address-mention keywords for passive→interactive promotion
     address_keywords: frozenset[str] = field(default_factory=lambda: _DEFAULT_ADDRESS_KEYWORDS)
 
@@ -198,6 +207,9 @@ class WhatsAppUserClientConnectorConfig:
         history_time_window_m = int(os.environ.get("WA_HISTORY_TIME_WINDOW_M", "35"))
         buffer_max_messages = int(os.environ.get("WA_BUFFER_MAX_MESSAGES", "50"))
         health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "40082"))
+        stale_restart_threshold_s = int(
+            os.environ.get("WHATSAPP_STALE_RESTART_THRESHOLD_S", "3600")
+        )
 
         # Address keywords (comma-separated, case-insensitive)
         _raw_keywords = os.environ.get("CONNECTOR_ADDRESS_KEYWORDS", "").strip()
@@ -221,6 +233,7 @@ class WhatsAppUserClientConnectorConfig:
             history_time_window_m=history_time_window_m,
             buffer_max_messages=buffer_max_messages,
             health_port=health_port,
+            stale_restart_threshold_s=stale_restart_threshold_s,
             address_keywords=address_keywords,
             max_interaction_group_size=max_interaction_group_size,
         )
@@ -540,6 +553,9 @@ class WhatsAppUserClientConnector:
         # Background flush scanner task
         self._flush_scanner_task: asyncio.Task[None] | None = None
 
+        # Background stale-link watchdog task
+        self._link_watchdog_task: asyncio.Task[None] | None = None
+
     async def start(self) -> None:
         """Start the WhatsApp user-client connector.
 
@@ -598,6 +614,12 @@ class WhatsAppUserClientConnector:
             self._flush_scanner_loop(), name="wa-flush-scanner"
         )
 
+        # Start stale-link watchdog
+        if self._config.stale_restart_threshold_s > 0:
+            self._link_watchdog_task = asyncio.create_task(
+                self._link_watchdog_loop(), name="wa-link-watchdog"
+            )
+
         self._running = True
         logger.info(
             "Starting WhatsApp user-client connector",
@@ -635,6 +657,15 @@ class WhatsAppUserClientConnector:
             except asyncio.CancelledError:
                 pass
             self._flush_scanner_task = None
+
+        # Cancel stale-link watchdog
+        if self._link_watchdog_task is not None and not self._link_watchdog_task.done():
+            self._link_watchdog_task.cancel()
+            try:
+                await self._link_watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._link_watchdog_task = None
 
         # Force-flush all non-empty buffers
         await self._flush_all_buffers(reason="shutdown")
@@ -823,6 +854,83 @@ class WhatsAppUserClientConnector:
         except asyncio.CancelledError:
             logger.debug("WA flush scanner cancelled")
             raise
+
+    async def _link_watchdog_loop(self) -> None:
+        """Restart the connector if a *recoverable* link outage persists.
+
+        A passive connector receiving no messages is indistinguishable from a
+        dead link by message flow alone, so this watchdog is the independent
+        liveness signal. On a persistent recoverable outage — notably a
+        StreamReplaced, where whatsmeow deliberately does not auto-reconnect — it
+        exits the process so Docker restarts the container and a fresh bridge
+        ``Connect()`` re-claims the WhatsApp session.
+
+        It deliberately does NOT restart on terminal degraded states
+        (pairing timeout, session invalidated, pair_required): those need a human
+        QR re-pair, so a restart would only re-degrade in a pointless loop.
+        Transient disconnects that self-heal reset the bridge's degraded clock
+        and never trip this.
+        """
+        logger.debug(
+            "WA stale-link watchdog started (threshold=%ds, interval=%ds)",
+            self._config.stale_restart_threshold_s,
+            _LINK_WATCHDOG_INTERVAL_S,
+        )
+        try:
+            while self._running:
+                await asyncio.sleep(_LINK_WATCHDOG_INTERVAL_S)
+                if self._link_is_stale():
+                    await self._restart_for_stale_link()
+                    return
+        except asyncio.CancelledError:
+            logger.debug("WA stale-link watchdog cancelled")
+            raise
+
+    def _link_is_stale(self) -> bool:
+        """True if a *recoverable* link outage has exceeded the restart threshold.
+
+        Terminal degraded states (needs human re-pair) are excluded: restarting
+        cannot recover them, so the watchdog must not loop on them.
+        """
+        if self._bridge_manager is None:
+            return False
+        threshold = self._config.stale_restart_threshold_s
+        if threshold <= 0:
+            return False
+        if self._bridge_manager.is_degraded_terminal:
+            return False
+        down_s = self._bridge_manager.degraded_duration_s
+        return down_s is not None and down_s >= threshold
+
+    async def _restart_for_stale_link(self) -> None:
+        """Flush what we can, then exit non-zero so Docker restarts the container."""
+        reason = self._bridge_manager.degraded_reason if self._bridge_manager else None
+        down_s = self._bridge_manager.degraded_duration_s if self._bridge_manager else None
+        logger.error(
+            "WhatsApp link degraded for %.0fs (>= %ds threshold; reason: %s) — "
+            "exiting to restart connector and re-claim the session",
+            down_s or 0.0,
+            self._config.stale_restart_threshold_s,
+            reason,
+        )
+        # Best-effort flush of any messages buffered before the link died. The
+        # Switchboard path is independent of the WhatsApp link, so this can still
+        # succeed even though WhatsApp itself is unreachable.
+        try:
+            await asyncio.wait_for(
+                self._flush_all_buffers(reason="stale_link_restart"), timeout=10.0
+            )
+        except Exception:
+            logger.exception("Flush before stale-link restart failed (continuing to exit)")
+        self._exit_process()
+
+    def _exit_process(self) -> None:
+        """Terminate the process so the container restart policy respawns it.
+
+        Isolated as a seam so tests can assert the watchdog decided to restart
+        without actually killing the test runner.
+        """
+        os._exit(1)
 
     async def _scan_and_flush(self, flush_interval_s: int | None = None) -> None:
         """Iterate all chat buffers and flush those whose interval has elapsed.

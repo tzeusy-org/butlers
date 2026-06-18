@@ -351,3 +351,153 @@ def test_group_with_no_participant_count_in_event_defaults_eligible(
     # participant_count is None (bridge didn't report it for groups)
     assert env["sender"]["participant_count"] is None
     assert env["control"]["interaction_eligible"] is True
+
+
+# ---------------------------------------------------------------------------
+# Stale-link watchdog
+# ---------------------------------------------------------------------------
+
+
+def _connector_with_threshold(threshold_s: int) -> WhatsAppUserClientConnector:
+    config = WhatsAppUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        endpoint_identity=_ENDPOINT,
+        stale_restart_threshold_s=threshold_s,
+    )
+    return WhatsAppUserClientConnector(config, cursor_pool=MagicMock())
+
+
+def test_link_not_stale_without_bridge_manager() -> None:
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = None
+    assert connector._link_is_stale() is False
+
+
+def test_link_not_stale_when_link_healthy() -> None:
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = None
+    assert connector._link_is_stale() is False
+
+
+def test_link_not_stale_below_threshold() -> None:
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = 120.0
+    assert connector._link_is_stale() is False
+
+
+def test_link_stale_at_or_above_threshold() -> None:
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = 3600.0
+    connector._bridge_manager.is_degraded_terminal = False
+    assert connector._link_is_stale() is True
+
+
+def test_link_watchdog_disabled_when_threshold_zero() -> None:
+    connector = _connector_with_threshold(0)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = 999999.0
+    assert connector._link_is_stale() is False
+
+
+async def test_restart_for_stale_link_flushes_then_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a stale-link restart, buffers are flushed best-effort before exiting."""
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_reason = "Link down (session taken over?)"
+    connector._bridge_manager.degraded_duration_s = 3601.0
+
+    flush = AsyncMock()
+    exit_seam = MagicMock()
+    monkeypatch.setattr(connector, "_flush_all_buffers", flush)
+    monkeypatch.setattr(connector, "_exit_process", exit_seam)
+
+    await connector._restart_for_stale_link()
+
+    flush.assert_awaited_once()
+    exit_seam.assert_called_once()
+
+
+async def test_restart_for_stale_link_exits_even_if_flush_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed flush must not prevent the restart exit."""
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_reason = "down"
+    connector._bridge_manager.degraded_duration_s = 3601.0
+
+    monkeypatch.setattr(
+        connector, "_flush_all_buffers", AsyncMock(side_effect=RuntimeError("boom"))
+    )
+    exit_seam = MagicMock()
+    monkeypatch.setattr(connector, "_exit_process", exit_seam)
+
+    await connector._restart_for_stale_link()
+    exit_seam.assert_called_once()
+
+
+async def test_watchdog_loop_triggers_restart_when_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The watchdog loop calls the restart path once the link is stale."""
+    import butlers.connectors.whatsapp_user_client as wac
+
+    connector = _connector_with_threshold(3600)
+    connector._running = True
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = 4000.0
+    connector._bridge_manager.is_degraded_terminal = False
+    connector._bridge_manager.degraded_reason = "down"
+
+    monkeypatch.setattr(wac, "_LINK_WATCHDOG_INTERVAL_S", 0)
+    restart = AsyncMock()
+    monkeypatch.setattr(connector, "_restart_for_stale_link", restart)
+
+    await connector._link_watchdog_loop()
+    restart.assert_awaited_once()
+
+
+async def test_watchdog_loop_exits_cleanly_on_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy link keeps the watchdog idling until cancelled."""
+    import asyncio
+
+    import butlers.connectors.whatsapp_user_client as wac
+
+    connector = _connector_with_threshold(3600)
+    connector._running = True
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = None  # healthy
+
+    monkeypatch.setattr(wac, "_LINK_WATCHDOG_INTERVAL_S", 0.01)
+
+    task = asyncio.create_task(connector._link_watchdog_loop())
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def test_link_not_stale_when_degraded_terminal() -> None:
+    """A terminal degraded state (needs re-pair) must not trip the watchdog."""
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = 99999.0
+    connector._bridge_manager.is_degraded_terminal = True
+    assert connector._link_is_stale() is False
+
+
+def test_link_stale_when_recoverable_past_threshold() -> None:
+    """A recoverable outage past threshold does trip the watchdog."""
+    connector = _connector_with_threshold(3600)
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = 3601.0
+    connector._bridge_manager.is_degraded_terminal = False
+    assert connector._link_is_stale() is True

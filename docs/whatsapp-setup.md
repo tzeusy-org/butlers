@@ -116,6 +116,49 @@ curl -s --unix-socket /tmp/wa-bridge.sock http://bridge/status | python3 -m json
 # Expired session shows: "state": "pair_required"
 ```
 
+The `/status` payload also reports the live link state, probed directly from the
+whatsmeow client at request time:
+
+- `connected` — websocket is up
+- `logged_in` — the WhatsApp session is still valid
+
+These are authoritative for liveness. The event-driven `state` field can lag
+reality if a connection event is missed (see 2.1.1), so prefer `connected` /
+`logged_in` when scripting health checks.
+
+#### 2.1.1 Session taken over by another device (StreamReplaced)
+
+WhatsApp permits only one active link per device slot. If the **same** session is
+linked again elsewhere (another stack reusing the credentials, or WhatsApp Web
+opened with this number), WhatsApp sends a `StreamReplaced` and silently bumps
+this connector off. whatsmeow deliberately does **not** auto-reconnect after a
+replaced stream — reconnecting would just get replaced again — so without
+handling this the bridge would keep reporting `connected` while ingesting
+nothing.
+
+The bridge now marks the link `disconnected` on `StreamReplaced`:
+
+```
+bridge[stdout]: stream replaced by another device — session taken over, link is down
+```
+
+The connector then reports `degraded` on its heartbeat, and a **stale-link
+watchdog** restarts it once the link has been down continuously past
+`WHATSAPP_STALE_RESTART_THRESHOLD_S` (default `3600`, i.e. ~1h). The restart
+exits the container; Docker's `restart: unless-stopped` policy respawns it, and a
+fresh `Connect()` **re-claims** the WhatsApp session. The long default is
+intentional: it avoids a reconnect war with a genuinely-competing session while
+still self-healing a transient takeover within an hour. Set the env var to `0` to
+disable the watchdog, or lower it to re-claim faster (at higher war risk).
+
+The watchdog only fires on **recoverable** outages (a restart can re-claim the
+link). Terminal states that need a human QR re-pair — `pair_required`, session
+invalidated (rc=2), pairing timeout (rc=1) — are exempt; restarting could not
+recover them, so they follow the re-pair flow in section 2.2 instead.
+
+If this fires repeatedly, two stacks are sharing one WhatsApp session — stop the
+duplicate rather than lowering the threshold.
+
 **Health endpoint:**
 
 ```bash

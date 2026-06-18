@@ -130,6 +130,13 @@ func runBridge(args []string) {
 		srv.Stop(stopCtx)
 	}()
 
+	// Wire the live link-state probe queried by /status. Reading IsConnected /
+	// IsLoggedIn directly from the client is the authoritative liveness signal —
+	// it does not depend on having handled every connection event type.
+	srv.SetLivenessFn(func() (bool, bool) {
+		return client.IsConnected(), client.IsLoggedIn()
+	})
+
 	// Wire send function.
 	srv.SetSendFn(func(sendCtx context.Context, recipient, text, replyTo string) (string, int64, error) {
 		jid, err := parseJID(recipient)
@@ -176,6 +183,17 @@ func runBridge(args []string) {
 		case *waEvents.Disconnected:
 			srv.SetState(api.StateDisconnected, "")
 			log.Printf("disconnected from WhatsApp")
+
+		case *waEvents.StreamReplaced:
+			// Another device claimed this session. whatsmeow deliberately does
+			// NOT auto-reconnect after a replaced stream (reconnecting would just
+			// get replaced again), so no Connected/Disconnected event follows —
+			// without this case the bridge would keep reporting connected while
+			// the link is dead. Mark disconnected so liveness is honest; the
+			// connector's stale-link watchdog restarts us later to re-claim the
+			// session deliberately rather than racing into a reconnect war.
+			srv.SetState(api.StateDisconnected, "")
+			log.Printf("stream replaced by another device — session taken over, link is down")
 
 		case *waEvents.LoggedOut:
 			log.Printf("logged out (reason=%v), marking session invalid and exiting", evt.Reason)
