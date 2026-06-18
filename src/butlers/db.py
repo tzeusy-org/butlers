@@ -27,6 +27,65 @@ def is_hardened_posture() -> bool:
     return os.environ.get("BUTLERS_POSTURE", "dev").strip().lower() == "hardened"
 
 
+# Known-default infra credentials that must be changed in hardened deployments.
+# Each entry is (env_var_name, known_default_value, service_label).
+_KNOWN_DEFAULT_INFRA_CREDS: tuple[tuple[str, str, str], ...] = (
+    ("MINIO_ROOT_USER", "minioadmin", "MinIO"),
+    ("MINIO_ROOT_PASSWORD", "minioadmin", "MinIO"),
+    ("GF_SECURITY_ADMIN_USER", "admin", "Grafana"),
+    ("GF_SECURITY_ADMIN_PASSWORD", "admin", "Grafana"),
+)
+
+
+def check_infra_default_creds() -> None:
+    """Detect known-default infra credentials and warn or refuse based on posture.
+
+    Reads each infra credential from the environment (env-var indirection).
+    When a credential is absent, the docker-compose default (``:-minioadmin`` /
+    ``:-admin``) would be used by Docker, so absence is treated as default.
+
+    Behaviour:
+    - **dev posture** (``BUTLERS_POSTURE`` unset or ``"dev"``): logs a loud
+      WARNING for each known-default credential found.  The stack continues
+      to start so the dev workflow is never broken.
+    - **hardened posture** (``BUTLERS_POSTURE=hardened``): raises
+      ``RuntimeError`` listing all offending credentials.  Startup is refused
+      until every default is replaced.
+
+    Services whose compose profiles are not active will still expose the env
+    vars if set, but the check is conservative: it only fires when the env var
+    is explicitly set to a known default OR is absent (treated as default).
+    """
+    hardened = is_hardened_posture()
+    offenders: list[str] = []
+
+    for env_var, known_default, service in _KNOWN_DEFAULT_INFRA_CREDS:
+        value = os.environ.get(env_var)
+        # Absent → docker-compose uses the ``:-<default>`` fallback, so treat
+        # absence the same as the explicit known default.
+        is_default = value is None or value == known_default
+        if is_default:
+            offenders.append(f"{service} {env_var} (known default)")
+            if not hardened:
+                logger.warning(
+                    "INSECURE DEFAULT: %s is using the known-default value for %s. "
+                    "Set %s to a strong credential before deploying to production. "
+                    "(posture=dev — startup continues)",
+                    service,
+                    env_var,
+                    env_var,
+                )
+
+    if hardened and offenders:
+        raise RuntimeError(
+            "Hardened posture requires all infra credentials to be changed from "
+            "known defaults.  The following credentials are still at their "
+            f"known-default values: {', '.join(offenders)}.  "
+            "Set each to a strong credential via the corresponding environment "
+            "variable before starting with BUTLERS_POSTURE=hardened."
+        )
+
+
 def _jsonb_encoder(value: object) -> bytes:
     """Encode a Python object to the JSONB binary wire format.
 

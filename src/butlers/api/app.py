@@ -102,6 +102,7 @@ from butlers.api.routers.timeline import router as timeline_router
 from butlers.api.routers.timeline_saved_views import router as timeline_saved_views_router
 from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
+from butlers.db import check_infra_default_creds
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,10 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     init_dependencies()
+
+    # Check infra creds for known-default values (A4 indicator: infra_creds_insecure_default).
+    # Dev posture: warns loudly per credential.  Hardened posture: raises RuntimeError.
+    check_infra_default_creds()
 
     # Check for DASHBOARD_EXPORT_SECRET env var (A4 indicator: export_secret_insecure_default).
     if os.environ.get("DASHBOARD_EXPORT_SECRET") in (None, ""):
