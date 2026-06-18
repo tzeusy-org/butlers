@@ -5,9 +5,8 @@ need to verify whether a specific channel address is the *primary* entry for an
 entity in ``relationship.entity_facts``.  This module provides a single canonical
 implementation so both code-paths enforce identical policy.
 
-Migration bead 7 (bu-akads): primacy is now read from
-``relationship.entity_facts.primary`` (a BOOL column on the triple row)
-rather than from ``public.contact_info.is_primary``.
+Primacy is read from ``relationship.entity_facts.primary`` (a BOOL column on
+the triple row).
 
 Public surface
 --------------
@@ -52,9 +51,8 @@ async def is_primary_contact(
     DB error or missing row so that non-primary addresses fall through to the
     rules/parking flow.
 
-    Migration bead 7 (bu-akads): previously queried ``public.contact_info``
-    with ``contact_id``.  Now queries ``relationship.entity_facts`` with
-    ``entity_id`` and the mapped predicate.
+    Queries ``relationship.entity_facts`` with ``entity_id`` and the mapped
+    predicate.
 
     Parameters
     ----------

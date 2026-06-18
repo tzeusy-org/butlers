@@ -34,7 +34,7 @@ from butlers.api.models.ingestion_event import (
 from butlers.api.routers.audit import append as _audit_append
 
 # ---------------------------------------------------------------------------
-# entity_facts helpers (bu-hjo3i — replaces public.contact_info reads)
+# entity_facts helpers (bu-hjo3i)
 # ---------------------------------------------------------------------------
 
 _TELEGRAM_HANDLE_PREFIX = "telegram:"
@@ -152,8 +152,7 @@ async def list_priority_contacts(
 
     Joins through public.contacts for canonical contact name.  Channel
     identifiers (email, phone, handles) are fetched from
-    relationship.entity_facts via the contact's linked entity (bu-hjo3i —
-    replaces the old public.contact_info LEFT JOIN).
+    relationship.entity_facts via the contact's linked entity (bu-hjo3i).
 
     Returns paginated list of priority contact entries.
     """

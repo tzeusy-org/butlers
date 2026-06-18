@@ -840,8 +840,7 @@ class ButlerDaemon:
         """Resolve the channel identifier for a specific contact_id and channel type.
 
         Reads from ``relationship.entity_facts`` via the contact's linked entity
-        (``public.contacts.entity_id``).  Migration bead bu-tv67t cut the read
-        path away from ``public.contact_info``.
+        (``public.contacts.entity_id``).
 
         Resolution:
         - contact_id → entity_id (via ``public.contacts.entity_id``)

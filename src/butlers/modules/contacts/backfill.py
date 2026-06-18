@@ -84,9 +84,7 @@ class ContactBackfillResolver:
     4. Conservative name match (manual-review flag when ambiguous)
 
     Channel matching reads ``relationship.entity_facts`` (subject = entity_id)
-    and maps back to a local contact via ``public.contacts.entity_id``; the
-    legacy ``public.contact_info`` table was dropped in migration bead 10
-    (bu-e2ja9 / core_115).
+    and maps back to a local contact via ``public.contacts.entity_id``.
     """
 
     def __init__(self, pool: asyncpg.Pool, *, provider: str, account_id: str) -> None:
@@ -157,7 +155,7 @@ class ContactBackfillResolver:
     async def _match_email(self, email_value: str) -> uuid.UUID | None:
         # Resolve via the triple store (migration bead 10, bu-e2ja9): a
         # ``has-email`` fact's subject is the entity; map back to a local contact
-        # through ``public.contacts.entity_id``. ``public.contact_info`` is dropped.
+        # through ``public.contacts.entity_id``.
         normalized = email_value.strip().lower()
         try:
             row = await self._pool.fetchrow(
@@ -552,8 +550,7 @@ class ContactBackfillWriter:
 
         Write-path cut-over (bu-k9ylx): channel facts are asserted as triples in
         ``relationship.entity_facts`` via the central writer
-        ``relationship_assert_fact()``.  ``public.contact_info`` is read-only and
-        is no longer written here.  Connector identifier types with no triple
+        ``relationship_assert_fact()``.  Connector identifier types with no triple
         predicate (e.g. ``telegram_chat_id``) are skipped — they have no home in
         the triple model.
         """

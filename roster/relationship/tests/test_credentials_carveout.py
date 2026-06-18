@@ -6,11 +6,9 @@ Covers:
   (c) Credential does NOT appear in relationship.entity_facts.
   (d) Unique constraint: cannot insert duplicate active credentials of same type/entity.
   (e) Revocation: revoked_at set → new active credential of same type CAN be inserted.
-  (f) Reconciler (run_contact_info_reconciler) skips secured=true rows — source-level
-      assertion that the guards remain in place.
   (g) Downgrade removes the table + indexes cleanly.
 
-Unit tests (a), (f) are pure Python with no Docker requirement.
+Unit test (a) is pure Python with no Docker requirement.
 Integration tests (b–e), (g) require Docker (postgres container provisioned by
 the shared ``provisioned_postgres_pool`` fixture).
 
@@ -84,48 +82,6 @@ class TestMigrationStructure:
     def test_depends_on_is_none(self):
         mod = _load_migration()
         assert mod.depends_on is None
-
-
-# ---------------------------------------------------------------------------
-# (f) Unit: Reconciler secured-row skip — source-level assertions
-# Pure sync — no DB or Docker required.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestReconcilerSecuredSkip:
-    """Confirm the reconciler keeps its credential carve-out guards.
-
-    Full behavioural coverage lives in test_reconciler.py::TestSecuredRowsSkipped.
-    This class asserts that the source-level guards remain present so that future
-    refactors cannot silently remove them.
-    """
-
-    def test_reconciler_sql_excludes_secured_rows(self):
-        """The SQL sweep query in run_contact_info_reconciler filters secured=false."""
-        import inspect
-
-        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
-
-        source = inspect.getsource(run_contact_info_reconciler)
-        assert "secured = false" in source, (
-            "run_contact_info_reconciler SQL sweep must contain 'secured = false' "
-            "to exclude credential rows from triple emission."
-        )
-
-    def test_reconciler_python_guard_excludes_secured_rows(self):
-        """The Python defensive guard skips secured rows that slip past the SQL filter."""
-        import inspect
-
-        from roster.relationship.jobs.relationship_jobs import run_contact_info_reconciler
-
-        source = inspect.getsource(run_contact_info_reconciler)
-        assert "rows_skipped_credential" in source, (
-            "run_contact_info_reconciler must maintain rows_skipped_credential counter."
-        )
-        assert 'row["secured"]' in source or "row['secured']" in source, (
-            "run_contact_info_reconciler must have a Python guard checking row['secured']."
-        )
 
 
 # ---------------------------------------------------------------------------

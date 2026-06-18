@@ -53,8 +53,7 @@ async def _get_email_context(pool: asyncpg.Pool, email_address: str) -> str | No
     the triple does not exist, has no context tag, or on any DB error
     (missing column is treated as NULL).
 
-    Migration bead 7 (bu-akads): previously queried ``public.contact_info``.
-    Now reads from ``relationship.entity_facts``.
+    Reads from ``relationship.entity_facts``.
     """
     try:
         row = await pool.fetchrow(

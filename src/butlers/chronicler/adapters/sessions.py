@@ -289,8 +289,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
         ``ingestion_event_id``, joins ``public.ingestion_events`` →
         ``relationship.entity_facts`` → ``public.entities`` to fetch the
         sender's display name and channel.  The JOIN uses a SQL CASE expression
-        to map ``source_channel`` to the correct ``has-*`` predicate
-        (bu-hjo3i — replaces the old ``public.contact_info`` JOIN).
+        to map ``source_channel`` to the correct ``has-*`` predicate (bu-hjo3i).
 
         Returns a mapping ``{session_id: (display_name, channel)}``.
         Sessions that cannot be resolved get ``(None, channel)`` when the
