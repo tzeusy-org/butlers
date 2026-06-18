@@ -202,10 +202,24 @@ export interface HealthAuthPosture {
   export_secret_insecure_default: boolean;
 }
 
+/** Infra-defaults security indicator from GET /api/health. Values are NEVER secret material. */
+export interface HealthSecurityPosture {
+  /**
+   * True when any known-default infra credential is active (absent env var = docker-compose
+   * default applies, or explicit known default is set) OR when Grafana anonymous access is
+   * enabled outside dev posture.
+   * False only when all infra credentials are overridden AND Grafana anon access is disabled
+   * (or posture is dev, where anon is expected).
+   */
+  insecure_infra_defaults: boolean;
+}
+
 export interface HealthResponse {
   status: string;
-  /** Security-posture indicators. Present in successful (200) responses. */
+  /** Auth-posture indicators. Present in successful (200) responses. */
   auth?: HealthAuthPosture;
+  /** Infra-defaults security indicator. Present in successful (200) responses. */
+  security?: HealthSecurityPosture;
 }
 
 // ---------------------------------------------------------------------------

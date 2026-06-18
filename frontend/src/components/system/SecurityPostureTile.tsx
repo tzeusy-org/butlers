@@ -1,9 +1,10 @@
 // ---------------------------------------------------------------------------
 // SecurityPostureTile -- dashboard security-posture indicator
-// (bu-dl98i.1.4)
+// (bu-dl98i.1.4, bu-dl98i.6.3)
 //
 // Data source: useHealthPosture -> GET /api/health
 // Fields used: auth.api_key_auth_enabled, auth.export_secret_insecure_default
+//              security.insecure_infra_defaults
 //
 // Displays boolean posture indicators only.  No secret values are ever
 // shown or transmitted; the backend enforces this at the source.
@@ -97,6 +98,8 @@ function PostureRow({ label, secure, secureLabel, insecureLabel, testId }: Postu
  * Indicators:
  *   - API key auth: whether the dashboard requires an X-API-Key header
  *   - Export secret: whether DASHBOARD_EXPORT_SECRET is explicitly configured
+ *   - Infra defaults: whether any infra credential is at its known default or
+ *     Grafana anonymous access is enabled outside dev posture
  *
  * Values are booleans only — no secret material is displayed or fetched.
  */
@@ -107,6 +110,7 @@ export function SecurityPostureTile() {
   if (isError) return <TileError />
 
   const posture = response?.auth
+  const security = response?.security
 
   return (
     <Card>
@@ -129,6 +133,13 @@ export function SecurityPostureTile() {
             secureLabel="Configured"
             insecureLabel="Insecure default"
             testId="posture-export-secret"
+          />
+          <PostureRow
+            label="Infra credentials"
+            secure={!(security?.insecure_infra_defaults ?? true)}
+            secureLabel="Hardened"
+            insecureLabel="Insecure defaults active"
+            testId="posture-infra-defaults"
           />
         </dl>
       </CardContent>

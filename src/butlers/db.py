@@ -37,6 +37,54 @@ _KNOWN_DEFAULT_INFRA_CREDS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def has_insecure_infra_defaults() -> bool:
+    """Return True when any known-default infra credential is active.
+
+    Pure inspection — no logging, no side effects.  Reads the same
+    ``_KNOWN_DEFAULT_INFRA_CREDS`` table used by ``check_infra_default_creds``.
+    Absence of a credential is treated as the known default (Docker compose
+    supplies the ``:-<default>`` fallback when the variable is unset).
+
+    Returns ``True`` under any of:
+    - one or more infra credentials are absent (Docker default applies), or
+    - one or more infra credentials are explicitly set to the known default.
+
+    Returns ``False`` only when every entry in ``_KNOWN_DEFAULT_INFRA_CREDS``
+    is overridden with a non-default value.
+
+    Intended for the dashboard health surface — call it at request time so live
+    environment changes are reflected without restarting the app.
+    """
+    for env_var, known_default, _service in _KNOWN_DEFAULT_INFRA_CREDS:
+        value = os.environ.get(env_var)
+        if value is None or value == known_default:
+            return True
+    return False
+
+
+def is_grafana_anon_outside_dev() -> bool:
+    """Return True when Grafana anonymous viewer is enabled outside dev posture.
+
+    In dev posture Grafana anon access is expected (convenient for local
+    iteration) so this returns ``False``.  In hardened posture anon access
+    should be disabled; if ``GF_AUTH_ANONYMOUS_ENABLED`` is not ``"false"``
+    (absent counts as enabled via Docker's ``:-false`` default, which means
+    safe for direct compose invocations — but explicit ``true`` in hardened
+    posture is the concern) this returns ``True``.
+
+    The intent is to surface a concrete operator action: disable anon access
+    before switching to hardened posture.
+
+    Returns ``False`` in dev posture unconditionally.
+    """
+    if not is_hardened_posture():
+        return False
+    # In hardened posture, GF_AUTH_ANONYMOUS_ENABLED must be "false".
+    # Absent = safe (docker-compose.observability.yml defaults to "false").
+    value = os.environ.get("GF_AUTH_ANONYMOUS_ENABLED", "false").strip().lower()
+    return value not in ("false", "0", "no", "")
+
+
 def check_infra_default_creds() -> None:
     """Detect known-default infra credentials and warn or refuse based on posture.
 

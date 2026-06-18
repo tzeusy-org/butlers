@@ -102,7 +102,11 @@ from butlers.api.routers.timeline import router as timeline_router
 from butlers.api.routers.timeline_saved_views import router as timeline_saved_views_router
 from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
-from butlers.db import check_infra_default_creds
+from butlers.db import (
+    check_infra_default_creds,
+    has_insecure_infra_defaults,
+    is_grafana_anon_outside_dev,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -361,14 +365,20 @@ def create_app(
             return JSONResponse(status_code=503, content={"status": "starting"})
         # Security-posture booleans — NEVER include secret values here.
         #
-        # api_key_auth_enabled: True when ApiKeyMiddleware is active.
+        # auth.api_key_auth_enabled: True when ApiKeyMiddleware is active.
         #   _effective_api_key is resolved once at create_app() time and
         #   captured via closure, matching exactly what the middleware uses.
         #
-        # export_secret_insecure_default: True when DASHBOARD_EXPORT_SECRET is
-        #   absent.  In dev the signer falls back to a known constant (forgeable
-        #   tokens); in production it refuses to sign.  Either way the posture
-        #   is insecure.  Read from env each call so live changes are reflected.
+        # auth.export_secret_insecure_default: True when DASHBOARD_EXPORT_SECRET
+        #   is absent.  In dev the signer falls back to a known constant (forgeable
+        #   tokens); in production it refuses to sign.  Either way the posture is
+        #   insecure.  Read from env each call so live changes are reflected.
+        #
+        # security.insecure_infra_defaults: True when any infra credential is at
+        #   its known default (absent env var = docker-compose default applies) OR
+        #   when Grafana anonymous access is enabled outside dev posture.
+        #   Clears only when all infra creds are overridden AND anon access is
+        #   disabled (or posture is dev).  Read at request time for live updates.
         return {
             "status": "ok",
             "auth": {
@@ -376,6 +386,10 @@ def create_app(
                 "export_secret_insecure_default": not bool(
                     os.environ.get("DASHBOARD_EXPORT_SECRET")
                 ),
+            },
+            "security": {
+                "insecure_infra_defaults": has_insecure_infra_defaults()
+                or is_grafana_anon_outside_dev(),
             },
         }
 

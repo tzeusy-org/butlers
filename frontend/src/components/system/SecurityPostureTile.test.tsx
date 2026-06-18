@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// SecurityPostureTile tests -- bu-dl98i.1.4
+// SecurityPostureTile tests -- bu-dl98i.1.4, bu-dl98i.6.3
 //
 // Coverage:
 //   - Loading state: skeleton rendered, no content
@@ -9,6 +9,9 @@
 //   - Happy path (api key disabled, export secret missing): both badges "insecure"
 //   - Mixed state: api key disabled, export secret set
 //   - Mixed state: api key enabled, export secret missing
+//   - Infra defaults: insecure_infra_defaults=true shows "Insecure defaults active"
+//   - Infra defaults: insecure_infra_defaults=false shows "Hardened"
+//   - Infra defaults: absent security field defaults to insecure (honest default)
 //   - No secret material rendered (invariant)
 // ---------------------------------------------------------------------------
 
@@ -38,13 +41,20 @@ vi.mock("@/hooks/use-system", () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeHealthResponse(overrides: Partial<HealthResponse["auth"]> = {}): HealthResponse {
+function makeHealthResponse(
+  authOverrides: Partial<HealthResponse["auth"]> = {},
+  securityOverrides: Partial<NonNullable<HealthResponse["security"]>> = {},
+): HealthResponse {
   return {
     status: "ok",
     auth: {
       api_key_auth_enabled: true,
       export_secret_insecure_default: false,
-      ...overrides,
+      ...authOverrides,
+    },
+    security: {
+      insecure_infra_defaults: false,
+      ...securityOverrides,
     },
   }
 }
@@ -170,7 +180,37 @@ describe("SecurityPostureTile -- mixed states", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 6. No secret material invariant
+// 6. Infra defaults indicator (bu-dl98i.6.3)
+// ---------------------------------------------------------------------------
+
+describe("SecurityPostureTile -- infra defaults indicator", () => {
+  it("shows 'Insecure defaults active' when insecure_infra_defaults=true", () => {
+    mockResult = {
+      isPending: false,
+      data: makeHealthResponse({}, { insecure_infra_defaults: true }),
+    }
+    expect(render()).toContain("Insecure defaults active")
+  })
+
+  it("shows 'Hardened' when insecure_infra_defaults=false", () => {
+    mockResult = {
+      isPending: false,
+      data: makeHealthResponse({}, { insecure_infra_defaults: false }),
+    }
+    expect(render()).toContain("Hardened")
+  })
+
+  it("defaults to insecure when security field is absent (honest default)", () => {
+    mockResult = {
+      isPending: false,
+      data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
+    }
+    expect(render()).toContain("Insecure defaults active")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. No secret material invariant
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- no secret material", () => {
@@ -183,8 +223,9 @@ describe("SecurityPostureTile -- no secret material", () => {
       isPending: false,
       data: {
         status: "ok",
-        // auth fields are booleans; no path for the canary to sneak in
+        // auth and security fields are booleans; no path for the canary to sneak in
         auth: { api_key_auth_enabled: true, export_secret_insecure_default: false },
+        security: { insecure_infra_defaults: false },
       },
     }
     const html = render()

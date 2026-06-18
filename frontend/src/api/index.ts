@@ -341,6 +341,7 @@ export type {
   FactParams,
   HealthAuthPosture,
   HealthResponse,
+  HealthSecurityPosture,
   Issue,
   Meal,
   MealParams,
