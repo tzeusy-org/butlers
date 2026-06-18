@@ -209,7 +209,7 @@ class TestOwnerBootstrap:
         When msg_context is provided, recipient selection prefers entries whose
         context matches msg_context over unclassified (NULL) entries.
 
-        The context-aware resolution logic lives in daemon._resolve_contact_channel_identifier().
+        The context-aware resolution logic lives in daemon._resolve_entity_channel_identifier().
         """
         import inspect
 

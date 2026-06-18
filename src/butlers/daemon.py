@@ -834,16 +834,14 @@ class ButlerDaemon:
         "telegram": "telegram_chat_id",
     }
 
-    async def _resolve_contact_channel_identifier(
-        self, *, contact_id: uuid.UUID, channel: str, msg_context: str | None = None
+    async def _resolve_entity_channel_identifier(
+        self, *, entity_id: uuid.UUID, channel: str, msg_context: str | None = None
     ) -> str | None:
-        """Resolve the channel identifier for a specific contact_id and channel type.
+        """Resolve the channel identifier for a specific entity_id and channel type.
 
-        Reads from ``relationship.entity_facts`` via the contact's linked entity
-        (``public.contacts.entity_id``).
+        Reads directly from ``relationship.entity_facts`` keyed on the entity.
 
         Resolution:
-        - contact_id → entity_id (via ``public.contacts.entity_id``)
         - channel → predicate (``_CHANNEL_TO_PREDICATE``)
         - For ``telegram``: queries ``has-handle`` WHERE object starts with
           ``"telegram:"`` (the format written by the reconciler for
@@ -863,10 +861,9 @@ class ButlerDaemon:
 
         Returns the identifier value on success, ``None`` if:
         - No DB pool is available.
-        - No linked entity found for the contact.
         - No matching ``entity_facts`` row exists.
-        - The ``relationship.entity_facts`` or ``public.contacts`` table does
-          not exist (graceful schema-not-ready guard).
+        - The ``relationship.entity_facts`` table does not exist (graceful
+          schema-not-ready guard).
         """
         from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE
 
@@ -876,7 +873,7 @@ class ButlerDaemon:
             predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel)
         if predicate is None:
             logger.debug(
-                "_resolve_contact_channel_identifier: no predicate for channel=%r; returning None",
+                "_resolve_entity_channel_identifier: no predicate for channel=%r; returning None",
                 channel,
             )
             return None
@@ -887,20 +884,7 @@ class ButlerDaemon:
 
         try:
             async with pool.acquire() as conn:
-                # Step 1: resolve contact_id → entity_id
-                entity_row = await conn.fetchrow(
-                    "SELECT entity_id FROM public.contacts WHERE id = $1 LIMIT 1",
-                    contact_id,
-                )
-                if entity_row is None or entity_row["entity_id"] is None:
-                    logger.debug(
-                        "_resolve_contact_channel_identifier: no entity linked to contact_id=%s",
-                        contact_id,
-                    )
-                    return None
-                entity_id = entity_row["entity_id"]
-
-                # Step 2: query entity_facts for the active triple.
+                # Query entity_facts for the active triple.
                 # For telegram, filter to entries with the "telegram:" prefix
                 # to avoid ambiguity with other has-handle entries (linkedin, etc.).
                 # rel_019 normalised all legacy telegram has-handle rows to the
@@ -962,9 +946,9 @@ class ButlerDaemon:
 
             if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
                 logger.debug(
-                    "_resolve_contact_channel_identifier skipped for contact_id=%s channel=%r; "
+                    "_resolve_entity_channel_identifier skipped for entity_id=%s channel=%r; "
                     "table/column not available: %s",
-                    contact_id,
+                    entity_id,
                     channel,
                     exc,
                 )

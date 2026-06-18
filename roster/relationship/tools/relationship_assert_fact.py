@@ -949,9 +949,9 @@ async def assert_sender_channel_fact(
         return None
 
     # Store telegram handles in the canonical ``telegram:<bare>`` form. The
-    # delivery read path (daemon._resolve_contact_channel_identifier) filters
+    # delivery read path (daemon._resolve_entity_channel_identifier) filters
     # has-handle objects on ``LIKE 'telegram:%'``, so an unprefixed object is
-    # NON-deliverable via notify(contact_id). Normalising here — keyed identically
+    # NON-deliverable via notify(entity_id). Normalising here — keyed identically
     # to the read fallback (resolve_contact_by_channel's _telegram_prefixed_value)
     # — keeps recognition, delivery, and ingress dedup on ONE stored format and
     # removes the need for the read-side prefix tolerance bridge (PR #2465).

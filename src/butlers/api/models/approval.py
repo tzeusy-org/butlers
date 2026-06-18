@@ -12,10 +12,10 @@ from pydantic import BaseModel, Field
 
 
 class TargetContact(BaseModel):
-    """Compact contact object resolved from a contact_id in action constraints.
+    """Compact target object resolved from an entity_id in action constraints.
 
-    Included in ApprovalAction when ``tool_args`` contains a ``contact_id`` that
-    resolves to a known contact in public.contacts.
+    Included in ApprovalAction when ``tool_args`` contains an ``entity_id`` that
+    resolves to a known entity in public.entities. ``id`` carries the entity_id.
     """
 
     id: str

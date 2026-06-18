@@ -307,38 +307,35 @@ async def _resolve_target_contact(
     db_mgr: DatabaseManager,
     action: PendingAction,
 ) -> TargetContact | None:
-    """Resolve target_contact from contact_id in action tool_args.
+    """Resolve target_contact from entity_id in action tool_args.
 
-    Looks up public.contacts when tool_args contains a non-empty 'contact_id' key.
-    Returns None if not found, pool unavailable, or contact_id is not present.
+    Looks up public.entities when tool_args contains a non-empty 'entity_id' key.
+    Returns None if not found, pool unavailable, or entity_id is not present.
     """
-    contact_id_raw = action.tool_args.get("contact_id")
-    if not contact_id_raw:
+    entity_id_raw = action.tool_args.get("entity_id")
+    if not entity_id_raw:
         return None
 
     try:
         from uuid import UUID
 
-        contact_uuid = UUID(str(contact_id_raw))
+        entity_uuid = UUID(str(entity_id_raw))
     except (ValueError, AttributeError):
         return None
 
-    # Find a pool that has public.contacts (try all butlers).
-    # Roles live on public.entities (joined via contacts.entity_id), NOT on
-    # public.contacts — the contacts table has no roles column.
+    # Find a pool that has public.entities (try all butlers).
     for butler_name in db_mgr.butler_names:
         try:
             pool = db_mgr.pool(butler_name)
             row = await pool.fetchrow(
                 """
-                SELECT c.id,
-                       c.name,
+                SELECT e.id,
+                       e.canonical_name AS name,
                        COALESCE(e.roles, '{}') AS roles
-                FROM public.contacts c
-                LEFT JOIN public.entities e ON e.id = c.entity_id
-                WHERE c.id = $1
+                FROM public.entities e
+                WHERE e.id = $1
                 """,
-                contact_uuid,
+                entity_uuid,
             )
             if row is not None:
                 raw_roles = row["roles"]

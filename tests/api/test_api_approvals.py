@@ -1182,19 +1182,19 @@ async def test_why_null_evidence_empty_on_legacy_rows(app):
 
 
 # ---------------------------------------------------------------------------
-# Detail dossier resolves target_contact from contact_id (bu — approvals UX)
+# Detail dossier resolves target_contact from entity_id (bu — approvals UX)
 # ---------------------------------------------------------------------------
 
 
-async def test_detail_resolves_target_contact_from_contact_id(app):
-    """GET /api/approvals/{id} resolves a tool_args.contact_id into a named,
+async def test_detail_resolves_target_contact_from_entity_id(app):
+    """GET /api/approvals/{id} resolves a tool_args.entity_id into a named,
     linkable target_contact so the dossier never shows a bare UUID."""
-    contact_id = uuid4()
+    entity_id = uuid4()
     action_id = uuid4()
     action_row = {
         "id": action_id,
         "tool_name": "notify",
-        "tool_args": {"contact_id": str(contact_id), "text": "hi"},
+        "tool_args": {"entity_id": str(entity_id), "text": "hi"},
         "status": "pending",
         "requested_at": _NOW,
         "agent_summary": None,
@@ -1207,7 +1207,7 @@ async def test_detail_resolves_target_contact_from_contact_id(app):
         "why": None,
         "evidence": [],
     }
-    contact_row = {"id": contact_id, "name": "Ada Lovelace", "roles": ["owner"]}
+    contact_row = {"id": entity_id, "name": "Ada Lovelace", "roles": ["owner"]}
 
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=[])
@@ -1231,7 +1231,7 @@ async def test_detail_resolves_target_contact_from_contact_id(app):
 
     mock_pool = AsyncMock()
     mock_pool.acquire = MagicMock(return_value=_MockAcquire())
-    # _resolve_target_contact queries public.contacts via pool.fetchrow directly
+    # _resolve_target_contact queries public.entities via pool.fetchrow directly
     mock_pool.fetchrow = AsyncMock(return_value=contact_row)
 
     mock_db = MagicMock(spec=DatabaseManager)
@@ -1251,7 +1251,7 @@ async def test_detail_resolves_target_contact_from_contact_id(app):
     assert resp.status_code == 200
     detail = resp.json()["data"]
     assert detail["target_contact"] is not None
-    assert detail["target_contact"]["id"] == str(contact_id)
+    assert detail["target_contact"]["id"] == str(entity_id)
     assert detail["target_contact"]["name"] == "Ada Lovelace"
     assert detail["target_contact"]["roles"] == ["owner"]
 
@@ -1326,7 +1326,7 @@ async def test_detail_resolves_referenced_entities_from_tool_args(app):
 
     mock_pool = AsyncMock()
     mock_pool.acquire = MagicMock(return_value=_MockAcquire())
-    # _resolve_target_contact -> no contact_id, returns None.
+    # _resolve_target_contact -> no entity_id, returns None.
     mock_pool.fetchrow = AsyncMock(return_value=None)
     # _resolve_referenced_entities queries public.entities via pool.fetch.
     mock_pool.fetch = AsyncMock(return_value=entity_rows)

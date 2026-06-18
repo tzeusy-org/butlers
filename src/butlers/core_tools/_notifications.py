@@ -178,9 +178,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 Field(
                     description=(
                         "Delivery channel. Allowed values: telegram | email | whatsapp. "
-                        "Optional: when omitted together with a contact_id, the channel is "
-                        "resolved from the contact entity's preferred channel (falling back to "
-                        "telegram, then email). When omitted without a contact_id, delivery "
+                        "Optional: when omitted together with an entity_id, the channel is "
+                        "resolved from the entity's preferred channel (falling back to "
+                        "telegram, then email). When omitted without an entity_id, delivery "
                         "defaults to telegram."
                     )
                 ),
@@ -221,11 +221,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     )
                 ),
             ] = None,
-            contact_id: Annotated[
+            entity_id: Annotated[
                 uuid.UUID | None,
                 Field(
                     description=(
-                        "Optional contact UUID. When provided, the channel"
+                        "Optional entity UUID (public.entities.id). When provided, the channel"
                         " identifier is resolved "
                         "from relationship.entity_facts (active triple preferred). If no matching "
                         "entity_facts triple exists, the notification is parked as a "
@@ -250,7 +250,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 Field(
                     description=(
                         "Optional message context sphere. Allowed values: personal | work | other. "
-                        "When provided with contact_id, recipient resolution prefers "
+                        "When provided with entity_id, recipient resolution prefers "
                         "contact_info entries tagged with matching context. "
                         "When the resolved address context conflicts with msg_context, "
                         "delivery is parked for approval. "
@@ -267,9 +267,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
 
             Optional fields:
             - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
-            - `contact_id` (UUID): resolve recipient from relationship.entity_facts (active
-              triple preferred). If no matching triple exists the notification is parked as
-              a pending_action and `{"status": "pending_missing_identifier"}` is returned.
+            - `entity_id` (UUID): resolve recipient from relationship.entity_facts (active
+              triple preferred) keyed on this entity. If no matching triple exists the
+              notification is parked as a pending_action and
+              `{"status": "pending_missing_identifier"}` is returned.
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
@@ -280,8 +281,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               Pass an object value, not a quoted placeholder string.
 
             Recipient resolution priority:
-            1. `contact_id` provided → look up channel identifier from relationship.entity_facts
-               via the contact's linked entity; msg_context is not used for ordering (entity_facts
+            1. `entity_id` provided → look up channel identifier from relationship.entity_facts
+               keyed on the entity; msg_context is not used for ordering (entity_facts
                has no context column) but is still applied by the email guard for validation
             2. `recipient` string provided → use as-is
             3. Neither → resolve owner entity's channel identifier (default)
@@ -330,23 +331,23 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # --- Channel resolution (entity-keyed-preferred-channel, group 2) ---
             # `channel` is optional. A forced channel always wins. When the caller
             # leaves it unspecified, resolve the outbound channel:
-            #   - contact-targeted → honour the contact entity's `prefers-channel`
+            #   - entity-targeted → honour the entity's `prefers-channel`
             #     fact when deliverable, else fall back to telegram → email;
-            #   - no contact_id → default to telegram (the historical owner-page
+            #   - no entity_id → default to telegram (the historical owner-page
             #     channel), preserving prior behaviour for callers that relied on
             #     a channel always being present.
             # The forced channel is never overridden, so preference is consulted
             # only here, before any channel-dependent validation runs.
             if channel is None:
                 resolved_channel: str | None = None
-                if contact_id is not None:
+                if entity_id is not None:
                     _resolve_pool = daemon.db.pool if daemon.db is not None else None
                     if _resolve_pool is not None:
                         from butlers.identity import resolve_outbound_channel
 
                         resolved_channel = await resolve_outbound_channel(
                             _resolve_pool,
-                            contact_id,
+                            entity_id,
                             deliverable_channels={"telegram", "email"},
                         )
                 channel = resolved_channel or "telegram"
@@ -514,13 +515,13 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             )
 
             # Approvals-policy quiet-hours gate: suppress owner-default pages.
-            # Applies only when no explicit contact_id or recipient is given
+            # Applies only when no explicit entity_id or recipient is given
             # (i.e. the notification is destined for the owner via the default
             # resolution path), the intent is send/insight, and priority is not
             # high (high-priority always delivers immediately, per §8.6 spec).
             if (
                 _notify_pool is not None
-                and contact_id is None
+                and entity_id is None
                 and recipient is None
                 and intent in {"send", "insight"}
                 and priority != "high"
@@ -585,18 +586,18 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 }
 
             # Resolution priority:
-            # (1) contact_id → query relationship.entity_facts via contact's entity_id;
+            # (1) entity_id → query relationship.entity_facts keyed on the entity;
             #     msg_context is not used for ordering (entity_facts has no context column)
             # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
             # (3) neither → resolve owner entity's channel identifier (default path)
-            if contact_id is not None:
-                contact_identifier = await daemon._resolve_contact_channel_identifier(
-                    contact_id=contact_id,
+            if entity_id is not None:
+                entity_identifier = await daemon._resolve_entity_channel_identifier(
+                    entity_id=entity_id,
                     channel=channel,
                     msg_context=msg_context,
                 )
-                if contact_identifier is None:
-                    # No matching contact_info entry — park as pending_action and notify owner
+                if entity_identifier is None:
+                    # No matching entity_facts triple — park as pending_action and notify owner
                     action_id: uuid.UUID | None = None
                     pool = daemon.db.pool if daemon.db is not None else None
                     if pool is not None:
@@ -608,9 +609,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
                         agent_summary = (
                             f"notify() could not deliver a {channel!r} notification: "
-                            f"contact {contact_id} has no {info_type!r} identifier in "
+                            f"entity {entity_id} has no {info_type!r} identifier in "
                             f"relationship.entity_facts. The message was: {message!r}. "
-                            f"To resolve, assert a channel triple for this contact in the "
+                            f"To resolve, assert a channel triple for this entity in the "
                             f"entity graph and re-trigger the notification."
                         )
                         await pool.execute(
@@ -624,7 +625,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 {
                                     "channel": channel,
                                     "message": message,
-                                    "contact_id": str(contact_id),
+                                    "entity_id": str(entity_id),
                                     "intent": intent,
                                 }
                             ),
@@ -636,8 +637,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         )
                         logger.warning(
                             "notify() parked as pending_missing_identifier: "
-                            "contact_id=%s has no %r entity_facts triple (action=%s)",
-                            contact_id,
+                            "entity_id=%s has no %r entity_facts triple (action=%s)",
+                            entity_id,
                             info_type,
                             action_id,
                         )
@@ -657,8 +658,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "intent": "send",
                                 "channel": channel,
                                 "message": (
-                                    f"A notification could not be delivered to contact "
-                                    f"{contact_id} via {channel!r}: missing {info_type!r} "
+                                    f"A notification could not be delivered to entity "
+                                    f"{entity_id} via {channel!r}: missing {info_type!r} "
                                     f"channel identifier. The pending action has been queued "
                                     f"for review."
                                 ),
@@ -696,11 +697,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             )
                     return {
                         "status": "pending_missing_identifier",
-                        "contact_id": str(contact_id),
+                        "entity_id": str(entity_id),
                         "channel": channel,
                         "pending_action_id": str(action_id) if action_id is not None else None,
                     }
-                resolved_recipient = contact_identifier
+                resolved_recipient = entity_identifier
             else:
                 resolved_recipient = await daemon._resolve_default_notify_recipient(
                     channel=channel,
@@ -721,8 +722,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
 
             # Validate email recipients against known contacts.
             # This prevents LLM-hallucinated addresses from reaching delivery.
-            # NOTE: runs regardless of whether contact_id was used for resolution.
-            # The contact_id path resolves to an email address but does NOT verify
+            # NOTE: runs regardless of whether entity_id was used for resolution.
+            # The entity_id path resolves to an email address but does NOT verify
             # that the address belongs to a known, non-temporary contact.
             if channel == "email" and resolved_recipient is not None:
                 pool = daemon.db.pool if daemon.db is not None else None

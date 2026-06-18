@@ -73,7 +73,7 @@ def ef_predicate_to_ci_type(predicate: str, object_val: str) -> str:
     Backward-compat note: legacy rows written before bu-wni4z may store telegram
     handles verbatim (no prefix).  Those rows are classified as ``"handle"``
     until a data migration prefixes them.  The read path in
-    ``daemon._resolve_contact_channel_identifier`` accepts both prefixed and
+    ``daemon._resolve_entity_channel_identifier`` accepts both prefixed and
     verbatim forms during the transition period.
     """
     if predicate == "has-email":

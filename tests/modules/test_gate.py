@@ -281,28 +281,28 @@ class TestGateOwnerPrimaryRequirement:
         assert result.get("status") == "pending_approval"
         assert "action_id" in result
 
-    async def test_owner_contact_id_dispatch_auto_approves_without_primacy_check(self) -> None:
-        """contact_id dispatch is exempt from the primacy check.
+    async def test_owner_entity_id_dispatch_auto_approves_without_primacy_check(self) -> None:
+        """entity_id dispatch is exempt from the primacy check.
 
-        When the tool is called with contact_id (not a specific channel address),
+        When the tool is called with entity_id (not a specific channel address),
         the system already resolves to the primary channel.  The gate must not
         add an extra primacy barrier here.
         """
         owner_id = uuid.uuid4()
         owner = _owner_contact(owner_id)
-        # fetchrow will NOT be called for is_primary in contact_id path
+        # fetchrow will NOT be called for is_primary in entity_id path
         pool = _make_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
-            {"contact_id": str(owner_id), "channel": "telegram", "message": "hi"},
+            {"entity_id": str(owner_id), "channel": "telegram", "message": "hi"},
             resolved_contact=owner,
             pool=pool,
         )
-        # Should auto-approve — contact_id dispatch skips primacy gate
+        # Should auto-approve — entity_id dispatch skips primacy gate
         assert result == {"status": "sent"}
         # Confirm fetchrow was NOT called for primacy (only _resolve_target_contact is patched)
         # pool.fetchrow may be called by _resolve_target_contact's internal direct UUID lookup,
-        # but _is_primary_contact must NOT be called for contact_id dispatch.
+        # but _is_primary_contact must NOT be called for entity_id dispatch.
         # We verify this indirectly: if it were called with is_primary=False the action would park.
 
     async def test_non_owner_with_primary_telegram_goes_through_rules(self) -> None:

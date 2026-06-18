@@ -242,8 +242,8 @@ class TestAC2ContextAwareRouting:
     async def test_personal_msg_context_resolves_via_entity_facts(self) -> None:
         """Resolution with msg_context now queries entity_facts (not contact_info).
 
-        Migration bead bu-tv67t: _resolve_contact_channel_identifier reads from
-        relationship.entity_facts via the contact's entity_id.  msg_context is no
+        Migration bead bu-km8xr: _resolve_entity_channel_identifier reads from
+        relationship.entity_facts keyed directly on entity_id.  msg_context is no
         longer used for DB-level ordering (entity_facts has no context column);
         context-mismatch enforcement happens downstream in the email guard.
 
@@ -256,14 +256,12 @@ class TestAC2ContextAwareRouting:
         pool = AsyncMock()
         conn = AsyncMock()
 
-        async def _two_step(query: str, *args, **kwargs):
-            if "public.contacts" in query:
-                return {"entity_id": entity_id}
+        async def _ef_fetchrow(query: str, *args, **kwargs):
             if "entity_facts" in query:
                 return {"object": PERSONAL_EMAIL}
             return None
 
-        conn.fetchrow = AsyncMock(side_effect=_two_step)
+        conn.fetchrow = AsyncMock(side_effect=_ef_fetchrow)
 
         @asynccontextmanager
         async def mock_acquire():
@@ -278,12 +276,12 @@ class TestAC2ContextAwareRouting:
         daemon._TELEGRAM_HANDLE_PREFIX = ButlerDaemon._TELEGRAM_HANDLE_PREFIX
         daemon._CHANNEL_TO_CONTACT_INFO_TYPE = ButlerDaemon._CHANNEL_TO_CONTACT_INFO_TYPE
         daemon.db = mock_db
-        daemon._resolve_contact_channel_identifier = (
-            ButlerDaemon._resolve_contact_channel_identifier.__get__(daemon)
+        daemon._resolve_entity_channel_identifier = (
+            ButlerDaemon._resolve_entity_channel_identifier.__get__(daemon)
         )
 
-        result = await daemon._resolve_contact_channel_identifier(
-            contact_id=OWNER_CONTACT_ID,
+        result = await daemon._resolve_entity_channel_identifier(
+            entity_id=entity_id,
             channel="email",
             msg_context="personal",
         )
