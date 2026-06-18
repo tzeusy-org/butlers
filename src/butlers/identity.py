@@ -63,6 +63,33 @@ def _telegram_prefixed_value(channel_value: str) -> str:
     return f"telegram:{bare}"
 
 
+def channel_value_for_storage(channel_type: str, channel_value: str) -> str:
+    """Return the canonical ``relationship.entity_facts`` storage form for a value.
+
+    Telegram channel handles are normalised to the ``telegram:<bare>`` form (any
+    pre-existing ``telegram:`` prefix is stripped and a leading ``@`` removed,
+    then the prefix is re-applied) so that storage, resolution
+    (``resolve_contact_by_channel``), and delivery
+    (``daemon._resolve_contact_channel_identifier``: ``LIKE 'telegram:%'``) all
+    agree on ONE format.  This is the write-side counterpart of the read-side
+    telegram-prefix fallback and mirrors the Phase 2 backfill (rel_028) and
+    ingress writer (:func:`assert_sender_channel_fact`).
+
+    Non-telegram channel values are returned unchanged.
+
+    Parameters
+    ----------
+    channel_type:
+        Source channel type (e.g. ``"telegram"``, ``"telegram_chat_id"``,
+        ``"email"``).
+    channel_value:
+        The raw identifier as entered/observed.
+    """
+    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        return _telegram_prefixed_value(channel_value)
+    return channel_value
+
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -724,6 +751,7 @@ __all__ = [
     "_telegram_username_candidates",
     "_TELEGRAM_USERNAME_CHANNEL_TYPES",
     "_telegram_prefixed_value",
+    "channel_value_for_storage",
     "_TELEGRAM_PREFIX_CHANNEL_TYPES",
     "_CHANNEL_TYPE_TO_PREDICATE",
 ]

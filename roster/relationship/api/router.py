@@ -37,6 +37,7 @@ from butlers.contact_info_write_guard import (
     assert_contact_info_writes_blocked,
 )
 from butlers.credential_store import assert_entity_info_secured
+from butlers.identity import channel_value_for_storage
 from butlers.tools.relationship._ef_channel_helpers import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
 )
@@ -2123,11 +2124,15 @@ async def create_contact_info(
             ),
         )
 
+    # Normalise telegram handles to the canonical ``telegram:<bare>`` storage
+    # form so storage, resolution, and delivery agree on one format (bu-oluyt.3).
+    stored_value = channel_value_for_storage(request.type, request.value)
+
     assert_result = await relationship_assert_fact(
         pool,
         entity_id,
         predicate,
-        request.value,
+        stored_value,
         src="relationship",
         object_kind="literal",
         primary=request.is_primary,
@@ -4512,6 +4517,31 @@ async def _assert_entity_exists(pool: object, entity_id: UUID) -> None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
 
+async def _entity_has_owner_role(pool: object, entity_id: UUID) -> bool:
+    """Return True if *entity_id* is the owner entity (``'owner' = ANY(roles)``).
+
+    Used by the owner self-identity exemption on the contact-fact write surface
+    (Phase 4 / RFC 0017 §2.3): a dashboard write whose subject is the owner
+    entity is the owner self-registering their own channel handle and must write
+    directly rather than parking in pending_actions.  Fails closed (returns
+    ``False`` on DB error) so a hiccup never silently grants the bypass.
+    """
+    try:
+        return bool(
+            await pool.fetchval(
+                """
+                SELECT 1 FROM public.entities
+                WHERE id = $1 AND 'owner' = ANY(COALESCE(roles, '{}'))
+                LIMIT 1
+                """,
+                entity_id,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("owner-role check failed for entity %s: %s", entity_id, exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # GET /entities/{entity_id}/notes
 # ---------------------------------------------------------------------------
@@ -5695,12 +5725,29 @@ async def add_entity_contact(
             },
         )
 
+    # Normalise telegram handles to the canonical ``telegram:<bare>`` storage form
+    # so storage, resolution, and delivery agree on one format (bu-oluyt.3 /
+    # Phase 5).  The ``has-*`` predicate alone cannot distinguish a telegram
+    # handle from another handle, so the caller passes the source channel_type.
+    stored_value = channel_value_for_storage(body.channel_type or "", body.value)
+
+    # Owner self-identity exemption (RFC 0017 §2.3 / Phase 4 bu-oluyt.4): this is
+    # the owner-authz-gated dashboard write surface, so a write whose SUBJECT is
+    # the owner entity is the owner self-registering their own channel handle.
+    # Apply the trusted ``owner-self`` source SERVER-SIDE (the API request body
+    # cannot spoof it — bu-vj46x) so the fact writes directly instead of parking
+    # in pending_actions.  Third-party claims about the owner arrive via other
+    # code paths (ingestion/MCP, src='relationship') and still park.
+    src = body.src
+    if await _entity_has_owner_role(pool, entity_id):
+        src = "owner-self"
+
     result = await relationship_assert_fact(
         pool,
         subject=entity_id,
         predicate=body.predicate,
-        object=body.value,
-        src=body.src,
+        object=stored_value,
+        src=src,
         object_kind="literal",
         conf=body.conf,
         verified=body.verified,

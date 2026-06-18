@@ -1266,6 +1266,13 @@ class AddContactRequest(BaseModel):
     verified: bool = False
     primary: bool | None = None
     conf: float = Field(default=1.0, ge=0.0, le=1.0)
+    channel_type: str | None = None
+    """Source channel type (e.g. ``"telegram"``, ``"email"``) when the caller
+    knows it.  Used to normalise the stored value to its canonical
+    ``entity_facts`` form — telegram handles are stored ``telegram:<bare>`` so
+    storage, resolution, and delivery agree on one format.  When omitted the
+    value is stored verbatim (the ``has-*`` predicate alone cannot distinguish a
+    telegram handle from a linkedin/twitter handle)."""
 
     @field_validator("src")
     @classmethod

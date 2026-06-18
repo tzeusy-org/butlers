@@ -33,6 +33,7 @@ from butlers.identity import (
     ResolvedContact,
     _telegram_username_candidates,
     build_identity_preamble,
+    channel_value_for_storage,
     create_temp_contact,
     resolve_contact_by_channel,
 )
@@ -614,6 +615,33 @@ class TestAssertSenderChannelFactPrefixesTelegram:
 # ---------------------------------------------------------------------------
 # Telegram username normalization — bu-c4f7f
 # ---------------------------------------------------------------------------
+
+
+class TestChannelValueForStorage:
+    """channel_value_for_storage normalises telegram channel values on WRITE.
+
+    This is the write-side counterpart of the read-side telegram-prefix fallback
+    in resolve_contact_by_channel, so that storage, resolution, and delivery all
+    agree on the canonical ``telegram:<bare>`` form (bu-oluyt.3 / Phase 5).
+    """
+
+    def test_telegram_username_is_prefixed_and_at_stripped(self) -> None:
+        assert channel_value_for_storage("telegram", "@Tzeusy") == "telegram:Tzeusy"
+
+    def test_telegram_numeric_chat_id_is_prefixed(self) -> None:
+        assert channel_value_for_storage("telegram_chat_id", "206570151") == "telegram:206570151"
+
+    def test_telegram_value_is_idempotent(self) -> None:
+        assert channel_value_for_storage("telegram", "telegram:206570151") == "telegram:206570151"
+
+    def test_email_is_unchanged(self) -> None:
+        assert channel_value_for_storage("email", "a@b.com") == "a@b.com"
+
+    def test_unknown_channel_type_is_unchanged(self) -> None:
+        # Empty string / non-telegram types pass through verbatim (the has-*
+        # predicate alone can't distinguish a telegram handle from another handle).
+        assert channel_value_for_storage("", "somehandle") == "somehandle"
+        assert channel_value_for_storage("linkedin", "in/jane") == "in/jane"
 
 
 class TestTelegramUsernameCandidates:

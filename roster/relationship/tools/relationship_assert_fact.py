@@ -935,8 +935,7 @@ async def assert_sender_channel_fact(
     # keyed identically.
     from butlers.identity import (
         _CHANNEL_TYPE_TO_PREDICATE,
-        _TELEGRAM_PREFIX_CHANNEL_TYPES,
-        _telegram_prefixed_value,
+        channel_value_for_storage,
     )
 
     predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
@@ -956,9 +955,7 @@ async def assert_sender_channel_fact(
     # to the read fallback (resolve_contact_by_channel's _telegram_prefixed_value)
     # — keeps recognition, delivery, and ingress dedup on ONE stored format and
     # removes the need for the read-side prefix tolerance bridge (PR #2465).
-    stored_value = channel_value
-    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
-        stored_value = _telegram_prefixed_value(channel_value)
+    stored_value = channel_value_for_storage(channel_type, channel_value)
 
     try:
         return await relationship_assert_fact(

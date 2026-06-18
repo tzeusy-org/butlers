@@ -6663,6 +6663,12 @@ export interface AddEntityContactRequest {
   verified?: boolean;
   primary?: boolean | null;
   conf?: number;
+  /** Source channel type (e.g. "telegram", "email") when known. Lets the
+   * backend normalise the stored value to its canonical entity_facts form —
+   * telegram handles are stored "telegram:<bare>" so storage, resolution, and
+   * delivery agree on one format. The "has-*" predicate alone cannot tell a
+   * telegram handle from a linkedin/twitter handle. */
+  channel_type?: string;
 }
 
 /**
