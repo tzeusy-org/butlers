@@ -87,6 +87,10 @@ from butlers.core.spawner_context import (
     fetch_system_prompt_override,
     store_session_episode,
 )
+from butlers.core.spawner_env import (
+    _build_env,  # noqa: F401 — re-export for test patches
+    _capture_pipeline_routing_context,  # noqa: F401 — re-export for test patches
+)
 from butlers.core.spawner_guardrails import (
     _check_degenerate_tool_loop,
     _check_token_budget,
@@ -288,72 +292,6 @@ def _estimate_worst_case_call_cost(
         )
         return None
     return cost
-
-
-def _capture_pipeline_routing_context() -> dict[str, Any] | None:
-    """Best-effort capture of switchboard routing context when available."""
-    from butlers.core.routing_context import _routing_ctx_var
-
-    payload = _routing_ctx_var.get()
-    if not isinstance(payload, dict) or not payload:
-        return None
-    return dict(payload)
-
-
-async def _build_env(
-    config: ButlerConfig,
-    module_credentials_env: dict[str, list[str]] | None = None,
-    credential_store: CredentialStore | None = None,
-) -> dict[str, str]:
-    """Build an explicit env dict for the runtime instance.
-
-    Includes a minimal runtime baseline (`PATH`) plus declared credentials.
-    This keeps runtime shebang resolution (for example ``#!/usr/bin/env node``)
-    working in spawned subprocesses without requiring machine-specific paths.
-
-    Other than `PATH`, only declared variables are included — undeclared env
-    vars do not leak through.  Includes butler-level required/optional vars
-    and module credential vars.
-
-    Runtime authentication is handled by CLI-level OAuth tokens (device-code
-    flow via the dashboard), not API keys.
-
-    When *credential_store* is provided, credentials are resolved from the
-    DB only via ``CredentialStore.resolve()`` (no env fallback).
-    When no store is provided (e.g. in unit tests without a DB pool),
-    resolution falls back directly to ``os.environ``.
-    """
-    env: dict[str, str] = {}
-
-    # Runtime baseline needed for CLI shebang resolution (e.g. /usr/bin/env node).
-    host_path = os.environ.get("PATH")
-    if host_path:
-        env["PATH"] = host_path
-
-    async def _resolve(key: str) -> str | None:
-        """Resolve a credential key: DB-first when store available, else env."""
-        if credential_store is not None:
-            return await credential_store.resolve(key)
-        return os.environ.get(key) or None
-
-    # Butler-level required + optional env vars
-    for var in config.env_required + config.env_optional:
-        value = await _resolve(var)
-        if value is not None:
-            env[var] = value
-
-    # Module credentials (DB-first passthrough to spawned instances)
-    if module_credentials_env:
-        for _module_name, cred_vars in module_credentials_env.items():
-            for var in cred_vars:
-                value = await _resolve(var)
-                if value is not None:
-                    env[var] = value
-
-    # Include traceparent for distributed tracing
-    env.update(get_traceparent_env())
-
-    return env
 
 
 def _derive_llm_provider(model: str | None) -> str:
