@@ -8,6 +8,10 @@ Merges sessions and notifications from all butler databases into a single
 time-ordered event stream using ``DatabaseManager.fan_out()``. Supports
 cursor-based pagination (``before`` timestamp + ``limit``) and filtering
 by butler and event type.
+
+Cross-butler fan-out reads go through the versioned read-model boundary in
+``butlers.api.read_models.timeline_v1`` rather than constructing ad-hoc SQL
+inline in this router.
 """
 
 from __future__ import annotations
@@ -20,6 +24,12 @@ from fastapi import APIRouter, Depends, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models.timeline import TimelineEvent, TimelineMeta, TimelineResponse
+from butlers.api.read_models.timeline_v1 import (
+    TimelineNotificationRow,
+    TimelineSessionRow,
+    query_timeline_notifications_single,
+    query_timeline_sessions_fan_out,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,50 +126,61 @@ def _derive_session_summary(prompt: str, *, trigger_source: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Event builders
+# Event builders — convert read-model DTOs to TimelineEvent response models
 # ---------------------------------------------------------------------------
 
 
-def _session_to_event(row, *, butler: str) -> TimelineEvent:
-    """Convert a session row to a TimelineEvent."""
-    success = row["success"]
-    event_type = "error" if success is False else "session"
-
-    summary = _derive_session_summary(row["prompt"] or "", trigger_source=row["trigger_source"])
+def _session_dto_to_event(dto: TimelineSessionRow) -> TimelineEvent:
+    """Convert a TimelineSessionRow DTO (timeline_v1) to a TimelineEvent."""
+    event_type = "error" if dto.success is False else "session"
+    summary = _derive_session_summary(dto.prompt or "", trigger_source=dto.trigger_source)
 
     return TimelineEvent(
-        id=row["id"],
+        id=dto.id,
         type=event_type,
-        butler=butler,
-        timestamp=row["started_at"],
+        butler=dto.butler or "",
+        timestamp=dto.started_at,
         summary=summary,
         data={
-            "trigger_source": row["trigger_source"],
-            "success": success,
-            "duration_ms": row["duration_ms"],
-            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+            "trigger_source": dto.trigger_source,
+            "success": dto.success,
+            "duration_ms": dto.duration_ms,
+            "completed_at": dto.completed_at.isoformat() if dto.completed_at else None,
         },
     )
 
 
-def _notification_to_event(row, *, butler: str) -> TimelineEvent:
-    """Convert a notification row to a TimelineEvent."""
-    message = row["message"] or ""
+def _notification_dto_to_event(dto: TimelineNotificationRow) -> TimelineEvent:
+    """Convert a TimelineNotificationRow DTO (timeline_v1) to a TimelineEvent."""
+    message = dto.message or ""
     summary = message[:120] + ("..." if len(message) > 120 else "")
 
     return TimelineEvent(
-        id=row["id"],
+        id=dto.id,
         type="notification",
-        butler=butler,
-        timestamp=row["created_at"],
+        butler=dto.source_butler,
+        timestamp=dto.created_at,
         summary=summary,
         data={
-            "channel": row["channel"],
-            "recipient": row["recipient"],
-            "status": row["status"],
-            "source_butler": row["source_butler"],
+            "channel": dto.channel,
+            "recipient": dto.recipient,
+            "status": dto.status,
+            "source_butler": dto.source_butler,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible shims for tests that import the old function names
+# ---------------------------------------------------------------------------
+
+
+def _session_to_event(row, *, butler: str) -> TimelineEvent:  # noqa: ANN001
+    """Legacy shim — raw asyncpg Record accepted.  New code: use :func:`_session_dto_to_event`."""
+    from butlers.api.read_models.timeline_v1 import _row_to_session  # noqa: PLC0415
+
+    dto = _row_to_session(row, butler=butler)
+    return _session_dto_to_event(dto)
 
 
 # ---------------------------------------------------------------------------
@@ -194,71 +215,35 @@ async def list_timeline(
     target_butlers = butler if butler else None
     events: list[TimelineEvent] = []
 
-    # --- Sessions ---
+    # --- Sessions — via versioned timeline read-model boundary (timeline_v1) ---
     if want_sessions:
-        conditions = []
-        args: list[object] = []
-        idx = 1
-
-        if before is not None:
-            conditions.append(f"started_at < ${idx}")
-            args.append(before)
-            idx += 1
-
-        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-
-        # Fetch more than limit to account for merging; we trim after merge
-        session_sql = (
-            f"SELECT id, prompt, trigger_source, success, started_at, "
-            f"completed_at, duration_ms "
-            f"FROM sessions{where} "
-            f"ORDER BY started_at DESC "
-            f"LIMIT {limit + 1}"
+        # Fetch more than limit per butler to account for merging; trim after merge
+        session_dtos = await query_timeline_sessions_fan_out(
+            db,
+            before=before,
+            limit=limit + 1,
+            butler_names=target_butlers,
         )
+        for dto in session_dtos:
+            ev = _session_dto_to_event(dto)
+            # If filtering by event_type, check the derived type
+            if event_type is not None and ev.type not in event_type:
+                continue
+            events.append(ev)
 
-        results = await db.fan_out(session_sql, tuple(args), butler_names=target_butlers)
-
-        for butler_name, rows in results.items():
-            for row in rows:
-                ev = _session_to_event(row, butler=butler_name)
-                # If filtering by event_type, check the derived type
-                if event_type is not None and ev.type not in event_type:
-                    continue
-                events.append(ev)
-
-    # --- Notifications ---
+    # --- Notifications — via versioned timeline read-model boundary (timeline_v1) ---
     if want_notifications:
-        conditions_n = []
-        args_n: list[object] = []
-        idx_n = 1
-
-        if before is not None:
-            conditions_n.append(f"created_at < ${idx_n}")
-            args_n.append(before)
-            idx_n += 1
-
-        if target_butlers is not None:
-            # Filter by source_butler matching any of the requested butlers
-            placeholders = ", ".join(f"${idx_n + i}" for i in range(len(target_butlers)))
-            conditions_n.append(f"source_butler IN ({placeholders})")
-            args_n.extend(target_butlers)
-            idx_n += len(target_butlers)
-
-        where_n = (" WHERE " + " AND ".join(conditions_n)) if conditions_n else ""
-
-        notif_sql = (
-            f"SELECT id, source_butler, channel, recipient, message, status, created_at "
-            f"FROM notifications{where_n} "
-            f"ORDER BY created_at DESC "
-            f"LIMIT {limit + 1}"
-        )
-
-        # Notifications live in the switchboard DB
+        # Notifications live in the switchboard DB (single-pool, not fan-out)
         try:
             pool = db.pool("switchboard")
-            rows = await pool.fetch(notif_sql, *args_n)
-            for row in rows:
-                events.append(_notification_to_event(row, butler=row["source_butler"]))
+            notif_dtos = await query_timeline_notifications_single(
+                pool,
+                before=before,
+                limit=limit + 1,
+                source_butlers=target_butlers,
+            )
+            for dto in notif_dtos:
+                events.append(_notification_dto_to_event(dto))
         except KeyError:
             # Switchboard DB is not configured in this deployment; benign — skip
             # notifications and return the rest of the timeline.

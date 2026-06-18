@@ -12,11 +12,15 @@ Provides two routers:
   - ``GET /api/butlers/{name}/sessions``
   - ``GET /api/butlers/{name}/sessions/{session_id}``
   - ``GET /api/butlers/{name}/analytics/latency-stats``
+
+Cross-butler reads (list + detail fan-outs) go through the versioned read-model
+boundary in ``butlers.api.read_models.sessions_v1`` rather than constructing
+ad-hoc SQL inline.  Butler-scoped single-pool queries also route through the
+same module's ``query_session_detail_single``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from typing import Literal
@@ -42,6 +46,15 @@ from butlers.api.models.session import (
     SessionKindBreakdown,
     SessionKindItem,
 )
+from butlers.api.read_models.sessions_v1 import (
+    SUMMARY_COLUMNS,
+    SessionDetailRow,
+    SessionSummaryRow,
+    query_session_detail_fan_out,
+    query_session_detail_single,
+    query_session_summaries_fan_out,
+    row_to_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +70,6 @@ def _get_db_manager() -> DatabaseManager:
 # ---------------------------------------------------------------------------
 # Shared SQL builder
 # ---------------------------------------------------------------------------
-
-_SUMMARY_COLUMNS = (
-    "id, prompt, trigger_source, request_id, success, started_at, completed_at, duration_ms, "
-    "model, complexity, input_tokens, output_tokens"
-)
-
-_DETAIL_COLUMNS = (
-    "id, prompt, trigger_source, result, tool_calls, duration_ms, trace_id, request_id, cost, "
-    "started_at, completed_at, success, error, model, input_tokens, output_tokens, "
-    "parent_session_id, complexity, resolution_source"
-)
 
 
 def _build_where(
@@ -140,57 +142,48 @@ def _resolve_success_filter(
     return success
 
 
-def _row_to_summary(row, *, butler: str | None = None) -> SessionSummary:
-    """Convert an asyncpg Record to a SessionSummary."""
+def _dto_to_summary(dto: SessionSummaryRow) -> SessionSummary:
+    """Convert a SessionSummaryRow DTO (sessions_v1) to a response model."""
     return SessionSummary(
-        id=row["id"],
-        butler=butler,
-        prompt=row["prompt"],
-        trigger_source=row["trigger_source"],
-        request_id=row["request_id"],
-        success=row["success"],
-        started_at=row["started_at"],
-        completed_at=row["completed_at"],
-        duration_ms=row["duration_ms"],
-        model=row["model"],
-        complexity=row["complexity"],
-        input_tokens=row["input_tokens"],
-        output_tokens=row["output_tokens"],
+        id=dto.id,
+        butler=dto.butler,
+        prompt=dto.prompt,
+        trigger_source=dto.trigger_source,
+        request_id=dto.request_id,
+        success=dto.success,
+        started_at=dto.started_at,
+        completed_at=dto.completed_at,
+        duration_ms=dto.duration_ms,
+        model=dto.model,
+        complexity=dto.complexity,
+        input_tokens=dto.input_tokens,
+        output_tokens=dto.output_tokens,
     )
 
 
-def _row_to_detail(row, *, butler: str | None = None) -> SessionDetail:
-    """Convert an asyncpg Record to a SessionDetail."""
-    # tool_calls and cost may be JSON strings or dicts depending on driver
-    tool_calls = row["tool_calls"]
-    if isinstance(tool_calls, str):
-        tool_calls = json.loads(tool_calls)
-
-    cost = row["cost"]
-    if isinstance(cost, str):
-        cost = json.loads(cost)
-
+def _dto_to_detail(dto: SessionDetailRow) -> SessionDetail:
+    """Convert a SessionDetailRow DTO (sessions_v1) to a response model."""
     return SessionDetail(
-        id=row["id"],
-        butler=butler,
-        prompt=row["prompt"],
-        trigger_source=row["trigger_source"],
-        result=row["result"],
-        tool_calls=tool_calls if tool_calls else [],
-        duration_ms=row["duration_ms"],
-        trace_id=row["trace_id"],
-        request_id=row["request_id"],
-        cost=cost,
-        started_at=row["started_at"],
-        completed_at=row["completed_at"],
-        success=row["success"],
-        error=row["error"],
-        model=row["model"],
-        input_tokens=row["input_tokens"],
-        output_tokens=row["output_tokens"],
-        parent_session_id=row["parent_session_id"],
-        complexity=row["complexity"],
-        resolution_source=row["resolution_source"],
+        id=dto.id,
+        butler=dto.butler,
+        prompt=dto.prompt,
+        trigger_source=dto.trigger_source,
+        result=dto.result,
+        tool_calls=dto.tool_calls,
+        duration_ms=dto.duration_ms,
+        trace_id=dto.trace_id,
+        request_id=dto.request_id,
+        cost=dto.cost,
+        started_at=dto.started_at,
+        completed_at=dto.completed_at,
+        success=dto.success,
+        error=dto.error,
+        model=dto.model,
+        input_tokens=dto.input_tokens,
+        output_tokens=dto.output_tokens,
+        parent_session_id=dto.parent_session_id,
+        complexity=dto.complexity,
+        resolution_source=dto.resolution_source,
     )
 
 
@@ -275,33 +268,20 @@ async def list_sessions(
         request_id=request_id,
     )
 
-    # Fan-out query across all (or filtered) butler DBs
-    count_sql = f"SELECT count(*) FROM sessions{where_clause}"
-    data_sql = f"SELECT {_SUMMARY_COLUMNS} FROM sessions{where_clause} ORDER BY started_at DESC"
-
     target_butlers = [butler] if butler else None
 
-    # Run count and data queries across butlers
-    count_results = await db.fan_out(count_sql, tuple(args), butler_names=target_butlers)
-    data_results = await db.fan_out(data_sql, tuple(args), butler_names=target_butlers)
+    # Fan out via the versioned sessions read-model boundary (sessions_v1)
+    result = await query_session_summaries_fan_out(
+        db, where_clause, tuple(args), butler_names=target_butlers
+    )
 
-    # Aggregate totals
-    total = sum(rows[0][0] if rows else 0 for rows in count_results.values())
-
-    # Merge all rows with butler name attached, sort by started_at DESC
-    all_sessions: list[SessionSummary] = []
-    for butler_name, rows in data_results.items():
-        for row in rows:
-            all_sessions.append(_row_to_summary(row, butler=butler_name))
-
-    all_sessions.sort(key=lambda s: s.started_at, reverse=True)
-
-    # Apply pagination on the merged result
-    page = all_sessions[offset : offset + limit]
+    # Sort merged rows descending and paginate
+    result.rows.sort(key=lambda s: s.started_at, reverse=True)
+    page = result.rows[offset : offset + limit]
 
     return PaginatedResponse[SessionSummary](
-        data=page,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+        data=[_dto_to_summary(dto) for dto in page],
+        meta=PaginationMeta(total=result.total, offset=offset, limit=limit),
     )
 
 
@@ -324,24 +304,14 @@ async def get_session(
     butler-scoped ``GET /api/butlers/{name}/sessions/{session_id}`` path,
     including best-effort process log and correction count.
     """
-    detail_results = await db.fan_out(
-        f"SELECT {_DETAIL_COLUMNS} FROM sessions WHERE id = $1",
-        (session_id,),
-    )
+    # Fan out via the versioned sessions read-model boundary (sessions_v1)
+    fan_out_result = await query_session_detail_fan_out(db, session_id)
 
-    owning_butler: str | None = None
-    row = None
-    for butler_name, rows in detail_results.items():
-        if rows:
-            owning_butler = butler_name
-            row = rows[0]
-            break
-
-    if row is None or owning_butler is None:
+    if fan_out_result.row is None or fan_out_result.butler is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    detail = _row_to_detail(row, butler=owning_butler)
-    await _attach_session_extras(detail, db.pool(owning_butler), session_id)
+    detail = _dto_to_detail(fan_out_result.row)
+    await _attach_session_extras(detail, db.pool(fan_out_result.butler), session_id)
 
     return ApiResponse[SessionDetail](data=detail)
 
@@ -401,9 +371,9 @@ async def list_butler_sessions(
     count_sql = f"SELECT count(*) FROM sessions{where_clause}"
     total = await pool.fetchval(count_sql, *args) or 0
 
-    # Data query
+    # Data query — columns from the versioned sessions read-model (sessions_v1)
     data_sql = (
-        f"SELECT {_SUMMARY_COLUMNS} FROM sessions{where_clause} "
+        f"SELECT {SUMMARY_COLUMNS} FROM sessions{where_clause} "
         f"ORDER BY started_at DESC "
         f"OFFSET ${idx} LIMIT ${idx + 1}"
     )
@@ -411,7 +381,7 @@ async def list_butler_sessions(
 
     rows = await pool.fetch(data_sql, *args)
 
-    sessions = [_row_to_summary(row, butler=name) for row in rows]
+    sessions = [_dto_to_summary(row_to_summary(row, butler=name)) for row in rows]
 
     return PaginatedResponse[SessionSummary](
         data=sessions,
@@ -442,15 +412,13 @@ async def get_butler_session(
             detail=f"Butler '{name}' database is not available",
         )
 
-    row = await pool.fetchrow(
-        f"SELECT {_DETAIL_COLUMNS} FROM sessions WHERE id = $1",
-        session_id,
-    )
+    # Route through the versioned sessions read-model boundary (sessions_v1)
+    single_result = await query_session_detail_single(pool, session_id, butler=name)
 
-    if row is None:
+    if single_result.row is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    detail = _row_to_detail(row, butler=name)
+    detail = _dto_to_detail(single_result.row)
     await _attach_session_extras(detail, pool, session_id)
 
     return ApiResponse[SessionDetail](data=detail)
