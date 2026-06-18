@@ -502,6 +502,98 @@ class TestOwnerCarveOut:
         )
         assert r1.action_id != r2.action_id
 
+    # ------------------------------------------------------------------
+    # Self-identity exemption (bu-oluyt.4)
+    # ------------------------------------------------------------------
+
+    async def test_owner_self_source_writes_directly(self, pool, owner_entity):
+        """Owner registering own handle with src='owner-self' bypasses pending_actions.
+
+        Acceptance criterion: owner self-registering a telegram/email/phone handle
+        writes the triple directly (no pending_actions) when src is a trusted
+        owner-self source.
+        """
+        from butlers.tools.relationship.relationship_assert_fact import _OWNER_SELF_SOURCES
+
+        assert "owner-self" in _OWNER_SELF_SOURCES
+
+        result = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="owner-self"
+        )
+
+        # Direct write: inserted outcome, fact_id present, no action
+        assert result.outcome == AssertOutcome.inserted
+        assert result.fact_id is not None
+        assert result.action_id is None
+
+        # Fact row exists in entity_facts
+        count = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM relationship.entity_facts
+            WHERE subject = $1 AND predicate = $2 AND object = $3 AND validity = 'active'
+            """,
+            owner_entity,
+            _PRED_HAS_EMAIL,
+            "owner@example.com",
+        )
+        assert count == 1
+
+        # No pending_actions row was created
+        pa_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM pending_actions WHERE (tool_args->>'subject')::uuid = $1",
+            owner_entity,
+        )
+        assert pa_count == 0
+
+    async def test_owner_bootstrap_source_writes_directly(self, pool, owner_entity):
+        """Owner handle seeded with src='owner-bootstrap' bypasses pending_actions.
+
+        Daemon startup path uses 'owner-bootstrap' to seed identity facts on first
+        boot — must write directly without requiring human approval.
+        """
+        result = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, "boot@example.com", src="owner-bootstrap"
+        )
+
+        assert result.outcome == AssertOutcome.inserted
+        assert result.fact_id is not None
+        assert result.action_id is None
+
+        row = await pool.fetchrow(
+            """
+            SELECT src FROM relationship.entity_facts
+            WHERE id = $1
+            """,
+            result.fact_id,
+        )
+        assert row is not None
+        assert row["src"] == "owner-bootstrap"
+
+    async def test_third_party_source_about_owner_still_parks(self, pool, owner_entity):
+        """Third-party assertions about the owner still route to pending_actions.
+
+        Acceptance criterion: src='relationship' (used by contact_info_add and
+        reconciler jobs) does NOT get the self-identity exemption — owner writes
+        from untrusted paths still require human approval.
+        """
+        result = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="relationship"
+        )
+
+        assert result.outcome == AssertOutcome.pending_approval
+        assert result.fact_id is None
+        assert result.action_id is not None
+
+        # No fact row written
+        count = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM relationship.entity_facts
+            WHERE subject = $1 AND validity = 'active'
+            """,
+            owner_entity,
+        )
+        assert count == 0
+
 
 # ---------------------------------------------------------------------------
 # Tests: Transaction safety (caller-supplied conn)

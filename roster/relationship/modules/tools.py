@@ -1015,7 +1015,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         subject: uuid.UUID,
         predicate: str,
         object: str,
-        src: str,
         object_kind: str = "literal",
         conf: float = 1.0,
         last_seen: datetime | None = None,
@@ -1036,7 +1035,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
                 relationship.entity_predicate_registry, e.g. 'has-email', 'knows').
             object: Object value — a literal string for contact predicates or
                 an entity UUID as text for relational predicates.
-            src: Authoring butler slug (e.g. 'relationship', 'migration').
             object_kind: 'literal' (default) or 'entity'.
             conf: Confidence in [0.0, 1.0] (default 1.0).
             last_seen: Timestamp of the most recent observation (nullable).
@@ -1051,13 +1049,20 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         Owner carve-out (RFC 0017 §2.3): when subject resolves to the owner
         entity, a pending_actions row is created for approval instead of
         writing the triple directly.
+
+        Security note: ``src`` is intentionally NOT exposed as a parameter here.
+        It is hardcoded to ``"relationship"`` (the untrusted LLM-session default)
+        to prevent privilege escalation via trusted-source spoofing (bu-vj46x).
+        Trusted sources (``owner-self``, ``owner-bootstrap``) are reachable ONLY
+        from internal daemon/bootstrap code that calls the underlying
+        :func:`relationship_assert_fact` library function directly.
         """
         result = await _raf.relationship_assert_fact(
             module._get_pool(),
             subject,
             predicate,
             object,
-            src=src,
+            src="relationship",
             object_kind=object_kind,
             conf=conf,
             last_seen=last_seen,

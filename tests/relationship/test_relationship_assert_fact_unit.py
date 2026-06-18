@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +18,25 @@ from butlers.tools.relationship.relationship_assert_fact import (
     _upsert_fact,
     contact_info_type_to_predicate,
 )
+
+# ---------------------------------------------------------------------------
+# Lazy loader for roster/relationship/api/models (not on sys.path; loaded
+# once per session via importlib so no __init__.py is needed).
+# ---------------------------------------------------------------------------
+
+
+def _load_relationship_api_models():  # noqa: ANN201
+    """Return the roster/relationship/api/models module (loaded on demand)."""
+    module_name = "relationship_api_models"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    models_path = Path(__file__).parents[2] / "roster" / "relationship" / "api" / "models.py"
+    spec = importlib.util.spec_from_file_location(module_name, models_path)
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -52,7 +74,8 @@ def test_contact_info_type_to_predicate_known_types() -> None:
 def test_contact_info_type_to_predicate_unmapped_returns_none() -> None:
     """Types with no predicate home return None (callers must skip the triple write)."""
     unmapped = [
-        "telegram_chat_id",  # group/channel routing key
+        # "telegram_chat_id" was moved HERE before RFC 0004 Amendment 3
+        # (PR #2471) mapped it to has-handle.  Use a genuinely unmapped type.
         "google_health",  # OAuth routing/credential identifier
         "home_assistant_url",  # service URL, not a contact channel
         "address",
@@ -292,3 +315,221 @@ async def test_owner_carveout_inserts_with_caller_supplied_why() -> None:
     #  requested_at, expires_at, why, evidence)
     assert insert_params[8] == caller_why
     assert insert_params[9] == caller_evidence
+
+
+# ---------------------------------------------------------------------------
+# Security regression: owner-self carve-out src non-spoofable (bu-vj46x)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_mcp_tool_wrapper_has_no_src_parameter() -> None:
+    """The MCP tool wrapper must NOT expose ``src`` as a public parameter.
+
+    Removing ``src`` from the tool signature is the primary enforcement layer
+    that prevents LLM sessions from supplying a trusted source and bypassing
+    the owner carve-out gate (bu-vj46x).
+
+    This test inspects the wrapper function's signature directly.  If ``src``
+    reappears (e.g. after a merge conflict), the test fails immediately.
+    """
+    # Import the module that registers MCP tools; locate the wrapper by name.
+    # The tools module must be importable (it is under src/butlers via the
+    # module loader) through the standard module discovery path.
+    # We use a lazy importlib load that mirrors what conftest does so that
+    # this test remains isolated and does not depend on module registration
+    # order.
+    module_name = "relationship_mcp_tools_wrapper"
+    if module_name not in sys.modules:
+        tools_path = Path(__file__).parents[2] / "roster" / "relationship" / "modules" / "tools.py"
+        spec = importlib.util.spec_from_file_location(module_name, tools_path)
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        sys.modules[module_name] = mod
+        try:
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        except Exception:
+            # The module performs DB/pool setup on exec which may fail in unit
+            # tests.  We only need the source text, so fall back to a raw
+            # source inspection if exec fails.
+            del sys.modules[module_name]
+            source = tools_path.read_text()
+            assert "src: str" not in source or "src=.relationship." in source, (
+                "relationship MCP tools wrapper unexpectedly exposes 'src' as a "
+                "free-form str parameter — this allows LLM sessions to supply "
+                "trusted source values and bypass the owner carve-out gate."
+            )
+            return
+
+    # If exec succeeded, check the signature of the inner wrapper function.
+    # The function is nested inside register_tools(); we can still inspect
+    # the source for the signature contract.
+    tools_path = Path(__file__).parents[2] / "roster" / "relationship" / "modules" / "tools.py"
+    source = tools_path.read_text()
+
+    # The wrapper must NOT have 'src: str' in the relationship_assert_fact
+    # tool function block.  A hardcoded src="relationship" assignment is
+    # expected at the call site instead.
+    assert 'src="relationship"' in source, (
+        "Expected hardcoded src='relationship' in relationship MCP tools wrapper "
+        "but it was not found — the security fix (bu-vj46x) may have been reverted."
+    )
+    # Grep for a 'src: str' parameter declaration in the tool definition block.
+    # We look for the pattern within 20 lines of the def to avoid false positives
+    # from other tools (e.g. relationship_lookup which legitimately has no src).
+    lines = source.splitlines()
+    in_raf_tool = False
+    for i, line in enumerate(lines):
+        if "async def relationship_assert_fact(" in line:
+            in_raf_tool = True
+            tool_start = i
+        if in_raf_tool and i > tool_start and "async def " in line:
+            # Entered the next tool definition — stop scanning.
+            break
+        if in_raf_tool and "src: str" in line:
+            pytest.fail(
+                "relationship_assert_fact MCP tool wrapper exposes 'src: str' "
+                "as a public parameter at line "
+                f"{i + 1}: {line.strip()!r}\n"
+                "This allows LLM sessions to pass src='owner-self' and bypass "
+                "the owner carve-out gate (bu-vj46x)."
+            )
+
+
+@pytest.mark.unit
+def test_add_contact_request_rejects_owner_self_src() -> None:
+    """AddContactRequest must raise ValidationError when src='owner-self'.
+
+    Trusted source strings are reserved for internal daemon code paths and
+    must never be accepted from HTTP callers (bu-vj46x).
+    """
+    from pydantic import ValidationError
+
+    models = _load_relationship_api_models()
+    AddContactRequest = models.AddContactRequest
+
+    with pytest.raises(ValidationError) as exc_info:
+        AddContactRequest(predicate="has-email", value="attacker@evil.com", src="owner-self")
+
+    errors = exc_info.value.errors()
+    assert any(e["loc"] == ("src",) for e in errors), (
+        "Expected validation error on 'src' field, got: " + str([e["loc"] for e in errors])
+    )
+    assert any("reserved internal source" in str(e["msg"]) for e in errors), (
+        "Expected 'reserved internal source' in error message, got: "
+        + str([e["msg"] for e in errors])
+    )
+
+
+@pytest.mark.unit
+def test_add_contact_request_rejects_owner_bootstrap_src() -> None:
+    """AddContactRequest must raise ValidationError when src='owner-bootstrap'.
+
+    Trusted source strings are reserved for internal daemon code paths and
+    must never be accepted from HTTP callers (bu-vj46x).
+    """
+    from pydantic import ValidationError
+
+    models = _load_relationship_api_models()
+    AddContactRequest = models.AddContactRequest
+
+    with pytest.raises(ValidationError) as exc_info:
+        AddContactRequest(predicate="has-phone", value="+10000000000", src="owner-bootstrap")
+
+    errors = exc_info.value.errors()
+    assert any(e["loc"] == ("src",) for e in errors)
+
+
+@pytest.mark.unit
+def test_update_contact_request_rejects_owner_self_src() -> None:
+    """UpdateContactRequest must raise ValidationError when src='owner-self'.
+
+    Both the add and update request models gate the API surface (bu-vj46x).
+    """
+    from pydantic import ValidationError
+
+    models = _load_relationship_api_models()
+    UpdateContactRequest = models.UpdateContactRequest
+
+    with pytest.raises(ValidationError) as exc_info:
+        UpdateContactRequest(new_value="attacker@evil.com", src="owner-self")
+
+    errors = exc_info.value.errors()
+    assert any(e["loc"] == ("src",) for e in errors)
+
+
+@pytest.mark.unit
+def test_update_contact_request_rejects_owner_bootstrap_src() -> None:
+    """UpdateContactRequest must raise ValidationError when src='owner-bootstrap'.
+
+    Both the add and update request models gate the API surface (bu-vj46x).
+    """
+    from pydantic import ValidationError
+
+    models = _load_relationship_api_models()
+    UpdateContactRequest = models.UpdateContactRequest
+
+    with pytest.raises(ValidationError) as exc_info:
+        UpdateContactRequest(new_value="+10000000000", src="owner-bootstrap")
+
+    errors = exc_info.value.errors()
+    assert any(e["loc"] == ("src",) for e in errors)
+
+
+@pytest.mark.unit
+def test_add_contact_request_accepts_untrusted_custom_src() -> None:
+    """AddContactRequest must accept any non-reserved src value.
+
+    Validation must only block the specific reserved strings, not all custom
+    sources (bu-vj46x — guard is targeted, not a blanket block).
+    """
+    models = _load_relationship_api_models()
+    AddContactRequest = models.AddContactRequest
+
+    # These should all succeed without raising.
+    for src_value in ("relationship", "reconciler", "import", "user-provided", ""):
+        req = AddContactRequest(predicate="has-email", value="x@example.com", src=src_value)
+        assert req.src == src_value
+
+
+@pytest.mark.unit
+async def test_owner_entity_with_non_trusted_src_parks_to_pending() -> None:
+    """When src is NOT in _OWNER_SELF_SOURCES and subject is owner, assert parks.
+
+    This covers the MCP tool path: since the wrapper hardcodes src='relationship',
+    owner-entity assertions from LLM sessions always go to pending_approval — the
+    carve-out bypass is unreachable via MCP regardless of what the LLM requests.
+    """
+    subject_id = uuid.uuid4()
+
+    conn = AsyncMock()
+    # fetchval sequence: predicate-registered=True, dedup-probe-miss=None.
+    conn.fetchval = AsyncMock(side_effect=[True, None])
+    conn.fetchrow = AsyncMock(return_value={"roles": ["owner"]})
+    conn.execute = AsyncMock()
+
+    result = await _assert_on_conn(
+        conn,
+        subject=subject_id,
+        predicate=_PRED_HAS_EMAIL,
+        object="owner@example.com",
+        object_kind="literal",
+        src="relationship",  # The value MCP tool hardcodes — NOT a trusted source.
+        conf=1.0,
+        last_seen=None,
+        observed_at=datetime.now(UTC),
+        weight=None,
+        verified=False,
+        primary=None,
+        wrap_transaction=False,
+        why=None,
+        evidence=None,
+    )
+
+    # With src='relationship' (not in _OWNER_SELF_SOURCES), the owner carve-out
+    # gate fires and the write parks to pending_approval.
+    assert result.outcome == AssertOutcome.pending_approval, (
+        f"Expected pending_approval but got {result.outcome!r} — "
+        "an LLM session's write to owner entity should always park, never bypass."
+    )
+    assert result.fact_id is None
+    assert result.action_id is not None

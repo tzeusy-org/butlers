@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Label(BaseModel):
@@ -1229,6 +1229,11 @@ class AddContactRequest(BaseModel):
     ``verified`` defaults to False.
     ``primary`` is optional; used to mark one entry as the primary of its kind.
     ``conf`` defaults to 1.0.
+
+    Security: ``src`` values in the trusted owner-self set (``owner-self``,
+    ``owner-bootstrap``) are rejected with a validation error — those source
+    strings are reserved for internal daemon/bootstrap code paths and must not
+    be reachable from external HTTP callers (bu-vj46x).
     """
 
     predicate: str
@@ -1237,6 +1242,17 @@ class AddContactRequest(BaseModel):
     verified: bool = False
     primary: bool | None = None
     conf: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @field_validator("src")
+    @classmethod
+    def src_not_trusted_internal(cls, v: str) -> str:
+        _RESERVED_SOURCES = frozenset({"owner-self", "owner-bootstrap"})
+        if v in _RESERVED_SOURCES:
+            raise ValueError(
+                f"src={v!r} is a reserved internal source and cannot be set via the API. "
+                "Trusted owner-self sources are reachable only from internal daemon code paths."
+            )
+        return v
 
 
 class AddContactResponse(BaseModel):
@@ -1318,6 +1334,11 @@ class UpdateContactRequest(BaseModel):
     optional and default to the same values used by the add endpoint when omitted.
 
     The predicate is fixed by the URL path — the edit changes only the value.
+
+    Security: ``src`` values in the trusted owner-self set (``owner-self``,
+    ``owner-bootstrap``) are rejected with a validation error — those source
+    strings are reserved for internal daemon/bootstrap code paths and must not
+    be reachable from external HTTP callers (bu-vj46x).
     """
 
     new_value: str
@@ -1325,6 +1346,17 @@ class UpdateContactRequest(BaseModel):
     verified: bool = False
     primary: bool | None = None
     conf: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @field_validator("src")
+    @classmethod
+    def src_not_trusted_internal(cls, v: str) -> str:
+        _RESERVED_SOURCES = frozenset({"owner-self", "owner-bootstrap"})
+        if v in _RESERVED_SOURCES:
+            raise ValueError(
+                f"src={v!r} is a reserved internal source and cannot be set via the API. "
+                "Trusted owner-self sources are reachable only from internal daemon code paths."
+            )
+        return v
 
 
 class UpdateContactResponse(BaseModel):

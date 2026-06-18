@@ -26,6 +26,18 @@ Contract (Amendment 14 + spec §"Requirement: Central writer"):
    whose ``roles`` array contains ``'owner'``, the mutation is NOT written
    directly.  Instead, a ``pending_actions`` row is created for human approval,
    mirroring ``contact_info.py::contact_info_add``.
+
+   **Self-identity exemption (bu-oluyt.4)** — when ``src`` is a trusted
+   owner-self source (``"owner-bootstrap"`` or ``"owner-self"``), the owner is
+   registering their own channel handles.  These writes bypass ``pending_actions``
+   and go directly to ``entity_facts``.  Third-party assertions about the owner
+   (any other ``src``) still park for approval.
+
+   **Security (bu-vj46x)** — trusted sources are reachable ONLY from internal
+   daemon/bootstrap code paths.  The MCP tool wrapper removes ``src`` from its
+   public signature (hardcoded to ``"relationship"``), and the dashboard API
+   models reject trusted sources via a Pydantic field validator, so neither
+   LLM sessions nor HTTP callers can spoof them.
 """
 
 from __future__ import annotations
@@ -150,6 +162,39 @@ _PREDICATE_ALIAS_MAP: dict[str, str] = {
 
 _FAMILY_GATE_PREDICATES: frozenset[str] = frozenset({"parent-of", "child-of", "family-of"})
 _FAMILY_GATE_CONF: float = 0.8
+
+
+# ---------------------------------------------------------------------------
+# Owner self-identity sources (bu-oluyt.4)
+# ---------------------------------------------------------------------------
+#
+# When the *subject* is the owner entity, writes normally park in
+# ``pending_actions`` for human approval (RFC 0017 §2.3).  The exemption
+# below allows the owner to register their OWN identity handles (telegram
+# chat-id, email address, phone, etc.) WITHOUT approval by using a
+# *trusted source* that originates from daemon/tool code paths — not from
+# arbitrary LLM-generated input.
+#
+# Trusted sources:
+#   "owner-bootstrap"  — daemon startup path (_ensure_owner_entity /
+#                        lifecycle.run_startup) seeding identity facts on
+#                        first boot.
+#   "owner-self"       — owner-setup tools where the owner is explicitly
+#                        entering their own channel identifiers.
+#
+# Security guarantee: these source strings MUST be set only by internal code
+# paths (daemon startup, owner-setup tools).  They are NOT safe to propagate
+# from untrusted external input — ``src`` is a free-form string at the library
+# level, so caller discipline is the only gate.  Enforcement layers (bu-vj46x):
+#   • MCP tool wrapper — ``src`` is removed from the tool signature and
+#     hardcoded to ``"relationship"`` inside the wrapper so an LLM session can
+#     never supply a trusted source.
+#   • Dashboard API models — ``AddContactRequest`` and ``UpdateContactRequest``
+#     reject ``owner-self`` / ``owner-bootstrap`` via a Pydantic field validator
+#     so an HTTP caller cannot supply a trusted source.
+# Any write whose ``src`` is NOT in this set still goes through the normal
+# pending_actions gate.
+_OWNER_SELF_SOURCES: frozenset[str] = frozenset({"owner-bootstrap", "owner-self"})
 
 
 def contact_info_type_to_predicate(ci_type: str) -> str | None:
@@ -536,7 +581,11 @@ async def _assert_on_conn(
     await _validate_predicate(conn, predicate)
 
     # Owner carve-out (RFC 0017 §2.3).
-    if await _is_owner_entity(conn, subject):
+    # Exception: when *src* is a trusted owner-self source (e.g. "owner-bootstrap"
+    # or "owner-self"), the owner is registering their own identity handles.
+    # These writes bypass pending_actions and go directly to entity_facts.
+    # Third-party writes about the owner (any other src) still park for approval.
+    if await _is_owner_entity(conn, subject) and src not in _OWNER_SELF_SOURCES:
         tool_args: dict[str, Any] = {
             "subject": str(subject),
             "predicate": predicate,
