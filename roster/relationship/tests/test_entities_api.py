@@ -810,6 +810,103 @@ class TestEntityContacts:
         assert resp.status_code == 400
 
 
+class TestEntityContactsTelegramAndOwnerSelf:
+    """POST /entities/{id}/contacts — telegram prefixing + owner self-identity (bu-oluyt.3).
+
+    Two write-side guarantees:
+    - a ``channel_type`` of telegram normalises the stored object to the canonical
+      ``telegram:<bare>`` form so the owner/contact is resolvable; and
+    - a write whose SUBJECT is the owner entity is the owner self-registering, so
+      the endpoint applies the trusted ``owner-self`` src SERVER-SIDE (the request
+      body cannot spoof it) and the fact writes directly instead of parking.
+    """
+
+    _WRITER_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
+
+    def _make_app(self, *, is_owner: bool) -> FastAPI:
+        """Wire an app for POST /entities/{id}/contacts.
+
+        fetchrow: [owner-gate row, post-write fact row]
+        fetchval: [entity-exists=1, is-owner-role]
+        """
+        owner_row = _make_owner_row()
+        fact_row = MagicMock()
+        _data = {
+            "id": uuid4(),
+            "predicate": "has-handle",
+            "object": "telegram:206570151",
+            "src": "owner-self" if is_owner else "relationship",
+            "conf": 1.0,
+            "last_seen": None,
+            "weight": None,
+            "verified": False,
+            "primary": True,
+        }
+        fact_row.__getitem__ = MagicMock(side_effect=lambda k: _data[k])
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, fact_row])
+        mock_pool.fetchval = AsyncMock(side_effect=[1, (1 if is_owner else None)])
+        return _wire_app(mock_pool)
+
+    def _writer_result(self) -> MagicMock:
+        r = MagicMock()
+        r.outcome = AssertOutcome("inserted")
+        r.fact_id = uuid4()
+        r.action_id = None
+        return r
+
+    async def test_telegram_channel_type_is_stored_prefixed(self):
+        """A telegram chat id is normalised to telegram:<bare> before the writer call."""
+        app = self._make_app(is_owner=False)
+        writer = AsyncMock(return_value=self._writer_result())
+        with patch(self._WRITER_PATCH, new=writer):
+            resp = await _post(
+                app,
+                _CONTACTS_PATH,
+                {
+                    "predicate": "has-handle",
+                    "value": "206570151",
+                    "channel_type": "telegram_chat_id",
+                },
+            )
+        assert resp.status_code == 201
+        assert writer.await_args.kwargs["object"] == "telegram:206570151"
+        # Non-owner subject keeps the default (untrusted) src — does NOT auto-bypass.
+        assert writer.await_args.kwargs["src"] == "relationship"
+
+    async def test_owner_subject_applies_owner_self_src(self):
+        """Owner self-registration writes directly via the trusted owner-self src."""
+        app = self._make_app(is_owner=True)
+        writer = AsyncMock(return_value=self._writer_result())
+        with patch(self._WRITER_PATCH, new=writer):
+            resp = await _post(
+                app,
+                _CONTACTS_PATH,
+                {
+                    "predicate": "has-handle",
+                    "value": "@Tzeusy",
+                    "channel_type": "telegram",
+                },
+            )
+        assert resp.status_code == 201
+        assert writer.await_args.kwargs["src"] == "owner-self"
+        assert writer.await_args.kwargs["object"] == "telegram:Tzeusy"
+
+    async def test_non_telegram_value_is_not_prefixed(self):
+        """A has-email value is stored verbatim (no telegram prefix)."""
+        app = self._make_app(is_owner=False)
+        writer = AsyncMock(return_value=self._writer_result())
+        with patch(self._WRITER_PATCH, new=writer):
+            resp = await _post(
+                app,
+                _CONTACTS_PATH,
+                {"predicate": "has-email", "value": "a@b.com", "channel_type": "email"},
+            )
+        assert resp.status_code == 201
+        assert writer.await_args.kwargs["object"] == "a@b.com"
+
+
 # ===========================================================================
 # §9.5 GET /entities/queue — curation queue
 # ===========================================================================

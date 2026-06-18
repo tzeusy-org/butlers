@@ -151,6 +151,35 @@ async def test_create_contact_info_asserts_triple(router_mod, monkeypatch):
     assert result.value == "alice@example.com"
 
 
+async def test_create_contact_info_telegram_is_stored_prefixed(router_mod, monkeypatch):
+    """A telegram channel value is normalised to telegram:<bare> before the writer call.
+
+    Matches the canonical storage format (bu-oluyt.3 / Phase 5) so storage,
+    resolution, and delivery agree.
+    """
+    contact_id = uuid.uuid4()
+    entity_id = uuid.uuid4()
+    pool = _make_pool(entity_id=entity_id)
+    monkeypatch.setattr(router_mod, "_pool", lambda db: pool)
+
+    async def _noop_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(router_mod, "emit_dashboard_audit", _noop_audit)
+
+    mock_assert = AsyncMock(return_value=_result("inserted", fact_id=uuid.uuid4()))
+    monkeypatch.setattr(_raf_module(), "relationship_assert_fact", mock_assert)
+
+    req = router_mod.CreateContactInfoRequest(
+        type="telegram", value="@Tzeusy", is_primary=True, secured=False
+    )
+    await router_mod.create_contact_info(contact_id, MagicMock(), req, MagicMock())
+
+    call = mock_assert.call_args
+    assert call.args[2] == "has-handle"  # predicate
+    assert call.args[3] == "telegram:Tzeusy"  # canonical prefixed object
+
+
 async def test_create_contact_info_secured_writes_to_entity_info(router_mod, monkeypatch):
     """Secured rows (bu-pl8fy) are written to public.entity_info, not rejected.
 

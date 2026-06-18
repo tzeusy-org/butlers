@@ -6,9 +6,15 @@
  * to fill them in via an inline dialog so that external syncs (e.g. Google
  * Contacts) can match the owner correctly instead of creating duplicates.
  *
- * An expandable "Credentials" section lets the user optionally set credentials
- * (Telegram API hash/ID/session, Home Assistant URL/token)
- * stored as entity_info entries.
+ * Non-secret channel handles (Telegram handle + chat ID) are written to the
+ * relationship graph as has-handle contact facts (entity_facts) so the owner
+ * becomes resolvable via resolve_contact_by_channel — telegram values are
+ * stored in the canonical "telegram:<bare>" form by the backend. ONLY secured
+ * credentials (Telegram API hash/ID, Home Assistant token) and whitelisted
+ * technical config (Home Assistant URL) go to the entity_info secret store.
+ *
+ * An expandable "Credentials" section lets the user optionally set those
+ * credentials.
  */
 
 import { useState } from "react";
@@ -16,6 +22,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 import type { EntityDetail } from "@/api/types";
+import { useAddEntityContact, useEntityLinkedContacts } from "@/hooks/use-entities";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -37,13 +44,14 @@ interface OwnerSetupBannerProps {
   entity: EntityDetail;
 }
 
-function hasInfoType(entity: EntityDetail, type: string): boolean {
-  return (entity.entity_info ?? []).some((e) => e.type === type);
-}
-
 export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   const createInfo = useCreateEntityInfo();
   const updateEntity = useUpdateEntity();
+  const addEntityContact = useAddEntityContact();
+  // Telegram handles now live as has-handle contact facts (entity_facts), not
+  // entity_info, so presence is detected from the entity's linked-contact
+  // channels rather than entity.entity_info.
+  const linkedContacts = useEntityLinkedContacts(entity.id);
 
   const [open, setOpen] = useState(false);
   const [canonicalName, setCanonicalName] = useState("");
@@ -65,8 +73,15 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   const nameIsPlaceholder =
     !entity.canonical_name?.trim() ||
     entity.canonical_name.trim().toLowerCase() === "owner";
-  const hasTelegram = hasInfoType(entity, "telegram");
-  const hasTelegramChatId = hasInfoType(entity, "telegram_chat_id");
+  // Telegram has-handle facts surface as type "telegram_user_id" with the
+  // "telegram:" prefix stripped from the display value. The deliverable chat ID
+  // is numeric; a username handle is non-numeric — distinguish on that.
+  const telegramValues = (linkedContacts.data ?? [])
+    .flatMap((c) => c.contact_info)
+    .filter((e) => e.type === "telegram_user_id" && e.value)
+    .map((e) => e.value!.trim());
+  const hasTelegramChatId = telegramValues.some((v) => /^\d+$/.test(v));
+  const hasTelegram = telegramValues.some((v) => !/^\d+$/.test(v));
 
   // Don't render if all core identity fields are configured
   if (!nameIsPlaceholder && hasTelegram && hasTelegramChatId) {
@@ -74,7 +89,8 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   }
 
   const entityId = entity.id;
-  const isSaving = createInfo.isPending || updateEntity.isPending;
+  const isSaving =
+    createInfo.isPending || updateEntity.isPending || addEntityContact.isPending;
 
   // Build a human-readable list of what's missing
   const missing: string[] = [];
@@ -116,22 +132,36 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
         );
       }
 
-      // --- Identity fields (entity_info) ---
+      // --- Identity channel facts (relationship.entity_facts) ---
+      // Non-secret telegram handles go to the graph as has-handle contact facts
+      // so the owner is resolvable via resolve_contact_by_channel. The backend
+      // applies the canonical "telegram:<bare>" storage prefix (from channel_type)
+      // and the owner self-identity exemption writes them directly (no approval).
 
       if (trimmedTelegram) {
         promises.push(
-          createInfo.mutateAsync({
+          addEntityContact.mutateAsync({
             entityId,
-            request: { type: "telegram", value: trimmedTelegram, is_primary: true },
+            request: {
+              predicate: "has-handle",
+              value: trimmedTelegram,
+              primary: true,
+              channel_type: "telegram",
+            },
           }),
         );
       }
 
       if (trimmedChatId) {
         promises.push(
-          createInfo.mutateAsync({
+          addEntityContact.mutateAsync({
             entityId,
-            request: { type: "telegram_chat_id", value: trimmedChatId, is_primary: true },
+            request: {
+              predicate: "has-handle",
+              value: trimmedChatId,
+              primary: true,
+              channel_type: "telegram_chat_id",
+            },
           }),
         );
       }

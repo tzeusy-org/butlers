@@ -528,6 +528,10 @@ function AddChannelInfoForm({
       predicate,
       value: trimmed,
       primary: isPrimary || null,
+      // Pass the channel type so the backend can normalise telegram handles to
+      // the canonical "telegram:<bare>" storage form (the has-* predicate alone
+      // can't distinguish telegram from other handles).
+      channel_type: type,
     };
     try {
       await addEntityContact.mutateAsync({ entityId, request });
