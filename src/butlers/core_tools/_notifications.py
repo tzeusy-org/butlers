@@ -602,8 +602,6 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     if pool is not None:
                         import datetime as _dt
 
-                        from butlers.modules.approvals.models import ActionStatus
-
                         action_id = uuid.uuid4()
                         now = _dt.datetime.now(_dt.UTC)
                         expires_at = now + _dt.timedelta(hours=72)
@@ -632,7 +630,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             ),
                             agent_summary,
                             get_current_runtime_session_id(),
-                            ActionStatus.PENDING.value,
+                            "pending",  # ActionStatus.PENDING — literal avoids approvals import
                             now,
                             expires_at,
                         )
@@ -729,7 +727,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             if channel == "email" and resolved_recipient is not None:
                 pool = daemon.db.pool if daemon.db is not None else None
                 if pool is not None:
-                    from butlers.modules.approvals.email_guard import (
+                    from butlers.core.approvals_hooks import (
                         check_email_recipient,
                     )
 

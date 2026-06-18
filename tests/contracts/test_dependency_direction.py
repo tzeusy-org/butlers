@@ -12,10 +12,12 @@ The module system is a plugin layer that sits ABOVE core. Modules "only add
 tools" (architecture.md). Core importing from modules inverts that direction,
 creating a hard coupling from core infrastructure to specific domain plugins.
 
-Current-compliance: the analysis below found 10 known violations where core or
-core_tools already imports from modules. Each is documented and allowlisted;
-follow-up issues have been filed (see PR body). The test FAILS on any NEW
-violation, guarding against further drift without making current CI red.
+All previously-known violations have been resolved via dependency inversion
+(bu-zn4vp): core now defines hook registries (core/memory_hooks.py,
+core/approvals_hooks.py, core/routing_context.py, core/channel_reactions.py)
+that modules register implementations into during on_startup. The allowlists
+below are kept as empty frozensets; this test now enforces the boundary cleanly
+with zero exceptions.
 
 Clean boundary (no current violations):
     modules.* must NOT import butlers.core.spawner (the LLM CLI spawning engine).
@@ -147,39 +149,12 @@ def _find_new_violations(
 # ---------------------------------------------------------------------------
 
 # core/* importing modules.*
-_CORE_IMPORTS_MODULES: frozenset[tuple[str, str]] = frozenset(
-    {
-        # corrections.py calls memory_forget() directly instead of accepting
-        # an injectable callable. Should be refactored to remove the upward import.
-        ("butlers/core/corrections.py", "butlers.modules.memory.tools.management"),
-        # spawner.py inline-imports memory tools to inject pre-session context
-        # (memory_context, embeddings, writing) before spawning the LLM CLI.
-        # Should be refactored to accept an optional async pre-session hook.
-        ("butlers/core/spawner.py", "butlers.modules.pipeline"),
-        ("butlers/core/spawner.py", "butlers.modules.memory.tools"),
-    }
-)
+# All violations resolved in bu-zn4vp via dependency inversion (hook registries).
+_CORE_IMPORTS_MODULES: frozenset[tuple[str, str]] = frozenset()
 
 # core_tools/* importing modules.*
-_CORE_TOOLS_IMPORTS_MODULES: frozenset[tuple[str, str]] = frozenset(
-    {
-        # _routing.py imports _routing_ctx_var from the pipeline module at the
-        # top level. Should be moved to a core-owned context variable.
-        ("butlers/core_tools/_routing.py", "butlers.modules.pipeline"),
-        # _routing.py inline-imports email_guard to apply approval checks before
-        # routing. Should accept an optional approval-gate hook instead.
-        ("butlers/core_tools/_routing.py", "butlers.modules.approvals.email_guard"),
-        # _notifications.py inline-imports approval guard to check email sends.
-        # Should accept an optional hook instead of knowing about the approvals module.
-        ("butlers/core_tools/_notifications.py", "butlers.modules.approvals.email_guard"),
-        ("butlers/core_tools/_notifications.py", "butlers.modules.approvals.models"),
-        # _switchboard.py inline-imports pipeline and telegram for MessagePipeline,
-        # _routing_ctx_var, and Telegram reaction constants.
-        # Should be refactored to use core-owned abstractions.
-        ("butlers/core_tools/_switchboard.py", "butlers.modules.pipeline"),
-        ("butlers/core_tools/_switchboard.py", "butlers.modules.telegram"),
-    }
-)
+# All violations resolved in bu-zn4vp via dependency inversion (hook registries).
+_CORE_TOOLS_IMPORTS_MODULES: frozenset[tuple[str, str]] = frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +188,8 @@ class TestDependencyDirection:
         plugin model: it couples core infrastructure to domain capabilities,
         making it impossible to run core independently of all modules.
 
-        Known violations (10 total across core + core_tools) are allowlisted
-        with follow-up issues filed. Any NEW violation fails this test.
+        All previously-known violations were resolved in bu-zn4vp. The allowlist
+        is now empty; any violation fails this test with no exceptions.
         """
         src = _src_dir()
         core_dir = src / "butlers" / "core"
@@ -239,7 +214,8 @@ class TestDependencyDirection:
         telegram), those modules become required even on butlers that never
         enable them, breaking opt-in composition.
 
-        Known violations are allowlisted; any NEW violation fails this test.
+        All previously-known violations were resolved in bu-zn4vp. Any new
+        violation fails this test with no exceptions.
         """
         src = _src_dir()
         core_tools_dir = src / "butlers" / "core_tools"

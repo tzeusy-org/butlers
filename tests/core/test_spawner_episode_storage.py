@@ -33,12 +33,29 @@ class TestStoreSessionEpisode:
     async def test_returns_true_on_success(self):
         """True returned on successful episode storage."""
         pool = AsyncMock()
-        with patch(
-            "butlers.modules.memory.tools.writing.memory_store_episode",
-            new_callable=AsyncMock,
-            return_value={"id": "abc"},
-        ):
-            result = await store_session_episode(pool, "my-butler", "session output text")
+        # The spawner.store_session_episode delegates to core.memory_hooks.store_session_episode.
+        # Register a hook that calls the writing module (patched) so the test exercises the
+        # end-to-end path without importing modules directly from spawner.
+        writing_mock = AsyncMock(return_value={"id": "abc"})
+        with patch("butlers.modules.memory.tools.writing.memory_store_episode", writing_mock):
+            # Wire the hook so store_session_episode's delegate can reach it
+            import butlers.core.memory_hooks as _hooks
+
+            async def _store_hook(pool, butler_name, session_output, session_id=None):
+                await writing_mock(
+                    pool,
+                    session_output,
+                    butler_name,
+                    session_id=str(session_id) if session_id is not None else None,
+                )
+                return True
+
+            orig = _hooks._memory_store_episode_hook
+            _hooks._memory_store_episode_hook = _store_hook
+            try:
+                result = await store_session_episode(pool, "my-butler", "session output text")
+            finally:
+                _hooks._memory_store_episode_hook = orig
 
         assert result is True
 
@@ -46,27 +63,32 @@ class TestStoreSessionEpisode:
         self, caplog: pytest.LogCaptureFixture
     ):
         """False on RuntimeError, None pool, whitespace output, or missing table (no traceback)."""
-        # RuntimeError → False
-        with patch(
-            "butlers.modules.memory.tools.writing.memory_store_episode",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("boom"),
-        ):
-            assert await store_session_episode(AsyncMock(), "my-butler", "session output") is False
+        import butlers.core.memory_hooks as _hooks
 
-        # pool=None → False
+        # RuntimeError → False (hook raises, spawner catches)
+        async def _raise_runtime(pool, butler_name, session_output, session_id=None):
+            raise RuntimeError("boom")
+
+        orig = _hooks._memory_store_episode_hook
+        _hooks._memory_store_episode_hook = _raise_runtime
+        try:
+            assert await store_session_episode(AsyncMock(), "my-butler", "session output") is False
+        finally:
+            _hooks._memory_store_episode_hook = orig
+
+        # pool=None → False (guard before hook call)
         assert await store_session_episode(None, "my-butler", "session output") is False
 
         # Missing table → False without traceback
-        with (
-            patch(
-                "butlers.modules.memory.tools.writing.memory_store_episode",
-                new_callable=AsyncMock,
-                side_effect=asyncpg.UndefinedTableError('relation "episodes" does not exist'),
-            ),
-            caplog.at_level(logging.WARNING, logger="butlers.core.spawner"),
-        ):
-            result = await store_session_episode(AsyncMock(), "my-butler", "session output")
+        async def _raise_table(pool, butler_name, session_output, session_id=None):
+            raise asyncpg.UndefinedTableError('relation "episodes" does not exist')
+
+        _hooks._memory_store_episode_hook = _raise_table
+        try:
+            with caplog.at_level(logging.WARNING, logger="butlers.core.spawner"):
+                result = await store_session_episode(AsyncMock(), "my-butler", "session output")
+        finally:
+            _hooks._memory_store_episode_hook = orig
         assert result is False
         record = next(r for r in caplog.records if "memory tables are missing" in r.getMessage())
         assert record.exc_info is None

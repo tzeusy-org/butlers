@@ -9,7 +9,6 @@ as a pluggable butler module conforming to the ``Module`` abstract base class.
 
 from __future__ import annotations
 
-import contextvars
 import hashlib
 import json
 import logging
@@ -25,7 +24,8 @@ from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field
 
 from butlers.core.model_routing import Complexity
-from butlers.core.utils import generate_uuid7_string
+from butlers.core.routing_context import _routing_ctx_var
+from butlers.core.utils import coerce_request_id as _coerce_request_id
 from butlers.modules.base import Module
 from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
@@ -37,14 +37,6 @@ logger = logging.getLogger(__name__)
 _ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECASE)
 _TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
 _TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
-
-# Per-task routing context for concurrent pipeline sessions.
-# Each asyncio task (pipeline.process() call) sets its own isolated copy,
-# preventing cross-contamination when max_concurrent_sessions > 1.
-_routing_ctx_var: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
-    "_routing_ctx_var", default=None
-)
-
 
 # ---------------------------------------------------------------------------
 # Conversation History Loading
@@ -843,18 +835,7 @@ class MessagePipeline:
 
     @staticmethod
     def _coerce_request_id(raw_request_id: Any) -> str:
-        if raw_request_id in (None, ""):
-            return generate_uuid7_string()
-        text = str(raw_request_id).strip()
-        if not text:
-            return generate_uuid7_string()
-        try:
-            parsed = UUID(text)
-        except ValueError:
-            return generate_uuid7_string()
-        if parsed.version != 7:
-            return generate_uuid7_string()
-        return str(parsed)
+        return _coerce_request_id(raw_request_id)
 
     @staticmethod
     def _string_or_none(value: Any) -> str | None:

@@ -19,6 +19,11 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.core.audit import write_audit_entry
+from butlers.core.channel_reactions import (
+    REACTION_FAILURE,
+    REACTION_IN_PROGRESS,
+    REACTION_SUCCESS,
+)
 from butlers.core.permissions import NOTIFY_PERMISSION, require_permission
 from butlers.modules.base import Module
 
@@ -28,9 +33,8 @@ TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Reaction lifecycle emoji keys (map to emoji via REACTION_TO_EMOJI).
-REACTION_IN_PROGRESS = ":eye"
-REACTION_SUCCESS = ":thumbsup"
-REACTION_FAILURE = ":space invader"
+# Constants are imported from butlers.core.channel_reactions; re-exported here
+# for backward compatibility with callers that import them from this module.
 
 REACTION_TO_EMOJI = {
     REACTION_IN_PROGRESS: "\U0001f440",

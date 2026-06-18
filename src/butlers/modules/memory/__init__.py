@@ -221,6 +221,55 @@ class MemoryModule(Module):
         if isinstance(config, MemoryModuleConfig):
             self._config = config
 
+        # Register memory hooks so core (spawner, corrections) can call
+        # memory operations without importing from modules directly
+        # (dependency inversion: core owns the interface, modules supply the impl).
+        from butlers.core.memory_hooks import (
+            register_memory_context,
+            register_memory_forget,
+            register_memory_store_episode,
+        )
+        from butlers.modules.memory.tools import context as _context
+        from butlers.modules.memory.tools import writing as _writing
+        from butlers.modules.memory.tools.management import memory_forget as _memory_forget
+
+        module = self
+
+        async def _context_hook(
+            pool: Any,
+            butler_name: str,
+            prompt: str,
+            *,
+            token_budget: int = 3000,
+        ) -> str | None:
+            import asyncio
+
+            embedding_engine = await asyncio.to_thread(module._get_embedding_engine)
+            result = await _context.memory_context(
+                pool, embedding_engine, prompt, butler_name, token_budget=token_budget
+            )
+            if isinstance(result, str) and result.strip():
+                return result
+            return None
+
+        async def _store_episode_hook(
+            pool: Any,
+            butler_name: str,
+            session_output: str,
+            session_id: Any = None,
+        ) -> bool:
+            await _writing.memory_store_episode(
+                pool,
+                session_output,
+                butler_name,
+                session_id=str(session_id) if session_id is not None else None,
+            )
+            return True
+
+        register_memory_context(_context_hook)
+        register_memory_store_episode(_store_episode_hook)
+        register_memory_forget(_memory_forget)
+
     async def on_shutdown(self) -> None:
         """Clear state references."""
         self._db = None

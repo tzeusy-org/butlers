@@ -502,6 +502,13 @@ class ApprovalsModule(Module):
         )
         self._db = db
 
+        # Register the email-guard hook so core_tools can call it without
+        # importing the approvals module directly (dependency inversion).
+        from butlers.core.approvals_hooks import register_email_guard
+        from butlers.modules.approvals.email_guard import check_email_recipient
+
+        register_email_guard(check_email_recipient)
+
     async def on_shutdown(self) -> None:
         """No persistent resources to clean up."""
         pass

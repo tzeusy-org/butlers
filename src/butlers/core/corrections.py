@@ -1225,4 +1225,4 @@ async def handle_action_reversal(
 # memory_forget import (imported here to allow patching in tests)
 # ---------------------------------------------------------------------------
 
-from butlers.modules.memory.tools.management import memory_forget  # noqa: E402
+from butlers.core.memory_hooks import memory_forget  # noqa: E402

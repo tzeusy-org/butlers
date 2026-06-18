@@ -673,10 +673,7 @@ async def fetch_general_timezone_instruction(
 
 def _capture_pipeline_routing_context() -> dict[str, Any] | None:
     """Best-effort capture of switchboard routing context when available."""
-    try:
-        from butlers.modules.pipeline import _routing_ctx_var
-    except Exception:
-        return None
+    from butlers.core.routing_context import _routing_ctx_var
 
     payload = _routing_ctx_var.get()
     if not isinstance(payload, dict) or not payload:
@@ -772,20 +769,9 @@ async def fetch_memory_context(
         return None
 
     try:
-        from butlers.modules.memory.tools import context as _context
-        from butlers.modules.memory.tools._helpers import get_embedding_engine
+        from butlers.core.memory_hooks import fetch_memory_context as _hook
 
-        embedding_engine = await asyncio.to_thread(get_embedding_engine)
-        context = await _context.memory_context(
-            pool,
-            embedding_engine,
-            prompt,
-            butler_name,
-            token_budget=token_budget,
-        )
-        if isinstance(context, str) and context.strip():
-            return context
-        return None
+        return await _hook(pool, butler_name, prompt, token_budget=token_budget)
     except Exception as exc:
         if _is_missing_memory_table_error(exc):
             _log_missing_memory_table_once(butler_name=butler_name, operation="context fetch")
@@ -970,15 +956,9 @@ async def store_session_episode(
         return False
 
     try:
-        from butlers.modules.memory.tools import writing as _writing
+        from butlers.core.memory_hooks import store_session_episode as _hook
 
-        await _writing.memory_store_episode(
-            pool,
-            session_output,
-            butler_name,
-            session_id=str(session_id) if session_id is not None else None,
-        )
-        return True
+        return await _hook(pool, butler_name, session_output, session_id)
     except Exception as exc:
         if _is_missing_memory_table_error(exc):
             _log_missing_memory_table_once(butler_name=butler_name, operation="episode storage")

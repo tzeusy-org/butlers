@@ -390,7 +390,30 @@ def _mock_switchboard_client() -> Any:
     return client
 
 
+@pytest.fixture(autouse=False)
+def register_email_guard_hook():
+    """Register the real approvals email guard so notify() enforces recipient validation.
+
+    The butler.toml fixture used by these tests does not enable the approvals module,
+    so ``on_startup`` never calls ``register_email_guard``.  This fixture registers the
+    real implementation directly against the hook slot, mirroring what the approvals
+    module's ``on_startup`` would do in production.  This preserves the fail-open
+    semantics for butlers that genuinely have no approvals module while keeping these
+    safety-contract tests hermetic.
+    """
+    import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.email_guard import (
+        check_email_recipient as _real_check,
+    )
+
+    orig = _hooks._email_guard_hook
+    _hooks._email_guard_hook = _real_check
+    yield
+    _hooks._email_guard_hook = orig
+
+
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("register_email_guard_hook")
 class TestNotifyRecipientValidation:
     """notify(channel='email') MUST validate recipients against public.contact_info."""
 
@@ -785,6 +808,7 @@ class TestMessengerApprovalGate:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("register_email_guard_hook")
 class TestIncidentReplay:
     """Replay the exact failure scenarios that occurred on 2026-03-12/14."""
 
@@ -909,6 +933,7 @@ def _temp_contact() -> ResolvedContact:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("register_email_guard_hook")
 class TestContactIdBypassFix:
     """Bug fix: notify(contact_id=...) must NOT skip the email validation guard.
 

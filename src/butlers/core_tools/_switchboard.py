@@ -23,7 +23,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     import importlib.util as _ilu
 
     from butlers.core.model_routing import Complexity
-    from butlers.modules.pipeline import MessagePipeline, _routing_ctx_var
+    from butlers.core.routing_context import _routing_ctx_var
+    from butlers.core.utils import coerce_request_id as _coerce_request_id
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
     from butlers.tools.switchboard.backfill.connector import backfill_progress as _backfill_progress
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
@@ -59,7 +60,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     asyncio.ensure_future(_global_policy_evaluator.ensure_loaded())
 
     async def _process_ingested_message(
-        pipeline: MessagePipeline,
+        pipeline: Any,
         request_id: str,
         message_text: str,
         source: dict[str, Any],
@@ -71,7 +72,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         """Background task: classify and route an ingested message."""
-        from butlers.modules.telegram import (
+        from butlers.core.channel_reactions import (
             REACTION_FAILURE,
             REACTION_IN_PROGRESS,
             REACTION_SUCCESS,
@@ -389,7 +390,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         raw_request_id = _routing_ctx.get("request_id")
         if raw_request_id in (None, "") and isinstance(request_context, dict):
             raw_request_id = request_context.get("request_id")
-        request_id = MessagePipeline._coerce_request_id(raw_request_id)
+        request_id = _coerce_request_id(raw_request_id)
         source_channel = str(
             request_context.get("source_channel")
             if isinstance(request_context, dict)

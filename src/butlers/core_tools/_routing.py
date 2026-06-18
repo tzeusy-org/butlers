@@ -28,11 +28,11 @@ from butlers.core.route_inbox import (
     route_inbox_mark_processed,
     route_inbox_mark_processing,
 )
+from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.spawner import Spawner
 from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
-from butlers.modules.pipeline import _routing_ctx_var
 from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
 
 logger = logging.getLogger(__name__)
@@ -776,7 +776,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 if email_target:
                     approval_pool = daemon.db.pool if daemon.db is not None else None
                     if approval_pool is not None:
-                        from butlers.modules.approvals.email_guard import check_email_recipient
+                        from butlers.core.approvals_hooks import check_email_recipient
 
                         gate_tool_name = (
                             "email_send_message" if intent == "send" else "email_reply_to_thread"
