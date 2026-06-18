@@ -402,6 +402,11 @@ async def init_db_manager(
                 cfg.db_schema or "default",
                 exc_info=True,
             )
+    # The API layer never calls Database.from_env() with a role parameter —
+    # schema isolation is enforced at the butler-daemon layer, not here.
+    # SET ROLE is therefore always disabled for API-managed pools; report that
+    # honest state on the health endpoint so operators can see it.
+    mgr.set_role_enforcement_disabled(True)
 
     configured_shared_db_name = shared_db_name_from_env()
     shared_db_env_override = os.environ.get("BUTLER_SHARED_DB_NAME")

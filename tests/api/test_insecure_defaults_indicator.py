@@ -23,11 +23,14 @@ Also tests the pure detection helpers directly:
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from butlers.api.app import create_app
+from butlers.api.db import DatabaseManager
 from butlers.db import has_insecure_infra_defaults, is_grafana_anon_outside_dev
 
 pytestmark = pytest.mark.unit
@@ -216,3 +219,102 @@ async def test_both_health_paths_expose_security_section(monkeypatch, path):
     assert "security" in body
     assert "insecure_infra_defaults" in body["security"]
     assert isinstance(body["security"]["insecure_infra_defaults"], bool)
+
+
+# ---------------------------------------------------------------------------
+# role_enforcement_disabled — DB role enforcement indicator (bu-zxxyo)
+# ---------------------------------------------------------------------------
+
+
+async def test_health_role_enforcement_disabled_true_when_db_manager_not_initialized():
+    """When DatabaseManager is not initialized, role_enforcement_disabled defaults True."""
+    app = _make_ready_app(api_key="")
+    # Patch get_db_manager to raise RuntimeError (no DB initialized — test isolation)
+    with patch("butlers.api.app.get_db_manager", side_effect=RuntimeError("not initialized")):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["security"]["role_enforcement_disabled"] is True
+
+
+async def test_health_role_enforcement_disabled_true_when_no_db_role():
+    """When DB manager has no role configured (dev posture), role_enforcement_disabled=True."""
+    app = _make_ready_app(api_key="")
+    mgr = DatabaseManager()
+    # No role is set on any pool — enforcement is disabled (default state).
+    assert mgr.role_enforcement_disabled is True
+    with patch("butlers.api.app.get_db_manager", return_value=mgr):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["security"]["role_enforcement_disabled"] is True
+
+
+async def test_health_role_enforcement_disabled_false_when_role_active():
+    """When DB manager reports role enforcement active, role_enforcement_disabled=False."""
+    app = _make_ready_app(api_key="")
+    mgr = DatabaseManager()
+    mgr.set_role_enforcement_disabled(False)
+    with patch("butlers.api.app.get_db_manager", return_value=mgr):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["security"]["role_enforcement_disabled"] is False
+
+
+async def test_health_security_section_includes_role_enforcement_field():
+    """The security section must include role_enforcement_disabled as a bool."""
+    app = _make_ready_app(api_key="")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "role_enforcement_disabled" in body["security"]
+    assert isinstance(body["security"]["role_enforcement_disabled"], bool)
+
+
+@pytest.mark.parametrize("path", ["/api/health", "/health"])
+async def test_both_health_paths_expose_role_enforcement_field(path):
+    """Both /api/health and /health must include the role_enforcement_disabled field."""
+    app = _make_ready_app(api_key="")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(path)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "security" in body
+    assert "role_enforcement_disabled" in body["security"]
+    assert isinstance(body["security"]["role_enforcement_disabled"], bool)
+
+
+def test_database_manager_role_enforcement_disabled_default():
+    """DatabaseManager defaults to role_enforcement_disabled=True (conservative)."""
+    mgr = DatabaseManager()
+    assert mgr.role_enforcement_disabled is True
+
+
+def test_database_manager_set_role_enforcement_disabled_false():
+    """set_role_enforcement_disabled(False) clears the flag."""
+    mgr = DatabaseManager()
+    mgr.set_role_enforcement_disabled(False)
+    assert mgr.role_enforcement_disabled is False
+
+
+def test_database_manager_set_role_enforcement_disabled_true():
+    """set_role_enforcement_disabled(True) keeps the flag set."""
+    mgr = DatabaseManager()
+    mgr.set_role_enforcement_disabled(False)
+    mgr.set_role_enforcement_disabled(True)
+    assert mgr.role_enforcement_disabled is True

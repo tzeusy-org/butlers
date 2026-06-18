@@ -332,6 +332,24 @@ class Database:
         self.pool: asyncpg.Pool | None = None
         self._role_verified: bool = False
 
+    @property
+    def role_enforcement_disabled(self) -> bool:
+        """Return True when SET ROLE enforcement is NOT active on this database.
+
+        Enforcement is disabled when:
+        - No role is configured (``self.role is None``), or
+        - The role exists check ran but the role was not found / verification failed
+          (``self._role_verified`` is False after ``connect()``).
+
+        Returns ``True`` by default before ``connect()`` is called, since
+        enforcement has not yet been established.  After ``connect()``, reflects
+        the actual outcome of role-existence verification.
+
+        Intended for the dashboard health surface — read after startup to report
+        whether schema isolation via SET ROLE is active.
+        """
+        return self.role is None or not self._role_verified
+
     def set_schema(self, schema: str | None) -> None:
         """Set schema context for runtime query resolution."""
         self.schema = _normalize_schema_name(schema)

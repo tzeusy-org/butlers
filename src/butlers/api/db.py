@@ -60,6 +60,11 @@ class DatabaseManager:
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
         self._butler_modules: dict[str, frozenset[str]] = {}
+        # role_enforcement_disabled: True when SET ROLE schema-isolation is NOT
+        # active for any butler database managed by this instance.  Starts True
+        # (conservative default — enforcement not yet confirmed) and may be
+        # updated via set_role_enforcement_disabled() during startup.
+        self._role_enforcement_disabled: bool = True
 
     async def _create_pool(
         self,
@@ -192,6 +197,27 @@ class DatabaseManager:
         if not self._butler_modules:
             return None
         return sorted(name for name, mods in self._butler_modules.items() if module_name in mods)
+
+    @property
+    def role_enforcement_disabled(self) -> bool:
+        """Return True when SET ROLE schema-isolation is NOT active.
+
+        True when no DB role has been verified for any butler managed by this
+        instance.  Starts True (conservative — enforcement not yet confirmed)
+        and is updated by ``set_role_enforcement_disabled()`` during startup
+        after role-existence verification.
+
+        Intended for the dashboard health surface.
+        """
+        return self._role_enforcement_disabled
+
+    def set_role_enforcement_disabled(self, disabled: bool) -> None:
+        """Set the role-enforcement-disabled flag.
+
+        Called during ``init_db_manager()`` after role verification to record
+        whether SET ROLE enforcement is active across the managed databases.
+        """
+        self._role_enforcement_disabled = disabled
 
     async def fan_out(
         self,

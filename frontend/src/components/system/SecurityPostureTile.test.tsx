@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// SecurityPostureTile tests -- bu-dl98i.1.4, bu-dl98i.6.3
+// SecurityPostureTile tests -- bu-dl98i.1.4, bu-dl98i.6.3, bu-zxxyo
 //
 // Coverage:
 //   - Loading state: skeleton rendered, no content
@@ -12,6 +12,9 @@
 //   - Infra defaults: insecure_infra_defaults=true shows "Insecure defaults active"
 //   - Infra defaults: insecure_infra_defaults=false shows "Hardened"
 //   - Infra defaults: absent security field defaults to insecure (honest default)
+//   - DB role enforcement: role_enforcement_disabled=true shows "Disabled (dev posture)"
+//   - DB role enforcement: role_enforcement_disabled=false shows "Active"
+//   - DB role enforcement: absent field defaults to insecure (honest default)
 //   - No secret material rendered (invariant)
 // ---------------------------------------------------------------------------
 
@@ -54,6 +57,7 @@ function makeHealthResponse(
     },
     security: {
       insecure_infra_defaults: false,
+      role_enforcement_disabled: false,
       ...securityOverrides,
     },
   }
@@ -210,7 +214,56 @@ describe("SecurityPostureTile -- infra defaults indicator", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 7. No secret material invariant
+// 7. DB role enforcement indicator (bu-zxxyo)
+// ---------------------------------------------------------------------------
+
+describe("SecurityPostureTile -- DB role enforcement indicator", () => {
+  it("shows 'Disabled (dev posture)' when role_enforcement_disabled=true", () => {
+    mockResult = {
+      isPending: false,
+      data: makeHealthResponse({}, { role_enforcement_disabled: true }),
+    }
+    expect(render()).toContain("Disabled (dev posture)")
+  })
+
+  it("shows 'Active' when role_enforcement_disabled=false", () => {
+    mockResult = {
+      isPending: false,
+      data: makeHealthResponse({}, { role_enforcement_disabled: false }),
+    }
+    expect(render()).toContain("Active")
+  })
+
+  it("defaults to insecure when security field is absent (honest default)", () => {
+    mockResult = {
+      isPending: false,
+      data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
+    }
+    // When security is absent, role_enforcement_disabled defaults to true → shows insecure label
+    expect(render()).toContain("Disabled (dev posture)")
+  })
+
+  it("renders the role enforcement row with correct testId", () => {
+    mockResult = {
+      isPending: false,
+      data: makeHealthResponse({}, { role_enforcement_disabled: false }),
+    }
+    expect(render()).toContain("posture-role-enforcement")
+  })
+
+  it("shows 'Active' badge when role enforcement is active", () => {
+    mockResult = {
+      isPending: false,
+      data: makeHealthResponse({}, { role_enforcement_disabled: false }),
+    }
+    const html = render()
+    expect(html).toContain("posture-role-enforcement")
+    expect(html).toContain("Active")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 9. No secret material invariant
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- no secret material", () => {
@@ -225,7 +278,7 @@ describe("SecurityPostureTile -- no secret material", () => {
         status: "ok",
         // auth and security fields are booleans; no path for the canary to sneak in
         auth: { api_key_auth_enabled: true, export_secret_insecure_default: false },
-        security: { insecure_infra_defaults: false },
+        security: { insecure_infra_defaults: false, role_enforcement_disabled: false },
       },
     }
     const html = render()

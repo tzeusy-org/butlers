@@ -212,6 +212,12 @@ export interface HealthSecurityPosture {
    * (or posture is dev, where anon is expected).
    */
   insecure_infra_defaults: boolean;
+  /**
+   * True when SET ROLE schema-isolation enforcement is NOT active for the managed database
+   * connections.  In dev posture this is expected (no DB role configured); clears only when
+   * all managed pools have an active, verified DB role enforcing schema isolation.
+   */
+  role_enforcement_disabled: boolean;
 }
 
 export interface HealthResponse {

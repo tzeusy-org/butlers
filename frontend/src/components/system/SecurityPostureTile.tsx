@@ -1,10 +1,11 @@
 // ---------------------------------------------------------------------------
 // SecurityPostureTile -- dashboard security-posture indicator
-// (bu-dl98i.1.4, bu-dl98i.6.3)
+// (bu-dl98i.1.4, bu-dl98i.6.3, bu-zxxyo)
 //
 // Data source: useHealthPosture -> GET /api/health
 // Fields used: auth.api_key_auth_enabled, auth.export_secret_insecure_default
 //              security.insecure_infra_defaults
+//              security.role_enforcement_disabled
 //
 // Displays boolean posture indicators only.  No secret values are ever
 // shown or transmitted; the backend enforces this at the source.
@@ -100,6 +101,8 @@ function PostureRow({ label, secure, secureLabel, insecureLabel, testId }: Postu
  *   - Export secret: whether DASHBOARD_EXPORT_SECRET is explicitly configured
  *   - Infra defaults: whether any infra credential is at its known default or
  *     Grafana anonymous access is enabled outside dev posture
+ *   - DB role enforcement: whether SET ROLE schema-isolation is active for
+ *     the managed database connections (disabled in dev posture)
  *
  * Values are booleans only — no secret material is displayed or fetched.
  */
@@ -140,6 +143,13 @@ export function SecurityPostureTile() {
             secureLabel="Hardened"
             insecureLabel="Insecure defaults active"
             testId="posture-infra-defaults"
+          />
+          <PostureRow
+            label="DB role enforcement"
+            secure={!(security?.role_enforcement_disabled ?? true)}
+            secureLabel="Active"
+            insecureLabel="Disabled (dev posture)"
+            testId="posture-role-enforcement"
           />
         </dl>
       </CardContent>
