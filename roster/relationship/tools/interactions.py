@@ -32,6 +32,15 @@ logger = logging.getLogger(__name__)
 
 _VALID_DIRECTIONS = ("incoming", "outgoing", "mutual")
 
+# interaction_log() writes predicate = f"interaction_{type}" at permanence='stable'.
+# These type strings are RESERVED because they conflict with episodic predicates that
+# must remain at volatile/ephemeral permanence (managed separately, not via interaction_log).
+# Passing a reserved type raises ValueError to prevent false-positive curation flags.
+#   'note'  → would write interaction_note at stable, which episodic-predicate curation
+#             flags as misplaced. interaction_note is an ephemeral annotation, not a
+#             structured interaction record.
+_RESERVED_INTERACTION_TYPES: frozenset[str] = frozenset({"note"})
+
 _embedding_engine: Any = None
 
 
@@ -135,6 +144,13 @@ async def interaction_log(
     """
     if direction is not None and direction not in _VALID_DIRECTIONS:
         raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
+    if type in _RESERVED_INTERACTION_TYPES:
+        raise ValueError(
+            f"interaction_log type '{type}' is reserved: 'interaction_{type}' is an episodic "
+            "predicate managed outside interaction_log (it must stay at volatile/ephemeral "
+            "permanence, but interaction_log always writes stable). "
+            f"Reserved types: {sorted(_RESERVED_INTERACTION_TYPES)}"
+        )
 
     from butlers.modules.memory.storage import store_fact
 

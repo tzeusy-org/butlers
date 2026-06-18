@@ -896,6 +896,26 @@ async def test_interaction_log_invalid_direction(pool):
         await interaction_log(pool, c["id"], "call", direction="sideways")
 
 
+async def test_interaction_log_reserved_type_note_rejected(pool):
+    """interaction_log rejects type='note' because 'interaction_note' is a reserved
+    episodic predicate that must stay at volatile/ephemeral permanence.
+    interaction_log always writes stable, so allowing type='note' would cause the
+    episodic-predicate curation job to generate false-positive reclassification flags.
+
+    Exact-match only: 'notebook' (prefix, not the same predicate) must not be rejected.
+    """
+    from butlers.tools.relationship import contact_create, interaction_log
+
+    c = await contact_create(pool, "Inter-NoteType")
+    with pytest.raises(ValueError, match="reserved"):
+        await interaction_log(pool, c["id"], "note")
+
+    # 'notebook' contains 'note' as a prefix but resolves to a distinct predicate
+    # (interaction_notebook); it must not be caught by the reserved-type guard.
+    result = await interaction_log(pool, c["id"], "notebook")
+    assert result["type"] == "notebook"
+
+
 async def test_interaction_log_backward_compat(pool):
     """interaction_log works without new fields (backward compat)."""
     from butlers.tools.relationship import contact_create, interaction_log

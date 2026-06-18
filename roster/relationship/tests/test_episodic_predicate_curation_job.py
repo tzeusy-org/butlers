@@ -231,10 +231,16 @@ async def _get_checkpoint(pool: asyncpg.Pool) -> str | None:
 
 def test_episodic_predicates_taxonomy_boundary():
     """Verify the taxonomy contains only known episodic predicates and
-    excludes intentional temporal (interaction_*) and durable CRM predicates."""
+    excludes intentional temporal (interaction_*) and durable CRM predicates.
+
+    interaction_note is the one interaction_* predicate that IS included:
+    it is an ephemeral free-text annotation that must stay at volatile/ephemeral
+    permanence.  interaction_log() rejects type='note' to enforce this invariant,
+    so interaction_note at stable permanence always indicates a mis-stored fact.
+    """
     # All expected episodic predicates must be present
     for expected in (
-        "interaction_note",
+        "interaction_note",  # episodic exception: NOT written by interaction_log
         "current_activity",
         "current_mood",
         "today_note",
@@ -244,7 +250,7 @@ def test_episodic_predicates_taxonomy_boundary():
     ):
         assert expected in _EPISODIC_PREDICATES, f"{expected!r} missing from _EPISODIC_PREDICATES"
 
-    # Intentional temporal predicates MUST NOT be in the episodic set
+    # Intentional temporal predicates written by interaction_log MUST NOT be in the episodic set
     for excluded in (
         "interaction_call",
         "interaction_meeting",

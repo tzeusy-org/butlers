@@ -3203,10 +3203,14 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
 #   coordination_note — scheduling/coordination text for a specific engagement
 #
 # Taxonomy boundary rules:
-#   • interaction_* predicates (interaction_call, interaction_meeting, …) are
-#     INTENTIONALLY stored as permanence='stable' by interaction_log() — they are
-#     temporal interaction records keyed on valid_at, not durable property facts.
-#     They are EXCLUDED from this curation sweep.
+#   • interaction_* predicates written by interaction_log() (interaction_call,
+#     interaction_meeting, interaction_email, …) are INTENTIONALLY stored at
+#     permanence='stable' — they are temporal interaction records keyed on valid_at
+#     and are EXCLUDED from this curation sweep.
+#     Exception: interaction_note is INCLUDED. It is an ephemeral free-text annotation
+#     that must stay at volatile/ephemeral permanence. It is NOT written by
+#     interaction_log() — type='note' is a reserved/rejected type there — so
+#     interaction_note at stable means it was mis-stored and must be reclassified.
 #   • contact_note is a free-text annotation about a person; it can legitimately
 #     live at permanence='stable' as a persistent CRM note. EXCLUDED.
 #   • life_event, contact_task, loan, gift are structured CRM records that the
@@ -3265,9 +3269,14 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
     The correct resolution is to reclassify them to ``'volatile'`` or ``'ephemeral'``.
 
     **Taxonomy:**  The :data:`_EPISODIC_PREDICATES` frozenset documents the
-    conservative episodic taxonomy.  ``interaction_*`` predicates (logged by
-    ``interaction_log()``) are explicitly EXCLUDED — they are temporal facts keyed
-    on ``valid_at`` and are intentionally stored at ``permanence='stable'``.
+    conservative episodic taxonomy.  Most ``interaction_*`` predicates (written by
+    ``interaction_log()``, e.g. ``interaction_call``, ``interaction_meeting``) are
+    explicitly EXCLUDED — they are temporal facts keyed on ``valid_at`` and are
+    intentionally stored at ``permanence='stable'``.  The single exception is
+    ``interaction_note``, which IS included: it is an ephemeral free-text annotation
+    that must stay at ``volatile``/``ephemeral`` permanence.  ``interaction_log()``
+    rejects ``type='note'`` to enforce this, so ``interaction_note`` at durable
+    permanence is always a mis-stored fact that warrants reclassification.
 
     **Mutation policy — conservative and owner-approved:**
 
@@ -3312,7 +3321,8 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
     # Step 1: Query for episodic-predicate facts stored at durable permanence.
     #
     # Scope: active, relationship-scoped facts only.
-    # Predicate list: _EPISODIC_PREDICATES (never includes interaction_* prefix).
+    # Predicate list: _EPISODIC_PREDICATES (includes interaction_note as an episodic
+    #   exception; interaction_log rejects type='note' to prevent false positives).
     # Permanence filter: 'stable' or 'permanent'.
     # -----------------------------------------------------------------------
     try:
