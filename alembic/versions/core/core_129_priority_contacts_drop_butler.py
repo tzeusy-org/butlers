@@ -12,7 +12,9 @@ Self-guarding design (mirrors core_115 / core_118 / core_123)
 ``upgrade()`` refuses to lose data silently:
 
 1. **Idempotency** — if the ``butler`` column is already gone (re-run / fresh DB),
-   no-op.
+   the column-drop steps are skipped, but the butler-less cascade-audit trigger
+   is still re-asserted (step 6) so a schema-scoped re-run of core_101 cannot
+   leave a butler-referencing trigger behind.
 2. **Snapshot** — copies every ``(contact_id, butler, added_at, added_by)`` row to
    ``public.priority_contacts_butler_dropbak_core_129`` so the drop is recoverable.
 3. **Dedup** — collapse to one row per ``contact_id`` before the new PK is applied.
@@ -202,39 +204,44 @@ def upgrade() -> None:
     if not _table_exists(bind):
         return
 
-    # 1. Idempotency — butler column already gone → nothing to do.
-    if not _column_exists(bind, "public", "priority_contacts", "butler"):
-        return
-
-    # 2. Snapshot every row for recovery.
-    op.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {_BACKUP_TABLE} AS
-        SELECT contact_id, butler, added_at, added_by
-        FROM {_TABLE}
-        """
-    )
-
-    # 3. Dedup to one row per contact_id (folding butler='gmail' rows first).
-    bind.execute(_DEDUP_SQL)
-
-    # 4. Parity guard — no contact_id may be lost by the dedup.
-    gap = int(bind.execute(_PARITY_SQL).scalar() or 0)
-    if gap > 0:
-        raise RuntimeError(
-            f"core_129 ABORTED: {gap} contact_id(s) from the snapshot have no "
-            f"surviving row after dedup; dropping the butler column would lose them. "
-            f"A full snapshot was taken at {_BACKUP_TABLE}."
+    # 1. Drop the butler dimension — only when it is still present. (Idempotent:
+    #    a re-run finds the column already gone and skips straight to the trigger
+    #    re-assertion below.)
+    if _column_exists(bind, "public", "priority_contacts", "butler"):
+        # 2. Snapshot every row for recovery.
+        op.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_BACKUP_TABLE} AS
+            SELECT contact_id, butler, added_at, added_by
+            FROM {_TABLE}
+            """
         )
 
-    # 5. Drop the per-butler index, composite PK, and butler column; add the new PK.
-    #    (DROP COLUMN would cascade to the index, but be explicit.)
-    op.execute("DROP INDEX IF EXISTS public.idx_priority_contacts_butler")
-    op.execute(f"ALTER TABLE {_TABLE} DROP CONSTRAINT IF EXISTS priority_contacts_pkey")
-    op.execute(f"ALTER TABLE {_TABLE} DROP COLUMN IF EXISTS butler")
-    op.execute(f"ALTER TABLE {_TABLE} ADD PRIMARY KEY (contact_id)")
+        # 3. Dedup to one row per contact_id (folding butler='gmail' rows first).
+        bind.execute(_DEDUP_SQL)
 
-    # 6. Recreate the cascade-audit trigger function without the butler suffix.
+        # 4. Parity guard — no contact_id may be lost by the dedup.
+        gap = int(bind.execute(_PARITY_SQL).scalar() or 0)
+        if gap > 0:
+            raise RuntimeError(
+                f"core_129 ABORTED: {gap} contact_id(s) from the snapshot have no "
+                f"surviving row after dedup; dropping the butler column would lose them. "
+                f"A full snapshot was taken at {_BACKUP_TABLE}."
+            )
+
+        # 5. Drop the per-butler index, composite PK, and butler column; add the new PK.
+        #    (DROP COLUMN would cascade to the index, but be explicit.)
+        op.execute("DROP INDEX IF EXISTS public.idx_priority_contacts_butler")
+        op.execute(f"ALTER TABLE {_TABLE} DROP CONSTRAINT IF EXISTS priority_contacts_pkey")
+        op.execute(f"ALTER TABLE {_TABLE} DROP COLUMN IF EXISTS butler")
+        op.execute(f"ALTER TABLE {_TABLE} ADD PRIMARY KEY (contact_id)")
+
+    # 6. Always (re-)assert the butler-less cascade-audit trigger function. This
+    #    runs even on the column-already-gone path: the schema-scoped migration
+    #    runner re-executes the whole core chain per schema, and core_101's re-run
+    #    reinstalls the butler-referencing function body — which would break every
+    #    cascade DELETE against the now butler-less table. ``CREATE OR REPLACE``
+    #    is body-late-bound, so re-asserting here is always safe.
     op.execute(_TRIGGER_FN_GLOBAL)
 
     # Re-grant on the table (privileges survive column drops, but keep parity with
