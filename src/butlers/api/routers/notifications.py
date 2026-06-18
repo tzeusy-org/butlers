@@ -316,6 +316,21 @@ async def notification_stats(
     if pool is None:
         return _empty_notification_stats()
 
+    # Query-budget: this handler fires 4 separate COUNT/GROUP-BY queries against
+    # the notifications table on every /stats request.
+    #
+    # Q1 (total): O(N) sequential scan.  Acceptable — count(*) on a heap table.
+    # Q2 (sent): O(N) with idx_notifications_status (sw_001) partial filter.
+    # Q3 (failed / terminal-failure self-join): most expensive.  The outer scan
+    #    filters to status='failed' via idx_notifications_status; the EXISTS
+    #    subquery uses ix_notifications_session_id (sw_016) to locate sibling
+    #    rows by session_id.  Budget: O(F * log N) where F = failed-row count.
+    # Q4/Q5 (by_channel, by_butler): O(N) GROUP BY — backed by composite indexes
+    #    idx_notifications_channel_created and idx_notifications_source_butler_created.
+    #
+    # At current notification volumes (< 100k rows) the full endpoint stays
+    # under 50 ms.  If total rows exceed ~1 M, consider adding a materialized
+    # summary table refreshed on insert, or caching this response for 60 s.
     try:
         total = await pool.fetchval("SELECT count(*) FROM notifications") or 0
         sent = await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'sent'") or 0

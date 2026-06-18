@@ -428,6 +428,11 @@ async def get_butler_session(
 # Butler-scoped analytics: GET /api/butlers/{name}/analytics/session-kinds
 # ---------------------------------------------------------------------------
 
+# Query-budget: O(rows_in_window) per butler.  Index ix_sessions_started_at
+# (core_128) provides a range-scan entry point; the GROUP BY aggregate runs
+# over the filtered set only.  Default window=7 days; caller-supplied max is
+# unbounded (ge=0) — a very large window_days on a prolific butler can pull
+# many rows.  Acceptable at current session volumes; monitor if p95 > 200 ms.
 _SESSION_KINDS_SQL = """
 SELECT trigger_source, COUNT(*) AS count
 FROM sessions
@@ -472,6 +477,10 @@ async def get_butler_session_kinds(
 # Butler-scoped analytics: GET /api/butlers/{name}/analytics/daily-activity
 # ---------------------------------------------------------------------------
 
+# Query-budget: window_days is validated to {7, 30} before this query runs
+# (see _VALID_WINDOW_DAYS guard below).  With ix_sessions_started_at (core_128)
+# the range filter is index-backed; result set is at most 30 rows (one per day).
+# Budget: O(sessions_in_window) scan → O(30) GROUP BY buckets.  Bounded and safe.
 _DAILY_ACTIVITY_SQL = """
 SELECT DATE(started_at) AS d, COUNT(*) AS sessions_count
 FROM sessions
@@ -592,6 +601,14 @@ async def get_butler_hourly_activity(
 # Butler-scoped analytics: GET /api/butlers/{name}/analytics/latency-stats
 # ---------------------------------------------------------------------------
 
+# Query-budget: percentile_cont and mode() are O(N log N) aggregates over the
+# filtered window.  With ix_sessions_started_at (core_128) the range predicate
+# is index-backed.  window_days is capped at 365 (le=365 in the Query param).
+# Worst case: 365 days × high-frequency butler → potentially 10k-100k rows in
+# the aggregate.  At that scale expect 50-200 ms per call; this is acceptable
+# for a dashboard detail view that fires once per page load, not on every render.
+# If p95 exceeds 500 ms on a production butler, consider caching the result for
+# 60 s or restricting the max window to 90 days.
 _LATENCY_STATS_SQL = """
 SELECT
     percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
