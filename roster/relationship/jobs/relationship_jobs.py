@@ -3182,6 +3182,368 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Episodic predicate curation job (behavior #5: episodic predicates leaking into
+# the durable fact store)
+# ---------------------------------------------------------------------------
+
+# ── Predicate taxonomy ──────────────────────────────────────────────────────
+#
+# EPISODIC predicates are tied to a specific moment in time: they describe a
+# transient state, a one-time observation, or a coordination note. They should
+# NOT be stored with permanence='stable' or permanence='permanent' because they
+# will not remain true across time.
+#
+#   interaction_note  — free-text summary tied to a single interaction event
+#   current_activity  — what someone is doing right now
+#   current_mood      — transient emotional state
+#   today_note        — a note written for/about a specific day
+#   meeting_note      — free-text from a single meeting
+#   event_note        — note about a specific event
+#   coordination_note — scheduling/coordination text for a specific engagement
+#
+# Taxonomy boundary rules:
+#   • interaction_* predicates (interaction_call, interaction_meeting, …) are
+#     INTENTIONALLY stored as permanence='stable' by interaction_log() — they are
+#     temporal interaction records keyed on valid_at, not durable property facts.
+#     They are EXCLUDED from this curation sweep.
+#   • contact_note is a free-text annotation about a person; it can legitimately
+#     live at permanence='stable' as a persistent CRM note. EXCLUDED.
+#   • life_event, contact_task, loan, gift are structured CRM records that the
+#     owner deliberately persists. EXCLUDED.
+#
+# DURABLE permanence levels that should NOT be used for episodic predicates:
+#   'permanent' — zero decay, truly permanent facts (birth dates, immutable bio)
+#   'stable'    — very slow decay (0.002); CRM records, relationship metadata
+#
+# Appropriate permanence for episodic facts:
+#   'volatile' or 'ephemeral' — fast decay; they expire naturally.
+#
+# ────────────────────────────────────────────────────────────────────────────
+
+_EPISODIC_PREDICATES: frozenset[str] = frozenset(
+    {
+        "interaction_note",  # Free-text tied to a single interaction event
+        "current_activity",  # Transient state: what someone is doing right now
+        "current_mood",  # Transient emotional state
+        "today_note",  # Note written for/about a specific day
+        "meeting_note",  # Free-text from a single meeting
+        "event_note",  # Note about a specific event
+        "coordination_note",  # Scheduling/coordination text for a specific engagement
+    }
+)
+
+# Permanence levels that indicate a durable storage intent.  Episodic predicates
+# found at these levels have been incorrectly stored and need reclassification.
+_EPISODIC_DURABLE_PERMANENCES: frozenset[str] = frozenset({"stable", "permanent"})
+
+# State key for the checkpoint timestamp (observability; job is idempotent via
+# pending_actions dedup — re-running is safe).
+_EPISODIC_CURATION_STATE_KEY = "memory_curation.last_episodic_predicate_at"
+
+# Insight priority for episodic-predicate-in-durable-store detections.
+# Lower than contradictions (75) and retraction low-conf (50); higher than
+# milestone insights (30) — these are data hygiene notices, not urgent.
+_EPISODIC_CURATION_PRIORITY = 45
+
+# How many days before the pending_action row expires if not acted on.
+_EPISODIC_CURATION_EXPIRES_DAYS = 7
+
+
+async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Flag episodic-predicate facts stored at durable permanence for owner review.
+
+    **Behavior #5 — episodic predicates leaking into the durable fact store.**
+
+    Scans ``relationship.facts`` for active rows whose ``predicate`` belongs to
+    :data:`_EPISODIC_PREDICATES` (e.g. ``interaction_note``, ``current_activity``)
+    AND whose ``permanence`` is one of :data:`_EPISODIC_DURABLE_PERMANENCES`
+    (``'stable'`` or ``'permanent'``).
+
+    Such facts were almost certainly written with the wrong permanence: episodic
+    content tied to a specific moment should decay quickly, not persist forever.
+    The correct resolution is to reclassify them to ``'volatile'`` or ``'ephemeral'``.
+
+    **Taxonomy:**  The :data:`_EPISODIC_PREDICATES` frozenset documents the
+    conservative episodic taxonomy.  ``interaction_*`` predicates (logged by
+    ``interaction_log()``) are explicitly EXCLUDED — they are temporal facts keyed
+    on ``valid_at`` and are intentionally stored at ``permanence='stable'``.
+
+    **Mutation policy — conservative and owner-approved:**
+
+    * For EVERY flagged fact this job creates a ``pending_actions`` row with
+      ``tool_name='memory_reclassify'`` and ``permanence_target='volatile'`` in
+      ``tool_args``.  The owner must explicitly approve the reclassification.
+    * Dedup: before inserting a new row the writer checks whether a
+      ``status='pending'`` row already exists for the same ``fact_id`` and
+      ``tool_name='memory_reclassify'``.  If one exists the flagging is skipped.
+    * Alongside each ``pending_actions`` row an insight candidate is submitted via
+      :func:`~butlers.tools.switchboard.insight.broker.propose_insight_candidate`
+      so the owner receives a notification.
+    * A checkpoint timestamp is written to state after each run.
+
+    Args:
+        db_pool: Database connection pool (relationship butler schema context).
+
+    Returns:
+        Dictionary with keys: facts_scanned, episodic_found, flagged_new,
+        skipped_already_pending, errors.
+    """
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    logger.info(
+        "Running episodic_predicate_curation job "
+        "(episodic predicates in durable fact store, predicates=%d)",
+        len(_EPISODIC_PREDICATES),
+    )
+
+    stats: dict[str, Any] = {
+        "facts_scanned": 0,
+        "episodic_found": 0,
+        "flagged_new": 0,
+        "skipped_already_pending": 0,
+        "errors": 0,
+    }
+
+    now_utc = datetime.now(UTC)
+    expires_at = now_utc + timedelta(days=_EPISODIC_CURATION_EXPIRES_DAYS)
+
+    # -----------------------------------------------------------------------
+    # Step 1: Query for episodic-predicate facts stored at durable permanence.
+    #
+    # Scope: active, relationship-scoped facts only.
+    # Predicate list: _EPISODIC_PREDICATES (never includes interaction_* prefix).
+    # Permanence filter: 'stable' or 'permanent'.
+    # -----------------------------------------------------------------------
+    try:
+        rows = await db_pool.fetch(
+            """
+            SELECT
+                f.id         AS fact_id,
+                f.entity_id,
+                f.predicate,
+                f.content,
+                f.confidence,
+                f.permanence
+            FROM facts f
+            WHERE f.validity    = 'active'
+              AND f.scope       = 'relationship'
+              AND f.predicate   = ANY($1::text[])
+              AND f.permanence  = ANY($2::text[])
+            """,
+            list(_EPISODIC_PREDICATES),
+            list(_EPISODIC_DURABLE_PERMANENCES),
+        )
+    except Exception:
+        logger.exception("episodic_predicate_curation: failed to query facts")
+        stats["errors"] += 1
+        return stats
+
+    stats["facts_scanned"] = len(rows)
+    stats["episodic_found"] = len(rows)
+    logger.info(
+        "episodic_predicate_curation: found %d episodic facts at durable permanence",
+        len(rows),
+    )
+
+    if not rows:
+        try:
+            await state_set(db_pool, _EPISODIC_CURATION_STATE_KEY, now_utc.isoformat())
+        except Exception:
+            logger.warning(
+                "episodic_predicate_curation: failed to write checkpoint key=%s (no rows path)",
+                _EPISODIC_CURATION_STATE_KEY,
+                exc_info=True,
+            )
+        return stats
+
+    # -----------------------------------------------------------------------
+    # Step 2: For each flagged fact, create a pending_actions row (deduped)
+    # and submit an insight candidate.
+    #
+    # CRITICAL POLICY: NEVER auto-mutate.  All paths go through pending_actions
+    # for owner approval — including owner-entity facts.
+    # -----------------------------------------------------------------------
+
+    async def _ensure_pending_action(
+        fact_id: uuid.UUID,
+        predicate: str,
+        content: str,
+        permanence: str,
+        confidence: float | None,
+    ) -> str:
+        """Create or return existing pending_actions row for this fact.
+
+        Returns 'new', 'existing', or 'error'.
+        """
+        try:
+            async with db_pool.acquire() as conn:
+                # Dedup check: pending row already exists for this fact_id and tool?
+                existing = await conn.fetchval(
+                    """
+                    SELECT id FROM pending_actions
+                     WHERE tool_name = 'memory_reclassify'
+                       AND status    = 'pending'
+                       AND (tool_args ->> 'memory_id') = $1
+                     LIMIT 1
+                    """,
+                    str(fact_id),
+                )
+                if existing is not None:
+                    return "existing"
+
+                action_id = uuid.uuid4()
+                pending_now = datetime.now(UTC)
+                action_expires_at = pending_now + timedelta(hours=72)
+
+                conf_display = f"{confidence:.3f}" if confidence is not None else "null"
+                why = (
+                    f"Memory curation detected an episodic predicate {predicate!r} "
+                    f"stored at permanence={permanence!r}. "
+                    f"Episodic facts tied to specific moments should use permanence='volatile' "
+                    f"or 'ephemeral' so they decay naturally — not 'stable' or 'permanent'. "
+                    f"Confidence: {conf_display}. "
+                    f"Content preview: {content[:120]}. "
+                    "Approving will reclassify this fact to permanence='volatile'. "
+                    "Rejecting keeps the fact at its current permanence."
+                )
+                evidence = [
+                    "source=episodic_predicate_curation",
+                    f"predicate={predicate}",
+                    f"permanence_current={permanence}",
+                    "permanence_target=volatile",
+                    f"fact_id={fact_id}",
+                    f"confidence={conf_display}",
+                    f"content_preview={content[:120]}",
+                ]
+
+                await conn.execute(
+                    "INSERT INTO pending_actions "
+                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                    "requested_at, expires_at, why, evidence) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    action_id,
+                    "memory_reclassify",
+                    {
+                        "memory_type": "fact",
+                        "memory_id": str(fact_id),
+                        "permanence_target": "volatile",
+                    },
+                    (
+                        f"Reclassify fact {fact_id} "
+                        f"(episodic-in-durable): {predicate!r} at "
+                        f"{permanence!r} — {content[:60]}"
+                    ),
+                    None,
+                    "pending",
+                    pending_now,
+                    action_expires_at,
+                    why,
+                    evidence,
+                )
+                return "new"
+        except Exception:
+            logger.exception(
+                "episodic_predicate_curation: error creating pending_action for fact %s",
+                fact_id,
+            )
+            return "error"
+
+    for row in rows:
+        fact_id: uuid.UUID = row["fact_id"]
+        entity_id: uuid.UUID | None = row.get("entity_id")
+        predicate: str = row["predicate"]
+        content: str = row["content"] or ""
+        confidence: float | None = row["confidence"]
+        permanence: str = row["permanence"]
+
+        outcome = await _ensure_pending_action(
+            fact_id=fact_id,
+            predicate=predicate,
+            content=content,
+            permanence=permanence,
+            confidence=confidence,
+        )
+
+        if outcome == "error":
+            stats["errors"] += 1
+            continue
+        if outcome == "existing":
+            stats["skipped_already_pending"] += 1
+            logger.debug(
+                "episodic_predicate_curation: skipping fact %s — pending_action already exists",
+                fact_id,
+            )
+            continue
+
+        # New pending_action created; also surface an insight candidate.
+        stats["flagged_new"] += 1
+
+        entity_display = str(entity_id) if entity_id is not None else "(no entity)"
+        conf_display = f"{confidence:.3f}" if confidence is not None else "unknown"
+
+        insight_message = (
+            f"Episodic fact stored at durable permanence flagged for reclassification:\n"
+            f"Entity: {entity_display}\n"
+            f"Predicate: {predicate!r} (episodic — should not be stored as {permanence!r})\n"
+            f"Content: {content[:120]}\n"
+            f"Confidence: {conf_display}\n"
+            f"Fact ID: {fact_id}\n\n"
+            f"This fact uses an episodic predicate but was stored at permanence={permanence!r}. "
+            "Episodic facts should decay quickly (volatile/ephemeral). "
+            "Review and approve reclassification to permanence='volatile' via pending_actions."
+        )
+        dedup_key = f"relationship:episodic-in-durable:{fact_id}"
+
+        try:
+            result = await propose_insight_candidate(
+                db_pool,
+                origin_butler="relationship",
+                priority=_EPISODIC_CURATION_PRIORITY,
+                category="episodic-predicate-in-durable",
+                dedup_key=dedup_key,
+                message=insight_message,
+                expires_at=expires_at,
+                cooldown_days=7,  # Re-surface at most once a week per fact
+            )
+            status = result.get("status", "error")
+            if status not in ("accepted", "filtered"):
+                logger.warning(
+                    "episodic_predicate_curation: propose_insight_candidate error for fact %s: %s",
+                    fact_id,
+                    result.get("reason", "unknown"),
+                )
+                stats["errors"] += 1
+        except Exception:
+            logger.exception(
+                "episodic_predicate_curation: error surfacing insight for fact %s",
+                fact_id,
+            )
+            stats["errors"] += 1
+
+    # Persist checkpoint timestamp (best-effort).
+    try:
+        await state_set(db_pool, _EPISODIC_CURATION_STATE_KEY, now_utc.isoformat())
+    except Exception:
+        logger.warning(
+            "episodic_predicate_curation: failed to write checkpoint key=%s",
+            _EPISODIC_CURATION_STATE_KEY,
+            exc_info=True,
+        )
+
+    logger.info(
+        "episodic_predicate_curation complete: "
+        "facts_scanned=%d episodic_found=%d flagged_new=%d "
+        "skipped_already_pending=%d errors=%d",
+        stats["facts_scanned"],
+        stats["episodic_found"],
+        stats["flagged_new"],
+        stats["skipped_already_pending"],
+        stats["errors"],
+    )
+    return stats
+
+
 def _stamp_checkpoint(db_pool: asyncpg.Pool) -> None:  # pragma: no cover
     """Fire-and-forget checkpoint stamp via asyncio.create_task when pool is live.
 
