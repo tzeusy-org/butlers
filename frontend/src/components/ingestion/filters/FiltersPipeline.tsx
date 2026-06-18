@@ -47,13 +47,6 @@ import { ArchivedRulesSection } from './ArchivedRulesSection'
 import { RuleEditor, type EditorMode } from './RuleEditor'
 import type { IngestionRule } from '@/api/types'
 
-/**
- * Butler that owns the priority-sender list. The Gmail policy evaluator
- * (connectors/gmail_policy.py) queries public.priority_contacts WHERE
- * butler = 'gmail', so the dashboard surface is scoped to the same butler.
- */
-const PRIORITY_BUTLER = 'gmail'
-
 // ---------------------------------------------------------------------------
 // Rule classification helpers
 // ---------------------------------------------------------------------------
@@ -112,7 +105,7 @@ export function FiltersPipeline() {
     data: priorityContactsResp,
     isLoading: priorityLoading,
     isError: priorityError,
-  } = usePriorityContacts({ butler: PRIORITY_BUTLER })
+  } = usePriorityContacts()
   const addPriorityContact = useAddPriorityContact()
   const removePriorityContact = useRemovePriorityContact()
 
@@ -182,7 +175,7 @@ export function FiltersPipeline() {
   function handleAddPrioritySender(contactId: string) {
     setPriorityMutationError(null)
     addPriorityContact.mutate(
-      { contact_id: contactId, butler: PRIORITY_BUTLER },
+      { contact_id: contactId },
       {
         onError: (err) => {
           setPriorityMutationError(
@@ -196,7 +189,7 @@ export function FiltersPipeline() {
   function handleRemovePrioritySender(contactId: string) {
     setPriorityMutationError(null)
     removePriorityContact.mutate(
-      { contactId, butler: PRIORITY_BUTLER },
+      { contactId },
       {
         onError: (err) => {
           setPriorityMutationError(

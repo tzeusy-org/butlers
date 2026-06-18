@@ -4176,12 +4176,11 @@ export function testIngestionRule(
 // Runtime source of truth for priority senders — public.priority_contacts.
 // ---------------------------------------------------------------------------
 
-/** List priority-contact assignments, optionally filtered by butler. */
+/** List priority contacts (global — butler-agnostic). */
 export function getPriorityContacts(
   params?: PriorityContactListParams,
 ): Promise<PaginatedResponse<PriorityContactEntry>> {
   const sp = new URLSearchParams();
-  if (params?.butler) sp.set("butler", params.butler);
   if (params?.offset !== undefined) sp.set("offset", String(params.offset));
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   const qs = sp.toString();
@@ -4190,7 +4189,7 @@ export function getPriorityContacts(
   );
 }
 
-/** Add a priority-contact assignment for a butler. */
+/** Add a priority contact (global — butler-agnostic). */
 export function addPriorityContact(
   body: PriorityContactAddRequest,
 ): Promise<PriorityContactAddResponse> {
@@ -4201,13 +4200,10 @@ export function addPriorityContact(
   });
 }
 
-/** Remove a priority-contact assignment. */
-export function removePriorityContact(
-  contactId: string,
-  butler: string,
-): Promise<void> {
+/** Remove a priority contact (global — butler-agnostic). */
+export function removePriorityContact(contactId: string): Promise<void> {
   return apiFetch<void>(
-    `/ingestion/priority-contacts/${encodeURIComponent(contactId)}/${encodeURIComponent(butler)}`,
+    `/ingestion/priority-contacts/${encodeURIComponent(contactId)}`,
     { method: "DELETE" },
   );
 }

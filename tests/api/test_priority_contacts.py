@@ -1,7 +1,7 @@
 """Tests for /api/ingestion/priority-contacts endpoints.
 
-Covers:
-- GET list (200, optional butler filter, 503 on DB unavailable)
+Covers (priority_contacts is butler-agnostic — bu-gx13h):
+- GET list (200, 503 on DB unavailable)
 - POST add (201, 400 on unknown contact, 400 on roles field, 409 on duplicate)
 - DELETE remove (204, 404 on missing)
 - Audit entry emitted on POST and DELETE
@@ -32,7 +32,6 @@ _NOW = datetime.now(tz=UTC)
 def _make_priority_contact_row(
     *,
     contact_id=None,
-    butler: str = "gmail",
     added_by: str | None = "dashboard",
     contact_name: str | None = "Alice",
     entity_id=None,
@@ -44,7 +43,6 @@ def _make_priority_contact_row(
     """
     return {
         "contact_id": contact_id or uuid4(),
-        "butler": butler,
         "added_at": _NOW,
         "added_by": added_by,
         "contact_name": contact_name,
@@ -82,7 +80,7 @@ def _make_record(row: dict):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/ingestion/priority-contacts — 200 + optional butler filter
+# GET /api/ingestion/priority-contacts — 200 (global, butler-agnostic)
 # ---------------------------------------------------------------------------
 
 
@@ -103,9 +101,11 @@ async def test_list_priority_contacts_200(app):
     assert "data" in body and "meta" in body
     assert body["meta"]["total"] == 1
     assert len(body["data"]) == 1
+    assert "butler" not in body["data"][0]
 
 
-async def test_list_priority_contacts_butler_filter_passes_to_query(app):
+async def test_list_priority_contacts_count_query_is_unfiltered(app):
+    """The list count query is global — no butler filter is applied."""
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=0)
     pool.fetch = AsyncMock(return_value=[])
@@ -114,12 +114,13 @@ async def test_list_priority_contacts_butler_filter_passes_to_query(app):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/ingestion/priority-contacts?butler=gmail")
+        resp = await client.get("/api/ingestion/priority-contacts")
 
     assert resp.status_code == 200
-    # Verify the filter arg was passed in the SQL (fetchval called with "gmail")
-    call_args = pool.fetchval.call_args
-    assert "gmail" in call_args[0]
+    # The count SQL must not carry a WHERE/butler predicate.
+    count_sql = pool.fetchval.call_args[0][0]
+    assert "butler" not in count_sql.lower()
+    assert "where" not in count_sql.lower()
 
 
 async def test_list_priority_contacts_503_on_db_unavailable(app):
@@ -140,14 +141,12 @@ async def test_post_priority_contact_201(app):
     contact_id = uuid4()
     inserted_row = {
         "contact_id": contact_id,
-        "butler": "gmail",
         "added_at": _NOW,
         "added_by": "dashboard",
     }
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=True)  # contact exists
     pool.fetchrow = AsyncMock(return_value=_make_record(inserted_row))
-    pool.fetchval_side_effect = None
     _app_with_mock_db(app, shared_pool=pool)
 
     async with httpx.AsyncClient(
@@ -155,13 +154,13 @@ async def test_post_priority_contact_201(app):
     ) as client:
         resp = await client.post(
             "/api/ingestion/priority-contacts",
-            json={"contact_id": str(contact_id), "butler": "gmail"},
+            json={"contact_id": str(contact_id)},
         )
 
     assert resp.status_code == 201
     body = resp.json()
     assert body["contact_id"] == str(contact_id)
-    assert body["butler"] == "gmail"
+    assert "butler" not in body
 
 
 async def test_post_priority_contact_400_on_unknown_contact(app):
@@ -174,7 +173,7 @@ async def test_post_priority_contact_400_on_unknown_contact(app):
     ) as client:
         resp = await client.post(
             "/api/ingestion/priority-contacts",
-            json={"contact_id": str(uuid4()), "butler": "gmail"},
+            json={"contact_id": str(uuid4())},
         )
 
     assert resp.status_code == 400
@@ -192,7 +191,7 @@ async def test_post_priority_contact_400_on_roles_field(app):
     ) as client:
         resp = await client.post(
             "/api/ingestion/priority-contacts",
-            json={"contact_id": str(uuid4()), "butler": "gmail", "roles": ["owner"]},
+            json={"contact_id": str(uuid4()), "roles": ["owner"]},
         )
 
     assert resp.status_code == 400
@@ -200,7 +199,7 @@ async def test_post_priority_contact_400_on_roles_field(app):
 
 
 async def test_post_priority_contact_409_on_duplicate(app):
-    """Duplicate (contact_id, butler) must return HTTP 409."""
+    """A duplicate contact_id must return HTTP 409."""
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=True)  # contact exists
 
@@ -215,14 +214,14 @@ async def test_post_priority_contact_409_on_duplicate(app):
     ) as client:
         resp = await client.post(
             "/api/ingestion/priority-contacts",
-            json={"contact_id": str(uuid4()), "butler": "gmail"},
+            json={"contact_id": str(uuid4())},
         )
 
     assert resp.status_code == 409
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/ingestion/priority-contacts/{contact_id}/{butler}
+# DELETE /api/ingestion/priority-contacts/{contact_id}
 # ---------------------------------------------------------------------------
 
 
@@ -235,7 +234,7 @@ async def test_delete_priority_contact_204(app):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.delete(f"/api/ingestion/priority-contacts/{contact_id}/gmail")
+        resp = await client.delete(f"/api/ingestion/priority-contacts/{contact_id}")
 
     assert resp.status_code == 204
 
@@ -249,7 +248,7 @@ async def test_delete_priority_contact_404_on_missing(app):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.delete(f"/api/ingestion/priority-contacts/{contact_id}/gmail")
+        resp = await client.delete(f"/api/ingestion/priority-contacts/{contact_id}")
 
     assert resp.status_code == 404
 
@@ -264,7 +263,6 @@ async def test_post_priority_contact_emits_audit(app):
     contact_id = uuid4()
     inserted_row = {
         "contact_id": contact_id,
-        "butler": "gmail",
         "added_at": _NOW,
         "added_by": "dashboard",
     }
@@ -282,15 +280,14 @@ async def test_post_priority_contact_emits_audit(app):
         ) as client:
             resp = await client.post(
                 "/api/ingestion/priority-contacts",
-                json={"contact_id": str(contact_id), "butler": "gmail"},
+                json={"contact_id": str(contact_id)},
             )
 
     assert resp.status_code == 201
     mock_audit.assert_awaited_once()
     call_kwargs = mock_audit.await_args.kwargs
     assert call_kwargs["action"] == "ingestion.priority_contact.add"
-    assert str(contact_id) in call_kwargs["target"]
-    assert "gmail" in call_kwargs["target"]
+    assert call_kwargs["target"] == str(contact_id)
 
 
 async def test_delete_priority_contact_emits_audit(app):
@@ -307,11 +304,10 @@ async def test_delete_priority_contact_emits_audit(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.delete(f"/api/ingestion/priority-contacts/{contact_id}/gmail")
+            resp = await client.delete(f"/api/ingestion/priority-contacts/{contact_id}")
 
     assert resp.status_code == 204
     mock_audit.assert_awaited_once()
     call_kwargs = mock_audit.await_args.kwargs
     assert call_kwargs["action"] == "ingestion.priority_contact.remove"
-    assert str(contact_id) in call_kwargs["target"]
-    assert "gmail" in call_kwargs["target"]
+    assert call_kwargs["target"] == str(contact_id)

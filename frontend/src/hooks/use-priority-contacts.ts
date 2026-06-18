@@ -9,7 +9,7 @@
  *
  * Query key strategy:
  * - priorityContactKeys.all                 -> broad invalidation anchor
- * - priorityContactKeys.list(params?)       -> list with optional butler filter
+ * - priorityContactKeys.list(params?)       -> list with pagination params
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -38,7 +38,7 @@ export const priorityContactKeys = {
 // Queries
 // ---------------------------------------------------------------------------
 
-/** Fetch priority contacts, optionally filtered by butler. */
+/** Fetch priority contacts (global — butler-agnostic). */
 export function usePriorityContacts(
   params?: PriorityContactListParams,
   options?: { enabled?: boolean },
@@ -70,8 +70,8 @@ export function useAddPriorityContact() {
 export function useRemovePriorityContact() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ contactId, butler }: { contactId: string; butler: string }) =>
-      removePriorityContact(contactId, butler),
+    mutationFn: ({ contactId }: { contactId: string }) =>
+      removePriorityContact(contactId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: priorityContactKeys.all });
     },
