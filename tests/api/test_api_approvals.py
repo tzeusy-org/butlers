@@ -1430,3 +1430,268 @@ async def test_resolve_referenced_entities_fails_open_on_db_error():
     db, _ = _entity_db(fetch_raises=True)
     refs = await _resolve_referenced_entities(db, {"subject": str(uuid4())})
     assert refs == []
+
+
+# ---------------------------------------------------------------------------
+# Re-gate guard: _dispatch_approved_action must not record success when the
+# tool re-enters the approval gate and returns {status: pending_approval}.
+# Regression test for bu-km0y2.
+# ---------------------------------------------------------------------------
+
+
+def _build_dispatch_mocks(
+    *,
+    action_id,
+    tool_name: str = "telegram_send_message",
+    tool_args: dict | None = None,
+    mcp_text_payload: str | None = None,
+    mcp_is_error: bool = False,
+    mark_executed_return: dict | None = None,
+):
+    """Build the minimal mocks needed to exercise _dispatch_approved_action."""
+    from butlers.api.db import DatabaseManager
+    from butlers.api.deps import MCPClientManager
+
+    tool_args = tool_args or {"chat_id": "12345", "text": "Hello"}
+
+    # MCP content block
+    mcp_block = MagicMock()
+    mcp_block.text = mcp_text_payload or '{"ok": true}'
+
+    mcp_result = MagicMock()
+    mcp_result.is_error = mcp_is_error
+    mcp_result.content = [mcp_block] if mcp_text_payload is not None else []
+
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(return_value=mcp_result)
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = ["messenger"]
+    mock_mcp.get_client = AsyncMock(return_value=mock_client)
+
+    # DB pool — mark_executed is patched at the module level in callers
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.execute = AsyncMock()
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["messenger"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    executed_result = mark_executed_return or {
+        "id": str(action_id),
+        "tool_name": tool_name,
+        "tool_args": tool_args,
+        "status": "executed",
+        "requested_at": _NOW.isoformat(),
+        "butler": "messenger",
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": "dashboard:rest-api",
+        "decided_at": _NOW.isoformat(),
+        "execution_result": {"success": True},
+        "approval_rule_id": None,
+    }
+
+    return mock_mcp, mock_db, mock_pool, executed_result
+
+
+async def test_dispatch_approved_action_re_gate_is_recorded_as_failure():
+    """Re-gate guard (bu-km0y2): if the tool returns {status: pending_approval},
+    _dispatch_approved_action must record the action as *failed*, not success.
+
+    Simulates the live bug: approved action is dispatched to a butler whose
+    tool surface is gate-wrapped; the gate parks a new pending action and
+    returns {status: pending_approval}.  The original action must be marked
+    executed/failure — not success — so the audit trail stays honest and
+    the action can be retried or investigated.
+    """
+    import json
+    from unittest.mock import patch
+
+    import butlers.modules.approvals.operations as approvals_ops
+    from butlers.api.routers.approvals import _dispatch_approved_action
+
+    action_id = uuid4()
+    phantom_action_id = uuid4()
+
+    # Gate returns the pending_approval sentinel (the re-gate scenario)
+    pending_approval_payload = json.dumps(
+        {
+            "status": "pending_approval",
+            "action_id": str(phantom_action_id),
+            "message": "Action queued for approval: Tool 'telegram_send_message' called with ...",
+            "risk_tier": "medium",
+            "rule_precedence": ["contact_role", "standing_rule"],
+        }
+    )
+
+    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="telegram_send_message",
+        tool_args={"chat_id": "@Tzeusy", "text": "Hello"},
+        mcp_text_payload=pending_approval_payload,
+        mcp_is_error=False,  # not an MCP error — the gate returned normally
+    )
+
+    captured_exec_result: dict = {}
+
+    async def _capture_mark_executed(conn, *, action_id, execution_result, success):
+        captured_exec_result["success"] = success
+        captured_exec_result["result"] = execution_result
+        return {
+            "id": str(action_id),
+            "status": "executed",
+            "tool_name": "telegram_send_message",
+            "tool_args": {},
+            "requested_at": _NOW.isoformat(),
+            "butler": "messenger",
+            "agent_summary": None,
+            "session_id": None,
+            "expires_at": None,
+            "decided_by": None,
+            "decided_at": None,
+            "execution_result": execution_result,
+            "approval_rule_id": None,
+        }
+
+    with patch.object(approvals_ops, "mark_executed", side_effect=_capture_mark_executed):
+        result = await _dispatch_approved_action(
+            mock_mcp,
+            mock_db,
+            mock_pool,
+            str(action_id),
+            "telegram_send_message",
+            {"chat_id": "@Tzeusy", "text": "Hello"},
+        )
+
+    # Must NOT record success — that would be the phantom-success bug
+    assert captured_exec_result["success"] is False, (
+        "Re-gate must be recorded as failure, not success"
+    )
+    # Error must mention the phantom action id and re-gate
+    error_msg = captured_exec_result["result"].get("error", "")
+    assert str(phantom_action_id) in error_msg, (
+        f"Error must reference the phantom action id {phantom_action_id}"
+    )
+    assert "pending_action" in error_msg or "pending_approval" in error_msg or "gate" in error_msg
+
+    # The dispatch function must return a result (not None) so the router
+    # propagates the failure rather than leaving the action in 'approved'
+    # limbo without any trace.
+    assert result is not None
+
+
+async def test_dispatch_approved_action_success_records_executed():
+    """Happy path (bu-km0y2): when MCP call_tool returns a real result,
+    _dispatch_approved_action marks the action as executed with success=True.
+    """
+    import json
+    from unittest.mock import patch
+
+    import butlers.modules.approvals.operations as approvals_ops
+    from butlers.api.routers.approvals import _dispatch_approved_action
+
+    action_id = uuid4()
+    real_payload = json.dumps({"status": "sent", "message_id": "tg-999"})
+
+    mock_mcp, mock_db, mock_pool, executed_result = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="telegram_send_message",
+        tool_args={"chat_id": "206570151", "text": "Hello"},
+        mcp_text_payload=real_payload,
+        mcp_is_error=False,
+    )
+
+    captured_exec_result: dict = {}
+
+    async def _capture_mark_executed(conn, *, action_id, execution_result, success):
+        captured_exec_result["success"] = success
+        captured_exec_result["result"] = execution_result
+        return {**executed_result, "execution_result": execution_result}
+
+    with patch.object(approvals_ops, "mark_executed", side_effect=_capture_mark_executed):
+        result = await _dispatch_approved_action(
+            mock_mcp,
+            mock_db,
+            mock_pool,
+            str(action_id),
+            "telegram_send_message",
+            {"chat_id": "206570151", "text": "Hello"},
+        )
+
+    # The real tool ran — must record success
+    assert captured_exec_result["success"] is True
+    assert "error" not in captured_exec_result["result"]
+    assert result is not None
+
+
+async def test_dispatch_approved_action_re_gate_without_action_id_still_fails():
+    """Re-gate with minimal sentinel (no action_id field) is still a failure.
+
+    Handles an edge case where the gate's pending_approval envelope lacks
+    action_id (e.g. an older gate version or a partial response).
+    """
+    import json
+    from unittest.mock import patch
+
+    import butlers.modules.approvals.operations as approvals_ops
+    from butlers.api.routers.approvals import _dispatch_approved_action
+
+    action_id = uuid4()
+    minimal_pending_approval = json.dumps({"status": "pending_approval"})
+
+    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="telegram_send_message",
+        tool_args={"chat_id": "@someone", "text": "Hi"},
+        mcp_text_payload=minimal_pending_approval,
+        mcp_is_error=False,
+    )
+
+    captured: dict = {}
+
+    async def _capture(conn, *, action_id, execution_result, success):
+        captured["success"] = success
+        captured["result"] = execution_result
+        return {
+            "id": str(action_id),
+            "status": "executed",
+            "tool_name": "telegram_send_message",
+            "tool_args": {},
+            "requested_at": _NOW.isoformat(),
+            "butler": "messenger",
+            "agent_summary": None,
+            "session_id": None,
+            "expires_at": None,
+            "decided_by": None,
+            "decided_at": None,
+            "execution_result": execution_result,
+            "approval_rule_id": None,
+        }
+
+    with patch.object(approvals_ops, "mark_executed", side_effect=_capture):
+        result = await _dispatch_approved_action(
+            mock_mcp,
+            mock_db,
+            mock_pool,
+            str(action_id),
+            "telegram_send_message",
+            {"chat_id": "@someone", "text": "Hi"},
+        )
+
+    assert captured["success"] is False
+    error_msg = captured["result"].get("error", "")
+    assert "<unknown>" in error_msg or "gate" in error_msg
+    assert result is not None

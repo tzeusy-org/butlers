@@ -782,6 +782,14 @@ async def _dispatch_approved_action(
 
     For other tools, calls the tool by name on any available butler daemon.
 
+    Re-gate guard: if the re-dispatched tool call returns
+    ``{status: pending_approval}`` the gate wrapper intercepted the call again
+    instead of the original (un-gated) function running.  This is a silent
+    no-op that creates a phantom pending action while recording the original as
+    success.  The guard detects this sentinel and marks the execution as
+    *failed*, leaving the original action in 'approved' state for
+    retry/investigation rather than silently poisoning the audit trail.
+
     If the daemon is unreachable or the call fails, the action remains in
     'approved' state for later retry.
 
@@ -827,6 +835,33 @@ async def _dispatch_approved_action(
                 exec_result["success"] = False
                 exec_result["error"] = exec_result.get("result", {}).get(
                     "error", "MCP tool call returned error"
+                )
+
+            # Guard: detect re-gating. If the tool re-entered the approval gate
+            # (e.g. the gate-wrapped surface was called instead of the original
+            # fn), the gate returns {status: pending_approval, action_id: ...}
+            # which is NOT a success — the original action was not executed.
+            # Recording it as success would create a phantom pending action and
+            # silence the real failure. Treat re-gate as an explicit failure so
+            # the original action stays in 'approved' state for retry/investigation.
+            tool_result = exec_result.get("result") or {}
+            if isinstance(tool_result, dict) and tool_result.get("status") == "pending_approval":
+                new_action_id = tool_result.get("action_id", "<unknown>")
+                logger.error(
+                    "Approved action %s (%s) re-entered the approval gate instead of executing "
+                    "— a new phantom pending action %s was created. "
+                    "The tool is running against a gate-wrapped surface; "
+                    "investigate the executor path. Original action left in 'approved' for retry.",
+                    action_id,
+                    tool_name,
+                    new_action_id,
+                )
+                exec_result["success"] = False
+                exec_result["error"] = (
+                    f"Executor re-entered the approval gate "
+                    f"(phantom pending_action={new_action_id}); "
+                    f"tool '{tool_name}' was not executed. "
+                    "Check that the executor bypasses gated tool wrappers."
                 )
 
             # Mark as executed in DB
