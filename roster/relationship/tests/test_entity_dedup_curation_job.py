@@ -28,6 +28,7 @@ import pytest
 # registered in sys.modules as butlers.jobs._roster.relationship_jobs.
 from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     _ENTITY_DEDUP_CURATION_STATE_KEY,  # noqa: F401 — re-exported for tests below
+    _ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH,
     _levenshtein,
     run_entity_dedup_curation,
 )
@@ -494,3 +495,127 @@ async def test_entity_dedup_checkpoint_written(pool: asyncpg.Pool, mock_propose_
         _ENTITY_DEDUP_CURATION_STATE_KEY,
     )
     assert val is not None, "checkpoint key should be written after run"
+
+
+# ---------------------------------------------------------------------------
+# Minimum-length guard for near-identical matching (bu-q7vfe)
+# ---------------------------------------------------------------------------
+
+
+def test_min_name_len_constant_is_sensible():
+    """The minimum-length constant guards against short 3-4 character names."""
+    # The guard must be > 4 to exclude 3- and 4-character names
+    assert _ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH >= 5
+
+
+async def test_entity_dedup_short_names_not_flagged_as_near_identical(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """Short distinct names ('Sam'/'Pam', 'Jon'/'Jan', 'Ana'/'Ava') must NOT be flagged.
+
+    These names are clearly different people despite small edit distances.  The
+    minimum-length guard must prevent them from surfacing as near-identical merge
+    candidates.
+    """
+    await _make_entity(pool, name="Sam")
+    await _make_entity(pool, name="Pam")
+    await _make_entity(pool, name="Jon")
+    await _make_entity(pool, name="Jan")
+    await _make_entity(pool, name="Ana")
+    await _make_entity(pool, name="Ava")
+
+    result = await run_entity_dedup_curation(pool)
+
+    # None of these short-name pairs should be flagged near-identical
+    assert result["near_identical_pairs_found"] == 0, (
+        "Short distinct names (Sam/Pam, Jon/Jan, Ana/Ava) must NOT be flagged as "
+        "near-identical merge candidates"
+    )
+    assert result["pairs_surfaced"] == 0
+    assert result["errors"] == 0
+
+    count = await pool.fetchval("SELECT COUNT(*) FROM pending_actions")
+    assert count == 0
+
+
+async def test_entity_dedup_short_name_exact_dup_still_flagged(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """Short-name EXACT duplicates must still be flagged regardless of length.
+
+    The minimum-length guard applies only to the Levenshtein near-identical path.
+    Exact (case-insensitive) duplicates are caught earlier and must always surface.
+    """
+    target = await _make_entity(pool, name="Sam")
+    source = await _make_entity(pool, name="Sam")  # exact duplicate
+
+    result = await run_entity_dedup_curation(pool)
+
+    assert result["exact_groups_found"] == 1, (
+        "Exact short-name duplicates must still be flagged even below min-length guard"
+    )
+    assert result["pairs_surfaced"] == 1
+    assert result["errors"] == 0
+
+    count = await _count_pending_for_pair(pool, source, target)
+    assert count == 1
+
+
+async def test_entity_dedup_short_name_exact_dup_case_insensitive(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """Short-name case-insensitive exact duplicates ('Jon'/'jon') are always flagged."""
+    target = await _make_entity(pool, name="Jon")
+    source = await _make_entity(pool, name="jon")
+
+    result = await run_entity_dedup_curation(pool)
+
+    assert result["exact_groups_found"] == 1
+    assert result["pairs_surfaced"] == 1
+
+    count = await _count_pending_for_pair(pool, source, target)
+    assert count == 1
+
+
+async def test_entity_dedup_long_near_identical_names_still_flagged(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """Genuine longer near-duplicates (>= min-length) still surface appropriately.
+
+    'Chloe' / 'Chloe ' (with trailing space, trimmed to equal → exact match) and
+    'Robert Brown' / 'Robirt Brown' (1 edit on a long name) should still flag.
+    """
+    # Near-identical: 1 edit on names well above min-length threshold
+    await _make_entity(pool, name="Robert Brown")
+    await _make_entity(pool, name="Robirt Brown")  # 'e' → 'i' = 1 edit
+
+    result = await run_entity_dedup_curation(pool)
+
+    assert result["near_identical_pairs_found"] >= 1, (
+        "Long near-identical names (Robert Brown / Robirt Brown) must still be flagged"
+    )
+    assert result["pairs_surfaced"] >= 1
+    assert result["errors"] == 0
+
+
+async def test_entity_dedup_five_char_names_still_matched(pool: asyncpg.Pool, mock_propose_insight):
+    """Names exactly at the minimum length (e.g. 'Chloe' / 'Chleo') are still checked.
+
+    The guard is a strict less-than (< min_len), so names with len == min_len
+    are included in near-identical matching.  'Chloe' / 'Chleo' is 2 edits
+    and should be flagged.
+    """
+    # Verify the names are exactly at the boundary
+    assert len("chloe") == _ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH
+    assert len("chleo") == _ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH
+
+    await _make_entity(pool, name="Chloe")
+    await _make_entity(pool, name="Chleo")  # 2 edits (transposition)
+
+    result = await run_entity_dedup_curation(pool)
+
+    assert result["near_identical_pairs_found"] >= 1, (
+        "Names at exactly the minimum length boundary must still be near-identical checked"
+    )
+    assert result["pairs_surfaced"] >= 1
+    assert result["errors"] == 0

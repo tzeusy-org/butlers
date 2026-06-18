@@ -2785,6 +2785,18 @@ _ENTITY_DEDUP_EXPIRES_DAYS = 14
 # Names within this many single-character edits of each other are flagged.
 _ENTITY_DEDUP_LEVENSHTEIN_THRESHOLD = 2
 
+# Minimum canonical_name length (after normalisation) for near-identical matching.
+# Pairs where either name is shorter than this threshold are skipped for the
+# Levenshtein near-identical check.  Short names (e.g. "Sam", "Pam", "Jon",
+# "Jan") have a high false-positive rate because a single-character substitution
+# changes 33 % of the name — these should NOT be flagged as near-identical merge
+# candidates even if their edit distance is within _ENTITY_DEDUP_LEVENSHTEIN_THRESHOLD.
+# Exact (case-insensitive) duplicates are caught in the separate exact-match step
+# above and are always surfaced regardless of name length.
+# A threshold of 5 allows common real-world 5-character names like "Chloe" to
+# still participate in near-identical matching while excluding 3-4 character names.
+_ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH = 5
+
 
 def _levenshtein(a: str, b: str) -> int:
     """Compute Levenshtein edit distance between two strings (pure Python).
@@ -2963,6 +2975,14 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         for b in unique_entities[i + 1 :]:
             name_a = a["canonical_name"].strip().lower()
             name_b = b["canonical_name"].strip().lower()
+            # Skip near-identical matching when either name is too short.  A
+            # threshold-2 edit-distance on a 3-character name means any single-
+            # character substitution is within threshold (e.g. "Sam"/"Pam",
+            # "Jon"/"Jan", "Ana"/"Ava" all have distance 1 or 2), which produces
+            # false positives.  Short-name exact duplicates are already caught by
+            # the exact-match step above, so nothing is missed.
+            if min(len(name_a), len(name_b)) < _ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH:
+                continue
             if _levenshtein(name_a, name_b) <= _ENTITY_DEDUP_LEVENSHTEIN_THRESHOLD:
                 pair_key = frozenset({a["id"], b["id"]})
                 if pair_key not in seen_near:
