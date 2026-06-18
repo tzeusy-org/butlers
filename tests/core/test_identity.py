@@ -548,10 +548,10 @@ async def test_second_message_from_new_sender_does_not_mint_duplicate_entity():
 # Contract: ingress writes telegram handles in the canonical prefixed form
 # (bu-oluyt.5 — Phase 5 of the contact-schema retirement epic)
 # ---------------------------------------------------------------------------
-# The delivery read path (daemon._resolve_contact_channel_identifier) filters
+# The delivery read path (daemon._resolve_entity_channel_identifier) filters
 # has-handle objects on ``LIKE 'telegram:%'``. If assert_sender_channel_fact
 # wrote an unprefixed object, an ingress-created telegram contact would be
-# NON-deliverable via notify(contact_id). These tests pin the write side to the
+# NON-deliverable via notify(entity_id). These tests pin the write side to the
 # ONE canonical format so the read-side prefix tolerance (PR #2465) is no longer
 # load-bearing.
 

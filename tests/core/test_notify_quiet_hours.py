@@ -333,22 +333,22 @@ class TestQuietHoursDecisionPath:
         """The gate condition `recipient is None` means explicit recipient skips the gate.
 
         This test verifies the guard condition logic used in notify(): the
-        suppression check only fires when contact_id is None AND recipient is None.
+        suppression check only fires when entity_id is None AND recipient is None.
         With an explicit recipient, the `if` condition evaluates to False.
         """
         from butlers.core.approvals_policy import should_suppress_by_policy
 
         policy = {"quiet_start_hour": 0, "quiet_end_hour": 23, "timezone": "UTC"}
 
-        # Simulate the guard: contact_id=None AND recipient=None → check policy
-        contact_id = None
+        # Simulate the guard: entity_id=None AND recipient=None → check policy
+        entity_id = None
         recipient = None
-        gate_fires = contact_id is None and recipient is None
+        gate_fires = entity_id is None and recipient is None
         assert gate_fires is True
 
         # With an explicit recipient, the gate does not fire
         recipient = "12345"
-        gate_fires = contact_id is None and recipient is None
+        gate_fires = entity_id is None and recipient is None
         assert gate_fires is False
 
         # Even if we somehow did call should_suppress, it would suppress (whole-day)

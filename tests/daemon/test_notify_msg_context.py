@@ -1,17 +1,17 @@
 """Tests for msg_context parameter in notify() and context-aware resolution.
 
-Covers bu-uv4b4 acceptance criteria (updated for bu-tv67t entity_facts migration):
-  - _resolve_contact_channel_identifier uses entity_facts (not contact_info) for all lookups
+Covers bu-uv4b4 acceptance criteria (updated for bu-km8xr entity-direct migration):
+  - _resolve_entity_channel_identifier uses entity_facts (not contact_info) for all lookups
   - msg_context is no longer used for ordering (entity_facts has no context column), but is
     still passed to check_email_recipient for validation
   - context mismatch causes pending_approval response
   - returns None gracefully when entity_facts table is absent
 
-Migration note (bu-tv67t):
-  The context-priority CASE ORDER BY query against public.contact_info has been replaced
-  with a two-step entity_facts query. The msg_context parameter is no longer used during
-  resolution (since entity_facts has no context column) but continues to be used downstream
-  by the email guard for context-mismatch validation.
+Migration note (bu-km8xr):
+  Resolution queries relationship.entity_facts keyed directly on entity_id — no
+  public.contacts indirection. The msg_context parameter is no longer used during
+  resolution (since entity_facts has no context column) but continues to be used
+  downstream by the email guard for context-mismatch validation.
 """
 
 from __future__ import annotations
@@ -27,15 +27,15 @@ pytestmark = pytest.mark.unit
 _ENTITY_ID = uuid.UUID("aabbccdd-0000-0000-0000-000000000001")
 
 
-def _make_two_step_conn(
+def _make_entity_facts_conn(
     entity_id: uuid.UUID | None = _ENTITY_ID,
     facts_value: str | None = "resolved@example.com",
     fetchrow_error: Exception | None = None,
 ) -> AsyncMock:
-    """Return a mock connection simulating two-step entity_facts resolution.
+    """Return a mock connection simulating entity-direct entity_facts resolution.
 
-    Step 1: public.contacts → entity_id
-    Step 2: relationship.entity_facts → object value
+    The resolver queries relationship.entity_facts keyed on the entity_id — there
+    is no public.contacts indirection step.
     """
     mock_conn = AsyncMock()
 
@@ -44,11 +44,7 @@ def _make_two_step_conn(
         return mock_conn
 
     async def _fetchrow(query: str, *args, **kwargs):
-        if "public.contacts" in query:
-            if entity_id is None:
-                return None
-            return {"entity_id": entity_id}
-        if "relationship.entity_facts" in query or "entity_facts" in query:
+        if "entity_facts" in query:
             if facts_value is None:
                 return None
             return {"object": facts_value}
@@ -63,8 +59,8 @@ def _make_mock_pool_with_entity_facts(
     facts_value: str | None = "resolved@example.com",
     fetchrow_error: Exception | None = None,
 ):
-    """Return (pool, conn) with entity_facts two-step resolution support."""
-    mock_conn = _make_two_step_conn(
+    """Return (pool, conn) with entity-direct entity_facts resolution support."""
+    mock_conn = _make_entity_facts_conn(
         entity_id=entity_id,
         facts_value=facts_value,
         fetchrow_error=fetchrow_error,
@@ -95,12 +91,12 @@ def _make_daemon_with_pool(pool):
 
 
 # ---------------------------------------------------------------------------
-# _resolve_contact_channel_identifier entity_facts query tests
+# _resolve_entity_channel_identifier entity_facts query tests
 # ---------------------------------------------------------------------------
 
 
-class TestResolveContactChannelIdentifierEntityFacts:
-    """Unit tests for entity_facts-based resolution in _resolve_contact_channel_identifier."""
+class TestResolveEntityChannelIdentifierEntityFacts:
+    """Unit tests for entity_facts-based resolution in _resolve_entity_channel_identifier."""
 
     async def test_resolution_uses_entity_facts_not_contact_info(self) -> None:
         """Resolution queries entity_facts, never contact_info."""
@@ -112,8 +108,8 @@ class TestResolveContactChannelIdentifierEntityFacts:
         )
         daemon = _make_daemon_with_pool(mock_pool)
 
-        result = await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon, contact_id=uuid.uuid4(), channel="email"
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=uuid.uuid4(), channel="email"
         )
 
         assert result == "personal@example.com"
@@ -128,7 +124,7 @@ class TestResolveContactChannelIdentifierEntityFacts:
 
         entity_facts has no context column; msg_context is no longer used for
         ordering during resolution.  Both with and without msg_context should
-        produce the same two-step entity_facts query.
+        produce the same entity-direct entity_facts query.
         """
         from butlers.daemon import ButlerDaemon
 
@@ -144,11 +140,11 @@ class TestResolveContactChannelIdentifierEntityFacts:
         daemon_with = _make_daemon_with_pool(mock_pool_with)
         daemon_without = _make_daemon_with_pool(mock_pool_without)
 
-        result_with = await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon_with, contact_id=uuid.uuid4(), channel="email", msg_context="personal"
+        result_with = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon_with, entity_id=uuid.uuid4(), channel="email", msg_context="personal"
         )
-        result_without = await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon_without, contact_id=uuid.uuid4(), channel="email"
+        result_without = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon_without, entity_id=uuid.uuid4(), channel="email"
         )
 
         assert result_with == "addr@example.com"
@@ -173,8 +169,8 @@ class TestResolveContactChannelIdentifierEntityFacts:
 
         daemon = _make_daemon_with_pool(None)
 
-        result = await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon, contact_id=uuid.uuid4(), channel="email", msg_context="personal"
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=uuid.uuid4(), channel="email", msg_context="personal"
         )
         assert result is None
 
@@ -189,8 +185,8 @@ class TestResolveContactChannelIdentifierEntityFacts:
         )
         daemon = _make_daemon_with_pool(mock_pool)
 
-        result = await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon, contact_id=uuid.uuid4(), channel="email", msg_context="personal"
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=uuid.uuid4(), channel="email", msg_context="personal"
         )
         assert result is None
 
@@ -204,8 +200,8 @@ class TestResolveContactChannelIdentifierEntityFacts:
         )
         daemon = _make_daemon_with_pool(mock_pool)
 
-        result = await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon, contact_id=uuid.uuid4(), channel="email"
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=uuid.uuid4(), channel="email"
         )
         assert result is None
 
@@ -219,8 +215,8 @@ class TestResolveContactChannelIdentifierEntityFacts:
         )
         daemon = _make_daemon_with_pool(mock_pool)
 
-        result = await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon, contact_id=uuid.uuid4(), channel="telegram"
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=uuid.uuid4(), channel="telegram"
         )
         # Numeric ID returned, prefix stripped
         assert result == "12345678"
@@ -230,37 +226,24 @@ class TestResolveContactChannelIdentifierEntityFacts:
         ef_query = next(q for q in queries if "relationship.entity_facts" in q)
         assert "LIKE" in ef_query or "like" in ef_query.lower()
 
-    async def test_two_step_resolution_order(self) -> None:
-        """contacts→entity_id query precedes entity_facts→object query."""
+    async def test_resolution_is_single_query_entity_direct(self) -> None:
+        """Resolution issues exactly one query — entity_facts, no public.contacts step."""
         from butlers.daemon import ButlerDaemon
 
-        call_order = []
-        mock_conn = AsyncMock()
-
-        async def _ordered_fetchrow(query: str, *args, **kwargs):
-            if "public.contacts" in query:
-                call_order.append("contacts")
-                return {"entity_id": _ENTITY_ID}
-            if "entity_facts" in query:
-                call_order.append("entity_facts")
-                return {"object": "result@example.com"}
-            return None
-
-        mock_conn.fetchrow = AsyncMock(side_effect=_ordered_fetchrow)
-
-        mock_pool = AsyncMock()
-
-        @asynccontextmanager
-        async def mock_acquire():
-            yield mock_conn
-
-        mock_pool.acquire = mock_acquire
+        mock_pool, mock_conn = _make_mock_pool_with_entity_facts(
+            entity_id=_ENTITY_ID,
+            facts_value="result@example.com",
+        )
         daemon = _make_daemon_with_pool(mock_pool)
 
-        await ButlerDaemon._resolve_contact_channel_identifier(
-            daemon, contact_id=uuid.uuid4(), channel="email"
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=uuid.uuid4(), channel="email"
         )
-        assert call_order == ["contacts", "entity_facts"]
+        assert result == "result@example.com"
+        assert mock_conn.fetchrow.await_count == 1
+        queries = [c.args[0] for c in mock_conn.fetchrow.await_args_list]
+        assert any("relationship.entity_facts" in q for q in queries)
+        assert not any("public.contacts" in q for q in queries)
 
 
 # ---------------------------------------------------------------------------

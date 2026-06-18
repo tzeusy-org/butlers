@@ -8,7 +8,7 @@ Wraps gated tools at MCP registration time so that:
    that channel type in ``relationship.entity_facts``, the action is auto-approved
    with no standing rule required.  Non-primary owner addresses (e.g. a work
    Telegram chat ID) fall through to the rules/parking flow.
-   ``contact_id`` dispatch is exempt from the primacy check — the system
+   ``entity_id`` dispatch is exempt from the primacy check — the system
    already resolves to the primary address downstream.
 3. For non-owner targets, standing approval rules are checked — if a rule
    matches, the tool is auto-approved and executed immediately.
@@ -115,7 +115,7 @@ def _extract_channel_identity(
 
     Inspects tool_args for known channel identifier patterns:
 
-    - ``contact_id`` (UUID string): returned as-is with type ``"contact_id"`` for
+    - ``entity_id`` (UUID string): returned as-is with type ``"entity_id"`` for
       direct lookup (not a channel type, handled separately by callers).
     - ``channel`` + ``recipient``: used by the ``notify`` tool.
     - ``chat_id``: used by ``telegram_send_message`` / ``telegram_reply_to_message``.
@@ -129,10 +129,10 @@ def _extract_channel_identity(
         ``(channel_type, channel_value)`` when a recognizable pair is found,
         ``None`` when the tool_args carry no resolvable channel identity.
     """
-    # contact_id direct lookup (highest priority — explicit contact reference)
-    contact_id = tool_args.get("contact_id")
-    if contact_id and isinstance(contact_id, str) and contact_id.strip():
-        return ("contact_id", contact_id.strip())
+    # entity_id direct lookup (highest priority — explicit entity reference)
+    entity_id = tool_args.get("entity_id")
+    if entity_id and isinstance(entity_id, str) and entity_id.strip():
+        return ("entity_id", entity_id.strip())
 
     # notify() tool pattern: channel + recipient
     channel = tool_args.get("channel")
@@ -180,8 +180,8 @@ async def _resolve_target_contact(
     value, then queries ``relationship.entity_facts`` via
     :func:`resolve_contact_by_channel` (migration bead 7).
 
-    For ``contact_id`` extractions (explicit contact reference), queries
-    ``public.contacts`` directly by UUID.
+    For ``entity_id`` extractions (explicit entity reference), queries
+    ``public.entities`` directly by UUID.
 
     Parameters
     ----------
@@ -201,25 +201,23 @@ async def _resolve_target_contact(
 
     channel_type, channel_value = identity
 
-    if channel_type == "contact_id":
-        # contact_id dispatch: look up entity via public.contacts (kept until bead 8).
-        # After bead 8 the caller will pass entity_id directly; for now we still
-        # resolve via the contacts table to maintain backward compatibility.
+    if channel_type == "entity_id":
+        # entity_id dispatch: resolve the entity directly (the caller passes
+        # public.entities.id; no public.contacts indirection).
         try:
             row = await pool.fetchrow(
                 """
                 SELECT e.id               AS entity_id,
                        e.canonical_name   AS name,
                        COALESCE(e.roles, '{}') AS roles
-                FROM public.contacts c
-                JOIN public.entities e ON e.id = c.entity_id
-                WHERE c.id = $1::uuid
+                FROM public.entities e
+                WHERE e.id = $1::uuid
                 """,
                 channel_value,
             )
         except Exception:  # noqa: BLE001
             logger.debug(
-                "_resolve_target_contact: direct contact_id lookup failed; returning None",
+                "_resolve_target_contact: direct entity_id lookup failed; returning None",
                 exc_info=True,
             )
             return None
@@ -344,7 +342,7 @@ def _make_gate_wrapper(
        Non-primary owner addresses (e.g. a work Telegram chat ID alongside the
        personal one) fall through to the rules/parking flow so they appear in
        the approval queue.
-       ``contact_id`` dispatch is exempt from the primacy check because no
+       ``entity_id`` dispatch is exempt from the primacy check because no
        specific address is targeted — the system already resolves to primary.
     3. If the target is a known non-owner contact: check standing rules;
        auto-approve if a rule matches, otherwise pend.
@@ -443,19 +441,19 @@ def _make_gate_wrapper(
         # --- Role-based target resolution ---
         resolved_contact = await _resolve_target_contact(pool, tool_args)
 
-        # Determine whether this is a channel-based or contact_id-based dispatch.
+        # Determine whether this is a channel-based or entity_id-based dispatch.
         # For channel-based dispatches (telegram, whatsapp, etc.) the owner bypass
         # requires that the targeted address is the *primary* entry for that channel
         # type.  Non-primary addresses (e.g. a work Telegram chat ID) must go
         # through the normal rules/parking flow.
-        # contact_id dispatch has no specific address to check — skip primacy gate.
+        # entity_id dispatch has no specific address to check — skip primacy gate.
         owner_is_primary: bool
         identity = _extract_channel_identity(tool_args)
         if (
             resolved_contact is not None
             and "owner" in resolved_contact.roles
             and identity is not None
-            and identity[0] != "contact_id"
+            and identity[0] != "entity_id"
         ):
             channel_type, channel_value = identity
             if resolved_contact.entity_id is None:
@@ -470,8 +468,8 @@ def _make_gate_wrapper(
                     channel_value,
                 )
         else:
-            # contact_id dispatch or unresolvable: treat as primary (no specific
-            # address to gate against; contact_id resolution already prefers primary).
+            # entity_id dispatch or unresolvable: treat as primary (no specific
+            # address to gate against; entity_id resolution already prefers primary).
             owner_is_primary = True
 
         if resolved_contact is not None and "owner" in resolved_contact.roles and owner_is_primary:

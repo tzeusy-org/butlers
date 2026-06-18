@@ -915,38 +915,38 @@ class TestIncidentReplay:
 
 
 # ---------------------------------------------------------------------------
-# Bug fix: contact_id must not bypass email validation guard
+# Bug fix: entity_id must not bypass email validation guard
 # ---------------------------------------------------------------------------
 
 DBS_ALERT_EMAIL = "ibanking.alert@dbs.com"
-TEMP_CONTACT_ID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+TEMP_ENTITY_ID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 
 
 def _temp_contact() -> ResolvedContact:
     """Temp contact created during email ingestion (no owner role)."""
     return ResolvedContact(
-        contact_id=TEMP_CONTACT_ID,
+        contact_id=None,
         name="Unknown (email ibanking.alert@dbs.com)",
         roles=[],
-        entity_id=None,
+        entity_id=TEMP_ENTITY_ID,
     )
 
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("register_email_guard_hook")
-class TestContactIdBypassFix:
-    """Bug fix: notify(contact_id=...) must NOT skip the email validation guard.
+class TestEntityIdBypassFix:
+    """Bug fix: notify(entity_id=...) must NOT skip the email validation guard.
 
     Prior to this fix, the email validation guard at daemon.py had the condition:
-        if channel == "email" and resolved_recipient is not None and contact_id is None:
-    The `contact_id is None` clause meant that providing a contact_id (e.g. from
+        if channel == "email" and resolved_recipient is not None and entity_id is None:
+    The `entity_id is None` clause meant that providing an entity_id (e.g. from
     a temp contact created during email ingestion) bypassed the guard entirely.
     """
 
-    async def test_contact_id_with_unknown_email_is_parked(self, butler_dir: Path) -> None:
-        """notify(contact_id=X) where X resolves to an email unknown to contact lookup.
+    async def test_entity_id_with_unknown_email_is_parked(self, butler_dir: Path) -> None:
+        """notify(entity_id=X) where X resolves to an email unknown to contact lookup.
 
-        Simulates: temp contact created during ingestion, then the contact_info entry
+        Simulates: temp entity created during ingestion, then the channel fact
         is cleaned up or the email doesn't reverse-resolve. The guard MUST still run.
         """
         daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
@@ -954,11 +954,11 @@ class TestContactIdBypassFix:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        # Simulate contact_id resolution: _resolve_contact_channel_identifier returns email
+        # Simulate entity_id resolution: _resolve_entity_channel_identifier returns email
         with (
             patch.object(
                 daemon,
-                "_resolve_contact_channel_identifier",
+                "_resolve_entity_channel_identifier",
                 new=AsyncMock(return_value=DBS_ALERT_EMAIL),
             ),
             # But resolve_contact_by_channel returns None (email not found on re-lookup)
@@ -970,13 +970,13 @@ class TestContactIdBypassFix:
             result = await notify_fn(
                 channel="email",
                 message="Card transaction alert details requested",
-                contact_id=str(TEMP_CONTACT_ID),
+                entity_id=str(TEMP_ENTITY_ID),
             )
 
         assert result["status"] == "pending_approval", (
-            f"contact_id resolving to unknown email MUST be parked, "
+            f"entity_id resolving to unknown email MUST be parked, "
             f"got status={result.get('status')}. "
-            f"The contact_id path must NOT bypass the email validation guard."
+            f"The entity_id path must NOT bypass the email validation guard."
         )
         daemon.switchboard_client.call_tool.assert_not_awaited()
 
@@ -1213,26 +1213,26 @@ class TestDBSIncidentReplay:
 
     A butler received a DBS card alert (from ibanking.alert@dbs.com), found the
     body empty, and replied asking for details. The reply was sent because:
-    1. notify() email guard was skipped when contact_id was provided
+    1. notify() email guard was skipped when entity_id was provided
     2. route.execute called _reply_to_thread() directly, bypassing approval gates
 
     Both bugs are now fixed. This test verifies the combined defense.
     """
 
-    async def test_dbs_reply_via_notify_contact_id_is_blocked(self, butler_dir: Path) -> None:
-        """Exact DBS scenario: butler replies via notify(contact_id=...) → blocked."""
+    async def test_dbs_reply_via_notify_entity_id_is_blocked(self, butler_dir: Path) -> None:
+        """Exact DBS scenario: butler replies via notify(entity_id=...) → blocked."""
         daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
         assert notify_fn is not None
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        # Simulate: temp contact was created for DBS during email ingestion,
-        # so _resolve_contact_channel_identifier finds the email.
+        # Simulate: temp entity was created for DBS during email ingestion,
+        # so _resolve_entity_channel_identifier finds the email.
         # But resolve_contact_by_channel returns the temp contact (no owner role).
         with (
             patch.object(
                 daemon,
-                "_resolve_contact_channel_identifier",
+                "_resolve_entity_channel_identifier",
                 new=AsyncMock(return_value=DBS_ALERT_EMAIL),
             ),
             # Temp contact exists in contact_info but has NO owner role
@@ -1248,7 +1248,7 @@ class TestDBSIncidentReplay:
                     "ibanking.alert@dbs.com but the body came through empty. "
                     "Please forward the full alert."
                 ),
-                contact_id=str(TEMP_CONTACT_ID),
+                entity_id=str(TEMP_ENTITY_ID),
             )
 
         # The temp contact IS in contact_info, so the notify guard allows it.
@@ -1256,7 +1256,7 @@ class TestDBSIncidentReplay:
         # catch it at the delivery layer. But if the temp contact is NOT in
         # contact_info (cleaned up), the notify guard catches it here.
         # This test verifies the guard RUNS (Bug 1 fix) — it used to be skipped
-        # entirely when contact_id was provided.
+        # entirely when entity_id was provided.
         # With the temp contact found, status will be "ok" at this layer because
         # the guard only checks existence. The route.execute fix (tested above)
         # provides the role-based defense.

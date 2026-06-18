@@ -69,7 +69,7 @@ def channel_value_for_storage(channel_type: str, channel_value: str) -> str:
     pre-existing ``telegram:`` prefix is stripped and a leading ``@`` removed,
     then the prefix is re-applied) so that storage, resolution
     (``resolve_contact_by_channel``), and delivery
-    (``daemon._resolve_contact_channel_identifier``: ``LIKE 'telegram:%'``) all
+    (``daemon._resolve_entity_channel_identifier``: ``LIKE 'telegram:%'``) all
     agree on ONE format.  This is the write-side counterpart of the read-side
     telegram-prefix fallback and mirrors the Phase 2 backfill (rel_028) and
     ingress writer (:func:`assert_sender_channel_fact`).
@@ -536,29 +536,6 @@ async def create_temp_contact(
 _OUTBOUND_FALLBACK_PRECEDENCE: tuple[str, ...] = ("telegram", "email")
 
 
-async def _resolve_entity_id_for_contact(
-    conn: asyncpg.Connection,
-    contact_id: UUID,
-) -> UUID | None:
-    """Resolve ``contact_id`` → linked ``entity_id`` via ``public.contacts``.
-
-    Returns ``None`` when the contact is unknown or has no linked entity.
-    """
-    row = await conn.fetchrow(
-        "SELECT entity_id FROM public.contacts WHERE id = $1 LIMIT 1",
-        contact_id,
-    )
-    if row is None or row["entity_id"] is None:
-        return None
-    entity_id = row["entity_id"]
-    if isinstance(entity_id, UUID):
-        return entity_id
-    try:
-        return UUID(str(entity_id))
-    except (ValueError, AttributeError):
-        return None
-
-
 async def _active_prefers_channel(
     conn: asyncpg.Connection,
     entity_id: UUID,
@@ -590,26 +567,24 @@ async def _active_prefers_channel(
 
 async def resolve_outbound_channel(
     pool: asyncpg.Pool,
-    contact_id: UUID,
+    entity_id: UUID,
     *,
     deliverable_channels: set[str],
     conn: asyncpg.Connection | None = None,
 ) -> str | None:
-    """Pick the outbound channel for a contact-targeted notification.
+    """Pick the outbound channel for an entity-targeted notification.
 
     Used by :func:`notify` only when the caller did NOT force a ``channel``.
 
     Resolution (entity-keyed-preferred-channel, core-notify spec):
 
-    1. ``contact_id`` → ``entity_id`` (via ``public.contacts.entity_id``).
-       Unknown / unlinked contact → return ``None`` (caller decides default).
-    2. Read the entity's active ``prefers-channel`` fact. When set, the channel
+    1. Read the entity's active ``prefers-channel`` fact. When set, the channel
        is honoured ONLY when it is both in *deliverable_channels* and currently
        reachable (the entity has the matching ``has-*`` contact fact, validated
        by the group-1 ``_entity_has_reachability_fact`` helper). A preference for
        a non-deliverable channel (e.g. ``discord``) or an unreachable one is
        skipped without error.
-    3. Otherwise fall back to the existing contact-fact precedence
+    2. Otherwise fall back to the existing reachability precedence
        (``_OUTBOUND_FALLBACK_PRECEDENCE``: telegram handle → email), returning the
        first deliverable channel the entity is reachable on.
 
@@ -617,8 +592,9 @@ async def resolve_outbound_channel(
     ----------
     pool:
         asyncpg connection pool (used when *conn* is ``None``).
-    contact_id:
-        UUID of the target contact in ``public.contacts``.
+    entity_id:
+        UUID of the target entity in ``public.entities``. Unknown / unreachable
+        entity → return ``None`` (caller decides default).
     deliverable_channels:
         The set of channels delivery can currently reach (notify's supported set,
         today ``{"telegram", "email"}``). A preference outside this set is
@@ -630,7 +606,7 @@ async def resolve_outbound_channel(
     -------
     str | None
         The chosen channel name, or ``None`` when no deliverable channel could be
-        resolved for the contact.
+        resolved for the entity.
     """
     # Reuse group-1's reachability check and predicate name rather than
     # re-implementing the channel→has-* mapping (single source of truth).
@@ -640,10 +616,6 @@ async def resolve_outbound_channel(
     )
 
     async def _resolve(c: asyncpg.Connection) -> str | None:
-        entity_id = await _resolve_entity_id_for_contact(c, contact_id)
-        if entity_id is None:
-            return None
-
         # 1. Honour an active preference when deliverable AND reachable.
         preferred = await _active_prefers_channel(c, entity_id, PREFERS_CHANNEL_PREDICATE)
         if (
@@ -671,8 +643,8 @@ async def resolve_outbound_channel(
         # notify() falls through to its caller-supplied / owner-default path
         # rather than failing the notification outright.
         logger.debug(
-            "resolve_outbound_channel: resolution failed for contact_id=%s; returning None",
-            contact_id,
+            "resolve_outbound_channel: resolution failed for entity_id=%s; returning None",
+            entity_id,
             exc_info=True,
         )
         return None

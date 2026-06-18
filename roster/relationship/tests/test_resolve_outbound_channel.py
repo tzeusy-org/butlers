@@ -5,7 +5,7 @@ Covers (entity-keyed-preferred-channel, group 2, bu-upbit; spec core-notify):
   - Preference skipped when not deliverable (discord pref, no discord handle)
   - Preference skipped when deliverable but entity not reachable on it
   - No preference → fall back to telegram → email precedence (first reachable)
-  - Unknown / unlinked contact → None
+  - Unknown entity_id → None
   - No reachable channel at all → None
 
 These exercise the real reachability validation reused from the group-1 fact
@@ -148,7 +148,7 @@ class TestPreferenceHonored:
         await _add_channel(pool, entity_id, "has-email", "alice@example.com")
         await assert_prefers_channel(pool, entity_id, "telegram")
 
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
+        chosen = await resolve_outbound_channel(pool, entity_id, deliverable_channels=_DELIVERABLE)
         assert chosen == "telegram"
 
     async def test_email_preference_honored_over_telegram_fallback(self, pool):
@@ -159,7 +159,7 @@ class TestPreferenceHonored:
         await _add_channel(pool, entity_id, "has-email", "alice@example.com")
         await assert_prefers_channel(pool, entity_id, "email")
 
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
+        chosen = await resolve_outbound_channel(pool, entity_id, deliverable_channels=_DELIVERABLE)
         assert chosen == "email"
 
 
@@ -173,7 +173,7 @@ class TestPreferenceSkipped:
         await _add_channel(pool, entity_id, "has-email", "alice@example.com")
         await assert_prefers_channel(pool, entity_id, "discord")
 
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
+        chosen = await resolve_outbound_channel(pool, entity_id, deliverable_channels=_DELIVERABLE)
         assert chosen == "email"
 
     async def test_skipped_when_deliverable_but_not_reachable(self, pool):
@@ -191,7 +191,7 @@ class TestPreferenceSkipped:
             entity_id,
         )
 
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
+        chosen = await resolve_outbound_channel(pool, entity_id, deliverable_channels=_DELIVERABLE)
         assert chosen == "email"
 
 
@@ -202,33 +202,27 @@ class TestFallback:
         await _add_channel(pool, entity_id, "has-email", "alice@example.com")
         # No prefers-channel fact asserted.
 
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
+        chosen = await resolve_outbound_channel(pool, entity_id, deliverable_channels=_DELIVERABLE)
         assert chosen == "telegram"
 
     async def test_no_preference_falls_to_email_when_no_telegram(self, pool):
         contact_id, entity_id = await _new_contact(pool)
         await _add_channel(pool, entity_id, "has-email", "alice@example.com")
 
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
+        chosen = await resolve_outbound_channel(pool, entity_id, deliverable_channels=_DELIVERABLE)
         assert chosen == "email"
 
     async def test_no_reachable_channel_returns_none(self, pool):
-        contact_id, _ = await _new_contact(pool)
+        _, entity_id = await _new_contact(pool)
         # No channel facts at all.
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
+        chosen = await resolve_outbound_channel(pool, entity_id, deliverable_channels=_DELIVERABLE)
         assert chosen is None
 
 
-class TestUnknownContact:
-    async def test_unknown_contact_returns_none(self, pool):
+class TestUnknownEntity:
+    async def test_unknown_entity_returns_none(self, pool):
+        # An entity_id that names no entity (and thus no facts) resolves to None.
         chosen = await resolve_outbound_channel(
             pool, uuid.uuid4(), deliverable_channels=_DELIVERABLE
         )
-        assert chosen is None
-
-    async def test_contact_without_entity_returns_none(self, pool):
-        contact_id = await pool.fetchval(
-            "INSERT INTO public.contacts (name, entity_id) VALUES ('Orphan', NULL) RETURNING id"
-        )
-        chosen = await resolve_outbound_channel(pool, contact_id, deliverable_channels=_DELIVERABLE)
         assert chosen is None
