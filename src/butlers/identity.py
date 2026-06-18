@@ -32,9 +32,36 @@ _WHATSAPP_INDIVIDUAL_JID_SUFFIX = "@s.whatsapp.net"
 _WHATSAPP_JID_PHONE_RE = re.compile(r"^(\d+)@s\.whatsapp\.net$")
 
 # Telegram channel types whose values may be usernames (with or without @-prefix).
-# Numeric chat IDs (e.g. "206570151") are stored as-is and will match on the
-# first exact-match attempt; only username lookups need normalization.
+# These also get the case-insensitive username-variant normalization below.
 _TELEGRAM_USERNAME_CHANNEL_TYPES: frozenset[str] = frozenset({"telegram", "telegram_username"})
+
+# All Telegram channel types.  Telegram ``has-handle`` triples are stored
+# canonically with a ``telegram:`` prefix (migration rel_019), but callers pass
+# the bare value — a numeric chat id ("206570151"), an @username, or an already
+# prefixed value.  Every telegram channel therefore gets the ``telegram:``-prefix
+# resolution fallback (not just ``telegram_user_client``), so a numeric chat id
+# from ``telegram_send_message`` or an inbound ``telegram_bot`` sender resolves to
+# its prefixed triple.
+_TELEGRAM_PREFIX_CHANNEL_TYPES: frozenset[str] = frozenset(
+    {
+        "telegram",
+        "telegram_user_id",
+        "telegram_user_client",
+        "telegram_username",
+        "telegram_bot",
+        "telegram_chat_id",
+    }
+)
+
+
+def _telegram_prefixed_value(channel_value: str) -> str:
+    """Return the canonical ``telegram:<bare>`` form for a Telegram channel value."""
+    bare = channel_value
+    if bare.startswith("telegram:"):
+        bare = bare[len("telegram:") :]
+    bare = bare.lstrip("@")
+    return f"telegram:{bare}"
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +85,7 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "telegram_user_client": "has-handle",
     "telegram_username": "has-handle",
     "telegram_chat_id": "has-handle",  # non-secret routing handle → entity_facts
+    "telegram_bot": "has-handle",
     "linkedin": "has-handle",
     "twitter": "has-handle",
     "website": "has-website",
@@ -257,16 +285,17 @@ async def resolve_contact_by_channel(
             )
             return None
 
-    if row is None and channel_type == "telegram_user_client":
-        # telegram_user_client fallback: try has-handle with telegram: prefix
-        telegram_value = (
-            channel_value if channel_value.startswith("telegram:") else f"telegram:{channel_value}"
-        )
+    if row is None and channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        # Telegram canonical-prefix fallback: handles are stored as telegram:<bare>
+        # (rel_019).  Try the prefixed form so a numeric chat id from
+        # telegram_send_message or an inbound telegram_bot sender resolves to its
+        # triple.  (@-username variants are handled separately below.)
+        telegram_value = _telegram_prefixed_value(channel_value)
         try:
             row = await _resolve_entity_by_triple(pool, "has-handle", telegram_value)
         except Exception:  # noqa: BLE001
             logger.debug(
-                "resolve_contact_by_channel: telegram_user_client fallback query failed",
+                "resolve_contact_by_channel: telegram prefix fallback query failed",
                 exc_info=True,
             )
             return None
@@ -690,8 +719,11 @@ __all__ = [
     "create_temp_contact",
     "resolve_contact_by_channel",
     "resolve_outbound_channel",
-    # Telegram username normalization helper — consumed by approvals._shared
-    # to keep is_primary_contact consistent with resolve_contact_by_channel.
+    # Telegram normalization helpers — consumed by approvals._shared to keep
+    # is_primary_contact consistent with resolve_contact_by_channel.
     "_telegram_username_candidates",
     "_TELEGRAM_USERNAME_CHANNEL_TYPES",
+    "_telegram_prefixed_value",
+    "_TELEGRAM_PREFIX_CHANNEL_TYPES",
+    "_CHANNEL_TYPE_TO_PREDICATE",
 ]

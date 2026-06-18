@@ -25,26 +25,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import asyncpg
 
-from butlers.identity import _TELEGRAM_USERNAME_CHANNEL_TYPES, _telegram_username_candidates
+# Sourced from butlers.identity so the approval gate's primacy check stays
+# byte-for-byte consistent with reverse-resolution — a drift here silently breaks
+# the owner auto-approve bypass (the exact failure mode this module guards).
+from butlers.identity import (
+    _CHANNEL_TYPE_TO_PREDICATE,
+    _TELEGRAM_PREFIX_CHANNEL_TYPES,
+    _TELEGRAM_USERNAME_CHANNEL_TYPES,
+    _telegram_prefixed_value,
+    _telegram_username_candidates,
+)
 
 logger = logging.getLogger(__name__)
-
-# Channel-type → predicate mapping (mirrors identity._CHANNEL_TYPE_TO_PREDICATE)
-# telegram_chat_id maps to has-handle per RFC 0004 Amendment 3 (bu-oluyt.1):
-# non-secret routing handles belong in entity_facts, not entity_info.
-_CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
-    "email": "has-email",
-    "phone": "has-phone",
-    "telegram": "has-handle",
-    "telegram_user_id": "has-handle",
-    "telegram_user_client": "has-handle",
-    "telegram_chat_id": "has-handle",  # non-secret routing handle → entity_facts
-    "linkedin": "has-handle",
-    "twitter": "has-handle",
-    "website": "has-website",
-    "other": "has-handle",
-    "whatsapp_jid": "has-handle",
-}
 
 
 async def is_primary_contact(
@@ -100,6 +92,13 @@ async def is_primary_contact(
         candidates = _telegram_username_candidates(channel_value)
     else:
         candidates = [channel_value]
+    # Telegram handles are stored canonically prefixed (telegram:<bare>, rel_019).
+    # Add the prefixed form for every telegram channel type so a numeric chat id
+    # or @username is primacy-checked against its real stored triple.
+    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        prefixed = _telegram_prefixed_value(channel_value)
+        if prefixed not in candidates:
+            candidates.append(prefixed)
 
     try:
         for candidate in candidates:

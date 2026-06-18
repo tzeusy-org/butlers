@@ -53,7 +53,18 @@ def _make_pool(
                 if entity_insert_returns is None:
                     fetchval_results.append(owner_select_after_insert)
 
-    conn.fetchval = AsyncMock(side_effect=fetchval_results)
+    # Return queued results in order, then None for any further calls (the Phase 2
+    # owner-telegram-handle seed's existence check) so the seed is a clean no-op in
+    # these entity-creation focused tests.
+    _fetchval_iter = iter(fetchval_results)
+
+    async def _fetchval(*_args: object, **_kwargs: object) -> object:
+        try:
+            return next(_fetchval_iter)
+        except StopIteration:
+            return None
+
+    conn.fetchval = AsyncMock(side_effect=_fetchval)
 
     pool = MagicMock()
     pool.acquire = MagicMock()
@@ -138,6 +149,46 @@ class TestEnsureOwnerEntityBehavior:
 
         conn4.fetchval = AsyncMock(side_effect=failing_on_insert)
         await _ensure_owner_entity(pool4)  # Should not raise
+
+
+class TestSeedOwnerTelegramHandle:
+    """Phase 2: mirror the owner's entity_info telegram_chat_id into a resolvable triple."""
+
+    async def test_seeds_prefixed_handle_from_chat_id(self) -> None:
+        from butlers.owner_bootstrap import _seed_owner_telegram_handle
+
+        conn = AsyncMock()
+        # 1. tables_ready check → True; 2. chat_id lookup → "206570151"
+        conn.fetchval = AsyncMock(side_effect=[True, "206570151"])
+        conn.execute = AsyncMock()
+
+        await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
+
+        conn.execute.assert_awaited_once()
+        insert_sql, *args = conn.execute.call_args.args
+        assert "relationship.entity_facts" in insert_sql
+        assert "has-handle" in insert_sql
+        assert "ON CONFLICT" in insert_sql  # idempotent
+        assert args[0] == _OWNER_ENTITY_ID
+        assert args[1] == "telegram:206570151"  # canonical prefixed form
+
+    async def test_no_chat_id_is_noop(self) -> None:
+        from butlers.owner_bootstrap import _seed_owner_telegram_handle
+
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(side_effect=[True, None])
+        conn.execute = AsyncMock()
+        await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
+        conn.execute.assert_not_awaited()
+
+    async def test_missing_tables_is_noop(self) -> None:
+        from butlers.owner_bootstrap import _seed_owner_telegram_handle
+
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(side_effect=[False])
+        conn.execute = AsyncMock()
+        await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
+        conn.execute.assert_not_awaited()
 
 
 class TestConcurrentStartupSafety:
