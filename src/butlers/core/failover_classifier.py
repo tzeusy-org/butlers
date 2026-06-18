@@ -122,6 +122,12 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
     # different same-tier model is the correct response.
     "compact_remote",
     "remote compaction failed",
+    # Codex / ChatGPT plan usage-cap exhaustion (5h or weekly limit).  The CLI
+    # exits 1 before any tool call with "You've hit your usage limit." — a
+    # pre-invocation systemic rejection, so failover to a same-tier non-codex
+    # model (e.g. opencode) is the correct response.
+    "usage limit",
+    "hit your usage limit",
 )
 
 # Substrings matched (lowercased) against the exception message to detect a

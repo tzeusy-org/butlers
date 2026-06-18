@@ -389,6 +389,31 @@ class TestRateLimitErrorsEligible:
         )
         assert "rate_limit" in dec.reason
 
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            # The exact string the Codex CLI emits when the ChatGPT plan 5h/weekly
+            # usage cap is hit — exit 1 before any tool call.  Observed in dev:
+            # 74 such failures in 24h were misclassified as unknown_runtime_error
+            # and never failed over to the same-tier opencode model.
+            "Codex CLI exited with code 1: You've hit your usage limit. Visit "
+            "https://chatgpt.com/codex/settings/usage to purchase more credits "
+            "or try again at 12:25 PM.",
+            "you've hit your usage limit",
+            "reached usage limit for this period",
+        ],
+    )
+    def test_codex_usage_limit_is_eligible(self, msg: str) -> None:
+        """Codex plan usage-cap exhaustion is failover-eligible.
+
+        Exit 1 with no tool calls is a pre-invocation systemic rejection; the
+        spawner should fail over to a same-tier non-codex model rather than
+        terminating the session.
+        """
+        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        assert _eligible(dec), f"Expected eligible for usage-limit msg={msg!r}, got: {dec.reason}"
+        assert "rate_limit" in dec.reason
+
 
 # ---------------------------------------------------------------------------
 # AC-1d: MCP discovery failures ARE eligible
