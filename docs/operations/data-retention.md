@@ -93,42 +93,51 @@ scan.  See sw_016 migration docstring for full budget analysis.
 
 ### `{butler_schema}.session_process_logs`
 
-**Decision: TTL 14 DAYS — pruner needed (see Follow-up [A])**
+**Decision: TTL 14 DAYS — pruner implemented, disabled by default (see Follow-up [A])**
 
 Process/execution logs for in-flight and completed sessions.  High-velocity
 write path.  The schema declares a 14-day `expires_at` column with a correct
-default, but no automated pruner currently runs.
+default.
 
-Current state: rows accumulate indefinitely until a pruner is wired up.
-This is a low-risk gap (process logs, not personal interaction records) but
-will cause unbounded table growth on active butlers.
+Current state: `butlers.jobs.retention.prune_session_process_logs()` implements
+the sweep but is **disabled by default**.  Enable per-butler by adding a scheduled
+task in `butler.toml` with `job_name = "session_process_logs_prune"` and
+`job_args = {enabled = true, dry_run = false, schema = "<butler_name>"}`.
+Dry-run logs candidate count without deleting.
 
 ---
 
 ### `connectors.filtered_events`
 
-**Decision: MONTHLY PARTITIONED — old partition pruning needed (see Follow-up [B])**
+**Decision: MONTHLY PARTITIONED — old partition pruner implemented, disabled by default (see Follow-up [B])**
 
 Connector event buffer.  Partitioned by month (`core_007`).  Old partitions
-accumulate — there is no `DROP PARTITION` sweep.
+accumulate.
 
-Current state: all historical monthly partitions are retained.  This is safe
-(no data loss risk) but will grow unboundedly.  Partition pruning is a
-follow-up once a policy on connector event history depth is agreed.
+Current state: `butlers.jobs.retention.prune_filtered_events_partitions()` implements
+a partition DROP sweep but is **disabled by default**.  Enable on the `general` butler
+with `job_name = "filtered_events_partition_prune"` and
+`job_args = {enabled = true, dry_run = false, keep_months = 12}`.
+Default policy: keep the most recent 12 months.  Dry-run lists eligible partitions
+without dropping.
 
 ---
 
 ### `public.insight_candidates`
 
-**Decision: STATUS-GATED KEEP / EXPIRES-AT for delivered rows**
+**Decision: STATUS-GATED KEEP / EXPIRES-AT for delivered rows — pruner implemented, disabled by default (see Follow-up [C])**
 
 Insight candidates have an `expires_at` column and a `status` field
 (`pending` → `delivered` / `filtered`).  The schema supports TTL-based
 cleanup of delivered/filtered candidates via a partial index on
 `(created_at) WHERE status <> 'pending'` (core_010).
 
-Current state: no automated pruner runs.  Delivered and expired candidates
-accumulate.  See Follow-up [C].
+Current state: `butlers.jobs.retention.prune_insight_candidates()` implements the
+sweep but is **disabled by default**.  Enable on the `general` butler with
+`job_name = "insight_candidates_prune"` and
+`job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
+Only terminal-status rows (`delivered`, `filtered`, `expired`) older than
+`ttl_days` are eligible.  `pending` rows are never touched.
 
 ---
 
@@ -143,11 +152,17 @@ No independent retention concern at current volumes.
 
 ### `public.secret_probe_log`
 
-**Decision: 90+ DAYS (core_105 spec)**
+**Decision: 90+ DAYS (core_105 spec) — pruner implemented, disabled by default (see Follow-up [D])**
 
 The core_105 migration docstring declares "Retention: ≥ 90 days (archive
-path not specified here)".  No pruner implemented yet.
-See Follow-up [D].
+path not specified here)".
+
+Current state: `butlers.jobs.retention.prune_secret_probe_log()` implements the
+sweep but is **disabled by default**.  Enable on the `general` butler with
+`job_name = "secret_probe_log_prune"` and
+`job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
+The pruner enforces the spec minimum: `ttl_days < 90` raises `ValueError`.
+Dry-run logs candidate count without deleting.
 
 ---
 
@@ -162,26 +177,31 @@ Not covered by this audit — defer to the memory butler's policy framework.
 
 ---
 
-## Follow-up items (deferred, no auto-delete before owner confirms)
+## Follow-up items
 
-These were identified during the audit but excluded from this PR to keep the
-scope additive-only.  Each needs a separate bead and explicit owner sign-off
-before any pruning code ships.
+**[A] session_process_logs pruner — IMPLEMENTED (bu-2nlt4)**
+`butlers.jobs.retention.prune_session_process_logs()` sweeps rows where
+`expires_at < now()`.  Registered as `session_process_logs_prune` in every
+butler's scheduled-job registry.  **Disabled by default** — enable per butler
+via `job_args = {enabled = true, dry_run = false, schema = "<butler_name>"}`.
 
-**[A] session_process_logs pruner**
-Wire an automated expiry sweep that deletes rows where `expires_at < now()`.
-The TTL column and default are already correct — only the sweep is missing.
-Suggested mechanism: a scheduled task on each butler, or a shared cron-driven
-background task.  Must be dry-run-able and owner-confirmable before enabling.
+**[B] filtered_events old partition pruning — IMPLEMENTED (bu-2nlt4)**
+`butlers.jobs.retention.prune_filtered_events_partitions()` drops monthly
+partitions older than `keep_months` (default: 12).  Registered as
+`filtered_events_partition_prune` on the `general` butler.  **Disabled by default.**
+Enable via `job_args = {enabled = true, dry_run = false, keep_months = 12}`.
 
-**[B] filtered_events old partition pruning**
-Define a policy (e.g. keep 12 months of connector events) and implement a
-monthly partition DROP sweep.  Must be opt-in via config; default = keep all.
+**[C] insight_candidates / engagement pruning — IMPLEMENTED (bu-2nlt4)**
+`butlers.jobs.retention.prune_insight_candidates()` removes terminal-status rows
+older than `ttl_days` (default: 90).  Registered as `insight_candidates_prune`
+on the `general` butler.  **Disabled by default.**
+Enable via `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
 
-**[C] insight_candidates / engagement pruning**
-Add a cron-driven cleanup that removes `delivered`/`filtered` candidates
-older than N days (suggested: 90).  Must be dry-run-able.
-
-**[D] secret_probe_log 90-day pruning**
-Implement the ≥ 90-day retention described in the core_105 spec.  Requires
-an archive path (export or discard decision) before deleting rows.
+**[D] secret_probe_log 90-day pruning — IMPLEMENTED (bu-2nlt4)**
+`butlers.jobs.retention.prune_secret_probe_log()` deletes rows older than
+`ttl_days` (minimum 90, per core_105 spec).  Registered as
+`secret_probe_log_prune` on the `general` butler.  **Disabled by default.**
+Enable via `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
+Note: no archive path was specified in the original spec; the pruner discards
+rows.  If an export path is needed before deleting, implement a separate export
+step before enabling deletion.

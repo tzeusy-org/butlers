@@ -905,6 +905,118 @@ async def _run_chronicler_project_spotify_job(
 
 
 # ---------------------------------------------------------------------------
+# Retention pruner jobs (opt-in, disabled by default)
+# ---------------------------------------------------------------------------
+
+
+async def _run_session_process_logs_prune_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Prune expired session_process_logs rows for a butler schema.
+
+    Disabled by default.  Enable via ``job_args = {enabled = true, dry_run = false}``.
+    ``schema`` must be supplied in job_args (defaults to the butler name).
+    See docs/operations/data-retention.md §[A] and butlers.jobs.retention.
+    """
+    from butlers.jobs.retention import prune_session_process_logs
+
+    args = job_args or {}
+    schema: str = args.get("schema", "general")
+    enabled: bool = bool(args.get("enabled", False))
+    dry_run: bool = bool(args.get("dry_run", True))
+    batch_limit: int = int(args.get("batch_limit", 500))
+    return await prune_session_process_logs(
+        pool,
+        schema=schema,
+        enabled=enabled,
+        dry_run=dry_run,
+        batch_limit=batch_limit,
+    )
+
+
+async def _run_filtered_events_partition_prune_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Drop old monthly partitions of connectors.filtered_events.
+
+    Disabled by default.  Enable via ``job_args = {enabled = true, dry_run = false}``.
+    See docs/operations/data-retention.md §[B] and butlers.jobs.retention.
+    """
+    from butlers.jobs.retention import prune_filtered_events_partitions
+
+    args = job_args or {}
+    enabled: bool = bool(args.get("enabled", False))
+    dry_run: bool = bool(args.get("dry_run", True))
+    keep_months: int = int(args.get("keep_months", 12))
+    return await prune_filtered_events_partitions(
+        pool,
+        enabled=enabled,
+        dry_run=dry_run,
+        keep_months=keep_months,
+    )
+
+
+async def _run_insight_candidates_prune_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Prune old delivered/filtered rows from public.insight_candidates.
+
+    Disabled by default.  Enable via ``job_args = {enabled = true, dry_run = false}``.
+    See docs/operations/data-retention.md §[C] and butlers.jobs.retention.
+    """
+    from butlers.jobs.retention import prune_insight_candidates
+
+    args = job_args or {}
+    enabled: bool = bool(args.get("enabled", False))
+    dry_run: bool = bool(args.get("dry_run", True))
+    ttl_days: int = int(args.get("ttl_days", 90))
+    batch_limit: int = int(args.get("batch_limit", 500))
+    return await prune_insight_candidates(
+        pool,
+        enabled=enabled,
+        dry_run=dry_run,
+        ttl_days=ttl_days,
+        batch_limit=batch_limit,
+    )
+
+
+async def _run_secret_probe_log_prune_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Prune old rows from public.secret_probe_log (≥90-day retention).
+
+    Disabled by default.  Enable via ``job_args = {enabled = true, dry_run = false}``.
+    See docs/operations/data-retention.md §[D] and butlers.jobs.retention.
+    """
+    from butlers.jobs.retention import prune_secret_probe_log
+
+    args = job_args or {}
+    enabled: bool = bool(args.get("enabled", False))
+    dry_run: bool = bool(args.get("dry_run", True))
+    ttl_days: int = int(args.get("ttl_days", 90))
+    batch_limit: int = int(args.get("batch_limit", 500))
+    return await prune_secret_probe_log(
+        pool,
+        enabled=enabled,
+        dry_run=dry_run,
+        ttl_days=ttl_days,
+        batch_limit=batch_limit,
+    )
+
+
+_RETENTION_PRUNER_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
+    "session_process_logs_prune": _run_session_process_logs_prune_job,
+    "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
+    "insight_candidates_prune": _run_insight_candidates_prune_job,
+    "secret_probe_log_prune": _run_secret_probe_log_prune_job,
+}
+
+
+# ---------------------------------------------------------------------------
 # Consolidated registry
 # ---------------------------------------------------------------------------
 
@@ -923,15 +1035,23 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "general": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
+            # Retention pruners (disabled by default — see docs/operations/data-retention.md)
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
+            "insight_candidates_prune": _run_insight_candidates_prune_job,
+            "secret_probe_log_prune": _run_secret_probe_log_prune_job,
         },
         "health": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_health_briefing_contribution_job,
             "insight_scan": _run_health_insight_scan_job,
+            # Per-butler session log pruner
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "finance": {
             "daily_briefing_contribution": _run_finance_briefing_contribution_job,
             "insight_scan": _run_finance_insight_scan_job,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "relationship": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -943,14 +1063,17 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "fact_retraction_curation": _run_relationship_fact_retraction_curation_job,
             "entity_dedup_curation": _run_relationship_entity_dedup_curation_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "travel": {
             "daily_briefing_contribution": _run_travel_briefing_contribution_job,
             "insight_scan": _run_travel_insight_scan_job,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "education": {
             "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
             "daily_briefing_contribution": _run_education_briefing_contribution_job,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "chronicler": {
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
@@ -979,21 +1102,25 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             **_HOME_DETERMINISTIC_JOB_HANDLERS,
             "daily_briefing_contribution": _run_home_briefing_contribution_job,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "lifestyle": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "switchboard": {
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "qa": {
             "qa_patrol": _run_qa_patrol_job,
             "qa_pr_status_check": _run_qa_pr_status_check_job,
             "qa_evidence_cleanup": _run_qa_evidence_cleanup_job,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
     }
 
