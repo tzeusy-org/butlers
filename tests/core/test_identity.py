@@ -501,6 +501,9 @@ async def test_second_message_from_new_sender_does_not_mint_duplicate_entity():
 
     channel_type, channel_value = "telegram", "new-sender-42"
     predicate = "has-handle"  # telegram → has-handle
+    # The writer normalises telegram handles to the canonical prefixed form, so
+    # the dedup triple lands as ``telegram:<bare>`` (bu-oluyt.5).
+    stored_value = "telegram:new-sender-42"
 
     # In-memory triple store shared by the read path (resolve_contact_by_channel)
     # and the deterministic hook's write (mocked relationship_assert_fact).
@@ -518,13 +521,15 @@ async def test_second_message_from_new_sender_does_not_mint_duplicate_entity():
     assert first is not None
     first_entity_id = first.entity_id
     assert first_entity_id is not None
-    assert (predicate, channel_value) not in store  # not written by create_temp_contact
+    assert (predicate, stored_value) not in store  # not written by create_temp_contact
 
     with patch(_ASSERT_FACT_PATCH, new=_record_triple):
         await assert_sender_channel_fact(pool, first_entity_id, channel_type, channel_value)
 
-    # The hook wrote the dedup triple keyed to the freshly-minted entity.
-    assert store[(predicate, channel_value)]["entity_id"] == first_entity_id
+    # The hook wrote the dedup triple — in canonical prefixed form — keyed to the
+    # freshly-minted entity.
+    assert (predicate, channel_value) not in store  # never the unprefixed form
+    assert store[(predicate, stored_value)]["entity_id"] == first_entity_id
 
     # --- 2nd message: same sender now resolves; no new entity is minted. ---
     resolved = await resolve_contact_by_channel(pool, channel_type, channel_value)
@@ -536,6 +541,74 @@ async def test_second_message_from_new_sender_does_not_mint_duplicate_entity():
     second = await create_temp_contact(pool, channel_type, channel_value)
     assert second is not None
     assert second.entity_id == first_entity_id
+
+
+# ---------------------------------------------------------------------------
+# Contract: ingress writes telegram handles in the canonical prefixed form
+# (bu-oluyt.5 — Phase 5 of the contact-schema retirement epic)
+# ---------------------------------------------------------------------------
+# The delivery read path (daemon._resolve_contact_channel_identifier) filters
+# has-handle objects on ``LIKE 'telegram:%'``. If assert_sender_channel_fact
+# wrote an unprefixed object, an ingress-created telegram contact would be
+# NON-deliverable via notify(contact_id). These tests pin the write side to the
+# ONE canonical format so the read-side prefix tolerance (PR #2465) is no longer
+# load-bearing.
+
+
+class TestAssertSenderChannelFactPrefixesTelegram:
+    """assert_sender_channel_fact stores telegram has-handle objects prefixed."""
+
+    @pytest.mark.parametrize(
+        ("channel_type", "raw_value", "expected_object"),
+        [
+            ("telegram", "206570151", "telegram:206570151"),
+            ("telegram_user_client", "206570151", "telegram:206570151"),
+            ("telegram_user_id", "206570151", "telegram:206570151"),
+            ("telegram_bot", "12345", "telegram:12345"),
+            ("telegram_chat_id", "-1001234", "telegram:-1001234"),
+            ("telegram_username", "@Tzeusy", "telegram:Tzeusy"),
+            # Already-prefixed input must not be double-prefixed (idempotent).
+            ("telegram", "telegram:206570151", "telegram:206570151"),
+        ],
+    )
+    async def test_telegram_objects_are_written_prefixed(
+        self, channel_type: str, raw_value: str, expected_object: str
+    ) -> None:
+        from butlers.tools.relationship.relationship_assert_fact import (
+            assert_sender_channel_fact,
+        )
+
+        entity_id = uuid.uuid4()
+        pool = MagicMock()
+
+        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
+            await assert_sender_channel_fact(pool, entity_id, channel_type, raw_value)
+
+        mock_assert.assert_awaited_once()
+        # Central writer signature: (pool, subject, predicate, object, ...)
+        _pool, subject, predicate, obj = mock_assert.await_args.args
+        assert subject == entity_id
+        assert predicate == "has-handle"
+        assert obj == expected_object
+        assert obj.startswith("telegram:")
+
+    async def test_non_telegram_handle_is_not_prefixed(self) -> None:
+        """A non-telegram channel value is passed through verbatim (no telegram: prefix)."""
+        from butlers.tools.relationship.relationship_assert_fact import (
+            assert_sender_channel_fact,
+        )
+
+        entity_id = uuid.uuid4()
+        pool = MagicMock()
+
+        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
+            await assert_sender_channel_fact(pool, entity_id, "email", "a@b.com")
+
+        mock_assert.assert_awaited_once()
+        _pool, _subject, predicate, obj = mock_assert.await_args.args
+        assert predicate == "has-email"
+        assert obj == "a@b.com"
+        assert not obj.startswith("telegram:")
 
 
 # ---------------------------------------------------------------------------
