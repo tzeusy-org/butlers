@@ -49,6 +49,7 @@ from butlers.core.healing import (
     redispatch_attempt_by_id,
 )
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.spawn_hooks import get_spawner
 from butlers.modules.base import Module, ToolMeta
 
 logger = logging.getLogger(__name__)
@@ -165,7 +166,6 @@ class SelfHealingModule(Module):
         # Set during register_tools; held for dispatch calls in MCP tool handlers
         self._butler_name: str = "<unknown>"
         self._pool: Any = None
-        self._spawner: Any = None
         self._repo_root: Path = Path(".")
         # Background watchdog tasks that on_shutdown must cancel
         self._watchdog_tasks: list[asyncio.Task] = []
@@ -641,7 +641,8 @@ class SelfHealingModule(Module):
         # have its own real session_id.
         sentinel_session_id = uuid.UUID(int=0)
 
-        if self._pool is None or self._spawner is None:
+        _spawner = get_spawner()
+        if self._pool is None or _spawner is None:
             # No DB pool or spawner available — return gracefully
             return {
                 "accepted": False,
@@ -660,12 +661,12 @@ class SelfHealingModule(Module):
             fingerprint_input=fp,
             config=healing_cfg,
             repo_root=self._repo_root,
-            spawner=self._spawner,
+            spawner=_spawner,
             agent_context=context,
             trigger_source="external",  # Not a healing session
             gh_token=None,
             task_registry=self._watchdog_tasks,
-            metrics=getattr(self._spawner, "_metrics", None),
+            metrics=getattr(_spawner, "_metrics", None),
         )
 
         if result.accepted:
@@ -763,7 +764,8 @@ class SelfHealingModule(Module):
                 "message": f"Not a valid UUID: {attempt_id!r}",
             }
 
-        if self._pool is None or self._spawner is None:
+        _spawner = get_spawner()
+        if self._pool is None or _spawner is None:
             return {
                 "accepted": False,
                 "attempt_id": str(parsed_id),
@@ -781,10 +783,10 @@ class SelfHealingModule(Module):
             attempt_id=parsed_id,
             config=healing_cfg,
             repo_root=self._repo_root,
-            spawner=self._spawner,
+            spawner=_spawner,
             task_registry=self._watchdog_tasks,
             gh_token=None,
-            metrics=getattr(self._spawner, "_metrics", None),
+            metrics=getattr(_spawner, "_metrics", None),
         )
 
         response: dict = {
@@ -827,7 +829,8 @@ class SelfHealingModule(Module):
             the QA staffer is registered, findings are relayed via Switchboard.
             When ``None``, the module uses direct dispatch only.
         """
-        self._spawner = spawner
+        # spawner is registered in the core spawn_hooks singleton by the daemon
+        # before wire_runtime() is called; do NOT store it here (Vision Rule 2).
         self._repo_root = Path(repo_root)
         self._switchboard_client = switchboard_client
 

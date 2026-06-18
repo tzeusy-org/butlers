@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
+from butlers.core.spawn_hooks import clear_spawner, register_spawner
 from butlers.modules.base import Module, ToolMeta
 from butlers.modules.self_healing import SelfHealingConfig, SelfHealingModule, _serialize_attempt
 
@@ -167,7 +168,8 @@ class TestRetryHealingTool:
 
         mod = _make_module()
         mod._pool = MagicMock()
-        mod._spawner = MagicMock()
+        fake_spawner = MagicMock()
+        register_spawner(fake_spawner)
 
         attempt_id = uuid.uuid4()
         captured: dict = {}
@@ -187,14 +189,17 @@ class TestRetryHealingTool:
             "butlers.modules.self_healing.redispatch_attempt_by_id", fake_redispatch
         )
 
-        result = await mod._handle_retry_healing(attempt_id=str(attempt_id))
+        try:
+            result = await mod._handle_retry_healing(attempt_id=str(attempt_id))
+        finally:
+            clear_spawner()
 
         assert result["accepted"] is True
         assert result["reason"] == "dispatched"
         assert result["attempt_id"] == str(attempt_id)
         assert captured["attempt_id"] == attempt_id
         assert captured["pool"] is mod._pool
-        assert captured["spawner"] is mod._spawner
+        assert captured["spawner"] is fake_spawner
 
 
 class TestSerializeAttempt:

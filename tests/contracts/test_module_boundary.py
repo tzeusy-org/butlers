@@ -55,25 +55,11 @@ pytestmark = pytest.mark.contract
 # ---------------------------------------------------------------------------
 
 # Assertion 2: modules that hold `_spawner` as an instance attribute.
-# These modules were granted spawner access via a non-ABC `wire_runtime()` hook
-# so they can proactively dispatch healing / QA investigation LLM sessions.
-#
-# Removal criterion: move dispatch logic into a daemon-owned scheduler task
-# (core responsibility) so the module emits a work request that the daemon
-# scheduler executes, keeping to the principle "daemon is infrastructure,
-# intelligence is in ephemeral LLM sessions" (vision.md Rule 4).
-ALLOWLIST_SPAWNER_HOLDER: dict[str, str] = {
-    "QaModule": (
-        "Holds _spawner via wire_runtime() to dispatch investigation agents. "
-        "Remove when QA agent dispatch is refactored to a daemon-scheduled task "
-        "and the module no longer needs to call spawner.trigger() directly."
-    ),
-    "SelfHealingModule": (
-        "Holds _spawner via wire_runtime() to dispatch healing agents. "
-        "Remove when healing agent dispatch is refactored to a daemon-scheduled task "
-        "and the module no longer needs to call spawner.trigger() directly."
-    ),
-}
+# QaModule and SelfHealingModule were previously listed here; both were
+# refactored in bu-k2sny to retrieve the spawner via `core.spawn_hooks.get_spawner()`
+# at dispatch time rather than storing it as an instance attribute.
+# The allowlist is intentionally empty — any future regression is caught immediately.
+ALLOWLIST_SPAWNER_HOLDER: dict[str, str] = {}
 
 # Core infrastructure attributes that modules must not hold after construction.
 _FORBIDDEN_INFRA_ATTRS: tuple[str, ...] = (

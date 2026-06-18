@@ -1479,6 +1479,13 @@ class ButlerDaemon:
             logger.debug("_wire_module_runtime: spawner not yet set — skipping")
             return
 
+        # Register the daemon's spawner in the core hook so modules (QaModule,
+        # SelfHealingModule) can retrieve it at dispatch time without holding a
+        # direct reference on their __init__ (Vision Rule 2).
+        from butlers.core.spawn_hooks import register_spawner
+
+        register_spawner(self.spawner)
+
         # Walk up from config_dir to find the repo root (marked by pyproject.toml).
         _candidate = self.config_dir.resolve()
         repo_root = _candidate.parent  # fallback: one level up

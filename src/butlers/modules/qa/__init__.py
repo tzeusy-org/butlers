@@ -56,6 +56,7 @@ from butlers.core.qa.sources.log_scanner import (
 from butlers.core.qa.sources.session_records import SessionRecordsSource
 from butlers.core.qa.sources.tool_call_failures import ToolCallFailuresSource
 from butlers.core.qa.triage import triage_findings
+from butlers.core.spawn_hooks import get_spawner
 from butlers.modules.base import Module, ToolMeta
 
 logger = logging.getLogger(__name__)
@@ -410,7 +411,6 @@ class QaModule(Module):
         self._config = QaConfig()
         self._butler_name: str = "qa"
         self._pool: Any = None
-        self._spawner: Any = None
         self._repo_root: Path = Path(".")
         self._credential_store: Any = None
 
@@ -1321,6 +1321,7 @@ class QaModule(Module):
                 _dispatch_span_token = otel_context.attach(
                     trace.set_span_in_context(_dispatch_span)
                 )
+            _spawner = get_spawner()
             try:
                 dispatch_results = await dispatch_novel_findings(
                     pool=pool,
@@ -1328,12 +1329,12 @@ class QaModule(Module):
                     patrol_id=patrol_id,
                     config=dispatch_config,
                     repo_root=self._repo_root,
-                    spawner=self._spawner,
+                    spawner=_spawner,
                     gh_token=gh_token,
                     git_author_name=git_author_name,
                     git_author_email=git_author_email,
                     task_registry=self._watchdog_tasks,
-                    metrics=getattr(self._spawner, "_metrics", None),
+                    metrics=getattr(_spawner, "_metrics", None),
                 )
             except Exception as dispatch_exc:
                 if _HAS_OTEL and _dispatch_span is not None:
@@ -1763,8 +1764,9 @@ class QaModule(Module):
         from butlers.core.qa.dispatch import QaDispatchConfig
 
         # Build dispatch config from module config for follow-up dispatch
+        _spawner = get_spawner()
         dispatch_config: QaDispatchConfig | None = None
-        if self._spawner is not None:
+        if _spawner is not None:
             dispatch_config = QaDispatchConfig(
                 severity_threshold=self._config.severity_threshold,
                 max_concurrent=self._config.max_concurrent_investigations,
@@ -1778,7 +1780,7 @@ class QaModule(Module):
                 gh_token,
                 git_author_name=git_author_name,
                 git_author_email=git_author_email,
-                spawner=self._spawner,
+                spawner=_spawner,
                 config=dispatch_config,
                 task_registry=self._watchdog_tasks,
                 patrol_id=patrol_id,
@@ -1875,7 +1877,8 @@ class QaModule(Module):
             When provided, enables future QA-to-butler routing via Switchboard.
             When ``None``, the module operates without Switchboard connectivity.
         """
-        self._spawner = spawner
+        # spawner is registered in the core spawn_hooks singleton by the daemon
+        # before wire_runtime() is called; do NOT store it here (Vision Rule 2).
         # Only use daemon's repo_root as fallback if managed clone is not active
         if self._managed_clone is None or self._managed_clone.clone_path is None:
             self._repo_root = Path(repo_root)
