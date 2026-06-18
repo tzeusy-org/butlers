@@ -296,8 +296,8 @@ class TestRetractContactInfoFactUnit:
         result = await retract_contact_info_fact(
             mock_pool,
             subject=_ENTITY_ID,
-            ci_type="telegram_chat_id",
-            ci_value="12345678",
+            ci_type="address",
+            ci_value="1 Privet Drive",
         )
 
         assert result is None

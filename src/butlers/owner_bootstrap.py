@@ -51,19 +51,17 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                         LIMIT 1
                         """
                     )
-                    if owner_entity_id is not None:
-                        return
-
-                    owner_entity_id = await conn.fetchval(
-                        """
-                        INSERT INTO public.entities
-                            (canonical_name, entity_type, roles)
-                        VALUES ('Owner', 'person', $1)
-                        ON CONFLICT DO NOTHING
-                        RETURNING id
-                        """,
-                        ["owner"],
-                    )
+                    if owner_entity_id is None:
+                        owner_entity_id = await conn.fetchval(
+                            """
+                            INSERT INTO public.entities
+                                (canonical_name, entity_type, roles)
+                            VALUES ('Owner', 'person', $1)
+                            ON CONFLICT DO NOTHING
+                            RETURNING id
+                            """,
+                            ["owner"],
+                        )
                     if owner_entity_id is None:
                         # ON CONFLICT hit (entity already exists); fetch the
                         # existing id so callers always have a valid reference.
@@ -79,6 +77,65 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                             "Owner entity not found after insert attempt — "
                             "bootstrap may be incomplete"
                         )
+                    else:
+                        # Mirror the owner's entity_info telegram_chat_id into a
+                        # resolvable has-handle triple (see _seed_owner_telegram_handle).
+                        await _seed_owner_telegram_handle(conn, owner_entity_id)
 
     except Exception:  # noqa: BLE001
         logger.warning("Owner entity bootstrap skipped (non-fatal)", exc_info=True)
+
+
+async def _seed_owner_telegram_handle(
+    conn: asyncpg.Connection,
+    owner_entity_id: object,
+) -> None:
+    """Mirror the owner's Telegram chat id into a resolvable ``has-handle`` triple.
+
+    The owner registers their Telegram identity through the dashboard, which
+    writes a non-secured ``telegram_chat_id`` row to ``public.entity_info``.  But
+    identity reverse-resolution and the approval gate's owner auto-approve bypass
+    read ``relationship.entity_facts`` (``has-handle`` triples), NOT
+    ``entity_info`` — so the owner is invisible to those paths and their own
+    notifications get parked for approval and never delivered.
+
+    This seeds the canonical ``telegram:<chat_id>`` handle (primary) into
+    ``entity_facts`` directly, bypassing the RFC-0017 owner carve-out (which would
+    otherwise park this write for human approval and leave the owner unresolvable
+    indefinitely).  Idempotent: skipped when the triple already exists (partial
+    unique index ``uq_ef_spo_active``) or when the prerequisite tables / chat-id
+    row are absent.
+    """
+    try:
+        tables_ready = await conn.fetchval(
+            "SELECT to_regclass('relationship.entity_facts') IS NOT NULL "
+            "AND to_regclass('public.entity_info') IS NOT NULL"
+        )
+        if not tables_ready:
+            return
+
+        chat_id = await conn.fetchval(
+            """
+            SELECT value FROM public.entity_info
+            WHERE entity_id = $1 AND type = 'telegram_chat_id'
+              AND value IS NOT NULL AND value <> ''
+            LIMIT 1
+            """,
+            owner_entity_id,
+        )
+        if not chat_id:
+            return
+
+        handle = f"telegram:{str(chat_id).strip()}"
+        await conn.execute(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, "primary", verified, validity)
+            VALUES ($1, 'has-handle', $2, 'literal', 'owner-bootstrap', true, true, 'active')
+            ON CONFLICT DO NOTHING
+            """,
+            owner_entity_id,
+            handle,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Owner Telegram handle seed skipped (non-fatal)", exc_info=True)

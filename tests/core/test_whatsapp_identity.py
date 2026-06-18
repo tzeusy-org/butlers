@@ -94,7 +94,10 @@ async def test_resolve_whatsapp_jid():
         await resolve_contact_by_channel(pool6, "whatsapp_jid", "5555555555@s.whatsapp.net") is None
     )
 
-    # Non-whatsapp_jid channel: no phone fallback on miss
-    pool7 = _make_pool_with_rows(None)
+    # Non-whatsapp_jid channel: no has-phone fallback on miss. Telegram tries the
+    # exact value then the canonical telegram:-prefixed form — both has-handle,
+    # never has-phone.
+    pool7 = _make_pool_with_rows(None, None)
     assert await resolve_contact_by_channel(pool7, "telegram", "99999") is None
-    pool7.fetchrow.assert_called_once()
+    assert pool7.fetchrow.call_count == 2  # "99999", then "telegram:99999"
+    assert all(call[0][1] == "has-handle" for call in pool7.fetchrow.call_args_list)
