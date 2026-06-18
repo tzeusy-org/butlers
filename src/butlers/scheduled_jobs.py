@@ -13,7 +13,6 @@ import functools
 import logging
 import sys
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -403,41 +402,6 @@ async def _discover_chronicler_projection_schemas(
     return tuple(row["table_schema"] for row in rows)
 
 
-async def _run_chronicler_project_sessions_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run Chronicler's core.sessions projection adapter."""
-    del job_args
-    from butlers.chronicler.adapters import CoreSessionsAdapter
-
-    butler_schemas = await _discover_chronicler_projection_schemas(pool, table_name="sessions")
-    result = await CoreSessionsAdapter(butler_schemas=butler_schemas).run(
-        pool=pool,
-        chronicler_pool=pool,
-    )
-    return asdict(result)
-
-
-async def _run_chronicler_project_calendar_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run Chronicler's google_calendar.completed projection adapter."""
-    del job_args
-    from butlers.chronicler.adapters import CalendarCompletedAdapter
-
-    butler_schemas = await _discover_chronicler_projection_schemas(
-        pool,
-        table_name="calendar_event_instances",
-    )
-    result = await CalendarCompletedAdapter(butler_schemas=butler_schemas).run(
-        pool=pool,
-        chronicler_pool=pool,
-    )
-    return asdict(result)
-
-
 # ---------------------------------------------------------------------------
 # Domain-specific briefing contribution jobs
 # ---------------------------------------------------------------------------
@@ -748,31 +712,6 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "energy_digest": _run_home_energy_digest_job,
     "maintenance_schedule_check": _run_home_maintenance_schedule_check_job,
 }
-
-
-# ---------------------------------------------------------------------------
-# Chronicler jobs
-# ---------------------------------------------------------------------------
-
-
-async def _run_chronicler_project_sessions_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the Chronicler core-session projection job."""
-    from butlers.jobs.chronicler import run_project_sessions
-
-    return await run_project_sessions(pool, job_args)
-
-
-async def _run_chronicler_project_calendar_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the Chronicler completed-calendar projection job."""
-    from butlers.jobs.chronicler import run_project_calendar
-
-    return await run_project_calendar(pool, job_args)
 
 
 # ---------------------------------------------------------------------------
