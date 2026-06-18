@@ -2893,6 +2893,12 @@ export default function EntityDetailPage() {
       <div ref={practicalDrawerRef}>
         <PracticalDrawer entity={entity} forceOpen={ownerNeedsSetup}>
           <OwnerSetupBanner entity={entity} />
+
+          {/* Full contact channels (email, phone, telegram, …) — the primary
+              contact details, expounded inline now that contacts are entities. */}
+          <ContactChannelCard entityId={entity.id} />
+
+          {/* Link/unlink management control for the underlying contact record. */}
           <LinkedContactSection entityId={entity.id} entity={entity} />
 
           {/* Credentials moved to the User tab of /secrets — link only. */}
@@ -3326,14 +3332,6 @@ export default function EntityDetailPage() {
 
               {/* Message threads — only when matches exist */}
               <MessageThreadsSection entityId={entityId} />
-
-              {/* Contact-channel card — linked contacts with channel info */}
-              <ContactChannelCard
-                entityId={entityId}
-                onLinkContact={() => {
-                  practicalDrawerRef.current?.scrollIntoView({ behavior: "smooth" });
-                }}
-              />
 
               {/* Facts — grouped by predicate family */}
               <FactsSection

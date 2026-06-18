@@ -27,7 +27,7 @@ function render(props: {
 describe("PracticalDrawer", () => {
   it("renders the section toggle button with the title", () => {
     const html = render({ entity: BASE_ENTITY, forceOpen: false });
-    expect(html).toContain("Practical details");
+    expect(html).toContain("Contact Details");
   });
 
   it("shows (action needed) label when forceOpen is true", () => {
@@ -49,10 +49,10 @@ describe("PracticalDrawer", () => {
     expect(html).toContain("child-content");
   });
 
-  it("renders children inside hidden panel when forceOpen is false (ARIA-always-present)", () => {
+  it("renders children inside the panel (ARIA-always-present)", () => {
     // The panel div is always present in the SSR markup (so aria-controls always
-    // points to an existing element). The div is hidden via hidden={true}, but the
-    // children content is still rendered inside it.
+    // points to an existing element). It is open by default, so children render
+    // and the panel is visible.
     const html = render({
       entity: BASE_ENTITY,
       forceOpen: false,
@@ -141,11 +141,12 @@ describe("PracticalDrawer ARIA disclosure pattern", () => {
     });
   }
 
-  it("toggle button has aria-expanded=false when closed", () => {
+  it("toggle button has aria-expanded=true by default (open)", () => {
+    // Drawer is open by default regardless of forceOpen; the user can collapse it.
     renderInDom({ entity: BASE_ENTITY, forceOpen: false });
     const button = container.querySelector("button");
     expect(button).toBeTruthy();
-    expect(button!.getAttribute("aria-expanded")).toBe("false");
+    expect(button!.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("toggle button has aria-expanded=true when open", () => {
@@ -155,16 +156,16 @@ describe("PracticalDrawer ARIA disclosure pattern", () => {
     expect(button!.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("toggle button aria-expanded changes to true after click", () => {
+  it("toggle button aria-expanded changes to false after click (collapse)", () => {
     renderInDom({ entity: BASE_ENTITY, forceOpen: false });
     const button = container.querySelector("button");
-    expect(button!.getAttribute("aria-expanded")).toBe("false");
+    expect(button!.getAttribute("aria-expanded")).toBe("true");
 
     act(() => {
       button!.click();
     });
 
-    expect(button!.getAttribute("aria-expanded")).toBe("true");
+    expect(button!.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("panel has id matching button aria-controls when open", () => {

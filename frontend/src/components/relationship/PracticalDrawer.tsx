@@ -1,11 +1,11 @@
 /**
  * PracticalDrawer
  *
- * A collapsible section at the bottom of the entity detail page that holds
+ * A collapsible section near the top of the entity detail page that holds
  * practical / administrative details: linked contact, credentials link,
  * provenance, and any other owner-specific setup.
  *
- * Collapsed by default; passes `forceOpen={true}` to keep it open when the
+ * Open by default; `forceOpen` drives the "action needed" affordance when the
  * owner entity still needs setup (no linked contact).
  */
 
@@ -75,7 +75,10 @@ export interface PracticalDrawerProps {
 }
 
 export function PracticalDrawer({ entity, forceOpen, children }: PracticalDrawerProps) {
-  const [open, setOpen] = useState(forceOpen);
+  // Open by default — practical details are first-class content on the entity
+  // page, not a hidden footer. `forceOpen` still drives the "action needed"
+  // affordance when owner setup is incomplete. Users can collapse manually.
+  const [open, setOpen] = useState(true);
   const panelId = useId();
 
   return (
@@ -88,7 +91,7 @@ export function PracticalDrawer({ entity, forceOpen, children }: PracticalDrawer
         className="hover:bg-muted/40 flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors"
       >
         <span className="text-sm font-medium">
-          Practical details
+          Contact Details
           {forceOpen && (
             <span className="text-muted-foreground ml-2 text-xs">
               (action needed)
@@ -104,7 +107,7 @@ export function PracticalDrawer({ entity, forceOpen, children }: PracticalDrawer
       <div
         id={panelId}
         role="region"
-        aria-label="Practical details"
+        aria-label="Contact Details"
         hidden={!open}
         className="space-y-4 border-t px-4 py-4"
       >
