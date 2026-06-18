@@ -43,6 +43,7 @@ from pydantic import BaseModel
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.models import ApiResponse
+from butlers.api.read_models.insights_v1 import query_insight_delivery_state
 
 logger = logging.getLogger(__name__)
 
@@ -829,53 +830,28 @@ async def get_insight_delivery_state(
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
+    _zero_state = InsightDeliveryState(queued=0, delivered=0, failed=0, last_delivery_at=None)
+
     try:
-        row = await pool.fetchrow(
-            """
-            SELECT
-                COUNT(*) FILTER (WHERE status = 'pending') AS queued,
-                COUNT(*) FILTER (WHERE status = 'delivered') AS delivered,
-                COUNT(*) FILTER (
-                    WHERE status = 'filtered' AND delivery_attempt_count >= 3
-                ) AS failed,
-                MAX(delivered_at) FILTER (
-                    WHERE status = 'delivered'
-                ) AS last_delivery_at
-            FROM public.insight_candidates
-            """
-        )
+        result = await query_insight_delivery_state(pool)
     except Exception as exc:
         # Degrade gracefully: table missing (pre-migration) or transient error.
         logger.warning("insight_candidates query failed (degraded state returned): %s", exc)
-        return ApiResponse(
-            data=InsightDeliveryState(
-                queued=0,
-                delivered=0,
-                failed=0,
-                last_delivery_at=None,
-            )
-        )
+        return ApiResponse(data=_zero_state)
 
-    if row is None:
+    if result is None:
         # Empty result (should not happen for an aggregate with no WHERE, but guard anyway)
-        return ApiResponse(
-            data=InsightDeliveryState(
-                queued=0,
-                delivered=0,
-                failed=0,
-                last_delivery_at=None,
-            )
-        )
+        return ApiResponse(data=_zero_state)
 
-    last_dt = row["last_delivery_at"]
+    last_dt = result.last_delivery_at
     if last_dt is not None and hasattr(last_dt, "tzinfo") and last_dt.tzinfo is None:
         last_dt = last_dt.replace(tzinfo=UTC)
 
     return ApiResponse(
         data=InsightDeliveryState(
-            queued=int(row["queued"] or 0),
-            delivered=int(row["delivered"] or 0),
-            failed=int(row["failed"] or 0),
+            queued=result.queued,
+            delivered=result.delivered,
+            failed=result.failed,
             last_delivery_at=last_dt.isoformat() if last_dt is not None else None,
         )
     )

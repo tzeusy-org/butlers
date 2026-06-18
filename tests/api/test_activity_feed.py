@@ -20,7 +20,7 @@ from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.activity_feed import _get_db_manager
+from butlers.api.routers.activity_feed import _get_db_manager, _normalize_tz
 
 pytestmark = pytest.mark.unit
 
@@ -475,3 +475,22 @@ class TestActivityFeedSummaryTruncation:
 
         ev = resp.json()["events"][0]
         assert ev["summary"] == "Short prompt"
+
+
+class TestNormalizeTz:
+    """_normalize_tz converts naive datetimes to UTC-aware; leaves aware and None unchanged."""
+
+    def test_naive_datetime_gets_utc_tzinfo(self):
+        naive = datetime(2026, 1, 15, 12, 0, 0)
+        result = _normalize_tz(naive)
+        assert result is not None
+        assert result.tzinfo == UTC
+        assert result.replace(tzinfo=None) == naive
+
+    def test_aware_datetime_is_unchanged(self):
+        aware = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
+        result = _normalize_tz(aware)
+        assert result is aware
+
+    def test_none_returns_none(self):
+        assert _normalize_tz(None) is None
