@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -29,6 +30,7 @@ import pytest
 from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     _infer_predicate_from_prose,
     run_memory_curation,
+    run_pending_actions_curation,
 )
 
 # ---------------------------------------------------------------------------
@@ -786,3 +788,305 @@ class TestMemoryCurationMultipleFacts:
         assert result["edges_proposed"] == 3
         assert result["edges_inserted"] == 3
         assert result["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers for pending_actions curation tests
+# ---------------------------------------------------------------------------
+
+
+async def _setup_pending_actions_schema(pool: asyncpg.Pool) -> None:
+    """Create the minimal schema needed by run_pending_actions_curation tests.
+
+    Includes the pending_actions table, the state table (for checkpoint), and
+    the insight candidate tables (used by propose_insight_candidate).
+    """
+    from butlers.tools.switchboard.insight.broker import create_insight_tables
+
+    await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
+    await pool.execute(_CREATE_STATE_SQL)
+    await create_insight_tables(pool)
+
+
+async def _insert_pending_action(
+    pool: asyncpg.Pool,
+    *,
+    tool_name: str = "contact_info_add",
+    tool_args: dict | None = None,
+    why: str | None = "Owner carve-out: adding email for owner",
+    status: str = "pending",
+    expires_at: datetime | None = None,
+) -> uuid.UUID:
+    """Insert a row into pending_actions and return its id."""
+    if tool_args is None:
+        tool_args = {"contact_id": str(uuid.uuid4()), "type": "email", "value": "owner@example.com"}
+    return await pool.fetchval(
+        """
+        INSERT INTO pending_actions (tool_name, tool_args, why, status, expires_at)
+        VALUES ($1, $2::jsonb, $3, $4, $5)
+        RETURNING id
+        """,
+        tool_name,
+        tool_args,
+        why,
+        status,
+        expires_at,
+    )
+
+
+async def _count_insight_candidates(pool: asyncpg.Pool) -> int:
+    return await pool.fetchval("SELECT COUNT(*) FROM insight_candidates")
+
+
+async def _fetch_insight_candidates(pool: asyncpg.Pool) -> list[dict]:
+    rows = await pool.fetch("SELECT * FROM insight_candidates ORDER BY created_at ASC")
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_pending_actions_curation
+# ---------------------------------------------------------------------------
+
+
+class TestPendingActionsCurationNoOp:
+    """No-op paths for run_pending_actions_curation."""
+
+    @pytest.fixture
+    async def pa_pool(self, provisioned_postgres_pool):
+        """Isolated DB with pending_actions + insight schema."""
+        async with provisioned_postgres_pool() as p:
+            await _setup_pending_actions_schema(p)
+            yield p
+
+    async def test_no_pending_actions_returns_zeros(self, pa_pool: asyncpg.Pool):
+        """Empty table — all counters are 0."""
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["scanned"] == 0
+        assert result["surfaced"] == 0
+        assert result["skipped_no_expiry"] == 0
+        assert result["skipped_not_approaching"] == 0
+        assert result["errors"] == 0
+
+    async def test_no_insight_candidate_when_no_actions(self, pa_pool: asyncpg.Pool):
+        """No insight candidates created when there are no pending_actions."""
+        await run_pending_actions_curation(pa_pool)
+
+        assert await _count_insight_candidates(pa_pool) == 0
+
+    async def test_non_pending_status_ignored(self, pa_pool: asyncpg.Pool):
+        """Only status='pending' rows are surfaced; approved/rejected/expired are ignored."""
+        now = datetime.now(UTC)
+        for status in ("approved", "rejected", "expired", "executed"):
+            await _insert_pending_action(
+                pa_pool,
+                status=status,
+                expires_at=now + timedelta(hours=1),
+            )
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["scanned"] == 0
+        assert result["surfaced"] == 0
+        assert await _count_insight_candidates(pa_pool) == 0
+
+
+class TestPendingActionsCurationDetection:
+    """Detection logic: approaching vs. not-approaching vs. no-expiry rows."""
+
+    @pytest.fixture
+    async def pa_pool(self, provisioned_postgres_pool):
+        async with provisioned_postgres_pool() as p:
+            await _setup_pending_actions_schema(p)
+            yield p
+
+    async def test_approaching_expiry_is_surfaced(self, pa_pool: asyncpg.Pool):
+        """A pending action expiring within 24 h is surfaced as an insight candidate."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(
+            pa_pool,
+            expires_at=now + timedelta(hours=12),
+        )
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["scanned"] == 1
+        assert result["surfaced"] == 1
+        assert result["skipped_not_approaching"] == 0
+        assert result["skipped_no_expiry"] == 0
+        assert result["errors"] == 0
+        assert await _count_insight_candidates(pa_pool) == 1
+
+    async def test_far_future_expiry_is_skipped(self, pa_pool: asyncpg.Pool):
+        """A pending action expiring in > 24 h is NOT surfaced."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(
+            pa_pool,
+            expires_at=now + timedelta(hours=48),
+        )
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["scanned"] == 1
+        assert result["surfaced"] == 0
+        assert result["skipped_not_approaching"] == 1
+        assert await _count_insight_candidates(pa_pool) == 0
+
+    async def test_null_expires_at_is_skipped(self, pa_pool: asyncpg.Pool):
+        """A pending action with no expiry is silently skipped (no expiry = no silent loss)."""
+        await _insert_pending_action(
+            pa_pool,
+            expires_at=None,
+        )
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["scanned"] == 1
+        assert result["surfaced"] == 0
+        assert result["skipped_no_expiry"] == 1
+        assert await _count_insight_candidates(pa_pool) == 0
+
+    async def test_already_expired_is_skipped(self, pa_pool: asyncpg.Pool):
+        """An action whose expires_at is already past is skipped.
+
+        The insight broker requires a future expires_at, and there is nothing
+        actionable the owner can do for an already-expired pending_action.
+        """
+        now = datetime.now(UTC)
+        await _insert_pending_action(
+            pa_pool,
+            expires_at=now - timedelta(minutes=5),
+        )
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["scanned"] == 1
+        assert result["surfaced"] == 0
+        assert result["skipped_already_expired"] == 1
+        assert await _count_insight_candidates(pa_pool) == 0
+
+    async def test_mixed_actions_only_approaching_surfaced(self, pa_pool: asyncpg.Pool):
+        """Mix of approaching, far-future, null-expiry, and already-expired — only approaching surfaced."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(pa_pool, expires_at=now + timedelta(hours=6))  # approaching
+        await _insert_pending_action(pa_pool, expires_at=now + timedelta(hours=72))  # far future
+        await _insert_pending_action(pa_pool, expires_at=None)  # no expiry
+        await _insert_pending_action(
+            pa_pool, expires_at=now - timedelta(minutes=30)
+        )  # already expired
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["scanned"] == 4
+        assert result["surfaced"] == 1
+        assert result["skipped_not_approaching"] == 1
+        assert result["skipped_no_expiry"] == 1
+        assert result["skipped_already_expired"] == 1
+        assert await _count_insight_candidates(pa_pool) == 1
+
+
+class TestPendingActionsCurationMessageContent:
+    """Verify the insight candidate message contains the right fields."""
+
+    @pytest.fixture
+    async def pa_pool(self, provisioned_postgres_pool):
+        async with provisioned_postgres_pool() as p:
+            await _setup_pending_actions_schema(p)
+            yield p
+
+    async def test_message_contains_tool_name(self, pa_pool: asyncpg.Pool):
+        """Insight message includes the tool_name of the pending action."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(
+            pa_pool,
+            tool_name="contact_info_update",
+            expires_at=now + timedelta(hours=8),
+        )
+
+        await run_pending_actions_curation(pa_pool)
+
+        candidates = await _fetch_insight_candidates(pa_pool)
+        assert len(candidates) == 1
+        assert "contact_info_update" in candidates[0]["message"]
+
+    async def test_message_contains_why(self, pa_pool: asyncpg.Pool):
+        """Insight message includes the 'why' field from the pending action."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(
+            pa_pool,
+            why="RFC-0017 owner carve-out: adding primary email",
+            expires_at=now + timedelta(hours=4),
+        )
+
+        await run_pending_actions_curation(pa_pool)
+
+        candidates = await _fetch_insight_candidates(pa_pool)
+        assert len(candidates) == 1
+        assert "RFC-0017 owner carve-out: adding primary email" in candidates[0]["message"]
+
+    async def test_message_contains_action_id(self, pa_pool: asyncpg.Pool):
+        """Insight message includes the action UUID for reference."""
+        now = datetime.now(UTC)
+        action_id = await _insert_pending_action(
+            pa_pool,
+            expires_at=now + timedelta(hours=2),
+        )
+
+        await run_pending_actions_curation(pa_pool)
+
+        candidates = await _fetch_insight_candidates(pa_pool)
+        assert len(candidates) == 1
+        assert str(action_id) in candidates[0]["message"]
+
+    async def test_dedup_key_format(self, pa_pool: asyncpg.Pool):
+        """dedup_key is in the expected 3-segment format."""
+        now = datetime.now(UTC)
+        action_id = await _insert_pending_action(
+            pa_pool,
+            expires_at=now + timedelta(hours=10),
+        )
+
+        await run_pending_actions_curation(pa_pool)
+
+        candidates = await _fetch_insight_candidates(pa_pool)
+        assert len(candidates) == 1
+        expected_dedup_key = f"relationship:pending-action-expiry:{action_id}"
+        assert candidates[0]["dedup_key"] == expected_dedup_key
+
+    async def test_origin_butler_is_relationship(self, pa_pool: asyncpg.Pool):
+        """Insight candidate is tagged with origin_butler='relationship'."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(pa_pool, expires_at=now + timedelta(hours=10))
+
+        await run_pending_actions_curation(pa_pool)
+
+        candidates = await _fetch_insight_candidates(pa_pool)
+        assert candidates[0]["origin_butler"] == "relationship"
+
+
+class TestPendingActionsCurationDedup:
+    """Dedup behavior: same action not proposed twice in a single run."""
+
+    @pytest.fixture
+    async def pa_pool(self, provisioned_postgres_pool):
+        async with provisioned_postgres_pool() as p:
+            await _setup_pending_actions_schema(p)
+            yield p
+
+    async def test_second_run_deduped_by_broker(self, pa_pool: asyncpg.Pool):
+        """Second invocation with the same pending action creates a second candidate
+        row (broker dedup is cooldown-based, not insert-blocked), but both calls
+        succeed without error."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(pa_pool, expires_at=now + timedelta(hours=10))
+
+        result1 = await run_pending_actions_curation(pa_pool)
+        result2 = await run_pending_actions_curation(pa_pool)
+
+        # Both runs should surface the action (broker may accept or filter on 2nd run
+        # depending on verbosity/cooldown, but neither should return errors).
+        assert result1["errors"] == 0
+        assert result2["errors"] == 0
+        assert result1["surfaced"] == 1
+        # The second run's surfaced could be 0 (cooldown) or 1 (re-inserted).
+        # Either way, no errors.

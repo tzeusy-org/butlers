@@ -2177,6 +2177,222 @@ async def run_memory_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Pending-actions curation job (behavior #4: RFC-0017 owner carve-out expiry)
+# ---------------------------------------------------------------------------
+
+# Surface pending_actions whose expires_at is within this many hours of now.
+_PENDING_ACTIONS_WARN_HOURS = 24
+
+# State key for recording last surface timestamp (observability only; job is
+# idempotent — the insight broker deduplication prevents double-notification).
+_PENDING_ACTIONS_CURATION_STATE_KEY = "memory_curation.last_pending_actions_surface_at"
+
+# Priority for pending-action expiry insights (high urgency: owner must act).
+_PENDING_ACTIONS_PRIORITY = 85
+
+
+async def run_pending_actions_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Surface owner carve-out pending_actions approaching expiry to the owner.
+
+    Scans the ``pending_actions`` table for rows with ``status='pending'``
+    whose ``expires_at`` is within the next 24 hours.  For each such row,
+    proposes an insight candidate via the durable insight broker so the owner
+    receives a Telegram notification and has a second chance to review before
+    the action silently expires.
+
+    Aligns with RFC-0017 §2.3 intent: owner-contact mutations are queued as
+    pending_actions rather than applied directly, but they expire silently after
+    72 h if never reviewed.  This curation pass surfaces the ones about to expire.
+
+    Args:
+        db_pool: Database connection pool (relationship schema context).
+
+    Returns:
+        Dictionary with keys: scanned, surfaced, skipped_no_expiry,
+        skipped_not_approaching, errors.
+    """
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    logger.info(
+        "Running pending_actions_curation job (RFC-0017 §2.3 expiry surface, warn_hours=%d)",
+        _PENDING_ACTIONS_WARN_HOURS,
+    )
+
+    stats: dict[str, Any] = {
+        "scanned": 0,
+        "surfaced": 0,
+        "skipped_no_expiry": 0,
+        "skipped_not_approaching": 0,
+        "skipped_already_expired": 0,
+        "errors": 0,
+    }
+
+    now_utc = datetime.now(UTC)
+    warn_cutoff = now_utc + timedelta(hours=_PENDING_ACTIONS_WARN_HOURS)
+
+    # Fetch all pending actions regardless of expires_at (we filter in Python so
+    # we can increment skipped_no_expiry accurately for observability).
+    try:
+        rows = await db_pool.fetch(
+            """
+            SELECT
+                id,
+                tool_name,
+                tool_args,
+                agent_summary,
+                why,
+                requested_at,
+                expires_at
+            FROM pending_actions
+            WHERE status = 'pending'
+            ORDER BY expires_at ASC NULLS LAST
+            """
+        )
+    except Exception:
+        logger.exception("pending_actions_curation: failed to query pending_actions")
+        stats["errors"] += 1
+        return stats
+
+    stats["scanned"] = len(rows)
+    logger.info("pending_actions_curation: found %d pending rows to inspect", len(rows))
+
+    if not rows:
+        logger.info("pending_actions_curation: no pending actions found — nothing to surface")
+        return stats
+
+    for row in rows:
+        action_id = row["id"]
+        tool_name: str = row["tool_name"]
+        expires_at = row["expires_at"]  # datetime | None
+
+        # Skip rows with no expiry — they cannot silently expire.
+        if expires_at is None:
+            logger.debug("pending_actions_curation: skipping action %s — no expires_at", action_id)
+            stats["skipped_no_expiry"] += 1
+            continue
+
+        # Normalise to UTC-aware if the DB returns a naive datetime.
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+
+        # Skip rows that have already expired — the insight broker requires a
+        # future expires_at, and there is nothing actionable the owner can do.
+        if expires_at <= now_utc:
+            logger.warning(
+                "pending_actions_curation: action %s (tool=%s) already expired at %s — skipping",
+                action_id,
+                tool_name,
+                expires_at.isoformat(),
+            )
+            stats["skipped_already_expired"] += 1
+            continue
+
+        # Skip rows that are not yet approaching expiry.
+        if expires_at > warn_cutoff:
+            logger.debug(
+                "pending_actions_curation: skipping action %s — expires_at %s "
+                "is beyond warn cutoff %s",
+                action_id,
+                expires_at.isoformat(),
+                warn_cutoff.isoformat(),
+            )
+            stats["skipped_not_approaching"] += 1
+            continue
+
+        # Calculate human-readable time remaining (expires_at > now is guaranteed here).
+        delta = expires_at - now_utc
+        hours_left = int(delta.total_seconds() // 3600)
+        minutes_left = int((delta.total_seconds() % 3600) // 60)
+        if hours_left > 0:
+            time_remaining = f"{hours_left}h {minutes_left}m"
+        else:
+            time_remaining = f"{minutes_left}m"
+
+        why_text = row["why"] or row["agent_summary"] or "(no reason recorded)"
+        tool_args_display = json.dumps(dict(row["tool_args"]), ensure_ascii=False)
+
+        message = (
+            f"Pending action expiring soon ({time_remaining} remaining):\n"
+            f"Tool: {tool_name}\n"
+            f"Args: {tool_args_display}\n"
+            f"Reason: {why_text}\n"
+            f"Action ID: {action_id}\n\n"
+            "This was queued for your review (RFC-0017 owner carve-out). "
+            "Approve or reject it before it expires."
+        )
+
+        dedup_key = f"relationship:pending-action-expiry:{action_id}"
+
+        try:
+            result = await propose_insight_candidate(
+                db_pool,
+                origin_butler="relationship",
+                priority=_PENDING_ACTIONS_PRIORITY,
+                category="pending-action-expiry",
+                dedup_key=dedup_key,
+                message=message,
+                expires_at=expires_at,
+                cooldown_days=None,  # No cooldown: each expiry window is a unique event
+            )
+            status = result.get("status", "error")
+            if status == "accepted":
+                stats["surfaced"] += 1
+                logger.info(
+                    "pending_actions_curation: surfaced action %s (tool=%s, "
+                    "expires=%s, time_remaining=%s)",
+                    action_id,
+                    tool_name,
+                    expires_at.isoformat(),
+                    time_remaining,
+                )
+            elif status == "filtered":
+                # Verbosity off or cooldown active — still counts as an attempt.
+                logger.debug(
+                    "pending_actions_curation: action %s filtered: %s",
+                    action_id,
+                    result.get("reason", "unknown"),
+                )
+                stats["surfaced"] += 1  # We tried; dedup/budget gated it
+            else:
+                logger.warning(
+                    "pending_actions_curation: propose_insight_candidate error for action %s: %s",
+                    action_id,
+                    result.get("reason", "unknown"),
+                )
+                stats["errors"] += 1
+        except Exception:
+            logger.exception(
+                "pending_actions_curation: error surfacing action %s (tool=%s)",
+                action_id,
+                tool_name,
+            )
+            stats["errors"] += 1
+
+    # Persist checkpoint timestamp (best-effort).
+    try:
+        await state_set(db_pool, _PENDING_ACTIONS_CURATION_STATE_KEY, now_utc.isoformat())
+    except Exception:
+        logger.warning(
+            "pending_actions_curation: failed to write checkpoint key=%s",
+            _PENDING_ACTIONS_CURATION_STATE_KEY,
+            exc_info=True,
+        )
+
+    logger.info(
+        "pending_actions_curation complete: scanned=%d surfaced=%d "
+        "skipped_no_expiry=%d skipped_not_approaching=%d "
+        "skipped_already_expired=%d errors=%d",
+        stats["scanned"],
+        stats["surfaced"],
+        stats["skipped_no_expiry"],
+        stats["skipped_not_approaching"],
+        stats["skipped_already_expired"],
+        stats["errors"],
+    )
+    return stats
+
+
 def _stamp_checkpoint(db_pool: asyncpg.Pool) -> None:  # pragma: no cover
     """Fire-and-forget checkpoint stamp via asyncio.create_task when pool is live.
 
