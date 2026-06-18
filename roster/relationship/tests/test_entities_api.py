@@ -1245,6 +1245,10 @@ class TestEntityConcentration:
             "conf": 1.0,
             "verified": False,
             "primary": None,
+            # The concentration query returns a ``targets`` jsonb array
+            # (COALESCE'd to ``[]``); mirror that here so ``r["targets"]`` in
+            # the endpoint does not KeyError on the mocked row.
+            "targets": [],
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
