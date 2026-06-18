@@ -388,7 +388,11 @@ def create_app(
         #   so it reflects real connection state established at startup.
         try:
             db_mgr = get_db_manager()
-            role_enforcement_disabled: bool = db_mgr.role_enforcement_disabled
+            # Use bool() to guard against non-bool values (e.g. a MagicMock
+            # leaked from a test's module-level singleton patch) reaching the
+            # JSON response, which would cause a RecursionError in FastAPI's
+            # jsonable_encoder.
+            role_enforcement_disabled: bool = bool(db_mgr.role_enforcement_disabled)
         except RuntimeError:
             # DatabaseManager not yet initialized (startup path / tests that
             # don't wire a DB).  Conservative default: report as disabled.

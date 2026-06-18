@@ -59,8 +59,20 @@ class TestDatabaseAndDeps:
         mgr.register("alpha", ButlerConnectionInfo("alpha", 41100))
         assert "alpha" in mgr.butler_names
 
-    async def test_init_db_manager_logs_butler_name_db_and_schema_on_pool_failure(self, caplog):
-        """Pool-init failure warning includes butler name, db name, and schema."""
+    async def test_init_db_manager_logs_butler_name_db_and_schema_on_pool_failure(
+        self, caplog, monkeypatch
+    ):
+        """Pool-init failure warning includes butler name, db name, and schema.
+
+        Uses monkeypatch to reset the module-level ``_db_manager`` singleton
+        after the test so that other tests running in the same xdist worker
+        process are not affected by the AsyncMock that ``init_db_manager``
+        installs as a side-effect of this test.
+        """
+        import butlers.api.deps as _deps_module
+
+        monkeypatch.setattr(_deps_module, "_db_manager", None)
+
         cfg = ButlerConnectionInfo(
             name="ghost",
             port=41999,
