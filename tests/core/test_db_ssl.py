@@ -285,3 +285,161 @@ async def test_provision_collation_refresh(mock_connect: AsyncMock) -> None:
     conn2.close = AsyncMock()
     mock_connect.return_value = conn2
     await Database(db_name="test_db2").provision()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Strict role enforcement (hardened posture) tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_hardened_posture_default_is_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default posture when BUTLERS_POSTURE is unset is dev (fail-open)."""
+    from butlers.db import is_hardened_posture
+
+    monkeypatch.delenv("BUTLERS_POSTURE", raising=False)
+    assert is_hardened_posture() is False
+
+
+def test_is_hardened_posture_explicit_hardened(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUTLERS_POSTURE=hardened → is_hardened_posture() returns True."""
+    from butlers.db import is_hardened_posture
+
+    monkeypatch.setenv("BUTLERS_POSTURE", "hardened")
+    assert is_hardened_posture() is True
+
+
+def test_is_hardened_posture_explicit_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUTLERS_POSTURE=dev → is_hardened_posture() returns False."""
+    from butlers.db import is_hardened_posture
+
+    monkeypatch.setenv("BUTLERS_POSTURE", "dev")
+    assert is_hardened_posture() is False
+
+
+def test_strict_role_enforcement_defaults_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Database.strict_role_enforcement follows BUTLERS_POSTURE when not explicitly set."""
+    monkeypatch.delenv("BUTLERS_POSTURE", raising=False)
+    assert Database(db_name="test_db").strict_role_enforcement is False
+
+    monkeypatch.setenv("BUTLERS_POSTURE", "hardened")
+    assert Database(db_name="test_db").strict_role_enforcement is True
+
+    monkeypatch.setenv("BUTLERS_POSTURE", "dev")
+    assert Database(db_name="test_db").strict_role_enforcement is False
+
+
+def test_strict_role_enforcement_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit strict_role_enforcement kwarg overrides BUTLERS_POSTURE env var."""
+    monkeypatch.setenv("BUTLERS_POSTURE", "hardened")
+    # Force dev-mode even in hardened env
+    assert (
+        Database(db_name="test_db", strict_role_enforcement=False).strict_role_enforcement is False
+    )
+
+    monkeypatch.delenv("BUTLERS_POSTURE", raising=False)
+    # Force strict even without hardened posture
+    assert Database(db_name="test_db", strict_role_enforcement=True).strict_role_enforcement is True
+
+
+@patch("butlers.db.asyncpg.create_pool", new_callable=AsyncMock)
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_strict_mode_role_missing_raises(
+    mock_connect: AsyncMock, mock_create_pool: AsyncMock
+) -> None:
+    """Hardened posture + role not found → RuntimeError raised (fail-closed)."""
+    check_conn = AsyncMock()
+    check_conn.fetchval = AsyncMock(return_value=False)  # role does not exist
+    check_conn.close = AsyncMock()
+    mock_connect.return_value = check_conn
+
+    pool = AsyncMock()
+    mock_create_pool.return_value = pool
+
+    db = Database(db_name="test_db", role="butler_missing_role", strict_role_enforcement=True)
+    with pytest.raises(RuntimeError, match=r"\[hardened\].*not found"):
+        await db.connect()
+
+    # Pool must NOT be created — we raised before create_pool
+    mock_create_pool.assert_not_awaited()
+
+
+@patch("butlers.db.asyncpg.create_pool", new_callable=AsyncMock)
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_strict_mode_role_verify_error_raises(
+    mock_connect: AsyncMock, mock_create_pool: AsyncMock
+) -> None:
+    """Hardened posture + role verification error (DB unreachable) → RuntimeError raised (fail-closed)."""
+    mock_connect.side_effect = ConnectionError("connection refused")
+
+    pool = AsyncMock()
+    mock_create_pool.return_value = pool
+
+    db = Database(db_name="test_db", role="butler_general_rw", strict_role_enforcement=True)
+    with pytest.raises(RuntimeError, match=r"\[hardened\].*Could not verify role"):
+        await db.connect()
+
+    mock_create_pool.assert_not_awaited()
+
+
+@patch("butlers.db.asyncpg.create_pool", new_callable=AsyncMock)
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_dev_mode_role_missing_logs_and_continues(
+    mock_connect: AsyncMock, mock_create_pool: AsyncMock
+) -> None:
+    """Dev posture + role not found → logs warning and continues without raising (fail-open)."""
+    check_conn = AsyncMock()
+    check_conn.fetchval = AsyncMock(return_value=False)  # role does not exist
+    check_conn.close = AsyncMock()
+    mock_connect.return_value = check_conn
+
+    pool = AsyncMock()
+    mock_create_pool.return_value = pool
+
+    db = Database(db_name="test_db", role="butler_missing_role", strict_role_enforcement=False)
+    out = await db.connect()
+
+    # Must succeed (fail-open): pool created, role_verified=False, no setup callback
+    assert out is pool
+    assert db._role_verified is False
+    assert "setup" not in mock_create_pool.await_args.kwargs
+
+
+@patch("butlers.db.asyncpg.create_pool", new_callable=AsyncMock)
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_dev_mode_role_verify_error_logs_and_continues(
+    mock_connect: AsyncMock, mock_create_pool: AsyncMock
+) -> None:
+    """Dev posture + role verification error → logs warning and continues without raising (fail-open)."""
+    mock_connect.side_effect = ConnectionError("connection refused")
+
+    pool = AsyncMock()
+    mock_create_pool.return_value = pool
+
+    db = Database(db_name="test_db", role="butler_general_rw", strict_role_enforcement=False)
+    out = await db.connect()
+
+    assert out is pool
+    assert db._role_verified is False
+    assert "setup" not in mock_create_pool.await_args.kwargs
+
+
+@patch("butlers.db.asyncpg.create_pool", new_callable=AsyncMock)
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_strict_mode_role_found_proceeds_normally(
+    mock_connect: AsyncMock, mock_create_pool: AsyncMock
+) -> None:
+    """Hardened posture + role found → no error, setup callback registered (normal path)."""
+    check_conn = AsyncMock()
+    check_conn.fetchval = AsyncMock(return_value=True)  # role exists
+    check_conn.close = AsyncMock()
+    mock_connect.return_value = check_conn
+
+    pool = AsyncMock()
+    mock_create_pool.return_value = pool
+
+    db = Database(db_name="test_db", role="butler_general_rw", strict_role_enforcement=True)
+    out = await db.connect()
+
+    assert out is pool
+    assert db._role_verified is True
+    assert callable(mock_create_pool.await_args.kwargs.get("setup"))

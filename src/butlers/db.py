@@ -14,6 +14,19 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
+def is_hardened_posture() -> bool:
+    """Return True when the deployment posture is ``hardened``.
+
+    Reads the ``BUTLERS_POSTURE`` environment variable (set via ``--hardened``
+    flag or ``BUTLERS_POSTURE=hardened`` in the environment).  Default-when-unset
+    is ``dev`` (fail-open) so the running dev stack is never broken unless the
+    operator explicitly opts in.
+
+    See ``docs/operations/deployment-posture.md`` for the full posture reference.
+    """
+    return os.environ.get("BUTLERS_POSTURE", "dev").strip().lower() == "hardened"
+
+
 def _jsonb_encoder(value: object) -> bytes:
     """Encode a Python object to the JSONB binary wire format.
 
@@ -190,6 +203,7 @@ class Database:
         ssl: str | None = None,
         min_pool_size: int = 1,
         max_pool_size: int = 10,
+        strict_role_enforcement: bool | None = None,
     ) -> None:
         self.db_name = db_name
         self.schema = _normalize_schema_name(schema)
@@ -201,6 +215,13 @@ class Database:
         self.ssl = ssl
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
+        # strict_role_enforcement: None → auto-detect from BUTLERS_POSTURE env var.
+        # True → hardened (fail-closed on role missing/unverifiable).
+        # False → dev (fail-open: log warning and continue without SET ROLE).
+        if strict_role_enforcement is None:
+            self.strict_role_enforcement: bool = is_hardened_posture()
+        else:
+            self.strict_role_enforcement = strict_role_enforcement
         self.pool: asyncpg.Pool | None = None
         self._role_verified: bool = False
 
@@ -343,6 +364,12 @@ class Database:
                 finally:
                     await check_conn.close()
             except (asyncpg.PostgresError, OSError) as exc:
+                if self.strict_role_enforcement:
+                    raise RuntimeError(
+                        f"[hardened] Could not verify role {self.role!r} existence"
+                        f" for {self.db_name!r};"
+                        f" refusing to start with unverified role enforcement: {exc}"
+                    ) from exc
                 logger.warning(
                     "Could not verify role %r existence; SET ROLE enforcement disabled for %s: %s",
                     self.role,
@@ -359,6 +386,12 @@ class Database:
                     self.schema,
                 )
             else:
+                if self.strict_role_enforcement:
+                    raise RuntimeError(
+                        f"[hardened] Role {self.role!r} not found in pg_roles"
+                        f" for {self.db_name!r};"
+                        f" refusing to start with SET ROLE enforcement disabled."
+                    )
                 logger.warning(
                     "Role %r not found; SET ROLE enforcement disabled. "
                     "Butler %s runs with shared-user privileges.",
