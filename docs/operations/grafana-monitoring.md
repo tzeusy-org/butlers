@@ -80,6 +80,8 @@ Grafana
   - Pre-provisioned with Prometheus and Tempo datasources
   - Pre-configured dashboards from `grafana/*.json`
   - Credentials: `admin` / `admin` (overridable via `GF_SECURITY_ADMIN_PASSWORD`)
+  - Anonymous viewer: **enabled in dev posture** (default), **disabled in hardened posture**
+    (see [Deployment Posture](deployment-posture.md))
 
 ### Accessing the UI
 
@@ -233,6 +235,7 @@ rate(ingestion_bulk_replay_errors_total{code="503"}[5m])
 
 ## Related Pages
 
+- [Deployment Posture](deployment-posture.md) -- Dev vs hardened posture, Grafana anon-viewer gating
 - [Docker Deployment](docker-deployment.md) -- Service configuration including OTLP endpoints
 - [Troubleshooting](troubleshooting.md) -- Debugging with traces
 - [Dashboard API](../api_and_protocols/dashboard-api.md) -- FastAPI instrumentation details

@@ -35,6 +35,21 @@
 #   All observability services join the `backend` network so they can
 #   reach connector health endpoints. Grafana and Prometheus also join
 #   `frontend` for host-port exposure.
+#
+# DEPLOYMENT POSTURE:
+#   The deployment posture (dev vs hardened) is resolved at startup via the
+#   BUTLERS_POSTURE environment variable. When unset the posture defaults to
+#   "dev" (running stack not broken). Set BUTLERS_POSTURE=hardened to opt into
+#   the hardened posture.
+#
+#   compose.sh --observability resolves posture and sets GF_AUTH_ANONYMOUS_ENABLED:
+#     dev (default)  — GF_AUTH_ANONYMOUS_ENABLED=true   (anonymous Grafana viewer on)
+#     hardened       — GF_AUTH_ANONYMOUS_ENABLED=false  (login required)
+#
+#   When invoking docker compose directly, set the variable explicitly:
+#     GF_AUTH_ANONYMOUS_ENABLED=true docker compose -f docker-compose.yml \
+#       -f docker-compose.observability.yml --profile observability up -d
+#   See docs/operations/deployment-posture.md for the full posture reference.
 
 services:
 
@@ -99,7 +114,11 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      # Anon viewer: enabled in dev posture, disabled in hardened posture.
+      # compose.sh resolves this from BUTLERS_POSTURE; when invoking docker
+      # compose directly, set GF_AUTH_ANONYMOUS_ENABLED in the environment.
+      # Default-when-unset is "false" (safe) for direct compose invocations.
+      GF_AUTH_ANONYMOUS_ENABLED: "${GF_AUTH_ANONYMOUS_ENABLED:-false}"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
