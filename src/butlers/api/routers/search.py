@@ -5,7 +5,7 @@ Provides:
 - ``router`` — search endpoint at ``GET /api/search``
 
 Searches sessions (prompt, result) and state (key, value::text) across all
-butler databases using ``DatabaseManager.fan_out()``.  Also searches
+butler databases using the ``search_v1`` read-model boundary.  Also searches
 entities and contacts in the shared schema.  Returns grouped results with
 id, butler name, type, title, snippet, and navigation URL.
 """
@@ -19,6 +19,12 @@ from fastapi import APIRouter, Depends, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.models.search import SearchResponse, SearchResult
+from butlers.api.read_models.search_v1 import (
+    query_contact_search,
+    query_entity_search,
+    query_session_search,
+    query_state_search,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,186 +116,81 @@ async def search(
     session_results: list[SearchResult] = []
     state_results: list[SearchResult] = []
 
-    # --- Entities search (shared schema) ---
-    try:
-        pool = _any_pool(db)
-        entity_rows = await pool.fetch(
-            "SELECT e.id, e.canonical_name, e.entity_type, e.aliases"
-            " FROM public.entities e"
-            " WHERE (e.metadata->>'merged_into') IS NULL"
-            "   AND (e.metadata->>'deleted_at') IS NULL"
-            "   AND ("
-            "     e.canonical_name ILIKE $1"
-            "     OR EXISTS ("
-            "       SELECT 1 FROM unnest(e.aliases) AS a WHERE a ILIKE $1"
-            "     )"
-            "   )"
-            " ORDER BY e.canonical_name"
-            " LIMIT $2",
-            pattern,
-            limit,
-        )
-        for row in entity_rows:
-            aliases = list(row["aliases"]) if row["aliases"] else []
-            alias_text = ", ".join(aliases[:3])
-            snippet = row["entity_type"]
-            if alias_text:
-                snippet += f" · {alias_text}"
-            entity_results.append(
-                SearchResult(
-                    id=str(row["id"]),
-                    butler="memory",
-                    type="entity",
-                    title=row["canonical_name"],
-                    snippet=snippet,
-                    url=f"/entities/{row['id']}",
-                )
+    # --- Entities search (shared schema) via search_v1 read-model ---
+    pool = _any_pool(db)
+    entity_rows = await query_entity_search(pool, pattern, limit)
+    for entity_row in entity_rows:
+        alias_text = ", ".join(entity_row.aliases[:3])
+        snippet = entity_row.entity_type or ""
+        if alias_text:
+            snippet += f" · {alias_text}"
+        entity_results.append(
+            SearchResult(
+                id=str(entity_row.id),
+                butler="memory",
+                type="entity",
+                title=entity_row.canonical_name,
+                snippet=snippet,
+                url=f"/entities/{entity_row.id}",
             )
-    except Exception:
-        logger.warning("Entity search failed", exc_info=True)
+        )
 
-    # --- Contacts search (shared schema) ---
+    # --- Contacts search (shared schema) via search_v1 read-model ---
     # Channel identifiers now come from relationship.entity_facts (bu-hjo3i).
-    # Phase 1: find contacts matching by name OR entity_facts object value.
-    # Phase 2: fetch email/phone for snippet display from entity_facts.
-    try:
-        pool = _any_pool(db)
-        # Find contacts: name match OR entity_facts channel-value match.
-        contact_rows = await pool.fetch(
-            """
-            SELECT DISTINCT ON (c.id) c.id, c.name, c.entity_id
-            FROM public.contacts c
-            WHERE c.archived_at IS NULL
-              AND (
-                c.name ILIKE $1
-                OR (
-                  c.entity_id IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1
-                    FROM relationship.entity_facts ef
-                    WHERE ef.subject     = c.entity_id
-                      AND ef.predicate  LIKE 'has-%'
-                      AND ef.validity    = 'active'
-                      AND ef.object_kind = 'literal'
-                      AND ef.object ILIKE $1
-                  )
-                )
-              )
-            ORDER BY c.id, c.name
-            LIMIT $2
-            """,
-            pattern,
-            limit,
+    contact_rows = await query_contact_search(pool, pattern, limit)
+    for contact_row in contact_rows:
+        parts = []
+        if contact_row.email:
+            parts.append(contact_row.email)
+        if contact_row.phone:
+            parts.append(contact_row.phone)
+        snippet = " · ".join(parts) if parts else ""
+        contact_results.append(
+            SearchResult(
+                id=str(contact_row.id),
+                butler="relationship",
+                type="contact",
+                title=contact_row.name or "Unnamed",
+                snippet=snippet,
+                url=f"/contacts/{contact_row.id}",
+            )
         )
 
-        # Batch-fetch email and phone snippets from entity_facts.
-        entity_ids_for_snippet: list[object] = list(
-            {row["entity_id"] for row in contact_rows if row["entity_id"] is not None}
-        )
-        email_by_entity: dict[object, str] = {}
-        phone_by_entity: dict[object, str] = {}
-        if entity_ids_for_snippet:
-            ef_rows = await pool.fetch(
-                """
-                SELECT ef.subject AS entity_id, ef.predicate, ef.object
-                FROM relationship.entity_facts ef
-                WHERE ef.subject = ANY($1)
-                  AND ef.predicate IN ('has-email', 'has-phone')
-                  AND ef.validity    = 'active'
-                  AND ef.object_kind = 'literal'
-                ORDER BY ef.subject, ef."primary" DESC NULLS LAST, ef.created_at ASC
-                """,
-                entity_ids_for_snippet,
-            )
-            for efr in ef_rows:
-                eid = efr["entity_id"]
-                if efr["predicate"] == "has-email" and eid not in email_by_entity:
-                    email_by_entity[eid] = efr["object"]
-                elif efr["predicate"] == "has-phone" and eid not in phone_by_entity:
-                    phone_by_entity[eid] = efr["object"]
-
-        for row in contact_rows:
-            eid = row["entity_id"]
-            parts = []
-            if eid is not None:
-                if eid in email_by_entity:
-                    parts.append(email_by_entity[eid])
-                if eid in phone_by_entity:
-                    parts.append(phone_by_entity[eid])
-            snippet = " · ".join(parts) if parts else ""
-            contact_results.append(
-                SearchResult(
-                    id=str(row["id"]),
-                    butler="relationship",
-                    type="contact",
-                    title=row["name"] or "Unnamed",
-                    snippet=snippet,
-                    url=f"/contacts/{row['id']}",
-                )
-            )
-    except Exception:
-        logger.warning("Contact search failed", exc_info=True)
-
-    # --- Sessions search (per-butler fan-out) ---
-    session_sql = """
-        SELECT id, prompt, result, trigger_source, success, started_at,
-               duration_ms,
-               CASE
-                   WHEN prompt ILIKE $1 THEN 'prompt'
-                   ELSE 'result'
-               END AS matched_field
-        FROM sessions
-        WHERE prompt ILIKE $1 OR result ILIKE $1
-        ORDER BY started_at DESC
-        LIMIT $2
-    """
-
-    session_fan_out = await db.fan_out(session_sql, (pattern, limit))
-
+    # --- Sessions search (per-butler fan-out) via search_v1 read-model ---
+    session_fan_out = await query_session_search(db, pattern, limit)
     for butler_name, rows in session_fan_out.items():
-        for row in rows:
-            matched_field = row["matched_field"]
-            source_text = row["prompt"] if matched_field == "prompt" else (row["result"] or "")
+        for session_row in rows:
+            source_text = (
+                session_row.prompt
+                if session_row.matched_field == "prompt"
+                else (session_row.result or "")
+            )
             snippet = _extract_snippet(source_text, q)
-
             session_results.append(
                 SearchResult(
-                    id=str(row["id"]),
+                    id=str(session_row.id),
                     butler=butler_name,
                     type="session",
-                    title=row["prompt"][:120] if row["prompt"] else "Session",
+                    title=session_row.prompt[:120] if session_row.prompt else "Session",
                     snippet=snippet,
-                    url=f"/sessions/{row['id']}",
+                    url=f"/sessions/{session_row.id}",
                 )
             )
 
-    # --- State search (per-butler fan-out) ---
-    state_sql = """
-        SELECT key, value::text AS value_text, updated_at,
-               CASE
-                   WHEN key ILIKE $1 THEN 'key'
-                   ELSE 'value'
-               END AS matched_field
-        FROM state
-        WHERE key ILIKE $1 OR value::text ILIKE $1
-        ORDER BY updated_at DESC
-        LIMIT $2
-    """
-
-    state_fan_out = await db.fan_out(state_sql, (pattern, limit))
-
+    # --- State search (per-butler fan-out) via search_v1 read-model ---
+    state_fan_out = await query_state_search(db, pattern, limit)
     for butler_name, rows in state_fan_out.items():
-        for row in rows:
-            matched_field = row["matched_field"]
-            source_text = row["key"] if matched_field == "key" else (row["value_text"] or "")
+        for state_row in rows:
+            source_text = (
+                state_row.key if state_row.matched_field == "key" else (state_row.value_text or "")
+            )
             snippet = _extract_snippet(source_text, q)
-
             state_results.append(
                 SearchResult(
-                    id=f"{butler_name}:{row['key']}",
+                    id=f"{butler_name}:{state_row.key}",
                     butler=butler_name,
                     type="state",
-                    title=row["key"],
+                    title=state_row.key,
                     snippet=snippet,
                     url=f"/butlers/{butler_name}",
                 )

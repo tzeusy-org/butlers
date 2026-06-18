@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import tomllib
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
@@ -45,6 +45,7 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
+from butlers.api.read_models.butlers_v1 import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
 
@@ -139,41 +140,17 @@ async def _fetch_sessions_24h(
 ) -> dict[str, int]:
     """Return a mapping of butler_name -> session count for the last 24 hours.
 
-    Queries each butler's ``sessions`` table via fan_out and aggregates the
-    counts.  This call is best-effort: any DB or query failure returns an empty
-    mapping so the list endpoint stays available when the DB is unhealthy.
-
-    Butlers without a ``sessions`` table are handled gracefully: the query uses
-    ``to_regclass`` to skip the count when the table does not exist, which avoids
-    warning spam on every call.
+    Delegates to :func:`~butlers.api.read_models.butlers_v1.query_sessions_24h`
+    from the versioned read-model boundary.  This call is best-effort: any DB
+    or query failure returns an empty mapping so the list endpoint stays
+    available when the DB is unhealthy.
 
     Args:
         db: The database manager.
-        butler_names: Subset of butler names to query.  Defaults to all registered
-            butlers if omitted.
+        butler_names: Subset of butler names to query.  Defaults to all
+            registered butlers if omitted.
     """
-    since = datetime.now(UTC) - timedelta(hours=24)
-    query = (
-        "SELECT CASE WHEN to_regclass('sessions') IS NOT NULL"
-        " THEN (SELECT count(*) FROM sessions WHERE started_at >= $1)"
-        " ELSE 0 END"
-    )
-    try:
-        raw = await asyncio.wait_for(
-            db.fan_out(query, args=(since,), butler_names=butler_names),
-            timeout=_STATUS_TIMEOUT_S,
-        )
-    except Exception:
-        logger.warning("Failed to fetch 24h session counts", exc_info=True)
-        return {}
-    result: dict[str, int] = {}
-    for butler_name, rows in raw.items():
-        if rows:
-            try:
-                result[butler_name] = int(rows[0][0])
-            except (IndexError, TypeError, ValueError):
-                result[butler_name] = 0
-    return result
+    return await query_sessions_24h(db, butler_names, timeout_s=_STATUS_TIMEOUT_S)
 
 
 @router.get("", response_model=ApiResponse[list[ButlerSummary]])

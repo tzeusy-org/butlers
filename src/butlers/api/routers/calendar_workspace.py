@@ -35,6 +35,10 @@ from butlers.api.models.calendar_workspace import (
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
+from butlers.api.read_models.calendar_workspace_v1 import (
+    query_calendar_sources,
+    query_calendar_workspace,
+)
 from butlers.api.routers.audit import log_audit_entry
 
 router = APIRouter(prefix="/api/calendar/workspace", tags=["calendar", "workspace"])
@@ -326,78 +330,18 @@ async def _fetch_sources(
     butlers: list[str] | None = None,
     sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    conditions: list[str] = []
-    args: list[Any] = []
-    idx = 1
+    """Fetch calendar source rows via the versioned read-model boundary.
 
-    if lane is not None:
-        conditions.append(f"s.lane = ${idx}")
-        args.append(lane)
-        idx += 1
-    if butlers:
-        conditions.append(f"COALESCE(s.butler_name, '') = ANY(${idx}::text[])")
-        args.append(butlers)
-        idx += 1
-    if sources:
-        conditions.append(f"s.source_key = ANY(${idx}::text[])")
-        args.append(sources)
-        idx += 1
-
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    query = f"""
-        SELECT
-            s.id AS source_id,
-            s.source_key,
-            s.source_kind,
-            s.lane,
-            s.provider,
-            s.calendar_id,
-            s.butler_name,
-            s.display_name,
-            s.writable,
-            s.metadata AS source_metadata,
-            c.cursor_name,
-            c.last_synced_at,
-            c.last_success_at,
-            c.last_error_at,
-            c.last_error,
-            c.full_sync_required
-        FROM calendar_sources AS s
-        LEFT JOIN LATERAL (
-            SELECT cursor_name, last_synced_at, last_success_at, last_error_at, last_error,
-                   full_sync_required, updated_at
-            FROM calendar_sync_cursors
-            WHERE source_id = s.id
-            ORDER BY updated_at DESC
-            LIMIT 1
-        ) AS c ON TRUE
-        {where}
-        ORDER BY s.lane, s.source_kind, s.source_key
+    Delegates to :func:`~butlers.api.read_models.calendar_workspace_v1.query_calendar_sources`
+    and converts the typed :class:`~butlers.api.read_models.calendar_workspace_v1.CalendarSourceRow`
+    DTOs back to plain dicts for the existing downstream helpers
+    (``_to_source_freshness``, ``_normalize_entry``, etc.) that expect
+    ``Mapping[str, Any]`` inputs.
     """
+    import dataclasses
 
-    if butlers:
-        query_targets: list[str] | None = sorted(set(butlers))
-    else:
-        query_targets = db.butlers_with_module("calendar")
-    results = await db.fan_out(query, tuple(args), butler_names=query_targets)
-    flattened: list[dict[str, Any]] = []
-    for butler_name, rows in results.items():
-        for row in rows:
-            payload = dict(row)
-            # The owning butler for a source is the schema (``db_butler``) the
-            # row was fetched from. The ``s.butler_name`` column is only
-            # populated for butler-lane calendars; for user-lane provider
-            # calendars it is NULL even though the source lives in (and is
-            # mutated through) a specific butler schema. Fall back to the
-            # fan-out schema so user-lane writable calendars resolve to an
-            # owning butler and remain submittable. NOTE: ``setdefault`` is
-            # insufficient here because the SELECT always materializes the
-            # ``butler_name`` key (possibly as None).
-            if not payload.get("butler_name"):
-                payload["butler_name"] = butler_name
-            payload["db_butler"] = butler_name
-            flattened.append(payload)
-    return flattened
+    source_rows = await query_calendar_sources(db, lane=lane, butlers=butlers, sources=sources)
+    return [dataclasses.asdict(row) for row in source_rows]
 
 
 async def _fetch_workspace_rows(
@@ -409,89 +353,22 @@ async def _fetch_workspace_rows(
     butlers: list[str] | None = None,
     sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    conditions: list[str] = [
-        "s.lane = $1",
-        "i.starts_at < $2",
-        "i.ends_at > $3",
-        "COALESCE(i.status, e.status) != 'cancelled'",
-    ]
-    args: list[Any] = [view, end, start]
-    idx = 4
+    """Fetch calendar event-instance rows via the versioned read-model boundary.
 
-    if butlers:
-        conditions.append(
-            f"COALESCE(s.butler_name, e.metadata->>'butler_name', '') = ANY(${idx}::text[])"
-        )
-        args.append(butlers)
-        idx += 1
-    if sources:
-        conditions.append(f"s.source_key = ANY(${idx}::text[])")
-        args.append(sources)
-        idx += 1
-
-    where = " AND ".join(conditions)
-    query = f"""
-        SELECT
-            i.id AS instance_id,
-            i.origin_instance_ref,
-            i.timezone AS instance_timezone,
-            i.starts_at AS instance_starts_at,
-            i.ends_at AS instance_ends_at,
-            i.status AS instance_status,
-            i.metadata AS instance_metadata,
-            e.id AS event_id,
-            e.origin_ref,
-            e.title,
-            e.description,
-            e.location,
-            e.timezone AS event_timezone,
-            e.all_day,
-            e.status AS event_status,
-            e.visibility,
-            e.recurrence_rule,
-            e.metadata AS event_metadata,
-            s.id AS source_id,
-            s.source_key,
-            s.source_kind,
-            s.lane,
-            s.provider,
-            s.calendar_id,
-            s.butler_name,
-            s.display_name,
-            s.writable,
-            s.metadata AS source_metadata,
-            c.cursor_name,
-            c.last_synced_at,
-            c.last_success_at,
-            c.last_error_at,
-            c.last_error,
-            c.full_sync_required
-        FROM calendar_event_instances AS i
-        JOIN calendar_events AS e ON e.id = i.event_id
-        JOIN calendar_sources AS s ON s.id = i.source_id
-        LEFT JOIN LATERAL (
-            SELECT cursor_name, last_synced_at, last_success_at, last_error_at, last_error,
-                   full_sync_required, updated_at
-            FROM calendar_sync_cursors
-            WHERE source_id = s.id
-            ORDER BY updated_at DESC
-            LIMIT 1
-        ) AS c ON TRUE
-        WHERE {where}
-        ORDER BY i.starts_at ASC, i.id ASC
+    Delegates to
+    :func:`~butlers.api.read_models.calendar_workspace_v1.query_calendar_workspace`
+    and converts the typed
+    :class:`~butlers.api.read_models.calendar_workspace_v1.CalendarWorkspaceRow`
+    DTOs back to plain dicts for the existing downstream helpers
+    (``_normalize_entry``, deduplication logic, etc.) that expect
+    ``Mapping[str, Any]`` inputs.
     """
+    import dataclasses
 
-    if butlers:
-        query_targets: list[str] | None = sorted(set(butlers))
-    else:
-        query_targets = db.butlers_with_module("calendar")
-    results = await db.fan_out(query, tuple(args), butler_names=query_targets)
-    flattened: list[dict[str, Any]] = []
-    for butler_name, rows in results.items():
-        for row in rows:
-            payload = dict(row)
-            payload["db_butler"] = butler_name
-            flattened.append(payload)
+    workspace_dtos = await query_calendar_workspace(
+        db, view=view, start=start, end=end, butlers=butlers, sources=sources
+    )
+    flattened: list[dict[str, Any]] = [dataclasses.asdict(dto) for dto in workspace_dtos]
 
     # Deduplicate across butler databases: the same Google Calendar event
     # is synced into every butler's projection tables.  Keep only one
