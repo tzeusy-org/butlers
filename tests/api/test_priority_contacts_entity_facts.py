@@ -11,9 +11,12 @@ Covers:
 - list endpoint: contact with no entity_id → empty contact_info_values.
 - list endpoint: entity_facts DB error → empty contact_info_values (graceful).
 - list endpoint: is_inert=True when contact has no entity_id.
-- list endpoint: is_inert=True when entity exists but has no has-email fact (Gmail only).
+- list endpoint: is_inert=True when entity exists but has no has-email fact.
 - list endpoint: is_inert=False when entity has an active has-email fact.
-- list endpoint: is_inert=False for non-Gmail contact with entity + has-handle fact (no has-email).
+
+priority_contacts is butler-agnostic (bu-gx13h): the sole runtime consumer is the
+Gmail policy evaluator (resolves via has-email), so a contact with no has-email
+fact is inert regardless of any other channel facts it carries.
 """
 
 from __future__ import annotations
@@ -173,7 +176,6 @@ async def test_list_contact_info_values_from_entity_facts(app: FastAPI) -> None:
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "gmail",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "Alice",
@@ -219,7 +221,6 @@ async def test_list_contact_no_entity_id_empty_values(app: FastAPI) -> None:
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "telegram",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "Unknown",
@@ -257,7 +258,6 @@ async def test_list_entity_facts_error_returns_empty_values(app: FastAPI) -> Non
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "gmail",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "Bob",
@@ -297,7 +297,6 @@ async def test_list_contact_info_values_telegram_prefix_stripped(app: FastAPI) -
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "telegram",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "Charlie",
@@ -347,7 +346,6 @@ async def test_list_is_inert_true_when_no_entity_id(app: FastAPI) -> None:
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "gmail",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "No Entity",
@@ -389,7 +387,6 @@ async def test_list_is_inert_true_when_entity_has_no_email_fact(app: FastAPI) ->
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "gmail",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "Telegram Only",
@@ -436,7 +433,6 @@ async def test_list_is_inert_false_when_entity_has_email_fact(app: FastAPI) -> N
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "gmail",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "Active Alice",
@@ -475,12 +471,13 @@ async def test_list_is_inert_false_when_entity_has_email_fact(app: FastAPI) -> N
     assert data[0]["is_inert"] is False
 
 
-async def test_list_is_inert_false_for_non_gmail_with_handle_fact(app: FastAPI) -> None:
-    """Non-Gmail contact with entity + has-handle fact (no has-email) → is_inert=False.
+async def test_list_is_inert_true_for_entity_with_only_handle_fact(app: FastAPI) -> None:
+    """Contact with entity + has-handle fact but no has-email → is_inert=True.
 
-    The has-email check is scoped to butler='gmail' only; other butlers use
-    has-handle or similar predicates, so the absence of has-email must not
-    produce a false-positive inert badge.
+    priority_contacts is butler-agnostic (bu-gx13h): the sole runtime consumer
+    is the Gmail policy evaluator, which resolves senders via has-email only.
+    A contact whose entity carries only a has-handle fact matches nothing at
+    runtime, so it is inert regardless of the (now-removed) butler dimension.
     """
     contact_id = uuid4()
     entity_id = uuid4()
@@ -488,7 +485,6 @@ async def test_list_is_inert_false_for_non_gmail_with_handle_fact(app: FastAPI) 
     pc_row = _make_record(
         {
             "contact_id": contact_id,
-            "butler": "telegram",
             "added_at": _NOW,
             "added_by": "dashboard",
             "contact_name": "Telegram VIP",
@@ -524,7 +520,7 @@ async def test_list_is_inert_false_for_non_gmail_with_handle_fact(app: FastAPI) 
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert len(data) == 1
-    assert data[0]["is_inert"] is False, (
-        "Non-Gmail contact with a linked entity should not be inert "
-        "even when it has no has-email fact"
+    assert data[0]["is_inert"] is True, (
+        "A priority contact with no has-email fact is inert — the Gmail "
+        "policy evaluator (sole consumer) matches senders via has-email only."
     )

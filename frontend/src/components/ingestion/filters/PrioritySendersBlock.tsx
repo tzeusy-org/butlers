@@ -9,11 +9,12 @@
  * previously backed it (the proxy was misleading: the runtime never read it).
  *
  * The section header shows the count; each row shows contact name, channel
- * identifiers, target butler, and added timestamp.
+ * identifiers, and added timestamp. Priority contacts are global
+ * (butler-agnostic) — the runtime priority set is shared, not per-butler.
  *
  * The "+ add" affordance opens an inline contact picker (backed by the
- * relationship contacts list); selecting a contact POSTs a new priority-contact
- * assignment. Removal DELETEs the assignment.
+ * relationship contacts list); selecting a contact POSTs a new priority
+ * contact. Removal DELETEs it.
  *
  * Mutations (add/remove) surface errors visibly via inline error state.
  * Errors are never silently swallowed.
@@ -198,23 +199,22 @@ export function PrioritySendersBlock({
           {/* Column headers */}
           <div
             className="grid gap-3.5 py-2.5 border-b border-border/50 font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70"
-            style={{ gridTemplateColumns: '1.4fr 1fr 90px 24px' }}
+            style={{ gridTemplateColumns: '1.4fr 90px 24px' }}
           >
             <span>name · handle</span>
-            <span>routes to</span>
             <span>added</span>
             <span />
           </div>
 
           {contacts.map((entry) => (
             <div
-              key={`${entry.contact_id}:${entry.butler}`}
+              key={entry.contact_id}
               className="py-3 border-b border-border/50"
               data-testid={`priority-sender-row-${entry.contact_id}`}
             >
               <div
                 className="grid gap-3.5 items-baseline"
-                style={{ gridTemplateColumns: '1.4fr 1fr 90px 24px' }}
+                style={{ gridTemplateColumns: '1.4fr 90px 24px' }}
               >
                 {/* Name / handle */}
                 <div className="min-w-0">
@@ -224,11 +224,6 @@ export function PrioritySendersBlock({
                   <span className="block font-mono text-[10px] text-muted-foreground mt-0.5 truncate">
                     {handleFromEntry(entry)}
                   </span>
-                </div>
-
-                {/* Routes to (butler) */}
-                <div className="font-mono text-[10.5px] text-muted-foreground truncate">
-                  {entry.butler}
                 </div>
 
                 {/* Added */}
@@ -253,14 +248,10 @@ export function PrioritySendersBlock({
                 <div
                   className="mt-1.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--filter-amber,oklch(0.72_0.15_85))] border border-[color:var(--filter-amber,oklch(0.72_0.15_85))]/40 px-2 py-0.5 inline-flex items-center gap-1.5"
                   data-testid={`priority-sender-inert-${entry.contact_id}`}
-                  title={
-                    entry.butler === 'gmail'
-                      ? "This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact — without one, this entry matches nothing."
-                      : "This contact has no linked entity in the system. Priority senders require a linked entity to resolve channel handles and match incoming messages."
-                  }
+                  title="This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact — without one, this entry matches nothing."
                 >
                   <span aria-hidden="true">⚠</span>
-                  {entry.butler === 'gmail' ? 'no email fact — entry matches nothing' : 'no linked entity — entry matches nothing'}
+                  no email fact — entry matches nothing
                 </div>
               )}
             </div>

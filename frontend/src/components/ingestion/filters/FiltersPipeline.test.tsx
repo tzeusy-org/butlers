@@ -175,7 +175,6 @@ function makePriorityContact(
 ): PriorityContactEntry {
   return {
     contact_id: 'contact-001',
-    butler: 'gmail',
     added_at: '2026-01-01T00:00:00Z',
     added_by: 'dashboard',
     name: 'VIP Contact',

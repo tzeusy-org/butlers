@@ -461,9 +461,11 @@ _PRIORITY_CONTACTS_TTL = 900  # 15 minutes
 class GmailPolicyEvaluator:
     """DB-backed priority contact evaluator with 15-minute TTL cache.
 
-    Loads priority contacts for ``butler='gmail'`` from ``public.priority_contacts``
+    Loads the global priority-contact set from ``public.priority_contacts``
     joined to ``relationship.entity_facts`` to resolve email addresses (migration
-    bead bu-hjo3i).  The cache refreshes automatically when it is older than 15 minutes.
+    bead bu-hjo3i).  ``priority_contacts`` is butler-agnostic (bu-gx13h dropped the
+    ``butler`` dimension).  The cache refreshes automatically when it is older than
+    15 minutes.
 
     If the DB is unreachable during a cache refresh, the evaluator retains its
     previous cache and logs a warning.  On the very first call, if the DB is
@@ -506,8 +508,7 @@ class GmailPolicyEvaluator:
                 FROM public.priority_contacts pc
                 JOIN public.contacts c ON c.id = pc.contact_id
                 JOIN relationship.entity_facts ef ON ef.subject = c.entity_id
-                WHERE pc.butler = 'gmail'
-                  AND ef.predicate  = 'has-email'
+                WHERE ef.predicate  = 'has-email'
                   AND ef.object_kind = 'literal'
                   AND ef.validity   = 'active'
                   AND ef.object IS NOT NULL

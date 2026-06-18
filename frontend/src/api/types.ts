@@ -3062,10 +3062,9 @@ export interface IngestionRuleListParams {
 // reads/writes them via GET/POST/DELETE /api/ingestion/priority-contacts.
 // ---------------------------------------------------------------------------
 
-/** One priority-contact assignment, joined to public.contacts for display. */
+/** One priority contact (global — butler-agnostic), joined to public.contacts. */
 export interface PriorityContactEntry {
   contact_id: string;
-  butler: string;
   added_at: string;
   added_by: string | null;
   /** Canonical contact name from public.contacts (may be null). */
@@ -3074,13 +3073,10 @@ export interface PriorityContactEntry {
   contact_info_values: string[];
   /**
    * True when this entry would silently match nothing at runtime.
-   * For Gmail: the policy evaluator resolves senders via a 3-hop join
-   * (priority_contacts → contacts.entity_id → entity_facts has-email);
-   * a contact is inert when it has no linked entity_id or its entity carries
-   * no active has-email fact.
-   * For other butlers: a contact is inert only when it has no linked entity_id
-   * (they use has-handle or other predicates, not has-email).
-   * In all cases the row saves OK but never matches any incoming sender.
+   * The sole consumer (GmailPolicyEvaluator) resolves senders via a 3-hop join
+   * (priority_contacts → contacts.entity_id → entity_facts has-email); a contact
+   * is inert when it has no linked entity_id or its entity carries no active
+   * has-email fact. The row saves OK but never matches any incoming sender.
    */
   is_inert: boolean;
 }
@@ -3088,20 +3084,17 @@ export interface PriorityContactEntry {
 /** Request body for POST /api/ingestion/priority-contacts. */
 export interface PriorityContactAddRequest {
   contact_id: string;
-  butler: string;
 }
 
 /** Response body for POST /api/ingestion/priority-contacts (201). */
 export interface PriorityContactAddResponse {
   contact_id: string;
-  butler: string;
   added_at: string;
   added_by: string | null;
 }
 
 /** Query parameters for GET /api/ingestion/priority-contacts. */
 export interface PriorityContactListParams {
-  butler?: string;
   offset?: number;
   limit?: number;
 }

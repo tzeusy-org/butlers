@@ -106,10 +106,27 @@ def upgrade() -> None:
         )
     """)
 
-    # Per-butler lookup index
+    # Per-butler lookup index.
+    # Guarded against a missing ``butler`` column: core_129 (bu-gx13h) drops the
+    # column, and the schema-scoped migration runner re-executes the whole core
+    # chain against the same physical public table (once per schema). On those
+    # re-runs core_101 sees the post-129 butler-less table; ``CREATE INDEX IF NOT
+    # EXISTS`` would still try to reference the dropped column (the name guard only
+    # skips on an existing index), so wrap it in a column-presence check.
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_priority_contacts_butler
-        ON public.priority_contacts (butler)
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name   = 'priority_contacts'
+                  AND column_name  = 'butler'
+            ) THEN
+                CREATE INDEX IF NOT EXISTS idx_priority_contacts_butler
+                ON public.priority_contacts (butler);
+            END IF;
+        END
+        $$;
     """)
 
     # --- Cascade-delete audit trigger ---

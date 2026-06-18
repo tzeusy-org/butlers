@@ -6,9 +6,9 @@ Provides:
 
 Endpoints
 ---------
-GET    /api/ingestion/priority-contacts                       — list (optional ?butler=)
-POST   /api/ingestion/priority-contacts                       — add assignment (201)
-DELETE /api/ingestion/priority-contacts/{contact_id}/{butler} — remove assignment (204)
+GET    /api/ingestion/priority-contacts              — list all (global)
+POST   /api/ingestion/priority-contacts              — add contact (201)
+DELETE /api/ingestion/priority-contacts/{contact_id} — remove contact (204)
 
 Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/ingestion-priority-contacts/
 §Requirement: Priority contacts REST API
@@ -144,12 +144,11 @@ def _get_db_manager() -> DatabaseManager:
 
 @router.get("", response_model=PaginatedResponse[PriorityContactEntry])
 async def list_priority_contacts(
-    butler: str | None = Query(None, description="Filter by butler name"),
     limit: int = Query(100, ge=1, le=1000, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[PriorityContactEntry]:
-    """List priority contact assignments, optionally filtered by butler.
+    """List all priority contacts (global — butler-agnostic).
 
     Joins through public.contacts for canonical contact name.  Channel
     identifiers (email, phone, handles) are fetched from
@@ -163,39 +162,24 @@ async def list_priority_contacts(
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
-    conditions: list[str] = []
-    args: list[object] = []
-    idx = 1
-
-    if butler is not None:
-        conditions.append(f"pc.butler = ${idx}")
-        args.append(butler)
-        idx += 1
-
-    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-
-    count_sql = f"SELECT count(*) FROM public.priority_contacts pc{where_clause}"
-    total = await pool.fetchval(count_sql, *args) or 0
+    total = await pool.fetchval("SELECT count(*) FROM public.priority_contacts") or 0
 
     # Main query: join contacts for name; channel identifiers fetched separately
     # from relationship.entity_facts (bu-hjo3i).
-    data_sql = f"""
+    data_sql = """
         SELECT
             pc.contact_id,
-            pc.butler,
             pc.added_at,
             pc.added_by,
             c.name    AS contact_name,
             c.entity_id AS entity_id
         FROM public.priority_contacts pc
         LEFT JOIN public.contacts c ON c.id = pc.contact_id
-        {where_clause}
         ORDER BY pc.added_at DESC
-        OFFSET ${idx} LIMIT ${idx + 1}
+        OFFSET $1 LIMIT $2
     """
-    args.extend([offset, limit])
 
-    rows = await pool.fetch(data_sql, *args)
+    rows = await pool.fetch(data_sql, offset, limit)
 
     # Batch-fetch channel values from relationship.entity_facts.
     contact_entity_pairs: list[tuple[UUID, UUID]] = [
@@ -206,20 +190,16 @@ async def list_priority_contacts(
     entries = [
         PriorityContactEntry(
             contact_id=row["contact_id"],
-            butler=row["butler"],
             added_at=row["added_at"],
             added_by=row["added_by"],
             name=row["contact_name"],
             contact_info_values=ef_result.values.get(row["contact_id"], []),
             # A contact is inert when it would silently match nothing at runtime.
-            # For Gmail: the 3-hop join requires both a linked entity_id and an
-            # active has-email fact; either absence means the row matches nothing.
-            # For other butlers: only a missing entity_id makes the row inert
-            # (they use has-handle or other predicates, not has-email).
-            is_inert=(
-                row["entity_id"] is None
-                or (row["butler"] == "gmail" and row["contact_id"] not in ef_result.has_email)
-            ),
+            # The sole consumer (GmailPolicyEvaluator) resolves senders via a 3-hop
+            # join requiring both a linked entity_id and an active has-email fact;
+            # ``has_email`` membership already implies a linked entity, so its
+            # absence captures both failure modes.
+            is_inert=row["contact_id"] not in ef_result.has_email,
         )
         for row in rows
     ]
@@ -241,7 +221,7 @@ async def add_priority_contact(
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PriorityContactAddResponse:
-    """Add a priority contact assignment for a butler.
+    """Add a priority contact (global — butler-agnostic).
 
     Rejects payloads that include a ``roles`` field — role mutations
     are the sole responsibility of PATCH /api/contacts.
@@ -250,7 +230,7 @@ async def add_priority_contact(
 
     Returns HTTP 201 on success.
     Returns HTTP 400 if the contact_id does not exist in public.contacts.
-    Returns HTTP 409 if the (contact_id, butler) pair already exists.
+    Returns HTTP 409 if the contact_id is already a priority contact.
     """
     # Reject any payload that includes a 'roles' field.
     # Role mutations belong at PATCH /api/contacts — not here.
@@ -292,18 +272,17 @@ async def add_priority_contact(
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO public.priority_contacts (contact_id, butler, added_by)
-            VALUES ($1, $2, $3)
-            RETURNING contact_id, butler, added_at, added_by
+            INSERT INTO public.priority_contacts (contact_id, added_by)
+            VALUES ($1, $2)
+            RETURNING contact_id, added_at, added_by
             """,
             body.contact_id,
-            body.butler,
             "dashboard",
         )
     except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
-            detail=f"Priority contact ({body.contact_id}, {body.butler}) already exists",
+            detail=f"Priority contact {body.contact_id} already exists",
         ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Failed to insert priority contact") from exc
@@ -315,47 +294,44 @@ async def add_priority_contact(
             pool,
             actor="dashboard",
             action="ingestion.priority_contact.add",
-            target=f"{body.contact_id}:{body.butler}",
-            note=f"Added priority contact for butler '{body.butler}'",
+            target=str(body.contact_id),
+            note="Added priority contact",
             ip=client_host,
         )
     except Exception:
         logger.warning(
-            "priority_contacts: failed to append audit_log entry for add %s/%s",
+            "priority_contacts: failed to append audit_log entry for add %s",
             body.contact_id,
-            body.butler,
             exc_info=True,
         )
 
     return PriorityContactAddResponse(
         contact_id=row["contact_id"],
-        butler=row["butler"],
         added_at=row["added_at"],
         added_by=row["added_by"],
     )
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/ingestion/priority-contacts/{contact_id}/{butler}
+# DELETE /api/ingestion/priority-contacts/{contact_id}
 # ---------------------------------------------------------------------------
 
 
 @router.delete(
-    "/{contact_id}/{butler}",
+    "/{contact_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def remove_priority_contact(
     contact_id: UUID,
-    butler: str,
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
-    """Remove a priority contact assignment.
+    """Remove a priority contact (global — butler-agnostic).
 
     Emits an audit entry with action='ingestion.priority_contact.remove' on success.
 
     Returns HTTP 204 on success.
-    Returns HTTP 404 if the (contact_id, butler) pair does not exist.
+    Returns HTTP 404 if the contact_id is not a priority contact.
     """
     try:
         pool = db.credential_shared_pool()
@@ -363,9 +339,8 @@ async def remove_priority_contact(
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
     result = await pool.execute(
-        "DELETE FROM public.priority_contacts WHERE contact_id = $1 AND butler = $2",
+        "DELETE FROM public.priority_contacts WHERE contact_id = $1",
         contact_id,
-        butler,
     )
 
     # asyncpg execute returns a status string like "DELETE 1" or "DELETE 0"
@@ -373,7 +348,7 @@ async def remove_priority_contact(
     if deleted_count == 0:
         raise HTTPException(
             status_code=404,
-            detail=f"Priority contact ({contact_id}, {butler}) not found",
+            detail=f"Priority contact {contact_id} not found",
         )
 
     # Emit audit entry
@@ -383,14 +358,13 @@ async def remove_priority_contact(
             pool,
             actor="dashboard",
             action="ingestion.priority_contact.remove",
-            target=f"{contact_id}:{butler}",
-            note=f"Removed priority contact for butler '{butler}'",
+            target=str(contact_id),
+            note="Removed priority contact",
             ip=client_host,
         )
     except Exception:
         logger.warning(
-            "priority_contacts: failed to append audit_log entry for remove %s/%s",
+            "priority_contacts: failed to append audit_log entry for remove %s",
             contact_id,
-            butler,
             exc_info=True,
         )

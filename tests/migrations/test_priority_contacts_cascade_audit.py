@@ -5,10 +5,14 @@ public.priority_contacts) fires the AFTER DELETE trigger, inserting an
 audit_log entry with:
   action = 'ingestion.priority_contact.cascade_remove'
   actor  = 'system:contact_cascade'
-  target = '<contact_id>:<butler>'
+  target = '<contact_id>'
   note   = 'contact removed from public.contacts'
 
-§3.12 / §3.1 — Phase 3d (bu-1f91v.9), covers Phase 3a trigger (core_101).
+The schema is exercised in its post-core_129 form: priority_contacts is
+butler-agnostic (the 'butler' column was dropped; PK collapsed to contact_id),
+so the trigger target is just '<contact_id>' (no ':<butler>' suffix).
+
+§3.12 / §3.1 — Phase 3a trigger (core_101), butler-drop (core_129, bu-gx13h).
 
 This test requires a real PostgreSQL DB with triggers enabled.
 Runs only under the 'integration' mark (needs postgres_container fixture).
@@ -43,6 +47,10 @@ def _revision_chain() -> None:
     assert mod.revision == "core_101"
     assert mod.down_revision == "core_100"
 
+    drop = _load_migration("core_129_priority_contacts_drop_butler")
+    assert drop.revision == "core_129"
+    assert drop.down_revision == "core_128"
+
 
 async def _run_upgrade_sqls(pool: asyncpg.Pool, mod) -> None:
     """Collect upgrade() SQL via mock op and execute against the pool."""
@@ -56,6 +64,25 @@ async def _run_upgrade_sqls(pool: asyncpg.Pool, mod) -> None:
             await pool.execute(sql)
         except asyncpg.DuplicateObjectError:
             pass  # idempotent re-runs OK
+
+
+async def _apply_core_129_schema(pool: asyncpg.Pool, drop_mod) -> None:
+    """Apply core_129's schema DDL directly to reach the butler-agnostic shape.
+
+    core_129's dedup/parity/existence steps go through ``op.get_bind()`` (not
+    capturable via the mock-op harness above) but are no-ops on an empty,
+    freshly-provisioned table.  Only its schema DDL matters here; the trigger
+    function body is imported from the migration to avoid duplication/drift.
+    """
+    sqls = [
+        "DROP INDEX IF EXISTS public.idx_priority_contacts_butler",
+        "ALTER TABLE public.priority_contacts DROP CONSTRAINT IF EXISTS priority_contacts_pkey",
+        "ALTER TABLE public.priority_contacts DROP COLUMN IF EXISTS butler",
+        "ALTER TABLE public.priority_contacts ADD PRIMARY KEY (contact_id)",
+        drop_mod._TRIGGER_FN_GLOBAL,
+    ]
+    for sql in sqls:
+        await pool.execute(sql)
 
 
 async def _provision_tables(pool: asyncpg.Pool) -> None:
@@ -72,9 +99,13 @@ async def _provision_tables(pool: asyncpg.Pool) -> None:
     audit_mod = _load_migration("core_092_audit_log")
     await _run_upgrade_sqls(pool, audit_mod)
 
-    # public.priority_contacts + trigger
+    # public.priority_contacts + trigger (core_101 shape, with butler column)
     pc_mod = _load_migration("core_101_priority_contacts")
     await _run_upgrade_sqls(pool, pc_mod)
+
+    # Collapse to the butler-agnostic shape (core_129).
+    drop_mod = _load_migration("core_129_priority_contacts_drop_butler")
+    await _apply_core_129_schema(pool, drop_mod)
 
 
 @pytest.fixture
@@ -103,19 +134,16 @@ async def test_cascade_delete_emits_audit_entry(cascade_pool: asyncpg.Pool) -> N
         "Alice",
     )
 
-    # Add a priority_contacts assignment
-    butler = "gmail"
+    # Add a priority contact (butler-agnostic — contact_id only)
     await pool.execute(
-        "INSERT INTO public.priority_contacts (contact_id, butler) VALUES ($1, $2)",
+        "INSERT INTO public.priority_contacts (contact_id) VALUES ($1)",
         contact_id,
-        butler,
     )
 
     # Verify the priority contact exists
     pc = await pool.fetchrow(
-        "SELECT * FROM public.priority_contacts WHERE contact_id = $1 AND butler = $2",
+        "SELECT * FROM public.priority_contacts WHERE contact_id = $1",
         contact_id,
-        butler,
     )
     assert pc is not None
 
@@ -125,9 +153,8 @@ async def test_cascade_delete_emits_audit_entry(cascade_pool: asyncpg.Pool) -> N
 
     # The priority_contacts row should be gone
     pc_after = await pool.fetchrow(
-        "SELECT * FROM public.priority_contacts WHERE contact_id = $1 AND butler = $2",
+        "SELECT * FROM public.priority_contacts WHERE contact_id = $1",
         contact_id,
-        butler,
     )
     assert pc_after is None, "Cascade delete should have removed the priority_contacts row"
 
@@ -140,43 +167,42 @@ async def test_cascade_delete_emits_audit_entry(cascade_pool: asyncpg.Pool) -> N
     assert audit_row is not None, "Cascade trigger should have inserted an audit_log entry"
     assert audit_row["actor"] == "system:contact_cascade"
     assert audit_row["action"] == "ingestion.priority_contact.cascade_remove"
-    assert str(contact_id) in audit_row["target"]
-    assert butler in audit_row["target"]
+    # Target is the bare contact_id — no ':<butler>' suffix after core_129.
+    assert audit_row["target"] == str(contact_id)
     assert audit_row["note"] == "contact removed from public.contacts"
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_cascade_delete_multiple_butlers(cascade_pool: asyncpg.Pool) -> None:
-    """Deleting a contact with multiple butler assignments emits one audit entry per row."""
+async def test_cascade_delete_multiple_contacts(cascade_pool: asyncpg.Pool) -> None:
+    """Deleting multiple priority contacts emits one audit entry per cascaded row."""
     pool = cascade_pool
 
-    contact_id = await pool.fetchval(
-        "INSERT INTO public.contacts (name) VALUES ($1) RETURNING id",
-        "Bob",
-    )
-
-    butlers = ["gmail", "messenger"]
-    for b in butlers:
-        await pool.execute(
-            "INSERT INTO public.priority_contacts (contact_id, butler) VALUES ($1, $2)",
-            contact_id,
-            b,
+    contact_ids = []
+    for name in ("Bob", "Carol"):
+        cid = await pool.fetchval(
+            "INSERT INTO public.contacts (name) VALUES ($1) RETURNING id",
+            name,
         )
+        await pool.execute(
+            "INSERT INTO public.priority_contacts (contact_id) VALUES ($1)",
+            cid,
+        )
+        contact_ids.append(cid)
 
-    # Delete the contact — both priority_contacts rows cascade, both trigger audits
-    await pool.execute("DELETE FROM public.contacts WHERE id = $1", contact_id)
+    # Delete both contacts — both priority_contacts rows cascade, both trigger audits
+    for cid in contact_ids:
+        await pool.execute("DELETE FROM public.contacts WHERE id = $1", cid)
 
+    targets = {str(cid) for cid in contact_ids}
     audit_rows = await pool.fetch(
-        "SELECT actor, action, target FROM public.audit_log "
+        "SELECT target FROM public.audit_log "
         "WHERE action = 'ingestion.priority_contact.cascade_remove' "
-        "AND target LIKE $1",
-        f"{contact_id}%",
+        "AND target = ANY($1)",
+        list(targets),
     )
 
     # One audit entry per priority_contacts row
-    assert len(audit_rows) == len(butlers), (
-        f"Expected {len(butlers)} audit entries for cascade delete, got {len(audit_rows)}"
+    assert len(audit_rows) == len(contact_ids), (
+        f"Expected {len(contact_ids)} audit entries for cascade delete, got {len(audit_rows)}"
     )
-    targets = {r["target"] for r in audit_rows}
-    for b in butlers:
-        assert f"{contact_id}:{b}" in targets
+    assert {r["target"] for r in audit_rows} == targets

@@ -126,7 +126,7 @@ def test_guardrail_allows_read_only_entity_facts_sql() -> None:
         FROM public.priority_contacts pc
         JOIN public.contacts c ON c.id = pc.contact_id
         JOIN relationship.entity_facts ef ON ef.subject = c.entity_id
-        WHERE pc.butler = 'gmail' AND ef.predicate = 'has-email'
+        WHERE ef.predicate = 'has-email'
         """,
         # discretion.py contact-role weighting read.
         "SELECT ef.subject FROM relationship.entity_facts ef WHERE ef.predicate = $1",
