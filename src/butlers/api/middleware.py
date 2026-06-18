@@ -17,10 +17,19 @@ as 500 responses with a stack trace in the server logs.  This prevents endpoint
 bugs from silently masquerading as butler-routing errors.
 
 Also provides ``ApiKeyMiddleware`` for optional API-key authentication on all
-``/api/*`` routes (excluding health endpoints).  Authentication is enabled only
-when the ``DASHBOARD_API_KEY`` environment variable is set.  When the variable
-is absent, the middleware is a no-op so that existing deployments that rely
-solely on network-level access control remain unaffected.
+``/api/*`` routes (excluding health endpoints).
+
+Security doctrine (``about/heart-and-soul/security.md``, RFC-0008): the PRIMARY
+trust boundary is **network isolation** — all host ports bind to ``127.0.0.1``
+and external access is handled by Tailscale serve.  ``DASHBOARD_API_KEY`` is
+**opt-in defense-in-depth** layered on top of that boundary; it is meaningful
+mainly when the dashboard is Tailscale-funneled beyond localhost.  Omitting the
+variable is an intentional, by-design choice for the common case — not a
+misconfiguration.
+
+When ``DASHBOARD_API_KEY`` is absent the middleware is a complete no-op.  When
+the variable is set, every ``/api/*`` request (except health/probe endpoints)
+must supply a matching ``X-API-Key`` header.
 """
 
 from __future__ import annotations
@@ -153,9 +162,11 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if self._api_key:
             logger.info("ApiKeyMiddleware: DASHBOARD_API_KEY is configured; auth is ENABLED")
         else:
-            logger.warning(
-                "ApiKeyMiddleware: DASHBOARD_API_KEY not set; dashboard API is UNAUTHENTICATED. "
-                "Set DASHBOARD_API_KEY for production use."
+            logger.info(
+                "ApiKeyMiddleware: DASHBOARD_API_KEY not set; API-key auth is inactive. "
+                "The network boundary (localhost binding + Tailscale) is the primary access "
+                "control — this is the expected default. Set DASHBOARD_API_KEY only if you "
+                "want an additional opt-in layer on top of the network boundary."
             )
 
     async def dispatch(self, request: Request, call_next):

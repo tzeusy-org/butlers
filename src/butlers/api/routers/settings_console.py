@@ -13,7 +13,7 @@ Implements §7.1 of the settings-redesign OpenSpec change:
   WS /api/settings/stream
        Multiplexes header_delta / attention_add / attention_remove events.
        Reconnect emits a full snapshot (event type "snapshot").
-       Auth: ?api_key=<DASHBOARD_API_KEY> required at handshake time.
+       Auth: ?api_key=<DASHBOARD_API_KEY> at handshake time (opt-in; absent when not configured).
 
 Partial-failure mode: when a sub-system aggregation fails, the exception is
 caught per-subsystem and surfaces an amber attention item instead of erroring
@@ -545,7 +545,7 @@ async def settings_stream(
     """WebSocket stream for the Settings Console.
 
     Protocol:
-      - Authenticate via ?api_key=<DASHBOARD_API_KEY> at handshake time.
+      - Authenticate via ?api_key=<DASHBOARD_API_KEY> at handshake time (no-op when not configured).
       - On connect: emit a full "snapshot" event.
       - Thereafter: emit "header_delta" when counts change, and
         "attention_add" / "attention_remove" when attention items change.
