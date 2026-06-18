@@ -125,6 +125,7 @@ if _models_path.exists():
         QueueEntry = _models_module.QueueEntry
         QueueResponse = _models_module.QueueResponse
         PredicateTab = _models_module.PredicateTab
+        ConcentrationTarget = _models_module.ConcentrationTarget
         ConcentrationEntry = _models_module.ConcentrationEntry
         ConcentrationRollup = _models_module.ConcentrationRollup
         ConcentrationResponse = _models_module.ConcentrationResponse
@@ -3945,7 +3946,10 @@ async def get_entities_concentration(
               "src": "relationship",
               "conf": 1.0,
               "verified": false,
-              "primary": null
+              "primary": null,
+              "targets": [
+                {"name": "Acme Corp", "entity_id": "<uuid>", "object_kind": "entity"}
+              ]
             },
             ...
           ],
@@ -4051,7 +4055,33 @@ async def get_entities_concentration(
             p.src,
             p.conf,
             p.verified,
-            p."primary"
+            p."primary",
+            -- Targets ("where" the predicate points): one object per active
+            -- contributing triple.  Entity-kind objects resolve to the target
+            -- entity's canonical_name + id (rendered as a hyperlink); literal
+            -- objects surface the raw value.  The ``object::uuid`` cast is
+            -- guarded by ``object_kind = 'entity'`` (CASE short-circuits) so
+            -- literal objects never attempt the cast.
+            COALESCE((
+                SELECT jsonb_agg(
+                    jsonb_build_object(
+                        'name', COALESCE(te.canonical_name, tf.object),
+                        'entity_id',
+                            CASE WHEN tf.object_kind = 'entity' THEN tf.object
+                                 ELSE NULL END,
+                        'object_kind', tf.object_kind
+                    )
+                    ORDER BY COALESCE(te.canonical_name, tf.object) ASC
+                )
+                FROM relationship.entity_facts tf
+                LEFT JOIN public.entities te
+                    ON tf.object_kind = 'entity'
+                   AND te.id = CASE WHEN tf.object_kind = 'entity'
+                                    THEN tf.object::uuid ELSE NULL END
+                WHERE tf.subject = a.entity_id
+                  AND tf.predicate = $1
+                  AND tf.validity = 'active'
+            ), '[]'::jsonb) AS targets
         FROM agg a
         JOIN prov p ON p.entity_id = a.entity_id
         JOIN public.entities e ON e.id = a.entity_id
@@ -4074,6 +4104,16 @@ async def get_entities_concentration(
     for r in agg_rows:
         ws = r["weight_sum"]
         share: float | None = (ws / total_weight) if total_weight > 0 else None
+        # ``targets`` arrives as a decoded jsonb array (list[dict]) via the
+        # registered jsonb codec; tolerate None/missing for robustness.
+        targets = [
+            ConcentrationTarget(
+                name=t.get("name") or "(unknown)",
+                entity_id=t.get("entity_id"),
+                object_kind=t.get("object_kind") or "literal",
+            )
+            for t in (r["targets"] or [])
+        ]
         items.append(
             ConcentrationEntry(
                 entity_id=r["entity_id"],
@@ -4086,6 +4126,7 @@ async def get_entities_concentration(
                 conf=r["conf"] if r["conf"] is not None else 1.0,
                 verified=r["verified"] if r["verified"] is not None else False,
                 primary=r["primary"],
+                targets=targets,
             )
         )
 

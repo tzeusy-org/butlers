@@ -1047,6 +1047,26 @@ class PredicateTab(BaseModel):
     entity_count: int = 0
 
 
+class ConcentrationTarget(BaseModel):
+    """The object ("where") of a relational triple contributing to a row.
+
+    For a ``works-at`` triple the subject is the person and the *target* is the
+    organization they work at.  Each contributing triple surfaces one target so
+    the UI can answer not just *who* has the predicate but *where it points*.
+
+    ``object_kind`` mirrors ``relationship.entity_facts.object_kind``:
+    ``'entity'`` (the object is another entity) or ``'literal'`` (a free-text
+    value).  When ``'entity'``, ``entity_id`` is the target entity's UUID and
+    ``name`` is its canonical name — the frontend renders this as a hyperlink to
+    that entity's detail page.  When ``'literal'``, ``entity_id`` is ``None`` and
+    ``name`` is the literal value (rendered as plain text).
+    """
+
+    name: str
+    entity_id: UUID | None = None
+    object_kind: str
+
+
 class ConcentrationEntry(BaseModel):
     """One row in the concentration balance-sheet for a given predicate.
 
@@ -1079,6 +1099,10 @@ class ConcentrationEntry(BaseModel):
     conf: float
     verified: bool
     primary: bool | None = None
+    # Targets of this entity's active triples for the predicate (the "where" —
+    # e.g. the organizations for a ``works-at`` row).  Empty for predicates that
+    # produce no resolvable objects.
+    targets: list[ConcentrationTarget] = Field(default_factory=list)
 
 
 class ConcentrationRollup(BaseModel):

@@ -187,3 +187,44 @@ async def test_concentration_returns_200_with_derived_labels(concentration_app, 
     item = next(i for i in body["items"] if i["entity_id"] == str(alice))
     assert item["canonical_name"] == "Alice"
     assert item["weight_sum"] == 3
+    # Entity-kind target resolves to the object entity's name + id (hyperlink).
+    assert item["targets"] == [
+        {"name": "Bob", "entity_id": str(bob), "object_kind": "entity"},
+    ]
+
+
+async def test_targets_resolve_entity_and_literal_objects(concentration_app, pool):
+    """Targets surface entity-kind (hyperlinked) and literal (plain) objects.
+
+    The ``object::uuid`` cast in the targets subquery is guarded by
+    ``object_kind = 'entity'``; this test seeds a *literal* object whose text is
+    NOT a valid UUID (``"freelance"``) alongside an entity object to prove the
+    CASE guard prevents the cast from ever running on literal rows (otherwise the
+    whole query would 500 with ``invalid input syntax for type uuid``).
+    """
+    await _make_owner(pool)
+    alice = await _make_entity(pool, "Alice")
+    acme = await _make_entity(pool, "Acme Corp")
+
+    # Entity-kind object: Alice works-at Acme (object is Acme's UUID).
+    await _add_relational_fact(pool, subject=alice, obj=acme, predicate="works-at", weight=2)
+    # Literal object: free-text "freelance" — NOT a UUID.
+    await pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, validity, weight, last_seen)
+        VALUES ($1, 'works-at', 'freelance', 'literal', 'test', 'active', 1, $2)
+        """,
+        alice,
+        datetime.now(UTC),
+    )
+
+    resp = await _get(concentration_app, pred="works-at")
+
+    assert resp.status_code == 200, resp.text
+    item = next(i for i in resp.json()["items"] if i["entity_id"] == str(alice))
+    # Ordered by name ASC: "Acme Corp" (entity) then "freelance" (literal).
+    assert item["targets"] == [
+        {"name": "Acme Corp", "entity_id": str(acme), "object_kind": "entity"},
+        {"name": "freelance", "entity_id": None, "object_kind": "literal"},
+    ]

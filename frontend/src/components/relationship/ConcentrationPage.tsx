@@ -19,8 +19,8 @@
  *       specs/dashboard-relationship/spec.md §"Concentration"
  */
 
-import { useCallback } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Fragment, useCallback } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
 
 import type { ConcentrationEntry, ConcentrationResponse, PredicateTab } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -153,6 +153,12 @@ function ConcentrationRow({ entry, rank, maxWeight, onOpen }: ConcentrationRowPr
   const sharePercent =
     entry.share != null ? `${(entry.share * 100).toFixed(1)}%` : "—";
 
+  // Targets — where this entity's predicate points (e.g. the organizations for
+  // a `works-at` row). Entity-kind targets are hyperlinks to the target entity;
+  // literal targets render as plain text. Rendered as a subtitle line *outside*
+  // the row's navigation button so the inner anchors are not nested in a button.
+  const targets = entry.targets ?? [];
+
   // Weight bar: width = weight / max × 100%, 6px tall, NO animation (spec).
   // Guard a zero/absent max so the bar is empty rather than NaN%.
   const barPercent =
@@ -254,6 +260,47 @@ function ConcentrationRow({ entry, rank, maxWeight, onOpen }: ConcentrationRowPr
           )}
         </span>
       </button>
+
+      {/* Targets line — "→ where the predicate points", with hyperlinks to
+          entity-kind objects (e.g. the corporation for a works-at row). Sits
+          below the row button so its anchors are not nested inside a button. */}
+      {targets.length > 0 && (
+        <div
+          className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 pl-11 pr-2 pb-2 -mt-1 text-xs"
+          data-testid="concentration-targets"
+        >
+          <span className="text-muted-foreground/60" aria-hidden>
+            →
+          </span>
+          {targets.map((t, i) => (
+            <Fragment key={`${t.object_kind}:${t.entity_id ?? t.name}:${i}`}>
+              {i > 0 && (
+                <span className="text-muted-foreground/40" aria-hidden>
+                  ·
+                </span>
+              )}
+              {t.entity_id != null ? (
+                <Link
+                  to={`/entities/${t.entity_id}`}
+                  className="font-medium text-foreground underline [text-underline-offset:3px] decoration-muted-foreground/40 hover:decoration-foreground"
+                  data-testid="concentration-target-link"
+                  title={t.name}
+                >
+                  {t.name}
+                </Link>
+              ) : (
+                <span
+                  className="text-muted-foreground"
+                  data-testid="concentration-target-literal"
+                  title={t.name}
+                >
+                  {t.name}
+                </span>
+              )}
+            </Fragment>
+          ))}
+        </div>
+      )}
     </li>
   );
 }

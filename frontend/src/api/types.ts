@@ -5984,10 +5984,25 @@ export interface PredicateTab {
 }
 
 /**
+ * The object ("where") of a relational triple contributing to a row.
+ *
+ * For a `works-at` row the target is the organization. When `object_kind` is
+ * `"entity"`, `entity_id` is set and the UI renders a hyperlink to that entity.
+ * When `"literal"`, `entity_id` is null and `name` is shown as plain text.
+ */
+export interface ConcentrationTarget {
+  name: string;
+  entity_id: string | null;
+  object_kind: string;
+}
+
+/**
  * One row in the concentration balance-sheet for a given predicate.
  *
  * ``weight_sum`` is the sum of edge weights (NULLs treated as 1 per triple).
  * ``share`` is the entity's fraction of total weight (0.0–1.0); null when total = 0.
+ * ``targets`` lists where the predicate points (e.g. the organizations for a
+ * `works-at` row); entity-kind targets carry an `entity_id` for hyperlinking.
  */
 export interface ConcentrationEntry {
   entity_id: string;
@@ -6000,6 +6015,7 @@ export interface ConcentrationEntry {
   conf: number;
   verified: boolean;
   primary: boolean | null;
+  targets: ConcentrationTarget[];
 }
 
 /** Header rollup for the concentration page. */

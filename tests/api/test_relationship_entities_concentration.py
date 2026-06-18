@@ -78,8 +78,14 @@ def _make_agg_row(
     conf: float = 1.0,
     verified: bool = False,
     primary: bool | None = None,
+    targets: list[dict] | None = None,
 ) -> MagicMock:
-    """Build a MagicMock simulating an asyncpg Record for aggregation rows."""
+    """Build a MagicMock simulating an asyncpg Record for aggregation rows.
+
+    ``targets`` mirrors the decoded jsonb array of the endpoint's ``targets``
+    subquery (list of ``{name, entity_id, object_kind}`` dicts); defaults to an
+    empty list.
+    """
     data = {
         "entity_id": entity_id or uuid4(),
         "canonical_name": canonical_name,
@@ -90,6 +96,7 @@ def _make_agg_row(
         "conf": conf,
         "verified": verified,
         "primary": primary,
+        "targets": targets if targets is not None else [],
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
@@ -297,6 +304,39 @@ class TestSinglePredicateAggregation:
         assert item["canonical_name"] == "Bob"
         assert item["weight_sum"] == 7
         assert item["fact_count"] == 3
+
+    async def test_targets_passed_through(self):
+        """Each row surfaces its targets (the "where" of the predicate).
+
+        Entity-kind targets carry an ``entity_id`` (for hyperlinking); literal
+        targets have ``entity_id=None``.
+        """
+        org_id = uuid4()
+        row = _make_agg_row(
+            canonical_name="Alice",
+            targets=[
+                {"name": "Acme Corp", "entity_id": str(org_id), "object_kind": "entity"},
+                {"name": "freelance", "entity_id": None, "object_kind": "literal"},
+            ],
+        )
+        app, _ = _app_with_pool(agg_rows=[row])
+        resp = await _get(app)
+
+        assert resp.status_code == 200
+        targets = resp.json()["items"][0]["targets"]
+        assert targets == [
+            {"name": "Acme Corp", "entity_id": str(org_id), "object_kind": "entity"},
+            {"name": "freelance", "entity_id": None, "object_kind": "literal"},
+        ]
+
+    async def test_targets_default_empty(self):
+        """A row with no resolvable objects returns an empty targets list."""
+        row = _make_agg_row(canonical_name="Bob")
+        app, _ = _app_with_pool(agg_rows=[row])
+        resp = await _get(app)
+
+        assert resp.status_code == 200
+        assert resp.json()["items"][0]["targets"] == []
 
     async def test_share_computed_correctly(self):
         """share = weight_sum / total_weight_sum."""

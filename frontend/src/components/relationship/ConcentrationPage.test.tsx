@@ -82,6 +82,10 @@ const KNOWS_RESPONSE: ConcentrationResponse = {
       conf: 1.0,
       verified: false,
       primary: null,
+      targets: [
+        { name: "Acme Corp", entity_id: "ent-acme-100", object_kind: "entity" },
+        { name: "Globex", entity_id: null, object_kind: "literal" },
+      ],
     },
     {
       entity_id: "ent-bob-002",
@@ -94,6 +98,7 @@ const KNOWS_RESPONSE: ConcentrationResponse = {
       conf: 0.9,
       verified: true,
       primary: null,
+      targets: [],
     },
   ],
   rollup: { total: 25, top3_share: 0.88 },
@@ -115,6 +120,7 @@ const FAMILY_OF_RESPONSE: ConcentrationResponse = {
       conf: 1.0,
       verified: false,
       primary: null,
+      targets: [],
     },
   ],
   rollup: { total: 5, top3_share: 1.0 },
@@ -342,6 +348,33 @@ describe("ConcentrationPage — entity rows", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/entities/ent-alice-001");
   });
 
+  it("renders target hyperlinks to the object entity (where the predicate points)", () => {
+    renderPage("/entities/concentration?predicate=works-at");
+    const aliceRow = container.querySelector("[data-entity-id='ent-alice-001']");
+    const targets = aliceRow?.querySelector("[data-testid='concentration-targets']");
+    expect(targets).toBeTruthy();
+
+    // Entity-kind target → hyperlink to /entities/:id with the canonical name.
+    const link = targets?.querySelector(
+      "[data-testid='concentration-target-link']",
+    ) as HTMLAnchorElement | null;
+    expect(link).toBeTruthy();
+    expect(link?.textContent).toBe("Acme Corp");
+    expect(link?.getAttribute("href")).toBe("/entities/ent-acme-100");
+
+    // Literal target → plain text, not a link.
+    const literal = targets?.querySelector(
+      "[data-testid='concentration-target-literal']",
+    );
+    expect(literal?.textContent).toBe("Globex");
+  });
+
+  it("omits the targets line for rows with no targets", () => {
+    renderPage("/entities/concentration?predicate=works-at");
+    const bobRow = container.querySelector("[data-entity-id='ent-bob-002']");
+    expect(bobRow?.querySelector("[data-testid='concentration-targets']")).toBeNull();
+  });
+
   it("renders share badge for each row", () => {
     renderPage("/entities/concentration");
     const badges = container.querySelectorAll("[data-testid='share-badge']");
@@ -474,6 +507,7 @@ describe("ConcentrationPage — footer KPI strip", () => {
           conf: 1.0,
           verified: false,
           primary: null,
+          targets: [],
         },
       ],
       total: 3,
