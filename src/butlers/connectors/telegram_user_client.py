@@ -2233,7 +2233,7 @@ async def run_telegram_user_client_connector() -> None:
         api_id = int(db_creds["TELEGRAM_API_ID"])
     except ValueError as exc:
         raise ValueError(
-            f"Telegram user-client connector: invalid TELEGRAM_API_ID from contact_info: {exc}"
+            f"Telegram user-client connector: invalid TELEGRAM_API_ID from credentials: {exc}"
         ) from exc
 
     api_hash = db_creds["TELEGRAM_API_HASH"]

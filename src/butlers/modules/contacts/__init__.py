@@ -959,7 +959,6 @@ class ContactsModule(Module):
 async def _enrich_telegram_chat_ids(provider: TelegramContactsProvider, pool: Any) -> None:
     """Post-sync enrichment for Telegram private chat IDs — disabled after cut-over.
 
-    Write-path cut-over (bu-k9ylx): ``public.contact_info`` is read-only and
     ``telegram_chat_id`` is a routing identifier with NO triple predicate (it is
     a numeric chat ID, not a user-facing handle), so it has no home in
     ``relationship.entity_facts``.  This enrichment therefore no longer persists

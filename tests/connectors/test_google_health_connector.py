@@ -636,18 +636,6 @@ def test_config_from_env_falls_back_on_invalid_int(monkeypatch: pytest.MonkeyPat
 
 
 # ---------------------------------------------------------------------------
-# Contact info registration contract (idempotency helper signature)
-# ---------------------------------------------------------------------------
-
-
-def test_upsert_contact_info_is_exposed_from_connector_module() -> None:
-    """The OAuth callback imports this symbol — keep it present."""
-    from butlers.connectors.google_health import upsert_google_health_contact_info
-
-    assert callable(upsert_google_health_contact_info)
-
-
-# ---------------------------------------------------------------------------
 # Window computation — first-run backfill vs steady-state
 # ---------------------------------------------------------------------------
 

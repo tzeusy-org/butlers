@@ -18,9 +18,7 @@ Key behaviours
   (primary account only). The Google user identifier recorded in
   ``source.endpoint_identity`` and ``sender.identity`` is the account's
   *email* — it is the stable identifier Google Health persists in
-  ``public.google_accounts`` today, and RFC 0004 identity resolution hinges
-  on a matching ``public.contact_info`` row being upserted during OAuth
-  callback for ``scope_set=health``.
+  ``public.google_accounts`` today.
 - Scope gate: connector stays in ``degraded`` until all three
   RESTRICTED Google Health scope URLs are present on the primary account's
   ``granted_scopes``. Scope checks run every 300 s and on each poll-loop
@@ -77,8 +75,7 @@ Environment variables
 ``CONNECTOR_BUTLER_DB_NAME`` (optional)
     Local butler DB — hosts ``switchboard.connector_registry`` for cursors.
 ``BUTLER_SHARED_DB_NAME`` (optional, default ``butlers``)
-    Shared DB — hosts ``public.google_accounts``, ``public.entity_info``,
-    ``public.contact_info``.
+    Shared DB — hosts ``public.google_accounts``, ``public.entity_info``.
 """
 
 from __future__ import annotations
@@ -594,46 +591,6 @@ def build_daily_summary_envelope(
             "ingestion_tier": "full",
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Contact-info registration (called from OAuth callback for scope_set=health)
-# ---------------------------------------------------------------------------
-
-
-async def upsert_google_health_contact_info(
-    pool: asyncpg.Pool,
-    *,
-    google_user_id: str,
-    owner_entity_id: uuid.UUID,
-) -> None:
-    """Upsert the owner's ``public.contact_info`` row for Google Health.
-
-    RFC 0004 identity resolution looks up ``sender.identity`` via
-    ``public.contact_info(type, value)`` and expects a single matching row
-    linked to a contact whose entity has the ``owner`` role. This helper
-    is idempotent — re-running pairing produces no duplicate row.
-
-    The connector does NOT call this at ingestion time; it is called by
-    the OAuth callback when ``scope_set=health`` completes successfully.
-    The function is exposed from the connector module because the contact
-    shape is owned by the connector's contract.
-    """
-    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only and
-    # 'google_health' is an unmapped routing/credential identifier with no triple
-    # predicate, so it has no home in relationship.entity_facts.  This pairing
-    # therefore no longer persists anything and is a no-op.
-    #
-    # NOTE (follow-up): re-homing the google_health → owner-entity routing link
-    # (so inbound health events still reverse-resolve to the owner) is out of
-    # scope for the channel-fact triple model and tracked as a follow-up — it
-    # needs a dedicated routing/credential store, not the contact_info table.
-    _ = (owner_entity_id, google_user_id)  # retained for signature/back-compat
-    logger.debug(
-        "upsert_google_health_contact_info: skipped — google_health has no triple "
-        "home after the contact_info write-path cut-over (no-op)"
-    )
-    return
 
 
 # ---------------------------------------------------------------------------

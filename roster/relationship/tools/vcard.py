@@ -72,7 +72,7 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
             given=str(contact.get("first_name") or ""),
         )
 
-        # TEL/EMAIL - from contact_info table
+        # TEL/EMAIL - channel facts from relationship.entity_facts
         try:
             infos = await contact_info_list(pool, contact["id"])
         except asyncpg.UndefinedTableError:

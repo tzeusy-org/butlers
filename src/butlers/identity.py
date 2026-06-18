@@ -6,8 +6,7 @@ associated roles and entity_id.
 
 Migration bead 7 (bu-akads): reads from ``relationship.entity_facts`` triples
 (predicate ``has-handle``, ``has-email``, ``has-phone``) joined to
-``public.entities``.  ``public.contact_info`` / ``public.contacts`` are no
-longer consulted by the primary resolution path.
+``public.entities`` as the primary resolution path.
 
 Used by:
 - Switchboard ingestion path (before routing) to inject sender identity preambles.
@@ -271,8 +270,7 @@ async def resolve_contact_by_channel(
 
     Migration bead 7 (bu-akads): this function now queries the triples store
     (``relationship.entity_facts``) directly, using predicates ``has-handle``,
-    ``has-email``, and ``has-phone``.  ``public.contact_info`` / ``public.contacts``
-    are no longer consulted.
+    ``has-email``, and ``has-phone``.
 
     Parameters
     ----------

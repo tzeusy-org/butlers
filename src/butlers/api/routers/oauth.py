@@ -1586,20 +1586,6 @@ async def oauth_google_callback(
     )
     logger.info("Scope granted: %s", scope)
 
-    # If the grant included Google Health RESTRICTED scopes, pre-register a
-    # public.contact_info(type='google_health') row linked to the owner entity
-    # so the Switchboard can resolve `sender.identity` on wellness envelopes
-    # via a known contact instead of creating a temp contact. Idempotent —
-    # re-runs produce no duplicate row. See openspec requirement "Owner
-    # Contact Info Registration" in connector-google-health/spec.md.
-    if shared_pool is not None and account_email and scope and "googlehealth." in scope:
-        try:
-            await _register_google_health_contact_info(shared_pool, google_user_id=account_email)
-        except Exception as exc:  # noqa: BLE001
-            # Non-fatal: the connector will keep running in degraded mode
-            # until the contact_info row is present.
-            logger.warning("Failed to upsert google_health contact_info (non-fatal): %s", exc)
-
     # Notify the Gmail connector to reload accounts immediately so it picks up the
     # new/updated refresh token without waiting for the next periodic rescan.
     gmail_health_port = int(os.environ.get("GMAIL_CONNECTOR_HEALTH_PORT", "40082"))
@@ -1619,39 +1605,6 @@ async def oauth_google_callback(
         "google", state_entry.page_of_origin, state_entry.connector_detail_path
     )
     return _frontend_redirect(success_url)
-
-
-async def _register_google_health_contact_info(
-    pool: Any,
-    *,
-    google_user_id: str,
-) -> None:
-    """Upsert a ``public.contact_info(type='google_health')`` row on the owner contact.
-
-    This is called from the OAuth callback when ``scope_set=health`` is
-    granted, satisfying the ``connector-google-health`` spec requirement
-    'Owner Contact Info Registration' — the Switchboard resolves
-    ``sender.identity = <google_user_id>`` on wellness envelopes via this
-    row, avoiding the temp-contact path used for unknown senders.
-
-    The function is idempotent — re-running pairing for the same account
-    produces no duplicate row (``ON CONFLICT (type, value) DO NOTHING``).
-    """
-    # Write-path cut-over (bu-k9ylx): public.contact_info is read-only and
-    # 'google_health' is an unmapped routing/credential identifier with no triple
-    # predicate, so it has no home in relationship.entity_facts.  This pairing
-    # therefore no longer persists anything and is a no-op.
-    #
-    # NOTE (follow-up): re-homing the google_health → owner-entity routing link
-    # (so inbound health events still reverse-resolve to the owner) is out of
-    # scope for the channel-fact triple model and tracked as a follow-up — it
-    # needs a dedicated routing/credential store, not the contact_info table.
-    _ = google_user_id  # retained for signature/back-compat; no longer persisted
-    logger.debug(
-        "_register_google_health_contact_info: skipped — google_health has no triple "
-        "home after the contact_info write-path cut-over (no-op)"
-    )
-    return
 
 
 async def _update_account_refresh_token(
@@ -3224,13 +3177,6 @@ async def _google_callback_from_state(
         account_email,
         is_new_account,
     )
-
-    # Register google_health contact_info if health scopes granted.
-    if shared_pool is not None and account_email and scope and "googlehealth." in scope:
-        try:
-            await _register_google_health_contact_info(shared_pool, google_user_id=account_email)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to upsert google_health contact_info: %s", exc)
 
     # Notify Gmail connector to reload.
     gmail_health_port = int(os.environ.get("GMAIL_CONNECTOR_HEALTH_PORT", "40082"))
