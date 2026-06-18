@@ -66,6 +66,7 @@ _FORBIDDEN_INFRA_ATTRS: tuple[str, ...] = (
     "scheduler",
     "_scheduler",
     "spawner",  # public
+    "_spawner",  # private — the form QaModule/SelfHealingModule held before bu-k2sny
     "session_log",
     "_session_log",
     "state_store",
