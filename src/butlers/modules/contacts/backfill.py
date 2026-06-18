@@ -282,12 +282,20 @@ class ContactBackfillWriter:
         Resolves or creates an entity before the contact INSERT so that
         ``entity_id`` is always set when the schema supports it.
 
-        ``executor`` lets the caller run every statement on a specific
+        ``executor`` lets the caller run the contact INSERT on a specific
         connection/transaction (asyncpg Pool and Connection share the
         ``fetchrow``/``execute`` interface). The engine passes a transactional
         connection so the contact INSERT and its provenance source-link commit
         atomically — otherwise an interrupted sync can leave a link-less
         contact that the next sync cannot find and re-creates as a duplicate.
+
+        Entity resolution deliberately runs on the pool, NOT on ``executor``:
+        ``_ensure_entity`` recovers from a duplicate canonical_name by catching
+        ``UniqueViolationError`` and re-SELECTing, but in Postgres a raised
+        error aborts the *enclosing* transaction even when Python catches it, so
+        the recovery query would fail if it shared the caller's transaction. The
+        entity is committed independently first; a contactless entity is
+        harmless and reused if the contact+source-link transaction rolls back.
         """
         db = executor or self._pool
         display = _build_display_name(contact)
@@ -307,7 +315,7 @@ class ContactBackfillWriter:
         metadata: dict[str, Any] = {}
         self._stamp_provenance(metadata, contact)
 
-        entity_id = await self._ensure_entity(first, last, nickname, company, executor=db)
+        entity_id = await self._ensure_entity(first, last, nickname, company)
 
         if entity_id is not None:
             try:
@@ -368,11 +376,18 @@ class ContactBackfillWriter:
         last_name: str | None,
         nickname: str | None,
         company: str | None,
-        *,
-        executor: Any | None = None,
     ) -> uuid.UUID | None:
-        """Resolve or create an entity for a backfilled contact."""
-        db = executor or self._pool
+        """Resolve or create an entity for a backfilled contact.
+
+        Always runs on the pool (autonomous statements). The INSERT may collide
+        with an existing canonical_name and recover via SELECT in the
+        ``UniqueViolationError`` branch; that recovery only works outside any
+        caller transaction, since a raised error aborts an enclosing Postgres
+        transaction even when caught. Callers needing atomicity (contact +
+        source link) resolve the entity via this method *before* opening their
+        transaction — see ``create_contact``.
+        """
+        db = self._pool
         canonical = " ".join(p.strip() for p in (first_name, last_name) if p and p.strip())
         if not canonical:
             canonical = nickname or company or "Unknown"
