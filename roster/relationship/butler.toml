@@ -114,6 +114,12 @@ cron = "0 5 * * 1"
 dispatch_mode = "job"
 job_name = "fact_retraction_curation"
 
+[[butler.schedule]]
+name = "entity-dedup-curation"
+cron = "0 6 * * 2"
+dispatch_mode = "job"
+job_name = "entity_dedup_curation"
+
 # contact-info-reconciler retired in migration bead 10 (bu-e2ja9 / core_115):
 # public.contact_info is dropped, so the dual-write reconciler has nothing to
 # sweep. Re-adding it would throw UndefinedTableError every 30 minutes.

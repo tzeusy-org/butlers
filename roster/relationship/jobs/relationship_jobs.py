@@ -2767,6 +2767,401 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Entity dedup curation constants
+# ---------------------------------------------------------------------------
+
+# State key for the checkpoint timestamp (observability; job is idempotent via
+# pending_actions dedup — re-running is safe).
+_ENTITY_DEDUP_CURATION_STATE_KEY = "memory_curation.last_entity_dedup_at"
+
+# Insight priority for duplicate-entity merge candidates.
+_ENTITY_DEDUP_PRIORITY = 80
+
+# Pending-action and insight TTL for dedup candidates.
+_ENTITY_DEDUP_EXPIRES_DAYS = 14
+
+# Levenshtein distance threshold for "near-identical" canonical name matching.
+# Names within this many single-character edits of each other are flagged.
+_ENTITY_DEDUP_LEVENSHTEIN_THRESHOLD = 2
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Compute Levenshtein edit distance between two strings (pure Python).
+
+    O(len(a) * len(b)) time and O(len(b)) space.  Adequate for short name
+    comparisons; entity names are typically < 100 characters.
+    """
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(
+                prev[j] + 1,
+                curr[j - 1] + 1,
+                prev[j - 1] + (0 if ca == cb else 1),
+            )
+        prev = curr
+    return prev[len(b)]
+
+
+async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Detect duplicate entities and surface merge candidates for owner review.
+
+    **Behavior #2 — entity dedup/merge.**
+
+    Scans ``public.entities`` for entities whose ``canonical_name`` is either:
+
+    * **Exact duplicate** — two or more entities share the same
+      ``LOWER(TRIM(canonical_name))``.
+    * **Near-identical** — two entities have ``canonical_name`` values within
+      :data:`_ENTITY_DEDUP_LEVENSHTEIN_THRESHOLD` edit-distance of each other
+      (case-insensitive).
+
+    Tombstoned entities (``metadata->>'merged_into' IS NOT NULL``) are excluded.
+
+    For every duplicate pair detected, a ``pending_actions`` row is inserted
+    with ``tool_name='entity_merge'`` so the owner must explicitly approve the
+    merge.  **No autonomous merge is ever performed.**  The ``tool_args``
+    format matches the :func:`~butlers.modules.memory.tools.entities.entity_merge`
+    call signature::
+
+        {"source_entity_id": "<uuid>", "target_entity_id": "<uuid>"}
+
+    Alongside each new pending_action, an insight candidate is submitted via
+    :func:`~butlers.tools.switchboard.insight.broker.propose_insight_candidate`
+    so the owner receives a Telegram notification.
+
+    **Dedup guard:** before inserting, the job checks whether a
+    ``status='pending'`` row already exists for the same ordered pair
+    (source, target).  If one exists the pair is skipped — the existing
+    proposal is still outstanding.
+
+    **Merge direction convention:** within each duplicate group, the entity
+    with the highest ``created_at`` (newest) is the source (merged away) and
+    the entity with the lowest ``created_at`` (oldest, canonical) is the
+    target (survives).  For near-identical pairs, the same rule applies.
+
+    Args:
+        db_pool: Database connection pool (relationship butler schema context).
+
+    Returns:
+        Dictionary with keys:
+          - entities_scanned: number of non-tombstoned entities examined.
+          - exact_groups_found: number of exact-duplicate groups detected.
+          - near_identical_pairs_found: number of near-identical pairs detected.
+          - pairs_surfaced: number of new pending_actions rows created.
+          - pairs_skipped_already_pending: number of pairs skipped (action exists).
+          - errors: number of errors during processing.
+    """
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    logger.info("Running entity_dedup_curation job (detect duplicate canonical names)")
+
+    stats: dict[str, Any] = {
+        "entities_scanned": 0,
+        "exact_groups_found": 0,
+        "near_identical_pairs_found": 0,
+        "pairs_surfaced": 0,
+        "pairs_skipped_already_pending": 0,
+        "errors": 0,
+    }
+
+    now_utc = datetime.now(UTC)
+    expires_at = now_utc + timedelta(days=_ENTITY_DEDUP_EXPIRES_DAYS)
+
+    # -----------------------------------------------------------------------
+    # Step 1: Fetch all non-tombstoned entities.
+    # -----------------------------------------------------------------------
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, canonical_name, entity_type, roles
+                  FROM public.entities
+                 WHERE (metadata->>'merged_into') IS NULL
+                   AND TRIM(canonical_name) != ''
+                 ORDER BY created_at ASC
+                """
+            )
+    except Exception:
+        logger.exception("entity_dedup_curation: failed to query public.entities")
+        stats["errors"] += 1
+        return stats
+
+    stats["entities_scanned"] = len(rows)
+    logger.info("entity_dedup_curation: scanned %d non-tombstoned entities", len(rows))
+
+    if not rows:
+        logger.info("entity_dedup_curation: no entities found — nothing to check")
+        try:
+            await state_set(db_pool, _ENTITY_DEDUP_CURATION_STATE_KEY, now_utc.isoformat())
+        except Exception:
+            logger.warning(
+                "entity_dedup_curation: failed to write checkpoint key=%s",
+                _ENTITY_DEDUP_CURATION_STATE_KEY,
+                exc_info=True,
+            )
+        return stats
+
+    # -----------------------------------------------------------------------
+    # Step 2: Detect exact duplicates.
+    #
+    # Group entities by LOWER(TRIM(canonical_name)).  Any group with > 1
+    # member contains duplicate entities.  Within a group, the oldest
+    # (lowest created_at, i.e. first in our ORDER BY ASC result) is the
+    # canonical target; all others are sources.  We emit one pair per
+    # (source, target) combination — typically one source per group.
+    # -----------------------------------------------------------------------
+    # Build ordered name → entity list mapping (ORDER BY created_at ASC preserved).
+    name_groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = row["canonical_name"].strip().lower()
+        name_groups.setdefault(key, []).append(
+            {
+                "id": str(row["id"]),
+                "canonical_name": row["canonical_name"],
+                "entity_type": row["entity_type"],
+                "roles": list(row["roles"] or []),
+            }
+        )
+
+    exact_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for name_key, group in name_groups.items():
+        if len(group) < 2:
+            continue
+        stats["exact_groups_found"] += 1
+        target = group[0]  # oldest — survives
+        for source in group[1:]:
+            exact_pairs.append((source, target))
+
+    # -----------------------------------------------------------------------
+    # Step 3: Detect near-identical pairs.
+    #
+    # For entities NOT already in an exact-duplicate group, compare all
+    # unique pairs by Levenshtein distance on their normalised canonical
+    # name.  Only pairs within the threshold distance are candidates.
+    # We exclude entity IDs that already appear in exact_pairs to avoid
+    # double-reporting.
+    # -----------------------------------------------------------------------
+    exact_pair_ids: set[str] = {e["id"] for pair in exact_pairs for e in pair}
+
+    # Collect unique groups (one representative per normalised name).
+    unique_entities: list[dict[str, Any]] = [
+        group[0] for key, group in name_groups.items() if group[0]["id"] not in exact_pair_ids
+    ]
+
+    near_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    seen_near: set[frozenset[str]] = set()
+    for i, a in enumerate(unique_entities):
+        for b in unique_entities[i + 1 :]:
+            name_a = a["canonical_name"].strip().lower()
+            name_b = b["canonical_name"].strip().lower()
+            if _levenshtein(name_a, name_b) <= _ENTITY_DEDUP_LEVENSHTEIN_THRESHOLD:
+                pair_key = frozenset({a["id"], b["id"]})
+                if pair_key not in seen_near:
+                    seen_near.add(pair_key)
+                    stats["near_identical_pairs_found"] += 1
+                    # Newer entity (b, since we use created_at ASC order) is source.
+                    near_pairs.append((b, a))
+
+    all_pairs = exact_pairs + near_pairs
+    if not all_pairs:
+        logger.info("entity_dedup_curation: no duplicate pairs detected — nothing to surface")
+        try:
+            await state_set(db_pool, _ENTITY_DEDUP_CURATION_STATE_KEY, now_utc.isoformat())
+        except Exception:
+            logger.warning(
+                "entity_dedup_curation: failed to write checkpoint key=%s",
+                _ENTITY_DEDUP_CURATION_STATE_KEY,
+                exc_info=True,
+            )
+        return stats
+
+    logger.info(
+        "entity_dedup_curation: found %d candidate pairs (exact=%d, near_identical=%d)",
+        len(all_pairs),
+        len(exact_pairs),
+        len(near_pairs),
+    )
+
+    # -----------------------------------------------------------------------
+    # Step 4: For each pair, check for existing pending_actions and insert if
+    # not already present, then surface an insight candidate.
+    # -----------------------------------------------------------------------
+    async def _ensure_dedup_pending_action(
+        source: dict[str, Any],
+        target: dict[str, Any],
+        match_type: str,
+    ) -> str:
+        """Create or return existing pending_actions row for this dedup pair.
+
+        Returns 'new', 'existing', or 'error'.
+        """
+        source_id = source["id"]
+        target_id = target["id"]
+        try:
+            async with db_pool.acquire() as conn:
+                # Dedup check: pending row already exists for this ordered pair?
+                existing = await conn.fetchval(
+                    """
+                    SELECT id FROM pending_actions
+                     WHERE tool_name = 'entity_merge'
+                       AND status    = 'pending'
+                       AND (tool_args ->> 'source_entity_id') = $1
+                       AND (tool_args ->> 'target_entity_id') = $2
+                     LIMIT 1
+                    """,
+                    source_id,
+                    target_id,
+                )
+                if existing is not None:
+                    return "existing"
+
+                action_id = uuid.uuid4()
+                pending_now = datetime.now(UTC)
+                action_expires_at = pending_now + timedelta(days=_ENTITY_DEDUP_EXPIRES_DAYS)
+
+                why = (
+                    f"Entity dedup curation detected a potential duplicate entity pair "
+                    f"({match_type} match).\n"
+                    f"Source (newer, to be merged away): {source['canonical_name']!r} "
+                    f"(id={source_id}, type={source['entity_type']})\n"
+                    f"Target (older, to survive): {target['canonical_name']!r} "
+                    f"(id={target_id}, type={target['entity_type']})\n\n"
+                    "Approving will merge the source entity into the target: "
+                    "all facts, aliases, and metadata are re-pointed to the target; "
+                    "the source entity is tombstoned. "
+                    "Rejecting keeps both entities separate."
+                )
+                evidence = [
+                    "source=entity_dedup_curation",
+                    f"match_type={match_type}",
+                    f"source_entity_id={source_id}",
+                    f"source_canonical_name={source['canonical_name']}",
+                    f"target_entity_id={target_id}",
+                    f"target_canonical_name={target['canonical_name']}",
+                ]
+
+                await conn.execute(
+                    "INSERT INTO pending_actions "
+                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                    "requested_at, expires_at, why, evidence) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    action_id,
+                    "entity_merge",
+                    {
+                        "source_entity_id": source_id,
+                        "target_entity_id": target_id,
+                    },
+                    (
+                        f"Merge duplicate entity {source['canonical_name']!r} "
+                        f"({match_type}) into {target['canonical_name']!r}"
+                    ),
+                    None,
+                    "pending",
+                    pending_now,
+                    action_expires_at,
+                    why,
+                    evidence,
+                )
+                return "new"
+        except Exception:
+            logger.exception(
+                "entity_dedup_curation: error creating pending_action for pair %s → %s",
+                source_id,
+                target_id,
+            )
+            return "error"
+
+    for match_type, (source, target) in [("exact", pair) for pair in exact_pairs] + [
+        ("near_identical", pair) for pair in near_pairs
+    ]:
+        outcome = await _ensure_dedup_pending_action(source, target, match_type)
+
+        if outcome == "error":
+            stats["errors"] += 1
+            continue
+
+        if outcome == "existing":
+            stats["pairs_skipped_already_pending"] += 1
+            logger.debug(
+                "entity_dedup_curation: skipping pair %s → %s — pending_action already exists",
+                source["id"],
+                target["id"],
+            )
+            continue
+
+        # New pending_action created; surface an insight candidate.
+        stats["pairs_surfaced"] += 1
+        insight_message = (
+            f"Duplicate entity detected ({match_type} name match):\n"
+            f"• Source (newer): {source['canonical_name']!r} (id={source['id']})\n"
+            f"• Target (older): {target['canonical_name']!r} (id={target['id']})\n\n"
+            "A merge candidate has been queued for your review. "
+            "Approve via pending_actions to merge the source into the target, "
+            "or reject to keep both entities separate."
+        )
+        dedup_key = f"relationship:entity-dedup:{source['id']}:{target['id']}"
+
+        try:
+            result = await propose_insight_candidate(
+                db_pool,
+                origin_butler="relationship",
+                priority=_ENTITY_DEDUP_PRIORITY,
+                category="entity-dedup",
+                dedup_key=dedup_key,
+                message=insight_message,
+                expires_at=expires_at,
+                cooldown_days=7,
+            )
+            status = result.get("status", "error")
+            if status not in ("accepted", "filtered"):
+                logger.warning(
+                    "entity_dedup_curation: propose_insight_candidate error for pair %s → %s: %s",
+                    source["id"],
+                    target["id"],
+                    result.get("reason", "unknown"),
+                )
+                stats["errors"] += 1
+        except Exception:
+            logger.exception(
+                "entity_dedup_curation: error surfacing insight for pair %s → %s",
+                source["id"],
+                target["id"],
+            )
+            stats["errors"] += 1
+
+    # Persist checkpoint timestamp (best-effort).
+    try:
+        await state_set(db_pool, _ENTITY_DEDUP_CURATION_STATE_KEY, now_utc.isoformat())
+    except Exception:
+        logger.warning(
+            "entity_dedup_curation: failed to write checkpoint key=%s",
+            _ENTITY_DEDUP_CURATION_STATE_KEY,
+            exc_info=True,
+        )
+
+    logger.info(
+        "entity_dedup_curation complete: "
+        "entities_scanned=%d exact_groups=%d near_identical_pairs=%d "
+        "pairs_surfaced=%d skipped_already_pending=%d errors=%d",
+        stats["entities_scanned"],
+        stats["exact_groups_found"],
+        stats["near_identical_pairs_found"],
+        stats["pairs_surfaced"],
+        stats["pairs_skipped_already_pending"],
+        stats["errors"],
+    )
+    return stats
+
+
 def _stamp_checkpoint(db_pool: asyncpg.Pool) -> None:  # pragma: no cover
     """Fire-and-forget checkpoint stamp via asyncio.create_task when pool is live.
 

@@ -608,6 +608,24 @@ async def _run_relationship_fact_retraction_curation_job(
     return await mod.run_fact_retraction_curation(pool)
 
 
+async def _run_relationship_entity_dedup_curation_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler entity-dedup curation job (behavior #2).
+
+    Scans public.entities for entities with same or near-identical
+    canonical_name values and surfaces each duplicate pair as a
+    pending_actions merge candidate for owner review.  No autonomous merge
+    is ever performed.
+    """
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_entity_dedup_curation(pool)
+
+
 # NOTE: _run_relationship_contact_info_reconciler_job was retired in migration
 # bead 10 (bu-e2ja9 / core_115). public.contact_info is dropped, so the
 # dual-write reconciler has nothing to sweep and is no longer dispatched.
@@ -984,6 +1002,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "memory_curation": _run_relationship_memory_curation_job,
             "pending_actions_curation": _run_relationship_pending_actions_curation_job,
             "fact_retraction_curation": _run_relationship_fact_retraction_curation_job,
+            "entity_dedup_curation": _run_relationship_entity_dedup_curation_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
         },
         "travel": {
