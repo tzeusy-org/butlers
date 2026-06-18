@@ -45,10 +45,6 @@ from opentelemetry.context import Context
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
-from butlers.core.general_settings import (
-    build_general_timezone_instruction,
-    load_general_settings,
-)
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
     canonical_runtime_mcp_url,
@@ -72,6 +68,37 @@ from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
+
+# ---------------------------------------------------------------------------
+# Seam imports — functions extracted to focused sub-modules.
+# Re-exported here so existing callers and test patches that reference
+# ``butlers.core.spawner.<name>`` continue to resolve correctly.
+# ---------------------------------------------------------------------------
+from butlers.core.spawner_context import (
+    _compose_system_prompt,
+    _is_missing_memory_table_error,  # noqa: F401 — re-export for test patches
+    _log_missing_memory_table_once,  # noqa: F401 — re-export for test patches
+    _memory_context_token_budget,
+    _memory_module_enabled,
+    fetch_general_timezone_instruction,
+    fetch_memory_context,
+    fetch_routing_instructions,
+    fetch_situational_context_preamble,
+    fetch_system_prompt_override,
+    store_session_episode,
+)
+from butlers.core.spawner_guardrails import (
+    _check_degenerate_tool_loop,
+    _check_token_budget,
+    _check_tool_call_budget,
+)
+from butlers.core.spawner_tool_calls import (
+    _dedup_tool_calls_by_id,  # noqa: F401 — re-export for test patches
+    _has_non_command_tool_calls,
+    _looks_like_mcp_endpoint_alias,  # noqa: F401 — re-export for test patches
+    _merge_tool_call_records,
+    _normalize_tool_name,  # noqa: F401 — re-export for test patches
+)
 from butlers.core.telemetry import (
     clear_active_session_context,
     get_traceparent_env,
@@ -82,7 +109,6 @@ from butlers.core.tool_call_capture import (
     clear_runtime_session_routing_context,
     consume_runtime_session_tool_calls,
     ensure_runtime_session_capture,
-    fingerprint_tool_call_payload,
     set_runtime_session_routing_context,
 )
 from butlers.core.utils import generate_uuid7_string
@@ -188,41 +214,6 @@ def _reset_global_semaphore() -> None:
     _global_semaphore = None
 
 
-_MEMORY_TABLE_NAMES = ("episodes", "facts", "rules", "memory_links", "memory_events")
-_missing_memory_table_warnings: set[tuple[str, str]] = set()
-_missing_context_table_logged: set[str] = set()
-
-
-def _is_missing_memory_table_error(exc: Exception) -> bool:
-    """Return whether an exception indicates missing memory module tables."""
-    if exc.__class__.__name__ == "UndefinedTableError":
-        return True
-    msg = str(exc).lower()
-    if "relation" not in msg or "does not exist" not in msg:
-        return False
-    return any(table in msg for table in _MEMORY_TABLE_NAMES)
-
-
-def _log_missing_memory_table_once(*, butler_name: str, operation: str) -> None:
-    """Log missing-memory-schema warning once per butler+operation."""
-    warning_key = (butler_name, operation)
-    if warning_key in _missing_memory_table_warnings:
-        logger.debug(
-            "Skipping memory %s for butler %s; memory tables are still missing",
-            operation,
-            butler_name,
-        )
-        return
-
-    _missing_memory_table_warnings.add(warning_key)
-    logger.warning(
-        "Skipping memory %s for butler %s because memory tables are missing. "
-        "Run migrations or disable [modules.memory].",
-        operation,
-        butler_name,
-    )
-
-
 @dataclass
 class SpawnerResult:
     """Result of a spawner invocation."""
@@ -255,322 +246,6 @@ def _append_runtime_session_query(
         query_items.append(("trigger_source", trigger_source))
     new_query = urlencode(query_items)
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
-
-
-def _dedup_tool_calls_by_id(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse records sharing the same non-empty id, keeping the last occurrence.
-
-    This handles lifecycle duplicates (e.g. in_progress + completed events for
-    the same tool call) — the last occurrence carries the most complete data.
-    Records with no id are always kept.
-    """
-    seen_ids: dict[str, int] = {}
-    for i, call in enumerate(calls):
-        call_id = call.get("id")
-        if isinstance(call_id, str) and call_id:
-            seen_ids[call_id] = i  # last occurrence wins
-    if not seen_ids:
-        return calls
-    keep_indexes = set(seen_ids.values())
-    return [
-        call
-        for i, call in enumerate(calls)
-        if i in keep_indexes or not (isinstance(call.get("id"), str) and call.get("id"))
-    ]
-
-
-def _normalize_tool_name(name: str, butler_name: str | None) -> str:
-    """Strip runtime-specific prefixes so the same underlying MCP tool matches
-    regardless of which runtime emitted the record.
-
-    Runtimes emit the same tool under three forms:
-
-    - bare ``fn.__name__`` (server-side capture in ``tool_call_capture``)
-    - ``mcp__{butler_name}__{fn}`` (claude_code / codex parsers)
-    - ``{butler_name}_{fn}`` (opencode parser)
-
-    Without normalization the merge-by-(name, payload) signature never matches
-    across those forms, causing duplicate rows in ``sessions.tool_calls``.
-
-    Safety rule: we unconditionally strip a leading ``{butler_name}_`` when
-    present. Underscores are ambiguous in theory — a butler named ``memory``
-    plus a real tool ``entity_resolve`` would collide with a tool named
-    ``memory_entity_resolve`` — but in practice this collision is already
-    impossible: opencode would emit ``memory_memory_entity_resolve`` vs
-    ``memory_entity_resolve`` for the two cases, and the bare
-    ``memory_entity_resolve`` form is what the capture side records either
-    way, so stripping is safe. No registered tool can start with its own
-    butler's name as a prefix without already colliding with opencode's
-    prefixed form.
-    """
-    if not name:
-        return name
-    if name.startswith("mcp__"):
-        parts = name.split("__", 2)
-        if len(parts) == 3 and _looks_like_mcp_endpoint_alias(parts[1]):
-            return parts[2]
-    if butler_name:
-        mcp_prefix = f"mcp__{butler_name}__"
-        if name.startswith(mcp_prefix):
-            return name[len(mcp_prefix) :]
-        opencode_prefix = f"{butler_name}_"
-        if name.startswith(opencode_prefix):
-            return name[len(opencode_prefix) :]
-    return name
-
-
-def _looks_like_mcp_endpoint_alias(alias: str) -> bool:
-    """Return whether an MCP server alias is an endpoint-derived identifier.
-
-    Codex/OpenCode should report configured server names such as ``lifestyle``,
-    but some runtime builds can echo the remote endpoint identity in the
-    ``mcp__<server>__<tool>`` prefix.  Those aliases are environment-specific
-    and must still collapse to the same bare tool name as server-side capture.
-    """
-    if not alias:
-        return False
-    if "://" in alias:
-        try:
-            parsed = urlsplit(alias)
-        except ValueError:
-            return False
-        return bool(parsed.scheme and parsed.netloc)
-    if "/" in alias or "?" in alias:
-        return True
-    if alias in {"localhost", "127.0.0.1", "::1"}:
-        return True
-    return ":" in alias or "." in alias
-
-
-def _merge_tool_call_records(
-    parsed_calls: list[dict[str, Any]],
-    executed_calls: list[dict[str, Any]],
-    *,
-    butler_name: str | None = None,
-) -> list[dict[str, Any]]:
-    """Merge parser + executed call records while preserving retry attempts.
-
-    ``butler_name`` enables normalization of runtime-specific tool-name
-    prefixes so parser-side records (e.g. ``mcp__lifestyle__memory_entity_resolve``
-    or ``lifestyle_memory_entity_resolve``) collapse against capture-side records
-    that use the bare ``fn.__name__`` form. When ``butler_name`` is omitted the
-    function falls back to legacy name-equality semantics for backward compat.
-    """
-
-    def _normalize_name_in_place(call: dict[str, Any]) -> dict[str, Any]:
-        if not butler_name:
-            return call
-        normalized = dict(call)
-        raw_name = str(normalized.get("name", "") or "")
-        normalized["name"] = _normalize_tool_name(raw_name, butler_name)
-        return normalized
-
-    if not executed_calls:
-        return _dedup_tool_calls_by_id([_normalize_name_in_place(c) for c in parsed_calls])
-    if not parsed_calls:
-        return _dedup_tool_calls_by_id([_normalize_name_in_place(c) for c in executed_calls])
-
-    def _payload_for_signature(call: dict[str, Any]) -> Any:
-        payload = call.get("input")
-        if payload is None:
-            payload = call.get("args")
-        if payload is None:
-            payload = call.get("arguments")
-        if payload is None:
-            payload = call.get("parameters")
-        if isinstance(payload, str):
-            stripped = payload.strip()
-            if stripped:
-                try:
-                    return json.loads(stripped)
-                except Exception:
-                    return payload
-        return payload
-
-    def _signature(call: dict[str, Any]) -> str:
-        raw_name = str(call.get("name", "") or "")
-        name = _normalize_tool_name(raw_name, butler_name)
-        fingerprint = call.get("input_fingerprint")
-        if not isinstance(fingerprint, str) or not fingerprint:
-            fingerprint = fingerprint_tool_call_payload(_payload_for_signature(call))
-        return f"{name}|{fingerprint}"
-
-    merged: list[dict[str, Any]] = []
-    matched_parsed_indexes: set[int] = set()
-
-    for executed_call in executed_calls:
-        executed_signature = _signature(executed_call)
-        parsed_index = next(
-            (
-                idx
-                for idx, parsed_call in enumerate(parsed_calls)
-                if (
-                    idx not in matched_parsed_indexes
-                    and _signature(parsed_call) == executed_signature
-                )
-            ),
-            None,
-        )
-        if parsed_index is None:
-            # No parser counterpart; capture name is already bare. Keep as-is.
-            merged.append(executed_call)
-            continue
-        matched_parsed_indexes.add(parsed_index)
-        merged_record = dict(parsed_calls[parsed_index])
-        merged_record.update(executed_call)
-        # Canonical stored name is the bare fn.__name__ form. The capture-side
-        # record carries that form already, but we normalize defensively so a
-        # single invocation always persists under one stable tool name.
-        raw_name = str(merged_record.get("name", "") or "")
-        merged_record["name"] = _normalize_tool_name(raw_name, butler_name)
-        merged.append(merged_record)
-
-    for idx, parsed_call in enumerate(parsed_calls):
-        if idx in matched_parsed_indexes:
-            continue
-        # Unmatched parser record: normalize the stored name so downstream
-        # consumers (dashboard, tool-call-scorecard) see one canonical form
-        # per tool even when no capture counterpart was recorded.
-        if butler_name:
-            normalized = dict(parsed_call)
-            raw_name = str(normalized.get("name", "") or "")
-            normalized["name"] = _normalize_tool_name(raw_name, butler_name)
-            merged.append(normalized)
-        else:
-            merged.append(parsed_call)
-
-    return _dedup_tool_calls_by_id(merged)
-
-
-def _has_non_command_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
-    """Return whether the record set includes any non-bash tool call."""
-    return any(str(call.get("name", "") or "") != "command_execution" for call in tool_calls)
-
-
-def _check_degenerate_tool_loop(
-    tool_calls: list[dict[str, Any]],
-    *,
-    consecutive_threshold: int = _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD,
-) -> str | None:
-    """Detect a degenerate tool loop in the session's tool-call list.
-
-    A degenerate loop is defined as ``consecutive_threshold`` or more
-    back-to-back tool calls with identical ``(name, input)`` signatures.
-    Only adjacent duplicates count — non-identical calls reset the streak.
-
-    Parameters
-    ----------
-    tool_calls:
-        Full list of tool call records for the completed session.
-    consecutive_threshold:
-        Number of consecutive identical calls required to trigger the guard.
-
-    Returns
-    -------
-    str | None
-        A human-readable guardrail reason string when a loop is detected, or
-        ``None`` when no degenerate pattern is found.
-    """
-    if consecutive_threshold <= 0 or len(tool_calls) < consecutive_threshold:
-        return None
-
-    def _call_signature(call: dict[str, Any]) -> str:
-        name = str(call.get("name", "") or "")
-        payload_fingerprint = call.get("input_fingerprint")
-        if not isinstance(payload_fingerprint, str) or not payload_fingerprint:
-            payload = call.get("input")
-            if payload is None:
-                payload = call.get("args")
-            if payload is None:
-                payload = call.get("arguments")
-            if payload is None:
-                payload = call.get("parameters")
-            if isinstance(payload, str):
-                stripped = payload.strip()
-                if stripped:
-                    try:
-                        payload = json.loads(stripped)
-                    except Exception:
-                        pass
-            payload_fingerprint = fingerprint_tool_call_payload(payload)
-        return f"{name}|{payload_fingerprint}"
-
-    streak = 1
-    prev_sig = _call_signature(tool_calls[0])
-    for call in tool_calls[1:]:
-        sig = _call_signature(call)
-        if sig == prev_sig:
-            streak += 1
-            if streak >= consecutive_threshold:
-                return (
-                    f"degenerate_tool_loop: {streak} consecutive identical calls to "
-                    f"{str(call.get('name', '') or '')!r} detected; "
-                    "session terminated to prevent runaway loop"
-                )
-        else:
-            streak = 1
-            prev_sig = sig
-    return None
-
-
-def _check_tool_call_budget(
-    tool_calls: list[dict[str, Any]],
-    *,
-    max_tool_calls: int,
-) -> str | None:
-    """Return a guardrail reason string when the tool-call budget is exceeded.
-
-    Parameters
-    ----------
-    tool_calls:
-        Full list of tool call records for the completed session.
-    max_tool_calls:
-        Maximum allowed tool calls. ``0`` disables the check.
-
-    Returns
-    -------
-    str | None
-        A reason string when the budget is exceeded, or ``None`` otherwise.
-    """
-    if max_tool_calls <= 0:
-        return None
-    count = len(tool_calls)
-    if count > max_tool_calls:
-        return (
-            f"tool_call_budget_exceeded: session made {count} tool calls, "
-            f"exceeding budget of {max_tool_calls}"
-        )
-    return None
-
-
-def _check_token_budget(
-    input_tokens: int | None,
-    *,
-    max_token_budget: int | None,
-) -> str | None:
-    """Return a guardrail reason string when the token budget is exceeded.
-
-    Parameters
-    ----------
-    input_tokens:
-        Input token count reported by the adapter. ``None`` means unknown.
-    max_token_budget:
-        Maximum allowed input tokens. ``None`` disables the check.
-
-    Returns
-    -------
-    str | None
-        A reason string when the budget is exceeded, or ``None`` otherwise.
-    """
-    if max_token_budget is None or input_tokens is None:
-        return None
-    if input_tokens > max_token_budget:
-        return (
-            f"token_budget_exceeded: session consumed {input_tokens:,} input tokens, "
-            f"exceeding budget of {max_token_budget:,} "
-            f"(+{input_tokens - max_token_budget:,} over)"
-        )
-    return None
 
 
 def _estimate_worst_case_call_cost(
@@ -613,62 +288,6 @@ def _estimate_worst_case_call_cost(
         )
         return None
     return cost
-
-
-def _compose_system_prompt(
-    base_system_prompt: str,
-    memory_context: str | None,
-    general_timezone_instruction: str | None = None,
-    routing_instructions: str | None = None,
-    context_preamble: str | None = None,
-) -> str:
-    """Compose the runtime system prompt from base instructions, routing instructions, and memory.
-
-    Layering order (stable for token-cache efficiency):
-    1. Base system prompt (CLAUDE.md — static)
-    2. Situational context preamble (dynamic, from context bus)
-    3. Owner routing instructions (semi-static, sorted by priority)
-    4. Memory context (dynamic per-request)
-
-    Contract:
-    - Runtime always receives the raw CLAUDE.md-derived system prompt when no
-      additional context is available.
-    - Each layer is appended as a suffix separated from the previous by exactly
-      one blank line.
-    """
-    prompt = base_system_prompt
-    if general_timezone_instruction:
-        prompt = f"{prompt}\n\n{general_timezone_instruction}"
-    if context_preamble:
-        prompt = f"{prompt}\n\n{context_preamble}"
-    if routing_instructions:
-        prompt = f"{prompt}\n\n{routing_instructions}"
-    if memory_context:
-        prompt = f"{prompt}\n\n{memory_context}"
-    return prompt
-
-
-async def fetch_general_timezone_instruction(
-    pool: asyncpg.Pool | None,
-    butler_name: str,
-    credential_store: CredentialStore | None = None,
-) -> str | None:
-    """Fetch the shared general timezone instruction, failing open."""
-    shared_pool = credential_store.shared_pool if credential_store is not None else None
-    settings_pool = shared_pool or pool
-    if settings_pool is None:
-        return None
-
-    try:
-        settings = await load_general_settings(settings_pool)
-        return build_general_timezone_instruction(settings)
-    except Exception:
-        logger.warning(
-            "Failed to fetch general timezone instruction for butler %s",
-            butler_name,
-            exc_info=True,
-        )
-        return None
 
 
 def _capture_pipeline_routing_context() -> dict[str, Any] | None:
@@ -735,240 +354,6 @@ async def _build_env(
     env.update(get_traceparent_env())
 
     return env
-
-
-def _memory_module_enabled(config: ButlerConfig) -> bool:
-    raw = config.modules.get("memory")
-    return isinstance(raw, dict)
-
-
-def _memory_context_token_budget(config: ButlerConfig) -> int:
-    raw = config.modules.get("memory", {})
-    if not isinstance(raw, dict):
-        return 3000
-    retrieval = raw.get("retrieval", {})
-    if not isinstance(retrieval, dict):
-        return 3000
-    budget = retrieval.get("context_token_budget", 3000)
-    try:
-        parsed = int(budget)
-    except (TypeError, ValueError):
-        return 3000
-    return parsed if parsed > 0 else 3000
-
-
-async def fetch_memory_context(
-    pool: asyncpg.Pool | None,
-    butler_name: str,
-    prompt: str,
-    *,
-    token_budget: int = 3000,
-) -> str | None:
-    """Fetch memory context via local memory tools when the module is enabled."""
-    if pool is None:
-        return None
-
-    try:
-        from butlers.core.memory_hooks import fetch_memory_context as _hook
-
-        return await _hook(pool, butler_name, prompt, token_budget=token_budget)
-    except Exception as exc:
-        if _is_missing_memory_table_error(exc):
-            _log_missing_memory_table_once(butler_name=butler_name, operation="context fetch")
-            return None
-        logger.warning(
-            "Failed to fetch memory context for butler %s",
-            butler_name,
-            exc_info=True,
-        )
-        return None
-
-
-_ROUTING_INSTRUCTIONS_TABLE = "routing_instructions"
-_missing_routing_instructions_warnings: set[str] = set()
-
-
-async def fetch_system_prompt_override(
-    pool: asyncpg.Pool | None,
-    butler_name: str,
-) -> str | None:
-    """Fetch the live system-prompt override from ``public.system_prompt_history``.
-
-    Returns the HEAD (highest-version) prompt body for *butler_name*, or
-    ``None`` when no prompt has been recorded, the pool is absent, or the table
-    does not yet exist. This is the live override set by the dashboard prompt
-    editor; the on-disk ``CLAUDE.md`` remains the seed/default fallback.
-
-    This function is **fail-open**: any unexpected error is logged at WARNING
-    level and ``None`` is returned so spawning proceeds with the on-disk prompt.
-    """
-    if pool is None:
-        return None
-
-    try:
-        prompt = await pool.fetchval(
-            "SELECT prompt FROM public.system_prompt_history"
-            " WHERE butler_name = $1"
-            " ORDER BY version DESC"
-            " LIMIT 1",
-            butler_name,
-        )
-    except Exception as exc:
-        msg = str(exc).lower()
-        if "does not exist" in msg and "system_prompt_history" in msg:
-            logger.debug(
-                "system_prompt_history table not yet created for %s; using on-disk prompt",
-                butler_name,
-            )
-            return None
-        logger.warning(
-            "Failed to fetch system prompt override for %s: %s",
-            butler_name,
-            exc,
-        )
-        return None
-
-    if not isinstance(prompt, str) or not prompt.strip():
-        return None
-    return prompt
-
-
-async def fetch_routing_instructions(
-    pool: asyncpg.Pool | None,
-    butler_name: str,
-) -> str | None:
-    """Fetch enabled routing instructions and format as a system prompt section.
-
-    Returns a markdown section string ready for injection, or ``None`` when
-    there are no instructions or the table doesn't exist.
-
-    Instructions are sorted by ``(priority ASC, created_at ASC)`` for
-    deterministic ordering that maximises token-cache hit rates.
-    """
-    if pool is None:
-        return None
-
-    try:
-        rows = await pool.fetch(
-            "SELECT instruction FROM routing_instructions"
-            " WHERE enabled = TRUE AND deleted_at IS NULL"
-            " ORDER BY priority ASC, created_at ASC, id ASC"
-        )
-    except Exception as exc:
-        msg = str(exc).lower()
-        if "does not exist" in msg and "routing_instructions" in msg:
-            if butler_name not in _missing_routing_instructions_warnings:
-                _missing_routing_instructions_warnings.add(butler_name)
-                logger.debug(
-                    "routing_instructions table not yet created for %s; skipping",
-                    butler_name,
-                )
-            return None
-        logger.warning(
-            "Failed to fetch routing instructions for %s: %s",
-            butler_name,
-            exc,
-        )
-        return None
-
-    if not rows:
-        return None
-
-    lines = [f"- {row['instruction']}" for row in rows]
-    return (
-        "## Owner Routing Instructions\n\n"
-        "The following routing directives have been set by the owner."
-        " Follow these exactly when classifying and routing messages:\n\n" + "\n".join(lines)
-    )
-
-
-async def fetch_situational_context_preamble(
-    pool: asyncpg.Pool | None,
-    butler_name: str,
-) -> str | None:
-    """Fetch the situational context preamble from the context bus.
-
-    Calls ``get_active_context()`` and formats the result via
-    ``format_context_preamble()``.  Returns ``None`` when there are no active
-    signals, the pool is absent, or the query fails.
-
-    This function is **fail-open**: any exception is logged at WARNING level
-    and the caller proceeds without a context preamble.
-
-    Parameters
-    ----------
-    pool:
-        asyncpg connection pool for the shared database.
-    butler_name:
-        Name of the calling butler (used for log messages).
-
-    Returns
-    -------
-    str | None
-        Formatted preamble string, or ``None`` when no active signals exist
-        or the query fails.
-    """
-    if pool is None:
-        return None
-
-    try:
-        from butlers.context_bus import format_context_preamble, get_active_context
-
-        signals = await get_active_context(pool)
-        preamble = format_context_preamble(signals)
-        return preamble if preamble else None
-    except Exception as exc:
-        msg = str(exc).lower()
-        is_missing_table = exc.__class__.__name__ == "UndefinedTableError" or (
-            "relation" in msg and "does not exist" in msg and "user_context" in msg
-        )
-        if is_missing_table:
-            if butler_name not in _missing_context_table_logged:
-                _missing_context_table_logged.add(butler_name)
-                logger.warning(
-                    "Skipping situational context preamble for butler %s: "
-                    "public.user_context table is missing. Run migrations (bu-1e2p).",
-                    butler_name,
-                )
-            else:
-                logger.debug(
-                    "Skipping situational context preamble for butler %s; "
-                    "public.user_context table is still missing",
-                    butler_name,
-                )
-        else:
-            logger.warning(
-                "Failed to fetch situational context preamble for butler %s",
-                butler_name,
-                exc_info=True,
-            )
-        return None
-
-
-async def store_session_episode(
-    pool: asyncpg.Pool | None,
-    butler_name: str,
-    session_output: str,
-    session_id: uuid.UUID | None = None,
-) -> bool:
-    """Store a session episode through local memory module tools."""
-    if pool is None:
-        return False
-
-    try:
-        from butlers.core.memory_hooks import store_session_episode as _hook
-
-        return await _hook(pool, butler_name, session_output, session_id)
-    except Exception as exc:
-        if _is_missing_memory_table_error(exc):
-            _log_missing_memory_table_once(butler_name=butler_name, operation="episode storage")
-            return False
-        logger.warning(
-            "Failed to store session episode for butler %s",
-            butler_name,
-            exc_info=True,
-        )
-        return False
 
 
 def _derive_llm_provider(model: str | None) -> str:
