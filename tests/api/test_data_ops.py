@@ -93,7 +93,7 @@ async def test_export_calls_audit(app):
 
     with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock) as mock_audit:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            await client.post("/api/data/export", json={"scope": "contacts"})
+            await client.post("/api/data/export", json={"scope": "entities"})
 
     # The route emits an explicit audit entry with action "data.export"; the
     # dashboard_audit_middleware ALSO routes through the same canonical
@@ -107,7 +107,7 @@ async def test_export_calls_audit(app):
         f"expected exactly one route audit.append with action 'data.export', "
         f"got call list: {mock_audit.call_args_list}"
     )
-    assert route_calls[0].kwargs["note"] == "contacts"
+    assert route_calls[0].kwargs["note"] == "entities"
 
 
 async def test_export_signed_url_includes_issued_at(app):
@@ -141,13 +141,13 @@ def _make_download_url(export_id: str, scope: str, issued_at: int | None = None)
 async def test_download_valid_token_returns_200(app):
     """Valid token within TTL returns 200 and NDJSON content."""
     pool = _make_pool()
-    # Simulate one row in contacts
+    # Simulate one row in entities
     pool.fetch = AsyncMock(return_value=[{"id": 1, "name": "Alice"}])
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     export_id = "test-export-id-1234"
-    url = _make_download_url(export_id, "contacts")
+    url = _make_download_url(export_id, "entities")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(url)
@@ -155,7 +155,7 @@ async def test_download_valid_token_returns_200(app):
     assert resp.status_code == 200
     assert "ndjson" in resp.headers["content-type"]
     body = resp.text
-    assert "contacts" in body  # table header comment
+    assert "entities" in body  # table header comment
     assert '"Alice"' in body  # row data
 
 
@@ -177,7 +177,7 @@ async def test_download_all_scope_fetches_all_tables(app):
     # Both exportable tables should appear as comments in the body.
     # Note: contact_info was removed from _EXPORTABLE_TABLES (bu-tv67t) —
     # channel identifiers are now stored in relationship.entity_facts.
-    assert "// table=contacts" in body
+    assert "// table=entities" in body
     assert "// table=audit_log" in body
     assert "// table=contact_info" not in body
 
@@ -217,7 +217,7 @@ async def test_download_bad_signature_returns_401(app):
 
 
 async def test_download_wrong_scope_returns_401(app):
-    """Token signed for scope=all but requested with scope=contacts returns 401.
+    """Token signed for scope=all but requested with scope=entities returns 401.
 
     The signature covers the scope, so mismatched scope causes a signature
     verification failure (401), not a scope-specific rejection (403).
@@ -230,8 +230,8 @@ async def test_download_wrong_scope_returns_401(app):
     ts = int(time.time())
     # Token is signed for scope=all
     token = _sign_token(export_id, "all", ts)
-    # Request uses scope=contacts → signature mismatch
-    url = f"/api/data/export/download/{export_id}?scope=contacts&issued_at={ts}&token={token}"
+    # Request uses scope=entities → signature mismatch
+    url = f"/api/data/export/download/{export_id}?scope=entities&issued_at={ts}&token={token}"
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(url)
@@ -247,7 +247,7 @@ async def test_download_content_disposition_header(app):
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     export_id = "test-export-id-header"
-    url = _make_download_url(export_id, "contacts")
+    url = _make_download_url(export_id, "entities")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(url)
