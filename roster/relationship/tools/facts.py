@@ -3,6 +3,11 @@
 Facts are always stored with ``entity_id`` set (resolved from the contact's
 linked entity).  The ``subject`` field uses ``contact:{contact_id}`` as a
 grouping key.
+
+Entity resolution delegates to :func:`resolve_contact_entity_id` (from
+``_entity_resolve``), which consults ``contacts_source_links`` and
+``contact_entity_map`` (rel_029) without reading ``public.contacts``
+(contacts-schema retirement, Phase 7, bu-oluyt).
 """
 
 from __future__ import annotations
@@ -13,15 +18,9 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
+
 logger = logging.getLogger(__name__)
-
-
-async def _resolve_entity_id(pool: asyncpg.Pool, contact_id: uuid.UUID) -> uuid.UUID | None:
-    """Look up the entity_id linked to a contact. Returns None if unlinked."""
-    try:
-        return await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact_id)
-    except Exception:
-        return None
 
 
 async def _fact_set_spo(
@@ -37,7 +36,7 @@ async def _fact_set_spo(
     have a linked entity — raises ``ValueError`` if not.
     """
     subject = f"contact:{contact_id}"
-    entity_id = await _resolve_entity_id(pool, contact_id)
+    entity_id = await resolve_contact_entity_id(pool, contact_id)
 
     if entity_id is None:
         raise ValueError(
@@ -93,7 +92,7 @@ async def _fact_list_spo(
     Queries by ``entity_id`` (resolved from the contact's linked entity).
     Every contact must have a linked entity — raises ``ValueError`` if not.
     """
-    entity_id = await _resolve_entity_id(pool, contact_id)
+    entity_id = await resolve_contact_entity_id(pool, contact_id)
 
     if entity_id is None:
         raise ValueError(
