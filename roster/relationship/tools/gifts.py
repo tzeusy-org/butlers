@@ -84,6 +84,11 @@ async def gift_add(
     subject = f"contact:{contact_id}:gift:{_slug(description)}"
 
     entity_id = await resolve_contact_entity_id(pool, contact_id)
+    if entity_id is None:
+        raise ValueError(
+            f"Contact {contact_id} has no linked entity_id. "
+            "All contacts must resolve to an entity — this is a data integrity issue."
+        )
 
     fact_metadata: dict[str, Any] = {"status": "idea"}
     if occasion is not None:

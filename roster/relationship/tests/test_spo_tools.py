@@ -85,6 +85,20 @@ async def pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
+        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
+        # contact_create() writes here best-effort; resolve_contact_entity_id() reads here.
+        # Without this table, contact_create silently no-ops and entity_id stays None.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
+        """)
         # Life event taxonomy tables (needed by _validate_life_event_type)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS life_event_categories (
@@ -228,6 +242,19 @@ async def _make_contact(pool, first_name: str) -> dict:
     row = await pool.fetchrow(
         "INSERT INTO contacts (first_name, entity_id) VALUES ($1, $2) RETURNING id, first_name",
         first_name,
+        entity_row["id"],
+    )
+    # Populate contact_entity_map (rel_029 bridge) so resolve_contact_entity_id
+    # can find the entity_id without reading public.contacts (contacts retirement,
+    # bu-oluyt). contact_create() does this automatically; direct-insert helpers
+    # must do it manually.
+    await pool.execute(
+        """
+        INSERT INTO contact_entity_map (contact_id, entity_id)
+        VALUES ($1, $2)
+        ON CONFLICT (contact_id) DO NOTHING
+        """,
+        row["id"],
         entity_row["id"],
     )
     return dict(row)

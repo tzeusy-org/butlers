@@ -64,6 +64,20 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
         """)
+        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
+        # contact_create() writes here best-effort; resolve_contact_entity_id() reads here.
+        # Without this table, contact_create silently no-ops and entity_id stays None.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
+        """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS predicate_registry (
                 name TEXT PRIMARY KEY,
