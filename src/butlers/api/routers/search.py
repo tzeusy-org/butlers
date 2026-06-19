@@ -6,8 +6,8 @@ Provides:
 
 Searches sessions (prompt, result) and state (key, value::text) across all
 butler databases using the ``search_v1`` read-model boundary.  Also searches
-entities and contacts in the shared schema.  Returns grouped results with
-id, butler name, type, title, snippet, and navigation URL.
+entities and contacts (person entities) in the shared schema.  Returns grouped
+results with id, butler name, type, title, snippet, and navigation URL.
 """
 
 from __future__ import annotations
@@ -101,7 +101,8 @@ async def search(
 
     Searches:
     - **entities** — canonical name and aliases in ``public.entities``
-    - **contacts** — name, email, and phone via ``public.contacts`` / ``relationship.entity_facts``
+    - **contacts** — person entities by canonical name, email, and phone via
+      ``public.entities`` / ``relationship.entity_facts``
     - **sessions** — prompt and result columns across all butler databases
     - **state** — key and value columns across all butler databases
 

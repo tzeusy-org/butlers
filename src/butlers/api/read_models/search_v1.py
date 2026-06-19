@@ -5,6 +5,11 @@ Centralises the SQL column projections and per-domain query functions for
 schema), contacts (shared schema), sessions (per-butler fan-out), and state
 (per-butler fan-out).
 
+Migration note (bu-tzyuh): the contact search now queries ``public.entities``
+directly rather than ``public.contacts``. The ``public.contacts`` table is
+intentionally NOT dropped by this change — it remains for other consumers —
+but ``query_contact_search`` no longer references it.
+
 A breaking schema change (new required column, renamed column, type change)
 should produce a new ``search_v2`` module rather than silently altering
 this one.
@@ -62,8 +67,10 @@ READ_MODEL_VERSION = "search_v1"
 #: Columns projected from ``public.entities`` for the entity search.
 ENTITY_COLUMNS: str = "e.id, e.canonical_name, e.entity_type, e.aliases"
 
-#: Columns projected from ``public.contacts`` for the contact search.
-CONTACT_COLUMNS: str = "c.id, c.name, c.entity_id"
+#: Columns projected from ``public.entities`` for the contact search (bu-tzyuh).
+#: After bu-tzyuh, ``public.contacts`` is no longer referenced here; both ``id``
+#: and ``entity_id`` hold the entity UUID.
+CONTACT_COLUMNS: str = "e.id, e.canonical_name AS name, e.id AS entity_id"
 
 #: Columns projected from ``relationship.entity_facts`` for contact snippet assembly.
 ENTITY_FACTS_SNIPPET_COLUMNS: str = "ef.subject AS entity_id, ef.predicate, ef.object"
@@ -97,7 +104,10 @@ class EntitySearchRow:
 
 @dataclass
 class ContactSearchRow:
-    """Typed DTO for a ``public.contacts`` search result (v1)."""
+    """Typed DTO for a ``public.entities`` contact-search result (v1).
+
+    After bu-tzyuh, both ``id`` and ``entity_id`` hold the entity UUID.
+    """
 
     id: UUID
     name: str | None
@@ -154,6 +164,9 @@ def row_to_entity(row: asyncpg.Record) -> EntitySearchRow:
 
 def row_to_contact(row: asyncpg.Record) -> ContactSearchRow:
     """Convert an asyncpg Record to a :class:`ContactSearchRow` (without snippets).
+
+    After bu-tzyuh rows come from ``public.entities``; both ``id`` and
+    ``entity_id`` map to the entity UUID.
 
     Snippet fields (``email``, ``phone``) are populated separately by
     :func:`query_contact_search` after the batch entity_facts fetch.
@@ -254,9 +267,13 @@ async def query_contact_search(
     pattern: str,
     limit: int,
 ) -> list[ContactSearchRow]:
-    """Search ``public.contacts`` by name or entity_facts channel value.
+    """Search ``public.entities`` by canonical name, alias, or entity_facts channel value.
 
-    Two-phase: first fetches matching contacts, then batch-fetches email and
+    After bu-tzyuh this function no longer references ``public.contacts``;
+    it queries ``public.entities`` directly and assembles contact snippets
+    from ``relationship.entity_facts``.
+
+    Two-phase: first fetches matching entities, then batch-fetches email and
     phone from ``relationship.entity_facts`` for snippet display.
 
     Parameters
@@ -275,36 +292,36 @@ async def query_contact_search(
         where available, or an empty list on error.
     """
     try:
-        contact_rows = await pool.fetch(
+        entity_rows = await pool.fetch(
             f"""
-            SELECT DISTINCT ON (c.id) {CONTACT_COLUMNS}
-            FROM public.contacts c
-            WHERE c.archived_at IS NULL
+            SELECT {CONTACT_COLUMNS}
+            FROM public.entities e
+            WHERE e.entity_type = 'person'
+              AND (e.metadata->>'merged_into') IS NULL
+              AND (e.metadata->>'deleted_at') IS NULL
               AND (
-                c.name ILIKE $1
-                OR (
-                  c.entity_id IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1
-                    FROM relationship.entity_facts ef
-                    WHERE ef.subject     = c.entity_id
-                      AND ef.predicate  LIKE 'has-%'
-                      AND ef.validity    = 'active'
-                      AND ef.object_kind = 'literal'
-                      AND ef.object ILIKE $1
-                  )
+                e.canonical_name ILIKE $1
+                OR EXISTS (
+                  SELECT 1 FROM unnest(e.aliases) AS a WHERE a ILIKE $1
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM relationship.entity_facts ef
+                  WHERE ef.subject     = e.id
+                    AND ef.predicate  LIKE 'has-%'
+                    AND ef.validity    = 'active'
+                    AND ef.object_kind = 'literal'
+                    AND ef.object ILIKE $1
                 )
               )
-            ORDER BY c.id, c.name
+            ORDER BY e.canonical_name
             LIMIT $2
             """,
             pattern,
             limit,
         )
-
-        contacts = [row_to_contact(r) for r in contact_rows]
-
-        # Batch-fetch email and phone snippets from entity_facts.
+        contacts = [row_to_contact(r) for r in entity_rows]
+        # Batch-fetch email/phone snippets from entity_facts
         entity_ids: list[Any] = list({c.entity_id for c in contacts if c.entity_id is not None})
         email_by_entity: dict[Any, str] = {}
         phone_by_entity: dict[Any, str] = {}
@@ -327,14 +344,11 @@ async def query_contact_search(
                     email_by_entity[eid] = efr["object"]
                 elif efr["predicate"] == "has-phone" and eid not in phone_by_entity:
                     phone_by_entity[eid] = efr["object"]
-
-        # Attach snippet data to each contact DTO.
         for contact in contacts:
             eid = contact.entity_id
             if eid is not None:
                 contact.email = email_by_entity.get(eid)
                 contact.phone = phone_by_entity.get(eid)
-
         return contacts
     except Exception:
         logger.warning("Contact search failed", exc_info=True)

@@ -75,9 +75,10 @@ def _entity_dict(**overrides) -> dict:
 
 
 def _contact_dict(**overrides) -> dict:
+    # After bu-tzyuh: rows come from public.entities; id == entity_id.
     base = {
-        "id": _CONTACT_ID,
-        "name": "Alice",
+        "id": _ENTITY_ID,
+        "name": "Alice Smith",
         "entity_id": _ENTITY_ID,
     }
     base.update(overrides)
@@ -140,6 +141,9 @@ def test_contact_columns_non_empty():
 def test_contact_columns_has_expected_identifiers():
     for col in ("id", "name", "entity_id"):
         assert col in CONTACT_COLUMNS
+    # After bu-tzyuh: uses public.entities via 'e.' alias
+    assert "public.contacts" not in CONTACT_COLUMNS
+    assert "e." in CONTACT_COLUMNS
 
 
 def test_entity_facts_snippet_columns_non_empty():
@@ -199,18 +203,12 @@ def test_row_to_contact_maps_all_fields():
     row = _make_record(_contact_dict())
     dto = row_to_contact(row)
     assert isinstance(dto, ContactSearchRow)
-    assert dto.id == _CONTACT_ID
-    assert dto.name == "Alice"
+    assert dto.id == _ENTITY_ID
+    assert dto.name == "Alice Smith"
     assert dto.entity_id == _ENTITY_ID
-    # snippet fields default to None (populated in two-phase query)
+    assert dto.id == dto.entity_id  # same UUID after bu-tzyuh
     assert dto.email is None
     assert dto.phone is None
-
-
-def test_row_to_contact_none_entity_id():
-    row = _make_record(_contact_dict(entity_id=None))
-    dto = row_to_contact(row)
-    assert dto.entity_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -336,17 +334,16 @@ async def test_query_entity_search_swallows_exception():
 # ---------------------------------------------------------------------------
 
 
-async def test_query_contact_search_returns_typed_dtos_no_entity_facts():
-    """Basic contact with no entity_id → email/phone stay None."""
+async def test_query_contact_search_returns_typed_dtos():
     mock_pool = AsyncMock()
-    no_entity_contact = _contact_dict(entity_id=None)
-    mock_pool.fetch = AsyncMock(return_value=[_make_record(no_entity_contact)])
-
+    entity_row = _make_record(_contact_dict())
+    mock_pool.fetch = AsyncMock(side_effect=[[entity_row], []])  # second call: empty ef_rows
     result = await query_contact_search(mock_pool, "%alice%", 20)
-
     assert len(result) == 1
     assert isinstance(result[0], ContactSearchRow)
-    assert result[0].name == "Alice"
+    assert result[0].name == "Alice Smith"
+    assert result[0].id == _ENTITY_ID
+    assert result[0].entity_id == _ENTITY_ID
     assert result[0].email is None
     assert result[0].phone is None
 
@@ -354,7 +351,7 @@ async def test_query_contact_search_returns_typed_dtos_no_entity_facts():
 async def test_query_contact_search_populates_email_from_entity_facts():
     """Two-phase: contact has entity_id → email populated from entity_facts."""
     mock_pool = AsyncMock()
-    contact_row = _make_record(_contact_dict(entity_id=_ENTITY_ID))
+    contact_row = _make_record(_contact_dict())
     ef_row = _make_record(
         {"entity_id": _ENTITY_ID, "predicate": "has-email", "object": "alice@example.com"}
     )
@@ -369,7 +366,7 @@ async def test_query_contact_search_populates_email_from_entity_facts():
 async def test_query_contact_search_populates_phone_from_entity_facts():
     """Two-phase: phone is populated from entity_facts has-phone predicate."""
     mock_pool = AsyncMock()
-    contact_row = _make_record(_contact_dict(entity_id=_ENTITY_ID))
+    contact_row = _make_record(_contact_dict())
     ef_row = _make_record(
         {"entity_id": _ENTITY_ID, "predicate": "has-phone", "object": "+1-555-0100"}
     )
@@ -381,16 +378,13 @@ async def test_query_contact_search_populates_phone_from_entity_facts():
     assert result[0].email is None
 
 
-async def test_query_contact_search_no_entity_facts_second_fetch_skipped():
-    """When no contacts have entity_id, the second fetch is skipped."""
+async def test_query_contact_search_second_fetch_always_runs():
+    """After bu-tzyuh all results have entity_id, so snippet fetch always runs."""
     mock_pool = AsyncMock()
-    contact_row = _make_record(_contact_dict(entity_id=None))
-    mock_pool.fetch = AsyncMock(return_value=[contact_row])
-
+    entity_row = _make_record(_contact_dict())  # entity_id always set
+    mock_pool.fetch = AsyncMock(side_effect=[[entity_row], []])
     result = await query_contact_search(mock_pool, "%alice%", 20)
-
-    # Should only have been called once (no entity_ids to batch-fetch)
-    assert mock_pool.fetch.call_count == 1
+    assert mock_pool.fetch.call_count == 2
     assert result[0].email is None
 
 

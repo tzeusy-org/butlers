@@ -10,7 +10,11 @@ Three main classes:
 - ContactBackfillEngine    – orchestrates resolver → writer (§7.4)
 
 Wire as the apply_contact callback in ContactsSyncEngine construction during on_startup.
-Provenance tracked in contacts.metadata JSONB under 'sources.contacts.{provider}.{field}'.
+Provenance tracked in entities.metadata JSONB under 'sources.contacts.{provider}.{field}'.
+
+Migration note (bu-tzyuh): local_entity_id / entity UUID replaces local_contact_id
+throughout. public.contacts is not written or read by resolver/writer; all identity
+matching routes through public.entities and relationship.entity_facts.
 """
 
 from __future__ import annotations
@@ -83,8 +87,8 @@ class ContactBackfillResolver:
     3. Phone exact/e164 match via relationship.entity_facts (has-phone)
     4. Conservative name match (manual-review flag when ambiguous)
 
-    Channel matching reads ``relationship.entity_facts`` (subject = entity_id)
-    and maps back to a local contact via ``public.contacts.entity_id``.
+    After bu-tzyuh all matchers return a local_entity_id (entity UUID) directly;
+    public.contacts is no longer joined or read.
     """
 
     def __init__(self, pool: asyncpg.Pool, *, provider: str, account_id: str) -> None:
@@ -93,11 +97,11 @@ class ContactBackfillResolver:
         self._account_id = account_id
 
     async def resolve(self, contact: CanonicalContact) -> tuple[uuid.UUID | None, str]:
-        """Resolve a canonical contact to a local contact ID.
+        """Resolve a canonical contact to a local entity ID.
 
         Returns
         -------
-        (local_contact_id | None, match_strategy)
+        (local_entity_id | None, match_strategy)
             match_strategy is one of:
             'source_link', 'email', 'phone', 'name', 'ambiguous_name', 'new'
         """
@@ -138,10 +142,9 @@ class ContactBackfillResolver:
     async def _match_source_link(self, external_id: str) -> uuid.UUID | None:
         row = await self._pool.fetchrow(
             """
-            SELECT sl.local_contact_id FROM contacts_source_links sl
-            JOIN public.contacts c ON c.id = sl.local_contact_id
+            SELECT sl.local_entity_id FROM contacts_source_links sl
             WHERE sl.provider = $1 AND sl.account_id = $2 AND sl.external_contact_id = $3
-              AND sl.deleted_at IS NULL
+              AND sl.deleted_at IS NULL AND sl.local_entity_id IS NOT NULL
             """,
             self._provider,
             self._account_id,
@@ -149,26 +152,24 @@ class ContactBackfillResolver:
         )
         if row is None:
             return None
-        local_id = row["local_contact_id"]
-        return uuid.UUID(str(local_id)) if local_id is not None else None
+        local_entity_id = row["local_entity_id"]
+        return uuid.UUID(str(local_entity_id)) if local_entity_id is not None else None
 
     async def _match_email(self, email_value: str) -> uuid.UUID | None:
-        # Resolve via the triple store (migration bead 10, bu-e2ja9): a
-        # ``has-email`` fact's subject is the entity; map back to a local contact
-        # through ``public.contacts.entity_id``.
+        # Resolve via the triple store: a ``has-email`` fact's subject is the entity UUID.
         normalized = email_value.strip().lower()
         try:
             row = await self._pool.fetchrow(
                 """
-                SELECT c.id AS contact_id
+                SELECT ef.subject AS entity_id
                 FROM relationship.entity_facts ef
-                JOIN public.contacts c ON c.entity_id = ef.subject
-                WHERE ef.predicate    = 'has-email'
-                  AND ef.object_kind  = 'literal'
-                  AND ef.validity     = 'active'
-                  AND lower(ef.object) = $1
-                ORDER BY c.created_at ASC NULLS LAST
-                LIMIT 1
+                JOIN public.entities e ON e.id = ef.subject
+                WHERE ef.predicate = 'has-email' AND ef.object_kind = 'literal'
+                  AND ef.validity = 'active' AND lower(ef.object) = $1
+                  AND e.entity_type = 'person'
+                  AND (e.metadata->>'merged_into') IS NULL
+                  AND (e.metadata->>'deleted_at') IS NULL
+                ORDER BY ef.created_at ASC NULLS LAST LIMIT 1
                 """,
                 normalized,
             )
@@ -176,7 +177,7 @@ class ContactBackfillResolver:
             return None
         if row is None:
             return None
-        return uuid.UUID(str(row["contact_id"]))
+        return uuid.UUID(str(row["entity_id"]))
 
     async def _match_phone(self, phone_value: str) -> uuid.UUID | None:
         normalized = phone_value.strip()
@@ -185,15 +186,17 @@ class ContactBackfillResolver:
         try:
             row = await self._pool.fetchrow(
                 """
-                SELECT c.id AS contact_id
+                SELECT ef.subject AS entity_id
                 FROM relationship.entity_facts ef
-                JOIN public.contacts c ON c.entity_id = ef.subject
-                WHERE ef.predicate   = 'has-phone'
+                JOIN public.entities e ON e.id = ef.subject
+                WHERE ef.predicate = 'has-phone'
                   AND ef.object_kind = 'literal'
                   AND ef.validity    = 'active'
                   AND (ef.object = $1 OR ef.object = $2)
-                ORDER BY c.created_at ASC NULLS LAST
-                LIMIT 1
+                  AND e.entity_type = 'person'
+                  AND (e.metadata->>'merged_into') IS NULL
+                  AND (e.metadata->>'deleted_at') IS NULL
+                ORDER BY ef.created_at ASC NULLS LAST LIMIT 1
                 """,
                 normalized,
                 digits,
@@ -202,7 +205,7 @@ class ContactBackfillResolver:
             return None
         if row is None:
             return None
-        return uuid.UUID(str(row["contact_id"]))
+        return uuid.UUID(str(row["entity_id"]))
 
     async def _match_name(self, display_name: str) -> list[uuid.UUID]:
         name_stripped = display_name.strip()
@@ -210,13 +213,14 @@ class ContactBackfillResolver:
             return []
         rows = await self._pool.fetch(
             """
-            SELECT id FROM contacts
-            WHERE (
-                name ILIKE $1
-                OR CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')) ILIKE $1
-                OR nickname ILIKE $1
-            )
-            AND (archived_at IS NULL OR archived_at > now())
+            SELECT id FROM public.entities
+            WHERE entity_type = 'person'
+              AND (
+                canonical_name ILIKE $1
+                OR EXISTS (SELECT 1 FROM unnest(aliases) AS a WHERE a ILIKE $1)
+              )
+              AND (metadata->>'merged_into') IS NULL
+              AND (metadata->>'deleted_at') IS NULL
             """,
             name_stripped,
         )
@@ -226,13 +230,16 @@ class ContactBackfillResolver:
 class ContactBackfillWriter:
     """Table mapping and upsert logic for CRM backfill (§7.2, §7.3).
 
+    After bu-tzyuh, ``local_id`` is an entity UUID (``public.entities.id``).
     Writes or updates:
-    - contacts (name, first_name, last_name, nickname, company, job_title, avatar_url, metadata)
-    - contact_info rows (emails, phones, urls, usernames)
-    - addresses rows
-    - important_dates rows (birthdays, anniversaries)
-    - labels + contact_labels (group memberships)
-    - contacts_source_links (provenance link)
+    - public.entities (canonical_name, metadata with profile fields and provenance)
+    - contact_info rows via relationship.entity_facts (emails, phones, urls, usernames)
+    - contacts_source_links (provenance link, keyed by local_entity_id)
+
+    Temporarily skipped pending FK migration:
+    - addresses rows (upsert_addresses skips; awaiting FK migration)
+    - important_dates rows (upsert_important_dates skips; awaiting FK migration)
+    - labels + contact_labels (upsert_labels skips; awaiting FK migration)
 
     Conflict policy (§7.3):
     - Source wins only for previously source-owned fields (tracked in metadata provenance)
@@ -275,28 +282,30 @@ class ContactBackfillWriter:
         *,
         executor: Any | None = None,
     ) -> uuid.UUID:
-        """Create a new CRM contact linked to an entity.
+        """Create or update an entity for a backfilled contact, returning entity UUID.
 
-        Resolves or creates an entity before the contact INSERT so that
-        ``entity_id`` is always set when the schema supports it.
+        After bu-tzyuh this method writes to ``public.entities`` only — not
+        ``public.contacts``. The entity is resolved/created on ``self._pool``
+        (autonomous transaction), then profile metadata is stamped on ``executor``
+        (caller's transaction) so the metadata UPDATE and the source-link INSERT
+        commit atomically.
 
-        ``executor`` lets the caller run the contact INSERT on a specific
+        ``executor`` lets the caller run the metadata UPDATE on a specific
         connection/transaction (asyncpg Pool and Connection share the
         ``fetchrow``/``execute`` interface). The engine passes a transactional
-        connection so the contact INSERT and its provenance source-link commit
-        atomically — otherwise an interrupted sync can leave a link-less
-        contact that the next sync cannot find and re-creates as a duplicate.
+        connection so the entity metadata update and its provenance source-link
+        commit atomically — otherwise an interrupted sync can leave a link-less
+        entity that the next sync cannot find and re-creates as a duplicate.
 
-        Entity resolution deliberately runs on the pool, NOT on ``executor``:
-        ``_ensure_entity`` recovers from a duplicate canonical_name by catching
-        ``UniqueViolationError`` and re-SELECTing, but in Postgres a raised
-        error aborts the *enclosing* transaction even when Python catches it, so
-        the recovery query would fail if it shared the caller's transaction. The
-        entity is committed independently first; a contactless entity is
-        harmless and reused if the contact+source-link transaction rolls back.
+        Entity resolution and the pre-transaction metadata read both run on the
+        pool, NOT on ``executor``: ``_ensure_entity`` recovers from a duplicate
+        canonical_name by catching ``UniqueViolationError`` and re-SELECTing, but
+        in Postgres a raised error aborts the *enclosing* transaction even when
+        Python catches it, so those queries would fail if they shared the caller's
+        transaction.  The entity is committed independently first; a stale or
+        partial-metadata entity is safe and corrected when the source-link
+        transaction rolls back and the next sync retries.
         """
-        db = executor or self._pool
-        display = _build_display_name(contact)
         first = contact.first_name
         last = contact.last_name
         nickname = contact.nickname
@@ -310,63 +319,55 @@ class ContactBackfillWriter:
             primary_photo = contact.photos[0]
         avatar_url = primary_photo.url if primary_photo else None
 
-        metadata: dict[str, Any] = {}
-        self._stamp_provenance(metadata, contact)
-
         entity_id = await self._ensure_entity(first, last, nickname, company)
 
-        if entity_id is not None:
-            try:
-                row = await db.fetchrow(
-                    """
-                    INSERT INTO public.contacts (
-                        name, first_name, last_name, nickname,
-                        company, job_title, avatar_url, metadata, entity_id
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    RETURNING id
-                    """,
-                    display,
-                    first,
-                    last,
-                    nickname,
-                    company,
-                    job_title,
-                    avatar_url,
-                    metadata,
-                    entity_id,
-                )
-            except asyncpg.UndefinedColumnError:
-                entity_id = None
-
         if entity_id is None:
-            row = await db.fetchrow(
-                """
-                INSERT INTO public.contacts (
-                    name, first_name, last_name, nickname,
-                    company, job_title, avatar_url, metadata
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                RETURNING id
-                """,
-                display,
-                first,
-                last,
-                nickname,
-                company,
-                job_title,
-                avatar_url,
-                metadata,
+            raise ValueError(
+                f"ContactBackfill: could not resolve or create entity for external_id="
+                f"{contact.external_id!r}"
             )
 
-        contact_id = uuid.UUID(str(row["id"]))
+        # Read existing metadata from pool before entering caller's transaction so the
+        # deep-merge below does not overwrite nested keys already present on the entity
+        # (e.g. when _ensure_entity recovers an existing entity via UniqueViolationError
+        # instead of inserting a new one with empty metadata).  The fetch runs on
+        # self._pool (autonomous) for the same reason _ensure_entity does: a raised error
+        # inside a Postgres transaction aborts it even when Python catches it, so any
+        # reads needed before the atomic commit must happen outside that transaction.
+        existing_row = await self._pool.fetchrow(
+            "SELECT metadata FROM public.entities WHERE id = $1", entity_id
+        )
+        metadata: dict[str, Any] = _parse_jsonb(existing_row["metadata"]) if existing_row else {}
+
+        if first is not None:
+            _deep_set(metadata, "profile.first_name", first)
+        if last is not None:
+            _deep_set(metadata, "profile.last_name", last)
+        if nickname is not None:
+            _deep_set(metadata, "profile.nickname", nickname)
+        if company is not None:
+            _deep_set(metadata, "profile.company", company)
+        if job_title is not None:
+            _deep_set(metadata, "profile.job_title", job_title)
+        if avatar_url is not None:
+            _deep_set(metadata, "profile.avatar_url", avatar_url)
+        self._stamp_provenance(metadata, contact)
+
+        db = executor or self._pool
+        # Pass the full merged dict directly: the pool's registered JSONB codec encodes it
+        # (json.dumps once). Wrapping in json.dumps here would double-encode.
+        await db.execute(
+            "UPDATE public.entities SET metadata = $1, updated_at = now() WHERE id = $2",
+            metadata,
+            entity_id,
+        )
+
         logger.debug(
-            "ContactBackfill: created contact %s (entity=%s) for external_id=%s",
-            contact_id,
+            "ContactBackfill: upserted entity %s for external_id=%s",
             entity_id,
             contact.external_id,
         )
-        return contact_id
+        return entity_id
 
     async def _ensure_entity(
         self,
@@ -431,7 +432,10 @@ class ContactBackfillWriter:
         *,
         match_strategy: str,
     ) -> dict[str, str]:
-        """Update an existing CRM contact, respecting provenance/conflict policy.
+        """Update an existing entity, respecting provenance/conflict policy.
+
+        After bu-tzyuh, reads from ``public.entities`` (not ``public.contacts``).
+        Profile fields come from ``entity.metadata["profile.*"]`` entries.
 
         Security contract: ``roles`` is intentionally excluded from all UPDATE SET
         clauses. Role assignment is a privileged operation managed exclusively by
@@ -443,9 +447,12 @@ class ContactBackfillWriter:
         dict[str, str]
             Mapping of {field: 'updated' | 'skipped_local_edit' | 'conflict'}.
         """
-        row = await self._pool.fetchrow("SELECT * FROM public.contacts WHERE id = $1", local_id)
+        row = await self._pool.fetchrow(
+            "SELECT id, canonical_name, aliases, metadata FROM public.entities WHERE id = $1",
+            local_id,
+        )
         if row is None:
-            raise ValueError(f"Contact {local_id} not found for backfill update")
+            raise ValueError(f"Entity {local_id} not found for backfill update")
 
         existing_meta = _parse_jsonb(row["metadata"])
         field_results: dict[str, str] = {}
@@ -455,7 +462,7 @@ class ContactBackfillWriter:
         # metadata) will never be written by the sync path.
         updates: dict[str, Any] = {}
 
-        # --- Name fields ---
+        # --- Name fields (stored in metadata["profile.*"]) ---
         for field_name, new_val, canonical_field in [
             ("first_name", contact.first_name, "first_name"),
             ("last_name", contact.last_name, "last_name"),
@@ -465,21 +472,23 @@ class ContactBackfillWriter:
                 continue
             prov_key = _provenance_key(self._provider, canonical_field)
             is_source_owned = _deep_get(existing_meta, prov_key) is not None
-            current_val = row[field_name]
+            current_val = _deep_get(existing_meta, f"profile.{field_name}")
             if current_val is None or is_source_owned:
                 updates[field_name] = new_val
                 field_results[field_name] = "updated"
             elif current_val != new_val:
                 field_results[field_name] = "skipped_local_edit"
 
-        # Rebuild composite name
+        # Rebuild composite canonical_name if name fields changed
         if "first_name" in updates or "last_name" in updates:
-            first = updates.get("first_name", row["first_name"])
-            last = updates.get("last_name", row["last_name"])
-            nick = updates.get("nickname", row["nickname"])
+            first = updates.get("first_name", _deep_get(existing_meta, "profile.first_name"))
+            last = updates.get("last_name", _deep_get(existing_meta, "profile.last_name"))
+            nick = updates.get("nickname", _deep_get(existing_meta, "profile.nickname"))
             name_parts = [p for p in [first, last] if p]
-            new_name = " ".join(name_parts).strip() or nick or row.get("name") or "Unknown"
-            updates["name"] = new_name
+            new_canonical = (
+                " ".join(name_parts).strip() or nick or row["canonical_name"] or "Unknown"
+            )
+            updates["canonical_name"] = new_canonical
 
         # --- Organization fields ---
         org = contact.organizations[0] if contact.organizations else None
@@ -491,7 +500,7 @@ class ContactBackfillWriter:
                 continue
             prov_key = _provenance_key(self._provider, canonical_field)
             is_source_owned = _deep_get(existing_meta, prov_key) is not None
-            current_val = row[field_name]
+            current_val = _deep_get(existing_meta, f"profile.{field_name}")
             if current_val is None or is_source_owned:
                 updates[field_name] = new_val
                 field_results[field_name] = "updated"
@@ -505,39 +514,35 @@ class ContactBackfillWriter:
         if primary_photo is not None:
             prov_key = _provenance_key(self._provider, "avatar_url")
             is_source_owned = _deep_get(existing_meta, prov_key) is not None
-            current_avatar = row["avatar_url"]
+            current_avatar = _deep_get(existing_meta, "profile.avatar_url")
             if current_avatar is None or is_source_owned:
                 updates["avatar_url"] = primary_photo.url
                 field_results["avatar_url"] = "updated"
             elif current_avatar != primary_photo.url:
                 field_results["avatar_url"] = "skipped_local_edit"
 
-        # --- Update metadata with provenance ---
+        # --- Update metadata with provenance and profile fields ---
+        for field_name in ("first_name", "last_name", "nickname", "company", "job_title"):
+            if field_name in updates:
+                _deep_set(existing_meta, f"profile.{field_name}", updates[field_name])
+        if "avatar_url" in updates:
+            _deep_set(existing_meta, "profile.avatar_url", updates["avatar_url"])
         self._stamp_provenance(existing_meta, contact)
-        updates["metadata"] = existing_meta
-        updates["updated_at"] = "now()"
 
-        if updates:
-            set_clauses: list[str] = []
-            params: list[Any] = [local_id]
-            idx = 2
-            for col, val in updates.items():
-                if col == "updated_at":
-                    set_clauses.append("updated_at = now()")
-                    continue
-                if col == "metadata":
-                    set_clauses.append(f"{col} = ${idx}")
-                    params.append(val)
-                else:
-                    set_clauses.append(f"{col} = ${idx}")
-                    params.append(val)
-                idx += 1
+        # Pass the dict directly: the registered JSONB codec encodes it once.
+        set_clauses: list[str] = ["metadata = metadata || $2::jsonb", "updated_at = now()"]
+        params: list[Any] = [local_id, existing_meta]
+        idx = 3
 
-            if set_clauses:
-                await self._pool.execute(
-                    f"UPDATE public.contacts SET {', '.join(set_clauses)} WHERE id = $1",  # noqa: S608
-                    *params,
-                )
+        if "canonical_name" in updates:
+            set_clauses.append(f"canonical_name = ${idx}")
+            params.append(updates["canonical_name"])
+            idx += 1
+
+        await self._pool.execute(
+            f"UPDATE public.entities SET {', '.join(set_clauses)} WHERE id = $1",  # noqa: S608
+            *params,
+        )
 
         return field_results
 
@@ -548,23 +553,18 @@ class ContactBackfillWriter:
     ) -> None:
         """Upsert channel-identity facts (email, phone, url, username) for a contact.
 
+        After bu-tzyuh, ``local_id`` IS the entity_id — no join to public.contacts needed.
+
         Write-path cut-over (bu-k9ylx): channel facts are asserted as triples in
         ``relationship.entity_facts`` via the central writer
         ``relationship_assert_fact()``.  Connector identifier types with no triple
         predicate (e.g. ``telegram_chat_id``) are skipped — they have no home in
         the triple model.
         """
-        # Resolve the entity to anchor channel facts on.  Channel facts live on
-        # the entity (subject), not the contact, in the triple store.
-        entity_row = await self._pool.fetchrow(
-            "SELECT entity_id FROM public.contacts WHERE id = $1",
-            local_id,
-        )
-        entity_id = entity_row["entity_id"] if entity_row is not None else None
+        entity_id = local_id  # local_id IS the entity_id after bu-tzyuh
         if entity_id is None:
             logger.debug(
-                "upsert_contact_info: contact %s has no linked entity; skipping channel facts",
-                local_id,
+                "upsert_contact_info: no entity_id; skipping channel facts",
             )
             return
 
@@ -630,60 +630,8 @@ class ContactBackfillWriter:
         await self._ensure_table_flags()
         if not self._has_table("addresses"):
             return
-        for addr in contact.addresses:
-            # Build a stable line_1 from street or city fallback
-            line_1 = addr.street or addr.city or "Unknown"
-            label = addr.label or "Home"
-
-            existing = await self._pool.fetchrow(
-                """
-                SELECT id FROM addresses
-                WHERE contact_id = $1 AND label = $2 AND line_1 = $3
-                """,
-                local_id,
-                label,
-                line_1,
-            )
-            if existing is not None:
-                # Update mutable fields
-                await self._pool.execute(
-                    """
-                    UPDATE addresses
-                    SET city = $2, province = $3, postal_code = $4, country = $5,
-                        is_current = $6, updated_at = now()
-                    WHERE id = $1
-                    """,
-                    existing["id"],
-                    addr.city,
-                    addr.region,
-                    addr.postal_code,
-                    addr.country[:2] if addr.country and len(addr.country) >= 2 else addr.country,
-                    addr.primary,
-                )
-                continue
-
-            # Validate country code
-            country_val = None
-            if addr.country:
-                country_val = addr.country[:2] if len(addr.country) > 2 else addr.country
-
-            await self._pool.execute(
-                """
-                INSERT INTO addresses (
-                    contact_id, label, line_1, city, province, postal_code, country, is_current
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT DO NOTHING
-                """,
-                local_id,
-                label,
-                line_1,
-                addr.city,
-                addr.region,
-                addr.postal_code,
-                country_val,
-                addr.primary,
-            )
+        logger.debug("upsert_addresses: skipped for entity %s — awaiting FK migration", local_id)
+        return
 
     async def upsert_important_dates(
         self,
@@ -694,50 +642,10 @@ class ContactBackfillWriter:
         await self._ensure_table_flags()
         if not self._has_table("important_dates"):
             return
-        date_entries: list[tuple[str, int | None, int | None, int | None]] = []
-
-        for bday in contact.birthdays:
-            if bday.month is not None and bday.day is not None:
-                date_entries.append(("birthday", bday.month, bday.day, bday.year))
-
-        for ann in contact.anniversaries:
-            if ann.month is not None and ann.day is not None:
-                date_entries.append(("anniversary", ann.month, ann.day, ann.year))
-
-        for label, month, day, year in date_entries:
-            if month is None or day is None:
-                continue
-            existing = await self._pool.fetchrow(
-                """
-                SELECT id FROM important_dates
-                WHERE contact_id = $1 AND label = $2 AND month = $3 AND day = $4
-                """,
-                local_id,
-                label,
-                month,
-                day,
-            )
-            if existing is not None:
-                if year is not None:
-                    await self._pool.execute(
-                        "UPDATE important_dates SET year = $2 WHERE id = $1",
-                        existing["id"],
-                        year,
-                    )
-                continue
-
-            await self._pool.execute(
-                """
-                INSERT INTO important_dates (contact_id, label, month, day, year)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT DO NOTHING
-                """,
-                local_id,
-                label,
-                month,
-                day,
-                year,
-            )
+        logger.debug(
+            "upsert_important_dates: skipped for entity %s — awaiting FK migration", local_id
+        )
+        return
 
     async def upsert_labels(
         self,
@@ -748,34 +656,8 @@ class ContactBackfillWriter:
         await self._ensure_table_flags()
         if not self._has_table("labels"):
             return
-        for group_resource in contact.group_memberships:
-            # Normalize: use the last segment of the resource name as label
-            label_name = _normalize_group_label(group_resource)
-            if not label_name:
-                continue
-
-            # Upsert the label
-            label_row = await self._pool.fetchrow(
-                """
-                INSERT INTO labels (name)
-                VALUES ($1)
-                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-                RETURNING id
-                """,
-                label_name,
-            )
-            label_id = uuid.UUID(str(label_row["id"]))
-
-            # Assign to contact (idempotent)
-            await self._pool.execute(
-                """
-                INSERT INTO contact_labels (label_id, contact_id)
-                VALUES ($1, $2)
-                ON CONFLICT DO NOTHING
-                """,
-                label_id,
-                local_id,
-            )
+        logger.debug("upsert_labels: skipped for entity %s — awaiting FK migration", local_id)
+        return
 
     async def upsert_source_link(
         self,
@@ -786,9 +668,11 @@ class ContactBackfillWriter:
     ) -> None:
         """Create or update the contacts_source_links provenance row.
 
+        After bu-tzyuh uses ``local_entity_id`` column (not ``local_contact_id``).
+
         ``executor`` lets the engine run this on the same transaction as the
-        contact INSERT (see ``create_contact``) so the provenance link is never
-        orphaned from its contact.
+        entity metadata UPDATE (see ``create_contact``) so the provenance link is never
+        orphaned from its entity.
         """
         db = executor or self._pool
         if contact.deleted:
@@ -806,19 +690,19 @@ class ContactBackfillWriter:
             return
 
         if local_id is None:
-            # No local contact to link; skip creating the source link.
+            # No local entity to link; skip creating the source link.
             return
 
         await db.execute(
             """
             INSERT INTO contacts_source_links (
                 provider, account_id, external_contact_id,
-                local_contact_id, source_etag, last_seen_at, deleted_at
+                local_entity_id, source_etag, last_seen_at, deleted_at
             )
             VALUES ($1, $2, $3, $4, $5, now(), NULL)
             ON CONFLICT (provider, account_id, external_contact_id)
             DO UPDATE SET
-                local_contact_id = EXCLUDED.local_contact_id,
+                local_entity_id = EXCLUDED.local_entity_id,
                 source_etag = EXCLUDED.source_etag,
                 last_seen_at = now(),
                 deleted_at = NULL
@@ -912,13 +796,13 @@ class ContactBackfillEngine:
             return
 
         if local_id is not None:
-            # Verify resolved contact still exists (stale source links, race conditions)
+            # Verify resolved entity still exists (stale source links, race conditions)
             exists = await self._pool.fetchval(
-                "SELECT 1 FROM public.contacts WHERE id = $1", local_id
+                "SELECT 1 FROM public.entities WHERE id = $1", local_id
             )
             if not exists:
                 logger.warning(
-                    "ContactBackfill: resolved local_id=%s via %s but contact missing; "
+                    "ContactBackfill: resolved local_id=%s via %s but entity missing; "
                     "treating as new",
                     local_id,
                     strategy,
@@ -926,15 +810,15 @@ class ContactBackfillEngine:
                 local_id = None
 
         if local_id is None:
-            # New contact — create CRM record. The contact INSERT and its
-            # provenance source-link MUST commit atomically: if the contact
+            # New contact — create/update entity record. The entity metadata UPDATE
+            # and its provenance source-link MUST commit atomically: if the entity
             # lands without a source link, the next sync cannot resolve it by
             # external_id and re-creates it, fanning out duplicate contacts for
             # the same person (the historical Ang-Zhi-Yuan duplication). Run
             # both on one transactional connection so they succeed or fail as a
             # unit. The remaining child-table upserts are best-effort and stay
             # outside the transaction — their failure must not block the
-            # idempotency anchor or strand a half-written contact.
+            # idempotency anchor or strand a half-written entity.
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
                     local_id = await self._writer.create_contact(contact, executor=conn)
@@ -944,14 +828,14 @@ class ContactBackfillEngine:
             await self._writer.upsert_important_dates(local_id, contact)
             await self._writer.upsert_labels(local_id, contact)
             logger.info(
-                "ContactBackfill: created new contact %s from %s/%s external_id=%s",
+                "ContactBackfill: created/updated entity %s from %s/%s external_id=%s",
                 local_id,
                 self._provider,
                 self._account_id,
                 contact.external_id,
             )
         else:
-            # Existing contact — update with conflict policy
+            # Existing entity — update with conflict policy
             field_results = await self._writer.update_contact(
                 local_id, contact, match_strategy=strategy
             )
@@ -966,13 +850,13 @@ class ContactBackfillEngine:
 
             if conflicting:
                 logger.info(
-                    "ContactBackfill: conflict on contact %s fields=%s (local edits preserved)",
+                    "ContactBackfill: conflict on entity %s fields=%s (local edits preserved)",
                     local_id,
                     sorted(conflicting),
                 )
             elif updated:
                 logger.info(
-                    "ContactBackfill: updated contact %s fields=%s via strategy=%s",
+                    "ContactBackfill: updated entity %s fields=%s via strategy=%s",
                     local_id,
                     sorted(updated),
                     strategy,
@@ -987,7 +871,7 @@ class ContactBackfillEngine:
         await self._writer.upsert_source_link(local_id, contact)
         if local_id is not None:
             logger.info(
-                "ContactBackfill: source tombstone for contact %s external_id=%s",
+                "ContactBackfill: source tombstone for entity %s external_id=%s",
                 local_id,
                 contact.external_id,
             )

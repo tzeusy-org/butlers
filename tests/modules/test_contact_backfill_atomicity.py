@@ -1,6 +1,6 @@
 """Atomicity of new-contact creation in the Google Contacts backfill engine.
 
-Regression for duplicate `public.contacts` rows for the same Google contact
+Regression for duplicate rows for the same Google contact
 (the Ang-Zhi-Yuan duplication). Root cause: on the new-contact path the engine
 created the contact and wrote its `contacts_source_links` provenance row as two
 separate pool statements. If the link write failed (or the process died)
@@ -9,6 +9,8 @@ could not resolve it by `external_id` and re-created it, fanning out duplicates.
 
 The engine now runs `create_contact` + `upsert_source_link` inside a single
 transaction on one acquired connection, so they commit or roll back as a unit.
+
+After bu-tzyuh: create_contact writes to public.entities (not public.contacts).
 """
 
 from __future__ import annotations
@@ -171,9 +173,9 @@ async def test_source_link_failure_rolls_back_and_propagates():
 # _ensure_entity recovers from a duplicate canonical_name by catching
 # UniqueViolationError and re-SELECTing. In Postgres a raised error aborts the
 # enclosing transaction even when Python catches it, so that recovery SELECT
-# would fail if entity resolution shared create_contact's contact+source-link
+# would fail if entity resolution shared create_contact's entity+source-link
 # transaction. This pins the contract: the entity INSERT goes to the pool, the
-# contact INSERT goes to the passed executor.
+# entity metadata UPDATE goes to the passed executor.
 # ---------------------------------------------------------------------------
 
 
@@ -186,26 +188,26 @@ class _RecordingExec:
 
     async def fetchrow(self, query: str, *args, **kwargs):
         self.queries.append(query)
-        return {"id": self._return_id}
+        # Return both 'id' (for INSERT … RETURNING id) and 'metadata' (for
+        # SELECT metadata … after _ensure_entity) so both callers get a valid row.
+        return {"id": self._return_id, "metadata": None}
 
-    async def execute(self, *args, **kwargs):
+    async def execute(self, query: str, *args, **kwargs) -> None:
+        self.queries.append(query)
         return None
 
 
 async def test_entity_resolution_runs_on_pool_not_caller_transaction():
     entity_id = uuid.uuid4()
-    contact_id = uuid.uuid4()
-
-    pool = _RecordingExec(entity_id)  # self._pool — entity resolution lands here
-    conn = _RecordingExec(contact_id)  # caller's transactional connection
+    pool = _RecordingExec(entity_id)  # self._pool — entity INSERT/SELECT lands here
+    conn = _RecordingExec(entity_id)  # caller's transaction — metadata UPDATE lands here
 
     writer = ContactBackfillWriter(pool, provider="google", account_id="default")
-
     result = await writer.create_contact(_contact(), executor=conn)
-    assert result == contact_id
+    assert result == entity_id
 
-    # Entity INSERT went to the pool; contact INSERT went to the executor.
     assert any("INSERT INTO public.entities" in q for q in pool.queries)
-    assert not any("INSERT INTO public.contacts" in q for q in pool.queries)
-    assert any("INSERT INTO public.contacts" in q for q in conn.queries)
+    assert not any("public.contacts" in q for q in pool.queries)
+    assert not any("public.contacts" in q for q in conn.queries)
+    assert any("UPDATE public.entities" in q for q in conn.queries)
     assert not any("INSERT INTO public.entities" in q for q in conn.queries)

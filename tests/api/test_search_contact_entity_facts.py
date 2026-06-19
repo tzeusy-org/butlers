@@ -1,12 +1,16 @@
-"""Tests for /api/search contact search migrated to entity_facts (bu-hjo3i).
+"""Tests for /api/search contact search over person entities (bu-tzyuh).
 
 Covers:
-- Contact search matches on name ILIKE (unchanged path).
-- Contact search matches on entity_facts object ILIKE (new path — replaces
-  the contact_info LEFT JOIN).
+- Contact search matches a person entity on canonical_name ILIKE.
+- Contact search matches on entity_facts object ILIKE (channel value).
 - Email/phone snippet comes from entity_facts has-email / has-phone.
-- Contacts without a linked entity still appear when matched by name.
-- Exception during entity_facts fetch is swallowed (warning logged, no crash).
+- Person entities still appear when matched by name only (no channels).
+- Exception during the person-entity fetch is swallowed (warning logged, no crash).
+
+Contact search now reads ``public.entities`` (``entity_type = 'person'``); the
+SQL no longer references ``public.contacts``.  Test fetch stubs dispatch on the
+``entity_type = 'person'`` marker (contact search) vs the ``has-email`` snippet
+marker.
 """
 
 from __future__ import annotations
@@ -59,28 +63,22 @@ async def _get(app: FastAPI, q: str) -> dict:
 
 
 async def test_contact_found_by_name(app: FastAPI) -> None:
-    """Contact matched by c.name ILIKE → appears in results with correct title."""
-    contact_id = uuid4()
+    """Person entity matched by canonical_name ILIKE → appears with correct title."""
     entity_id = uuid4()
 
-    contact_row = _make_record({"id": contact_id, "name": "Alice Smith", "entity_id": entity_id})
+    contact_row = _make_record({"id": entity_id, "name": "Alice Smith", "entity_id": entity_id})
     ef_snippet_row = _make_record(
         {"entity_id": entity_id, "predicate": "has-email", "object": "alice@example.com"}
     )
 
     pool = AsyncMock()
 
-    # fetch call 1 → entity search, 2 → contact search, 3 → entity_facts snippet
-    call_count = [0]
-
+    # fetch dispatch: contact search (person entities) vs entity_facts snippet
     async def _fetch(sql, *args, **kwargs):
-        call_count[0] += 1
-        if "public.entities" in sql:
-            return []
-        if "public.contacts" in sql:
-            return [contact_row]
         if "has-email" in sql or "has-phone" in sql:
             return [ef_snippet_row]
+        if "entity_type = 'person'" in sql:
+            return [contact_row]
         return []
 
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -99,7 +97,7 @@ async def test_contact_found_by_name(app: FastAPI) -> None:
     assert len(contacts) == 1
     assert contacts[0]["title"] == "Alice Smith"
     assert contacts[0]["snippet"] == "alice@example.com"
-    assert contacts[0]["id"] == str(contact_id)
+    assert contacts[0]["id"] == str(entity_id)
 
 
 async def test_contact_without_entity_no_snippet(app: FastAPI) -> None:
@@ -111,7 +109,7 @@ async def test_contact_without_entity_no_snippet(app: FastAPI) -> None:
     pool = AsyncMock()
 
     async def _fetch(sql, *args, **kwargs):
-        if "public.contacts" in sql:
+        if "entity_type = 'person'" in sql:
             return [contact_row]
         return []
 
@@ -136,7 +134,7 @@ async def test_contact_search_exception_swallowed(app: FastAPI) -> None:
     pool = AsyncMock()
 
     async def _fetch(sql, *args, **kwargs):
-        if "public.contacts" in sql:
+        if "entity_type = 'person'" in sql:
             raise RuntimeError("db gone")
         return []
 
@@ -188,10 +186,10 @@ async def test_contact_snippet_includes_phone(app: FastAPI) -> None:
     pool = AsyncMock()
 
     async def _fetch(sql, *args, **kwargs):
-        if "public.contacts" in sql:
-            return [contact_row]
         if "has-email" in sql or "has-phone" in sql:
             return [ef_row]
+        if "entity_type = 'person'" in sql:
+            return [contact_row]
         return []
 
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -225,10 +223,10 @@ async def test_contact_snippet_email_and_phone_both_shown(app: FastAPI) -> None:
     pool = AsyncMock()
 
     async def _fetch(sql, *args, **kwargs):
-        if "public.contacts" in sql:
-            return [contact_row]
         if "has-email" in sql or "has-phone" in sql:
             return [ef_email, ef_phone]
+        if "entity_type = 'person'" in sql:
+            return [contact_row]
         return []
 
     pool.fetch = AsyncMock(side_effect=_fetch)
