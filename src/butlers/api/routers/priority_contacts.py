@@ -150,8 +150,9 @@ async def list_priority_contacts(
 ) -> PaginatedResponse[PriorityContactEntry]:
     """List all priority contacts (global — butler-agnostic).
 
-    Joins through public.contacts for canonical contact name.  Channel
-    identifiers (email, phone, handles) are fetched from
+    Joins through public.entities for canonical contact name via
+    priority_contacts.entity_id (core_131 — no longer through public.contacts).
+    Channel identifiers (email, phone, handles) are fetched from
     relationship.entity_facts via the contact's linked entity (bu-hjo3i).
 
     Returns paginated list of priority contact entries.
@@ -163,17 +164,18 @@ async def list_priority_contacts(
 
     total = await pool.fetchval("SELECT count(*) FROM public.priority_contacts") or 0
 
-    # Main query: join contacts for name; channel identifiers fetched separately
-    # from relationship.entity_facts (bu-hjo3i).
+    # Main query: join public.entities for canonical name via pc.entity_id
+    # (core_131 — contact_id no longer bridges through public.contacts).
+    # Channel identifiers fetched separately from relationship.entity_facts (bu-hjo3i).
     data_sql = """
         SELECT
             pc.contact_id,
             pc.added_at,
             pc.added_by,
-            c.name    AS contact_name,
-            c.entity_id AS entity_id
+            e.canonical_name AS contact_name,
+            pc.entity_id     AS entity_id
         FROM public.priority_contacts pc
-        LEFT JOIN public.contacts c ON c.id = pc.contact_id
+        LEFT JOIN public.entities e ON e.id = pc.entity_id
         ORDER BY pc.added_at DESC
         OFFSET $1 LIMIT $2
     """
@@ -228,7 +230,8 @@ async def add_priority_contact(
     Emits an audit entry with action='ingestion.priority_contact.add' on success.
 
     Returns HTTP 201 on success.
-    Returns HTTP 400 if the contact_id does not exist in public.contacts.
+    Returns HTTP 400 if the contact_id (entity UUID) does not exist in
+    public.entities (core_131 — validation moved off public.contacts).
     Returns HTTP 409 if the contact_id is already a priority contact.
     """
     # Reject any payload that includes a 'roles' field.
@@ -256,23 +259,40 @@ async def add_priority_contact(
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
-    # Verify the contact exists
-    contact_exists = await pool.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM public.contacts WHERE id = $1)",
+    # Verify the entity exists (contact_id carries an entity UUID — core_131;
+    # validation moved off public.contacts onto public.entities).
+    entity_exists = await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM public.entities WHERE id = $1)",
         body.contact_id,
     )
-    if not contact_exists:
+    if not entity_exists:
         raise HTTPException(
             status_code=400,
-            detail=f"Contact '{body.contact_id}' not found in public.contacts",
+            detail=f"Contact '{body.contact_id}' not found",
         )
 
-    # Insert — conflict on PK raises HTTP 409
+    # Guard against duplicate entries via entity_id — catches backfilled legacy rows
+    # where contact_id holds the old contacts UUID but entity_id already equals
+    # body.contact_id.  The PK constraint on contact_id alone cannot detect this
+    # because legacy rows carry a different value in contact_id.
+    already_exists = await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM public.priority_contacts WHERE entity_id = $1)",
+        body.contact_id,
+    )
+    if already_exists:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Priority contact {body.contact_id} already exists",
+        )
+
+    # Insert — contact_id now carries an entity UUID (core_131); entity_id
+    # stores the same value so the GET display-name join resolves correctly.
+    # Conflict on PK raises HTTP 409.
     try:
         row = await pool.fetchrow(
             """
-            INSERT INTO public.priority_contacts (contact_id, added_by)
-            VALUES ($1, $2)
+            INSERT INTO public.priority_contacts (contact_id, entity_id, added_by)
+            VALUES ($1, $1, $2)
             RETURNING contact_id, added_at, added_by
             """,
             body.contact_id,
