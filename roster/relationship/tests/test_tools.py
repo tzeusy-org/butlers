@@ -513,6 +513,60 @@ async def test_contact_update_not_found(pool):
         await contact_update(pool, uuid.uuid4(), first_name="Nobody")
 
 
+async def test_contact_update_entity_id_updates_map(pool):
+    """contact_update upserts contact_entity_map when entity_id is reassigned.
+
+    Regression guard for bu-0tg4s: contact_create populates contact_entity_map at
+    creation; contact_update must keep the map in sync when entity_id changes.
+    """
+    from butlers.tools.relationship import contact_create, contact_update
+
+    # Create a contact; contact_create auto-creates an entity and writes contact_entity_map.
+    c = await contact_create(pool, "Entity Map Sync Test")
+    contact_id = c["id"]
+    original_entity_id = c["entity_id"]
+    assert original_entity_id is not None, "contact_create must set entity_id"
+
+    # Verify initial map entry reflects the creation-time entity.
+    initial_map = await pool.fetchrow(
+        "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", contact_id
+    )
+    assert initial_map is not None, "contact_entity_map row must exist after contact_create"
+    assert initial_map["entity_id"] == original_entity_id
+
+    # Create a second entity to reassign to.
+    new_entity_row = await pool.fetchrow(
+        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+        "Reassigned Entity",
+    )
+    new_entity_id = new_entity_row["id"]
+    assert new_entity_id != original_entity_id
+
+    # Reassign the contact's entity_id.
+    updated = await contact_update(pool, contact_id, entity_id=new_entity_id)
+    assert updated["entity_id"] == new_entity_id, "contact row entity_id must reflect update"
+
+    # contact_entity_map must be updated to match the new entity_id.
+    map_row = await pool.fetchrow(
+        "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", contact_id
+    )
+    assert map_row is not None, "contact_entity_map row must still exist after contact_update"
+    assert map_row["entity_id"] == new_entity_id, (
+        "contact_entity_map entity_id must reflect the updated entity_id"
+    )
+
+    # Clear the entity_id — map row must be deleted.
+    updated_none = await contact_update(pool, contact_id, entity_id=None)
+    assert updated_none["entity_id"] is None, "contact row entity_id must be None after clearing"
+
+    map_row_none = await pool.fetchrow(
+        "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", contact_id
+    )
+    assert map_row_none is None, (
+        "contact_entity_map row must be deleted when entity_id is explicitly set to None"
+    )
+
+
 async def test_contact_get(pool):
     """contact_get returns the contact by ID."""
     from butlers.tools.relationship import contact_create, contact_get

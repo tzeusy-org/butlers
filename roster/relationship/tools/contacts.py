@@ -382,11 +382,18 @@ async def contact_update(
         if col in fields and col in cols:
             to_update[col] = fields[col]
 
+    # entity_id — UUID column; requires explicit coercion from str if passed as text.
+    if "entity_id" in fields and "entity_id" in cols:
+        raw_eid = fields["entity_id"]
+        if raw_eid is not None and not isinstance(raw_eid, uuid.UUID):
+            raw_eid = uuid.UUID(str(raw_eid))
+        to_update["entity_id"] = raw_eid
+
     if not to_update:
         raise ValueError(
             "At least one field must be provided for update. "
             "Valid fields: first_name, last_name, nickname, company, job_title, "
-            "gender, pronouns, avatar_url, metadata, listed."
+            "gender, pronouns, avatar_url, metadata, listed, entity_id."
         )
 
     json_cols = {"details", "metadata"} & set(to_update)
@@ -426,6 +433,37 @@ async def contact_update(
                 first_name=result.get("first_name"),
                 last_name=result.get("last_name"),
                 nickname=result.get("nickname"),
+            )
+
+    # Sync contact_entity_map when entity_id is being changed (rel_029 / bu-0tg4s).
+    # contact_create populates this map at creation time; contact_update must keep it
+    # in sync when entity_id is explicitly reassigned or cleared.  Best-effort: catch
+    # UndefinedTableError so the update degrades gracefully if rel_029 has not run.
+    if "entity_id" in to_update:
+        try:
+            if to_update["entity_id"] is not None:
+                await pool.execute(
+                    """
+                    INSERT INTO contact_entity_map (contact_id, entity_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (contact_id) DO UPDATE SET entity_id = EXCLUDED.entity_id
+                    """,
+                    contact_id,
+                    to_update["entity_id"],
+                )
+            else:
+                await pool.execute(
+                    "DELETE FROM contact_entity_map WHERE contact_id = $1",
+                    contact_id,
+                )
+        except asyncpg.UndefinedTableError:
+            # rel_029 migration has not run yet; not fatal.
+            pass
+        except asyncpg.PostgresError:
+            logger.warning(
+                "contact_update: failed to sync contact_entity_map for %s",
+                contact_id,
+                exc_info=True,
             )
 
     # Write-path cut-over (bu-k9ylx): contact_update modifies only the contact
