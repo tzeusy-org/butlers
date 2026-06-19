@@ -162,6 +162,11 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     description = row["content"]
 
     entity_id = await resolve_contact_entity_id(pool, contact_id)
+    if entity_id is None:
+        raise ValueError(
+            f"Contact {contact_id} has no linked entity_id. "
+            "All contacts must resolve to an entity — this is a data integrity issue."
+        )
 
     now = datetime.now(UTC)
     new_metadata = dict(meta)

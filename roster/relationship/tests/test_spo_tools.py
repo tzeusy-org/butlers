@@ -870,3 +870,30 @@ async def test_gift_add_no_entity_raises_value_error(pool):
 
     with pytest.raises(ValueError, match="no linked entity_id"):
         await gift_add(pool, cid, "mystery gift")
+
+
+async def test_gift_update_status_no_entity_raises_value_error(pool):
+    """gift_update_status raises ValueError when the contact has no linked entity."""
+    from butlers.tools.relationship.gifts import gift_update_status
+
+    # Create a contact without entity_id (no entry in contact_entity_map)
+    row = await pool.fetchrow(
+        "INSERT INTO contacts (first_name) VALUES ($1) RETURNING id",
+        "OrphanUpdate",
+    )
+    cid = row["id"]
+
+    # Insert a gift fact directly (bypassing gift_add which would also raise).
+    # This simulates a gift that exists but whose contact lost its entity link.
+    gift_row = await pool.fetchrow(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, metadata)
+        VALUES ($1, 'gift', 'mystery gift', 'relationship', 'active', '{"status": "idea"}')
+        RETURNING id
+        """,
+        f"contact:{cid}:gift:mystery_gift",
+    )
+    gift_id = gift_row["id"]
+
+    with pytest.raises(ValueError, match="no linked entity_id"):
+        await gift_update_status(pool, gift_id, "purchased")
