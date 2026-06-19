@@ -114,6 +114,7 @@ class TestDunbarRankingAliases:
             id=entity_id,
             canonical_name="Alice Nguyen",
             aliases=["Ally", "A. Nguyen"],
+            avatar_url=None,
         )
         owner_row = None
 
@@ -142,7 +143,7 @@ class TestDunbarRankingAliases:
             }
         ]
 
-        entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[])
+        entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[], avatar_url=None)
 
         app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
@@ -167,7 +168,7 @@ class TestDunbarRankingAliases:
             }
         ]
 
-        entity_row = _row(id=entity_id, canonical_name="Carol Lee", aliases=None)
+        entity_row = _row(id=entity_id, canonical_name="Carol Lee", aliases=None, avatar_url=None)
 
         app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
@@ -215,7 +216,7 @@ class TestDunbarRankingLastInteractionAt:
             }
         ]
 
-        entity_row = _row(id=entity_id, canonical_name="Alice Nguyen", aliases=[])
+        entity_row = _row(id=entity_id, canonical_name="Alice Nguyen", aliases=[], avatar_url=None)
 
         app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
@@ -241,7 +242,7 @@ class TestDunbarRankingLastInteractionAt:
             }
         ]
 
-        entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[])
+        entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[], avatar_url=None)
 
         app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
@@ -249,3 +250,116 @@ class TestDunbarRankingLastInteractionAt:
         assert resp.status_code == 200
         entry = resp.json()["entries"][0]
         assert entry["last_interaction_at"] is None
+
+
+class TestDunbarRankingAvatarUrl:
+    """GET /dunbar/ranking — avatar_url populated from public.entities.metadata."""
+
+    async def test_avatar_url_populated_when_entity_has_avatar(self):
+        """avatar_url is taken from metadata->'profile'->>'avatar_url' on the entity."""
+        contact_id = uuid4()
+        entity_id = uuid4()
+
+        ranked = [
+            {
+                "contact_id": contact_id,
+                "entity_id": entity_id,
+                "dunbar_tier": 5,
+                "dunbar_score": 1.0,
+                "dunbar_tier_override": False,
+                "last_interaction_at": None,
+            }
+        ]
+
+        entity_row = _row(
+            id=entity_id,
+            canonical_name="Alice Nguyen",
+            aliases=[],
+            avatar_url="https://example.com/avatars/alice.jpg",
+        )
+
+        app = _build_app(ranked, [entity_row], None)
+        resp = await _get_ranking(app)
+
+        assert resp.status_code == 200
+        entry = resp.json()["entries"][0]
+        assert entry["avatar_url"] == "https://example.com/avatars/alice.jpg"
+
+    async def test_avatar_url_null_when_entity_has_no_avatar(self):
+        """avatar_url is null in DunbarEntry when the entity has no avatar in metadata."""
+        contact_id = uuid4()
+        entity_id = uuid4()
+
+        ranked = [
+            {
+                "contact_id": contact_id,
+                "entity_id": entity_id,
+                "dunbar_tier": 15,
+                "dunbar_score": 0.5,
+                "dunbar_tier_override": False,
+                "last_interaction_at": None,
+            }
+        ]
+
+        entity_row = _row(
+            id=entity_id,
+            canonical_name="Bob Smith",
+            aliases=[],
+            avatar_url=None,
+        )
+
+        app = _build_app(ranked, [entity_row], None)
+        resp = await _get_ranking(app)
+
+        assert resp.status_code == 200
+        entry = resp.json()["entries"][0]
+        assert entry["avatar_url"] is None
+
+    async def test_avatar_url_independent_per_entity(self):
+        """Each entry gets its own entity's avatar_url (not shared across entries)."""
+        contact_a = uuid4()
+        entity_a = uuid4()
+        contact_b = uuid4()
+        entity_b = uuid4()
+
+        ranked = [
+            {
+                "contact_id": contact_a,
+                "entity_id": entity_a,
+                "dunbar_tier": 5,
+                "dunbar_score": 1.5,
+                "dunbar_tier_override": False,
+                "last_interaction_at": None,
+            },
+            {
+                "contact_id": contact_b,
+                "entity_id": entity_b,
+                "dunbar_tier": 15,
+                "dunbar_score": 0.8,
+                "dunbar_tier_override": False,
+                "last_interaction_at": None,
+            },
+        ]
+
+        rows = [
+            _row(
+                id=entity_a,
+                canonical_name="Alice",
+                aliases=[],
+                avatar_url="https://example.com/alice.jpg",
+            ),
+            _row(
+                id=entity_b,
+                canonical_name="Bob",
+                aliases=[],
+                avatar_url=None,
+            ),
+        ]
+
+        app = _build_app(ranked, rows, None)
+        resp = await _get_ranking(app)
+
+        assert resp.status_code == 200
+        entries = {e["entity_id"]: e for e in resp.json()["entries"]}
+        assert entries[str(entity_a)]["avatar_url"] == "https://example.com/alice.jpg"
+        assert entries[str(entity_b)]["avatar_url"] is None

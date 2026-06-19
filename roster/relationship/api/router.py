@@ -5100,13 +5100,16 @@ async def get_dunbar_ranking(
     # Use the canonical scoring engine — includes decay, overrides, and hysteresis.
     ranked = await _dunbar.compute_tier_ranking(pool)
 
-    # Fetch canonical names for all entity IDs returned by the ranking.
-    entity_ids = [r["entity_id"] for r in ranked if r["entity_id"] is not None]
+    # Fetch canonical names and avatar URLs for all entity IDs returned by the ranking.
+    # avatar_url is stored in public.entities.metadata->'profile'->>'avatar_url' by the
+    # contacts backfill (ContactBackfill._deep_set(metadata, "profile.avatar_url", ...)).
+    entity_ids = list({r["entity_id"] for r in ranked if r["entity_id"] is not None})
     contact_ids = [r["contact_id"] for r in ranked if r["entity_id"] is not None]
     entity_name_rows, owner_row, interaction_30d_rows = await asyncio.gather(
         pool.fetch(
             """
-            SELECT e.id, e.canonical_name, e.aliases
+            SELECT e.id, e.canonical_name, e.aliases,
+                   e.metadata->'profile'->>'avatar_url' AS avatar_url
             FROM public.entities e
             WHERE e.id = ANY($1::uuid[])
             """,
@@ -5141,6 +5144,9 @@ async def get_dunbar_ranking(
     entity_aliases: dict[UUID, list[str]] = {
         row["id"]: list(row["aliases"]) if row["aliases"] else [] for row in entity_name_rows
     }
+    entity_avatar: dict[UUID, str | None] = {
+        row["id"]: row["avatar_url"] for row in entity_name_rows
+    }
     interaction_30d: dict[UUID, int] = {
         row["contact_id"]: int(row["interaction_count_30d"]) for row in interaction_30d_rows
     }
@@ -5169,7 +5175,7 @@ async def get_dunbar_ranking(
                 dunbar_tier=tier,
                 dunbar_score=r["dunbar_score"],
                 dunbar_tier_override=r.get("dunbar_tier_override", False),
-                avatar_url=None,  # avatar_url retired from public.contacts (bu-j77a5)
+                avatar_url=entity_avatar.get(r["entity_id"]),
                 aliases=entity_aliases.get(r["entity_id"], []),
                 warmth=warmth,
                 last_interaction_at=r.get("last_interaction_at"),

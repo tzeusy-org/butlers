@@ -166,7 +166,9 @@ class TestDunbarRankingWarmth:
             fetch_call_count[0] += 1
             if fetch_call_count[0] == 1:
                 # entity name rows
-                return [_row(id=entity_id, canonical_name="Alice Test", aliases=[])]
+                return [
+                    _row(id=entity_id, canonical_name="Alice Test", aliases=[], avatar_url=None)
+                ]
             else:
                 # interaction_30d rows — 2 interactions in last 30d
                 # (avatar_url query removed from public.contacts — bu-j77a5)
@@ -208,7 +210,7 @@ class TestDunbarRankingWarmth:
         async def _fetch(*args, **kwargs):
             fetch_call_count[0] += 1
             if fetch_call_count[0] == 1:
-                return [_row(id=entity_id, canonical_name="Alice", aliases=[])]
+                return [_row(id=entity_id, canonical_name="Alice", aliases=[], avatar_url=None)]
             else:
                 # interaction_30d rows (avatar_url query removed — bu-j77a5)
                 return [_row(contact_id=contact_id, interaction_count_30d=2)]
@@ -255,7 +257,7 @@ class TestDunbarRankingWarmth:
         async def _fetch(*args, **kwargs):
             fetch_call_count[0] += 1
             if fetch_call_count[0] == 1:
-                return [_row(id=entity_id, canonical_name="Bob", aliases=[])]
+                return [_row(id=entity_id, canonical_name="Bob", aliases=[], avatar_url=None)]
             else:
                 return []  # no 30d interactions (avatar_url query removed — bu-j77a5)
 
