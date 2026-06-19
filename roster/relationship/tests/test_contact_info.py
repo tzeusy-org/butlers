@@ -742,11 +742,9 @@ async def test_channel_search_case_insensitive(pool):
 async def test_channel_search_excludes_archived(pool):
     """channel_search excludes archived contacts.
 
-    channel_search now filters on public.entities.listed (entity-level archive
-    flag, core_103) rather than contacts.listed.  contact_archive() only sets
-    contacts.listed=false; until that propagates to entities (a future
-    contacts.py update, outside this bead's scope), the test also archives
-    the entity directly to exercise the filter.
+    contact_archive() now sets entities.listed=false (bu-5nlh6), so
+    channel_search (which filters on e.listed = true) correctly excludes
+    archived contacts without a separate manual entity update.
     """
     from butlers.tools.relationship import (
         channel_search,
@@ -759,13 +757,8 @@ async def test_channel_search_excludes_archived(pool):
         pool, c["entity_id"], "has-email", "archivedsearch_unique@example.com"
     )
     await contact_archive(pool, c["id"])
-    # Archive the entity too (channel_search filters on e.listed = true).
-    # contact_archive currently only sets contacts.listed=false; once that
-    # cascades to entities.listed, this direct UPDATE will be redundant.
-    await pool.execute(
-        "UPDATE public.entities SET listed = false WHERE id = $1",
-        c["entity_id"],
-    )
+    # contact_archive now propagates the archive to entities.listed (bu-5nlh6);
+    # no manual entity update needed here.
 
     results = await channel_search(pool, "archivedsearch_unique@example.com")
     assert not any(r["id"] == c["id"] for r in results)

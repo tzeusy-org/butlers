@@ -562,6 +562,34 @@ async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str
         )
     result = _parse_contact(row)
 
+    # Phase-7 retirement (bu-5nlh6): propagate archive flag to the linked entity
+    # so entity-anchored searches (channel_search, contact_search_by_label) exclude
+    # archived contacts via entities.listed even after public.contacts is dropped
+    # (bu-y6o7q).  entity_id is read from the contact row first; if absent (legacy
+    # row without the column), fall back to contact_entity_map via
+    # resolve_contact_entity_id.  Best-effort: never let an entity update failure
+    # block the contact archive.
+    entity_id: uuid.UUID | None = None
+    try:
+        entity_id = result.get("entity_id")
+        if entity_id is None:
+            from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
+
+            entity_id = await resolve_contact_entity_id(pool, contact_id)
+        if entity_id is not None:
+            await pool.execute(
+                "UPDATE public.entities SET listed = false WHERE id = $1",
+                entity_id,
+            )
+    except (ValueError, asyncpg.PostgresError):
+        logger.warning(
+            "contact_archive: failed to set entities.listed=false for contact_id=%s"
+            " (entity_id=%s); archived contact may still appear in entity-anchored searches",
+            contact_id,
+            entity_id,
+            exc_info=True,
+        )
+
     # Write-path cut-over (bu-k9ylx): contact_archive soft-removes the contact
     # RECORD (public.contacts).  Channel-fact retraction now flows through the
     # relationship butler's triple retraction path, not a contact_info shim; the

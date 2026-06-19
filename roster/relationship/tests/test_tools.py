@@ -317,6 +317,9 @@ async def pool(provisioned_postgres_pool):
         """)
 
         # public.entities (needed by store_fact for entity_id validation)
+        # listed (BOOLEAN NOT NULL DEFAULT true, core_103) is required so that
+        # contact_archive() can set entities.listed=false (bu-5nlh6) and
+        # entity-anchored searches (channel_search) can filter on e.listed=true.
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -326,6 +329,7 @@ async def pool(provisioned_postgres_pool):
                 aliases TEXT[] NOT NULL DEFAULT '{}',
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
+                listed BOOLEAN NOT NULL DEFAULT true,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -551,12 +555,25 @@ async def test_contact_search_by_company(pool):
 
 
 async def test_contact_archive(pool):
-    """contact_archive sets listed=false and excludes from search."""
+    """contact_archive sets listed=false and excludes from search.
+
+    Also verifies that entities.listed is set to false (bu-5nlh6) so that
+    entity-anchored searches (channel_search) correctly exclude the contact.
+    """
     from butlers.tools.relationship import contact_archive, contact_create, contact_search
 
     c = await contact_create(pool, "Hank Archived")
     archived = await contact_archive(pool, c["id"])
     assert archived["listed"] is False
+
+    # contact_archive must also delist the linked entity (bu-5nlh6) so that
+    # entity-anchored searches (channel_search filters on e.listed = true)
+    # exclude archived contacts.
+    entity_row = await pool.fetchrow(
+        "SELECT listed FROM public.entities WHERE id = $1", c["entity_id"]
+    )
+    assert entity_row is not None, "Entity row missing after contact_archive"
+    assert entity_row["listed"] is False, "entities.listed must be false after contact_archive"
 
     # Should not appear in search
     results = await contact_search(pool, "Hank Archived")
