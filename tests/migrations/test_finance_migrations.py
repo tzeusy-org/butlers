@@ -9,12 +9,40 @@ is covered canonically by tests/config/test_migration_contract.py.
 
 from __future__ import annotations
 
+import importlib.util
 from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
 
 pytestmark = pytest.mark.integration
+
+# ---------------------------------------------------------------------------
+# Migration loader helpers (shared by all migration test classes below)
+# ---------------------------------------------------------------------------
+
+_FINANCE_MIGRATIONS = Path(__file__).resolve().parents[2] / "roster" / "finance" / "migrations"
+
+
+def _load_migration(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+async def _apply(pool: asyncpg.Pool, mod, direction: str) -> None:
+    """Capture op.execute() SQL emitted by upgrade()/downgrade() and run it."""
+    sqls: list[str] = []
+    mock_op = MagicMock()
+    mock_op.execute.side_effect = lambda sql: sqls.append(sql)
+    with patch.object(mod, "op", mock_op):
+        getattr(mod, direction)()
+    for sql in sqls:
+        await pool.execute(sql)
 
 
 @pytest.fixture
@@ -277,3 +305,137 @@ class TestCSVDedupIndexIntegration:
         assert "merchant" in index_def, "Index should include merchant"
         assert "account_id" in index_def, "Index should include account_id"
         assert "source_message_id IS NULL" in index_def, "Index should be partial"
+
+
+# ---------------------------------------------------------------------------
+# finance_009 — bills.reconciled_transaction_id
+# ---------------------------------------------------------------------------
+
+_MIGRATION_009 = _FINANCE_MIGRATIONS / "009_bills_reconciled_transaction_id.py"
+
+
+@pytest.fixture
+async def bills_pool(provisioned_postgres_pool):
+    """Pool with a minimal finance schema (accounts + bills) for migration 009 tests.
+
+    Sets up the schema at the finance_001 state for the two tables that matter:
+    accounts (required by the FK in bills) and bills itself.  No other tables
+    are needed to test the additive column migration.
+    """
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                institution TEXT NOT NULL,
+                type        TEXT NOT NULL
+                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
+                name        TEXT,
+                last_four   CHAR(4),
+                currency    CHAR(3) NOT NULL DEFAULT 'USD',
+                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS bills (
+                id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                payee                  TEXT NOT NULL,
+                amount                 NUMERIC(14, 2) NOT NULL,
+                currency               CHAR(3) NOT NULL,
+                due_date               DATE NOT NULL,
+                frequency              TEXT NOT NULL
+                                           CHECK (frequency IN (
+                                               'one_time', 'weekly', 'monthly',
+                                               'quarterly', 'yearly', 'custom'
+                                           )),
+                status                 TEXT NOT NULL
+                                           CHECK (status IN ('pending', 'paid', 'overdue')),
+                payment_method         TEXT,
+                account_id             UUID REFERENCES accounts(id) ON DELETE SET NULL,
+                source_message_id      TEXT,
+                statement_period_start DATE,
+                statement_period_end   DATE,
+                paid_at                TIMESTAMPTZ,
+                metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        yield pool
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestBillsReconciledTransactionIdMigration:
+    """Integration tests for finance_009: bills.reconciled_transaction_id (UUID NULL)."""
+
+    @pytest.mark.integration
+    async def test_upgrade_adds_nullable_uuid_column_defaulting_null(
+        self, bills_pool: asyncpg.Pool
+    ) -> None:
+        """After upgrade the column is present, nullable, has no explicit DEFAULT, and
+        reads as NULL when omitted from an INSERT.
+        """
+        pool = bills_pool
+        mod = _load_migration("finance_009", _MIGRATION_009)
+        await _apply(pool, mod, "upgrade")
+
+        # Column metadata.
+        col = await pool.fetchrow(
+            "SELECT data_type, is_nullable, column_default "
+            "FROM information_schema.columns "
+            "WHERE table_name = 'bills' AND column_name = 'reconciled_transaction_id'"
+        )
+        assert col is not None, "reconciled_transaction_id column must exist after upgrade"
+        assert col["data_type"] == "uuid", "column type must be uuid"
+        assert col["is_nullable"] == "YES", "column must be nullable"
+        # Nullable UUID with no explicit DEFAULT — column_default should be NULL
+        # (the value is implicitly NULL when the column is omitted from an INSERT).
+        assert col["column_default"] is None, "no explicit DEFAULT expression expected"
+
+        # Index check: partial index must exist after upgrade.
+        indexes = await pool.fetch(
+            "SELECT indexname FROM pg_indexes"
+            " WHERE tablename = 'bills'"
+            "   AND indexname = 'idx_bills_reconciled_transaction_id'"
+        )
+        assert len(indexes) == 1, (
+            "Partial index on reconciled_transaction_id must exist after upgrade"
+        )
+
+        # Behavioural check: INSERT without specifying the column yields NULL.
+        row = await pool.fetchrow(
+            """
+            INSERT INTO bills (payee, amount, currency, due_date, frequency, status)
+            VALUES ('ACME Corp', 99.00, 'USD', '2026-08-01', 'monthly', 'pending')
+            RETURNING reconciled_transaction_id
+            """
+        )
+        assert row is not None
+        assert row["reconciled_transaction_id"] is None, (
+            "reconciled_transaction_id must be NULL when not supplied"
+        )
+
+    @pytest.mark.integration
+    async def test_downgrade_drops_column(self, bills_pool: asyncpg.Pool) -> None:
+        """After upgrade then downgrade the column and its index are absent from the schema."""
+        pool = bills_pool
+        mod = _load_migration("finance_009", _MIGRATION_009)
+        await _apply(pool, mod, "upgrade")
+        await _apply(pool, mod, "downgrade")
+
+        col = await pool.fetchrow(
+            "SELECT column_name "
+            "FROM information_schema.columns "
+            "WHERE table_name = 'bills' AND column_name = 'reconciled_transaction_id'"
+        )
+        assert col is None, "reconciled_transaction_id column must be absent after downgrade"
+
+        indexes = await pool.fetch(
+            "SELECT indexname FROM pg_indexes"
+            " WHERE tablename = 'bills'"
+            "   AND indexname = 'idx_bills_reconciled_transaction_id'"
+        )
+        assert len(indexes) == 0, (
+            "Partial index on reconciled_transaction_id must be absent after downgrade"
+        )
