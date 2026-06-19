@@ -155,7 +155,7 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 - **WHEN** the sidebar renders
 - **THEN** navigation items are organized into three labelled sections displayed in order:
   1. **Main** — Overview (`/`, exact match), Butlers (`/butlers`), QA (`/qa`; butler-aware on `qa`; badge), Ingestion (`/ingestion`), Approvals (`/approvals`; badge), Memory (`/memory`), Entities (`/entities`), Secrets (`/secrets`), Settings (`/settings`; badge)
-  2. **Dedicated Butlers** — Relationships group (Contacts `/contacts`, Groups `/groups`; butler-aware on `relationship`), Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`), Chronicles (`/chronicles`; butler-aware on `chronicler`)
+  2. **Dedicated Butlers** — Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`), Chronicles (`/chronicles`; butler-aware on `chronicler`)
   3. **Telemetry** — Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Sessions (`/sessions`), Audit Log (`/audit-log`), System (`/system`)
 - **AND** section headers are hidden on the desktop rail (icon-only mode); sections are separated by a thin horizontal `border-border` divider
 - **AND** a section auto-expands when any of its items (including group children) matches the current active route
@@ -197,13 +197,11 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 - **THEN** an amber circle badge (`bg-amber-500 text-white`) renders at the top-right of the icon
 - **AND** badge and status dot do not overlap (badge takes precedence over status dot when both would render)
 
-#### Scenario: Group expand interaction (Relationships)
+#### Scenario: No collapsible nav groups in the sidebar
 
-- **WHEN** the user clicks the Relationships group glyph in the rail
-- **THEN** the group toggles expanded/collapsed
-- **AND** when expanded, indented child items (Contacts, Groups) appear immediately below the group header
-- **AND** a chevron at the bottom-right of the glyph area indicates current state (rotated when expanded)
-- **AND** the group auto-expands when any child route is active
+- **WHEN** the sidebar renders
+- **THEN** no collapsible nav group (group header glyph with expand/collapse chevron) appears
+- **AND** the Relationships group is not rendered (its only remaining child, Groups, was removed from the navigation; the `/groups` page stays routable but is not surfaced in the sidebar)
 
 #### Scenario: Sidebar Settings entry (single, un-nested)
 
@@ -251,7 +249,7 @@ The route map SHALL include the Settings Console sub-routes and the ingestion di
   - `/calendar` -- Calendar workspace
   - `/contacts` -- Contacts list
   - `/contacts/:contactId` -- Contact detail (parameterized)
-  - `/groups` -- Groups list
+  - `/groups` -- Groups list (not in sidebar; reachable via the relationship butler's CRM tab Quick Links)
   - `/costs` -- Costs and usage (not in sidebar)
   - `/memory` -- Memory system
   - `/ingestion` -- Ingestion Timeline ledger
