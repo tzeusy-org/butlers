@@ -62,27 +62,23 @@ async def _resolve_interaction_target(
 
     ``interaction_log`` and ``interaction_list`` now store/read canonical
     ``entity:{entity_id}`` subjects, but direct legacy callers may still pass a
-    contact UUID. Resolve contact UUIDs here so the low-level helpers remain
-    compatible while keeping the storage shape entity-keyed.
+    contact UUID. Resolve contact UUIDs via ``resolve_contact_entity_id``
+    (contact_entity_map → contacts_source_links → public.entities direct pass-through)
+    without reading public.contacts.
+
+    Returns ``(resolved_entity_id, target_id)`` when target_id was a contact UUID.
+    Returns ``(target_id, None)`` when target_id is already an entity UUID or
+    cannot be resolved to a distinct entity_id.
     """
-    try:
-        row = await pool.fetchrow(
-            "SELECT id, entity_id FROM contacts WHERE id = $1",
-            target_id,
-        )
-    except asyncpg.PostgresError:
-        row = None
+    from ._entity_resolve import resolve_contact_entity_id
 
-    if row is None:
+    resolved = await resolve_contact_entity_id(pool, target_id)
+    if resolved is None or resolved == target_id:
+        # target_id is already an entity UUID (Step 3 pass-through), or could not
+        # be resolved — treat it as entity_id directly, no contact_id.
         return target_id, None
-
-    entity_id = row["entity_id"]
-    if entity_id is None:
-        raise ValueError(
-            f"Contact {target_id} has no linked entity_id. "
-            "All contacts must resolve to an entity — this is a data integrity issue."
-        )
-    return entity_id, row["id"]
+    # target_id was a contact UUID; resolved is the canonical entity_id.
+    return resolved, target_id
 
 
 def _fact_to_interaction(
@@ -257,7 +253,7 @@ async def interaction_log_group(
     """Log an interaction with all members of a contact group in a single call.
 
     Resolves group membership from the group_members table, maps each member's
-    contact_id to their entity_id via public.contacts, and fans out
+    contact_id to their entity_id via contact_entity_map, and fans out
     interaction_log() calls for each member with group_size injected into
     the fact metadata.
 
@@ -273,12 +269,13 @@ async def interaction_log_group(
         raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
 
     # Fetch up to 21 rows so we can detect oversized groups without reading unbounded rows.
-    # Join contacts to resolve entity_id in the same query.
+    # LEFT JOIN contact_entity_map to resolve entity_id without reading public.contacts.
+    # Members not yet in the map yield entity_id=NULL and are skipped in the fan-out loop.
     rows = await pool.fetch(
         """
-        SELECT gm.contact_id, c.entity_id
+        SELECT gm.contact_id, cem.entity_id
         FROM group_members gm
-        JOIN contacts c ON c.id = gm.contact_id
+        LEFT JOIN contact_entity_map cem ON cem.contact_id = gm.contact_id
         WHERE gm.group_id = $1
         LIMIT 21
         """,
