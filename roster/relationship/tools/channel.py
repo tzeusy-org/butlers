@@ -267,7 +267,10 @@ async def channel_search(
 ) -> list[dict[str, Any]]:
     """Search contacts by channel value (reverse lookup).
 
-    READ path — queries ``relationship.entity_facts`` (has-* predicates).
+    READ path — queries ``relationship.entity_facts`` (has-* predicates) joined
+    to ``contact_entity_map`` and ``public.entities``.  Does NOT read
+    ``public.contacts`` (contacts-schema retirement, Phase 7, bu-sf8l8).
+
     Finds all contacts that have a matching channel fact.  Optionally filter by
     info type (email, phone, etc.).  Uses ILIKE for case-insensitive partial
     matching against the stored object value.
@@ -282,6 +285,14 @@ async def channel_search(
     filtering (e.g. ``"telegram"`` → ``"has-handle"``).  All handle types
     (telegram, linkedin, twitter, other) share ``has-handle``; passing ``type``
     narrows to that predicate but does not further discriminate within it.
+
+    Result contract
+    ---------------
+    Each entry contains at minimum: ``id`` (contact UUID from
+    ``contact_entity_map``), ``entity_id`` (entity UUID), ``name`` (entity
+    canonical name), and ``metadata`` (entity metadata dict).  Fields that
+    previously came from ``public.contacts`` (``first_name``, ``last_name``,
+    etc.) are no longer included — callers should use ``name`` instead.
     """
     # Map optional type to predicate filter
     predicate_filter: str | None = None
@@ -291,18 +302,27 @@ async def channel_search(
             # Unmapped type (e.g. 'address') — no triple predicate home
             return []
 
+    # Re-pointed off public.contacts (bu-sf8l8): join entity_facts directly to
+    # contact_entity_map (contact_id ↔ entity_id bridge, rel_029) and
+    # public.entities for entity metadata.  Unqualified contact_entity_map
+    # resolves via search_path (relationship in production, public in tests).
     if predicate_filter is not None:
         rows = await pool.fetch(
             """
-            SELECT DISTINCT c.*
-            FROM contacts c
-            JOIN relationship.entity_facts ef ON ef.subject = c.entity_id
+            SELECT DISTINCT
+                cem.contact_id      AS id,
+                e.id                AS entity_id,
+                e.canonical_name    AS name,
+                e.metadata
+            FROM relationship.entity_facts ef
+            JOIN contact_entity_map cem ON cem.entity_id = ef.subject
+            JOIN public.entities e ON e.id = ef.subject
             WHERE ef.predicate = $1
               AND ef.object ILIKE '%' || $2 || '%'
               AND ef.validity = 'active'
               AND ef.object_kind = 'literal'
-              AND c.listed = true
-            ORDER BY c.first_name, c.last_name, c.nickname
+              AND e.listed = true
+            ORDER BY e.canonical_name
             """,
             predicate_filter,
             value,
@@ -310,15 +330,20 @@ async def channel_search(
     else:
         rows = await pool.fetch(
             """
-            SELECT DISTINCT c.*
-            FROM contacts c
-            JOIN relationship.entity_facts ef ON ef.subject = c.entity_id
+            SELECT DISTINCT
+                cem.contact_id      AS id,
+                e.id                AS entity_id,
+                e.canonical_name    AS name,
+                e.metadata
+            FROM relationship.entity_facts ef
+            JOIN contact_entity_map cem ON cem.entity_id = ef.subject
+            JOIN public.entities e ON e.id = ef.subject
             WHERE ef.predicate LIKE 'has-%%'
               AND ef.object ILIKE '%' || $1 || '%'
               AND ef.validity = 'active'
               AND ef.object_kind = 'literal'
-              AND c.listed = true
-            ORDER BY c.first_name, c.last_name, c.nickname
+              AND e.listed = true
+            ORDER BY e.canonical_name
             """,
             value,
         )

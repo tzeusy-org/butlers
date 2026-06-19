@@ -45,7 +45,9 @@ def patch_embedding_engine():
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with relationship + contact_info tables."""
     async with provisioned_postgres_pool() as p:
-        # Create public.entities first so contacts.entity_id FK resolves
+        # Create public.entities first so contacts.entity_id FK resolves.
+        # `listed` (BOOLEAN NOT NULL DEFAULT true, core_103) is included so
+        # channel_search can filter `e.listed = true` without a separate join.
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,6 +57,7 @@ async def pool(provisioned_postgres_pool):
                 aliases TEXT[] NOT NULL DEFAULT '{}',
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
+                listed BOOLEAN NOT NULL DEFAULT true,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -130,6 +133,22 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
         """)
+
+        # contact_entity_map (rel_029) — contact_id → entity_id bridge used by
+        # _entity_resolve and channel_search.  Unqualified: resolves to public
+        # schema under the test pool's default search_path.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
+        """)
+
         # Create public.contact_info
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.contact_info (
@@ -721,7 +740,14 @@ async def test_channel_search_case_insensitive(pool):
 
 
 async def test_channel_search_excludes_archived(pool):
-    """channel_search excludes archived contacts."""
+    """channel_search excludes archived contacts.
+
+    channel_search now filters on public.entities.listed (entity-level archive
+    flag, core_103) rather than contacts.listed.  contact_archive() only sets
+    contacts.listed=false; until that propagates to entities (a future
+    contacts.py update, outside this bead's scope), the test also archives
+    the entity directly to exercise the filter.
+    """
     from butlers.tools.relationship import (
         channel_search,
         contact_archive,
@@ -733,6 +759,13 @@ async def test_channel_search_excludes_archived(pool):
         pool, c["entity_id"], "has-email", "archivedsearch_unique@example.com"
     )
     await contact_archive(pool, c["id"])
+    # Archive the entity too (channel_search filters on e.listed = true).
+    # contact_archive currently only sets contacts.listed=false; once that
+    # cascades to entities.listed, this direct UPDATE will be redundant.
+    await pool.execute(
+        "UPDATE public.entities SET listed = false WHERE id = $1",
+        c["entity_id"],
+    )
 
     results = await channel_search(pool, "archivedsearch_unique@example.com")
     assert not any(r["id"] == c["id"] for r in results)
@@ -843,7 +876,9 @@ async def _make_owner_contact(pool):
     """Create an owner entity + contact and return the contact row.
 
     Inserts a public.entities row with roles=['owner'], then inserts a contacts
-    row referencing that entity.  This mirrors the real owner_bootstrap path.
+    row referencing that entity, and populates contact_entity_map so that
+    _entity_resolve can find the entity_id from the contact_id without reading
+    public.contacts (contacts-schema retirement, bu-sf8l8).
     """
     entity_id = await pool.fetchval(
         """
@@ -858,6 +893,15 @@ async def _make_owner_contact(pool):
         VALUES ('Owner', true, $1)
         RETURNING id
         """,
+        entity_id,
+    )
+    await pool.execute(
+        """
+        INSERT INTO contact_entity_map (contact_id, entity_id)
+        VALUES ($1, $2)
+        ON CONFLICT (contact_id) DO NOTHING
+        """,
+        contact_id,
         entity_id,
     )
     return {"id": contact_id, "entity_id": entity_id}
