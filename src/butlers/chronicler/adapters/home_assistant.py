@@ -34,19 +34,18 @@ Semantics:
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
 
-Entity-id resolution (bu-v7hen):
+Entity-id resolution (bu-v7hen, updated bu-e9xbw):
 - Each presence episode is tagged with the ``entity_id`` of the person
   whose presence is being tracked, resolved via:
     ``connectors.home_assistant_persons.ha_entity_id``  (e.g. ``person.alice``)
-    → ``connectors.home_assistant_persons.contact_id``
-    → ``public.contacts.entity_id``
+    → ``connectors.home_assistant_persons.entity_id``   (core_132, direct FK to public.entities)
 - Resolution is performed once per adapter run (batch-loaded for all
   distinct person entities present in the batch) — never per row.
 - Degrades gracefully to ``entity_id = NULL`` when:
   - ``connectors.home_assistant_persons`` table is absent (migration not run)
   - No mapping exists for the HA person entity
-  - The mapped contact has ``entity_id IS NULL`` (not yet linked to the
-    memory entity graph)
+  - The mapped entry has ``entity_id IS NULL`` (not yet linked to the
+    memory entity graph, or core_132 migration not yet applied)
 - To bootstrap person-entity mappings, see migration core_116 for SQL
   examples (single-person and multi-person households).
 - To backfill the resolved person entity on historical presence episodes,
@@ -88,16 +87,20 @@ async def resolve_ha_person_entity_ids(
 ) -> dict[str, UUID]:
     """Batch-resolve HA person entity IDs to entity graph UUIDs.
 
-    Queries ``connectors.home_assistant_persons`` joined to ``public.contacts``
-    for the given HA entity IDs (e.g. ``person.alice``).
+    Queries ``connectors.home_assistant_persons`` for the given HA entity IDs
+    (e.g. ``person.alice``) and returns their directly-stored ``entity_id``
+    values (core_132 — entity_id column on home_assistant_persons; no longer
+    joins through public.contacts).
 
     Returns a mapping ``ha_entity_id → entity_id`` for entities that have a
-    mapping AND whose contact has a non-NULL entity_id.  Unmapped entities
-    are absent from the returned dict (caller should default to ``None``).
+    non-NULL entity_id.  Unmapped entities are absent from the returned dict
+    (caller should default to ``None``).
 
     Degrades gracefully to an empty dict when:
     - ``connectors.home_assistant_persons`` table is absent (migration not run)
-    - All entities are unmapped
+    - ``entity_id`` column is absent (core_132 migration not run — caught by
+      PostgresError handler)
+    - All entities are unmapped or have NULL entity_id
     - Any DB error occurs
 
     Called once per adapter run batch (not per row or per entity).
@@ -125,11 +128,10 @@ async def resolve_ha_person_entity_ids(
 
             rows = await conn.fetch(
                 """
-                SELECT hap.ha_entity_id, c.entity_id
+                SELECT hap.ha_entity_id, hap.entity_id
                 FROM connectors.home_assistant_persons AS hap
-                INNER JOIN public.contacts AS c ON c.id = hap.contact_id
                 WHERE hap.ha_entity_id = ANY($1)
-                  AND c.entity_id IS NOT NULL
+                  AND hap.entity_id IS NOT NULL
                 """,
                 ha_entity_ids,
             )
