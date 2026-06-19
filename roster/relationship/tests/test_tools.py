@@ -190,7 +190,8 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS contact_labels (
                 label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID REFERENCES contacts(id) ON DELETE CASCADE,
+                local_entity_id UUID,
                 PRIMARY KEY (label_id, contact_id)
             )
         """)
