@@ -1,4 +1,4 @@
-"""Shared helper: resolve the owner entity_id from ``public.contacts``.
+"""Shared helper: resolve the owner entity_id from ``public.entities``.
 
 Owner-only adapters (focus, sessions, spotify, steam, meals, owntracks,
 reading, google_health) need to stamp the owner entity on every episode they
@@ -6,14 +6,12 @@ project. This helper provides a single resolution point so the lookup
 pattern is consistent across all adapters.
 
 Lookup path:
-  ``public.contacts WHERE 'owner' = ANY(roles)``
-  → ``contacts.entity_id``
+  ``public.entities WHERE 'owner' = ANY(roles)`` → ``entities.id``
 
 Returns ``None`` and logs at DEBUG level when:
-- ``public.contacts`` table is absent.
-- No contact row has ``'owner' = ANY(roles)``.
-- The matching row has ``entity_id IS NULL`` (not yet linked to the memory
-  entity graph — fine in test environments or early-stage deployments).
+- ``public.entities`` is absent.
+- No entity has ``'owner' = ANY(roles)`` (owner not bootstrapped yet — fine in
+  test environments or early-stage deployments).
 
 The caller (each adapter's ``project()`` method) should call this once per
 adapter run (not per row) and pass the result into each projection call.
@@ -34,11 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
-    """Return the ``entity_id`` for the owner contact, or ``None``.
+    """Return the owner ``entity_id`` from ``public.entities``, or ``None``.
 
-    Queries ``public.contacts WHERE 'owner' = ANY(roles)`` and returns the
-    ``entity_id`` column value. Returns ``None`` gracefully on any failure:
-    missing table, no owner row, NULL entity_id, or unexpected type.
+    Queries ``public.entities WHERE 'owner' = ANY(roles)`` and returns the
+    ``id`` column value. Returns ``None`` gracefully on any failure:
+    missing table, no owner entity, or unexpected type.
 
     This should be called once per ``project()`` invocation (not per row)
     to avoid N+1 DB round-trips.
@@ -47,8 +45,8 @@ async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT entity_id
-                FROM public.contacts
+                SELECT id
+                FROM public.entities
                 WHERE 'owner' = ANY(roles)
                 LIMIT 1
                 """
@@ -63,16 +61,12 @@ async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
 
     if row is None:
         logger.debug(
-            "resolve_owner_entity_id: no contact with role 'owner' found — entity_id will be NULL"
+            "resolve_owner_entity_id: no entity with role 'owner' found — entity_id will be NULL"
         )
         return None
 
-    raw = row["entity_id"]
+    raw = row["id"]
     if raw is None:
-        logger.debug(
-            "resolve_owner_entity_id: owner contact exists but entity_id IS NULL "
-            "(not yet linked to entity graph) — entity_id will be NULL"
-        )
         return None
     if isinstance(raw, UUID):
         return raw

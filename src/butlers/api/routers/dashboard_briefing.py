@@ -120,10 +120,11 @@ def _get_db_manager() -> DatabaseManager:
 
 
 async def _assert_owner_contact(pool: Any) -> Any:
-    """Raise HTTP 403 unless an owner contact is found in the DB.
+    """Raise HTTP 403 unless an owner entity is found in the DB.
 
-    Joins public.contacts -> public.entities and asserts
-    'owner' = ANY(e.roles). Returns the owner's contact id on success.
+    Asserts ``'owner' = ANY(roles)`` on public.entities. Returns the owner's
+    entity id on success (used as the opaque per-owner briefing-cache key, which
+    must match ``briefing.cache.resolve_owner_id``).
 
     In v1, the dashboard is owner-only and there is no per-request
     identity in the request. The assertion checks that at least one
@@ -134,15 +135,14 @@ async def _assert_owner_contact(pool: Any) -> Any:
     try:
         row = await pool.fetchrow(
             """
-            SELECT c.id
-            FROM public.contacts c
-            JOIN public.entities e ON c.entity_id = e.id
-            WHERE 'owner' = ANY(e.roles)
+            SELECT id
+            FROM public.entities
+            WHERE 'owner' = ANY(roles)
             LIMIT 1
             """
         )
     except Exception as exc:
-        logger.warning("Owner-contact assertion query failed: %s", exc)
+        logger.warning("Owner-entity assertion query failed: %s", exc)
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},

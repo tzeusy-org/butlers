@@ -9,8 +9,8 @@ Surfaces five ownership-fact domains:
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
 
 Privacy contract: /api/system/egress is owner-only. The owner is identified
-by joining public.contacts -> public.entities and asserting
-'owner' = ANY(e.roles). Non-owner callers receive HTTP 403. All other endpoints
+by asserting 'owner' = ANY(roles) on public.entities. Non-owner callers
+receive HTTP 403. All other endpoints
 are gated only by the standard dashboard session boundary (v1 simplification).
 
 All endpoints are read-only. No writes, no new tables.
@@ -507,17 +507,17 @@ async def get_backup_facts() -> ApiResponse[BackupFacts]:
 
 
 async def _assert_owner_contact(pool) -> None:
-    """Raise HTTP 403 unless the caller can be mapped to the owner contact.
+    """Raise HTTP 403 unless an owner entity exists in the DB.
 
-    Joins public.contacts -> public.entities and asserts 'owner' = ANY(e.roles).
-    public.contacts.roles was dropped in migration core_016; roles live on
-    public.entities.roles exclusively.
+    Asserts 'owner' = ANY(roles) on public.entities. Roles live on
+    public.entities.roles exclusively (public.contacts.roles was dropped in
+    migration core_016, and the contact object is being retired).
 
     In v1, the dashboard is owner-only and there is no per-request identity
     attached to /api/system/* calls. The assertion checks that at least one
-    owner entity exists in the database (i.e., the system is bootstrapped and
-    the owner contact is registered). If no owner entity is found, the request
-    is rejected with 403 to prevent data leakage in misconfigured deployments.
+    owner entity exists in the database (i.e., the system is bootstrapped).
+    If no owner entity is found, the request is rejected with 403 to prevent
+    data leakage in misconfigured deployments.
 
     Note: a fuller v2 implementation would extract the calling identity from
     the request session/cookie and verify it against the owner entity.
@@ -525,15 +525,14 @@ async def _assert_owner_contact(pool) -> None:
     try:
         row = await pool.fetchrow(
             """
-            SELECT e.id
-            FROM public.contacts c
-            JOIN public.entities e ON c.entity_id = e.id
-            WHERE 'owner' = ANY(e.roles)
+            SELECT id
+            FROM public.entities
+            WHERE 'owner' = ANY(roles)
             LIMIT 1
             """
         )
     except Exception as exc:
-        logger.warning("Owner-contact assertion query failed: %s", exc)
+        logger.warning("Owner-entity assertion query failed: %s", exc)
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},
