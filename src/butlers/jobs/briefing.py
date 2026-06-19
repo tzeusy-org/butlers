@@ -559,18 +559,47 @@ async def run_relationship_briefing_contribution(
     highlights: list[BriefingHighlight] = []
 
     # --- Birthdays in the next 7 days ---
-    # important_dates has (month, day) — check if (month, day) falls in next 7 days
+    # important_dates has (month, day) — check if (month, day) falls in next 7 days.
+    # Surfaces both contact_id-anchored rows (legacy) and local_entity_id-anchored
+    # rows written by the contacts backfill after migration contacts_004.
     birthday_rows = await pool.fetch(
         """
-        SELECT c.name, id.label, id.month, id.day, id.year
+        -- Contact-anchored path: contact_id → contacts
+        SELECT c.name AS name, id.label, id.month, id.day, id.year
         FROM important_dates id
         JOIN contacts c ON c.id = id.contact_id
         WHERE LOWER(id.label) LIKE '%birthday%'
+          AND id.contact_id IS NOT NULL
           AND EXISTS (
             SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
             WHERE t.m = id.month AND t.d = id.day
           )
-        ORDER BY id.month, id.day, c.name
+
+        UNION ALL
+
+        -- Entity-anchored path (contacts_004): local_entity_id → entities directly
+        -- Guard: if this entity has contacts, require at least one to be listed=true,
+        -- so archived contacts' birthdays remain hidden even after the contacts_004 backfill.
+        SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
+               id.label, id.month, id.day, id.year
+        FROM important_dates id
+        JOIN public.entities e ON e.id = id.local_entity_id
+        WHERE LOWER(id.label) LIKE '%birthday%'
+          AND id.contact_id IS NULL
+          AND id.local_entity_id IS NOT NULL
+          AND (
+              NOT EXISTS (SELECT 1 FROM contacts c WHERE c.entity_id = id.local_entity_id)
+              OR EXISTS (
+                  SELECT 1 FROM contacts c
+                  WHERE c.entity_id = id.local_entity_id AND c.listed = true
+              )
+          )
+          AND EXISTS (
+            SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
+            WHERE t.m = id.month AND t.d = id.day
+          )
+
+        ORDER BY month, day, name
         """,
         [d.month for d in (today_dt + timedelta(days=i) for i in range(7))],
         [d.day for d in (today_dt + timedelta(days=i) for i in range(7))],

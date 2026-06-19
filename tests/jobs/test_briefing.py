@@ -22,6 +22,7 @@ from butlers.jobs.briefing import (
     contribution_key,
     run_finance_briefing_contribution,
     run_health_briefing_contribution,
+    run_relationship_briefing_contribution,
     today_sgt,
     validate_contribution,
 )
@@ -430,3 +431,114 @@ async def test_run_health_briefing_missed_doses_positive_case_from_facts():
     envelope = mock_write.call_args[0][1]
     med_highlight = next(h for h in envelope["highlights"] if h["category"] == "medication")
     assert "Metformin" in med_highlight["text"]
+
+
+# ---------------------------------------------------------------------------
+# Relationship butler contribution — birthday query coverage
+# ---------------------------------------------------------------------------
+
+
+async def test_run_relationship_briefing_birthday_sql_contains_both_paths():
+    """The birthday query contains UNION ALL branches for contact-anchored AND
+    entity-anchored (local_entity_id) important_dates rows.
+
+    Regression guard: after contacts_004 migration, rows written by the backfill
+    have contact_id IS NULL and local_entity_id set.  Both paths must appear in
+    the SQL so the briefing does not silently drop entity-anchored birthdays.
+    """
+    # fetch() order: birthday_rows, reminder_rows, gap_rows
+    pool = _make_pool(fetch_rows=[])
+    mock_write = AsyncMock()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
+    ):
+        await run_relationship_briefing_contribution(pool, None)
+
+    birthday_sql = pool.fetch.call_args_list[0][0][0]
+
+    # Contact-anchored branch
+    assert "JOIN contacts c ON c.id = id.contact_id" in birthday_sql
+    assert "id.contact_id IS NOT NULL" in birthday_sql
+
+    # Entity-anchored branch (contacts_004)
+    assert "UNION ALL" in birthday_sql
+    assert "JOIN public.entities e ON e.id = id.local_entity_id" in birthday_sql
+    assert "id.contact_id IS NULL" in birthday_sql
+    assert "id.local_entity_id IS NOT NULL" in birthday_sql
+    # Listed guard: archived contacts' birthdays must stay hidden after contacts_004 backfill
+    assert "c.listed = true" in birthday_sql
+
+
+async def test_run_relationship_briefing_contact_anchored_birthday():
+    """A contact-anchored birthday (contact_id set) produces a birthday highlight."""
+    birthday_row = {
+        "name": "Alice Smith",
+        "label": "birthday",
+        "month": _DATE_2026_03_25.month,
+        "day": _DATE_2026_03_25.day,
+        "year": 1990,
+    }
+    # fetch() order: birthday_rows, reminder_rows, gap_rows
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[birthday_row], [], []])
+    mock_write = AsyncMock()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
+    ):
+        result = await run_relationship_briefing_contribution(pool, None)
+
+    assert result["has_updates"] is True
+    assert result["birthdays_upcoming"] == 1
+    envelope = mock_write.call_args[0][1]
+    bday_highlight = next(h for h in envelope["highlights"] if h["category"] == "birthdays")
+    assert "Alice Smith" in bday_highlight["text"]
+
+
+async def test_run_relationship_briefing_entity_anchored_birthday():
+    """An entity-anchored birthday (contact_id IS NULL, local_entity_id set) produces
+    a birthday highlight using canonical_name from public.entities.
+
+    This tests the contacts_004 entity-anchor read path — rows backfilled from the
+    Google contacts sync have no contact_id, only a local_entity_id.  The briefing
+    UNION ALL query must surface them so entity-anchored birthdays appear in the daily
+    briefing contribution.
+    """
+    # Simulate a row returned by the entity-anchored UNION branch.
+    # The query returns canonical_name aliased as 'name'.
+    entity_birthday_row = {
+        "name": "Bob Entity",  # from COALESCE(e.canonical_name, 'Unknown')
+        "label": "birthday",
+        "month": _DATE_2026_03_25.month,
+        "day": _DATE_2026_03_25.day,
+        "year": None,
+    }
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[entity_birthday_row], [], []])
+    mock_write = AsyncMock()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
+    ):
+        result = await run_relationship_briefing_contribution(pool, None)
+
+    assert result["has_updates"] is True
+    assert result["birthdays_upcoming"] == 1
+    envelope = mock_write.call_args[0][1]
+    bday_highlight = next(h for h in envelope["highlights"] if h["category"] == "birthdays")
+    assert "Bob Entity" in bday_highlight["text"]
+
+
+async def test_run_relationship_briefing_no_birthdays():
+    """No birthdays in the next 7 days produces has_updates=False (assuming no other updates)."""
+    pool = _make_pool(fetch_rows=[])
+    mock_write = AsyncMock()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", mock_write),
+    ):
+        result = await run_relationship_briefing_contribution(pool, None)
+
+    assert result["birthdays_upcoming"] == 0
+    assert result["butler"] == "relationship"

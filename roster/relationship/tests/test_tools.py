@@ -86,7 +86,8 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS important_dates (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID REFERENCES contacts(id) ON DELETE CASCADE,
+                local_entity_id UUID,
                 label TEXT NOT NULL,
                 month INT NOT NULL,
                 day INT NOT NULL,
@@ -748,6 +749,48 @@ async def test_upcoming_dates(pool):
 
     results = await upcoming_dates(pool, days_ahead=7)
     assert any(r["contact_id"] == c["id"] for r in results)
+
+
+async def test_upcoming_dates_entity_anchored(pool):
+    """upcoming_dates surfaces rows anchored to local_entity_id with no contact_id.
+
+    This tests the contacts_004 migration entity-anchor path where important_dates
+    rows have contact_id IS NULL and local_entity_id set directly.
+    """
+    from datetime import timedelta
+
+    from butlers.tools.relationship import upcoming_dates
+
+    now = datetime.now(UTC)
+    tomorrow = now + timedelta(days=1)
+
+    # Insert a public.entities row directly (no contact needed)
+    entity_id = await pool.fetchval(
+        """
+        INSERT INTO public.entities (canonical_name, name)
+        VALUES ($1, $2)
+        RETURNING id
+        """,
+        "Entity-Anchored-Person",
+        "Entity-Anchored-Person",
+    )
+
+    # Insert an entity-anchored important_dates row (contact_id IS NULL)
+    await pool.execute(
+        """
+        INSERT INTO important_dates (contact_id, local_entity_id, label, month, day)
+        VALUES (NULL, $1, 'anniversary', $2, $3)
+        """,
+        entity_id,
+        tomorrow.month,
+        tomorrow.day,
+    )
+
+    results = await upcoming_dates(pool, days_ahead=7)
+    entity_rows = [r for r in results if r.get("local_entity_id") == entity_id]
+    assert entity_rows, "entity-anchored important_date should appear in upcoming_dates"
+    assert entity_rows[0]["contact_name"] == "Entity-Anchored-Person"
+    assert entity_rows[0]["contact_id"] is None
 
 
 # ------------------------------------------------------------------

@@ -57,7 +57,11 @@ async def date_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[dict[str,
 
 
 async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[str, Any]]:
-    """Get upcoming important dates within the next N days using month/day matching."""
+    """Get upcoming important dates within the next N days using month/day matching.
+
+    Surfaces both contact_id-anchored rows (legacy) and local_entity_id-anchored
+    rows (written by the contacts backfill after migration contacts_004).
+    """
     from datetime import date
 
     now = datetime.now(UTC)
@@ -66,13 +70,35 @@ async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[
 
     rows = await pool.fetch(
         """
+        -- Contact-anchored path: contact_id → contacts → entities
         SELECT d.*,
                COALESCE(e.canonical_name, 'Unknown') AS contact_name
         FROM important_dates d
-        JOIN contacts c ON d.contact_id = c.id
+        JOIN contacts c ON c.id = d.contact_id
         LEFT JOIN public.entities e ON e.id = c.entity_id
         WHERE c.listed = true
-        ORDER BY d.month, d.day
+          AND d.contact_id IS NOT NULL
+
+        UNION ALL
+
+        -- Entity-anchored path (contacts_004): local_entity_id → entities directly
+        -- Guard: if this entity has contacts, require at least one to be listed=true,
+        -- so archived contacts' dates remain hidden even after the contacts_004 backfill.
+        SELECT d.*,
+               COALESCE(e.canonical_name, 'Unknown') AS contact_name
+        FROM important_dates d
+        JOIN public.entities e ON e.id = d.local_entity_id
+        WHERE d.contact_id IS NULL
+          AND d.local_entity_id IS NOT NULL
+          AND (
+              NOT EXISTS (SELECT 1 FROM contacts c WHERE c.entity_id = d.local_entity_id)
+              OR EXISTS (
+                  SELECT 1 FROM contacts c
+                  WHERE c.entity_id = d.local_entity_id AND c.listed = true
+              )
+          )
+
+        ORDER BY month, day
         """
     )
 
