@@ -845,14 +845,15 @@ async def list_upcoming_dates(
         """
         SELECT
             id.contact_id,
-            c.name AS contact_name,
+            e.canonical_name AS contact_name,
             id.label,
             id.month,
             id.day,
             id.year
         FROM important_dates id
-        JOIN contacts c ON c.id = id.contact_id
-        WHERE c.archived_at IS NULL
+        JOIN contact_entity_map cem ON cem.contact_id = id.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE (e.metadata->>'archived') IS DISTINCT FROM 'true'
         """,
     )
 
@@ -3189,12 +3190,13 @@ async def list_entity_linked_contacts(
     rows = await pool.fetch(
         """
         SELECT
-            c.id,
-            c.name AS full_name
-        FROM public.contacts c
-        WHERE c.entity_id = $1
-          AND c.archived_at IS NULL
-        ORDER BY c.name
+            cem.contact_id AS id,
+            e.canonical_name AS full_name
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE cem.entity_id = $1
+          AND (e.metadata->>'archived') IS DISTINCT FROM 'true'
+        ORDER BY e.canonical_name
         """,
         entity_id,
     )
@@ -3489,15 +3491,16 @@ async def list_entity_important_dates(
         """
         SELECT
             id.contact_id,
-            c.name AS contact_name,
+            e.canonical_name AS contact_name,
             id.label,
             id.month,
             id.day,
             id.year
         FROM important_dates id
-        JOIN contacts c ON c.id = id.contact_id
-        WHERE c.entity_id = $1
-          AND c.archived_at IS NULL
+        JOIN contact_entity_map cem ON cem.contact_id = id.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE cem.entity_id = $1
+          AND (e.metadata->>'archived') IS DISTINCT FROM 'true'
         """,
         entity_id,
     )
@@ -3574,9 +3577,10 @@ async def patch_entity_dunbar_tier(
 
     contact_row = await pool.fetchrow(
         """
-        SELECT id FROM contacts
-        WHERE entity_id = $1 AND archived_at IS NULL
-        ORDER BY id
+        SELECT contact_id AS id
+        FROM contact_entity_map
+        WHERE entity_id = $1
+        ORDER BY contact_id
         LIMIT 1
         """,
         entity_id,
@@ -4986,8 +4990,8 @@ async def forget_entity(
        ``works_at``/``friend_of`` pointing AT it). On a forget there is no
        survivor to re-point onto, so these orphaned rows are retracted rather
        than left dangling on the tombstone (bu-j820n.2).
-    3. Clears ``public.contacts.entity_id`` for any contact linked to the entity
-       so no CRM record is left pointing at a tombstoned entity (bu-j820n.2).
+    3. Removes ``contact_entity_map`` rows for any contact linked to the entity
+       so no CRM lookup can reach the tombstoned entity (bu-j820n.2).
     4. Tombstones the ``public.entities`` row by setting
        ``metadata->>'tombstone' = 'true'``.
 
@@ -5042,17 +5046,15 @@ async def forget_entity(
 
             await _retract_facts_on_conn(conn, entity_id)
 
-            # Clear ``public.contacts.entity_id`` for any contact linked to this
+            # Remove contact_entity_map rows for any contact linked to this
             # entity. A contact is bound to exactly one entity; on forget the link
-            # must be severed or the contact (and its channel details) is left
-            # pointing at a tombstoned entity. ``public.contacts`` lives in the
-            # ``public`` schema — fully qualified so the cross-schema update is
-            # explicit and does not depend on search_path ordering.
+            # must be severed or CRM contact lookups will return stale rows for the
+            # tombstoned entity. contact_entity_map lives in the ``relationship``
+            # schema — unqualified for search_path resolution, consistent with
+            # _entity_resolve.py.
             await conn.execute(
                 """
-                UPDATE public.contacts
-                SET entity_id  = NULL,
-                    updated_at = now()
+                DELETE FROM contact_entity_map
                 WHERE entity_id = $1
                 """,
                 entity_id,
@@ -5101,7 +5103,7 @@ async def get_dunbar_ranking(
     # Fetch canonical names for all entity IDs returned by the ranking.
     entity_ids = [r["entity_id"] for r in ranked if r["entity_id"] is not None]
     contact_ids = [r["contact_id"] for r in ranked if r["entity_id"] is not None]
-    entity_name_rows, avatar_rows, owner_row, interaction_30d_rows = await asyncio.gather(
+    entity_name_rows, owner_row, interaction_30d_rows = await asyncio.gather(
         pool.fetch(
             """
             SELECT e.id, e.canonical_name, e.aliases
@@ -5109,14 +5111,6 @@ async def get_dunbar_ranking(
             WHERE e.id = ANY($1::uuid[])
             """,
             entity_ids,
-        ),
-        pool.fetch(
-            """
-            SELECT id, avatar_url
-            FROM public.contacts
-            WHERE id = ANY($1::uuid[])
-            """,
-            contact_ids,
         ),
         pool.fetchrow(
             """
@@ -5128,16 +5122,16 @@ async def get_dunbar_ranking(
         pool.fetch(
             """
             SELECT
-                c.id AS contact_id,
+                cem.contact_id,
                 COUNT(f.id) AS interaction_count_30d
-            FROM contacts c
-            JOIN facts f ON f.entity_id = c.entity_id
-            WHERE c.id = ANY($1::uuid[])
+            FROM contact_entity_map cem
+            JOIN facts f ON f.entity_id = cem.entity_id
+            WHERE cem.contact_id = ANY($1::uuid[])
               AND f.predicate LIKE 'interaction_%'
               AND f.validity = 'active'
               AND f.scope = 'relationship'
               AND f.valid_at >= now() - INTERVAL '30 days'
-            GROUP BY c.id
+            GROUP BY cem.contact_id
             """,
             contact_ids,
         ),
@@ -5147,7 +5141,6 @@ async def get_dunbar_ranking(
     entity_aliases: dict[UUID, list[str]] = {
         row["id"]: list(row["aliases"]) if row["aliases"] else [] for row in entity_name_rows
     }
-    contact_avatars: dict[UUID, str | None] = {row["id"]: row["avatar_url"] for row in avatar_rows}
     interaction_30d: dict[UUID, int] = {
         row["contact_id"]: int(row["interaction_count_30d"]) for row in interaction_30d_rows
     }
@@ -5176,7 +5169,7 @@ async def get_dunbar_ranking(
                 dunbar_tier=tier,
                 dunbar_score=r["dunbar_score"],
                 dunbar_tier_override=r.get("dunbar_tier_override", False),
-                avatar_url=contact_avatars.get(cid),
+                avatar_url=None,  # avatar_url retired from public.contacts (bu-j77a5)
                 aliases=entity_aliases.get(r["entity_id"], []),
                 warmth=warmth,
                 last_interaction_at=r.get("last_interaction_at"),
@@ -5215,8 +5208,8 @@ async def merge_entities(
        notes, life-events keyed by ``entity_id``; edge-facts via
        ``object_entity_id``) from source → target, with the same
        confidence-based supersession used by the memory butler's ``entity_merge``.
-    6. Re-points ``public.contacts.entity_id`` from source → target so linked
-       contacts (and their channel details) follow the survivor.
+    6. Re-points ``contact_entity_map`` rows from source → target so linked
+       contacts follow the survivor.
     7. Tombstones source entity: sets ``metadata->>'merged_into'`` to the target UUID string.
 
     Steps 3–7 execute inside a **single transaction** (atomicity guarantee): a
@@ -5452,18 +5445,16 @@ async def merge_entities(
 
             await _repoint_facts_on_conn(conn, source_id, target_id)
 
-            # 3c. Re-point linked contacts (``public.contacts.entity_id``). A
-            # contact is bound to exactly one entity; on merge every contact that
-            # pointed at the source must follow it onto the survivor or the
-            # contact (and its channel details) silently disappears from the
-            # merged entity's CRM view. ``public.contacts`` lives in the ``public``
-            # schema — fully qualified here so the cross-schema update is explicit
-            # and does not depend on search_path ordering.
+            # 3c. Re-point contact_entity_map rows from source → target. A contact
+            # is bound to exactly one entity; on merge every contact that pointed at
+            # the source must follow the survivor or CRM contact lookups will return
+            # stale rows for the tombstoned source. contact_entity_map lives in the
+            # ``relationship`` schema — unqualified for search_path resolution,
+            # consistent with _entity_resolve.py.
             await conn.execute(
                 """
-                UPDATE public.contacts
-                SET entity_id = $2,
-                    updated_at = now()
+                UPDATE contact_entity_map
+                SET entity_id = $2
                 WHERE entity_id = $1
                 """,
                 source_id,

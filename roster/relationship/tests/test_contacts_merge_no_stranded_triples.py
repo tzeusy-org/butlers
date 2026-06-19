@@ -181,6 +181,19 @@ async def pool(provisioned_postgres_pool):
         # ``facts``; the narrative ``facts`` table created above has no contact_id,
         # so add it (harmless — compute_merge_evidence reads entity_facts, not facts).
         await p.execute("ALTER TABLE facts ADD COLUMN IF NOT EXISTS contact_id UUID")
+        # contact_entity_map (rel_029) — merge_entities now updates this instead of
+        # public.contacts.entity_id directly (bu-j77a5).
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
+        """)
         yield p
 
 

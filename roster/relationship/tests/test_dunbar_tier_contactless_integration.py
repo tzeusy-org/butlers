@@ -107,6 +107,19 @@ async def tier_pool(provisioned_postgres_pool):
         await p.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred ON facts (subject, predicate)"
         )
+        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
+        # patch_entity_dunbar_tier looks here instead of contacts.entity_id (bu-j77a5).
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
+        """)
         yield p
 
 
@@ -157,7 +170,15 @@ async def _create_entity_with_contact(pool, name: str) -> tuple[uuid.UUID, uuid.
         name,
         entity_id,
     )
-    return entity_id, contact_row["id"]
+    contact_id = contact_row["id"]
+    # Populate contact_entity_map (rel_029) — patch_entity_dunbar_tier looks here
+    # instead of contacts.entity_id to find a linked contact (bu-j77a5).
+    await pool.execute(
+        "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        contact_id,
+        entity_id,
+    )
+    return entity_id, contact_id
 
 
 # ===========================================================================

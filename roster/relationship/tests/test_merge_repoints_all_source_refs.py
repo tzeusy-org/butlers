@@ -145,6 +145,19 @@ async def pool(provisioned_postgres_pool):
                 created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        # contact_entity_map (rel_029) — contact_id → entity_id bridge used by
+        # the re-point step in merge_entities (replacing direct public.contacts writes).
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
+        """)
         yield p
 
 
@@ -233,6 +246,12 @@ class TestMergeRepointsAllSourceRefs:
             "Alice (duplicate)",
             source_id,
         )
+        # Populate contact_entity_map (rel_029) — this is what merge_entities now updates.
+        await pool.execute(
+            "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+            source_contact,
+            source_id,
+        )
 
         db = _db_with_pool(pool)
         body = MergeEntitiesRequest(entityA=target_id, entityB=source_id, keepAs="A")
@@ -257,9 +276,9 @@ class TestMergeRepointsAllSourceRefs:
         )
         assert edge_target == target_id, "edge-fact object_entity_id did not follow survivor"
 
-        # 3. The linked contact now points at the survivor.
+        # 3. The linked contact now points at the survivor (via contact_entity_map).
         contact_entity = await pool.fetchval(
-            "SELECT entity_id FROM public.contacts WHERE id = $1", source_contact
+            "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", source_contact
         )
         assert contact_entity == target_id, "linked contact did not follow survivor"
 
@@ -292,7 +311,7 @@ class TestMergeRepointsAllSourceRefs:
             source_id,
         )
         orphan_contacts = await pool.fetchval(
-            "SELECT count(*) FROM public.contacts WHERE entity_id = $1", source_id
+            "SELECT count(*) FROM contact_entity_map WHERE entity_id = $1", source_id
         )
         orphan_triples = await pool.fetchval(
             "SELECT count(*) FROM relationship.entity_facts "
@@ -301,7 +320,7 @@ class TestMergeRepointsAllSourceRefs:
         )
         assert orphan_narrative == 0, "narrative facts stranded on tombstoned source"
         assert orphan_edge == 0, "edge-facts stranded on tombstoned source"
-        assert orphan_contacts == 0, "contacts stranded on tombstoned source"
+        assert orphan_contacts == 0, "contact_entity_map rows stranded on tombstoned source"
         assert orphan_triples == 0, "relationship triples stranded on tombstoned source"
 
         # 7. The in-transaction audit row was written.

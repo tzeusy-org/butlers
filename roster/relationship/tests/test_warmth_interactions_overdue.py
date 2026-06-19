@@ -167,11 +167,9 @@ class TestDunbarRankingWarmth:
             if fetch_call_count[0] == 1:
                 # entity name rows
                 return [_row(id=entity_id, canonical_name="Alice Test", aliases=[])]
-            elif fetch_call_count[0] == 2:
-                # avatar rows
-                return [_row(id=contact_id, avatar_url=None)]
             else:
                 # interaction_30d rows — 2 interactions in last 30d
+                # (avatar_url query removed from public.contacts — bu-j77a5)
                 return [_row(contact_id=contact_id, interaction_count_30d=2)]
 
         mock_pool.fetch = _fetch
@@ -211,9 +209,8 @@ class TestDunbarRankingWarmth:
             fetch_call_count[0] += 1
             if fetch_call_count[0] == 1:
                 return [_row(id=entity_id, canonical_name="Alice", aliases=[])]
-            elif fetch_call_count[0] == 2:
-                return [_row(id=contact_id, avatar_url=None)]
             else:
+                # interaction_30d rows (avatar_url query removed — bu-j77a5)
                 return [_row(contact_id=contact_id, interaction_count_30d=2)]
 
         mock_pool.fetch = _fetch
@@ -259,10 +256,8 @@ class TestDunbarRankingWarmth:
             fetch_call_count[0] += 1
             if fetch_call_count[0] == 1:
                 return [_row(id=entity_id, canonical_name="Bob", aliases=[])]
-            elif fetch_call_count[0] == 2:
-                return [_row(id=contact_id, avatar_url=None)]
             else:
-                return []  # no 30d interactions
+                return []  # no 30d interactions (avatar_url query removed — bu-j77a5)
 
         mock_pool.fetch = _fetch
         mock_pool.fetchrow = AsyncMock(return_value=None)

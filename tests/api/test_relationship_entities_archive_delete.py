@@ -139,7 +139,7 @@ def _make_delete_app(
          conn.execute   — retract relationship.entity_facts (subject + object)
          conn.execute   — retract memory facts where entity_id = $1   (bu-j820n.2)
          conn.execute   — retract memory facts where object_entity_id = $1 (bu-j820n.2)
-         conn.execute   — clear public.contacts.entity_id            (bu-j820n.2)
+         conn.execute   — delete contact_entity_map rows (bu-j77a5, replacing contacts clear)
          conn.execute   — tombstone entity
 
     ``owner_exists=False`` makes the first fetchrow return None → 403.
@@ -392,32 +392,37 @@ class TestForgetEntity:
         )
 
     async def test_forget_clears_linked_contacts_entity_id(self):
-        """Forget clears ``public.contacts.entity_id`` so no contact dangles on the tombstone."""
+        """Forget removes contact_entity_map rows so no CRM lookup dangles on the tombstone.
+
+        Historically this step cleared ``public.contacts.entity_id``. As of bu-j77a5
+        it deletes from ``contact_entity_map`` instead (Phase 7 contacts retirement).
+        """
         app, _, mock_conn = _make_delete_app()
         resp = await _delete(app, _DELETE_PATH)
         assert resp.status_code == 204
 
         sqls = self._conn_execute_sqls(mock_conn)
-        clear_contacts = [
-            s for s in sqls if "public.contacts" in s and "entity_id" in s and "NULL" in s.upper()
-        ]
-        assert clear_contacts, (
-            "Expected an UPDATE clearing public.contacts.entity_id to NULL for the "
-            f"forgotten entity. conn.execute SQLs: {sqls}"
+        clear_map = [s for s in sqls if "contact_entity_map" in s and "DELETE" in s.upper()]
+        assert clear_map, (
+            "Expected a DELETE from contact_entity_map for the forgotten entity. "
+            f"conn.execute SQLs: {sqls}"
         )
 
     async def test_forget_contacts_clear_inside_transaction(self):
-        """The contacts clear must run through conn.execute (atomic with the tombstone)."""
+        """The contact_entity_map delete must run through conn.execute (atomic with the tombstone).
+
+        As of bu-j77a5 the step uses contact_entity_map instead of public.contacts.
+        """
         app, mock_pool, mock_conn = _make_delete_app()
         await _delete(app, _DELETE_PATH)
 
-        # The contacts UPDATE must NOT have leaked to pool.execute (would break atomicity).
+        # The contact_entity_map DELETE must NOT have leaked to pool.execute (would break atomicity).
         pool_sqls = [
             call.args[0]
             for call in mock_pool.execute.call_args_list
             if call.args and isinstance(call.args[0], str)
         ]
-        assert not any("public.contacts" in s for s in pool_sqls), (
-            "public.contacts UPDATE ran on pool.execute, outside the transaction; "
+        assert not any("contact_entity_map" in s for s in pool_sqls), (
+            "contact_entity_map DELETE ran on pool.execute, outside the transaction; "
             "it must run on conn.execute inside pool.acquire()."
         )

@@ -35,18 +35,17 @@ def _row(**kwargs) -> MagicMock:
 def _build_app(
     ranked: list[dict],
     entity_rows: list[MagicMock],
-    avatar_rows: list[MagicMock],
     owner_row: MagicMock | None,
 ) -> FastAPI:
     """Wire up a test app whose pool returns controlled data for the ranking endpoint."""
     mock_pool = AsyncMock()
 
     # compute_tier_ranking is called first and returns the ranked list.
-    # The pool is then used in asyncio.gather for four queries:
+    # The pool is then used in asyncio.gather for three queries:
     #   1. pool.fetch(entities query)            -> entity_rows
-    #   2. pool.fetch(contacts/avatar query)     -> avatar_rows
-    #   3. pool.fetchrow(owner query)            -> owner_row
-    #   4. pool.fetch(30d interaction count)     -> [] (empty — warmth not tested here)
+    #   2. pool.fetchrow(owner query)            -> owner_row
+    #   3. pool.fetch(30d interaction count)     -> [] (empty — warmth not tested here)
+    # avatar_url is no longer fetched from public.contacts (bu-j77a5).
     # We'll patch compute_tier_ranking to avoid any real DB call and
     # configure pool.fetch to return the correct rows per call.
     fetch_call_count = [0]
@@ -55,8 +54,6 @@ def _build_app(
         fetch_call_count[0] += 1
         if fetch_call_count[0] == 1:
             return entity_rows
-        elif fetch_call_count[0] == 2:
-            return avatar_rows
         else:
             # 30-day interaction count query — return empty list (warmth=None for tier-1500
             # or warmth computed from 0 interactions for others)
@@ -118,10 +115,9 @@ class TestDunbarRankingAliases:
             canonical_name="Alice Nguyen",
             aliases=["Ally", "A. Nguyen"],
         )
-        avatar_row = _row(id=contact_id, avatar_url=None)
         owner_row = None
 
-        app = _build_app(ranked, [entity_row], [avatar_row], owner_row)
+        app = _build_app(ranked, [entity_row], owner_row)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -147,9 +143,8 @@ class TestDunbarRankingAliases:
         ]
 
         entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[])
-        avatar_row = _row(id=contact_id, avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], [avatar_row], None)
+        app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -173,9 +168,8 @@ class TestDunbarRankingAliases:
         ]
 
         entity_row = _row(id=entity_id, canonical_name="Carol Lee", aliases=None)
-        avatar_row = _row(id=contact_id, avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], [avatar_row], None)
+        app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -190,7 +184,7 @@ class TestDunbarRankingAliases:
 
         owner_row = _row(id=owner_entity_id)
 
-        app = _build_app(ranked, [], [], owner_row)
+        app = _build_app(ranked, [], owner_row)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -222,9 +216,8 @@ class TestDunbarRankingLastInteractionAt:
         ]
 
         entity_row = _row(id=entity_id, canonical_name="Alice Nguyen", aliases=[])
-        avatar_row = _row(id=contact_id, avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], [avatar_row], None)
+        app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -249,9 +242,8 @@ class TestDunbarRankingLastInteractionAt:
         ]
 
         entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[])
-        avatar_row = _row(id=contact_id, avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], [avatar_row], None)
+        app = _build_app(ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
