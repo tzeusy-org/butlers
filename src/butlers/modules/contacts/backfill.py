@@ -235,11 +235,9 @@ class ContactBackfillWriter:
     - public.entities (canonical_name, metadata with profile fields and provenance)
     - contact_info rows via relationship.entity_facts (emails, phones, urls, usernames)
     - contacts_source_links (provenance link, keyed by local_entity_id)
-
-    Temporarily skipped pending FK migration:
-    - addresses rows (upsert_addresses skips; awaiting FK migration)
-    - important_dates rows (upsert_important_dates skips; awaiting FK migration)
-    - labels + contact_labels (upsert_labels skips; awaiting FK migration)
+    - addresses rows (entity-anchored via local_entity_id; requires contacts_004)
+    - important_dates rows (entity-anchored via local_entity_id; requires contacts_004)
+    - labels + contact_labels (entity-anchored via local_entity_id; requires contacts_004)
 
     Conflict policy (§7.3):
     - Source wins only for previously source-owned fields (tracked in metadata provenance)
@@ -262,19 +260,45 @@ class ContactBackfillWriter:
         self._table_flags: dict[str, bool] | None = None
 
     async def _ensure_table_flags(self) -> None:
-        """Probe once which relationship-only tables exist in the current search_path."""
+        """Probe which relationship-only tables exist and are entity-anchored.
+
+        Sets two flag groups per table:
+        - ``<table>``: True when the table is visible in the current search_path.
+        - ``<table>_entity``: True when the table has the ``local_entity_id``
+          column (added by contacts_004 migration).  A missing column means the
+          migration has not yet been applied and entity-path writes are skipped.
+        """
         if self._table_flags is not None:
             return
         tables = ("addresses", "important_dates", "labels", "contact_labels")
         flags: dict[str, bool] = {}
         for tbl in tables:
             row = await self._pool.fetchrow("SELECT to_regclass($1) IS NOT NULL AS exists", tbl)
-            flags[tbl] = bool(row and row["exists"])
+            exists = bool(row and row["exists"])
+            flags[tbl] = exists
+            if exists and tbl != "labels":
+                # labels is a reference table; only child tables get local_entity_id.
+                col_row = await self._pool.fetchrow(
+                    """
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass($1)
+                      AND attname  = 'local_entity_id'
+                      AND NOT attisdropped
+                    """,
+                    tbl,
+                )
+                flags[f"{tbl}_entity"] = col_row is not None
+            else:
+                flags[f"{tbl}_entity"] = False
         self._table_flags = flags
 
     def _has_table(self, name: str) -> bool:
         """Return True if the named table was found during init probe."""
         return self._table_flags is not None and self._table_flags.get(name, False)
+
+    def _has_entity_anchor(self, name: str) -> bool:
+        """Return True if the table has the local_entity_id column (contacts_004 applied)."""
+        return self._table_flags is not None and self._table_flags.get(f"{name}_entity", False)
 
     async def create_contact(
         self,
@@ -626,38 +650,198 @@ class ContactBackfillWriter:
         local_id: uuid.UUID,
         contact: CanonicalContact,
     ) -> None:
-        """Upsert addresses from canonical contact into the addresses table."""
+        """Upsert addresses from canonical contact into the addresses table.
+
+        Requires the ``local_entity_id`` column (contacts_004 migration).
+        Silently no-ops when the table is absent or the migration has not run.
+
+        Each address is inserted only if no existing row with the same
+        (local_entity_id, label, line_1) tuple exists — avoiding duplicates on
+        repeated sync cycles.  Addresses with no ``street`` value are skipped
+        because ``line_1`` is NOT NULL in the schema.
+        """
         await self._ensure_table_flags()
         if not self._has_table("addresses"):
             return
-        logger.debug("upsert_addresses: skipped for entity %s — awaiting FK migration", local_id)
-        return
+        if not self._has_entity_anchor("addresses"):
+            logger.debug(
+                "upsert_addresses: skipped for entity %s — contacts_004 migration not applied",
+                local_id,
+            )
+            return
+
+        for addr in contact.addresses:
+            if not addr.street:
+                continue  # line_1 is NOT NULL; skip addresses with no street
+            label = addr.label or "Home"
+            # Validate country: schema requires VARCHAR(2) so truncate/drop if invalid.
+            country = addr.country
+            if country is not None:
+                country = country.strip()
+                if len(country) != 2:  # noqa: PLR2004
+                    country = None
+            try:
+                await self._pool.execute(
+                    """
+                    INSERT INTO addresses
+                        (local_entity_id, label, line_1, line_2,
+                         city, province, postal_code, country, is_current)
+                    SELECT $1, $2, $3, $4, $5, $6, $7, $8, false
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM addresses
+                        WHERE local_entity_id = $1
+                          AND label            = $2
+                          AND line_1           = $3
+                    )
+                    """,
+                    local_id,
+                    label,
+                    addr.street,
+                    None,  # line_2 not provided by Google Contacts sync
+                    addr.city,
+                    addr.region,
+                    addr.postal_code,
+                    country,
+                )
+            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+                logger.warning(
+                    "upsert_addresses: failed for entity %s label=%r street=%r",
+                    local_id,
+                    label,
+                    addr.street,
+                    exc_info=True,
+                )
 
     async def upsert_important_dates(
         self,
         local_id: uuid.UUID,
         contact: CanonicalContact,
     ) -> None:
-        """Upsert birthdays and anniversaries into important_dates."""
+        """Upsert birthdays and anniversaries into important_dates.
+
+        Requires the ``local_entity_id`` column (contacts_004 migration).
+        Silently no-ops when the table is absent or the migration has not run.
+
+        Each date is inserted only if no existing row with the same
+        (local_entity_id, label, month, day) tuple exists.  Dates with NULL
+        month or day are skipped because those columns are NOT NULL in the schema.
+        """
         await self._ensure_table_flags()
         if not self._has_table("important_dates"):
             return
-        logger.debug(
-            "upsert_important_dates: skipped for entity %s — awaiting FK migration", local_id
-        )
-        return
+        if not self._has_entity_anchor("important_dates"):
+            logger.debug(
+                "upsert_important_dates: skipped for entity %s — contacts_004 not applied",
+                local_id,
+            )
+            return
+
+        entries = [(d, d.label or "birthday") for d in contact.birthdays] + [
+            (d, d.label or "anniversary") for d in contact.anniversaries
+        ]
+
+        for date_obj, label in entries:
+            if date_obj.month is None or date_obj.day is None:
+                continue  # month and day are NOT NULL in the schema
+            try:
+                await self._pool.execute(
+                    """
+                    INSERT INTO important_dates
+                        (local_entity_id, label, month, day, year)
+                    SELECT $1, $2, $3, $4, $5
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM important_dates
+                        WHERE local_entity_id = $1
+                          AND label            = $2
+                          AND month            = $3
+                          AND day              = $4
+                    )
+                    """,
+                    local_id,
+                    label,
+                    date_obj.month,
+                    date_obj.day,
+                    date_obj.year,
+                )
+            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+                logger.warning(
+                    "upsert_important_dates: failed for entity %s label=%r month=%s day=%s",
+                    local_id,
+                    label,
+                    date_obj.month,
+                    date_obj.day,
+                    exc_info=True,
+                )
 
     async def upsert_labels(
         self,
         local_id: uuid.UUID,
         contact: CanonicalContact,
     ) -> None:
-        """Upsert contact group memberships as labels + contact_labels."""
+        """Upsert contact group memberships as labels + contact_labels.
+
+        Requires the ``local_entity_id`` column on contact_labels (contacts_004).
+        Silently no-ops when the tables are absent or the migration has not run.
+
+        For each group in contact.group_memberships:
+        1. Normalize the Google group resource name to a human-readable label.
+        2. Ensure a labels row exists (insert if absent, no-op if present).
+        3. Insert a contact_labels row keyed by (label_id, local_entity_id)
+           if one does not already exist.
+
+        The partial unique index ``idx_contact_labels_label_entity``
+        (added by contacts_004) enforces (label_id, local_entity_id) uniqueness
+        for entity-anchored rows.
+        """
         await self._ensure_table_flags()
-        if not self._has_table("labels"):
+        if not self._has_table("labels") or not self._has_table("contact_labels"):
             return
-        logger.debug("upsert_labels: skipped for entity %s — awaiting FK migration", local_id)
-        return
+        if not self._has_entity_anchor("contact_labels"):
+            logger.debug(
+                "upsert_labels: skipped for entity %s — contacts_004 migration not applied",
+                local_id,
+            )
+            return
+
+        for group_resource in contact.group_memberships:
+            label_name = _normalize_group_label(group_resource)
+            if not label_name:
+                continue
+
+            try:
+                # Ensure the label exists; fetch its id.
+                await self._pool.execute(
+                    "INSERT INTO labels (name) VALUES ($1) ON CONFLICT (name) DO NOTHING",
+                    label_name,
+                )
+                label_id = await self._pool.fetchval(
+                    "SELECT id FROM labels WHERE name = $1",
+                    label_name,
+                )
+                if label_id is None:
+                    continue
+
+                # Insert contact_labels link if not already present.
+                await self._pool.execute(
+                    """
+                    INSERT INTO contact_labels (label_id, local_entity_id)
+                    SELECT $1, $2
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM contact_labels
+                        WHERE label_id        = $1
+                          AND local_entity_id = $2
+                    )
+                    """,
+                    label_id,
+                    local_id,
+                )
+            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+                logger.warning(
+                    "upsert_labels: failed for entity %s label=%r",
+                    local_id,
+                    label_name,
+                    exc_info=True,
+                )
 
     async def upsert_source_link(
         self,
