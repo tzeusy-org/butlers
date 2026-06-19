@@ -9,8 +9,10 @@ entity-v3 (bu-hvrt1): create_temp_contact NO LONGER asserts the sender's channel
 triple to relationship.entity_facts. Switchboard ingress must not write
 entity_facts (switchboard-identity invariant); that assertion moved into a
 deterministic post-resolution hook in the routing pipeline
-(relationship.tools.relationship_assert_fact.assert_sender_channel_fact). This
-function still mints the public.entities / public.contacts rows.
+(relationship.tools.relationship_assert_fact.assert_sender_channel_fact).
+
+Phase 7 (bu-jnaa3): create_temp_contact now mints ONLY the public.entities row —
+no public.contacts row — and returns contact_id=None.
 
 Covers:
 - resolve_contact_by_channel: owner, non-owner, unknown→None, DB error→None
@@ -245,24 +247,23 @@ def test_build_identity_preamble():
 def _make_new_temp_contact_pool(contact_id: uuid.UUID, entity_id: uuid.UUID):
     """Pool mock for create_temp_contact's new-contact path (no existing match).
 
-    entity-v3 (bu-hvrt1): create_temp_contact first calls
+    entity-v3 (bu-hvrt1) + Phase 7 (bu-jnaa3): create_temp_contact first calls
     resolve_contact_by_channel (pool.fetchrow on entity_facts → None here), then
-    acquires a conn to INSERT the entity (conn.fetchval) and contact
-    (conn.fetchrow). It does NOT assert the channel triple — that is the routing
-    pipeline's deterministic hook, not this function's job.
+    acquires a conn to INSERT the entity (conn.fetchval RETURNING id). It no
+    longer writes a public.contacts row (the contact object is retired;
+    contact_id is always None). It does NOT assert the channel triple — that is
+    the routing pipeline's deterministic hook, not this function's job.
+
+    ``contact_id`` is accepted for signature compatibility with the existing
+    callers but is unused now that no contacts row is minted.
     """
     pool = MagicMock()
     # resolve_contact_by_channel queries the triple store on the pool → no match.
     pool.fetchrow = AsyncMock(return_value=None)
 
     conn = AsyncMock()
-
-    async def conn_fetchrow(query, *args):
-        if "INSERT INTO public.contacts" in query:
-            return {"id": contact_id, "name": args[0], "entity_id": entity_id}
-        return None
-
-    conn.fetchrow = AsyncMock(side_effect=conn_fetchrow)
+    # The in-transaction re-resolve issues a SELECT on the triple store → None.
+    conn.fetchrow = AsyncMock(return_value=None)
     conn.fetchval = AsyncMock(return_value=entity_id)  # entity INSERT RETURNING id
     conn.execute = AsyncMock()
 
@@ -278,7 +279,10 @@ def _make_new_temp_contact_pool(contact_id: uuid.UUID, entity_id: uuid.UUID):
 
 
 async def test_create_temp_contact():
-    """create_temp_contact creates entity + contact and returns it (cut-over path)."""
+    """create_temp_contact mints only an entity and returns it (cut-over path).
+
+    Phase 7 (bu-jnaa3): no public.contacts row is written; contact_id is None.
+    """
     entity_id = uuid.uuid4()
     contact_id = uuid.uuid4()
     pool, _conn = _make_new_temp_contact_pool(contact_id, entity_id)
@@ -286,7 +290,7 @@ async def test_create_temp_contact():
     result = await create_temp_contact(pool, "telegram", "555")
 
     assert result is not None
-    assert result.contact_id == contact_id
+    assert result.contact_id is None  # no contacts row minted (entity_id is identity)
     assert result.entity_id == entity_id
     assert result.name == "Unknown (telegram 555)"
     assert result.roles == []
@@ -343,7 +347,7 @@ async def test_create_temp_contact_returns_existing_on_conflict():
 
 
 class TestCreateTempContactCentralWriter:
-    """create_temp_contact mints the public entity/contact and asserts NO fact."""
+    """create_temp_contact mints only the public entity and asserts NO fact."""
 
     async def test_does_not_call_relationship_assert_fact(self):
         """create_temp_contact must NOT call the central entity_facts writer.
@@ -360,10 +364,10 @@ class TestCreateTempContactCentralWriter:
             result = await create_temp_contact(pool, "telegram", "12345")
 
         mock_assert.assert_not_awaited()
-        # The public entity/contact are still minted and returned.
+        # The public entity is still minted and returned; no contacts row (bu-jnaa3).
         assert result is not None
         assert result.entity_id == entity_id
-        assert result.contact_id == contact_id
+        assert result.contact_id is None
 
     async def test_no_contact_info_insert_anywhere(self):
         """No INSERT/UPDATE/DELETE against public.contact_info is ever issued."""
