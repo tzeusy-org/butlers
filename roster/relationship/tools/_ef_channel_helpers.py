@@ -144,23 +144,3 @@ async def entity_facts_channels_by_entity(
         if eid in result:
             result[eid].append(r)
     return result
-
-
-async def contact_entity_map(
-    pool: Any,
-    contact_ids: list[UUID],
-) -> dict[UUID, UUID | None]:
-    """Batch-fetch entity_id for a list of contact IDs.
-
-    Returns a dict mapping contact_id → entity_id (or None when unlinked).
-    """
-    if not contact_ids:
-        return {}
-    rows = await pool.fetch(
-        "SELECT id, entity_id FROM public.contacts WHERE id = ANY($1)",
-        contact_ids,
-    )
-    mapping: dict[UUID, UUID | None] = {cid: None for cid in contact_ids}
-    for r in rows:
-        mapping[r["id"]] = r["entity_id"]
-    return mapping

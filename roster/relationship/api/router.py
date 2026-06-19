@@ -36,9 +36,6 @@ from butlers.tools.relationship._ef_channel_helpers import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
 )
 from butlers.tools.relationship._ef_channel_helpers import (
-    contact_entity_map as _contact_entity_map_shared,
-)
-from butlers.tools.relationship._ef_channel_helpers import (
     ef_object_to_display_value as _ef_object_to_display_value_shared,
 )
 from butlers.tools.relationship._ef_channel_helpers import (
@@ -328,7 +325,6 @@ _TELEGRAM_HANDLE_PREFIX = _EF_TELEGRAM_HANDLE_PREFIX
 _ef_predicate_to_ci_type = _ef_predicate_to_ci_type_shared
 _ef_object_to_display_value = _ef_object_to_display_value_shared
 _entity_facts_channels_by_entity = _entity_facts_channels_by_entity_shared
-_contact_entity_map = _contact_entity_map_shared
 
 
 def _ef_row_to_ci_entry(fr: Any) -> Any:

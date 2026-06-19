@@ -36,6 +36,9 @@ from butlers.tools.relationship._ef_channel_helpers import (
     encode_handle_object,
     entity_facts_channels_by_entity,
 )
+from butlers.tools.relationship._entity_resolve import (
+    resolve_contact_entity_id as _resolve_contact_entity_id,
+)
 from butlers.tools.relationship.contacts import _parse_contact
 from butlers.tools.relationship.relationship_assert_fact import (
     contact_info_type_to_predicate,
@@ -92,16 +95,15 @@ def classify_email_context(email: str) -> str | None:
 async def _resolve_contact_entity(pool: asyncpg.Pool, contact_id: uuid.UUID) -> uuid.UUID | None:
     """Resolve the entity_id linked to *contact_id*, or None if absent.
 
-    Reads ``public.contacts`` (a SELECT — still allowed after the cut-over).
-    Returns None when the contact does not exist or has no linked entity.
+    Delegates to ``_resolve_contact_entity_id`` (reads relationship schema /
+    entities; does NOT query ``public.contacts``).  Converts the ValueError
+    raised for an unlinked contact to None so callers can handle both missing
+    and unlinked the same way.
     """
-    row = await pool.fetchrow(
-        "SELECT entity_id FROM public.contacts WHERE id = $1",
-        contact_id,
-    )
-    if row is None:
+    try:
+        return await _resolve_contact_entity_id(pool, contact_id)
+    except ValueError:
         return None
-    return row["entity_id"]
 
 
 async def channel_add(
@@ -118,7 +120,8 @@ async def channel_add(
     Write-path cut-over (bu-k9ylx): this asserts a triple in
     ``relationship.entity_facts`` through ``relationship_assert_fact()`` instead
     of inserting into ``public.contact_info``.  The contact's ``entity_id`` is
-    resolved first (SELECT on ``public.contacts``); the ``type`` is mapped to a
+    resolved first via ``_resolve_contact_entity`` (delegates to the entity
+    graph — no ``public.contacts`` read); the ``type`` is mapped to a
     contact predicate (``has-email``, ``has-phone``, ``has-handle``,
     ``has-website``).
 
@@ -207,7 +210,8 @@ async def channel_list(
     """List channel-identity facts for a contact, optionally filtered by type.
 
     READ path — queries ``relationship.entity_facts`` (has-* predicates).
-    Contact is resolved to its linked entity via ``public.contacts.entity_id``;
+    Contact is resolved to its linked entity via ``_resolve_contact_entity``
+    (delegates to the entity graph — no ``public.contacts`` read);
     contacts with no linked entity return an empty list.
 
     When *type* is provided it is mapped to the corresponding predicate

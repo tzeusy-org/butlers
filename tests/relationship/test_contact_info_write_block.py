@@ -205,7 +205,7 @@ class TestContactInfoReadsAllowed:
 
         fact_id = uuid.uuid4()
         pool = MagicMock()
-        # fetchrow is used by _resolve_contact_entity (SELECT entity_id FROM public.contacts)
+        # fetchrow is used by resolve_contact_entity_id (SELECT entity_id FROM contacts)
         pool.fetchrow = AsyncMock(return_value={"entity_id": _ENTITY_ID})
         # fetch is used by entity_facts_channels_by_entity (SELECT from relationship.entity_facts)
         pool.fetch = AsyncMock(
