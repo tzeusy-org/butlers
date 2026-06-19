@@ -25,7 +25,7 @@ Contract (Amendment 14 + spec §"Requirement: Central writer"):
 5. **Owner carve-out (RFC 0017 §2.3)** — when *subject* resolves to an entity
    whose ``roles`` array contains ``'owner'``, the mutation is NOT written
    directly.  Instead, a ``pending_actions`` row is created for human approval,
-   mirroring ``contact_info.py::contact_info_add``.
+   mirroring ``channel.py::channel_add``.
 
    **Self-identity exemption (bu-oluyt.4)** — when ``src`` is a trusted
    owner-self source (``"owner-bootstrap"`` or ``"owner-self"``), the owner is

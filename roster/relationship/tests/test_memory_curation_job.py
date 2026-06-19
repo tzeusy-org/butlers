@@ -813,7 +813,7 @@ async def _setup_pending_actions_schema(pool: asyncpg.Pool) -> None:
 async def _insert_pending_action(
     pool: asyncpg.Pool,
     *,
-    tool_name: str = "contact_info_add",
+    tool_name: str = "channel_add",
     tool_args: dict | None = None,
     why: str | None = "Owner carve-out: adding email for owner",
     status: str = "pending",
@@ -1001,7 +1001,7 @@ class TestPendingActionsCurationMessageContent:
         now = datetime.now(UTC)
         await _insert_pending_action(
             pa_pool,
-            tool_name="contact_info_update",
+            tool_name="channel_add",
             expires_at=now + timedelta(hours=8),
         )
 
@@ -1009,7 +1009,7 @@ class TestPendingActionsCurationMessageContent:
 
         candidates = await _fetch_insight_candidates(pa_pool)
         assert len(candidates) == 1
-        assert "contact_info_update" in candidates[0]["message"]
+        assert "channel_add" in candidates[0]["message"]
 
     async def test_message_contains_why(self, pa_pool: asyncpg.Pool):
         """Insight message includes the 'why' field from the pending action."""

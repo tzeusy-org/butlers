@@ -25,7 +25,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr
-    from butlers.tools.relationship import contact_info as _ci
+    from butlers.tools.relationship import channel as _ci
     from butlers.tools.relationship import contacts as _contacts
     from butlers.tools.relationship import dates as _dates
     from butlers.tools.relationship import dunbar as _dunbar
@@ -124,11 +124,11 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         await _addr.address_remove(module._get_pool(), address_id)
 
     # =================================================================
-    # Contact Info tools (group: contacts / contacts_extended)
+    # Channel tools (group: contacts / contacts_extended)
     # =================================================================
 
     @_tool("contacts")
-    async def contact_info_add(
+    async def channel_add(
         contact_id: uuid.UUID,
         type: str,
         value: str,
@@ -136,8 +136,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         is_primary: bool = False,
         context: str | None = None,
     ) -> dict[str, Any]:
-        """Add a piece of contact information (email, phone, etc.)
-        for a contact.
+        """Add a channel-identity fact (email, phone, etc.) for a contact.
 
         When ``type='email'`` and ``context`` is omitted, the work-domain
         heuristic runs automatically: if the email domain is in the
@@ -145,7 +144,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         ``context='work'``.  Pass ``context='personal'`` explicitly to
         suppress the heuristic for a known personal address.
         """
-        return await _ci.contact_info_add(
+        return await _ci.channel_add(
             module._get_pool(),
             contact_id,
             type,
@@ -156,54 +155,26 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     @_tool("contacts_extended")
-    async def contact_info_list(
+    async def channel_list(
         contact_id: uuid.UUID,
         type: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List contact info for a contact, optionally filtered
+        """List channel-identity facts for a contact, optionally filtered
         by type."""
-        return await _ci.contact_info_list(module._get_pool(), contact_id, type=type)
+        return await _ci.channel_list(module._get_pool(), contact_id, type=type)
 
     @_tool("contacts")
-    async def contact_info_update(
-        contact_info_id: uuid.UUID,
-        value: str | None = None,
-        label: str | None = None,
-        is_primary: bool | None = None,
-    ) -> dict[str, Any]:
-        """Update fields on an existing contact info entry (value, label, is_primary).
-
-        Owner gate: mutations targeting the owner contact are queued as
-        pending_actions for human approval instead of writing immediately.
-        At least one field must be provided.
-        """
-        return await _ci.contact_info_update(
-            module._get_pool(),
-            contact_info_id,
-            value=value,
-            label=label,
-            is_primary=is_primary,
-        )
-
-    @_tool("contacts_extended")
-    async def contact_info_remove(
-        contact_info_id: uuid.UUID,
-    ) -> None:
-        """Remove a piece of contact information by its ID."""
-        await _ci.contact_info_remove(module._get_pool(), contact_info_id)
-
-    @_tool("contacts")
-    async def contact_search_by_info(
+    async def channel_search(
         value: str,
         type: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Search contacts by contact info value (reverse lookup).
+        """Search contacts by channel value (reverse lookup).
 
-        Finds all contacts that have a matching contact info entry.
+        Finds all contacts that have a matching channel fact.
         Optionally filter by info type (email, phone, etc.).
         Uses ILIKE for case-insensitive partial matching.
         """
-        return await _ci.contact_search_by_info(module._get_pool(), value, type=type)
+        return await _ci.channel_search(module._get_pool(), value, type=type)
 
     # =================================================================
     # Contact tools (group: contacts)

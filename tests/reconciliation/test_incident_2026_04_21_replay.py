@@ -7,7 +7,7 @@ bu-7qfrg epic hold together end-to-end.
 Scenario:
   The relationship butler ingested an email thread where the user asked
   "am I correct in understanding my ACME email would be owner@example.com?"
-  — a speculative future work email.  The runtime LLM called contact_info_add
+  — a speculative future work email.  The runtime LLM called channel_add
   against the owner contact, poisoning outbound email routing for ~3 days.
 
 Covered acceptance criteria
@@ -15,7 +15,7 @@ Covered acceptance criteria
 1. bu-jwby9: Non-primary owner-email sends park for approval (not auto-approved).
 2. bu-uv4b4: Context-aware notify() routing — personal message resolves to
    personal address, not work address.
-3. bu-v6ttx: contact_info_add against the owner contact creates pending_action,
+3. bu-v6ttx: channel_add against the owner contact creates pending_action,
    NOT a DB row.
 4. bu-m24ua: Dashboard DELETE on a contact_info row writes to audit log.
 
@@ -45,15 +45,15 @@ WORK_EMAIL = "owner@example.com"
 
 
 # ---------------------------------------------------------------------------
-# AC #3 — contact_info_add against owner → pending_action, not DB row
+# AC #3 — channel_add against owner → pending_action, not DB row
 # ---------------------------------------------------------------------------
 
 
-def _contact_info_module():
-    """Return the module that owns contact_info_add's writer binding."""
+def _channel_module():
+    """Return the module that owns channel_add's writer binding."""
     import importlib
 
-    return importlib.import_module("butlers.tools.relationship.contact_info")
+    return importlib.import_module("butlers.tools.relationship.channel")
 
 
 def _assert_result(outcome: str, *, fact_id=None, action_id=None):
@@ -67,20 +67,20 @@ def _assert_result(outcome: str, *, fact_id=None, action_id=None):
 class TestAC3OwnerGate:
     """bu-v6ttx + bu-k9ylx: owner-contact channel writes are gated.
 
-    Post write-path cut-over (bu-k9ylx): contact_info_add no longer INSERTs into
+    Post write-path cut-over (bu-k9ylx): channel_add no longer INSERTs into
     public.contact_info. It resolves the contact's entity_id and asserts the
     channel triple via relationship_assert_fact(), which owns the RFC 0017 owner
     carve-out (returns pending_approval for owner-role entities). The original
     2026-04-21 incident protection now lives in the central writer.
     """
 
-    async def test_contact_info_add_owner_parks_acme_email(self) -> None:
+    async def test_channel_add_owner_parks_acme_email(self) -> None:
         """Replays the 2026-04-21 incident: speculative work email write is parked.
 
         The central writer returns pending_approval for the owner entity, and
-        contact_info_add surfaces that without any contact_info INSERT.
+        channel_add surfaces that without any contact_info INSERT.
         """
-        from butlers.tools.relationship.contact_info import contact_info_add
+        from butlers.tools.relationship.channel import channel_add
 
         pool = MagicMock()
         pool.fetchrow = AsyncMock(return_value={"entity_id": OWNER_ENTITY_ID})
@@ -88,10 +88,10 @@ class TestAC3OwnerGate:
 
         action_id = uuid.uuid4()
         with patch.object(
-            _contact_info_module(), "relationship_assert_fact", new_callable=AsyncMock
+            _channel_module(), "relationship_assert_fact", new_callable=AsyncMock
         ) as writer:
             writer.return_value = _assert_result("pending_approval", action_id=action_id)
-            result = await contact_info_add(
+            result = await channel_add(
                 pool, OWNER_CONTACT_ID, "email", WORK_EMAIL, is_primary=False
             )
 
@@ -108,13 +108,13 @@ class TestAC3OwnerGate:
         assert result["action_id"] == str(action_id)
         pool.execute.assert_not_called()
 
-    async def test_contact_info_add_non_owner_asserts_triple(self) -> None:
-        """Non-owner contact_info_add writes via the central writer (no gate).
+    async def test_channel_add_non_owner_asserts_triple(self) -> None:
+        """Non-owner channel_add writes via the central writer (no gate).
 
         Post-cut-over the non-owner path asserts a channel triple through
         relationship_assert_fact() — there is NO direct contact_info INSERT.
         """
-        from butlers.tools.relationship.contact_info import contact_info_add
+        from butlers.tools.relationship.channel import channel_add
 
         non_owner_id = uuid.uuid4()
         non_owner_entity = uuid.uuid4()
@@ -125,10 +125,10 @@ class TestAC3OwnerGate:
 
         fact_id = uuid.uuid4()
         with patch.object(
-            _contact_info_module(), "relationship_assert_fact", new_callable=AsyncMock
+            _channel_module(), "relationship_assert_fact", new_callable=AsyncMock
         ) as writer:
             writer.return_value = _assert_result("inserted", fact_id=fact_id)
-            result = await contact_info_add(pool, non_owner_id, "email", "nonowner@example.com")
+            result = await channel_add(pool, non_owner_id, "email", "nonowner@example.com")
 
         writer.assert_awaited_once()
         assert writer.call_args.args[1] == non_owner_entity

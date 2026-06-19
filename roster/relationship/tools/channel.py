@@ -1,4 +1,4 @@
-"""Contact info — structured contact details and addresses.
+"""Channel tools — structured channel-identity facts for contacts.
 
 Read-path cut-over (Migration bead 10, bu-twbt0)
 -------------------------------------------------
@@ -11,16 +11,10 @@ Write-path cut-over (Migration bead 8, bu-k9ylx)
 through the central writer ``relationship_assert_fact()`` into
 ``relationship.entity_facts`` ONLY.
 
-- ``contact_info_add`` resolves the contact's ``entity_id`` and asserts a
+- ``channel_add`` resolves the contact's ``entity_id`` and asserts a
   channel triple via ``relationship_assert_fact()``.  Owner-entity writes are
   parked as ``pending_actions`` by the central writer's RFC 0017 carve-out.
-- ``contact_info_update`` / ``contact_info_remove`` are keyed by the
-  ``public.contact_info.id`` PK, which has no equivalent in the triple store.
-  After the cut-over there is no in-place mutate/delete-by-id path; callers must
-  re-assert (update) or retract (remove) the channel fact via
-  ``relationship_assert_fact()``.  These functions now fail fast via the
-  contact_info write-block guard.
-- ``contact_info_list`` / ``contact_search_by_info`` read from
+- ``channel_list`` / ``channel_search`` read from
   ``relationship.entity_facts`` (has-* predicates) via shared helpers in
   ``_ef_channel_helpers``.  Telegram entries are stored as
   ``has-handle`` with object ``"telegram:<numeric_id>"``; the prefix is
@@ -36,7 +30,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.contact_info_write_guard import assert_contact_info_writes_blocked
 from butlers.tools.relationship._ef_channel_helpers import (
     ef_object_to_display_value,
     ef_predicate_to_ci_type,
@@ -111,7 +104,7 @@ async def _resolve_contact_entity(pool: asyncpg.Pool, contact_id: uuid.UUID) -> 
     return row["entity_id"]
 
 
-async def contact_info_add(
+async def channel_add(
     pool: asyncpg.Pool,
     contact_id: uuid.UUID,
     type: str,
@@ -206,29 +199,12 @@ async def contact_info_add(
     }
 
 
-async def contact_info_update(
-    pool: asyncpg.Pool,  # noqa: ARG001 — guard rejects before use
-    contact_info_id: uuid.UUID,  # noqa: ARG001
-    value: str | None = None,  # noqa: ARG001
-    label: str | None = None,  # noqa: ARG001
-    is_primary: bool | None = None,  # noqa: ARG001
-) -> dict[str, Any]:
-    """Reject in-place updates to the read-only ``contact_info`` table.
-
-    Write-path cut-over (bu-k9ylx): ``public.contact_info`` is read-only and the
-    triple store has no ``contact_info.id``-addressable update.  To change a
-    channel fact, re-assert it via ``contact_info_add`` /
-    ``relationship_assert_fact()`` (supersession applies on changed provenance).
-    """
-    assert_contact_info_writes_blocked("update")
-
-
-async def contact_info_list(
+async def channel_list(
     pool: asyncpg.Pool,
     contact_id: uuid.UUID,
     type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List contact info for a contact, optionally filtered by type.
+    """List channel-identity facts for a contact, optionally filtered by type.
 
     READ path — queries ``relationship.entity_facts`` (has-* predicates).
     Contact is resolved to its linked entity via ``public.contacts.entity_id``;
@@ -280,25 +256,12 @@ async def contact_info_list(
     return result
 
 
-async def contact_info_remove(
-    pool: asyncpg.Pool,  # noqa: ARG001 — guard rejects before use
-    contact_info_id: uuid.UUID,  # noqa: ARG001
-) -> None:
-    """Reject deletes from the read-only ``contact_info`` table.
-
-    Write-path cut-over (bu-k9ylx): ``public.contact_info`` is read-only.
-    Channel-fact retraction is handled through the relationship butler's triple
-    retraction path, not by deleting a ``contact_info`` row by id.
-    """
-    assert_contact_info_writes_blocked("delete")
-
-
-async def contact_search_by_info(
+async def channel_search(
     pool: asyncpg.Pool,
     value: str,
     type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search contacts by contact info value (reverse lookup).
+    """Search contacts by channel value (reverse lookup).
 
     READ path — queries ``relationship.entity_facts`` (has-* predicates).
     Finds all contacts that have a matching channel fact.  Optionally filter by

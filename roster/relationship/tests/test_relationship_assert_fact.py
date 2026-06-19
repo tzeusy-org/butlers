@@ -572,7 +572,7 @@ class TestOwnerCarveOut:
     async def test_third_party_source_about_owner_still_parks(self, pool, owner_entity):
         """Third-party assertions about the owner still route to pending_actions.
 
-        Acceptance criterion: src='relationship' (used by contact_info_add and
+        Acceptance criterion: src='relationship' (used by channel_add and
         reconciler jobs) does NOT get the self-identity exemption — owner writes
         from untrusted paths still require human approval.
         """

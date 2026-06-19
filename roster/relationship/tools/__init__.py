@@ -10,12 +10,10 @@ from butlers.tools.relationship.addresses import (
     address_remove,
     address_update,
 )
-from butlers.tools.relationship.contact_info import (
-    contact_info_add,
-    contact_info_list,
-    contact_info_remove,
-    contact_info_update,
-    contact_search_by_info,
+from butlers.tools.relationship.channel import (
+    channel_add,
+    channel_list,
+    channel_search,
 )
 from butlers.tools.relationship.contacts import (
     _parse_contact,
@@ -153,13 +151,11 @@ __all__ = [
     "contact_export_vcard",
     "contact_get",
     "contact_import_vcard",
-    "contact_info_add",
-    "contact_info_list",
-    "contact_info_remove",
-    "contact_info_update",
+    "channel_add",
+    "channel_list",
+    "channel_search",
     "contact_resolve",
     "contact_search",
-    "contact_search_by_info",
     "contact_search_by_label",
     "contact_update",
     "contacts_overdue",

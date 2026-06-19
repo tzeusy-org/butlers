@@ -9,7 +9,7 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship.addresses import address_add, address_list
-from butlers.tools.relationship.contact_info import contact_info_add, contact_info_list
+from butlers.tools.relationship.channel import channel_add, channel_list
 from butlers.tools.relationship.contacts import (
     _parse_contact,
     contact_create,
@@ -74,7 +74,7 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
 
         # TEL/EMAIL - channel facts from relationship.entity_facts
         try:
-            infos = await contact_info_list(pool, contact["id"])
+            infos = await channel_list(pool, contact["id"])
         except asyncpg.UndefinedTableError:
             infos = []
         if not infos:
@@ -231,7 +231,7 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                 phone_label = "VOICE"
                 if hasattr(tel, "type_param") and isinstance(tel.type_param, str):
                     phone_label = tel.type_param
-                await contact_info_add(
+                await channel_add(
                     pool,
                     contact["id"],
                     "phone",
@@ -251,7 +251,7 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                 email_label = "INTERNET"
                 if hasattr(email, "type_param") and isinstance(email.type_param, str):
                     email_label = email.type_param
-                await contact_info_add(
+                await channel_add(
                     pool,
                     contact["id"],
                     "email",

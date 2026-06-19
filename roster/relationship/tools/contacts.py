@@ -289,7 +289,7 @@ async def contact_create(
 
     # Write-path cut-over (bu-k9ylx): contact_create writes only the contact
     # RECORD (public.contacts), which remains writable.  No channel facts exist
-    # at creation time; they are asserted later via contact_info_add ->
+    # at creation time; they are asserted later via channel_add ->
     # relationship_assert_fact().  The former dual-write shim call here was a
     # structural no-op and has been removed.
 

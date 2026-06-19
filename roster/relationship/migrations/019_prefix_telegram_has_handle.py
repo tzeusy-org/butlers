@@ -6,7 +6,7 @@ Create Date: 2026-06-02 00:00:00.000000
 
 Background
 ----------
-Before bead bu-wni4z the reconciler, backfill script, and contact_info_add tool
+Before bead bu-wni4z the reconciler, backfill script, and channel_add tool
 wrote telegram_user_id / telegram_username values to ``relationship.entity_facts``
 as ``has-handle`` with the raw ``contact_info.value`` as the object (verbatim,
 no prefix).  The read path (``daemon._resolve_contact_channel_identifier``,
