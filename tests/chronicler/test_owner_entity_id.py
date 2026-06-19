@@ -81,9 +81,13 @@ def _make_pool_with_fetchrow(row_value: object) -> AsyncMock:
 
 
 def _fake_record(entity_id: UUID | str | None) -> MagicMock:
-    """asyncpg.Record-like mock with a single entity_id key."""
+    """asyncpg.Record-like mock with a single ``id`` key.
+
+    resolve_owner_entity_id now reads ``SELECT id FROM public.entities`` (bu-jnaa3),
+    so the owner entity UUID is projected as the ``id`` column.
+    """
     rec = MagicMock(spec=asyncpg.Record)
-    rec.__getitem__ = MagicMock(side_effect=lambda k: entity_id if k == "entity_id" else None)
+    rec.__getitem__ = MagicMock(side_effect=lambda k: entity_id if k == "id" else None)
     return rec
 
 
