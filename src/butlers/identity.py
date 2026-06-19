@@ -398,12 +398,13 @@ async def create_temp_contact(
     channel_value: str,
     display_name: str | None = None,
 ) -> ResolvedContact | None:
-    """Create a temporary contact and entity for an unknown sender.
+    """Create a temporary entity for an unknown sender.
 
-    Creates a ``public.entities`` entry with ``metadata.unidentified = true``
-    and a ``public.contacts`` entry linked to it (with
-    ``metadata.needs_disambiguation = true``). It does NOT write the sender's
-    channel triple to ``relationship.entity_facts``.
+    Creates a ``public.entities`` entry with ``metadata.unidentified = true``.
+    Phase 7 (bu-jnaa3): it no longer writes a ``public.contacts`` row — the
+    returned ``ResolvedContact.contact_id`` is always ``None`` and ``entity_id``
+    is the authoritative identity. It does NOT write the sender's channel triple
+    to ``relationship.entity_facts``.
 
     entity-v3 (bu-hvrt1): the channel-triple assertion — the existing-sender
     dedup key ``resolve_contact_by_channel()`` reads — was moved OUT of this
@@ -417,8 +418,7 @@ async def create_temp_contact(
     Parameters
     ----------
     pool:
-        asyncpg connection pool.  Role must have INSERT on public.entities and
-        public.contacts.
+        asyncpg connection pool.  Role must have INSERT on public.entities.
     channel_type:
         Channel type (e.g., ``"telegram"``).
     channel_value:
@@ -473,34 +473,20 @@ async def create_temp_contact(
                     entity_metadata,
                 )
 
-                # Create the contact linked to the entity.
-                contact_metadata: dict[str, Any] = {
-                    "needs_disambiguation": True,
-                    "source_channel": channel_type,
-                    "source_value": channel_value,
-                }
-                contact_row: asyncpg.Record = await conn.fetchrow(
-                    """
-                    INSERT INTO public.contacts (name, entity_id, metadata)
-                    VALUES ($1, $2, $3)
-                    RETURNING id, name, entity_id
-                    """,
-                    name,
-                    entity_id,
-                    contact_metadata,
-                )
-                contact_id: UUID = contact_row["id"]
-
-        # entity-v3 (bu-hvrt1): create_temp_contact NO LONGER writes the sender's
-        # channel triple to relationship.entity_facts. Switchboard ingress must not
-        # write entity_facts (switchboard-identity invariant); the channel-triple
+        # Phase 7 (bu-jnaa3): create_temp_contact NO LONGER writes a
+        # public.contacts row — the contact object is being retired and
+        # ``entity_id`` is the authoritative identity. ``contact_id`` is always
+        # ``None`` for freshly-minted senders; callers key off ``entity_id``.
+        #
+        # entity-v3 (bu-hvrt1): it also does NOT write the sender's channel
+        # triple to relationship.entity_facts. Switchboard ingress must not write
+        # entity_facts (switchboard-identity invariant); the channel-triple
         # assertion — the existing-sender dedup key resolve_contact_by_channel()
         # reads — is asserted deterministically from the routing pipeline via
         # ``relationship.tools.relationship_assert_fact.assert_sender_channel_fact``.
-        # This function still mints the public.entities / public.contacts rows.
 
         return ResolvedContact(
-            contact_id=contact_id,
+            contact_id=None,
             name=name,
             roles=[],
             entity_id=entity_id,
