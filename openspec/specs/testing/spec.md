@@ -120,7 +120,7 @@ grep 'classify_message\|route.*target' .tmp/e2e-logs/e2e-latest.log
 ## Requirements
 
 ### Requirement: Test Framework Configuration
-The project uses pytest with pytest-asyncio as the test runner. Configuration lives in `pyproject.toml` under `[tool.pytest.ini_options]`.
+The project SHALL use pytest with pytest-asyncio as the test runner. Configuration SHALL live in `pyproject.toml` under `[tool.pytest.ini_options]`.
 
 #### Scenario: Async test mode
 - **WHEN** pytest runs async test functions
@@ -137,7 +137,7 @@ The project uses pytest with pytest-asyncio as the test runner. Configuration li
 - **THEN** known deprecation warnings from `websockets`, `uvicorn`, `AsyncMock`, `EmailModule`, and `health server` are filtered to avoid noise
 
 ### Requirement: Test Markers and Categories
-Tests are classified into four tiers with increasing scope, cost, and infrastructure requirements. Markers control which tiers execute in which environment.
+Tests SHALL be classified into four tiers with increasing scope, cost, and infrastructure requirements. Markers SHALL control which tiers execute in which environment.
 
 #### Scenario: Unit tests (default, unmarked)
 - **WHEN** a test has no marker or is marked `@pytest.mark.unit`
@@ -181,7 +181,7 @@ Shared fixtures and helpers SHALL be provided in `tests/adapters/conftest.py` fo
 - **THEN** all integration tests for that adapter SHALL be skipped via `@pytest.mark.skipif(not shutil.which("<binary>"), reason="<binary> not on PATH")`
 
 ### Requirement: Test Directory Structure
-Tests are organized into subdirectories by concern, with standalone test files for cross-cutting validations.
+Tests SHALL be organized into subdirectories by concern, with standalone test files for cross-cutting validations.
 
 #### Scenario: Subdirectory organization
 - **WHEN** new tests are added
@@ -196,7 +196,7 @@ Tests are organized into subdirectories by concern, with standalone test files f
 - **THEN** they live under `roster/{butler-name}/tests/` and are auto-marked with the integration marker via `roster/conftest.py`
 
 ### Requirement: Conftest Fixture Hierarchy
-Fixtures are layered across three conftest files with clear scoping and re-export rules.
+Fixtures SHALL be layered across three conftest files with clear scoping and re-export rules.
 
 #### Scenario: Root conftest (conftest.py)
 - **WHEN** any test in the project runs
@@ -211,7 +211,7 @@ Fixtures are layered across three conftest files with clear scoping and re-expor
 - **THEN** `roster/conftest.py` auto-applies the `integration` marker and Docker-skip behavior to all tests in that directory tree via `pytest_collection_modifyitems`
 
 ### Requirement: PostgreSQL Testcontainer Infrastructure
-Integration and E2E tests use Docker testcontainers for PostgreSQL, with resilient startup and teardown to handle transient Docker API errors.
+Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with resilient startup and teardown to handle transient Docker API errors.
 
 #### Scenario: Session-scoped PostgreSQL container
 - **WHEN** a test session starts and any test requires a database
@@ -236,7 +236,7 @@ Integration and E2E tests use Docker testcontainers for PostgreSQL, with resilie
 - **THEN** they are guarded by sentinel attributes (`__butlers_resilient_startup__`, `__butlers_resilient__`, `_butlers_retry_patch`) on the patched methods to prevent double-patching
 
 ### Requirement: E2E Staging Harness Architecture
-The E2E harness boots a complete disposable butler ecosystem for every test session: real ButlerDaemon processes, real PostgreSQL databases, real Alembic migrations, and real LLM calls via Haiku.
+The E2E harness SHALL boot a complete disposable butler ecosystem for every test session: real ButlerDaemon processes, real PostgreSQL databases, real Alembic migrations, and real LLM calls via Haiku.
 
 #### Scenario: Ecosystem bootstrap
 - **WHEN** the E2E test session starts
@@ -263,7 +263,7 @@ The E2E harness boots a complete disposable butler ecosystem for every test sess
 - **THEN** it uses `pgvector/pgvector:pg17` (matching production `docker-compose.yml`) for migration and extension parity
 
 ### Requirement: E2E Assertion Strategy
-LLM behavior is non-deterministic. The E2E harness separates infrastructure assertions (exact) from LLM-dependent assertions (loose).
+LLM behavior is non-deterministic. The E2E harness SHALL separate infrastructure assertions (exact) from LLM-dependent assertions (loose).
 
 #### Scenario: Structural assertions are exact
 - **WHEN** validating infrastructure behavior
@@ -275,7 +275,7 @@ LLM behavior is non-deterministic. The E2E harness separates infrastructure asse
 - **AND** assertions never match on exact text output from the LLM
 
 ### Requirement: E2E Declarative Scenario Framework
-Simple input-output test cases are defined as `E2EScenario` dataclass instances in `tests/e2e/scenarios.py`. A parametrized test runner auto-generates one pytest test case per scenario.
+Simple input-output test cases SHALL be defined as `E2EScenario` dataclass instances in `tests/e2e/scenarios.py`. A parametrized test runner SHALL auto-generate one pytest test case per scenario.
 
 #### Scenario: E2EScenario dataclass
 - **WHEN** a new scenario is defined
@@ -295,7 +295,7 @@ Simple input-output test cases are defined as `E2EScenario` dataclass instances 
 - **THEN** the parametrized runner in `test_scenario_runner.py` automatically generates a pytest test case for it with no new test functions required
 
 ### Requirement: E2E Complex Flow Tests
-Multi-step scenarios that go beyond the declarative pattern are implemented as dedicated test modules.
+Multi-step scenarios that go beyond the declarative pattern SHALL be implemented as dedicated test modules.
 
 #### Scenario: Flow test module naming
 - **WHEN** a complex flow test is needed
@@ -315,7 +315,7 @@ Multi-step scenarios that go beyond the declarative pattern are implemented as d
 - **THEN** the test validates: mock Telegram `IngestEnvelopeV1` is ingested, classification routes to correct butler, MCP dispatch succeeds, target butler spawns runtime instance, domain tools write to database, and assertions span both switchboard DB (`routing_log`, `fanout_execution_log`) and target butler DB (domain table, `sessions`)
 
 ### Requirement: E2E Security Domain
-E2E security tests validate credential isolation, MCP config lockdown, database isolation, secret detection, and inter-butler communication boundaries.
+E2E security tests SHALL validate credential isolation, MCP config lockdown, database isolation, secret detection, and inter-butler communication boundaries.
 
 #### Scenario: Credential sandbox testing
 - **WHEN** testing environment variable isolation
@@ -342,7 +342,7 @@ E2E security tests validate credential isolation, MCP config lockdown, database 
 - **AND** tool span attributes do not contain values for arguments marked as sensitive
 
 ### Requirement: E2E State Store Domain
-E2E state tests validate cross-session persistence, JSONB type fidelity, state isolation between butlers, prefix listing, and concurrent access behavior.
+E2E state tests SHALL validate cross-session persistence, JSONB type fidelity, state isolation between butlers, prefix listing, and concurrent access behavior.
 
 #### Scenario: Cross-session persistence
 - **WHEN** a value is written via `state_set` in one MCP client session
@@ -365,7 +365,7 @@ E2E state tests validate cross-session persistence, JSONB type fidelity, state i
 - **AND** no data corruption occurs
 
 ### Requirement: E2E Data Contract Validation Domain
-E2E contract tests validate the typed data contracts between pipeline stages: IngestEnvelopeV1, Classification Response, FanoutPlan, Route Contract Version, and SpawnerResult.
+E2E contract tests SHALL validate the typed data contracts between pipeline stages: IngestEnvelopeV1, Classification Response, FanoutPlan, Route Contract Version, and SpawnerResult.
 
 #### Scenario: IngestEnvelopeV1 contract
 - **WHEN** a well-formed envelope is submitted
@@ -389,7 +389,7 @@ E2E contract tests validate the typed data contracts between pipeline stages: In
 - **THEN** exactly two database writes happen: `session_create()` before invocation (status="running") and `session_complete()` after with final status, duration, tokens, tool calls, and output
 
 ### Requirement: E2E Observability Domain
-E2E observability tests validate distributed tracing, tool span instrumentation, routing metrics, session log completeness, and cost tracking.
+E2E observability tests SHALL validate distributed tracing, tool span instrumentation, routing metrics, session log completeness, and cost tracking.
 
 #### Scenario: Trace context propagation
 - **WHEN** a message traverses the full pipeline (switchboard to target butler)
@@ -415,7 +415,7 @@ E2E observability tests validate distributed tracing, tool span instrumentation,
 - **AND** no single scenario exceeds 10,000 input tokens
 
 ### Requirement: E2E Approval Gate Domain
-E2E approval tests validate the gate lifecycle: interception, approval decision, timeout, denial, and audit trail.
+E2E approval tests SHALL validate the gate lifecycle: interception, approval decision, timeout, denial, and audit trail.
 
 #### Scenario: Gated tool interception
 - **WHEN** a runtime instance calls a tool configured with `approval_mode = "always"` (e.g., `contact_delete`)
@@ -443,7 +443,7 @@ E2E approval tests validate the gate lifecycle: interception, approval decision,
 - **THEN** the `approvals` table records: `tool_name`, `tool_args` (JSONB), `session_id`, `status` (pending/approved/denied/expired), `requested_at`, `decided_at`, `decided_by`, and `reason`
 
 ### Requirement: E2E Resilience Domain
-E2E resilience tests validate graceful degradation under failure at every layer: infrastructure, daemon, MCP transport, LLM/spawner, and cross-butler.
+E2E resilience tests SHALL validate graceful degradation under failure at every layer: infrastructure, daemon, MCP transport, LLM/spawner, and cross-butler.
 
 #### Scenario: Butler kill and recovery
 - **WHEN** a butler daemon is killed mid-operation
@@ -483,7 +483,7 @@ E2E resilience tests validate graceful degradation under failure at every layer:
 - **AND** after connections are returned, subsequent calls succeed
 
 ### Requirement: E2E Message Flow Domain
-E2E flow tests validate the complete message pipeline from ingestion through classification, dispatch, tool execution, and database persistence.
+E2E flow tests SHALL validate the complete message pipeline from ingestion through classification, dispatch, tool execution, and database persistence.
 
 #### Scenario: Canonical message flow
 - **WHEN** a test exercises the full pipeline
@@ -511,7 +511,7 @@ E2E flow tests validate the complete message pipeline from ingestion through cla
 - **AND** each entry has a self-contained prompt with relevant context
 
 ### Requirement: E2E Scheduling Domain
-E2E scheduling tests validate the TOML schedule sync, tick dispatch, cron rearm, timer/external trigger interleaving, schedule CRUD via MCP tools, and tick idempotency.
+E2E scheduling tests SHALL validate the TOML schedule sync, tick dispatch, cron rearm, timer/external trigger interleaving, schedule CRUD via MCP tools, and tick idempotency.
 
 #### Scenario: TOML schedule sync
 - **WHEN** a butler daemon starts
@@ -548,7 +548,7 @@ E2E scheduling tests validate the TOML schedule sync, tick dispatch, cron rearm,
 - **AND** the stagger offset is bounded to at most 15 minutes and always less than the cron interval
 
 ### Requirement: E2E Performance Domain
-E2E performance tests validate serial dispatch lock behavior under load, connection pool saturation, MCP transport overhead, pipeline latency budgets, and cost scaling.
+E2E performance tests SHALL validate serial dispatch lock behavior under load, connection pool saturation, MCP transport overhead, pipeline latency budgets, and cost scaling.
 
 #### Scenario: Serial dispatch under load
 - **WHEN** 5 concurrent triggers are fired at a single butler
@@ -581,7 +581,7 @@ E2E performance tests validate serial dispatch lock behavior under load, connect
 - **AND** cost per message is under $0.02
 
 ### Requirement: E2E Infrastructure Domain
-E2E infrastructure tests validate the staging environment: PostgreSQL testcontainer provisioning, database isolation, port allocation, Docker requirements, module degradation, and CI/CD exclusion.
+E2E infrastructure tests SHALL validate the staging environment: PostgreSQL testcontainer provisioning, database isolation, port allocation, Docker requirements, module degradation, and CI/CD exclusion.
 
 #### Scenario: Per-butler database provisioning
 - **WHEN** the E2E ecosystem bootstraps
@@ -609,7 +609,7 @@ E2E infrastructure tests validate the staging environment: PostgreSQL testcontai
 - **THEN** E2E tests are excluded via three independent mechanisms: pytest marker (`@pytest.mark.e2e`), environment guard (session-scoped autouse fixture skips when `ANTHROPIC_API_KEY` is not set), and explicit `--ignore=tests/e2e` in CI workflow
 
 ### Requirement: Migration Testing Approach
-Database schema migrations are validated both in isolation and as part of the E2E harness to ensure Alembic migration output and runtime tool SQL are compatible.
+Database schema migrations SHALL be validated both in isolation and as part of the E2E harness to ensure Alembic migration output and runtime tool SQL are compatible.
 
 #### Scenario: Migration-runtime compatibility
 - **WHEN** the E2E harness bootstraps a butler's database
@@ -621,7 +621,7 @@ Database schema migrations are validated both in isolation and as part of the E2
 - **THEN** they validate individual migration steps: forward migration applies cleanly, expected tables and columns exist after migration, and indexes/constraints are created
 
 ### Requirement: Test Naming Conventions
-Tests follow consistent naming patterns for discoverability and filtering.
+Tests SHALL follow consistent naming patterns for discoverability and filtering.
 
 #### Scenario: Test file naming
 - **WHEN** a test file is created

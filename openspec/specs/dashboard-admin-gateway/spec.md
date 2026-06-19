@@ -8,7 +8,7 @@ The dashboard serves as the primary administrative gateway for the butler system
 
 ### Requirement: Secrets and Credentials Management
 
-The Secrets page (`/secrets`) is the operator's primary surface for provisioning and managing all credentials consumed by butler daemons and connectors. Secrets are organized by target (shared defaults vs. per-butler overrides) and by category (core, telegram, email, google, gemini, general). The page combines a template-driven schema of known secret requirements with the actual resolved state from the database, presenting a unified view of what is expected, what is configured, and what is missing.
+The Secrets page (`/secrets`) SHALL be the operator's primary surface for provisioning and managing all credentials consumed by butler daemons and connectors. Secrets SHALL be organized by target (shared defaults vs. per-butler overrides) and by category (core, telegram, email, google, gemini, general). The page SHALL combine a template-driven schema of known secret requirements with the actual resolved state from the database, presenting a unified view of what is expected, what is configured, and what is missing.
 
 #### Scenario: Target-scoped secret listing
 
@@ -105,7 +105,7 @@ The Secrets page (`/secrets`) is the operator's primary surface for provisioning
 
 ### Requirement: Google OAuth Bootstrap Flow
 
-The Owner Config section under Settings provides the primary mechanism to configure Google OAuth app credentials and bootstrap or refresh Google OAuth tokens. The Secrets page remains the credential inventory and audit surface, not the only setup surface. The flow requires browser interaction (redirect to Google's consent screen) and cannot be performed through MCP tools or CLI. The frontend drives a two-leg authorization code flow: it initiates the redirect to Google, the backend handles the callback, exchanges the code for tokens, and persists credentials to the database.
+The Owner Config section under Settings SHALL provide the primary mechanism to configure Google OAuth app credentials and bootstrap or refresh Google OAuth tokens. The Secrets page SHALL remain the credential inventory and audit surface, not the only setup surface. The flow SHALL require browser interaction (redirect to Google's consent screen) and cannot be performed through MCP tools or CLI. The frontend SHALL drive a two-leg authorization code flow: it initiates the redirect to Google, the backend handles the callback, exchanges the code for tokens, and persists credentials to the database.
 
 #### Scenario: OAuth credential status display
 
@@ -180,7 +180,7 @@ The Owner Config section under Settings provides the primary mechanism to config
 
 ### Requirement: Approval Queue and Decision Workflow
 
-The Approvals page (`/approvals`) is the operator's primary surface for reviewing, deciding on, and managing approval-gated actions. While approval decisions can also be made via MCP tools, the dashboard provides a richer experience with filtering, pagination, metrics, action detail inspection, and one-click approve/reject with optional standing rule creation.
+The Approvals page (`/approvals`) SHALL be the operator's primary surface for reviewing, deciding on, and managing approval-gated actions. While approval decisions can also be made via MCP tools, the dashboard SHALL provide a richer experience with filtering, pagination, metrics, action detail inspection, and one-click approve/reject with optional standing rule creation.
 
 #### Scenario: Approval metrics dashboard
 
@@ -237,7 +237,7 @@ The Approvals page (`/approvals`) is the operator's primary surface for reviewin
 
 ### Requirement: Approval Rules Management
 
-The Approval Rules page (`/approvals/rules`) provides management of standing approval rules that enable automatic approval of repeatable safe invocations. Rules are the primary mechanism for reducing operator overhead on well-understood, low-risk tool calls.
+The Approval Rules page (`/approvals/rules`) SHALL provide management of standing approval rules that enable automatic approval of repeatable safe invocations. Rules SHALL be the primary mechanism for reducing operator overhead on well-understood, low-risk tool calls.
 
 #### Scenario: Rules listing with filters and pagination
 
@@ -267,7 +267,7 @@ The Approval Rules page (`/approvals/rules`) provides management of standing app
 
 ### Requirement: Ingestion and Connector Fleet Management
 
-The Ingestion page (`/ingestion`) is the operator's unified control surface for source visibility, connector health monitoring, routing policy, and historical replay. It provides the only real-time view of connector fleet status that is not available through any other interface. The page is organized into four tabs: Overview, Connectors, Filters, and History.
+The Ingestion page (`/ingestion`) SHALL be the operator's unified control surface for source visibility, connector health monitoring, routing policy, and historical replay. It SHALL provide the only real-time view of connector fleet status that is not available through any other interface. The page SHALL be organized into four tabs: Overview, Connectors, Filters, and History.
 
 #### Scenario: Ingestion page tab navigation
 
@@ -369,7 +369,7 @@ The Ingestion page (`/ingestion`) is the operator's unified control surface for 
 
 ### Requirement: Connectors Tab Backfill Integration
 
-The Connectors tab integrates backfill job status into the connector card grid, providing at-a-glance visibility into which connectors are currently running historical replay jobs.
+The Connectors tab SHALL integrate backfill job status into the connector card grid, providing at-a-glance visibility into which connectors are currently running historical replay jobs.
 
 #### Scenario: Active backfill indicator on connector cards
 
@@ -380,7 +380,7 @@ The Connectors tab integrates backfill job status into the connector card grid, 
 
 ### Requirement: Settings as Operator Preferences
 
-The Settings page (`/settings`) manages local browser-scoped preferences. These settings affect only the current browser session and are not persisted to the server. Settings provide operator comfort controls that do not affect butler behavior.
+The Settings page (`/settings`) SHALL manage local browser-scoped preferences. These settings SHALL affect only the current browser session and SHALL NOT be persisted to the server. Settings SHALL provide operator comfort controls that do not affect butler behavior.
 
 #### Scenario: Theme preference control
 
@@ -412,7 +412,7 @@ The Settings page (`/settings`) manages local browser-scoped preferences. These 
 
 ### Requirement: Query Key Strategy and Cache Sharing
 
-The dashboard implements a hierarchical query key strategy across all admin gateway surfaces to enable warm cache reuse, targeted invalidation, and efficient background refetching.
+The dashboard SHALL implement a hierarchical query key strategy across all admin gateway surfaces to enable warm cache reuse, targeted invalidation, and efficient background refetching.
 
 #### Scenario: Secrets query key hierarchy
 
@@ -436,7 +436,7 @@ The dashboard implements a hierarchical query key strategy across all admin gate
 
 ### Requirement: Frontend-Gated Operation Safety
 
-Several operations are intentionally restricted to the dashboard frontend as a safety measure, ensuring that credential provisioning and sensitive decisions require deliberate human interaction through a visual interface.
+Several operations SHALL be intentionally restricted to the dashboard frontend as a safety measure, ensuring that credential provisioning and sensitive decisions require deliberate human interaction through a visual interface.
 
 #### Scenario: Credential provisioning requires dashboard
 
