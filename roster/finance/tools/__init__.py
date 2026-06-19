@@ -37,6 +37,16 @@ except (ImportError, AttributeError):
     track_bill = None  # type: ignore[assignment]
     upcoming_bills = None  # type: ignore[assignment]
 
+# --- Bill↔payment reconciliation (bu-fo2uv Track B) ---
+try:
+    from butlers.tools.finance.reconciliation import (  # type: ignore[attr-defined]
+        match_transaction_to_bills,
+        reconcile_bills,
+    )
+except (ImportError, AttributeError):
+    match_transaction_to_bills = None  # type: ignore[assignment]
+    reconcile_bills = None  # type: ignore[assignment]
+
 # --- SPO fact-layer (bu-ddb.4) ---
 try:
     from butlers.tools.finance.facts import (  # type: ignore[attr-defined]
@@ -234,4 +244,7 @@ __all__ = [
     "backfill_spo_transactions",
     "BackfillResult",
     "SkippedRow",
+    # Bill↔payment reconciliation (bu-fo2uv Track B)
+    "reconcile_bills",
+    "match_transaction_to_bills",
 ]

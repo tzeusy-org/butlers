@@ -38,6 +38,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
     from butlers.tools.finance import bills as _bills
     from butlers.tools.finance import facts as _facts
+    from butlers.tools.finance import reconciliation as _reconciliation
     from butlers.tools.finance import spending as _spending
     from butlers.tools.finance import subscriptions as _subscriptions
     from butlers.tools.finance import transactions as _transactions
@@ -298,6 +299,40 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             module._get_pool(),
             days_ahead=days_ahead,
             include_overdue=include_overdue,
+        )
+
+    @_tool("bills")
+    async def reconcile_bills(
+        lookback_days: int = 90,
+        payee: str | None = None,
+    ) -> dict[str, Any]:
+        """Deterministic bill↔payment reconciliation sweep.
+
+        Scans every unsettled (pending/overdue) bill against recorded debit
+        transactions in the trailing lookback window.  Catches the
+        "payment-recorded-before-bill-existed" case that the inline hook misses.
+
+        lookback_days: Outer scan horizon for transactions (default 90 days).
+          The per-bill date window (±45d/+7d) is applied as an inner filter.
+        payee: Optional — restrict the sweep to a single payee (exact match on
+          bills.payee). Omit to process all unsettled bills.
+
+        Returns:
+          auto_settled: [{bill_id, payee, amount, paid_at, txn_id}, ...]
+            Bills that were deterministically matched and settled.  Amount is
+            backfilled from the transaction when the bill was a $0 placeholder.
+          candidates: [{bill_id, payee, due_date, amount, candidates: [...]}, ...]
+            Ambiguous matches (multiple candidates or fuzzy payee) that require
+            user or LLM confirmation.  Nothing is mutated for these.
+
+        Idempotent — running it multiple times is safe.  A guarded SQL UPDATE
+        (WHERE status <> 'paid' AND reconciled_transaction_id IS NULL) prevents
+        double-settlement even under concurrent calls.
+        """
+        return await _reconciliation.reconcile_bills(
+            module._get_pool(),
+            lookback_days=lookback_days,
+            payee=payee,
         )
 
     # =================================================================
