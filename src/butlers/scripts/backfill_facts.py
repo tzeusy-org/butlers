@@ -130,19 +130,7 @@ async def _create_pool(db_name: str, schema: str) -> asyncpg.Pool:
 
 
 async def _owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity from public.contacts -> public.entities."""
-    row = await pool.fetchrow(
-        """
-        SELECT e.id
-        FROM public.contacts c
-        JOIN public.entities e ON c.entity_id = e.id
-        WHERE c.roles @> '["owner"]'::jsonb
-        LIMIT 1
-        """
-    )
-    if row:
-        return row["id"]
-    # Fallback: look directly in public.entities for owner role.
+    """Resolve the owner entity directly from public.entities."""
     row = await pool.fetchrow(
         "SELECT id FROM public.entities WHERE roles @> ARRAY['owner'] LIMIT 1"
     )

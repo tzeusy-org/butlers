@@ -1036,9 +1036,6 @@ async def list_entities(
     rows = await pool.fetch(
         f"SELECT e.id, e.canonical_name, e.entity_type, e.aliases,"
         f" e.created_at, e.updated_at,"
-        f" (SELECT c.id FROM public.contacts c"
-        f"  WHERE c.entity_id = e.id LIMIT 1"
-        f" ) AS linked_contact_id,"
         f" e.roles AS linked_contact_roles,"
         f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
         f" e.metadata->>'source_butler' AS source_butler,"
@@ -1085,7 +1082,8 @@ async def list_entities(
                 aliases=list(r["aliases"]) if r["aliases"] else [],
                 roles=list(r["linked_contact_roles"]) if r["linked_contact_roles"] else [],
                 fact_count=fact_counts.get(eid, 0),
-                linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
+                # public.contacts retired (bu-jnaa3): no contact row to link.
+                linked_contact_id=None,
                 unidentified=r["unidentified"],
                 source_butler=r["source_butler"],
                 source_scope=r["source_scope"],
@@ -1131,12 +1129,6 @@ async def get_entity(
         " e.aliases, e.metadata,"
         " e.created_at, e.updated_at,"
         " COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified,"
-        " (SELECT c.id FROM public.contacts c"
-        "  WHERE c.entity_id = e.id LIMIT 1"
-        " ) AS linked_contact_id,"
-        " (SELECT c.name FROM public.contacts c"
-        "  WHERE c.entity_id = e.id LIMIT 1"
-        " ) AS linked_contact_name,"
         " e.roles AS linked_contact_roles"
         " FROM public.entities e"
         " WHERE e.id = $1",
@@ -1222,8 +1214,9 @@ async def get_entity(
         metadata=_parse_jsonb(row["metadata"]),
         unidentified=row["unidentified"],
         fact_count=fact_count,
-        linked_contact_id=str(row["linked_contact_id"]) if row["linked_contact_id"] else None,
-        linked_contact_name=row["linked_contact_name"],
+        # public.contacts retired (bu-jnaa3): no contact row to link.
+        linked_contact_id=None,
+        linked_contact_name=None,
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         recent_facts=recent_facts,
@@ -1349,12 +1342,14 @@ async def set_linked_contact(
     body: _LinkContactRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> dict:
-    """Link a contact to this entity by setting entity_id on the contact.
+    """Migrate any contact-scoped facts onto this entity.
 
-    After linking, migrates any existing contact-scoped facts (stored with
-    ``subject = 'contact:{cid}'`` or legacy bare-UUID ``subject = '{cid}'``)
-    to the entity by setting their ``entity_id`` column.  This ensures facts
-    created before entity promotion are visible on the entity detail page.
+    public.contacts is retired (bu-jnaa3): there is no contact row to link, so
+    this route no longer writes ``contacts.entity_id``. It still migrates any
+    existing contact-scoped facts (stored with ``subject = 'contact:{cid}'`` or
+    legacy bare-UUID ``subject = '{cid}'``) to the entity by setting their
+    ``entity_id`` column, so facts created before entity promotion are visible
+    on the entity detail page.
     """
     import uuid as _uuid
 
@@ -1366,17 +1361,6 @@ async def set_linked_contact(
     entity = await pool.fetchval("SELECT id FROM public.entities WHERE id = $1", eid)
     if entity is None:
         raise HTTPException(status_code=404, detail="Entity not found")
-
-    # Verify contact exists
-    contact = await pool.fetchval("SELECT id FROM public.contacts WHERE id = $1", cid)
-    if contact is None:
-        raise HTTPException(status_code=404, detail="Contact not found")
-
-    await pool.execute(
-        "UPDATE public.contacts SET entity_id = $1, updated_at = now() WHERE id = $2",
-        eid,
-        cid,
-    )
 
     # Migrate existing contact-scoped facts to the entity across all memory pools.
     # Matches both the current 'contact:{cid}' prefix and legacy bare-UUID subjects.
@@ -1429,10 +1413,9 @@ async def delete_entity(
 ) -> None:
     """Soft-delete an entity by setting metadata.deleted_at.
 
-    Unlinks any contacts pointing to this entity.  Owner entities cannot be
-    deleted (returns 403).  When active facts exist, returns 409 with the count
-    unless ``retire_facts=true`` is passed, in which case all active facts are
-    retired (validity → 'retracted') first.
+    Owner entities cannot be deleted (returns 403).  When active facts exist,
+    returns 409 with the count unless ``retire_facts=true`` is passed, in which
+    case all active facts are retired (validity → 'retracted') first.
     """
     import uuid as _uuid
     from datetime import datetime
@@ -1501,12 +1484,7 @@ async def delete_entity(
         eid,
         {"deleted_at": deleted_at},
     )
-
-    # Unlink any contacts referencing this entity
-    await pool.execute(
-        "UPDATE public.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
-        eid,
-    )
+    # public.contacts retired (bu-jnaa3): no contact rows to unlink.
 
 
 # ---------------------------------------------------------------------------
@@ -1599,16 +1577,9 @@ async def unlink_contact(
     entity_id: str,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
-    """Unlink the contact from this entity by clearing entity_id on the contact."""
-    import uuid as _uuid
-
-    pool = _any_pool(db)
-    eid = _uuid.UUID(entity_id)
-
-    await pool.execute(
-        "UPDATE public.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
-        eid,
-    )
+    """No-op: public.contacts is retired (bu-jnaa3), so there is no contact link
+    to clear. Retained for API compatibility; returns 204."""
+    return None
 
 
 # ---------------------------------------------------------------------------

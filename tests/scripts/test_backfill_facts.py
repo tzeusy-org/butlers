@@ -125,15 +125,12 @@ async def test_fact_exists(monkeypatch):
 async def test_owner_entity_id():
     eid = uuid.uuid4()
 
-    # Found via contacts join
+    # Resolved directly from public.entities (bu-jnaa3: single query, no
+    # contacts join / fallback).
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value={"id": eid})
     assert await bf._owner_entity_id(pool) == eid
-
-    # Fallback path
-    pool2 = AsyncMock()
-    pool2.fetchrow = AsyncMock(side_effect=[None, {"id": eid}])
-    assert await bf._owner_entity_id(pool2) == eid
+    assert pool.fetchrow.await_count == 1
 
     # Not found
     pool3 = AsyncMock()

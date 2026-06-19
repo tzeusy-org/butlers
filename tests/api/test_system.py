@@ -286,7 +286,9 @@ def _make_egress_db(*, has_owner=True, audit_rows=None, owner_fails=False, audit
     async def _fetchrow(sql, *args):
         if owner_fails:
             raise RuntimeError("DB error")
-        if "ANY(e.roles)" in sql:
+        # Owner-assertion query now reads public.entities directly (bu-jnaa3):
+        # WHERE 'owner' = ANY(roles) — no contacts join, no 'e.' alias.
+        if "ANY(roles)" in sql:
             if has_owner:
                 rec = MagicMock()
                 rec.__getitem__ = MagicMock(return_value="fake-uuid")
@@ -660,7 +662,8 @@ class TestEgressSpan:
         pool = AsyncMock()
 
         async def _fetchrow(sql, *args):
-            if "ANY(e.roles)" in sql:
+            # Owner-assertion query now reads public.entities directly (bu-jnaa3).
+            if "ANY(roles)" in sql:
                 rec = MagicMock()
                 rec.__getitem__ = MagicMock(return_value="fake-uuid")
                 return rec

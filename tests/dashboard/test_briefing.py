@@ -88,7 +88,9 @@ def _make_owner_pool(
     owner_id = "owner-uuid-1234"
 
     async def _fetchrow(sql, *args):
-        if "public.contacts" in sql and "public.entities" in sql:
+        # Owner-assertion query now reads public.entities directly (bu-jnaa3):
+        # SELECT id FROM public.entities WHERE 'owner' = ANY(roles).
+        if "public.entities" in sql and "ANY(roles)" in sql:
             if owner_fails:
                 raise RuntimeError("DB error")
             if not has_owner:
@@ -1214,7 +1216,8 @@ def _make_audit_pool(
     owner_id = "owner-uuid-1234"
 
     async def _fetchrow(sql, *args):
-        if "public.contacts" in sql and "public.entities" in sql:
+        # Owner-assertion query now reads public.entities directly (bu-jnaa3).
+        if "public.entities" in sql and "ANY(roles)" in sql:
             rec = MagicMock()
             rec.__getitem__ = MagicMock(return_value=owner_id)
             return rec

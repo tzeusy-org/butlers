@@ -10,11 +10,10 @@ Two helpers are provided:
   Returns the owner entity UUID or ``None``.  Swallows ``asyncpg.PostgresError``
   so that pre-migration databases (missing ``public.entities``) fail gracefully.
 
-* ``resolve_owner_entity`` — two-step lookup used by the memory preferences
-  module: primary path via ``public.contacts JOIN public.entities`` (for
-  installs that have a registered owner contact), fallback to the direct
-  entities query.  Returns ``(entity_id, canonical_name)`` or raises
-  ``ValueError`` when no owner can be found.
+* ``resolve_owner_entity`` — direct ``public.entities WHERE 'owner' = ANY(roles)``
+  lookup used by the memory preferences module.  Returns
+  ``(entity_id, canonical_name)`` or raises ``ValueError`` when no owner can be
+  found.
 """
 
 from __future__ import annotations
@@ -69,19 +68,15 @@ async def fetch_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
 
 
 async def resolve_owner_entity_id_two_step(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner entity UUID via a two-step fallback strategy.
+    """Resolve the owner entity UUID directly from ``public.entities``.
 
-    Primary path
-        ``public.contacts JOIN public.entities`` filtered by
-        ``'owner' = ANY(e.roles)`` — works for fully-bootstrapped installs where
-        the owner entity has a linked contact row.
+    Reads ``public.entities WHERE 'owner' = ANY(roles)`` — roles live on the
+    entity (``public.contacts.roles`` was dropped in core_016 and the contact
+    object is being retired). Returns ``None`` when no owner entity exists.
 
-    Fallback path
-        ``public.entities WHERE 'owner' = ANY(roles)`` — works for installs
-        where the owner entity was seeded directly (e.g. early bootstrap or
-        post-migration state without a contact row yet).
-
-    Returns ``None`` when neither path finds an owner entity.
+    The legacy ``public.contacts JOIN public.entities`` primary path was removed:
+    it could only ever match the same owner entity the direct query finds, but
+    additionally required a (now-vestigial) contact row to exist.
 
     Parameters
     ----------
@@ -93,38 +88,18 @@ async def resolve_owner_entity_id_two_step(pool: asyncpg.Pool) -> uuid.UUID | No
     uuid.UUID | None
         The owner entity UUID, or ``None`` when the owner cannot be found.
     """
-    # Primary path: contacts table with entity_id FK.
-    # Note: public.contacts.roles was dropped in core_016; roles are on public.entities.
-    row = await pool.fetchrow(
-        """
-        SELECT e.id
-        FROM public.contacts c
-        JOIN public.entities e ON c.entity_id = e.id
-        WHERE 'owner' = ANY(e.roles)
-          AND c.entity_id IS NOT NULL
-        LIMIT 1
-        """
-    )
-    if row is not None:
-        return row["id"]
-
-    # Fallback: entities with owner role directly (no contact row required).
     row = await pool.fetchrow(_OWNER_ID_FROM_ENTITIES_SQL)
     return row["id"] if row is not None else None
 
 
 async def resolve_owner_entity(pool: asyncpg.Pool) -> tuple[uuid.UUID, str]:
-    """Resolve the owner entity via a two-step fallback strategy.
+    """Resolve the owner entity directly from ``public.entities``.
 
-    Primary path
-        ``public.contacts JOIN public.entities`` filtered by
-        ``'owner' = ANY(e.roles)`` — works for fully-bootstrapped installs where
-        the owner entity has a linked contact row.
-
-    Fallback path
-        ``public.entities WHERE 'owner' = ANY(roles)`` — works for installs
-        where the owner entity was seeded directly (e.g. early bootstrap or
-        post-migration state without a contact row yet).
+    Reads ``public.entities WHERE 'owner' = ANY(roles)`` — roles live on the
+    entity (``public.contacts.roles`` was dropped in core_016 and the contact
+    object is being retired). The legacy ``public.contacts JOIN public.entities``
+    primary path was removed: it could only match the same owner entity this
+    query finds, but additionally required a (now-vestigial) contact row.
 
     Parameters
     ----------
@@ -139,25 +114,9 @@ async def resolve_owner_entity(pool: asyncpg.Pool) -> tuple[uuid.UUID, str]:
     Raises
     ------
     ValueError
-        When neither path finds an owner entity.  Callers should surface a
-        meaningful error to the user (e.g. "owner not bootstrapped").
+        When no owner entity exists.  Callers should surface a meaningful error
+        to the user (e.g. "owner not bootstrapped").
     """
-    # Primary path: contacts table with entity_id FK.
-    # Note: public.contacts.roles was dropped in core_016; roles are on public.entities.
-    row = await pool.fetchrow(
-        """
-        SELECT e.id, e.canonical_name
-        FROM public.contacts c
-        JOIN public.entities e ON c.entity_id = e.id
-        WHERE 'owner' = ANY(e.roles)
-          AND c.entity_id IS NOT NULL
-        LIMIT 1
-        """
-    )
-    if row:
-        return row["id"], row["canonical_name"]
-
-    # Fallback: entities with owner role directly (no contact row required).
     row = await pool.fetchrow(_OWNER_FROM_ENTITIES_SQL)
     if row:
         return row["id"], row["canonical_name"]

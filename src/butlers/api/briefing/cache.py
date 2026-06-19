@@ -107,19 +107,20 @@ class BriefingCache:
 
 
 async def resolve_owner_id(pool: asyncpg.Pool) -> object | None:
-    """Return the owner contact id from the public schema, or None.
+    """Return the owner entity id from ``public.entities``, or None.
 
     Used by mutation endpoints to perform precise per-owner cache invalidation.
-    Errors are swallowed so that a missing or stale contacts table does not
-    block the primary operation.
+    The value is an opaque per-owner cache key — it must match the key used by
+    the briefing cache writer (``dashboard_briefing._assert_owner_contact``),
+    which resolves the same owner entity. Errors are swallowed so that a missing
+    or stale entities table does not block the primary operation.
     """
     try:
         row = await pool.fetchrow(
             """
-            SELECT c.id
-            FROM public.contacts c
-            JOIN public.entities e ON c.entity_id = e.id
-            WHERE 'owner' = ANY(e.roles)
+            SELECT id
+            FROM public.entities
+            WHERE 'owner' = ANY(roles)
             LIMIT 1
             """
         )

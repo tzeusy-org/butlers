@@ -67,8 +67,11 @@ _EXPORT_TTL_SECONDS = 3600  # 60 minutes
 # "all" expands to every table in this list (order is preserved in the export).
 # Note: "contact_info" was removed (bu-tv67t) — channel identifiers are now
 # stored in relationship.entity_facts and the legacy table is being dropped.
+# Note: the "contacts" scope was re-pointed to public.entities (bu-jnaa3) — the
+# identity registry is the canonical person/actor table; public.contacts is
+# being retired.
 _EXPORTABLE_TABLES: dict[str, str] = {
-    "contacts": "SELECT * FROM public.contacts ORDER BY id",
+    "entities": "SELECT * FROM public.entities ORDER BY id",
     "audit_log": "SELECT * FROM public.audit_log ORDER BY id",
 }
 _ALL_SCOPE_TABLES = list(_EXPORTABLE_TABLES.keys())
