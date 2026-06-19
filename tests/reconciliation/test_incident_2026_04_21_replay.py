@@ -83,7 +83,9 @@ class TestAC3OwnerGate:
         from butlers.tools.relationship.channel import channel_add
 
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"entity_id": OWNER_ENTITY_ID})
+        # resolve_contact_entity_id now queries contacts_source_links.local_entity_id
+        # (contacts-schema retirement, bu-ozpyl) rather than public.contacts.entity_id.
+        pool.fetchrow = AsyncMock(return_value={"local_entity_id": OWNER_ENTITY_ID})
         pool.execute = AsyncMock()
 
         action_id = uuid.uuid4()
@@ -120,7 +122,9 @@ class TestAC3OwnerGate:
         non_owner_entity = uuid.uuid4()
 
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"entity_id": non_owner_entity})
+        # resolve_contact_entity_id now queries contacts_source_links.local_entity_id
+        # (contacts-schema retirement, bu-ozpyl) rather than public.contacts.entity_id.
+        pool.fetchrow = AsyncMock(return_value={"local_entity_id": non_owner_entity})
         pool.execute = AsyncMock()
 
         fact_id = uuid.uuid4()

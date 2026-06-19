@@ -90,7 +90,9 @@ def _result(outcome: str, *, fact_id=None, action_id=None):
 
 def _pool_with_entity(entity_id=_ENTITY_ID):
     pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value={"entity_id": entity_id})
+    # resolve_contact_entity_id now queries contacts_source_links.local_entity_id
+    # (contacts-schema retirement, bu-ozpyl) rather than public.contacts.entity_id.
+    pool.fetchrow = AsyncMock(return_value={"local_entity_id": entity_id})
     # Wire execute/acquire so any accidental SQL DML would be observable.
     pool.execute = AsyncMock(return_value=None)
     conn = AsyncMock()
@@ -187,7 +189,9 @@ class TestContactInfoAddUsesCentralWriter:
         from butlers.tools.relationship.channel import channel_add
 
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"entity_id": None})
+        # Simulate a contacts_source_links row with NULL local_entity_id — data
+        # integrity issue that resolve_contact_entity_id should raise on.
+        pool.fetchrow = AsyncMock(return_value={"local_entity_id": None})
         with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
             with pytest.raises(ValueError):
                 await channel_add(pool, _CONTACT_ID, "email", "a@b.com")
@@ -205,8 +209,9 @@ class TestContactInfoReadsAllowed:
 
         fact_id = uuid.uuid4()
         pool = MagicMock()
-        # fetchrow is used by resolve_contact_entity_id (SELECT entity_id FROM contacts)
-        pool.fetchrow = AsyncMock(return_value={"entity_id": _ENTITY_ID})
+        # fetchrow is used by resolve_contact_entity_id (SELECT local_entity_id
+        # FROM contacts_source_links — contacts-schema retirement, bu-ozpyl).
+        pool.fetchrow = AsyncMock(return_value={"local_entity_id": _ENTITY_ID})
         # fetch is used by entity_facts_channels_by_entity (SELECT from relationship.entity_facts)
         pool.fetch = AsyncMock(
             return_value=[

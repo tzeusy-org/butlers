@@ -293,6 +293,31 @@ async def contact_create(
     # relationship_assert_fact().  The former dual-write shim call here was a
     # structural no-op and has been removed.
 
+    # Populate contact_entity_map (rel_029 / bu-ozpyl) so that _entity_resolve
+    # can resolve entity_id without querying public.contacts (contacts-schema
+    # retirement, bu-oluyt Phase 7).  Best-effort: if the migration has not yet
+    # run, catch UndefinedTableError and continue rather than failing the create.
+    if entity_uuid is not None:
+        try:
+            await pool.execute(
+                """
+                INSERT INTO contact_entity_map (contact_id, entity_id)
+                VALUES ($1, $2)
+                ON CONFLICT (contact_id) DO NOTHING
+                """,
+                row["id"],
+                entity_uuid,
+            )
+        except asyncpg.UndefinedTableError:
+            # rel_029 migration has not run yet; not fatal.
+            pass
+        except asyncpg.PostgresError:
+            logger.warning(
+                "contact_create: failed to populate contact_entity_map for %s",
+                result["id"],
+                exc_info=True,
+            )
+
     return result
 
 
