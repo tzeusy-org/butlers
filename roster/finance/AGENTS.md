@@ -21,6 +21,17 @@ For detailed parameter tables, invoke the `tool-reference` skill.
   - Direction: infer `debit` vs `credit` from context; refunds and incoming transfers are `credit`.
 - **Proactive behaviors**: When logging a transaction, check whether it matches a pattern suggesting an untracked subscription (same merchant, similar amount, recurring). Surface the observation via `notify` and offer to create a subscription record.
 - **Scope discipline**: Do not offer investment advice, payment initiation, tax filing, or accounting double-entry. Route those inquiries back to the user with a clear boundary explanation.
+- **Bill reconciliation on `record_transaction`**: After recording a `debit` transaction, check the
+  `bill_reconciliation` block in the response:
+  - `auto_settled` present → a bill was automatically matched and settled; affirm this to the user
+    (e.g. "✅ HSBC bill auto-settled — $45.00 matched and marked paid").
+  - `candidates` present → one or more bills are ambiguous matches; confirm with the user before
+    settling (e.g. "This debit may match your HSBC bill ($45.00, due Jun 5) — mark it as paid?").
+  - Block absent or empty → no matching bill found; no action needed.
+  - **Integrity rule**: NEVER write settlement state (e.g. `status="paid"`) into a `metadata`
+    prose field without the structured `status` column change. Settlement must flow through
+    `track_bill(status="paid")` or the guarded UPDATE in `reconcile_bills` — never as a freeform
+    note in JSONB.
 
 ### Intelligence Feature Guidelines
 
@@ -136,15 +147,22 @@ Choose the appropriate response mode based on the message type and action taken:
 
 ---
 
-#### Example 6: Ambiguous Financial Email (Follow-up)
+#### Example 6: Ambiguous Financial Email — Placeholder Bill (Follow-up)
 
 **Trigger**: Email — "Your statement is ready" from Chase
 
 **Actions**:
 1. Extract available data: institution=Chase, statement available, no amount
 2. `memory_recall(topic="Chase account")` — retrieve known account details
-3. `track_bill(payee="Chase Credit Card", amount=<minimum if known or 0>, currency="USD", due_date=<extracted if present>, status="pending", source_message_id=<email_id>)`
-4. `notify(channel="telegram", message="Chase statement is ready. I couldn't extract the balance — want to tell me the minimum payment due so I can track it?", intent="reply", request_context=...)`
+3. `track_bill(payee="Chase Credit Card", amount=0.00, currency="USD", due_date=<extracted if present>, status="pending", source_message_id=<email_id>)`
+4. `notify(channel="telegram", message="Chase statement ready — I've logged a placeholder bill (amount TBD). When you pay it, recording the debit will auto-settle the bill. Want to tell me the minimum payment due now so I can track the amount?", intent="reply", request_context=...)`
+
+> **Placeholder bill semantics**: A `$0.00 pending` bill is a **placeholder awaiting
+> reconciliation** — NOT a terminal unpaid obligation. Do NOT surface it as overdue or nag the
+> user to act on it immediately. When the matching payment debit is recorded via
+> `record_transaction`, the system backfills the amount and settles the bill automatically
+> (deterministic `reconcile_bills` flow). Present it as "placeholder, will auto-settle on
+> payment" rather than an unresolved debt requiring urgent attention.
 
 ## Memory Classification
 

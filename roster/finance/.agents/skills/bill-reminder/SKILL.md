@@ -15,9 +15,14 @@ Surface bills due within a specified horizon, triage them by urgency, highlight 
 ## Prerequisites
 
 Before starting the bill reminder workflow, gather context:
-1. Get upcoming bills: `upcoming_bills(days_ahead=14, include_overdue=true)` to surface all due bills
-2. Understand user's reminder preference: `memory_recall(topic="bill reminder preference")` (default: 3 days before due date)
-3. Verify calendar is available if setting reminders
+1. **Run reconciliation first**: `reconcile_bills()` — auto-settles any high-confidence pending
+   bills that already have matching debits on record. Bills settled here will not appear in the
+   triage list and require no manual action. Note auto-settled bills to report them to the user.
+2. Get upcoming bills: `upcoming_bills(days_ahead=14, include_overdue=true)` to surface all
+   remaining due bills (already-reconciled bills are marked as `paid` and excluded from results)
+3. Understand user's reminder preference: `memory_recall(topic="bill reminder preference")`
+   (default: 3 days before due date)
+4. Verify calendar is available if setting reminders
 
 ## Review Flow
 
@@ -105,6 +110,11 @@ What would you like to do?
 **For each action:**
 
 #### Action: Mark as Paid
+
+"Mark as paid" is the **explicit, manual path** — use it for bills the system could not
+auto-settle (ambiguous candidates, missing transaction record, or user-initiated payment
+outside the recorded debits). If `reconcile_bills()` already auto-settled a bill, it will
+not appear in the triage list.
 
 If user selects "Mark as paid":
 1. Ask confirmation: "Mark [Payee] $[amount] as paid today?"
