@@ -146,6 +146,7 @@ export function useMedicationDoses(
     queryKey: ["health-medication-doses", medicationId, params],
     queryFn: () => getMedicationDoses(medicationId, params),
     enabled: !!medicationId,
+    refetchInterval: 30_000,
   });
 }
 
@@ -164,6 +165,7 @@ export function useMedicationAdherence(
     queryKey: ["health-medication-adherence", medicationId, params],
     queryFn: () => getMedicationAdherence(medicationId, params),
     enabled: !!medicationId,
+    refetchInterval: 30_000,
   });
 }
 
@@ -463,7 +465,7 @@ export function useMeasurementsLatest(types: string[]) {
   return useQuery({
     queryKey: ["health-measurements-latest", types],
     queryFn: () => getMeasurementsLatest(types),
-    refetchInterval: 60_000,
+    refetchInterval: 30_000,
     enabled: types.length > 0,
   });
 }
