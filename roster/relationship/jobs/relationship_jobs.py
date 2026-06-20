@@ -1541,6 +1541,7 @@ async def _backfill_object_entity_ids(db_pool: asyncpg.Pool) -> dict[str, int]:
             SELECT id, content
             FROM facts
             WHERE validity        = 'active'
+              AND scope           = 'relationship'
               AND object_entity_id IS NULL
               AND predicate        = ANY($1::text[])
               AND TRIM(content)   != ''
