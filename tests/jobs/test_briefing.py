@@ -445,6 +445,10 @@ async def test_run_relationship_briefing_birthday_sql_contains_both_paths():
     Regression guard: after contacts_004 migration, rows written by the backfill
     have contact_id IS NULL and local_entity_id set.  Both paths must appear in
     the SQL so the briefing does not silently drop entity-anchored birthdays.
+
+    The contact-anchored arm is now re-pointed off public.contacts and reads via
+    contact_entity_map → entities (Phase 7.4g / bu-vccfw).  The entity-anchored
+    arm reads entities directly.  Both use e.listed as the canonical archive flag.
     """
     # fetch() order: birthday_rows, reminder_rows, gap_rows
     pool = _make_pool(fetch_rows=[])
@@ -457,17 +461,18 @@ async def test_run_relationship_briefing_birthday_sql_contains_both_paths():
 
     birthday_sql = pool.fetch.call_args_list[0][0][0]
 
-    # Contact-anchored branch
-    assert "JOIN contacts c ON c.id = id.contact_id" in birthday_sql
+    # Contact-anchored branch — via contact_entity_map + entities (not contacts)
+    assert "JOIN contact_entity_map cem ON cem.contact_id = id.contact_id" in birthday_sql
+    assert "JOIN public.entities e ON e.id = cem.entity_id" in birthday_sql
     assert "id.contact_id IS NOT NULL" in birthday_sql
 
-    # Entity-anchored branch (contacts_004)
+    # Entity-anchored branch (contacts_004) — entities joined directly on local_entity_id
     assert "UNION ALL" in birthday_sql
     assert "JOIN public.entities e ON e.id = id.local_entity_id" in birthday_sql
     assert "id.contact_id IS NULL" in birthday_sql
     assert "id.local_entity_id IS NOT NULL" in birthday_sql
-    # Listed guard: archived contacts' birthdays must stay hidden after contacts_004 backfill
-    assert "c.listed = true" in birthday_sql
+    # Listed guard: e.listed is the canonical archive flag for both arms
+    assert "e.listed = true" in birthday_sql
 
 
 async def test_run_relationship_briefing_contact_anchored_birthday():

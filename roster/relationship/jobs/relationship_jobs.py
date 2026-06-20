@@ -335,15 +335,12 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             d.label,
             d.month,
             d.day,
-            COALESCE(
-                NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                c.nickname,
-                'Unknown'
-            ) AS contact_name,
-            c.entity_id
+            COALESCE(e.canonical_name, 'Unknown') AS contact_name,
+            cem.entity_id
         FROM important_dates d
-        JOIN contacts c ON d.contact_id = c.id
-        WHERE c.listed = true
+        JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE e.listed = true
         ORDER BY d.month, d.day
         """
     )
@@ -445,32 +442,28 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     tier_ranking = get_tier_ranking(all_scores, overrides)
     dunbar_by_entity: dict = {entry["entity_id"]: entry for entry in tier_ranking}
 
-    # Query all listed contacts with interaction info (including those without entity_id)
+    # Query all listed contacts with interaction info via contact_entity_map → entities
     stale_rows = await db_pool.fetch(
         """
         SELECT
-            c.id,
-            c.entity_id,
-            c.stay_in_touch_days,
-            COALESCE(
-                NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                c.nickname,
-                'Unknown'
-            ) AS contact_name,
+            cem.contact_id AS id,
+            cem.entity_id,
+            e.stay_in_touch_days,
+            COALESCE(e.canonical_name, 'Unknown') AS contact_name,
             CASE
                 WHEN MAX(f.valid_at) IS NULL THEN NULL
                 ELSE EXTRACT(EPOCH FROM (now() - MAX(f.valid_at))) / 86400.0
             END AS days_since_last
-        FROM contacts c
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
         LEFT JOIN facts f
-            ON f.entity_id = c.entity_id
+            ON f.entity_id = cem.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
-        WHERE c.listed = true
-          AND c.entity_id IS NOT NULL
-        GROUP BY c.id, c.entity_id, c.stay_in_touch_days, c.first_name, c.last_name, c.nickname
-        ORDER BY c.first_name, c.last_name, c.nickname
+        WHERE e.listed = true
+        GROUP BY cem.contact_id, cem.entity_id, e.stay_in_touch_days, e.canonical_name
+        ORDER BY e.canonical_name
         """
     )
 
@@ -571,14 +564,11 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             gift_contact_rows = await db_pool.fetch(
                 """
                 SELECT
-                    c.id,
-                    COALESCE(
-                        NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                        c.nickname,
-                        'Unknown'
-                    ) AS contact_name
-                FROM contacts c
-                WHERE c.id = ANY($1::uuid[])
+                    cem.contact_id AS id,
+                    COALESCE(e.canonical_name, 'Unknown') AS contact_name
+                FROM contact_entity_map cem
+                JOIN public.entities e ON e.id = cem.entity_id
+                WHERE cem.contact_id = ANY($1::uuid[])
                 """,
                 gift_contact_ids,
             )
@@ -589,8 +579,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 """
                 SELECT DISTINCT d.contact_id, d.month, d.day, d.label
                 FROM important_dates d
-                JOIN contacts c ON d.contact_id = c.id
-                WHERE c.listed = true
+                JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
+                JOIN public.entities e ON e.id = cem.entity_id
+                WHERE e.listed = true
                   AND d.contact_id = ANY($1::uuid[])
                 ORDER BY d.month, d.day
                 """,
@@ -671,25 +662,21 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     interaction_stats_rows = await db_pool.fetch(
         """
         SELECT
-            c.id AS contact_id,
-            COALESCE(
-                NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                c.nickname,
-                'Unknown'
-            ) AS contact_name,
+            cem.contact_id AS contact_id,
+            COALESCE(e.canonical_name, 'Unknown') AS contact_name,
             COUNT(f.id)  AS interaction_count,
             MIN(f.valid_at) AS first_interaction_at
-        FROM contacts c
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
         LEFT JOIN facts f
-            ON f.entity_id = c.entity_id
+            ON f.entity_id = cem.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
-        WHERE c.listed = true
-          AND c.entity_id IS NOT NULL
-        GROUP BY c.id, c.first_name, c.last_name, c.nickname
+        WHERE e.listed = true
+        GROUP BY cem.contact_id, e.canonical_name
         HAVING COUNT(f.id) > 0
-        ORDER BY c.first_name, c.last_name, c.nickname
+        ORDER BY e.canonical_name
         """
     )
 
