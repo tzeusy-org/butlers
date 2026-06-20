@@ -1,7 +1,7 @@
 ---
 name: upcoming-bills-check
-description: Scheduled task skill — weekly bills check with pattern-based predictions, urgency-ranked digest sent via notify intent=send
-version: 1.1.0
+description: Scheduled task skill — weekly bills check with reconciliation sweep, pattern-based predictions, urgency-ranked digest sent via notify intent=send
+version: 2.0.0
 trigger_patterns:
   - scheduled task upcoming-bills-check
 ---
@@ -10,10 +10,11 @@ trigger_patterns:
 
 ## Purpose
 
-Weekly scheduled bill check. Surface bills due in the next 14 days (and any overdue), rank by
-urgency, compute totals, and include pattern-based bill predictions from historical transaction
-data. Deliver a concise digest to the owner via Telegram. If no bills are due, overdue, or
-predicted, send nothing.
+Weekly scheduled bill check. **First**, run the reconciliation sweep to auto-settle any bills
+matched by existing transactions (the backstop — catches cases the inline hook missed). Then
+surface remaining pending/overdue bills due in the next 14 days, rank by urgency, compute totals,
+and include pattern-based bill predictions from historical transaction data. Deliver a concise
+digest to the owner via Telegram. If nothing to report across all sections, send nothing.
 
 ## When to Use
 
@@ -22,9 +23,28 @@ Use this skill when:
 
 ## Execution Protocol
 
+### Step 0: Run Reconciliation Sweep (FIRST)
+
+Before fetching upcoming bills, run the deterministic reconciliation sweep. This is the weekly
+**backstop** — it settles bills that have matching payment transactions but were missed by the
+inline hook (e.g. a transaction recorded before the bill existed).
+
+```python
+reconciliation = reconcile_bills(lookback_days=90)
+```
+
+`reconcile_bills` returns:
+- `auto_settled`: bills just settled in this sweep — each has `bill_id`, `payee`, `amount`,
+  `paid_at`, `txn_id`
+- `candidates`: ambiguous matches needing confirmation — each has `bill_id`, `payee`, `due_date`,
+  `amount`, `candidates` (list of possible matching transactions)
+
+Capture these results. **Do not surface `auto_settled` bills in the unpaid urgency sections** —
+they are now paid. Confirmed ambiguous candidates must still be reported so the owner can decide.
+
 ### Step 1: Fetch Bills and Predictions
 
-Run both calls:
+Run both calls (these now reflect the post-reconciliation state):
 
 ```python
 # Tracked bills due in next 14 days plus any overdue
@@ -43,8 +63,12 @@ predictions = predict_bills(days_ahead=30)
 
 ### Step 2: Early Exit — Nothing to Report
 
-If `upcoming_bills` returns empty **and** `predict_bills` returns no predictions with
-`is_tracked=false`, **do not send a notification**. Exit the session immediately.
+If ALL of the following are true, **do not send a notification**. Exit the session immediately.
+
+- `reconcile_bills` returned no `auto_settled` entries
+- `reconcile_bills` returned no `candidates`
+- `upcoming_bills` returns empty
+- `predict_bills` returns no predictions with `is_tracked=false`
 
 (Predictions where `is_tracked=true` without urgency in `upcoming_bills` do not need reporting —
 they are already captured in the tracked bills list.)
@@ -59,6 +83,9 @@ Group tracked bill results into buckets:
 
 Sort each bucket by amount descending (largest obligation first within each tier).
 
+Bills auto-settled in Step 0 are **not** in these buckets — they've been removed from the
+pending/overdue list by the reconciliation sweep.
+
 ### Step 4: Classify Predictions
 
 From `predict_bills` results:
@@ -72,10 +99,17 @@ only if the `is_tracked=false` pattern is high-confidence.
 
 ### Step 5: Compose Digest
 
-Format the message concisely — readable on mobile Telegram:
+Format the message concisely — readable on mobile Telegram. Lead with reconciliation results,
+then unpaid obligations, then predictions.
 
 ```
 Bills update — [Date]
+
+✅ AUTO-SETTLED ([N]) — matched and marked paid this sweep
+- [Payee]: $[amount] — paid [paid_at date]
+
+❓ CONFIRM NEEDED ([N]) — ambiguous matches, please verify
+- [Payee]: $[bill_amount] due [due_date] — possible match: $[txn_amount] at [merchant] on [posted_at]
 
 🚨 OVERDUE ([N])
 - [Payee]: $[amount] — [N] days overdue
@@ -89,26 +123,29 @@ Bills update — [Date]
 🟡 UPCOMING ([N])
 - [Payee]: $[amount] — due [date]
 
-Total due: $[sum of all tracked amounts]
+Total still due: $[sum of remaining unpaid amounts]
 
 📈 PREDICTED (untracked recurring):
 - [Payee]: ~$[predicted_amount] — expected [predicted_date] (pattern-based)
 ```
 
-Omit any section header if its bucket is empty. If only "Upcoming" bills exist (nothing urgent),
-a shorter format is acceptable:
+**Section rules:**
+- Omit any section header if its bucket is empty.
+- Omit "Total still due" line if there are no remaining unpaid bills.
+- If nothing overdue/urgent and only upcoming bills exist, a shorter format is acceptable:
+  ```
+  Bills — next 14 days: [N] due, $[total]
+  - [Payee]: $[amount] — [date]
+  ```
+- Omit the "PREDICTED" section if `predict_bills` returns no untracked patterns.
+- Include an `amount_drift` note inline for tracked bills where drift exceeds 5%:
+  ```
+  - [Payee]: $[amount] — due [date] (tracked $[tracked_amount], predicted ~$[predicted_amount])
+  ```
 
-```
-Bills — next 14 days: [N] due, $[total]
-- [Payee]: $[amount] — [date]
-```
-
-Omit the "PREDICTED" section if `predict_bills` returns no untracked patterns.
-
-Include an `amount_drift` note inline for tracked bills where drift exceeds 5%:
-```
-- [Payee]: $[amount] — due [date] (tracked $[tracked_amount], predicted ~$[predicted_amount])
-```
+**Confirm-needed guidance:** For each `candidates` entry, include the payee, bill amount, due
+date, and the best-matching transaction candidate's merchant/amount/date. The owner can confirm
+via the `bill-reminder` skill or by directly updating the bill status.
 
 ### Step 6: Deliver Notification
 
@@ -126,9 +163,10 @@ a user message.
 
 ## Exit Criteria
 
-- `upcoming_bills(days_ahead=14, include_overdue=True)` called
+- `reconcile_bills(lookback_days=90)` called first (settlement backstop)
+- `upcoming_bills(days_ahead=14, include_overdue=True)` called after
 - `predict_bills(days_ahead=30)` called to surface pattern-based predictions
-- If no bills and no untracked predictions: session exits without sending
-- If bills or untracked predictions exist: urgency-classified digest with prediction section
-  sent via `notify(intent="send")`
+- If nothing to report across all sections: session exits without sending
+- If any reconciliation results or bills or untracked predictions exist: urgency-classified
+  digest with reconciliation and prediction sections sent via `notify(intent="send")`
 - Session exits after delivery — no interactive follow-up in this session

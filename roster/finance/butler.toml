@@ -42,21 +42,27 @@ groups = ["core", "subscriptions", "bills", "analytics", "bulk", "intelligence",
 name = "upcoming-bills-check"
 cron = "15 21 * * 0"
 prompt = """
-Weekly bills check. Use upcoming_bills(days_ahead=14, include_overdue=true) to surface bills due
-in the next two weeks, ranked by urgency:
-- Overdue bills first
-- Bills due today
-- Bills due this week
-- Bills due within 14 days
+Weekly bills check. Follow the upcoming-bills-check skill for the full protocol.
 
-Also call predict_bills(days_ahead=30) to surface upcoming bills predicted from historical
-payment patterns. For each predicted bill, note whether it is already tracked (is_tracked=true)
-or is a new pattern, and flag any amount_drift detected vs the tracked record.
+STEP 0 — Reconciliation sweep (FIRST): call reconcile_bills(lookback_days=90) to auto-settle
+any bills matched by existing payment transactions (backstop for the inline hook). Capture
+auto_settled (bills just paid) and candidates (ambiguous matches needing confirmation).
 
-Notify the owner via Telegram with the urgency-ranked list, total amount due, and any
-pattern-based predictions not yet tracked as bills.
-Use notify(channel="telegram", intent="send", message=<urgency_ranked_list>).
-If no bills are upcoming, overdue, or predicted, do not send a message.
+STEP 1 — Fetch bills: call upcoming_bills(days_ahead=14, include_overdue=true) and
+predict_bills(days_ahead=30). These now reflect the post-reconciliation state.
+
+STEP 2 — Early exit: if reconcile_bills returned nothing AND upcoming_bills is empty AND
+predict_bills has no untracked patterns, do not send a message.
+
+STEP 3 — Compose urgency-ranked digest including:
+  - ✅ AUTO-SETTLED: bills settled in this sweep (reconcile_bills.auto_settled)
+  - ❓ CONFIRM NEEDED: ambiguous matches (reconcile_bills.candidates)
+  - 🚨 OVERDUE / 🔴 DUE TODAY / 🟠 DUE SOON / 🟡 UPCOMING: remaining unpaid bills
+  - Total still due (unpaid only)
+  - 📈 PREDICTED: untracked recurring patterns from predict_bills
+
+Send via notify(channel="telegram", intent="send", message=<digest>).
+If no content across all sections, do not send a message.
 """
 
 [[butler.schedule]]
