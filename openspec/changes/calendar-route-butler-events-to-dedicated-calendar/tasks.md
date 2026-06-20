@@ -1,0 +1,34 @@
+## 1. Calendar-id role separation (foundation)
+
+- [ ] 1.1 Introduce a distinct default-target field separate from the immutable Butlers calendar id (`_resolved_calendar_id`); pick a distinct credential key for the user-chosen default target (do NOT reuse `GOOGLE_CALENDAR_ID`)
+- [ ] 1.2 Update `calendar_set_primary` to set only the default-target field/cred key; assert `_resolved_calendar_id` is never mutated
+- [ ] 1.3 Unit tests: `calendar_set_primary` leaves `_resolved_calendar_id` intact and persists the default target under the new key
+
+## 2. Flip the create default to the Butlers calendar
+
+- [ ] 2.1 Change `_resolve_calendar_id(None)` no-override branch to return `_resolved_calendar_id` (Butlers calendar); keep the explicit-override path (validated against discovered calendars) unchanged
+- [ ] 2.2 Unit tests: no-override create resolves to the Butlers id; explicit `calendar_id` override (primary) resolves to primary; invalid override raises
+- [ ] 2.3 Integration test (fake provider): `calendar_create_event` with no `calendar_id` lands the event on the Butlers calendar id, branded `BUTLER:` + `butler_generated`
+
+## 3. Home-calendar resolver for update/delete
+
+- [ ] 3.1 Implement a resolver keyed by provider event id: explicit override → projection lookup (`calendar_events.origin_ref` JOIN `calendar_sources.calendar_id`) → bounded search across Butlers+primary (+ other discovered) → primary fallback (fail-open not-found)
+- [ ] 3.2 Wire `calendar_update_event` to use the resolver instead of `_resolve_calendar_id(None)`
+- [ ] 3.3 Wire `calendar_delete_event` to use the resolver instead of `_resolve_calendar_id(None)`
+- [ ] 3.4 Unit tests: projection hit targets home calendar; explicit override wins; search fallback locates event; not-found surfaces fail-open (no raise)
+- [ ] 3.5 Integration test: butler event on Butlers calendar is updated/deleted on the Butlers calendar; a user-lane event on primary is patched/deleted in place on primary
+
+## 4. Promote `create_user_event` to a branded butler-authored write
+
+- [ ] 4.1 Stamp `create_user_event` payloads with `_ensure_butler_title` + `_build_butler_private_metadata` and route via the new Butlers-calendar default
+- [ ] 4.2 Confirm the `calendar.write` permissions-matrix gate still runs before the provider write
+- [ ] 4.3 Unit test: `create_user_event` targets the Butlers calendar id and stamps butler metadata
+- [ ] 4.4 Verify health/meal-logging path (`roster/health/modules/__init__.py`) now lands meal events on the Butlers calendar (integration or fake-provider test)
+
+## 5. Spec + regression + docs
+
+- [ ] 5.1 Update existing `module-calendar` spec scenarios that assert "primary calendar is used as the default for tool mutations" to match the new behavior (this change's delta is the source of truth)
+- [ ] 5.2 Update/replace regression tests that assert the old primary-default create behavior
+- [ ] 5.3 Run `openspec validate calendar-route-butler-events-to-dedicated-calendar --strict`
+- [ ] 5.4 Full quality gate: `ruff check`/`format --check` + targeted calendar test suite, then full `pytest` (excluding e2e) before merge
+- [ ] 5.5 Confirm go-forward-only: no migration that mutates live Google events; note in PR that pre-existing butler events on primary are intentionally left untouched
