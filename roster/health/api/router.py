@@ -478,6 +478,24 @@ async def list_medication_doses(
 # ---------------------------------------------------------------------------
 
 
+# --- Per-owner 5-minute TTL cache (reuses the shared BriefingCache) ---------
+# Defined here (above the dose-logging route) so the route can reference
+# get_health_briefing_cache as a FastAPI dependency at definition time; the
+# GET /briefing route below shares the same singleton.
+_health_briefing_cache: BriefingCache = BriefingCache()
+
+
+def get_health_briefing_cache() -> BriefingCache:
+    """Return the module-level health-briefing cache singleton (FastAPI dep)."""
+    return _health_briefing_cache
+
+
+def replace_health_briefing_cache(cache: BriefingCache) -> None:
+    """Replace the module-level cache (used in tests to inject a zero-TTL cache)."""
+    global _health_briefing_cache
+    _health_briefing_cache = cache
+
+
 def _dose_response(result: dict, medication_id: str) -> Dose:
     """Build the Dose response model from a write-tool result dict."""
     return Dose(
@@ -499,6 +517,7 @@ async def log_medication_dose(
     medication_id: str,
     body: DoseLogRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
+    cache: BriefingCache = Depends(get_health_briefing_cache),
 ) -> Dose:
     """Log a medication dose via the butler's ``medication_log_dose`` fact path.
 
@@ -507,6 +526,13 @@ async def log_medication_dose(
     tool writes — so the dose appears in GET /medications/{id}/doses immediately.
     Set ``skipped=True`` to record a missed dose.  Returns 404 if the medication
     does not exist.
+
+    After a successful write the per-owner health-briefing cache is invalidated
+    so the next ``GET /api/health/briefing`` reflects the new dose rather than
+    serving a pre-dose cached paragraph for up to the 5-minute TTL (spec:
+    "Logging a dose ... MUST invalidate the per-owner briefing cache").  The
+    deployment is single-owner, so ``invalidate_all`` clears the one owner entry
+    without a switchboard-pool owner lookup on the write path.
     """
     from butlers.tools.health import medication_log_dose
 
@@ -521,6 +547,7 @@ async def log_medication_dose(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    cache.invalidate_all()
     return _dose_response(result, medication_id)
 
 
@@ -1842,21 +1869,6 @@ def _health_briefing_llm_enabled() -> bool:
         "yes",
         "on",
     )
-
-
-# --- Per-owner 5-minute TTL cache (reuses the shared BriefingCache) ---------
-_health_briefing_cache: BriefingCache = BriefingCache()
-
-
-def get_health_briefing_cache() -> BriefingCache:
-    """Return the module-level health-briefing cache singleton (FastAPI dep)."""
-    return _health_briefing_cache
-
-
-def replace_health_briefing_cache(cache: BriefingCache) -> None:
-    """Replace the module-level cache (used in tests to inject a zero-TTL cache)."""
-    global _health_briefing_cache
-    _health_briefing_cache = cache
 
 
 # --- Owner gate (mirrors dashboard_briefing._assert_owner_contact) ----------

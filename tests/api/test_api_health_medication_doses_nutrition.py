@@ -97,6 +97,40 @@ async def test_log_dose_returns_201_and_dose(monkeypatch):
     assert body["taken_at"] == _NOW.isoformat()
 
 
+async def test_log_dose_invalidates_briefing_cache(monkeypatch):
+    """A successful dose write invalidates the per-owner health-briefing cache.
+
+    Spec (butler-health delta, "Logging a dose writes a took_dose fact"): the
+    route MUST invalidate the per-owner briefing cache so the next briefing
+    reflects the dose rather than serving a stale pre-dose paragraph for the
+    5-minute TTL.
+    """
+    import health_api_router as health_router
+
+    med_id = str(uuid.uuid4())
+
+    async def fake_log_dose(pool, medication_id, *, taken_at, skipped, notes):
+        return {
+            "id": uuid.uuid4(),
+            "medication_id": uuid.UUID(med_id),
+            "skipped": skipped,
+            "notes": notes,
+            "taken_at": _NOW,
+            "created_at": _NOW,
+        }
+
+    monkeypatch.setattr(health_tools, "medication_log_dose", fake_log_dose)
+
+    cache = MagicMock()
+    app, _ = _make_app()
+    app.dependency_overrides[health_router.get_health_briefing_cache] = lambda: cache
+    async with _client(app) as client:
+        resp = await client.post(f"/api/health/medications/{med_id}/doses", json={})
+
+    assert resp.status_code == 201
+    cache.invalidate_all.assert_called_once()
+
+
 async def test_log_dose_defaults_skipped_false(monkeypatch):
     """Omitting skipped logs a taken dose (skipped defaults to False)."""
     med_id = str(uuid.uuid4())
