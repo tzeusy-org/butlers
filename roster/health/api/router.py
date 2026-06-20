@@ -10,14 +10,24 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
+import re
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
+from butlers.api.briefing.cache import BriefingCache
+from butlers.api.briefing.classify import time_of_day
+from butlers.api.briefing.lint import first_violation, voice_lint_passes
 from butlers.api.db import DatabaseManager
-from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core.general_settings import load_general_settings
+from butlers.core.model_routing import Complexity
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -27,6 +37,7 @@ if _spec is not None and _spec.loader is not None:
     sys.modules["health_api_models"] = _models
     _spec.loader.exec_module(_models)
 
+    Briefing = _models.Briefing
     Condition = _models.Condition
     ConditionCreateRequest = _models.ConditionCreateRequest
     ConditionUpdateRequest = _models.ConditionUpdateRequest
@@ -1781,3 +1792,534 @@ async def get_nutrition_summary(
         meal_count=result["meal_count"],
         days=days,
     )
+
+
+# ===========================================================================
+# GET /briefing — health Voice briefing (mirrors GET /api/dashboard/briefing)
+#
+# An owner-only LLM Voice composer over the health summary + the proactive
+# insight feed.  It is templated-only BY DEFAULT; an LLM elaboration is
+# attempted only when the cost flag is on, and even then it falls through to
+# the deterministic templated paragraph on ANY failure (LLM error, timeout,
+# empty text, or a non-diagnostic voice-lint rejection).  ``source`` is exactly
+# "llm" or "fallback".  The endpoint NEVER raises in normal operation.
+#
+# Owner gating, the per-owner 5-minute TTL cache, and the elaborate->lint->
+# fallback pipeline are copied from src/butlers/api/routers/dashboard_briefing.py.
+#
+# Voice: the briefing is descriptive and NON-DIAGNOSTIC.  It pairs measurements
+# with the owner's own stored reference ranges rather than rendering clinical
+# verdicts, and never frames co-occurring signals as cause and effect.
+# ---------------------------------------------------------------------------
+
+SWITCHBOARD_DB = "switchboard"
+
+# Insight priority at or above this threshold is treated as "needs review now".
+_HIGH_INSIGHT_PRIORITY = 2
+
+# Runtime butler name used for the briefing's discretion-tier LLM dispatch.
+HEALTH_BRIEFING_RUNTIME_BUTLER_NAME = "__health_briefing__"
+
+
+# --- Cost flag -------------------------------------------------------------
+#
+# Templated-only by default.  LLM elaboration is enabled only behind a cost
+# flag, mirroring how the dashboard briefing keeps the LLM path gated behind a
+# config/catalog mechanism.  The flag is read fresh on every request so it can
+# be toggled without a restart (and monkeypatched in tests).
+
+
+def _health_briefing_llm_enabled() -> bool:
+    """Return True only when the LLM-elaboration cost flag is explicitly on.
+
+    Off by default so the endpoint is templated-only and invokes no LLM unless
+    an operator opts into the cost. Set ``HEALTH_BRIEFING_LLM_ENABLED`` to one
+    of ``1/true/yes/on`` to enable.
+    """
+    return os.environ.get("HEALTH_BRIEFING_LLM_ENABLED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+# --- Per-owner 5-minute TTL cache (reuses the shared BriefingCache) ---------
+_health_briefing_cache: BriefingCache = BriefingCache()
+
+
+def get_health_briefing_cache() -> BriefingCache:
+    """Return the module-level health-briefing cache singleton (FastAPI dep)."""
+    return _health_briefing_cache
+
+
+def replace_health_briefing_cache(cache: BriefingCache) -> None:
+    """Replace the module-level cache (used in tests to inject a zero-TTL cache)."""
+    global _health_briefing_cache
+    _health_briefing_cache = cache
+
+
+# --- Owner gate (mirrors dashboard_briefing._assert_owner_contact) ----------
+
+
+async def _assert_owner_contact(pool: Any) -> Any:
+    """Raise HTTP 403 unless an owner entity exists; return its id as cache key.
+
+    Mirrors the dashboard briefing owner gate: asserts ``'owner' = ANY(roles)``
+    on ``public.entities``. In v1 the dashboard is owner-only and there is no
+    per-request identity, so the assertion checks that the system is
+    bootstrapped with an owner entity.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT id
+            FROM public.entities
+            WHERE 'owner' = ANY(roles)
+            LIMIT 1
+            """
+        )
+    except Exception as exc:
+        logger.warning("Health briefing owner-entity assertion query failed: %s", exc)
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "forbidden", "message": "Owner contact assertion failed"},
+        )
+
+    if row is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "forbidden", "message": "Owner contact not found"},
+        )
+
+    return row["id"]
+
+
+async def _owner_local_now(pool: Any, *, utc_now: datetime | None = None) -> datetime:
+    """Return the current wall-clock time in the owner's configured timezone."""
+    current = utc_now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    try:
+        settings = await load_general_settings(pool)
+        timezone_name = str(settings.get("timezone") or "UTC")
+        return current.astimezone(ZoneInfo(timezone_name))
+    except Exception as exc:
+        logger.warning("Could not resolve owner timezone for health briefing: %s", exc)
+        return current.astimezone(UTC)
+
+
+# --- Non-diagnostic voice lint (extends the global voice_lint_passes) -------
+#
+# The briefing copy must read as a calm, descriptive log entry — never a
+# diagnosis, a prediction, or a celebration. These rules extend the shared
+# dashboard voice lint (no exclamation/em-dash/first-person/future-tense/
+# hedging) with health-specific bans.
+
+# (1) Diagnosis / medical-advice tokens.
+_HEALTH_DIAGNOSIS = re.compile(
+    r"(diagnos\w*"
+    r"|\brisk of\b"
+    r"|\bsymptom of\b"
+    r"|\bconsistent with\b"
+    r"|\bindicates?\b"
+    r"|\byou (?:may|might|could) have\b"
+    r"|\bshould see (?:a|your) (?:doctor|physician|provider)\b)",
+    re.IGNORECASE,
+)
+
+# (2) Causal connectives — the briefing states co-occurrence, never causation.
+_HEALTH_CAUSAL = re.compile(
+    r"\b(because(?: of)?|caused? by|causes?|due to|leads? to|results? in|triggers?)\b",
+    re.IGNORECASE,
+)
+
+# (3) Celebration / judgment — praise, streak/green-check, encouragement.
+_HEALTH_PRAISE = re.compile(
+    r"(\b(great job|well done|amazing|awesome|congrat\w*|keep it up|nice work|proud"
+    r"|on track|streak)\b|✅|✓)",
+    re.IGNORECASE,
+)
+
+# (4) Future-tense markers — prediction is diagnosis-adjacent. The global lint
+# only bans "will be"/"is going to"; here we also ban bare "will"/"going to".
+_HEALTH_FUTURE = re.compile(r"\b(will|going to|gonna)\b", re.IGNORECASE)
+
+# (5) Clinical verdict adjectives — pair a measurement with the owner's own
+# stored reference range instead of rendering a verdict on it.
+_HEALTH_VERDICT = re.compile(
+    r"\b(elevated|dangerously|abnormal|critically|too high|too low|out of range|alarming)\b",
+    re.IGNORECASE,
+)
+
+_HEALTH_LINT_RULES: list[tuple[str, re.Pattern]] = [
+    ("diagnosis_or_advice", _HEALTH_DIAGNOSIS),
+    ("causal_connective", _HEALTH_CAUSAL),
+    ("celebration_or_judgment", _HEALTH_PRAISE),
+    ("future_tense", _HEALTH_FUTURE),
+    ("clinical_verdict", _HEALTH_VERDICT),
+]
+
+
+def _health_first_violation(text: str) -> str | None:
+    """Return the label of the first violated rule (global or health), else None."""
+    base = first_violation(text)
+    if base is not None:
+        return base
+    for label, pattern in _HEALTH_LINT_RULES:
+        if pattern.search(text):
+            return label
+    return None
+
+
+def _health_voice_lint_passes(text: str) -> bool:
+    """Return True only if *text* passes the global AND the health-specific lint."""
+    if not voice_lint_passes(text):
+        return False
+    return not any(pattern.search(text) for _label, pattern in _HEALTH_LINT_RULES)
+
+
+# --- State fetch -----------------------------------------------------------
+
+
+async def _fetch_health_summary(health_pool: Any) -> dict:
+    """Fetch the health summary (measurements/medications/conditions).
+
+    Returns an empty-shaped summary on any failure; logs at WARNING.
+    """
+    try:
+        from butlers.tools.health import health_summary
+
+        return await health_summary(health_pool)
+    except Exception as exc:
+        logger.warning("Could not fetch health summary for briefing: %s", exc)
+        return {
+            "recent_measurements": [],
+            "active_medications": [],
+            "active_conditions": [],
+        }
+
+
+async def _fetch_health_insights(sw_pool: Any) -> list[dict]:
+    """Fetch pending health insight candidates from the Switchboard insight feed.
+
+    Reads ``public.insight_candidates`` (origin_butler = 'health', status =
+    'pending') — the same surface the GET /api/insights Switchboard reader
+    exposes. Only the Switchboard role has SELECT on this table, so the
+    Switchboard pool is used. Returns [] on any failure; logs at WARNING.
+    """
+    try:
+        rows = await sw_pool.fetch(
+            """
+            SELECT id, category, priority, message, metadata, created_at, status, expires_at
+            FROM public.insight_candidates
+            WHERE status = 'pending' AND origin_butler = $1
+            ORDER BY priority DESC, created_at ASC
+            LIMIT 50
+            """,
+            "health",
+        )
+    except Exception as exc:
+        logger.warning("Could not fetch health insight feed for briefing: %s", exc)
+        return []
+
+    insights: list[dict] = []
+    for r in rows:
+        try:
+            priority = int(r["priority"])
+        except (TypeError, ValueError, KeyError):
+            priority = 0
+        insights.append(
+            {
+                "id": str(r["id"]),
+                "category": r["category"],
+                "priority": priority,
+                "message": r["message"],
+                "created_at": (r["created_at"].isoformat() if r["created_at"] else None),
+            }
+        )
+    return insights
+
+
+async def _fetch_health_briefing_state(health_pool: Any, sw_pool: Any, now: datetime) -> dict:
+    """Build the internal state used for classification and prose.
+
+    Composes the health summary (from the health pool) with the proactive
+    insight feed (from the Switchboard pool). The public response is still the
+    six-field Briefing object; this richer state stays internal.
+    """
+    summary = await _fetch_health_summary(health_pool)
+    insights = await _fetch_health_insights(sw_pool)
+    return {
+        "now": now,
+        "summary": summary,
+        "insights": insights,
+    }
+
+
+# --- Classification / headline / fallback ----------------------------------
+
+
+def _classify_health(state: dict) -> str:
+    """Classify health state from the insight feed (count-based, non-diagnostic).
+
+    Priority (top wins):
+        attention  1+ pending insight at or above the high-priority threshold
+        active     3+ pending insights, none high
+        light      1-2 pending insights, none high
+        quiet      0 pending insights
+    """
+    insights: list[dict] = state.get("insights", [])
+    high = sum(1 for i in insights if int(i.get("priority", 0)) >= _HIGH_INSIGHT_PRIORITY)
+    total = len(insights)
+
+    if high >= 1:
+        return "attention"
+    if total >= 3:
+        return "active"
+    if total >= 1:
+        return "light"
+    return "quiet"
+
+
+def _plural(n: int, singular: str, plural: str) -> str:
+    return singular if n == 1 else plural
+
+
+def _health_headline(state: dict, state_class: str) -> str:
+    """Return the non-diagnostic headline body for a given health state class."""
+    insights: list[dict] = state.get("insights", [])
+    high = sum(1 for i in insights if int(i.get("priority", 0)) >= _HIGH_INSIGHT_PRIORITY)
+    total = len(insights)
+
+    if state_class == "attention":
+        n = high if high else 1
+        verb = _plural(n, "insight needs", "insights need")
+        return f"{n} health {verb} review."
+    if state_class == "active":
+        return f"The health feed holds {total} insights to review."
+    if state_class == "light":
+        noun = _plural(total, "insight is", "insights are")
+        return f"{total} health {noun} noted since the last review."
+    return "The health log is steady."
+
+
+def _health_fallback(state: dict, state_class: str) -> str:
+    """Return the deterministic templated paragraph (factual counts only).
+
+    Purely descriptive — it reports counts from the health log and the insight
+    feed and renders no clinical verdict, prediction, or judgment, so it always
+    passes the non-diagnostic voice lint.
+    """
+    summary = state.get("summary", {})
+    meds = len(summary.get("active_medications", []) or [])
+    conds = len(summary.get("active_conditions", []) or [])
+    meas = len(summary.get("recent_measurements", []) or [])
+    ins = len(state.get("insights", []) or [])
+
+    med_word = _plural(meds, "medication", "medications")
+    cond_word = _plural(conds, "condition", "conditions")
+    meas_word = _plural(meas, "measurement type", "measurement types")
+    ins_word = _plural(ins, "item", "items")
+
+    return (
+        f"The health log holds {meds} active {med_word} and {conds} tracked {cond_word}. "
+        f"{meas} {meas_word} carry recent readings, and the insight feed has "
+        f"{ins} {ins_word} pending review."
+    )
+
+
+# --- LLM elaboration (gated by the cost flag; never raises to the caller) ---
+
+_HEALTH_SYSTEM_PROMPT = """\
+You write a one-to-three sentence elaboration paragraph for a personal health \
+dashboard. The paragraph names what is true about the health log and the insight \
+feed right now, drawing only from the state JSON provided in the user message.
+
+This is a descriptive log entry, never medical guidance. Hard rules (all mandatory):
+- No diagnosis and no advice. Do not name conditions, do not write "risk of," \
+"symptom of," "consistent with," "indicates," "you may have," or "should see a doctor."
+- No causation. State that signals co-occurred; never write that one caused another \
+("because," "due to," "leads to," "caused by").
+- No clinical verdicts on a number. Do not write "elevated," "too high," "abnormal," \
+or "dangerously." Pair a reading with the owner's own stored reference range instead.
+- No prediction. No future tense. Do not write "will" or "going to."
+- No celebration or judgment. No exclamation marks, no praise, no "streak" or "on track."
+- No first person. Write "the log," "the feed." Never "I," "we," "us," or "our."
+- No em-dashes. Maximum 50 words. Three sentences at most.
+- Write only the paragraph. No preamble, no sign-off, no markdown formatting.
+"""
+
+
+def _compact_insight(item: dict) -> dict:
+    return {
+        "category": item.get("category"),
+        "priority": item.get("priority"),
+        "message": item.get("message"),
+    }
+
+
+def _build_health_user_message(state: dict, state_class: str) -> str:
+    """Render the user turn from health state and the computed class."""
+    summary = state.get("summary", {})
+    insights = state.get("insights", [])
+    state_summary = {
+        "state_class": state_class,
+        "generated_for_local_time": state.get("now"),
+        "counts": {
+            "active_medications": len(summary.get("active_medications", []) or []),
+            "active_conditions": len(summary.get("active_conditions", []) or []),
+            "recent_measurement_types": len(summary.get("recent_measurements", []) or []),
+            "pending_insights": len(insights),
+        },
+        "recent_measurements": summary.get("recent_measurements", []),
+        "top_insights": [_compact_insight(i) for i in insights[:5]],
+    }
+    return (
+        f"Health state:\n{json.dumps(state_summary, default=str, indent=2)}\n\n"
+        f"Write the elaboration paragraph for state_class={state_class!r}."
+    )
+
+
+async def elaborate_health_llm(pool: Any, state: dict, state_class: str) -> str | None:
+    """Call the catalog-backed local runtime and return the paragraph or None.
+
+    Returns None on any failure so the caller uses the deterministic fallback.
+    """
+    dispatcher = DiscretionDispatcher(
+        pool,
+        butler_name=HEALTH_BRIEFING_RUNTIME_BUTLER_NAME,
+        complexity_tier=Complexity.CHEAP,
+    )
+    try:
+        text = (
+            await dispatcher.call(
+                _build_health_user_message(state, state_class),
+                system_prompt=_HEALTH_SYSTEM_PROMPT,
+            )
+        ).strip()
+        if not text:
+            logger.info("Health briefing LLM elaboration returned empty text")
+            return None
+        return text
+    except Exception as exc:
+        logger.warning("Health briefing local-runtime elaboration failed: %s", exc)
+        return None
+
+
+# --- Composition -----------------------------------------------------------
+
+
+async def _compose_health_briefing(
+    state: dict,
+    cache: BriefingCache,
+    owner_id: Any,
+    llm_pool: Any,
+) -> dict:
+    """Compose a fresh Briefing dict and populate the cache.
+
+    Pipeline: classify -> greet+headline -> (cost-flag) LLM elaboration ->
+    non-diagnostic voice lint -> templated fallback on any failure -> cache.
+    Every fallback path logs its reason with structured context so a silently
+    degraded (always-templated) briefing is diagnosable rather than invisible.
+    """
+    now = state["now"]
+
+    try:
+        state_class = _classify_health(state)
+    except Exception as exc:
+        logger.error("Health briefing classification failed, defaulting to quiet: %s", exc)
+        state_class = "quiet"
+
+    hour = now.hour if isinstance(now, datetime) else 12
+    greet = f"Good {time_of_day(hour)}."
+    headline = _health_headline(state, state_class)
+
+    elaboration: str | None = None
+    source = "fallback"
+
+    if _health_briefing_llm_enabled():
+        try:
+            llm_text = await elaborate_health_llm(llm_pool, state, state_class)
+            if llm_text:
+                if _health_voice_lint_passes(llm_text):
+                    elaboration = llm_text
+                    source = "llm"
+                else:
+                    violation = _health_first_violation(llm_text)
+                    logger.info(
+                        "Health briefing LLM elaboration rejected by voice lint "
+                        "(violation=%s, state_class=%s); using templated fallback",
+                        violation,
+                        state_class,
+                    )
+            else:
+                logger.info(
+                    "Health briefing LLM produced no text (state_class=%s); "
+                    "using templated fallback",
+                    state_class,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Health briefing LLM elaboration raised (state_class=%s); "
+                "using templated fallback: %s",
+                state_class,
+                exc,
+            )
+    else:
+        logger.debug(
+            "Health briefing LLM disabled by cost flag (state_class=%s); templated fallback",
+            state_class,
+        )
+
+    if elaboration is None:
+        elaboration = _health_fallback(state, state_class)
+
+    generated_at = datetime.now(UTC).isoformat()
+
+    briefing_dict = {
+        "greet": greet,
+        "headline": headline,
+        "elaboration": elaboration,
+        "source": source,
+        "state_class": state_class,
+        "generated_at": generated_at,
+    }
+
+    cache.set(owner_id, briefing_dict)
+    return briefing_dict
+
+
+@router.get("/briefing", response_model=ApiResponse[Briefing])
+async def get_health_briefing(
+    db: DatabaseManager = Depends(_get_db_manager),
+    cache: BriefingCache = Depends(get_health_briefing_cache),
+) -> ApiResponse[Briefing]:
+    """Return the health Voice briefing for the authenticated owner.
+
+    - Owner-only: HTTP 403 for non-owner (no cache read or write), 401 for
+      unauthenticated (via the API-key middleware).
+    - Templated-only BY DEFAULT; an LLM elaboration is attempted only when the
+      cost flag is on, and falls through to the templated fallback on any
+      failure (LLM error, timeout, empty text, or voice-lint rejection).
+    - ``source`` is exactly "llm" or "fallback".
+    - 5-minute per-owner cache: a cache hit preserves the original generated_at.
+    - Never raises HTTP 500 in normal operation.
+    """
+    try:
+        sw_pool = db.pool(SWITCHBOARD_DB)
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    health_pool = _pool(db)
+
+    # Owner-only gate (HTTP 403 for non-owner) — before any cache read or write.
+    owner_id = await _assert_owner_contact(sw_pool)
+
+    cached = cache.get(owner_id)
+    if cached is not None:
+        return ApiResponse(data=Briefing(**cached))
+
+    now = await _owner_local_now(sw_pool)
+    state = await _fetch_health_briefing_state(health_pool, sw_pool, now)
+    briefing_dict = await _compose_health_briefing(state, cache, owner_id, sw_pool)
+    return ApiResponse(data=Briefing(**briefing_dict))

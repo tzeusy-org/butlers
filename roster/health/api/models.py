@@ -474,3 +474,21 @@ class NutritionSummaryResponse(BaseModel):
     daily_avg: NutritionDailyAverage
     meal_count: int
     days: int
+
+
+class Briefing(BaseModel):
+    """The six-field health Voice briefing returned by GET /api/health/briefing.
+
+    Mirrors the dashboard briefing contract (``GET /api/dashboard/briefing``).
+    ``source`` is exactly ``"llm"`` (a model-written elaboration that passed the
+    non-diagnostic voice-lint) or ``"fallback"`` (the deterministic templated
+    paragraph). The dashboard BriefingStatus pill renders ``source = "llm"`` as
+    ``llm · cached`` and ``source = "fallback"`` as ``templated``.
+    """
+
+    greet: str
+    headline: str
+    elaboration: str
+    source: str  # "llm" or "fallback"
+    state_class: str
+    generated_at: str  # ISO 8601
