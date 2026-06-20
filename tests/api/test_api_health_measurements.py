@@ -277,9 +277,6 @@ def test_no_health_measurements_table_references():
         "roster/health/migrations/001_health_tables.py",
         # Drops the table — legitimate DDL reference in the drop migration.
         "roster/health/migrations/002_drop_measurements_table.py",
-        # One-time backfill script that reads the legacy table to migrate data
-        # into facts.  Must run before health_002 drops the table.
-        "src/butlers/scripts/backfill_facts.py",
     }
     offenders = []
     for glob in candidate_globs:
