@@ -32,7 +32,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.jobs.home import HomeJobContext
+from butlers.jobs.ha_context import HomeJobContext
 
 logger = logging.getLogger(__name__)
 
