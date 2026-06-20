@@ -6847,3 +6847,38 @@ export interface TimelineSavedViewUpdateRequest {
   name?: string;
   filter_spec?: TimelineSavedViewFilterSpec;
 }
+
+// ---------------------------------------------------------------------------
+// Proactive insight candidates (bu-sqjc7.3 / bu-w7b18.1)
+// Read from GET /api/switchboard/insights?butler=health&status=pending
+// ---------------------------------------------------------------------------
+
+/**
+ * A single proactive-insight candidate from ``public.insight_candidates``.
+ *
+ * Mirrors the Switchboard InsightCandidate model (roster/switchboard/api/models.py).
+ * The Switchboard role is the only butler role with SELECT on this table.
+ */
+export interface InsightCandidate {
+  id: string;
+  origin_butler: string;
+  priority: number;
+  category: string;
+  dedup_key: string;
+  cooldown_days: number | null;
+  expires_at: string | null;
+  message: string;
+  channel: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  status: string;
+  delivered_at: string | null;
+  delivery_attempt_count: number;
+}
+
+/** Query parameters for GET /api/switchboard/insights. */
+export interface InsightCandidatesParams {
+  butler?: string;
+  status?: string;
+  limit?: number;
+}

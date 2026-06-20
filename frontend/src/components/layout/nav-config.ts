@@ -73,7 +73,7 @@ export const navSections: NavSection[] = [
     title: 'Dedicated Butlers',
     items: [
       { path: '/education', label: 'Education', butler: 'education' },
-      { path: '/health/measurements', label: 'Health' },
+      { path: '/health', label: 'Health', butler: 'health' },
       { path: '/calendar', label: 'Calendar' },
       { path: '/chronicles', label: 'Chronicles', butler: 'chronicler', tooltip: 'Retrospective lived-time reconstruction' },
     ],

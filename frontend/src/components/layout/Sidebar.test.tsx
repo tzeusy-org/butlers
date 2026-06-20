@@ -147,11 +147,23 @@ describe("Sidebar", () => {
     });
 
     it("renders nav labels by default", () => {
+      // Include health so the butler-gated Health nav item is visible (bu-w7b18.1: Health is now a
+      // ButlerMark nav item like Education/Chronicles, filtered when its butler is absent).
+      setButlersState({
+        data: {
+          data: [
+            { name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 },
+            { name: "health", status: "ok", port: 40109, type: "butler" as const, sessions_24h: 0 },
+          ],
+          meta: {},
+        },
+      });
       renderExpanded();
 
       expect(container.textContent).toContain("Overview");
       expect(container.textContent).toContain("Calendar");
-      expect(container.textContent).toContain("Health");
+      // Health renders as a ButlerMark icon (not a text label) — check for the link, not text content.
+      expect(container.querySelector('a[href="/health"]')).toBeInstanceOf(HTMLAnchorElement);
     });
 
     it("renders Butlers brand label by default", () => {
@@ -274,11 +286,23 @@ describe("Sidebar", () => {
     });
 
     it("renders nav labels in mobile expanded mode", () => {
+      // Include health so the butler-gated Health nav item is visible (bu-w7b18.1: Health is now a
+      // ButlerMark nav item like Education/Chronicles, filtered when its butler is absent).
+      setButlersState({
+        data: {
+          data: [
+            { name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 },
+            { name: "health", status: "ok", port: 40109, type: "butler" as const, sessions_24h: 0 },
+          ],
+          meta: {},
+        },
+      });
       renderMobile();
 
       expect(container.textContent).toContain("Overview");
       expect(container.textContent).toContain("Calendar");
-      expect(container.textContent).toContain("Health");
+      // Health renders as a ButlerMark icon (not a text label) — check for the link, not text content.
+      expect(container.querySelector('a[href="/health"]')).toBeInstanceOf(HTMLAnchorElement);
     });
 
     it("shows today's spend in mobile expanded footer", () => {

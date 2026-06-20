@@ -31,6 +31,7 @@ import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import SettingsModelsPage from './pages/SettingsModelsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
 import GroupsPage from './pages/GroupsPage.tsx'
+import HealthOverviewPage from './pages/HealthOverviewPage.tsx'
 import MeasurementsPage from './pages/MeasurementsPage.tsx'
 import MedicationsPage from './pages/MedicationsPage.tsx'
 import ConditionsPage from './pages/ConditionsPage.tsx'
@@ -94,6 +95,7 @@ export const router = createBrowserRouter(
         // Spec: openspec/changes/decommission-contact-detail-page/tasks.md §4
         { path: '/contacts/:contactId', element: <ContactEntityRedirect /> },
         { path: '/groups', element: <GroupsPage /> },
+        { path: '/health', element: <HealthOverviewPage /> },
         { path: '/health/measurements', element: <MeasurementsPage /> },
         { path: '/health/medications', element: <MedicationsPage /> },
         { path: '/health/conditions', element: <ConditionsPage /> },

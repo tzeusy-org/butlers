@@ -1702,6 +1702,41 @@ export function getMeasurementSources(): Promise<import("./types").MeasurementSo
   return apiFetch<import("./types").MeasurementSourcesResponse>("/health/measurements/sources");
 }
 
+/**
+ * Fetch the health Voice briefing.
+ *
+ * GET /api/health/briefing — mirrors GET /api/dashboard/briefing but scoped to
+ * the health butler. Source is exactly "llm" or "fallback". Owner-only (403).
+ * Backed by a 5-minute per-owner TTL cache.
+ *
+ * The returned promise resolves to the unwrapped Briefing data.
+ */
+export function getHealthBriefing(): Promise<import("./types").Briefing> {
+  return apiFetch<ApiResponse<import("./types").Briefing>>("/health/briefing").then(
+    (r) => r.data,
+  );
+}
+
+/**
+ * Fetch proactive insight candidates from the Switchboard.
+ *
+ * GET /api/switchboard/insights — read-only reader for public.insight_candidates.
+ * Hosted on the Switchboard role (the only butler role with SELECT on this table).
+ * Defaults to status=pending; filter by butler to scope to a specific origin.
+ */
+export function getInsightCandidates(
+  params?: import("./types").InsightCandidatesParams,
+): Promise<import("./types").InsightCandidate[]> {
+  const sp = new URLSearchParams();
+  if (params?.butler) sp.set("butler", params.butler);
+  if (params?.status) sp.set("status", params.status);
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<ApiResponse<import("./types").InsightCandidate[]>>(
+    qs ? `/switchboard/insights?${qs}` : "/switchboard/insights",
+  ).then((r) => r.data);
+}
+
 /** Fetch a paginated list of health research notes. */
 export function getResearch(params?: ResearchParams): Promise<PaginatedResponse<HealthResearch>> {
   const sp = new URLSearchParams();

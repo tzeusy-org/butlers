@@ -22,3 +22,18 @@ test("smoke: app loads and has a page title", async ({ page }) => {
   // The root element must be present.
   await expect(page.locator("#root")).toBeAttached();
 });
+
+test("smoke: /health route renders without crashing", async ({ page }) => {
+  // The route may fail API requests (no backend in e2e preview), but the
+  // React tree must mount cleanly — no JS error, no blank white screen.
+  await page.goto("/health", { timeout: 10_000 });
+
+  // Root element must be attached.
+  await expect(page.locator("#root")).toBeAttached();
+
+  // The health overview page container must be present.
+  // data-testid="health-overview-page" is set on the page root div.
+  await expect(page.locator('[data-testid="health-overview-page"]')).toBeAttached({
+    timeout: 5_000,
+  });
+});
