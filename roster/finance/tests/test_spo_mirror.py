@@ -593,3 +593,231 @@ async def test_spending_summary_raises_on_invalid_group_by():
 
     with pytest.raises(ValueError, match="Unsupported group_by"):
         await spending_summary(fake_pool, group_by="invalid_mode")
+
+
+# ---------------------------------------------------------------------------
+# Bill SPO mirror tests (track_bill fire-and-forget mirror — E1/E3)
+# ---------------------------------------------------------------------------
+
+
+def _make_bill_row(
+    *,
+    id: str = "00000000-0000-0000-0000-000000000002",
+    payee: str = "PG&E",
+    amount: Decimal | None = None,
+    currency: str = "USD",
+    due_date=None,
+    frequency: str = "one_time",
+    status: str = "pending",
+    payment_method: str | None = None,
+    account_id: str | None = None,
+    statement_period_start=None,
+    statement_period_end=None,
+    paid_at=None,
+    source_message_id: str | None = None,
+    metadata: dict | None = None,
+    reconciled_transaction_id: str | None = None,
+    created_at=None,
+    updated_at=None,
+) -> dict:
+    from datetime import date as _date
+
+    now = _utcnow()
+    return {
+        "id": id,
+        "payee": payee,
+        "amount": amount or Decimal("84.00"),
+        "currency": currency,
+        "due_date": due_date or _date.today(),
+        "frequency": frequency,
+        "status": status,
+        "payment_method": payment_method,
+        "account_id": account_id,
+        "statement_period_start": statement_period_start,
+        "statement_period_end": statement_period_end,
+        "paid_at": paid_at,
+        "source_message_id": source_message_id,
+        "metadata": metadata or {},
+        "reconciled_transaction_id": reconciled_transaction_id,
+        "created_at": created_at or now,
+        "updated_at": updated_at or now,
+    }
+
+
+def _make_bill_pool(bill_row: dict | None = None, *, existing_id: str | None = None):
+    """Build a minimal asyncpg pool mock for track_bill.
+
+    ``existing_id`` — if provided, the SELECT check returns a row with that id
+    (simulating an UPDATE path); otherwise returns None (INSERT path).
+    """
+    pool = AsyncMock()
+    row = bill_row or _make_bill_row()
+    record = _make_asyncpg_record(row)
+
+    if existing_id is not None:
+        # First fetchrow → SELECT existing id; second fetchrow → UPDATE RETURNING *
+        existing_record = _make_asyncpg_record({"id": existing_id})
+        pool.fetchrow = AsyncMock(side_effect=[existing_record, record])
+    else:
+        # First fetchrow → None (no existing); second fetchrow → INSERT RETURNING *
+        pool.fetchrow = AsyncMock(side_effect=[None, record])
+
+    return pool
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_track_bill_schedules_spo_mirror_on_insert():
+    """After a successful insert, track_bill schedules a fire-and-forget SPO mirror."""
+    from datetime import date as _date
+
+    from butlers.tools.finance.bills import track_bill
+
+    pool = _make_bill_pool()
+    mirror_called = asyncio.Event()
+
+    async def _fake_mirror(**kwargs):
+        mirror_called.set()
+
+    with patch("butlers.tools.finance.bills._mirror_bill_to_spo", side_effect=_fake_mirror):
+        await track_bill(
+            pool=pool,
+            payee="PG&E",
+            amount=84.00,
+            currency="USD",
+            due_date=_date.today(),
+        )
+        await asyncio.sleep(0)
+
+    assert mirror_called.is_set(), "SPO mirror was not scheduled/called after track_bill insert"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_track_bill_schedules_spo_mirror_on_update():
+    """After a successful update (upsert), track_bill schedules the SPO mirror."""
+    from datetime import date as _date
+
+    from butlers.tools.finance.bills import track_bill
+
+    existing_id = "00000000-0000-0000-0000-000000000099"
+    pool = _make_bill_pool(existing_id=existing_id)
+    mirror_called = asyncio.Event()
+
+    async def _fake_mirror(**kwargs):
+        mirror_called.set()
+
+    with patch("butlers.tools.finance.bills._mirror_bill_to_spo", side_effect=_fake_mirror):
+        await track_bill(
+            pool=pool,
+            payee="Comcast",
+            amount=89.99,
+            currency="USD",
+            due_date=_date.today(),
+            status="paid",
+        )
+        await asyncio.sleep(0)
+
+    assert mirror_called.is_set(), "SPO mirror was not scheduled/called after track_bill update"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_track_bill_spo_mirror_failure_does_not_raise():
+    """If the SPO mirror fails, track_bill still returns the upserted row successfully.
+
+    Exercises _mirror_bill_to_spo's exception handler: the primary upsert result
+    must be returned even when track_bill_fact raises.
+    """
+    from datetime import date as _date
+
+    from butlers.tools.finance.bills import track_bill
+
+    bill_row = _make_bill_row(payee="Netflix", status="pending")
+    pool = _make_bill_pool(bill_row=bill_row)
+
+    async def _failing_fact(*args, **kwargs):
+        raise RuntimeError("Simulated SPO mirror failure")
+
+    with patch("butlers.tools.finance.facts.track_bill_fact", side_effect=_failing_fact):
+        result = await track_bill(
+            pool=pool,
+            payee="Netflix",
+            amount=15.49,
+            currency="USD",
+            due_date=_date.today(),
+        )
+        # Yield so the background task runs and _mirror_bill_to_spo's handler swallows the error
+        await asyncio.sleep(0)
+
+    # Primary upsert succeeded
+    assert "id" in result
+    assert result["payee"] == "Netflix"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_track_bill_spo_mirror_called_with_correct_args():
+    """track_bill passes the canonical metadata fields to the SPO mirror."""
+    from datetime import date as _date
+
+    from butlers.tools.finance.bills import track_bill
+
+    due = _date.today()
+    pool = _make_bill_pool(bill_row=_make_bill_row(payee="HSBC", due_date=due, currency="USD"))
+    captured: list[dict] = []
+
+    async def _capture_mirror(**kwargs):
+        captured.append(kwargs)
+
+    with patch("butlers.tools.finance.bills._mirror_bill_to_spo", side_effect=_capture_mirror):
+        await track_bill(
+            pool=pool,
+            payee="HSBC",
+            amount=45.00,
+            currency="USD",
+            due_date=due,
+            frequency="monthly",
+            status="pending",
+            source_message_id="msg-bill-mirror-001",
+        )
+        await asyncio.sleep(0)
+
+    assert len(captured) == 1, "Mirror should be called exactly once"
+    kwargs = captured[0]
+    assert kwargs["payee"] == "HSBC"
+    assert kwargs["currency"] == "USD"
+    assert kwargs["due_date"] == due
+    assert kwargs["frequency"] == "monthly"
+    assert kwargs["status"] == "pending"
+    assert kwargs["source_message_id"] == "msg-bill-mirror-001"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_track_bill_spo_mirror_includes_reconciled_transaction_id():
+    """reconciled_transaction_id from the upserted row is forwarded to the mirror."""
+    from datetime import date as _date
+
+    from butlers.tools.finance.bills import track_bill
+
+    reconciled_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    bill_row = _make_bill_row(
+        payee="Chase",
+        reconciled_transaction_id=reconciled_id,
+        status="paid",
+    )
+    pool = _make_bill_pool(bill_row=bill_row)
+    captured: list[dict] = []
+
+    async def _capture_mirror(**kwargs):
+        captured.append(kwargs)
+
+    with patch("butlers.tools.finance.bills._mirror_bill_to_spo", side_effect=_capture_mirror):
+        await track_bill(
+            pool=pool,
+            payee="Chase",
+            amount=200.00,
+            currency="USD",
+            due_date=_date.today(),
+            status="paid",
+        )
+        await asyncio.sleep(0)
+
+    assert len(captured) == 1
+    assert captured[0]["reconciled_transaction_id"] == reconciled_id

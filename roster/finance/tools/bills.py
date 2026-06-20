@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -10,6 +12,10 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.finance._helpers import _deserialize_row
+
+logger = logging.getLogger(__name__)
+
+_background_tasks: set[asyncio.Task[None]] = set()
 
 _VALID_STATUSES = ("pending", "paid", "overdue")
 _VALID_FREQUENCIES = ("one_time", "weekly", "monthly", "quarterly", "yearly", "custom")
@@ -32,6 +38,64 @@ def _urgency(due: date, today: date, is_overdue: bool) -> str:
     if days == 0:
         return "due_today"
     return "due_soon"
+
+
+async def _mirror_bill_to_spo(
+    pool: asyncpg.Pool,
+    *,
+    payee: str,
+    amount: float,
+    currency: str,
+    due_date: date,
+    frequency: str,
+    status: str,
+    payment_method: str | None,
+    account_id: str | None,
+    paid_at: datetime | None,
+    reconciled_transaction_id: uuid.UUID | str | None,
+    source_message_id: str | None,
+) -> None:
+    """Fire-and-forget SPO mirror write to public.facts after a bills upsert.
+
+    Writes a property fact (predicate='bill', valid_at=NULL) via track_bill_fact.
+    Errors are swallowed so that a mirror failure never rolls back the primary
+    finance.bills upsert.
+
+    Canonical metadata written: payee, amount, currency, due_date, frequency,
+    status, payment_method, account_id, paid_at, reconciled_transaction_id,
+    source_message_id.
+
+    This function is scheduled via asyncio.create_task and must never raise.
+    """
+    try:
+        from butlers.tools.finance.facts import track_bill_fact
+
+        mirror_metadata: dict[str, Any] = {}
+        if reconciled_transaction_id is not None:
+            mirror_metadata["reconciled_transaction_id"] = str(reconciled_transaction_id)
+
+        await track_bill_fact(
+            pool=pool,
+            payee=payee,
+            amount=amount,
+            currency=currency,
+            due_date=due_date,
+            frequency=frequency,
+            status=status,
+            payment_method=payment_method,
+            account_id=account_id,
+            paid_at=paid_at,
+            source_message_id=source_message_id,
+            metadata=mirror_metadata if mirror_metadata else None,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_mirror_bill_to_spo: SPO mirror write failed for payee=%r due_date=%r; "
+            "primary upsert is unaffected",
+            payee,
+            due_date,
+            exc_info=True,
+        )
 
 
 async def track_bill(
@@ -181,7 +245,32 @@ async def track_bill(
             metadata_value,
         )
 
-    return _deserialize_row(row)
+    result = _deserialize_row(row)
+
+    # Fire-and-forget SPO mirror write to public.facts. Scheduled as a
+    # background task so failures never roll back the primary upsert.
+    # Hold a strong reference in _background_tasks so the task is not
+    # garbage-collected before it completes; the done-callback removes it.
+    _task = asyncio.create_task(
+        _mirror_bill_to_spo(
+            pool=pool,
+            payee=payee,
+            amount=amount,
+            currency=currency,
+            due_date=due,
+            frequency=frequency,
+            status=status,
+            payment_method=payment_method,
+            account_id=str(account_uuid) if account_uuid is not None else None,
+            paid_at=paid_at_dt,
+            reconciled_transaction_id=result.get("reconciled_transaction_id"),
+            source_message_id=source_message_id,
+        )
+    )
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
+
+    return result
 
 
 async def upcoming_bills(
