@@ -490,8 +490,9 @@ function DataOpsSection() {
       <div className="flex flex-col gap-3 border-r border-b border-border/60 px-4 py-4">
         <div className="flex flex-col gap-1.5">
           <Eyebrow>Export data</Eyebrow>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            Download an encrypted zip of your data.
+          <p className="text-xs text-muted-foreground leading-relaxed" data-testid="export-description">
+            Download an AES-256-GCM encrypted export of your data. Decrypt using{" "}
+            <span className="font-mono">DASHBOARD_EXPORT_ENCRYPTION_KEY</span>.
           </p>
         </div>
         <div className="flex gap-2">
