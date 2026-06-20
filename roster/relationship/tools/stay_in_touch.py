@@ -7,8 +7,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship.contacts import _parse_contact
-
 
 async def stay_in_touch_set(
     pool: asyncpg.Pool,
@@ -17,20 +15,28 @@ async def stay_in_touch_set(
 ) -> dict[str, Any]:
     """Set or clear the stay-in-touch cadence for a contact.
 
-    Pass frequency_days=None to clear the cadence (removes from overdue list).
+    Writes ``stay_in_touch_days`` onto the contact's linked ``public.entities``
+    row (resolved via ``contact_entity_map``), the dedicated column homed there
+    by migration rel_031.  Pass frequency_days=None to clear the cadence
+    (removes from overdue list).
     """
     row = await pool.fetchrow(
         """
-        UPDATE contacts SET stay_in_touch_days = $2, updated_at = now()
-        WHERE id = $1
-        RETURNING *
+        UPDATE public.entities e
+        SET stay_in_touch_days = $2, updated_at = now()
+        FROM contact_entity_map cem
+        WHERE cem.contact_id = $1 AND e.id = cem.entity_id
+        RETURNING cem.contact_id AS id,
+                  e.id AS entity_id,
+                  e.stay_in_touch_days AS stay_in_touch_days,
+                  COALESCE(e.canonical_name, 'Unknown') AS name
         """,
         contact_id,
         frequency_days,
     )
     if row is None:
         raise ValueError(f"Contact {contact_id} not found")
-    return _parse_contact(row)
+    return dict(row)
 
 
 async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:

@@ -331,6 +331,7 @@ async def pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
                 listed BOOLEAN NOT NULL DEFAULT true,
+                stay_in_touch_days INT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -647,9 +648,11 @@ async def test_contact_get_archived_returns_stale_dunbar(pool):
     """contact_get returns archived contact with dunbar_stale=True flag."""
     from butlers.tools.relationship import contact_get
 
-    # Directly create contact and entity rows to avoid entity_create issues
+    # Directly create contact and entity rows to avoid entity_create issues.
+    # Archived state lives on the entity now (listed=false), read by dunbar via
+    # contact_entity_map → public.entities.
     entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+        "INSERT INTO public.entities (name, listed) VALUES ($1, false) RETURNING id",
         "Archived Contact",
     )
     entity_id = entity_row["id"]
@@ -666,6 +669,12 @@ async def test_contact_get_archived_returns_stale_dunbar(pool):
     )
     contact_id = contact_row["id"]
     assert contact_row["listed"] is False
+
+    await pool.execute(
+        "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        contact_id,
+        entity_id,
+    )
 
     # Get the archived contact directly
     fetched = await contact_get(pool, contact_id)
@@ -702,6 +711,14 @@ async def test_contact_get_active_returns_not_stale_dunbar(pool):
     )
     contact_id = contact_row["id"]
     assert contact_row["listed"] is True
+
+    # Bridge contact → entity so the dunbar staleness lookup (which now reads
+    # listed off public.entities via contact_entity_map) resolves this contact.
+    await pool.execute(
+        "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        contact_id,
+        entity_id,
+    )
 
     # Get the active contact
     fetched = await contact_get(pool, contact_id)
