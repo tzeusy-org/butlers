@@ -1,14 +1,14 @@
 // ---------------------------------------------------------------------------
 // SymptomTracker — direct add/edit/delete for logged symptoms [bu-gk38e]
 //
-// Mirrors ConditionTracker (bu-a7vw9): a list surface with a "Log symptom"
-// toolbar affordance, per-row Edit / Delete actions, a delete confirmation
-// dialog, and an add/edit dialog wrapping the shared SymptomForm. All writes
-// go through the /api/health/symptoms fact-store path, so dashboard edits and
-// butler edits stay in sync.
-//
-// Symptoms are TEMPORAL facts (occurrence log): the name + date-range filters
-// from the original view-only page are preserved here.
+// Dispatch reframe [bu-w7b18.4]: the symptom log is a Dispatch rule-list, not a
+// Card-wrapped data table. Each row leads with a 6px SEVERITY GLYPH — a square,
+// not a progress bar — coloured by the owner's own 1-10 severity (bands at
+// 2/5/8 via --severity-low/medium/high). The raw 1-10 value is shown verbatim;
+// no clinical adjective is layered onto it. Per-row Edit / Delete actions, the
+// delete confirmation dialog, and the name + date-range filters are preserved.
+// All writes go through the /api/health/symptoms fact-store path, so dashboard
+// edits and butler edits stay in sync.
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
@@ -26,7 +26,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -35,23 +34,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Time } from "@/components/ui/time";
-import { useDeleteSymptom, useSymptoms } from "@/hooks/use-health";
+import { useConditions, useDeleteSymptom, useSymptoms } from "@/hooks/use-health";
 
 const PAGE_SIZE = 50;
 
-/** Return a color for the severity 1-10 scale. */
+/**
+ * Severity band colour for the 1-10 scale. Bands sit at 2 / 5 / 8 (low /
+ * medium / high band centres): 1-3 low, 4-6 medium, 7-10 high. This colours the
+ * glyph only — it never relabels the owner's numeric severity value.
+ */
 function severityColor(severity: number): string {
   if (severity <= 3) return "var(--severity-low)";
   if (severity <= 6) return "var(--severity-medium)";
@@ -64,39 +57,32 @@ function severityColor(severity: number): string {
 
 function SkeletonRows({ count = 5 }: { count?: number }) {
   return (
-    <>
+    <div className="divide-y divide-border/60 border-y border-border/60">
       {Array.from({ length: count }, (_, i) => (
-        <TableRow key={i}>
-          <TableCell><Skeleton className="h-4 w-28" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-48" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-        </TableRow>
+        <div key={i} className="grid grid-cols-[10px_1fr_auto] items-start gap-3 py-3">
+          <span className="bg-muted mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse" />
+          <div className="space-y-1.5">
+            <div className="bg-muted h-3.5 w-40 animate-pulse rounded" />
+            <div className="bg-muted h-2.5 w-28 animate-pulse rounded" />
+          </div>
+          <div className="bg-muted h-7 w-24 animate-pulse rounded" />
+        </div>
       ))}
-    </>
-  );
-}
-
-function EmptyState() {
-  return (
-    <EmptyStateUI
-      title="No symptoms found."
-      description="Log a symptom with the button above, or record one by talking to your Health butler."
-    />
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// SymptomRow — a single symptom with edit/delete affordances
+// SymptomRow — a single symptom rule-list row with edit/delete affordances
 // ---------------------------------------------------------------------------
 
 function SymptomRow({
   symptom,
+  conditionName,
   onEdit,
 }: {
   symptom: Symptom;
+  conditionName?: string;
   onEdit: (symptom: Symptom) => void;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -113,58 +99,53 @@ function SymptomRow({
   }
 
   return (
-    <TableRow>
-      <TableCell className="font-medium">{symptom.name}</TableCell>
-      <TableCell>
-        <div className="flex items-center gap-2">
-          <div className="bg-muted h-2 w-16 overflow-hidden rounded-full">
-            <div
-              className="h-full rounded-full"
-              style={{
-                width: `${(symptom.severity / 10) * 100}%`,
-                backgroundColor: severityColor(symptom.severity),
-              }}
-            />
-          </div>
-          <span className="text-sm tabular-nums">{symptom.severity}/10</span>
+    <div className="grid grid-cols-[10px_1fr_auto] items-start gap-3 py-3">
+      {/* 6px severity glyph — a square, coloured by the 1-10 band. */}
+      <span
+        className="mt-1.5 h-1.5 w-1.5 shrink-0"
+        style={{ backgroundColor: severityColor(symptom.severity) }}
+        aria-hidden="true"
+      />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="text-foreground text-sm font-medium">{symptom.name}</span>
+          <span className="text-muted-foreground font-mono text-[10px] tabular-nums">
+            {symptom.severity}/10
+          </span>
         </div>
-      </TableCell>
-      <TableCell className="text-muted-foreground text-sm">
-        <Time value={symptom.occurred_at} mode="absolute" />
-      </TableCell>
-      <TableCell className="text-muted-foreground max-w-xs truncate text-sm">
-        {symptom.notes ?? "—"}
-      </TableCell>
-      <TableCell className="text-sm">
-        {symptom.condition_id ? (
-          <Badge variant="outline" className="text-xs">
-            {symptom.condition_id}
-          </Badge>
-        ) : (
-          <span className="text-muted-foreground text-xs">{"—"}</span>
-        )}
-      </TableCell>
-      <TableCell>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onEdit(symptom)}
-            aria-label={`Edit ${symptom.name}`}
-          >
-            Edit
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            onClick={() => setConfirmingDelete(true)}
-            aria-label={`Delete ${symptom.name}`}
-          >
-            Delete
-          </Button>
+        <div className="text-muted-foreground mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 font-mono text-[10px] tabular-nums">
+          <span>
+            <Time value={symptom.occurred_at} mode="absolute" />
+          </span>
+          {conditionName && (
+            <span className="uppercase tracking-[0.1em]">· {conditionName}</span>
+          )}
+          {symptom.notes && (
+            <span className="text-muted-foreground/80 min-w-0 truncate font-sans">
+              · {symptom.notes}
+            </span>
+          )}
         </div>
-      </TableCell>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onEdit(symptom)}
+          aria-label={`Edit ${symptom.name}`}
+        >
+          Edit
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          onClick={() => setConfirmingDelete(true)}
+          aria-label={`Delete ${symptom.name}`}
+        >
+          Delete
+        </Button>
+      </div>
 
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
         <AlertDialogContent>
@@ -189,7 +170,7 @@ function SymptomRow({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </TableRow>
+    </div>
   );
 }
 
@@ -214,6 +195,11 @@ export default function SymptomTracker() {
   };
 
   const { data, isLoading } = useSymptoms(params);
+  // Fetch all conditions (up to 500) for ID → name resolution in rows.
+  const { data: conditionsData } = useConditions({ limit: 500 });
+  const conditionNameById = Object.fromEntries(
+    (conditionsData?.data ?? []).map((c) => [c.id, c.name]),
+  );
 
   const symptoms = data?.data ?? [];
   const total = data?.meta?.total ?? 0;
@@ -285,30 +271,23 @@ export default function SymptomTracker() {
         </Button>
       </div>
 
-      {!isLoading && symptoms.length === 0 ? (
-        <EmptyState />
+      {isLoading ? (
+        <SkeletonRows />
+      ) : symptoms.length === 0 ? (
+        <p className="text-muted-foreground font-serif text-[15px] italic">
+          Nothing logged yet — log a symptom above, or tell your Health butler.
+        </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Severity</TableHead>
-              <TableHead>Occurred</TableHead>
-              <TableHead>Notes</TableHead>
-              <TableHead>Condition</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <SkeletonRows />
-            ) : (
-              symptoms.map((symptom) => (
-                <SymptomRow key={symptom.id} symptom={symptom} onEdit={setFormTarget} />
-              ))
-            )}
-          </TableBody>
-        </Table>
+        <div className="divide-y divide-border/60 border-y border-border/60">
+          {symptoms.map((symptom) => (
+            <SymptomRow
+              key={symptom.id}
+              symptom={symptom}
+              conditionName={symptom.condition_id ? conditionNameById[symptom.condition_id] : undefined}
+              onEdit={setFormTarget}
+            />
+          ))}
+        </div>
       )}
 
       {/* Pagination */}

@@ -1,34 +1,21 @@
 import ConditionTracker from "@/components/health/ConditionTracker";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 export default function ConditionsPage() {
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Conditions</h1>
-        <p className="text-muted-foreground mt-1">
-          Add, edit, and track your health conditions and their current status.
-          Changes here and entries logged via your Health butler stay in sync.
+      <header className="space-y-1">
+        <p className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.14em]">
+          Health
         </p>
-      </div>
+        <h1 className="text-foreground font-sans text-2xl font-medium leading-tight tracking-[-0.02em]">
+          Conditions
+        </h1>
+        <p className="text-muted-foreground max-w-prose font-serif text-[15px] leading-relaxed">
+          What you're carrying, and where each one stands. In sync with your Health butler.
+        </p>
+      </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>All Conditions</CardTitle>
-          <CardDescription>
-            Add a condition, or edit one to update its status as it evolves.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ConditionTracker />
-        </CardContent>
-      </Card>
+      <ConditionTracker />
     </div>
   );
 }

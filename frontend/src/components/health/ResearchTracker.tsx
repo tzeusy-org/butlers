@@ -1,17 +1,18 @@
 // ---------------------------------------------------------------------------
 // ResearchTracker — direct add/edit/delete for health research notes [bu-wamzk]
 //
-// Mirrors ConditionTracker (bu-a7vw9): a list surface with an "Add research"
-// toolbar affordance, per-row Edit / Delete actions, a delete confirmation
-// dialog, and an add/edit dialog wrapping the shared ResearchForm. It also keeps
-// the research-specific search and tag filters that previously lived on the
-// page. All writes go through the /api/health/research fact-store path, so
-// dashboard edits and butler edits stay in sync.
-//
-// Research notes are PROPERTY facts (like conditions, NOT temporal): an edit
-// supersedes the prior note keyed on its `research:{title}` subject.
+// Dispatch reframe [bu-w7b18.4]: research notes render as a Dispatch rule-list
+// (time · topic + source-tag · excerpt · expand-arrow), not a Card-wrapped data
+// table. The topic line is a button: clicking it expands the full note in place
+// with a rotating chevron. Source URLs open in a new tab (noopener noreferrer).
+// Per-row Edit / Delete actions, the delete confirmation dialog, and the search
+// + tag filters are preserved. Research notes are PROPERTY facts (like
+// conditions, NOT temporal): an edit supersedes the prior note keyed on its
+// `research:{title}` subject. All writes go through the /api/health/research
+// fact-store path, so dashboard edits and butler edits stay in sync.
 // ---------------------------------------------------------------------------
 
+import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -36,19 +37,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Time } from "@/components/ui/time";
 import { useDeleteResearch, useResearch } from "@/hooks/use-health";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
 
@@ -58,31 +50,23 @@ const PAGE_SIZE = 50;
 
 function SkeletonRows({ count = 5 }: { count?: number }) {
   return (
-    <>
+    <div className="divide-y divide-border/60 border-y border-border/60">
       {Array.from({ length: count }, (_, i) => (
-        <TableRow key={i}>
-          <TableCell><Skeleton className="h-4 w-48" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-        </TableRow>
+        <div key={i} className="grid grid-cols-[1fr_auto] items-start gap-3 py-3">
+          <div className="space-y-1.5">
+            <div className="bg-muted h-3.5 w-48 animate-pulse rounded" />
+            <div className="bg-muted h-2.5 w-32 animate-pulse rounded" />
+            <div className="bg-muted h-3 w-full max-w-md animate-pulse rounded" />
+          </div>
+          <div className="bg-muted h-7 w-24 animate-pulse rounded" />
+        </div>
       ))}
-    </>
-  );
-}
-
-function EmptyState() {
-  return (
-    <EmptyStateUI
-      title="No research found."
-      description="Add a research note with the button above, or save one by talking to your Health butler."
-    />
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// ResearchRow — a single note with expand + edit/delete affordances
+// ResearchRow — a single note rule-list row with in-place expand + edit/delete
 // ---------------------------------------------------------------------------
 
 function ResearchRow({
@@ -110,73 +94,90 @@ function ResearchRow({
   }
 
   return (
-    <>
-      <TableRow>
-        <TableCell
-          className="cursor-pointer font-medium"
+    <div className="py-3">
+      <div className="grid grid-cols-[1fr_auto] items-start gap-3">
+        {/* Topic + source-tag + excerpt — click to expand the full note. */}
+        <button
+          type="button"
           onClick={onToggleExpand}
+          aria-expanded={expanded}
+          className="group focus-visible:ring-ring w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-1"
         >
-          {note.title}
-        </TableCell>
-        <TableCell>
-          <div className="flex flex-wrap gap-1">
+          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <ChevronRight
+              className={cn(
+                "text-muted-foreground group-hover:text-foreground duration-fast mt-0.5 h-3.5 w-3.5 shrink-0 self-center transition-transform",
+                expanded && "rotate-90",
+              )}
+              aria-hidden="true"
+            />
+            <span className="text-foreground text-sm font-medium">{note.title}</span>
             {note.tags.map((tag) => (
-              <Badge key={tag} variant="outline" className="text-xs">
+              <span
+                key={tag}
+                className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.1em]"
+              >
                 {tag}
-              </Badge>
+              </span>
             ))}
-            {note.tags.length === 0 && (
-              <span className="text-muted-foreground text-xs">{"—"}</span>
-            )}
-          </div>
-        </TableCell>
-        <TableCell className="text-sm">
-          {note.source_url ? (
+          </span>
+          <span className="text-muted-foreground mt-0.5 block pl-[22px] font-mono text-[10px] tabular-nums">
+            updated <Time value={note.updated_at} mode="absolute" precision="day" />
+          </span>
+          {!expanded && (
+            <span className="text-muted-foreground mt-0.5 block truncate pl-[22px] text-[13px]">
+              {note.content}
+            </span>
+          )}
+        </button>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {note.source_url && (
             <a
               href={note.source_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:underline dark:text-blue-400"
+              className="text-muted-foreground hover:text-foreground duration-fast font-mono text-[10px] uppercase tracking-[0.1em] transition-colors"
             >
-              Link
+              Source ↗
             </a>
-          ) : (
-            <span className="text-muted-foreground text-xs">{"—"}</span>
           )}
-        </TableCell>
-        <TableCell className="text-muted-foreground text-sm">
-          <Time value={note.updated_at} mode="absolute" precision="day" />
-        </TableCell>
-        <TableCell>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onEdit(note)}
-              aria-label={`Edit ${note.title}`}
-            >
-              Edit
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              onClick={() => setConfirmingDelete(true)}
-              aria-label={`Delete ${note.title}`}
-            >
-              Delete
-            </Button>
-          </div>
-        </TableCell>
-      </TableRow>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onEdit(note)}
+            aria-label={`Edit ${note.title}`}
+          >
+            Edit
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setConfirmingDelete(true)}
+            aria-label={`Delete ${note.title}`}
+          >
+            Delete
+          </Button>
+        </div>
+      </div>
+
       {expanded && (
-        <TableRow>
-          <TableCell colSpan={5}>
-            <div className="prose dark:prose-invert max-w-none py-3 text-sm whitespace-pre-wrap">
-              {note.content}
+        <div className="text-foreground mt-2 pl-[22px] text-sm leading-relaxed whitespace-pre-wrap">
+          {note.content}
+          {note.source_url && (
+            <div className="mt-3">
+              <a
+                href={note.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-muted-foreground hover:text-foreground duration-fast font-mono text-[10px] uppercase tracking-[0.1em] transition-colors"
+              >
+                Open source ↗
+              </a>
             </div>
-          </TableCell>
-        </TableRow>
+          )}
+        </div>
       )}
 
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
@@ -202,7 +203,7 @@ function ResearchRow({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </div>
   );
 }
 
@@ -302,37 +303,24 @@ export default function ResearchTracker() {
         </Button>
       </div>
 
-      {!isLoading && notes.length === 0 ? (
-        <EmptyState />
+      {isLoading ? (
+        <SkeletonRows />
+      ) : notes.length === 0 ? (
+        <p className="text-muted-foreground font-serif text-[15px] italic">
+          Nothing saved yet — add a research note above, or tell your Health butler.
+        </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Title</TableHead>
-              <TableHead>Tags</TableHead>
-              <TableHead>Source</TableHead>
-              <TableHead>Updated</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <SkeletonRows />
-            ) : (
-              notes.map((note) => (
-                <ResearchRow
-                  key={note.id}
-                  note={note}
-                  expanded={expandedId === note.id}
-                  onToggleExpand={() =>
-                    setExpandedId(expandedId === note.id ? null : note.id)
-                  }
-                  onEdit={setFormTarget}
-                />
-              ))
-            )}
-          </TableBody>
-        </Table>
+        <div className="divide-y divide-border/60 border-y border-border/60">
+          {notes.map((note) => (
+            <ResearchRow
+              key={note.id}
+              note={note}
+              expanded={expandedId === note.id}
+              onToggleExpand={() => setExpandedId(expandedId === note.id ? null : note.id)}
+              onEdit={setFormTarget}
+            />
+          ))}
+        </div>
       )}
 
       {/* Pagination */}

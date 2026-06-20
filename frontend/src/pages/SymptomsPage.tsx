@@ -1,34 +1,21 @@
 import SymptomTracker from "@/components/health/SymptomTracker";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 export default function SymptomsPage() {
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Symptoms</h1>
-        <p className="text-muted-foreground mt-1">
-          Log, edit, and review symptom occurrences with their severity ratings.
-          Changes here and entries logged via your Health butler stay in sync.
+      <header className="space-y-1">
+        <p className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.14em]">
+          Health
         </p>
-      </div>
+        <h1 className="text-foreground font-sans text-2xl font-medium leading-tight tracking-[-0.02em]">
+          Symptoms
+        </h1>
+        <p className="text-muted-foreground max-w-prose font-serif text-[15px] leading-relaxed">
+          A log of what you've felt, and how hard. In sync with your Health butler.
+        </p>
+      </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>All Symptoms</CardTitle>
-          <CardDescription>
-            Log a symptom, or edit one to refine its severity, date, or notes.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <SymptomTracker />
-        </CardContent>
-      </Card>
+      <SymptomTracker />
     </div>
   );
 }

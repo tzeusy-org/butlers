@@ -1,35 +1,21 @@
 import ResearchTracker from "@/components/health/ResearchTracker";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 export default function ResearchPage() {
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Research</h1>
-        <p className="text-muted-foreground mt-1">
-          Add, edit, and organize your health research notes, articles, and
-          references. Changes here and entries saved via your Health butler stay
-          in sync.
+      <header className="space-y-1">
+        <p className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.14em]">
+          Health
         </p>
-      </div>
+        <h1 className="text-foreground font-sans text-2xl font-medium leading-tight tracking-[-0.02em]">
+          Research
+        </h1>
+        <p className="text-muted-foreground max-w-prose font-serif text-[15px] leading-relaxed">
+          Notes, articles, and references you've gathered. In sync with your Health butler.
+        </p>
+      </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Research Notes</CardTitle>
-          <CardDescription>
-            Add a note, or edit one to keep its findings up to date.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ResearchTracker />
-        </CardContent>
-      </Card>
+      <ResearchTracker />
     </div>
   );
 }

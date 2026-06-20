@@ -40,6 +40,7 @@ vi.mock("@/hooks/use-health", () => ({
     },
     isLoading: false,
   }),
+  useConditions: () => ({ data: { data: [], meta: { total: 0, has_more: false } } }),
   useCreateSymptom: () => ({ mutateAsync: createMutate, isPending: false }),
   useUpdateSymptom: () => ({ mutateAsync: updateMutate, isPending: false }),
   useDeleteSymptom: () => ({ mutateAsync: deleteMutate, isPending: false }),

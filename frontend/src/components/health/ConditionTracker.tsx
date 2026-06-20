@@ -1,10 +1,11 @@
 // ---------------------------------------------------------------------------
 // ConditionTracker — direct add/edit/delete for health conditions [bu-a7vw9]
 //
-// Mirrors MedicationTracker (bu-aisjm): a list surface with an "Add condition"
-// toolbar affordance, per-row Edit / Delete actions, a delete confirmation
-// dialog, and an add/edit dialog wrapping the shared ConditionForm. All writes
-// go through the /api/health/conditions fact-store path, so dashboard edits and
+// Dispatch reframe [bu-w7b18.4]: the conditions surface is a Dispatch rule-list
+// (status-dot · condition + status · onset-date), not a Card-wrapped data table.
+// Each row carries per-row Edit / Delete actions, a delete confirmation dialog,
+// and the add/edit dialog still wraps the shared ConditionForm. All writes go
+// through the /api/health/conditions fact-store path, so dashboard edits and
 // butler edits stay in sync.
 // ---------------------------------------------------------------------------
 
@@ -23,7 +24,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -32,26 +32,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Time } from "@/components/ui/time";
 import { useConditions, useDeleteCondition } from "@/hooks/use-health";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
 
-const STATUS_COLORS: Record<string, string> = {
-  active: "bg-green-500/15 text-green-700 dark:text-green-400",
-  resolved: "bg-gray-500/15 text-gray-600 dark:text-gray-400",
-  managed: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-400",
+// Status → single dot color. The dot replaces the old filled status badge:
+// the colour alone carries the state, the word sits beside it in mono caps.
+const STATUS_DOT: Record<string, string> = {
+  active: "bg-[var(--severity-low)]", // green — currently ongoing
+  managed: "bg-[var(--severity-medium)]", // amber — under management
+  resolved: "bg-muted-foreground", // neutral — no longer active
 };
+
+function statusDotClass(status: string): string {
+  return STATUS_DOT[status.toLowerCase()] ?? "bg-muted-foreground";
+}
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -59,32 +56,23 @@ const STATUS_COLORS: Record<string, string> = {
 
 function SkeletonRows({ count = 5 }: { count?: number }) {
   return (
-    <>
+    <div className="divide-y divide-border/60 border-y border-border/60">
       {Array.from({ length: count }, (_, i) => (
-        <TableRow key={i}>
-          <TableCell><Skeleton className="h-4 w-32" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-48" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-        </TableRow>
+        <div key={i} className="grid grid-cols-[10px_1fr_auto] items-start gap-3 py-3">
+          <span className="bg-muted mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full" />
+          <div className="space-y-1.5">
+            <div className="bg-muted h-3.5 w-40 animate-pulse rounded" />
+            <div className="bg-muted h-2.5 w-24 animate-pulse rounded" />
+          </div>
+          <div className="bg-muted h-7 w-24 animate-pulse rounded" />
+        </div>
       ))}
-    </>
-  );
-}
-
-function EmptyState() {
-  return (
-    <EmptyStateUI
-      title="No conditions found."
-      description="Add a condition with the button above, or log one by talking to your Health butler."
-    />
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// ConditionRow — a single condition with edit/delete affordances
+// ConditionRow — a single condition rule-list row with edit/delete affordances
 // ---------------------------------------------------------------------------
 
 function ConditionRow({
@@ -108,48 +96,54 @@ function ConditionRow({
   }
 
   return (
-    <TableRow>
-      <TableCell className="font-medium">{condition.name}</TableCell>
-      <TableCell>
-        <Badge
-          variant="secondary"
-          className={STATUS_COLORS[condition.status.toLowerCase()] ?? ""}
-        >
-          {condition.status}
-        </Badge>
-      </TableCell>
-      <TableCell className="text-muted-foreground text-sm">
-        {condition.diagnosed_at
-          ? <Time value={condition.diagnosed_at} mode="absolute" precision="day" />
-          : "—"}
-      </TableCell>
-      <TableCell className="text-muted-foreground max-w-xs truncate text-sm">
-        {condition.notes ?? "—"}
-      </TableCell>
-      <TableCell className="text-muted-foreground text-sm">
-        <Time value={condition.updated_at} mode="absolute" precision="day" />
-      </TableCell>
-      <TableCell>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onEdit(condition)}
-            aria-label={`Edit ${condition.name}`}
-          >
-            Edit
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            onClick={() => setConfirmingDelete(true)}
-            aria-label={`Delete ${condition.name}`}
-          >
-            Delete
-          </Button>
+    <div className="grid grid-cols-[10px_1fr_auto] items-start gap-3 py-3">
+      <span
+        className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", statusDotClass(condition.status))}
+        aria-hidden="true"
+      />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="text-foreground text-sm font-medium">{condition.name}</span>
+          <span className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.1em]">
+            {condition.status}
+          </span>
         </div>
-      </TableCell>
+        <div className="text-muted-foreground mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 font-mono text-[10px] tabular-nums">
+          <span>
+            {condition.diagnosed_at ? (
+              <>
+                onset <Time value={condition.diagnosed_at} mode="absolute" precision="day" />
+              </>
+            ) : (
+              "onset unknown"
+            )}
+          </span>
+          {condition.notes && (
+            <span className="text-muted-foreground/80 min-w-0 truncate font-sans normal-case">
+              · {condition.notes}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onEdit(condition)}
+          aria-label={`Edit ${condition.name}`}
+        >
+          Edit
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          onClick={() => setConfirmingDelete(true)}
+          aria-label={`Delete ${condition.name}`}
+        >
+          Delete
+        </Button>
+      </div>
 
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
         <AlertDialogContent>
@@ -174,7 +168,7 @@ function ConditionRow({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </TableRow>
+    </div>
   );
 }
 
@@ -205,36 +199,27 @@ export default function ConditionTracker() {
   return (
     <div className="space-y-4">
       {/* Toolbar: add affordance */}
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.14em]">
+          Conditions{total > 0 ? ` · ${total.toLocaleString()}` : ""}
+        </span>
         <Button size="sm" onClick={() => setFormTarget(undefined)}>
           Add condition
         </Button>
       </div>
 
-      {!isLoading && conditions.length === 0 ? (
-        <EmptyState />
+      {isLoading ? (
+        <SkeletonRows />
+      ) : conditions.length === 0 ? (
+        <p className="text-muted-foreground font-serif text-[15px] italic">
+          Nothing on record yet — add a condition above, or tell your Health butler.
+        </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Diagnosed</TableHead>
-              <TableHead>Notes</TableHead>
-              <TableHead>Updated</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <SkeletonRows />
-            ) : (
-              conditions.map((cond) => (
-                <ConditionRow key={cond.id} condition={cond} onEdit={setFormTarget} />
-              ))
-            )}
-          </TableBody>
-        </Table>
+        <div className="divide-y divide-border/60 border-y border-border/60">
+          {conditions.map((cond) => (
+            <ConditionRow key={cond.id} condition={cond} onEdit={setFormTarget} />
+          ))}
+        </div>
       )}
 
       {/* Pagination */}
