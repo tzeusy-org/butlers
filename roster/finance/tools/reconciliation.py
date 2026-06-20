@@ -19,6 +19,7 @@ Invocation surfaces:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from datetime import UTC, timedelta
@@ -27,10 +28,14 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.finance.bills import _mirror_bill_to_spo
+
 # --- Spec constants -------------------------------------------------------
 LOOKBACK_DAYS = 45  # days before anchor that a payment can arrive early
 GRACE_DAYS = 7  # days after anchor that a payment can arrive late
 _AMOUNT_TOLERANCE_FLOOR = Decimal("1.00")  # minimum tolerance floor
+
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +527,33 @@ async def reconcile_bills(
                         "txn_id": str(txn_row["id"]),
                     }
                 )
+                # Mirror the settled state to public.facts immediately.
+                # Amount post-settlement: txn amount backfills a $0 placeholder;
+                # otherwise the original bill amount is unchanged.
+                bill_amount = Decimal(str(bill["amount"]))
+                settled_amount = (
+                    float(settle_txn["amount"]) if bill_amount == 0 else float(bill_amount)
+                )
+                _task = asyncio.create_task(
+                    _mirror_bill_to_spo(
+                        pool=pool,
+                        payee=bill["payee"],
+                        amount=settled_amount,
+                        currency=bill["currency"],
+                        due_date=bill["due_date"],
+                        frequency=bill["frequency"],
+                        status="paid",
+                        payment_method=(
+                            settle_txn.get("payment_method") or bill.get("payment_method")
+                        ),
+                        account_id=str(bill["account_id"]) if bill.get("account_id") else None,
+                        paid_at=txn_row["posted_at"],
+                        reconciled_transaction_id=txn_row["id"],
+                        source_message_id=bill.get("source_message_id"),
+                    )
+                )
+                _background_tasks.add(_task)
+                _task.add_done_callback(_background_tasks.discard)
 
         elif tier == "confirm":
             candidates = match["candidates"]
