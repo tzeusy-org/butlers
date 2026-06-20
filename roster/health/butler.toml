@@ -55,7 +55,10 @@ job_name = "daily_briefing_contribution"
 
 [[butler.schedule]]
 name = "insight_scan"
-cron = "0 7 15 * *"
+# Weekly (Mondays 07:00 UTC) so cross-signal correlation freshness meets the
+# Insight pillar. Changed from the prior monthly "0 7 15 * *"; the job is
+# per-deployment (not per-pageview) so weekly stays cost-safe.
+cron = "0 7 * * 1"
 dispatch_mode = "job"
 job_name = "insight_scan"
 

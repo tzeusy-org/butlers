@@ -16,10 +16,21 @@ from __future__ import annotations
 
 import logging
 import statistics
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
+
+# A reader that returns Home Assistant environmental readings owned by the
+# ``home`` butler. Each reading is a dict with at least::
+#     {"captured_at": datetime, "metric": str, "adverse": bool}
+# where ``metric`` is e.g. "temperature" or "air_quality" and ``adverse`` marks
+# a reading outside the home butler's comfort range (the threshold logic lives
+# with the ``home`` butler, never duplicated here). The health insight-scan job
+# MUST NOT read the home butler's schema directly; environmental data is reached
+# via cross-butler MCP/Switchboard, surfaced through this injected reader.
+HaEnvironmentReader = Callable[[], Awaitable[list[dict[str, Any]]]]
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +70,41 @@ _STREAK_PRIORITY = 25
 _STREAK_COOLDOWN_DAYS = 30
 _STREAK_EXPIRES_DAYS = 7
 
+# ---------------------------------------------------------------------------
+# Cross-signal correlation constants
+# ---------------------------------------------------------------------------
+# Correlation candidates surface co-occurring signals, never causal claims. They
+# expire after a week and carry a moderate priority. Messages are framed as
+# observations ("coincided with", "the overlap may be worth tracking") so they
+# pass the dashboard voice lint and make no diagnostic assertions.
+_CORRELATION_EXPIRES_DAYS = 7
+
+# 1. Adherence dip preceding a symptom flare
+#    Earlier window = where adherence is measured; later window = where flares
+#    are measured. A dip is non-skipped doses below half the prescribed schedule;
+#    a flare is several higher-severity symptom entries in the following window.
+_ADHERENCE_DIP_WINDOW_DAYS = 7
+_ADHERENCE_FLARE_WINDOW_DAYS = 7
+_ADHERENCE_DIP_MAX_RATIO = 0.5
+_FLARE_MIN_SYMPTOMS = 2
+_FLARE_MIN_SEVERITY = 3
+_CORRELATION_ADHERENCE_PRIORITY = 60
+
+# 2. Slow measurement drift
+#    Compare the median of the oldest third of recent readings against the
+#    newest third; a sustained relative change flags a gradual drift.
+_DRIFT_HISTORY_LIMIT = 20
+_DRIFT_MIN_HISTORY = 6
+_DRIFT_MIN_RELATIVE_CHANGE = 0.10
+_CORRELATION_DRIFT_PRIORITY = 50
+
+# 3. Home Assistant environment co-occurring with poor sleep / symptoms
+#    A reading is "adverse" per the home butler's comfort thresholds; we count
+#    days where an adverse reading co-occurs with short sleep or a symptom entry.
+_ENV_SLEEP_SHORT_HOURS = 6.0
+_ENV_CORRELATION_MIN_DAYS = 2
+_CORRELATION_ENV_PRIORITY = 50
+
 # Medication frequency factors (doses per day)
 _FREQUENCY_DOSES_PER_DAY: dict[str, float] = {
     "daily": 1.0,
@@ -86,14 +132,29 @@ def _frequency_to_doses_per_day(frequency: str) -> float:
     return _FREQUENCY_DOSES_PER_DAY.get(normalized, 1.0)
 
 
-async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
+async def run_insight_scan(
+    db_pool: asyncpg.Pool,
+    ha_environment_reader: HaEnvironmentReader | None = None,
+) -> dict[str, Any]:
     """Generate proactive insight candidates for the health domain.
 
-    Covers four categories:
+    Covers four single-signal categories:
     1. Measurement gaps — types where time since last measurement exceeds 2x typical cadence
     2. Medication refills — active meds estimated to deplete within 14 days
     3. Symptom trends — same symptom 3+ times in 7 days with severity >= 3
     4. Health streaks — consecutive-day logging milestones (7/30/60/90/180/365 days)
+
+    Plus three cross-signal correlation categories (co-occurrence framing only,
+    never causal claims):
+    5. Adherence dip preceding a symptom flare — a week of low medication
+       adherence followed by a week with several higher-severity symptom entries.
+    6. Slow measurement drift — a measurement type whose median has gradually
+       shifted across recent readings.
+    7. Environment overlap — Home Assistant environmental readings (e.g. bedroom
+       temperature, air quality) outside the comfort range co-occurring with
+       short sleep or symptom entries. This runs only when ``ha_environment_reader``
+       is provided; environmental data owned by the ``home`` butler is reached via
+       cross-butler MCP/Switchboard, never a direct cross-schema read.
 
     Each candidate is submitted via ``propose_insight_candidate()`` from the shared
     insight broker.  If the broker returns ``{"status": "filtered"}`` (verbosity=off),
@@ -101,6 +162,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     Args:
         db_pool: Database connection pool.
+        ha_environment_reader: Optional async callable returning Home Assistant
+            environmental readings (see ``HaEnvironmentReader``). When ``None``
+            (the current default in the scheduled job, pending cross-butler MCP
+            wiring), the environment correlation is skipped.
 
     Returns:
         Dictionary with keys: candidates_proposed, candidates_accepted,
@@ -491,6 +556,39 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     return stats
                 break  # only one milestone per type per run
 
+    # -----------------------------------------------------------------------
+    # 5. Cross-signal correlation: adherence dip preceding a symptom flare
+    # -----------------------------------------------------------------------
+    if not await _scan_adherence_symptom_correlation(db_pool, now_utc, _submit, med_rows):
+        logger.info("Health insight scan: verbosity=off, exiting early after adherence correlation")
+        stats["early_exit"] = True
+        return stats
+
+    # -----------------------------------------------------------------------
+    # 6. Cross-signal correlation: slow measurement drift
+    # -----------------------------------------------------------------------
+    if not await _scan_measurement_drift_correlation(db_pool, now_utc, _submit, measurement_types):
+        logger.info("Health insight scan: verbosity=off, exiting early after drift correlation")
+        stats["early_exit"] = True
+        return stats
+
+    # -----------------------------------------------------------------------
+    # 7. Cross-signal correlation: HA environment vs sleep / symptoms
+    # -----------------------------------------------------------------------
+    if ha_environment_reader is not None:
+        if not await _scan_environment_correlation(
+            db_pool, now_utc, _submit, ha_environment_reader
+        ):
+            logger.info(
+                "Health insight scan: verbosity=off, exiting early after environment correlation"
+            )
+            stats["early_exit"] = True
+            return stats
+    else:
+        logger.info(
+            "Health insight scan: no HA environment reader wired; skipping environment correlation"
+        )
+
     logger.info(
         "Health insight scan complete: proposed=%d, accepted=%d, "
         "filtered=%d, errored=%d, early_exit=%s",
@@ -501,6 +599,332 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["early_exit"],
     )
     return stats
+
+
+_SubmitFn = Callable[..., Awaitable[bool]]
+
+
+async def _scan_adherence_symptom_correlation(
+    db_pool: asyncpg.Pool,
+    now_utc: datetime,
+    submit: _SubmitFn,
+    med_rows: list[Any],
+) -> bool:
+    """Correlate a recent medication-adherence dip with a following symptom flare.
+
+    For each active medication, the prior week (``[now-14d, now-7d)``) is the
+    *dip window* and the most recent week (``[now-7d, now]``) is the *flare
+    window*. A candidate is proposed when the user normally logs the medication
+    (dose history exists before the dip window), non-skipped doses in the dip
+    window fall below half the prescribed schedule, and several higher-severity
+    symptom entries land in the flare window. The framing is co-occurrence only.
+
+    ``med_rows`` is the already-fetched list of active medication rows from the
+    caller (same query as section 2 in ``run_insight_scan``); passing it avoids
+    a redundant database round-trip.
+
+    Returns False when the broker signals verbosity=off (caller exits early).
+    """
+    dip_start = now_utc - timedelta(days=_ADHERENCE_DIP_WINDOW_DAYS + _ADHERENCE_FLARE_WINDOW_DAYS)
+    dip_end = now_utc - timedelta(days=_ADHERENCE_FLARE_WINDOW_DAYS)
+    prior_start = dip_start - timedelta(days=_ADHERENCE_DIP_WINDOW_DAYS)
+    flare_start = dip_end
+    year_week = now_utc.strftime("%Y-W%W")
+
+    # A symptom flare is shared across medications; count once per run.
+    flare_count = await db_pool.fetchval(
+        """
+        SELECT count(*)
+        FROM facts
+        WHERE predicate = 'symptom'
+          AND validity = 'active'
+          AND scope = 'health'
+          AND valid_at >= $1
+          AND (metadata->>'severity')::int >= $2
+        """,
+        flare_start,
+        _FLARE_MIN_SEVERITY,
+    )
+    if (flare_count or 0) < _FLARE_MIN_SYMPTOMS:
+        return True  # no flare to correlate against
+
+    for med_row in med_rows:
+        med_id = str(med_row["id"])
+        med_name = med_row["name"]
+        frequency = med_row["frequency"] or "daily"
+        doses_per_day = _frequency_to_doses_per_day(frequency)
+
+        expected_doses = doses_per_day * _ADHERENCE_DIP_WINDOW_DAYS
+        if expected_doses <= 0:
+            continue
+
+        # The user must normally log this medication (history before the dip).
+        prior_doses = await db_pool.fetchval(
+            """
+            SELECT count(*)
+            FROM facts
+            WHERE predicate = 'took_dose'
+              AND validity = 'active'
+              AND scope = 'health'
+              AND metadata->>'medication_id' = $1
+              AND valid_at >= $2
+              AND valid_at < $3
+              AND COALESCE((metadata->>'skipped')::boolean, false) = false
+            """,
+            med_id,
+            prior_start,
+            dip_start,
+        )
+        if (prior_doses or 0) <= 0:
+            continue
+
+        dip_doses = await db_pool.fetchval(
+            """
+            SELECT count(*)
+            FROM facts
+            WHERE predicate = 'took_dose'
+              AND validity = 'active'
+              AND scope = 'health'
+              AND metadata->>'medication_id' = $1
+              AND valid_at >= $2
+              AND valid_at < $3
+              AND COALESCE((metadata->>'skipped')::boolean, false) = false
+            """,
+            med_id,
+            dip_start,
+            dip_end,
+        )
+
+        adherence_ratio = (dip_doses or 0) / expected_doses
+        if adherence_ratio > _ADHERENCE_DIP_MAX_RATIO:
+            continue
+
+        dedup_key = f"health:correlation-adherence:{med_id}:{year_week}"
+        expires_at = now_utc + timedelta(days=_CORRELATION_EXPIRES_DAYS)
+        message = (
+            f"{med_name} adherence dropped to about {adherence_ratio * 100:.0f}% of the "
+            f"usual schedule in the prior week, and {flare_count} higher-severity symptom "
+            f"entries were logged in the {_ADHERENCE_FLARE_WINDOW_DAYS} days that followed. "
+            "Reviewing the timing of the two together may be worthwhile."
+        )
+
+        if not await submit(
+            priority=_CORRELATION_ADHERENCE_PRIORITY,
+            category="correlation-adherence",
+            dedup_key=dedup_key,
+            message=message,
+            expires_at=expires_at,
+        ):
+            return False
+
+    return True
+
+
+async def _scan_measurement_drift_correlation(
+    db_pool: asyncpg.Pool,
+    now_utc: datetime,
+    submit: _SubmitFn,
+    measurement_types: list[str],
+) -> bool:
+    """Detect a slow drift in a measurement type's median across recent readings.
+
+    The most recent ``_DRIFT_HISTORY_LIMIT`` numeric readings of a type are split
+    into an oldest third and a newest third; a sustained relative change between
+    their medians flags a gradual drift. The framing is observational only.
+
+    ``measurement_types`` is the already-computed list of type suffixes (e.g.
+    ``["weight", "glucose"]``) from the caller's section-1 query; passing it
+    avoids a redundant ``SELECT DISTINCT predicate`` round-trip.
+
+    Returns False when the broker signals verbosity=off (caller exits early).
+    """
+    year_week = now_utc.strftime("%Y-W%W")
+
+    for mtype in measurement_types:
+        predicate = f"measurement_{mtype}"
+        rows = await db_pool.fetch(
+            """
+            SELECT metadata->>'value' AS value
+            FROM facts
+            WHERE predicate = $1
+              AND scope = 'health'
+              AND validity = 'active'
+              AND valid_at IS NOT NULL
+            ORDER BY valid_at DESC
+            LIMIT $2
+            """,
+            predicate,
+            _DRIFT_HISTORY_LIMIT,
+        )
+
+        # Newest-first numeric values.
+        values: list[float] = []
+        for row in rows:
+            parsed = _parse_float(row["value"])
+            if parsed is not None:
+                values.append(parsed)
+
+        if len(values) < _DRIFT_MIN_HISTORY:
+            continue
+
+        third = len(values) // 3
+        if third == 0:
+            continue
+        newest = values[:third]
+        oldest = values[-third:]
+
+        old_median = statistics.median(oldest)
+        new_median = statistics.median(newest)
+        if old_median == 0:
+            continue
+
+        relative_change = abs(new_median - old_median) / abs(old_median)
+        if relative_change < _DRIFT_MIN_RELATIVE_CHANGE:
+            continue
+
+        direction = "upward" if new_median > old_median else "downward"
+        dedup_key = f"health:correlation-drift:{mtype}:{year_week}"
+        expires_at = now_utc + timedelta(days=_CORRELATION_EXPIRES_DAYS)
+        message = (
+            f"{mtype} readings show a gradual {direction} drift, from about "
+            f"{old_median:.1f} to about {new_median:.1f} across the last {len(values)} "
+            "entries. The slow shift may be worth a closer look."
+        )
+
+        if not await submit(
+            priority=_CORRELATION_DRIFT_PRIORITY,
+            category="correlation-drift",
+            dedup_key=dedup_key,
+            message=message,
+            expires_at=expires_at,
+        ):
+            return False
+
+    return True
+
+
+async def _scan_environment_correlation(
+    db_pool: asyncpg.Pool,
+    now_utc: datetime,
+    submit: _SubmitFn,
+    ha_environment_reader: HaEnvironmentReader,
+) -> bool:
+    """Correlate adverse Home Assistant environment readings with poor sleep / symptoms.
+
+    ``ha_environment_reader`` returns readings owned by the ``home`` butler,
+    reached via cross-butler MCP/Switchboard (never a direct cross-schema read).
+    For each environmental metric, count the recent calendar days where an
+    *adverse* reading co-occurs with short sleep or a logged symptom; a recurring
+    overlap proposes a co-occurrence candidate.
+
+    Returns False when the broker signals verbosity=off (caller exits early).
+    """
+    window_start = now_utc - timedelta(days=14)
+    year_week = now_utc.strftime("%Y-W%W")
+
+    readings = await ha_environment_reader()
+    if not readings:
+        return True
+
+    # Calendar days (UTC) with short sleep.
+    sleep_rows = await db_pool.fetch(
+        """
+        SELECT valid_at, metadata->>'duration_ms' AS duration_ms
+        FROM facts
+        WHERE predicate = 'sleep_session'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND valid_at >= $1
+        """,
+        window_start,
+    )
+    short_sleep_days: set[Any] = set()
+    for row in sleep_rows:
+        dt = _parse_datetime_from_db(row["valid_at"])
+        duration_ms = _parse_float(row["duration_ms"])
+        if dt is None or duration_ms is None:
+            continue
+        if duration_ms / 3_600_000 < _ENV_SLEEP_SHORT_HOURS:
+            short_sleep_days.add(dt.date())
+
+    # Calendar days (UTC) with a logged symptom.
+    symptom_rows = await db_pool.fetch(
+        """
+        SELECT valid_at
+        FROM facts
+        WHERE predicate = 'symptom'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND valid_at >= $1
+        """,
+        window_start,
+    )
+    symptom_days: set[Any] = set()
+    for row in symptom_rows:
+        dt = _parse_datetime_from_db(row["valid_at"])
+        if dt is not None:
+            symptom_days.add(dt.date())
+
+    health_signal_days = short_sleep_days | symptom_days
+    if not health_signal_days:
+        return True
+
+    # metric -> set of calendar days with an adverse reading co-occurring with a signal.
+    overlap_by_metric: dict[str, set[Any]] = {}
+    for reading in readings:
+        if not reading.get("adverse"):
+            continue
+        captured = _parse_datetime_from_db(reading.get("captured_at"))
+        metric = reading.get("metric")
+        if captured is None or not metric:
+            continue
+        if captured < window_start:
+            continue
+        day = captured.date()
+        if day in health_signal_days:
+            overlap_by_metric.setdefault(metric, set()).add(day)
+
+    _metric_labels = {
+        "temperature": "bedroom temperature",
+        "air_quality": "bedroom air quality",
+    }
+
+    for metric in sorted(overlap_by_metric):
+        overlap_days = overlap_by_metric[metric]
+        if len(overlap_days) < _ENV_CORRELATION_MIN_DAYS:
+            continue
+
+        label = _metric_labels.get(metric, f"bedroom {metric.replace('_', ' ')}")
+        dedup_key = f"health:correlation-env:{metric}:{year_week}"
+        expires_at = now_utc + timedelta(days=_CORRELATION_EXPIRES_DAYS)
+        message = (
+            f"On {len(overlap_days)} recent days, {label} ran outside the comfort range "
+            "and shorter sleep or a symptom entry was logged the same day. "
+            "The overlap may be worth tracking."
+        )
+
+        if not await submit(
+            priority=_CORRELATION_ENV_PRIORITY,
+            category="correlation-environment",
+            dedup_key=dedup_key,
+            message=message,
+            expires_at=expires_at,
+        ):
+            return False
+
+    return True
+
+
+def _parse_float(value: Any) -> float | None:
+    """Parse a float from a DB value (number or numeric string); None if not numeric."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_datetime_from_db(value: Any) -> datetime | None:

@@ -136,10 +136,10 @@ async def _insert_measurement(
     """Insert a measurement fact into public.facts and return its UUID string.
 
     Measurements are stored as temporal facts with predicate = "measurement_{type}",
-    scope = "health", validity = "active", and valid_at = measured_at.
+    scope = "health", validity = "active", valid_at = measured_at, and the value
+    under metadata.value (scalar or compound dict) — the same surface
+    ``measurement_log`` writes and the drift correlation reads.
     """
-    import json
-
     if value is None:
         value = {"value": 70.0}
     if measured_at is None:
@@ -148,17 +148,19 @@ async def _insert_measurement(
     predicate = f"measurement_{mtype}"
     metadata = {"value": value.get("value", value) if isinstance(value, dict) else value}
 
+    # Pass the dict so the pool's JSONB codec serializes it once (no double-encode);
+    # otherwise metadata->>'value' would be NULL.
     await pool.execute(
         """
         INSERT INTO public.facts
             (id, subject, predicate, content, validity, scope, valid_at, metadata)
-        VALUES ($1::uuid, 'owner', $2, $3, 'active', 'health', $4, $5::jsonb)
+        VALUES ($1::uuid, 'owner', $2, $3, 'active', 'health', $4, $5)
         """,
         mid,
         predicate,
         f"{mtype}: {metadata['value']}",
         measured_at,
-        json.dumps(metadata),
+        metadata,
     )
     return mid
 
@@ -265,6 +267,37 @@ async def _insert_symptom(
         metadata,
     )
     return sym_id
+
+
+async def _insert_sleep_session(
+    pool,
+    *,
+    duration_hours: float,
+    occurred_at: datetime | None = None,
+) -> str:
+    """Insert a sleep_session FACT into public.facts and return its UUID string.
+
+    Sleep sessions are temporal facts (predicate='sleep_session', scope='health',
+    validity='active') with valid_at=session start and duration_ms in metadata —
+    the same surface the google_health wellness ingest writes and the environment
+    correlation reads.
+    """
+    if occurred_at is None:
+        occurred_at = _utcnow()
+    sleep_id = str(uuid.uuid4())
+    metadata = {"duration_ms": int(duration_hours * 3_600_000)}
+    await pool.execute(
+        """
+        INSERT INTO public.facts
+            (id, subject, predicate, content, validity, scope, valid_at, metadata)
+        VALUES ($1::uuid, 'owner', 'sleep_session', $2, 'active', 'health', $3, $4)
+        """,
+        sleep_id,
+        "sleep session",
+        occurred_at,
+        metadata,
+    )
+    return sleep_id
 
 
 # ---------------------------------------------------------------------------
@@ -1061,3 +1094,184 @@ async def test_insight_scan_origin_butler_is_health(provisioned_postgres_pool):
         assert len(rows) >= 1
         for row in rows:
             assert row["origin_butler"] == "health"
+
+
+# ---------------------------------------------------------------------------
+# Tests: cross-signal correlation — adherence dip preceding a symptom flare
+# ---------------------------------------------------------------------------
+
+
+async def test_correlation_adherence_dip_then_symptom_flare(provisioned_postgres_pool):
+    """A medication-adherence dip followed by a symptom flare generates a candidate."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        med_id = await _insert_medication(pool, name="Sertraline", frequency="daily", active=True)
+        # Prior week (days 15-21): the user normally logs the medication daily.
+        for day in range(15, 22):
+            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=day))
+        # Dip week (days 7-14): no doses logged → adherence collapses.
+        # Flare week (days 0-7): two higher-severity symptom entries.
+        for day in (1, 3):
+            await _insert_symptom(
+                pool, name="nausea", severity=4, occurred_at=now - timedelta(days=day)
+            )
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT priority, dedup_key, message FROM insight_candidates"
+            " WHERE category = 'correlation-adherence'"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["priority"] == 60
+        assert row["dedup_key"].startswith(f"health:correlation-adherence:{med_id}:")
+        assert "Sertraline" in row["message"]
+
+
+async def test_correlation_adherence_no_flare_no_candidate(provisioned_postgres_pool):
+    """An adherence dip with no following symptom flare does not generate a candidate."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        med_id = await _insert_medication(pool, name="Sertraline", frequency="daily", active=True)
+        for day in range(15, 22):
+            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=day))
+        # Only one symptom in the flare window — below the flare threshold.
+        await _insert_symptom(pool, name="nausea", severity=4, occurred_at=now - timedelta(days=1))
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'correlation-adherence'"
+        )
+        assert len(rows) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: cross-signal correlation — slow measurement drift
+# ---------------------------------------------------------------------------
+
+
+async def test_correlation_measurement_drift_generates_candidate(provisioned_postgres_pool):
+    """A gradual upward median shift across recent readings generates a drift candidate."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        # Daily weight readings drifting 70 → 80 over 9 days (newest = highest).
+        values = [80.0, 80.0, 80.0, 75.0, 75.0, 75.0, 70.0, 70.0, 70.0]
+        for i, value in enumerate(values):
+            await _insert_measurement(
+                pool,
+                mtype="weight",
+                value={"value": value},
+                measured_at=now - timedelta(days=i),
+            )
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT priority, dedup_key, message FROM insight_candidates"
+            " WHERE category = 'correlation-drift'"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["priority"] == 50
+        assert row["dedup_key"].startswith("health:correlation-drift:weight:")
+        assert "drift" in row["message"]
+
+
+async def test_correlation_measurement_drift_stable_no_candidate(provisioned_postgres_pool):
+    """Stable readings (no meaningful drift) do not generate a drift candidate."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        for i in range(9):
+            await _insert_measurement(
+                pool,
+                mtype="weight",
+                value={"value": 70.0},
+                measured_at=now - timedelta(days=i),
+            )
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'correlation-drift'"
+        )
+        assert len(rows) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: cross-signal correlation — HA environment vs sleep / symptoms
+# ---------------------------------------------------------------------------
+
+
+async def test_correlation_environment_with_reader_generates_candidate(provisioned_postgres_pool):
+    """Adverse HA readings co-occurring with short sleep generate an environment candidate."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        day1 = now - timedelta(days=2)
+        day2 = now - timedelta(days=3)
+        # 5h sleep on two distinct nights.
+        await _insert_sleep_session(pool, duration_hours=5.0, occurred_at=day1)
+        await _insert_sleep_session(pool, duration_hours=5.0, occurred_at=day2)
+
+        async def reader():
+            return [
+                {"captured_at": day1, "metric": "temperature", "adverse": True},
+                {"captured_at": day2, "metric": "temperature", "adverse": True},
+            ]
+
+        await run_insight_scan(pool, reader)
+
+        rows = await pool.fetch(
+            "SELECT priority, dedup_key, message FROM insight_candidates"
+            " WHERE category = 'correlation-environment'"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["priority"] == 50
+        assert row["dedup_key"].startswith("health:correlation-env:temperature:")
+        assert "bedroom temperature" in row["message"]
+
+
+async def test_correlation_environment_no_reader_skipped(provisioned_postgres_pool):
+    """Without an HA environment reader, no environment candidate is generated."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        await _insert_sleep_session(pool, duration_hours=5.0, occurred_at=now - timedelta(days=2))
+
+        await run_insight_scan(pool)  # no reader
+
+        rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'correlation-environment'"
+        )
+        assert len(rows) == 0
