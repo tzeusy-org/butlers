@@ -44,6 +44,10 @@ class UnifiedCalendarEntry(BaseModel):
     editable: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # core_076 provenance columns — which butler session wrote this event
+    source_butler: str | None = None
+    source_session_id: str | None = None
+
 
 class CalendarWorkspaceSourceFreshness(BaseModel):
     """Per-source freshness metadata for workspace rendering."""
@@ -220,3 +224,44 @@ class CalendarWorkspaceMutationResponse(BaseModel):
     projection_version: str | None = None
     staleness_ms: int | None = None
     projection_freshness: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Audit trail models — GET /api/calendar/workspace/audit
+# ---------------------------------------------------------------------------
+
+CalendarActionStatus = Literal["pending", "applied", "failed", "noop"]
+
+
+class CalendarAuditEntry(BaseModel):
+    """One row from ``calendar_action_log``, enriched with provenance from ``calendar_events``.
+
+    ``source_butler`` and ``source_session_id`` come from the associated
+    ``calendar_events`` row (core_076 columns) via the ``event_id`` FK.
+    They are ``None`` when the action has no linked event (e.g. a failed create).
+    """
+
+    id: UUID
+    idempotency_key: str
+    request_id: str | None = None
+    action_type: str
+    action_status: CalendarActionStatus
+    origin_ref: str | None = None
+    # Condensed payload summary — key fields only (not the full JSONB)
+    payload_summary: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    applied_at: datetime | None = None
+    # Provenance from calendar_events (core_076 source columns)
+    source_butler: str | None = None
+    source_session_id: str | None = None
+
+
+class CalendarAuditResponse(BaseModel):
+    """Response payload for GET /api/calendar/workspace/audit."""
+
+    entries: list[CalendarAuditEntry] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 50

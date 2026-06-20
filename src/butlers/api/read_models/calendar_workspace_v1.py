@@ -78,7 +78,8 @@ SOURCE_COLUMNS: str = (
 #: Columns projected for the workspace event-instance view: instances joined
 #: to events, sources, and the latest sync cursor per source.
 #: Changing this list is a breaking change — create ``calendar_workspace_v2``
-#: instead.
+#: instead.  Adding new NULLABLE columns from existing DB columns is safe
+#: (additive, no existing consumer breaks).
 WORKSPACE_COLUMNS: str = (
     "i.id AS instance_id,"
     " i.origin_instance_ref,"
@@ -98,6 +99,8 @@ WORKSPACE_COLUMNS: str = (
     " e.visibility,"
     " e.recurrence_rule,"
     " e.metadata AS event_metadata,"
+    " e.source_butler,"
+    " e.source_session_id,"
     " s.id AS source_id,"
     " s.source_key,"
     " s.source_kind,"
@@ -171,6 +174,9 @@ class CalendarWorkspaceRow:
     visibility: str | None
     recurrence_rule: str | None
     event_metadata: Any  # raw asyncpg value (dict or None)
+    # core_076 provenance columns on calendar_events
+    source_butler: str | None
+    source_session_id: str | None
     source_id: UUID
     source_key: str
     source_kind: str
@@ -250,6 +256,8 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         visibility=row["visibility"],
         recurrence_rule=row["recurrence_rule"],
         event_metadata=row["event_metadata"],
+        source_butler=row.get("source_butler") or None,
+        source_session_id=row.get("source_session_id") or None,
         source_id=row["source_id"],
         source_key=row["source_key"],
         source_kind=row["source_kind"],
