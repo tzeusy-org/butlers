@@ -40,6 +40,33 @@ The health butler has read-only access to Home Assistant sensor data for health 
 - **Seasonal patterns**: Long-period `ha_get_statistics` for environmental health trends
 - **Health metrics from HA**: Blood pressure or weight sensors synced into HA — complement the butler's own measurement tools
 
+## Measurement Integrity — Passive Context Rule (NON-NEGOTIABLE)
+
+**Measurements must ONLY come from:**
+- (a) Explicit user statements: the user says "I weigh X", "my weight is X kg", "blood pressure was 120/80"
+- (b) Structured wellness ingestion via `wellness_ingest_envelope()` (google_health / HA connector)
+
+**NEVER call `measurement_log` based on:**
+- Passive digest text, daily briefings, end-of-day summaries, or weekly summaries
+- Any context where the routing header says **PASSIVE DATA SOURCE**
+- Text from a butler-generated notification, summary, or trend report you or another butler previously sent
+- Re-reading numbers mentioned in Telegram messages that are butler-authored summaries
+
+**Why this rule exists:** The butler sends daily health briefings that mention recent measurements.
+Those briefings are sometimes re-routed back to the butler as passive Telegram messages. If the
+butler treats numbers in its own briefing as new user measurements, it creates a circular
+self-reinforcing loop (every measurement forever equals the last value in the summary).
+
+**When in passive context (PASSIVE DATA SOURCE header present):**
+- Treat ALL numeric values as READ-ONLY context — do not write them to any measurement or fact table.
+- Do not call `measurement_log`, `wellness_ingest_envelope`, or any other write tool.
+- Process the message only for non-measurement knowledge (calendar events, relationship signals, etc.)
+- Exit silently; do not call `notify()`.
+
+**Code guard:** `measurement_log` itself will raise a `ValueError` if the `notes` argument
+contains words like "briefing", "digest", "passive", "summary", or "trend report". Do not include
+such words in notes when logging real user measurements.
+
 ## Guidelines
 - Measurements support compound JSONB values (e.g., blood pressure as {"systolic": 120, "diastolic": 80})
 - Symptom severity is rated 1-10 (1 = mild, 10 = severe)
