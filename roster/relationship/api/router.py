@@ -2192,12 +2192,13 @@ _CONCENTRATION_DEFAULT_PREDICATE = "knows"
 
 @router.get("/entities/concentration", response_model=ConcentrationResponse)
 async def get_entities_concentration(
-    pred: str = Query(
-        _CONCENTRATION_DEFAULT_PREDICATE,
+    pred: str | None = Query(
+        None,
         description=(
             "Relational predicate to aggregate.  Must be a predicate registered in "
             "``relationship.entity_predicate_registry`` with ``kind='relational'``.  "
-            "Defaults to ``'knows'``."
+            "When omitted, defaults to the relational predicate with the most active rows "
+            "(or ``'knows'`` when no relational data exists)."
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -2299,12 +2300,29 @@ async def get_entities_concentration(
         for r in tab_rows
     ]
 
-    # Validate that the requested predicate is relational; default silently
-    # to the first relational predicate if pred is unknown or not relational.
+    # Determine the active predicate for this request.
+    #
+    # When ``pred`` is None (no explicit ?pred= supplied): pick the relational
+    # predicate with the most active rows so the page loads populated by default.
+    # Fall back to ``_CONCENTRATION_DEFAULT_PREDICATE`` for a stable empty state
+    # (or to the first registered tab if even the default is unregistered).
+    #
+    # When ``pred`` is explicitly given: validate it's relational; fall back
+    # silently to the default if unknown, or to the first tab if the default
+    # itself is not registered.
     known_relational = {t.predicate for t in predicate_tabs}
-    active_predicate = pred if pred in known_relational else _CONCENTRATION_DEFAULT_PREDICATE
-    if active_predicate not in known_relational and predicate_tabs:
-        active_predicate = predicate_tabs[0].predicate
+    if pred is None:
+        best_tab = max(predicate_tabs, key=lambda t: t.entity_count, default=None)
+        if best_tab is not None and best_tab.entity_count > 0:
+            active_predicate = best_tab.predicate
+        else:
+            active_predicate = _CONCENTRATION_DEFAULT_PREDICATE
+            if active_predicate not in known_relational and predicate_tabs:
+                active_predicate = predicate_tabs[0].predicate
+    else:
+        active_predicate = pred if pred in known_relational else _CONCENTRATION_DEFAULT_PREDICATE
+        if active_predicate not in known_relational and predicate_tabs:
+            active_predicate = predicate_tabs[0].predicate
 
     # -------------------------------------------------------------------
     # 2. Aggregate weight for the active predicate.

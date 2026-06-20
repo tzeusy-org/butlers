@@ -491,6 +491,97 @@ class TestPredicateSelection:
 
 
 # ---------------------------------------------------------------------------
+# Scenario: Smart default predicate (bu-dtfy7)
+# ---------------------------------------------------------------------------
+
+
+class TestSmartDefaultPredicate:
+    """When no ?pred= is given, the backend picks the most-populated relational predicate.
+
+    This prevents the first-load empty state when 'knows' has zero rows but other
+    relational predicates (works-at, member-of, etc.) have active data.
+    """
+
+    async def test_default_picks_most_populated_predicate(self):
+        """No ?pred= → response uses the predicate with the highest entity_count."""
+        tabs = [
+            _make_tab_row(predicate="knows", label="Knows", entity_count=0),
+            _make_tab_row(predicate="works-at", label="Works At", entity_count=17),
+            _make_tab_row(predicate="member-of", label="Member Of", entity_count=5),
+        ]
+        agg_rows = [_make_agg_row(canonical_name="Alice", weight_sum=10)]
+        app, pool = _app_with_pool(tab_rows=tabs, agg_rows=agg_rows)
+        resp = await _get(app)  # no pred param
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["predicate"] == "works-at"
+        # Verify the aggregation SQL was issued for works-at, not knows.
+        agg_call = pool.fetch.call_args_list[1]
+        sql_args = agg_call[0]
+        assert "works-at" in sql_args
+
+    async def test_default_populated_page_has_items(self):
+        """Smart default returns populated items, not the empty state."""
+        tabs = [
+            _make_tab_row(predicate="knows", label="Knows", entity_count=0),
+            _make_tab_row(predicate="works-at", label="Works At", entity_count=3),
+        ]
+        agg_rows = [
+            _make_agg_row(canonical_name="Alice", weight_sum=5),
+            _make_agg_row(canonical_name="Bob", weight_sum=3),
+        ]
+        app, _ = _app_with_pool(tab_rows=tabs, agg_rows=agg_rows)
+        resp = await _get(app)
+
+        body = resp.json()
+        assert body["total"] == 2
+        assert len(body["items"]) == 2
+
+    async def test_default_falls_back_to_knows_when_all_empty(self):
+        """When ALL predicates have zero rows, falls back to 'knows' for stable empty state."""
+        tabs = [
+            _make_tab_row(predicate="knows", label="Knows", entity_count=0),
+            _make_tab_row(predicate="works-at", label="Works At", entity_count=0),
+        ]
+        app, _ = _app_with_pool(tab_rows=tabs, agg_rows=[])
+        resp = await _get(app)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["predicate"] == "knows"
+        assert body["items"] == []
+
+    async def test_explicit_pred_ignores_smart_default(self):
+        """Explicit ?pred= still routes through the standard validation path."""
+        tabs = [
+            _make_tab_row(predicate="knows", label="Knows", entity_count=0),
+            _make_tab_row(predicate="works-at", label="Works At", entity_count=17),
+        ]
+        # Even though works-at has more data, explicit pred="knows" must be honored.
+        app, _ = _app_with_pool(tab_rows=tabs, agg_rows=[])
+        resp = await _get(app, pred="knows")
+
+        assert resp.status_code == 200
+        assert resp.json()["predicate"] == "knows"
+
+    async def test_tab_strip_always_includes_all_predicates(self):
+        """predicate_tabs includes all registered predicates regardless of default selection."""
+        tabs = [
+            _make_tab_row(predicate="knows", label="Knows", entity_count=0),
+            _make_tab_row(predicate="works-at", label="Works At", entity_count=17),
+            _make_tab_row(predicate="member-of", label="Member Of", entity_count=5),
+        ]
+        agg_rows = [_make_agg_row(canonical_name="Alice", weight_sum=10)]
+        app, _ = _app_with_pool(tab_rows=tabs, agg_rows=agg_rows)
+        resp = await _get(app)
+
+        body = resp.json()
+        predicates = {t["predicate"] for t in body["predicate_tabs"]}
+        assert predicates == {"knows", "works-at", "member-of"}
+
+
+# ---------------------------------------------------------------------------
 # Scenario: Provenance fields on every entry
 # ---------------------------------------------------------------------------
 
