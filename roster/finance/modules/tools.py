@@ -493,42 +493,11 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             metadata=_parse_metadata(metadata),
         )
 
-    @_tool("facts")
-    async def track_bill_fact(
-        payee: str,
-        amount: float,
-        currency: str,
-        due_date: str,
-        frequency: str = "one_time",
-        status: str = "pending",
-        payment_method: str | None = None,
-        account_id: str | None = None,
-        paid_at: str | None = None,
-        source_message_id: str | None = None,
-        metadata: str | None = None,
-    ) -> dict[str, Any]:
-        """Create or update a bill obligation as a property fact (supersession).
-
-        frequency: one_time | weekly | monthly | quarterly | yearly | custom
-        status: pending | paid | overdue
-        due_date: ISO-8601 date string (YYYY-MM-DD).
-        paid_at: ISO-8601 datetime string when status is 'paid'.
-        Different bills (payee + due_date) coexist; same bill is updated in-place.
-        """
-        return await _facts.track_bill_fact(
-            module._get_pool(),
-            payee=payee,
-            amount=amount,
-            currency=currency,
-            due_date=due_date,
-            frequency=frequency,
-            status=status,
-            payment_method=payment_method,
-            account_id=account_id,
-            paid_at=paid_at,
-            source_message_id=source_message_id,
-            metadata=_parse_metadata(metadata),
-        )
+    # NOTE: `track_bill_fact` is intentionally NOT registered as a standalone MCP
+    # tool. Bill writes flow through `track_bill`, which fires the SPO mirror via
+    # the private `facts._write_bill_fact` helper. Exposing a separate bill-fact
+    # tool was a footgun (direct calls bypass track_bill's table upsert +
+    # reconciliation), so the registration was removed (Track E2 / bu-z0nzz).
 
     @_tool("facts")
     async def spending_summary_facts(

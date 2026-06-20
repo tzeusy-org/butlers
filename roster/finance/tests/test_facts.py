@@ -7,7 +7,7 @@ Covers:
   direction, account_id; pagination.
 - track_account_fact: property fact creation (content-differentiated accounts).
 - track_subscription_fact: property fact creation, validation of status/frequency.
-- track_bill_fact: property fact creation, validation of status/frequency.
+- _write_bill_fact: property fact creation, validation of status/frequency.
 - spending_summary_facts: JSONB aggregation over transaction facts, group_by modes.
 """
 
@@ -884,22 +884,22 @@ class TestTrackSubscriptionFact:
 
 
 # ---------------------------------------------------------------------------
-# track_bill_fact
+# _write_bill_fact
 # ---------------------------------------------------------------------------
 
 
 class TestTrackBillFact:
-    """Tests for track_bill_fact — property fact creation."""
+    """Tests for _write_bill_fact — property fact creation."""
 
     async def test_creates_bill_fact(self, pool_with_owner):
         with patch(
             "butlers.tools.finance.facts._get_embedding_engine",
             return_value=_mock_embedding_engine(),
         ):
-            from butlers.tools.finance.facts import track_bill_fact
+            from butlers.tools.finance.facts import _write_bill_fact
 
             due = date.today() + timedelta(days=7)
-            result = await track_bill_fact(
+            result = await _write_bill_fact(
                 pool=pool_with_owner,
                 payee="PG&E",
                 amount=84.00,
@@ -920,10 +920,10 @@ class TestTrackBillFact:
             "butlers.tools.finance.facts._get_embedding_engine",
             return_value=_mock_embedding_engine(),
         ):
-            from butlers.tools.finance.facts import track_bill_fact
+            from butlers.tools.finance.facts import _write_bill_fact
 
             with pytest.raises(ValueError, match="Invalid status"):
-                await track_bill_fact(
+                await _write_bill_fact(
                     pool=pool_with_owner,
                     payee="Phone",
                     amount=50.00,
@@ -937,10 +937,10 @@ class TestTrackBillFact:
             "butlers.tools.finance.facts._get_embedding_engine",
             return_value=_mock_embedding_engine(),
         ):
-            from butlers.tools.finance.facts import track_bill_fact
+            from butlers.tools.finance.facts import _write_bill_fact
 
             with pytest.raises(ValueError, match="Invalid frequency"):
-                await track_bill_fact(
+                await _write_bill_fact(
                     pool=pool_with_owner,
                     payee="Phone",
                     amount=50.00,
@@ -954,9 +954,9 @@ class TestTrackBillFact:
             "butlers.tools.finance.facts._get_embedding_engine",
             return_value=_mock_embedding_engine(),
         ):
-            from butlers.tools.finance.facts import track_bill_fact
+            from butlers.tools.finance.facts import _write_bill_fact
 
-            await track_bill_fact(
+            await _write_bill_fact(
                 pool=pool_with_owner,
                 payee="PG&E",
                 amount=84.00,
@@ -975,10 +975,10 @@ class TestTrackBillFact:
             "butlers.tools.finance.facts._get_embedding_engine",
             return_value=_mock_embedding_engine(),
         ):
-            from butlers.tools.finance.facts import track_bill_fact
+            from butlers.tools.finance.facts import _write_bill_fact
 
             due_str = (date.today() + timedelta(days=7)).isoformat()
-            result = await track_bill_fact(
+            result = await _write_bill_fact(
                 pool=pool_with_owner,
                 payee="Credit Card",
                 amount=300.00,
@@ -992,10 +992,10 @@ class TestTrackBillFact:
             "butlers.tools.finance.facts._get_embedding_engine",
             return_value=_mock_embedding_engine(),
         ):
-            from butlers.tools.finance.facts import track_bill_fact
+            from butlers.tools.finance.facts import _write_bill_fact
 
             paid_time = _utcnow()
-            result = await track_bill_fact(
+            result = await _write_bill_fact(
                 pool=pool_with_owner,
                 payee="Electric",
                 amount=70.00,
@@ -1013,10 +1013,10 @@ class TestTrackBillFact:
             "butlers.tools.finance.facts._get_embedding_engine",
             return_value=_mock_embedding_engine(),
         ):
-            from butlers.tools.finance.facts import track_bill_fact
+            from butlers.tools.finance.facts import _write_bill_fact
 
             due = date.today() + timedelta(days=10)
-            await track_bill_fact(
+            await _write_bill_fact(
                 pool=pool_with_owner,
                 payee="Rent",
                 amount=1800.00,
@@ -1024,7 +1024,7 @@ class TestTrackBillFact:
                 due_date=due,
                 status="pending",
             )
-            await track_bill_fact(
+            await _write_bill_fact(
                 pool=pool_with_owner,
                 payee="Rent",
                 amount=1800.00,

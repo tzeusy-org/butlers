@@ -53,14 +53,12 @@ try:
         list_transaction_facts,
         spending_summary_facts,
         track_account_fact,
-        track_bill_fact,
         track_subscription_fact,
     )
 except (ImportError, AttributeError):
     list_transaction_facts = None  # type: ignore[assignment]
     spending_summary_facts = None  # type: ignore[assignment]
     track_account_fact = None  # type: ignore[assignment]
-    track_bill_fact = None  # type: ignore[assignment]
     track_subscription_fact = None  # type: ignore[assignment]
 
 # --- Bulk ingestion: canonical implementation routes through record_transaction ---
@@ -200,7 +198,6 @@ __all__ = [
     "list_transaction_facts",
     "track_account_fact",
     "track_subscription_fact",
-    "track_bill_fact",
     "spending_summary_facts",
     # Bulk ingestion (bu-8c8c)
     "bulk_record_transactions",

@@ -672,7 +672,7 @@ _VALID_BILL_STATUSES = ("pending", "paid", "overdue")
 _VALID_BILL_FREQUENCIES = ("one_time", "weekly", "monthly", "quarterly", "yearly", "custom")
 
 
-async def track_bill_fact(
+async def _write_bill_fact(
     pool: asyncpg.Pool,
     payee: str,
     amount: float | Decimal,

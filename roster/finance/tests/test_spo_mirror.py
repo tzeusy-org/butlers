@@ -724,7 +724,7 @@ async def test_track_bill_spo_mirror_failure_does_not_raise():
     """If the SPO mirror fails, track_bill still returns the upserted row successfully.
 
     Exercises _mirror_bill_to_spo's exception handler: the primary upsert result
-    must be returned even when track_bill_fact raises.
+    must be returned even when _write_bill_fact raises.
     """
     from datetime import date as _date
 
@@ -736,7 +736,7 @@ async def test_track_bill_spo_mirror_failure_does_not_raise():
     async def _failing_fact(*args, **kwargs):
         raise RuntimeError("Simulated SPO mirror failure")
 
-    with patch("butlers.tools.finance.facts.track_bill_fact", side_effect=_failing_fact):
+    with patch("butlers.tools.finance.facts._write_bill_fact", side_effect=_failing_fact):
         result = await track_bill(
             pool=pool,
             payee="Netflix",

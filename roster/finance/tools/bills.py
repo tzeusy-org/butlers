@@ -77,7 +77,7 @@ async def _mirror_bill_to_spo(
 ) -> None:
     """Fire-and-forget SPO mirror write to public.facts after a bills upsert.
 
-    Writes a property fact (predicate='bill', valid_at=NULL) via track_bill_fact.
+    Writes a property fact (predicate='bill', valid_at=NULL) via _write_bill_fact.
     Errors are swallowed so that a mirror failure never rolls back the primary
     finance.bills upsert.
 
@@ -88,13 +88,13 @@ async def _mirror_bill_to_spo(
     This function is scheduled via asyncio.create_task and must never raise.
     """
     try:
-        from butlers.tools.finance.facts import track_bill_fact
+        from butlers.tools.finance.facts import _write_bill_fact
 
         mirror_metadata: dict[str, Any] = {}
         if reconciled_transaction_id is not None:
             mirror_metadata["reconciled_transaction_id"] = str(reconciled_transaction_id)
 
-        await track_bill_fact(
+        await _write_bill_fact(
             pool=pool,
             payee=payee,
             amount=amount,
