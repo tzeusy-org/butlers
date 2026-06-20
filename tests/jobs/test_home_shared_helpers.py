@@ -18,12 +18,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.jobs.ha_context import HomeJobContext
 from butlers.jobs.home import (
     _DEFAULT_BATTERY_THRESHOLDS,
     _DEFAULT_ENERGY_THRESHOLDS,
     _DEFAULT_OFFLINE_HOURS_THRESHOLDS,
     EmptyEntitySnapshotError,
-    HomeJobContext,
     _load_thresholds,
     _read_entity_snapshot,
     _send_notify,
@@ -76,13 +76,15 @@ async def test_home_job_context_create():
             info_type
         ]
 
-    with patch("butlers.jobs.home.resolve_owner_entity_info", side_effect=_resolve):
+    with patch("butlers.jobs.ha_context.resolve_owner_entity_info", side_effect=_resolve):
         ctx = await HomeJobContext.create(pool)
 
     assert ctx.ha_url == "http://ha.local:8123" and ctx.ha_token == "secret"
 
     with patch(
-        "butlers.jobs.home.resolve_owner_entity_info", new_callable=AsyncMock, return_value=None
+        "butlers.jobs.ha_context.resolve_owner_entity_info",
+        new_callable=AsyncMock,
+        return_value=None,
     ):
         ctx2 = await HomeJobContext.create(pool)
     assert ctx2.ha_url is None and ctx2.ha_token is None
