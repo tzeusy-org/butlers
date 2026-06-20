@@ -515,7 +515,7 @@ async def reconcile_bills(
                     {
                         "bill_id": str(bill_id),
                         "payee": bill["payee"],
-                        "amount": float(txn_row["amount"]),
+                        "amount": str(Decimal(str(txn_row["amount"]))),
                         "paid_at": txn_row["posted_at"].isoformat()
                         if txn_row["posted_at"]
                         else None,
@@ -548,12 +548,12 @@ async def reconcile_bills(
                         "due_date": candidate_bill["due_date"].isoformat()
                         if hasattr(candidate_bill["due_date"], "isoformat")
                         else str(candidate_bill["due_date"]),
-                        "amount": float(candidate_bill["amount"]),
+                        "amount": str(Decimal(str(candidate_bill["amount"]))),
                         "candidates": [
                             {
                                 "txn_id": str(txn_row["id"]),
                                 "merchant": txn_row["merchant"],
-                                "amount": float(txn_row["amount"]),
+                                "amount": str(Decimal(str(txn_row["amount"]))),
                                 "posted_at": txn_row["posted_at"].isoformat()
                                 if txn_row["posted_at"]
                                 else None,

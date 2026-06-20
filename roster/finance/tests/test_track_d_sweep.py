@@ -207,7 +207,7 @@ class TestSweepAutoSettledNotInUpcoming:
         assert "txn_id" in settled
 
         assert settled["payee"] == "Singtel"
-        assert abs(settled["amount"] - 80.00) < 0.01
+        assert abs(Decimal(settled["amount"]) - Decimal("80.00")) < Decimal("0.01")
 
     async def test_multiple_auto_settled_all_removed(self, pool):
         """Two auto-settled bills are both removed from the upcoming list."""
@@ -583,7 +583,7 @@ class TestPaymentBeforeBillSwept:
         # Digest data: auto-settled section
         assert len(sweep["auto_settled"]) == 1
         assert sweep["auto_settled"][0]["payee"] == "Grab"
-        assert abs(sweep["auto_settled"][0]["amount"] - 45.00) < 0.01
+        assert abs(Decimal(sweep["auto_settled"][0]["amount"]) - Decimal("45.00")) < Decimal("0.01")
 
         # Digest data: confirm section
         assert len(sweep["candidates"]) >= 1
