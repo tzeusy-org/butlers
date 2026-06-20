@@ -202,7 +202,7 @@ class TestB1Reproducer:
         assert len(result["auto_settled"]) == 1
         settled = result["auto_settled"][0]
         assert settled["payee"] == "HSBC Credit Card"
-        assert abs(settled["amount"] - 717.57) < 0.01
+        assert abs(Decimal(settled["amount"]) - Decimal("717.57")) < Decimal("0.01")
 
         # 5. Verify the bill is now paid and backfilled
         row_after = await pool.fetchrow(
