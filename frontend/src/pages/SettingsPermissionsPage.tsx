@@ -176,19 +176,6 @@ async function postExport(scope: ExportScope): Promise<{ signed_url: string; exp
   return body.data;
 }
 
-async function deleteWipe(phrase: string): Promise<void> {
-  const resp = await fetch("/api/data/wipe", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phrase }),
-  });
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    const err = body?.detail?.error ?? `DELETE /api/data/wipe failed: ${resp.status}`;
-    throw new Error(err);
-  }
-}
-
 async function createWebhook(
   endpoint: string,
   events: string[],
@@ -445,16 +432,10 @@ function AuditReelSection() {
 // Data Ops Section
 // ---------------------------------------------------------------------------
 
-const WIPE_PHRASE = "WIPE EVERYTHING IRREVERSIBLY";
-
 function DataOpsSection() {
   const [exportScope, setExportScope] = useState<ExportScope>("all");
   const [exportLoading, setExportLoading] = useState(false);
   const [exportUrl, setExportUrl] = useState<string | null>(null);
-
-  const [wipePhrase, setWipePhrase] = useState("");
-  const [wipeLoading, setWipeLoading] = useState(false);
-  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
 
   async function handleExport() {
     setExportLoading(true);
@@ -467,20 +448,6 @@ function DataOpsSection() {
       toast.error(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setExportLoading(false);
-    }
-  }
-
-  async function handleWipe() {
-    setWipeLoading(true);
-    try {
-      await deleteWipe(wipePhrase);
-      toast.success("All data wiped.");
-      setWipePhrase("");
-      setWipeConfirmOpen(false);
-    } catch (err) {
-      toast.error(`Wipe failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setWipeLoading(false);
     }
   }
 
@@ -524,63 +491,21 @@ function DataOpsSection() {
         )}
       </div>
 
-      {/* Wipe — danger zone: the sole attention-tint usage on this page */}
+      {/* Wipe — temporarily disabled */}
       <div
-        className="attention-row flex flex-col gap-3 border-r border-b border-border/60 px-4 py-4"
-        data-tone="red"
+        className="flex flex-col gap-3 border-r border-b border-border/60 px-4 py-4 opacity-50"
+        data-testid="wipe-panel-disabled"
       >
         <div className="flex flex-col gap-1.5">
-          <Eyebrow className="text-[var(--red)]">Wipe all data</Eyebrow>
+          <Eyebrow>Wipe all data</Eyebrow>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Permanently deletes every butler schema and all cross-butler tables. This cannot be undone.
+            Temporarily disabled — a safer implementation is in progress.
           </p>
         </div>
-        <div className="space-y-1">
-          <Label htmlFor="wipe-phrase" className="text-xs font-mono">
-            Type to confirm: <span className="text-[var(--red)]">{WIPE_PHRASE}</span>
-          </Label>
-          <Input
-            id="wipe-phrase"
-            value={wipePhrase}
-            onChange={(e) => setWipePhrase(e.target.value)}
-            placeholder="Type the phrase exactly"
-            className="font-mono text-xs"
-          />
-        </div>
-        <Button
-          variant="destructive"
-          disabled={wipePhrase !== WIPE_PHRASE || wipeLoading}
-          onClick={() => setWipeConfirmOpen(true)}
-          className="self-start"
-        >
+        <Button variant="destructive" disabled className="self-start">
           Wipe everything
         </Button>
       </div>
-
-      {/* Wipe confirmation dialog */}
-      <Dialog open={wipeConfirmOpen} onOpenChange={setWipeConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="font-medium text-[var(--red)]">Confirm wipe</DialogTitle>
-            <DialogDescription>
-              This will permanently delete all butler data. There is no undo. Are you sure?
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setWipeConfirmOpen(false)}
-              disabled={wipeLoading}
-            >
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleWipe} disabled={wipeLoading}>
-              {wipeLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Yes, wipe everything
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

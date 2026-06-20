@@ -82,6 +82,48 @@ function defaultFetch(url: string) {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe("SettingsPermissionsPage — wipe disabled [bu-9q1dx.2]", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => defaultFetch(url));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("wipe panel renders as disabled — no enabled wipe control", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    // The disabled wipe panel must be present
+    const panel = await screen.findByTestId("wipe-panel-disabled");
+    expect(panel).toBeTruthy();
+
+    // No enabled button whose name contains "wipe" (case-insensitive)
+    const allButtons = document.querySelectorAll("button");
+    const enabledWipeButtons = Array.from(allButtons).filter(
+      (btn) =>
+        !btn.disabled &&
+        /wipe/i.test(btn.textContent ?? ""),
+    );
+    expect(enabledWipeButtons).toHaveLength(0);
+  });
+
+  it("wipe phrase input does not render", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    // No input with id "wipe-phrase"
+    const phraseInput = document.getElementById("wipe-phrase");
+    expect(phraseInput).toBeNull();
+  });
+});
+
 describe("SettingsPermissionsPage — export section [bu-9q1dx.1]", () => {
   beforeEach(() => {
     fetchMock.mockReset();
