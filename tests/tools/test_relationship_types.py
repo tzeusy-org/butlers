@@ -61,6 +61,17 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
+        """)
+        await p.execute("""
             CREATE TABLE IF NOT EXISTS relationship_types (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 "group" VARCHAR NOT NULL,

@@ -1359,7 +1359,7 @@ async def test_group_list(pool):
 
 
 async def test_group_members(pool):
-    """group_members returns contacts in a group."""
+    """group_members returns group members resolved via contact_entity_map → entities."""
     from butlers.tools.relationship import (
         contact_create,
         group_add_member,
@@ -1374,7 +1374,9 @@ async def test_group_members(pool):
     await group_add_member(pool, g["id"], c2["id"])
 
     members = await group_members(pool, g["id"])
-    member_names = [m["first_name"] for m in members]
+    # group_members returns entity-centric records (contact_entity_map → public.entities);
+    # canonical_name is surfaced via the computed "name" field (bead 7.4d).
+    member_names = [m["name"] for m in members]
     assert "Member-A" in member_names
     assert "Member-B" in member_names
 
@@ -1429,7 +1431,9 @@ async def test_contact_search_by_label(pool):
     await label_assign(pool, lbl["id"], c2["id"])
 
     results = await contact_search_by_label(pool, "priority")
-    names = [r["first_name"] for r in results]
+    # contact_search_by_label branch 1 returns entity-centric records via
+    # contact_entity_map → public.entities (bead 7.4d); canonical_name is in "name".
+    names = [r["name"] for r in results]
     assert "Priority-A" in names
     assert "Priority-B" in names
     assert "Normal-C" not in names

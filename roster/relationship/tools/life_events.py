@@ -278,15 +278,15 @@ async def life_event_list(
     join_params.append(limit)
     where_join = " AND ".join(join_conditions)
 
-    # Join entities via contacts for display name (bead 7: uses canonical_name)
+    # Join entities via contact_entity_map for display name (bead 7: uses canonical_name)
     rows = await pool.fetch(
         f"""
         SELECT f.id, f.content, f.valid_at, f.created_at, f.metadata,
-               c.id AS _contact_id,
+               cem.contact_id AS _contact_id,
                COALESCE(e.canonical_name, 'Unknown') AS contact_name
         FROM facts f
-        JOIN contacts c ON f.subject = 'contact:' || c.id::text
-        LEFT JOIN public.entities e ON e.id = c.entity_id
+        JOIN contact_entity_map cem ON f.subject = 'contact:' || cem.contact_id::text
+        JOIN public.entities e ON e.id = cem.entity_id
         WHERE {where_join}
         ORDER BY f.valid_at DESC NULLS LAST, f.created_at DESC
         LIMIT ${join_idx}

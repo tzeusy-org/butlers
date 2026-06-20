@@ -42,27 +42,20 @@ async def contact_search_by_label(pool: asyncpg.Pool, label_name: str) -> list[d
     local_entity_id IS NOT NULL.
     """
     # Branch 1: contact-anchored (contact_id IS NOT NULL in contact_labels).
-    # The JOIN ON c.id = cl.contact_id implicitly excludes contact_id IS NULL rows.
+    # Resolved via contact_entity_map → public.entities; e.listed replaces c.listed.
     contact_rows = await pool.fetch(
         """
-        SELECT c.*,
-               COALESCE(
-                   e.canonical_name,
-                   NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS canonical_name
-        FROM contacts c
-        JOIN contact_labels cl ON c.id = cl.contact_id
+        SELECT cem.contact_id AS id,
+               cem.entity_id,
+               COALESCE(e.canonical_name, 'Unknown') AS name
+        FROM contact_labels cl
         JOIN labels l ON cl.label_id = l.id
-        LEFT JOIN public.entities e ON e.id = c.entity_id
-        WHERE l.name = $1 AND c.listed = true
-        ORDER BY COALESCE(
-            e.canonical_name,
-            NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
-            c.nickname,
-            'Unknown'
-        )
+        JOIN contact_entity_map cem ON cem.contact_id = cl.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE l.name = $1
+          AND cl.contact_id IS NOT NULL
+          AND e.listed = true
+        ORDER BY COALESCE(e.canonical_name, 'Unknown')
         """,
         label_name,
     )

@@ -59,26 +59,20 @@ async def group_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
 
 async def group_members(pool: asyncpg.Pool, group_id: uuid.UUID) -> list[dict[str, Any]]:
-    """List all members of a group, using entity canonical_name for display (bead 7)."""
+    """List all members of a group, using entity canonical_name for display (bead 7).
+
+    Returns entity-centric records via contact_entity_map → public.entities.
+    """
     rows = await pool.fetch(
         """
-        SELECT c.*,
-               COALESCE(
-                   e.canonical_name,
-                   NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS name
-        FROM contacts c
-        JOIN group_members gm ON c.id = gm.contact_id
-        LEFT JOIN public.entities e ON e.id = c.entity_id
+        SELECT cem.contact_id AS id,
+               cem.entity_id,
+               COALESCE(e.canonical_name, 'Unknown') AS name
+        FROM group_members gm
+        JOIN contact_entity_map cem ON cem.contact_id = gm.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
         WHERE gm.group_id = $1
-        ORDER BY COALESCE(
-            e.canonical_name,
-            NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
-            c.nickname,
-            'Unknown'
-        )
+        ORDER BY COALESCE(e.canonical_name, 'Unknown')
         """,
         group_id,
     )

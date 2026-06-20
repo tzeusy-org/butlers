@@ -146,7 +146,7 @@ async def task_list(
 
     where = " AND ".join(conditions)
 
-    # Join entities via contacts for display name (bead 7: uses canonical_name)
+    # Join entities via contact_entity_map for display name (bead 7: uses canonical_name)
     if contact_id is not None:
         # contact_id is passed as the last param; its index is len(params)+1
         cid_idx = len(params) + 1
@@ -155,8 +155,8 @@ async def task_list(
             SELECT f.id, f.subject, f.content, f.created_at, f.metadata,
                    COALESCE(e.canonical_name, 'Unknown') AS contact_name
             FROM facts f
-            JOIN contacts c ON c.id = ${cid_idx}
-            LEFT JOIN public.entities e ON e.id = c.entity_id
+            JOIN contact_entity_map cem ON cem.contact_id = ${cid_idx}
+            JOIN public.entities e ON e.id = cem.entity_id
             WHERE {where}
             ORDER BY f.created_at DESC
             """,
@@ -170,8 +170,9 @@ async def task_list(
             SELECT f.id, f.subject, f.content, f.created_at, f.metadata,
                    COALESCE(e.canonical_name, 'Unknown') AS contact_name
             FROM facts f
-            JOIN contacts c ON f.subject LIKE 'contact:' || c.id::text || ':task:%'
-            LEFT JOIN public.entities e ON e.id = c.entity_id
+            JOIN contact_entity_map cem
+                ON f.subject LIKE 'contact:' || cem.contact_id::text || ':task:%'
+            JOIN public.entities e ON e.id = cem.entity_id
             WHERE {where}
             ORDER BY f.created_at DESC
             """,

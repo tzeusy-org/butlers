@@ -70,20 +70,21 @@ async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[
 
     rows = await pool.fetch(
         """
-        -- Contact-anchored path: contact_id → contacts → entities
+        -- Contact-anchored path: contact_id → contact_entity_map → entities
         SELECT d.*,
                COALESCE(e.canonical_name, 'Unknown') AS contact_name
         FROM important_dates d
-        JOIN contacts c ON c.id = d.contact_id
-        LEFT JOIN public.entities e ON e.id = c.entity_id
-        WHERE c.listed = true
+        JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE e.listed = true
           AND d.contact_id IS NOT NULL
 
         UNION ALL
 
         -- Entity-anchored path (contacts_004): local_entity_id → entities directly
-        -- Guard: if this entity has contacts, require at least one to be listed=true,
-        -- so archived contacts' dates remain hidden even after the contacts_004 backfill.
+        -- Guard: if this entity has associated contacts (via contact_entity_map), require
+        -- at least one linked entity to be listed=true, so archived contacts' dates remain
+        -- hidden even after the contacts_004 backfill.
         SELECT d.*,
                COALESCE(e.canonical_name, 'Unknown') AS contact_name
         FROM important_dates d
@@ -91,10 +92,12 @@ async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[
         WHERE d.contact_id IS NULL
           AND d.local_entity_id IS NOT NULL
           AND (
-              NOT EXISTS (SELECT 1 FROM contacts c WHERE c.entity_id = d.local_entity_id)
+              NOT EXISTS (SELECT 1 FROM contact_entity_map cem2
+                          WHERE cem2.entity_id = d.local_entity_id)
               OR EXISTS (
-                  SELECT 1 FROM contacts c
-                  WHERE c.entity_id = d.local_entity_id AND c.listed = true
+                  SELECT 1 FROM contact_entity_map cem2
+                  JOIN public.entities e2 ON e2.id = cem2.entity_id
+                  WHERE cem2.entity_id = d.local_entity_id AND e2.listed = true
               )
           )
 
