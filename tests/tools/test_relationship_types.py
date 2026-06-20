@@ -95,8 +95,8 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS relationships (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_a UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                contact_b UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_a UUID NOT NULL,
+                contact_b UUID NOT NULL,
                 type TEXT NOT NULL,
                 relationship_type_id UUID REFERENCES relationship_types(id) ON DELETE SET NULL,
                 notes TEXT,

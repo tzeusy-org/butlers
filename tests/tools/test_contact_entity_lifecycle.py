@@ -111,7 +111,6 @@ async def test_contact_create_and_update_entity_sync():
     pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
 
     with (
-        patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
         patch.object(
             _contacts_mod, "_ensure_entity", AsyncMock(return_value=str(ENTITY_UUID))
         ) as mock_ensure,
@@ -123,7 +122,6 @@ async def test_contact_create_and_update_entity_sync():
     # Failure path
     pool2 = AsyncMock()
     with (
-        patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
         patch.object(
             _contacts_mod, "_ensure_entity", AsyncMock(side_effect=RuntimeError("failed"))
         ),
@@ -140,7 +138,6 @@ async def test_contact_create_and_update_entity_sync():
             side_effect=[_asyncpg_record(old_row), _asyncpg_record(updated_row)]
         )
         with (
-            patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
             patch.object(_contacts_mod, "_sync_entity_update", AsyncMock()) as mock_sync,
         ):
             await contact_update(pool3, CONTACT_UUID, first_name="Alicia")
@@ -173,7 +170,6 @@ async def test_contact_merge_and_entity_merge_validation():
 
     memory_pool = AsyncMock()
     with (
-        patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
         patch(
             "butlers.modules.memory.tools.entities.entity_merge",
             AsyncMock(return_value={"entity_id": str(ENTITY_UUID2)}),

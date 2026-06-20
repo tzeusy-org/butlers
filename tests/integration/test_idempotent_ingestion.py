@@ -66,7 +66,7 @@ async def pool(postgres_container):
     await p.execute("""
         CREATE TABLE IF NOT EXISTS important_dates (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            contact_id UUID NOT NULL,
             label TEXT NOT NULL,
             month INT NOT NULL,
             day INT NOT NULL,
@@ -77,7 +77,7 @@ async def pool(postgres_container):
     await p.execute("""
         CREATE TABLE IF NOT EXISTS notes (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            contact_id UUID NOT NULL,
             content TEXT NOT NULL,
             emotion TEXT,
             created_at TIMESTAMPTZ DEFAULT now()
@@ -86,7 +86,7 @@ async def pool(postgres_container):
     await p.execute("""
         CREATE TABLE IF NOT EXISTS interactions (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            contact_id UUID NOT NULL,
             type TEXT NOT NULL,
             summary TEXT,
             occurred_at TIMESTAMPTZ DEFAULT now(),
@@ -100,7 +100,7 @@ async def pool(postgres_container):
     await p.execute("""
         CREATE TABLE IF NOT EXISTS life_events (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            contact_id UUID NOT NULL,
             type TEXT NOT NULL,
             description TEXT,
             occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
