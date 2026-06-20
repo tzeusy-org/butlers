@@ -170,8 +170,9 @@ class TestSweepAutoSettledNotInUpcoming:
 
         # Step 1: fetch upcoming bills — settled bill is gone
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert result["items"] == [], "auto-settled bill must not appear as unpaid"
-        assert result["totals"]["overdue"] == 0
+        assert result["needs_action"] == [], "auto-settled bill must not appear as unpaid"
+        overdue_count = len([i for i in result["needs_action"] if i["urgency"] == "overdue"])
+        assert overdue_count == 0
 
     async def test_auto_settled_bill_appears_only_in_sweep_output(self, pool):
         """reconcile_bills() returns settled bill in auto_settled for digest reporting."""
@@ -234,7 +235,7 @@ class TestSweepAutoSettledNotInUpcoming:
         assert len(sweep["auto_settled"]) == 2
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert result["items"] == [], "all auto-settled bills must be gone from upcoming"
+        assert result["needs_action"] == [], "all auto-settled bills must be gone from upcoming"
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +285,7 @@ class TestSweepCandidatesRemainPending:
 
         # Both bills still pending → appear in upcoming
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert len(result["items"]) == 2, "unresolved ambiguous bills must remain in upcoming list"
+        assert len(result["needs_action"]) == 2, "unresolved ambiguous bills must remain in upcoming list"
 
     async def test_candidates_carry_required_digest_fields(self, pool):
         """Each candidate entry has the fields needed for the digest confirm section."""
@@ -379,8 +380,8 @@ class TestEmptySweepNoEffect:
         assert sweep["auto_settled"] == []
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert len(result["items"]) == 1
-        assert result["items"][0]["bill"]["payee"] == "Electric Company"
+        assert len(result["needs_action"]) == 1
+        assert result["needs_action"][0]["bill"]["payee"] == "Electric Company"
 
     async def test_no_bills_no_transactions_sweep_empty(self, pool):
         """Empty database: sweep returns empty lists, upcoming_bills returns empty items."""
@@ -392,7 +393,7 @@ class TestEmptySweepNoEffect:
         assert sweep["candidates"] == []
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert result["items"] == []
+        assert result["needs_action"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +467,7 @@ class TestSweepIdempotency:
         assert len(sweep1["auto_settled"]) == 1  # Netflix settled
 
         bills = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        payees = [item["bill"]["payee"] for item in bills["items"]]
+        payees = [item["bill"]["payee"] for item in bills["needs_action"]]
         assert "Netflix" not in payees, "settled bill must not appear"
         assert "Hulu" in payees, "pending bill must still appear"
 
@@ -512,8 +513,9 @@ class TestPaymentBeforeBillSwept:
 
         # 3. Without sweep, bill appears as overdue
         result_before = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert len(result_before["items"]) == 1
-        assert result_before["totals"]["overdue"] == 1
+        assert len(result_before["needs_action"]) == 1
+        overdue_before = len([i for i in result_before["needs_action"] if i["urgency"] == "overdue"])
+        assert overdue_before == 1
 
         # 4. Sweep catches and settles it
         sweep = await reconcile_bills(pool=pool, lookback_days=90)
@@ -522,7 +524,7 @@ class TestPaymentBeforeBillSwept:
 
         # 5. Bill no longer appears as overdue
         result_after = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert result_after["items"] == []
+        assert result_after["needs_action"] == []
 
     async def test_sweep_return_structure_for_full_digest(self, pool):
         """reconcile_bills() returns both auto_settled and candidates with full digest data."""
@@ -607,11 +609,13 @@ class TestPaymentBeforeBillSwept:
         )
 
         before = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert before["totals"]["overdue"] == 1
+        overdue_before = len([i for i in before["needs_action"] if i["urgency"] == "overdue"])
+        assert overdue_before == 1
 
         sweep = await reconcile_bills(pool=pool)
         assert len(sweep["auto_settled"]) == 1
 
         after = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert after["totals"]["overdue"] == 0
-        assert after["items"] == []
+        overdue_after = len([i for i in after["needs_action"] if i["urgency"] == "overdue"])
+        assert overdue_after == 0
+        assert after["needs_action"] == []
