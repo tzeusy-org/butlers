@@ -339,11 +339,13 @@ async def dunbar_pool(provisioned_postgres_pool):
                 aliases TEXT[] NOT NULL DEFAULT '{}',
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
+                listed BOOLEAN NOT NULL DEFAULT true,
+                stay_in_touch_days INT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        # contacts table
+        # contacts table (kept; dunbar now reads via contact_entity_map + entities)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -356,6 +358,19 @@ async def dunbar_pool(provisioned_postgres_pool):
                 created_at TIMESTAMPTZ DEFAULT now(),
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
+        """)
+        # contact_entity_map (rel_029) — contact_id → entity_id bridge that
+        # dunbar reads instead of public.contacts (Phase 7.4e).
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
         """)
         # important_dates table (for context bonus tests)
         await p.execute("""
@@ -424,9 +439,17 @@ async def _make_contact(
 ) -> dict:
     entity_id = None
     if with_entity:
+        # Seed the entity with listed + stay_in_touch_days directly — dunbar now
+        # reads these off public.entities (rel_031), not public.contacts.
         entity_row = await pool.fetchrow(
-            "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+            """
+            INSERT INTO public.entities (name, listed, stay_in_touch_days)
+            VALUES ($1, $2, $3)
+            RETURNING id
+            """,
             name,
+            listed,
+            stay_in_touch_days,
         )
         entity_id = entity_row["id"]
     row = await pool.fetchrow(
@@ -440,6 +463,13 @@ async def _make_contact(
         listed,
         stay_in_touch_days,
     )
+    # Bridge the contact to its entity so dunbar's contact_entity_map reads match.
+    if entity_id is not None:
+        await pool.execute(
+            "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+            row["id"],
+            entity_id,
+        )
     return dict(row)
 
 
@@ -1325,8 +1355,24 @@ _LAMBDA_NEW = math.log(2) / 30.0
 
 @pytest.fixture
 async def simple_pool(provisioned_postgres_pool):
-    """Provision a fresh database with contacts and facts tables (no shared schema)."""
+    """Provision a fresh database with entities, contacts, cem and facts tables."""
     async with provisioned_postgres_pool() as p:
+        # public.entities — dunbar reads listed + stay_in_touch_days here (rel_031).
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.entities (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                canonical_name VARCHAR NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                entity_type VARCHAR NOT NULL DEFAULT 'other',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                listed BOOLEAN NOT NULL DEFAULT true,
+                stay_in_touch_days INT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1345,6 +1391,18 @@ async def simple_pool(provisioned_postgres_pool):
                 created_at TIMESTAMPTZ DEFAULT now(),
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
+        """)
+        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_entity_map (
+                contact_id  UUID NOT NULL,
+                entity_id   UUID NOT NULL,
+                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
+                ON contact_entity_map (entity_id)
         """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
@@ -1389,8 +1447,22 @@ async def simple_pool(provisioned_postgres_pool):
 
 
 async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) -> dict:
-    """Create a contact with a random entity_id."""
-    entity_id = uuid.uuid4()
+    """Create an entity (with listed), a contact, and the contact_entity_map bridge.
+
+    dunbar now reads listed + stay_in_touch_days off public.entities (rel_031),
+    so the entity carries ``listed`` and a contact_entity_map row links them.
+    """
+    entity_row = await pool.fetchrow(
+        """
+        INSERT INTO public.entities (name, canonical_name, listed)
+        VALUES ($1, $2, $3)
+        RETURNING id
+        """,
+        first_name,
+        first_name,
+        listed,
+    )
+    entity_id = entity_row["id"]
     row = await pool.fetchrow(
         """
         INSERT INTO contacts (first_name, entity_id, listed)
@@ -1400,6 +1472,11 @@ async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) ->
         first_name,
         entity_id,
         listed,
+    )
+    await pool.execute(
+        "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        row["id"],
+        entity_id,
     )
     return dict(row)
 
@@ -1626,7 +1703,11 @@ async def test_contacts_overdue_with_tiers_stay_in_touch_overrides(simple_pool):
     contact = await _make_simple_contact(simple_pool, "Iris")
     cid = uuid.UUID(str(contact["id"]))
 
-    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 60 WHERE id = $1", cid)
+    await simple_pool.execute(
+        "UPDATE public.entities SET stay_in_touch_days = 60 "
+        "WHERE id = (SELECT entity_id FROM contact_entity_map WHERE contact_id = $1)",
+        cid,
+    )
     await _log_simple_interaction(simple_pool, cid, 30.0)
 
     results = await contacts_overdue_with_tiers(simple_pool)
@@ -1644,7 +1725,11 @@ async def test_contacts_overdue_with_tiers_no_interactions_always_overdue(simple
     contact = await _make_simple_contact(simple_pool, "Karen")
     cid = uuid.UUID(str(contact["id"]))
 
-    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 30 WHERE id = $1", cid)
+    await simple_pool.execute(
+        "UPDATE public.entities SET stay_in_touch_days = 30 "
+        "WHERE id = (SELECT entity_id FROM contact_entity_map WHERE contact_id = $1)",
+        cid,
+    )
 
     results = await contacts_overdue_with_tiers(simple_pool)
     ids = [str(r["id"]) for r in results]
@@ -1675,7 +1760,11 @@ async def test_contacts_overdue_with_tiers_enriched_fields(simple_pool):
     contact = await _make_simple_contact(simple_pool, "Nina")
     cid = uuid.UUID(str(contact["id"]))
 
-    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 7 WHERE id = $1", cid)
+    await simple_pool.execute(
+        "UPDATE public.entities SET stay_in_touch_days = 7 "
+        "WHERE id = (SELECT entity_id FROM contact_entity_map WHERE contact_id = $1)",
+        cid,
+    )
     await _log_simple_interaction(simple_pool, cid, 10.0)
 
     results = await contacts_overdue_with_tiers(simple_pool)
@@ -1698,7 +1787,11 @@ async def test_contacts_overdue_with_tiers_archived_excluded(simple_pool):
     contact = await _make_simple_contact(simple_pool, "Oscar", listed=False)
     cid = uuid.UUID(str(contact["id"]))
 
-    await simple_pool.execute("UPDATE contacts SET stay_in_touch_days = 7 WHERE id = $1", cid)
+    await simple_pool.execute(
+        "UPDATE public.entities SET stay_in_touch_days = 7 "
+        "WHERE id = (SELECT entity_id FROM contact_entity_map WHERE contact_id = $1)",
+        cid,
+    )
     await _log_simple_interaction(simple_pool, cid, 30.0)
 
     results = await contacts_overdue_with_tiers(simple_pool)

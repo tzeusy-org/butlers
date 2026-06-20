@@ -157,8 +157,9 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     Returns a list of dicts ordered by score descending:
         {contact_id, entity_id, score, days_since_last}
 
-    Only contacts with ``listed=true`` and a non-NULL ``entity_id`` are
-    included.  Contacts with no interaction facts receive score=0.0.
+    Only contacts mapped to a listed entity (``contact_entity_map`` row whose
+    ``public.entities.listed=true``) are included.  Contacts with no
+    interaction facts receive score=0.0.
 
     The decay formula is::
 
@@ -190,8 +191,8 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
         SELECT
-            c.id          AS contact_id,
-            c.entity_id   AS entity_id,
+            cem.contact_id AS contact_id,
+            cem.entity_id  AS entity_id,
             COALESCE(
                 SUM(
                     CASE
@@ -231,9 +232,10 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                 0.0
             )              AS score,
             MAX(f.valid_at) AS last_interaction_at
-        FROM contacts c
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
         LEFT JOIN facts f
-            ON  f.entity_id = c.entity_id
+            ON  f.entity_id = cem.entity_id
             AND f.predicate LIKE 'interaction_%'
             AND f.scope     = 'relationship'
             AND f.validity  = 'active'
@@ -251,9 +253,8 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                     false
                 )
             )
-        WHERE c.listed    = true
-          AND c.entity_id IS NOT NULL
-        GROUP BY c.id, c.entity_id
+        WHERE e.listed = true
+        GROUP BY cem.contact_id, cem.entity_id
         ORDER BY score DESC
         """,
         _LAMBDA,
@@ -442,9 +443,10 @@ async def compute_urgency(
     contact_ids = [entry["contact_id"] for entry in tier_ranking]
     sitd_rows = await pool.fetch(
         """
-        SELECT id, stay_in_touch_days
-        FROM contacts
-        WHERE id = ANY($1::uuid[])
+        SELECT cem.contact_id AS id, e.stay_in_touch_days
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE cem.contact_id = ANY($1::uuid[])
         """,
         contact_ids,
     )
@@ -618,7 +620,11 @@ async def _pending_gift_contact_ids(
             (regexp_match(subject, 'contact:([0-9a-f-]+):'))[1]::uuid AS contact_id
         FROM facts
         WHERE subject ~ ('^contact:(' || array_to_string(
-                    ARRAY(SELECT id::text FROM contacts WHERE id = ANY($1::uuid[])),
+                    ARRAY(
+                        SELECT contact_id::text
+                        FROM contact_entity_map
+                        WHERE contact_id = ANY($1::uuid[])
+                    ),
                     '|'
               ) || '):')
           AND predicate  = 'gift'
@@ -653,9 +659,9 @@ async def _positive_note_contact_ids(
         FROM facts
         WHERE subject   = ANY(
                     ARRAY(
-                        SELECT 'contact:' || id::text
-                        FROM contacts
-                        WHERE id = ANY($1::uuid[])
+                        SELECT 'contact:' || contact_id::text
+                        FROM contact_entity_map
+                        WHERE contact_id = ANY($1::uuid[])
                     )
               )
           AND predicate = 'contact_note'
@@ -704,19 +710,20 @@ async def dunbar_tier_set(
             "Pass tier=None to clear the override."
         )
 
-    row = await pool.fetchrow("SELECT id, entity_id FROM contacts WHERE id = $1", contact_id)
+    row = await pool.fetchrow(
+        "SELECT contact_id AS id, entity_id FROM contact_entity_map WHERE contact_id = $1",
+        contact_id,
+    )
     if row is None:
+        # No contact_entity_map row means the contact either does not exist or
+        # has no linked entity — both are unworkable for a tier override.
         raise ValueError(
-            f"Contact {contact_id} not found. "
+            f"Contact {contact_id} not found or has no linked entity. "
+            "Dunbar tier overrides require a contact with a linked entity. "
+            "The contact must be created via contact_create to get an entity. "
             "Use contact_search(query=<name>) to find the correct contact ID."
         )
     entity_id = row["entity_id"]
-    if entity_id is None:
-        raise ValueError(
-            f"Contact {contact_id} has no linked entity. "
-            "Dunbar tier overrides require a linked entity. "
-            "The contact must be created via contact_create to get an entity."
-        )
 
     entity_id_str = str(entity_id)
 
@@ -800,7 +807,7 @@ async def get_contact_dunbar(
     separately.
     """
     row = await pool.fetchrow(
-        "SELECT id, entity_id FROM contacts WHERE id = $1",
+        "SELECT contact_id AS id, entity_id FROM contact_entity_map WHERE contact_id = $1",
         contact_id,
     )
     if row is None or row["entity_id"] is None:
@@ -836,7 +843,12 @@ async def get_contact_dunbar_with_stale_flag(
     Returns dict with dunbar_tier, dunbar_score, dunbar_tier_override, dunbar_stale.
     """
     row = await pool.fetchrow(
-        "SELECT id, entity_id, listed FROM contacts WHERE id = $1",
+        """
+        SELECT cem.contact_id AS id, cem.entity_id, e.listed
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE cem.contact_id = $1
+        """,
         contact_id,
     )
     if row is None or row["entity_id"] is None:
@@ -891,27 +903,29 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
     Returns contacts enriched with dunbar_tier, dunbar_score,
     effective_cadence, and days_since_last_interaction.
     """
-    from butlers.tools.relationship.contacts import _parse_contact
-
     contact_rows = await pool.fetch(
         """
         SELECT
-            c.*,
+            cem.contact_id AS id,
+            cem.entity_id  AS entity_id,
+            COALESCE(e.canonical_name, 'Unknown') AS name,
+            e.listed       AS listed,
+            e.stay_in_touch_days AS stay_in_touch_days,
             MAX(f.valid_at) AS last_interaction_at,
             CASE
                 WHEN MAX(f.valid_at) IS NULL THEN NULL
                 ELSE EXTRACT(EPOCH FROM (now() - MAX(f.valid_at))) / 86400.0
             END AS days_since_last_interaction
-        FROM contacts c
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
         LEFT JOIN facts f
-            ON f.entity_id = c.entity_id
+            ON f.entity_id = cem.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
-        WHERE c.listed = true
-          AND c.entity_id IS NOT NULL
-        GROUP BY c.id
-        ORDER BY c.first_name, c.last_name, c.nickname
+        WHERE e.listed = true
+        GROUP BY cem.contact_id, e.id
+        ORDER BY e.canonical_name
         """
     )
 
@@ -928,7 +942,7 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
 
     results: list[dict[str, Any]] = []
     for row in contact_rows:
-        contact = _parse_contact(row)
+        contact = dict(row)
         cid = contact["id"]
         days_since = row["days_since_last_interaction"]
 

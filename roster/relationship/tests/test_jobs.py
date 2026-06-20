@@ -101,8 +101,20 @@ CREATE TABLE IF NOT EXISTS public.entities (
     aliases TEXT[] NOT NULL DEFAULT '{}',
     metadata JSONB DEFAULT '{}'::jsonb,
     roles TEXT[] NOT NULL DEFAULT '{}',
+    listed BOOLEAN NOT NULL DEFAULT true,
+    stay_in_touch_days INT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+# contact_entity_map (rel_029) — contact_id → entity_id bridge that dunbar reads
+# instead of public.contacts (Phase 7.4e).
+CREATE_CONTACT_ENTITY_MAP_SQL = """
+CREATE TABLE IF NOT EXISTS contact_entity_map (
+    contact_id  UUID NOT NULL,
+    entity_id   UUID NOT NULL,
+    CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
 )
 """
 
@@ -115,6 +127,7 @@ async def _setup_relationship_schema(pool) -> None:
 
     await pool.execute(CREATE_ENTITIES_SQL)
     await pool.execute(CREATE_CONTACTS_SQL)
+    await pool.execute(CREATE_CONTACT_ENTITY_MAP_SQL)
     await pool.execute(CREATE_IMPORTANT_DATES_SQL)
     await pool.execute(CREATE_FACTS_SQL)
     await pool.execute(
@@ -162,6 +175,29 @@ async def _insert_contact(
         last_name,
         listed,
         stay_in_touch_days,
+        resolved_entity_id,
+    )
+    # Seed the entity + contact_entity_map bridge so dunbar (which now reads via
+    # contact_entity_map → public.entities, not public.contacts) sees this contact.
+    await pool.execute(
+        """
+        INSERT INTO public.entities (id, name, canonical_name, listed, stay_in_touch_days)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        resolved_entity_id,
+        first_name,
+        f"{first_name} {last_name}".strip(),
+        listed,
+        stay_in_touch_days,
+    )
+    await pool.execute(
+        """
+        INSERT INTO contact_entity_map (contact_id, entity_id)
+        VALUES ($1::uuid, $2)
+        ON CONFLICT (contact_id) DO NOTHING
+        """,
+        contact_id,
         resolved_entity_id,
     )
     return contact_id
