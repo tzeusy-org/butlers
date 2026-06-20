@@ -5226,6 +5226,9 @@ export interface ChroniclesBriefing {
   kpi: ChroniclesKpi;
   attention_items: ChroniclesAttentionItem[];
   recent_days: ChroniclesRecentDay[];
+  /** Earliest chronicled day (owner tz, YYYY-MM-DD), or null when no data.
+   * Bounds backward archive navigation. */
+  earliest_date?: string | null;
 }
 
 // ---------------------------------------------------------------------------

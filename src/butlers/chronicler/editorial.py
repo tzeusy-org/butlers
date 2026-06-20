@@ -96,6 +96,7 @@ class BriefingPayload:
     kpi: KpiSnapshot
     attention_items: list[AttentionItem]
     recent_days: list[RecentDay]
+    earliest_date: str | None = None
 
 
 # ── State classification ───────────────────────────────────────────────────
@@ -174,6 +175,27 @@ def day_window_utc(target: date, tz_name: str) -> tuple[datetime, datetime]:
     start_local = datetime.combine(target, time.min, tzinfo=tz)
     end_local = datetime.combine(target + timedelta(days=1), time.min, tzinfo=tz)
     return start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+
+def _utc_to_local_date(dt: datetime, tz_name: str) -> date:
+    """Return the owner-tz calendar date for a UTC instant."""
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz = UTC
+    return dt.astimezone(tz).date()
+
+
+def _target_is_recent(target: date, tz_name: str, now: datetime) -> bool:
+    """True when ``target`` is the most recent settled day (yesterday) or today.
+
+    Source-health attention reflects live connector state ("a source is
+    erroring now"), so it is only meaningful for the freshest reconstructable
+    day. For older archive dates it would surface today's connector state as if
+    it belonged to that day, so callers exclude it.
+    """
+    today_local = _utc_to_local_date(now, tz_name)
+    return target >= today_local - timedelta(days=1)
 
 
 # ── Database queries (single round-trip per concern) ───────────────────────
@@ -390,7 +412,9 @@ async def _compute_streaks(pool: asyncpg.Pool, end_utc: datetime, tz_name: str) 
     return Streaks(sleep=sleep_streak, exercise=workout_streak)
 
 
-async def _fetch_source_health_items(pool: asyncpg.Pool) -> list[AttentionItem]:
+async def _fetch_source_health_items(
+    pool: asyncpg.Pool, *, now: datetime | None = None
+) -> list[AttentionItem]:
     """Read source-state and produce one attention item per degraded row.
 
     Source state is split across two tables in the chronicler schema:
@@ -398,9 +422,13 @@ async def _fetch_source_health_items(pool: asyncpg.Pool) -> list[AttentionItem]:
     ``projection_checkpoints`` (last_run_at + last_error). We join them to
     produce one attention row per source where either the adapter is
     inactive or the most recent run errored within the cutoff window.
+
+    ``now`` is injectable so the 24h ``last_error`` cutoff is deterministic
+    under test; it defaults to the current instant.
     """
     items: list[AttentionItem] = []
-    cutoff = datetime.now(UTC) - timedelta(hours=SOURCE_LAST_ERROR_WINDOW_HOURS)
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(hours=SOURCE_LAST_ERROR_WINDOW_HOURS)
     sql = """
     SELECT
         sas.source_name,
@@ -463,6 +491,27 @@ async def _fetch_open_corrections(
     """
     async with pool.acquire() as conn:
         return int(await conn.fetchval(sql, start_utc, end_utc) or 0)
+
+
+async def _fetch_earliest_episode_date(pool: asyncpg.Pool, tz_name: str) -> str | None:
+    """Return the earliest chronicled calendar day (owner-tz) as an ISO string.
+
+    Bounds backward archive navigation so the date stepper cannot step before
+    the first day with data. Returns ``None`` when no episodes exist.
+    """
+    sql = """
+    SELECT MIN(start_at) AS min_start
+    FROM episodes
+    WHERE tombstone_at IS NULL
+    """
+    try:
+        async with pool.acquire() as conn:
+            min_start = await conn.fetchval(sql)
+    except (asyncpg.UndefinedTableError, asyncpg.PostgresError):
+        return None
+    if min_start is None:
+        return None
+    return _utc_to_local_date(min_start, tz_name).isoformat()
 
 
 # ── Anomaly detection helpers ──────────────────────────────────────────────
@@ -601,11 +650,16 @@ async def compose_briefing_payload(
     pool: asyncpg.Pool,
     target: date,
     tz_name: str,
+    *,
+    now: datetime | None = None,
 ) -> BriefingPayload:
     """Compose the full editorial briefing payload (without voice paragraph).
 
-    Reads only from the chronicler schema. NEVER invokes an LLM.
+    Reads only from the chronicler schema. NEVER invokes an LLM. ``now`` is
+    injectable so date-relative classification (source-health scoping) is
+    deterministic under test; it defaults to the current instant.
     """
+    now = now or datetime.now(UTC)
     start_utc, end_utc = day_window_utc(target, tz_name)
 
     episodes = await _fetch_window_episodes(pool, start_utc, end_utc)
@@ -641,7 +695,12 @@ async def compose_briefing_payload(
                 detail=f"{gap_h} hours without a recorded episode",
             )
         )
-    attention_items.extend(await _fetch_source_health_items(pool))
+    # Source health is a live-now signal about connectors. It is only
+    # meaningful for the most recent settled day (or today); on older archive
+    # dates it would surface present connector state as that day's, so exclude
+    # it (and never let it drive an old day to ``urgent``).
+    if _target_is_recent(target, tz_name, now):
+        attention_items.extend(await _fetch_source_health_items(pool, now=now))
     open_corrections = await _fetch_open_corrections(pool, start_utc, end_utc)
     if open_corrections > 0:
         attention_items.append(
@@ -660,6 +719,7 @@ async def compose_briefing_payload(
     state_class = classify_state(attention_items)
     headline = headline_for(state_class, len(attention_items))
     recent_days = await _fetch_recent_days(pool, end_utc, days=7, tz_name=tz_name)
+    earliest_date = await _fetch_earliest_episode_date(pool, tz_name)
 
     return BriefingPayload(
         state_class=state_class,
@@ -667,6 +727,7 @@ async def compose_briefing_payload(
         kpi=kpi,
         attention_items=attention_items,
         recent_days=recent_days,
+        earliest_date=earliest_date,
     )
 
 

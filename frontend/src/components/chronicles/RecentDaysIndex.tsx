@@ -1,10 +1,13 @@
 /**
  * RecentDaysIndex -- eyebrow-titled list of recent calendar days.
  *
- * Renders one row per day with: date label, total minutes (tabular),
- * episode count, and (optionally) the day's top lane label. No card
- * chrome; hairline border-bottom on each row except the last. The
- * index is read-only; clicking a row is not wired in v1.
+ * Renders one row per day with: date label, the day's top lane, total minutes
+ * (tabular), and episode count. No card chrome; hairline border-bottom on each
+ * row except the last.
+ *
+ * When ``onSelect`` is provided each row is a button that re-anchors the
+ * archive to that day (bu archive nav); the ``selectedDate`` row is marked
+ * with ``aria-current``. Without ``onSelect`` the rows are static text.
  *
  * Doctrine: about/heart-and-soul/design-language.md §Editorial archetype
  *   §Attention list (row anatomy reused: rule-separated rows, no card chrome).
@@ -15,6 +18,10 @@ import type { ChroniclesRecentDay } from "@/api/types";
 
 interface RecentDaysIndexProps {
   days: ChroniclesRecentDay[];
+  /** When set, rows become buttons that select that day. */
+  onSelect?: (date: string) => void;
+  /** The currently-viewed day; its row is marked aria-current. */
+  selectedDate?: string;
 }
 
 function formatDayLabel(iso: string): string {
@@ -41,7 +48,46 @@ function formatMinutes(total: number): string {
   return `${h}h ${m.toString().padStart(2, "0")}m`;
 }
 
-export function RecentDaysIndex({ days }: RecentDaysIndexProps) {
+const ROW_GRID = "auto 1fr auto";
+
+function DayRowBody({ day, active }: { day: ChroniclesRecentDay; active: boolean }) {
+  return (
+    <>
+      <span
+        className="tnum"
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: "11px",
+          color: active ? "var(--foreground)" : "var(--muted-foreground)",
+        }}
+      >
+        {formatDayLabel(day.date)}
+      </span>
+      <span
+        style={{
+          fontFamily: "var(--font-sans)",
+          fontSize: "14px",
+          fontWeight: active ? 500 : 400,
+          color: "var(--foreground)",
+        }}
+      >
+        {day.top_lane ?? "no top lane"}
+      </span>
+      <span
+        className="tnum"
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: "11px",
+          color: "var(--muted-foreground)",
+        }}
+      >
+        {formatMinutes(day.total_minutes)} · {day.episode_count}
+      </span>
+    </>
+  );
+}
+
+export function RecentDaysIndex({ days, onSelect, selectedDate }: RecentDaysIndexProps) {
   if (days.length === 0) {
     return (
       <Section eyebrow="Recent days">
@@ -62,50 +108,50 @@ export function RecentDaysIndex({ days }: RecentDaysIndexProps) {
   return (
     <Section eyebrow="Recent days">
       <ul role="list" className="m-0 list-none p-0">
-        {days.map((d, i) => (
-          <li
-            key={d.date}
-            className="grid items-baseline"
-            style={{
-              gridTemplateColumns: "auto 1fr auto",
-              columnGap: "16px",
-              paddingTop: i === 0 ? 0 : "10px",
-              paddingBottom: "10px",
-              borderBottom:
-                i === days.length - 1 ? undefined : "1px solid var(--border)",
-            }}
-          >
-            <span
-              className="tnum"
+        {days.map((d, i) => {
+          const active = d.date === selectedDate;
+          const border = i === days.length - 1 ? undefined : "1px solid var(--border)";
+          if (onSelect) {
+            return (
+              <li key={d.date} style={{ borderBottom: border }}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(d.date)}
+                  aria-current={active ? "true" : undefined}
+                  aria-label={`View ${formatDayLabel(d.date)}`}
+                  className="grid w-full cursor-pointer items-baseline rounded-sm text-left transition-colors hover:bg-[var(--accent)]"
+                  style={{
+                    gridTemplateColumns: ROW_GRID,
+                    columnGap: "16px",
+                    border: 0,
+                    background: "transparent",
+                    paddingTop: "10px",
+                    paddingBottom: "10px",
+                    paddingInline: "4px",
+                    marginInline: "-4px",
+                  }}
+                >
+                  <DayRowBody day={d} active={active} />
+                </button>
+              </li>
+            );
+          }
+          return (
+            <li
+              key={d.date}
+              className="grid items-baseline"
               style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "11px",
-                color: "var(--muted-foreground)",
+                gridTemplateColumns: ROW_GRID,
+                columnGap: "16px",
+                paddingTop: i === 0 ? 0 : "10px",
+                paddingBottom: "10px",
+                borderBottom: border,
               }}
             >
-              {formatDayLabel(d.date)}
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-sans)",
-                fontSize: "14px",
-                color: "var(--foreground)",
-              }}
-            >
-              {d.top_lane ?? "no top lane"}
-            </span>
-            <span
-              className="tnum"
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "11px",
-                color: "var(--muted-foreground)",
-              }}
-            >
-              {formatMinutes(d.total_minutes)} · {d.episode_count}
-            </span>
-          </li>
-        ))}
+              <DayRowBody day={d} active={active} />
+            </li>
+          );
+        })}
       </ul>
     </Section>
   );

@@ -321,6 +321,9 @@ class ChroniclesBriefing(BaseModel):
     kpi: ChroniclesKpi = Field(default_factory=ChroniclesKpi)
     attention_items: list[ChroniclesAttentionItem] = Field(default_factory=list)
     recent_days: list[ChroniclesRecentDay] = Field(default_factory=list)
+    earliest_date: str | None = None
+    """Earliest chronicled calendar day (owner tz, YYYY-MM-DD), or null when
+    no episodes exist. Bounds backward archive navigation."""
 
 
 __all__ = [

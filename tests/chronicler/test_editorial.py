@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+import butlers.chronicler.editorial as editorial
 from butlers.chronicler.editorial import (
     AttentionItem,
     BriefingPayload,
@@ -20,9 +21,12 @@ from butlers.chronicler.editorial import (
     Streaks,
     _compute_streaks,
     _detect_waking_gaps,
+    _fetch_earliest_episode_date,
     _fetch_recent_days,
     _fetch_sleep_median_prior_week,
     _fetch_source_health_items,
+    _target_is_recent,
+    _utc_to_local_date,
     classify_state,
     day_window_utc,
     headline_for,
@@ -407,3 +411,68 @@ async def test_source_health_items_link_to_connectors_tab() -> None:
 
     assert items[0].kind == "source_health"
     assert items[0].action_href == "/ingestion?tab=connectors"
+
+
+# ── Date-scoped source health + earliest_date (bu archive nav) ─────────────
+
+
+class _ValConn(_FetchConn):
+    """Like ``_FetchConn`` but ``fetchval`` returns a configured value."""
+
+    def __init__(self, rows: list[_FakeRow] | None = None, fetchval_result: object = None) -> None:
+        super().__init__(rows)
+        self._fetchval_result = fetchval_result
+
+    async def fetchval(self, *args: object) -> object:
+        self.fetchval_calls.append(args)
+        return self._fetchval_result
+
+
+def test_utc_to_local_date_uses_owner_tz() -> None:
+    dt = datetime(2026, 1, 1, 18, 0, tzinfo=UTC)  # 02:00 next day in SGT (UTC+8)
+    assert _utc_to_local_date(dt, "Asia/Singapore") == date(2026, 1, 2)
+    assert _utc_to_local_date(dt, "UTC") == date(2026, 1, 1)
+
+
+def test_target_is_recent_includes_yesterday_and_today_only() -> None:
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)  # today (UTC) is 2026-05-09
+    assert _target_is_recent(date(2026, 5, 9), "UTC", now) is True  # today
+    assert _target_is_recent(date(2026, 5, 8), "UTC", now) is True  # yesterday
+    assert _target_is_recent(date(2026, 5, 7), "UTC", now) is False  # older
+    assert _target_is_recent(date(2026, 5, 1), "UTC", now) is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_earliest_episode_date_converts_to_owner_tz() -> None:
+    conn = _ValConn(fetchval_result=datetime(2026, 1, 1, 18, 0, tzinfo=UTC))
+    earliest = await _fetch_earliest_episode_date(_FetchPool(conn), "Asia/Singapore")
+    assert earliest == "2026-01-02"
+
+
+@pytest.mark.asyncio
+async def test_fetch_earliest_episode_date_is_none_when_empty() -> None:
+    conn = _ValConn(fetchval_result=None)
+    assert await _fetch_earliest_episode_date(_FetchPool(conn), "UTC") is None
+
+
+@pytest.mark.asyncio
+async def test_compose_excludes_source_health_for_old_archive_date(monkeypatch) -> None:
+    async def _fake_health(pool: object, *, now: object = None) -> list[AttentionItem]:
+        return [AttentionItem(kind="source_health", severity="high", title="spotify down")]
+
+    async def _fake_earliest(pool: object, tz_name: str) -> str:
+        return "2026-01-01"
+
+    monkeypatch.setattr(editorial, "_fetch_source_health_items", _fake_health)
+    monkeypatch.setattr(editorial, "_fetch_earliest_episode_date", _fake_earliest)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    old = await editorial.compose_briefing_payload(pool, date(2026, 5, 6), "UTC", now=now)
+    assert all(i.kind != "source_health" for i in old.attention_items)
+    assert old.state_class == "quiet"
+    assert old.earliest_date == "2026-01-01"
+
+    recent = await editorial.compose_briefing_payload(pool, date(2026, 5, 8), "UTC", now=now)
+    assert any(i.kind == "source_health" for i in recent.attention_items)
+    assert recent.state_class == "urgent"

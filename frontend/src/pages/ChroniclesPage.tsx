@@ -1,22 +1,31 @@
 // ---------------------------------------------------------------------------
-// ChroniclesPage (bu-i29ix): editorial archetype landing.
+// ChroniclesPage: editorial archetype, date-navigable retrospective archive.
 //
-// Voice column on the left (date eyebrow, briefing status pill, Display
-// headline, Voice paragraph). Index column on the right (KPI strip, attention
-// list, recent-days index). The Gantt / Map / Aggregations / Drawer surfaces
-// that used to be the primary view live below the fold inside
-// <ChroniclesDrilldownPanel> and lazy-mount when opened.
+// Voice column on the left (date eyebrow with a prev/next day stepper, Display
+// headline, Voice paragraph). Index rail on the right (attention list, KPI
+// strip, navigable recent-days index). The Gantt / Map / Aggregations / Drawer
+// surfaces live below the fold inside <ChroniclesDrilldownPanel>, driven by the
+// same selected day.
+//
+// The selected day is URL state (?date=YYYY-MM-DD), defaulting to the most
+// recent settled day (yesterday in owner tz) and clamped to
+// [earliest_date, yesterday]. Navigation reuses the existing cached/templated
+// briefing; it never initiates an LLM call.
 //
 // All copy obeys the voice rules from
 // about/heart-and-soul/design-language.md: sentence case, no em-dashes,
 // and no exclamation marks.
 // ---------------------------------------------------------------------------
 
-import { useMemo } from "react";
+import { useEffect } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useSearchParams } from "react-router";
 
 import { useTimezone } from "@/components/ui/timezone-context";
 import { useChroniclesBriefing } from "@/hooks/use-chronicles-briefing";
 import { Page } from "@/components/ui/page";
+import { Button } from "@/components/ui/button";
+import { Time } from "@/components/ui/time";
 import { Headline } from "@/components/overview/Headline";
 import { Elaboration } from "@/components/overview/Elaboration";
 import { KpiStrip } from "@/components/overview/KpiStrip";
@@ -24,43 +33,33 @@ import { AttentionList, type AttentionListItem } from "@/components/overview/Att
 import { Section } from "@/components/overview/Section";
 import { ChroniclesDrilldownPanel } from "@/components/chronicles/ChroniclesDrilldownPanel";
 import { RecentDaysIndex } from "@/components/chronicles/RecentDaysIndex";
-import type {
-  ChroniclesAttentionItem,
-  ChroniclesKpi,
-  ChroniclesVoiceSource,
-} from "@/api/types";
+import {
+  clampIsoDay,
+  greetSubject,
+  isAtEarliest,
+  isAtLatest,
+  isValidIsoDay,
+  nextIsoDay,
+  prevIsoDay,
+} from "@/pages/chronicles-date-nav";
+import type { ChroniclesAttentionItem, ChroniclesKpi } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Eyebrow date string for the chronicles briefing. */
-function formatBriefingEyebrow(date: string): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  if (isNaN(d.getTime())) return `Chronicles · ${date}`;
-  const weekday = d.toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
-  const day = d.getUTCDate();
-  const month = d.toLocaleDateString("en-GB", { month: "long", timeZone: "UTC" });
-  const year = d.getUTCFullYear();
-  return `Chronicles · ${weekday}, ${day} ${month} ${year}`;
-}
+/** State-class predicate for the greeting line. Past tense, sentence case. */
+const STATE_PREDICATE: Record<string, string> = {
+  urgent: "had loose ends.",
+  busy: "was full.",
+  mild: "went mostly to plan.",
+  quiet: "was quiet.",
+};
 
-/** Two-line greeting derived from the briefing state class. */
-function deriveHeadlineLines(stateClass: string, headline: string) {
-  // The briefing already provides a single sentence-case headline.
-  // For the Display tier two-line component we synthesise a short greet
-  // line and use the briefing headline as the body. The greet is templated
-  // and matches the doctrinal voice rules.
-  switch (stateClass) {
-    case "urgent":
-      return { greet: "Yesterday left work.", body: headline };
-    case "busy":
-      return { greet: "Yesterday was full.", body: headline };
-    case "mild":
-      return { greet: "Yesterday went mostly to plan.", body: headline };
-    default:
-      return { greet: "Yesterday is settled.", body: headline };
-  }
+/** Two-line greeting: a date-relative subject plus the briefing headline. */
+function deriveHeadlineLines(stateClass: string, headline: string, subject: string) {
+  const predicate = STATE_PREDICATE[stateClass] ?? STATE_PREDICATE.quiet;
+  return { greet: `${subject} ${predicate}`, body: headline };
 }
 
 /** Format minutes as "Hh MMm" or "MMm". */
@@ -89,6 +88,7 @@ function previousIsoCalendarDate(dateIso: string): string {
   return previous.toISOString().slice(0, 10);
 }
 
+/** The most recent settled day: yesterday in the owner timezone. */
 function yesterdayInTimeZone(timeZone: string): string {
   try {
     return previousIsoCalendarDate(formatDateInTimeZone(new Date(), timeZone));
@@ -99,14 +99,13 @@ function yesterdayInTimeZone(timeZone: string): string {
 
 function buildKpiCells(kpi: ChroniclesKpi): React.ComponentProps<typeof KpiStrip>["cells"] {
   const top = kpi.hours_by_top_lanes[0];
-  const topLabel = top ? `${top.lane} · ${top.hours.toFixed(1)}h` : "no lane data";
+  const second = kpi.hours_by_top_lanes[1];
   return [
     {
+      // The mega-number slot holds a number (hours); the lane name is the delta.
       eyebrow: "Top lane",
-      value: topLabel,
-      delta: kpi.hours_by_top_lanes[1]
-        ? `then ${kpi.hours_by_top_lanes[1].lane}`
-        : "",
+      value: top ? `${top.hours.toFixed(1)}h` : "—",
+      delta: top ? (second ? `${top.lane}, then ${second.lane}` : top.lane) : "no lane data",
     },
     {
       eyebrow: "Sleep",
@@ -140,16 +139,14 @@ function adaptAttention(items: ChroniclesAttentionItem[]): AttentionListItem[] {
   }));
 }
 
-/** Pill descriptor for the briefing status above the headline. */
-function pillDescriptor(
-  source: ChroniclesVoiceSource | undefined,
-  isFetching: boolean,
-): { label: string; tone: "amber" | "green" | "dim" } {
-  if (isFetching) return { label: "composing…", tone: "amber" };
-  if (source === "llm·cached") return { label: "llm · cached", tone: "green" };
-  if (source === "stale") return { label: "stale cache", tone: "amber" };
-  return { label: "templated", tone: "dim" };
-}
+const EYEBROW_STYLE: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "10px",
+  letterSpacing: "0.14em",
+  lineHeight: 1,
+  color: "var(--muted-foreground)",
+  textTransform: "uppercase",
+};
 
 // ---------------------------------------------------------------------------
 // Page
@@ -157,21 +154,61 @@ function pillDescriptor(
 
 export default function ChroniclesPage() {
   const ownerTz = useTimezone();
-  // Brief default: yesterday in owner-tz. The owner can later add a date
-  // picker; for v1 we always show the most recent settled day.
-  const targetDate = useMemo(() => yesterdayInTimeZone(ownerTz), [ownerTz]);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // The most recent settled day is the default and the forward bound: today is
+  // incomplete and is not shown.
+  const latest = yesterdayInTimeZone(ownerTz);
+  // Ignore malformed ?date= values so every downstream date is a real day.
+  const dateParam = searchParams.get("date");
+  const requestedDate = isValidIsoDay(dateParam) ? dateParam : latest;
+
+  // Forward-clamp immediately; the backward (earliest) bound needs earliest_date
+  // from the response, so it is applied after the first fetch.
+  const fetchDate = clampIsoDay(requestedDate, undefined, latest);
 
   const { data, isFetching, isError, refetch } = useChroniclesBriefing({
-    date: targetDate,
+    date: fetchDate,
     tz: ownerTz,
   });
 
-  const eyebrowLabel = formatBriefingEyebrow(data?.date ?? targetDate);
+  // earliest_date arrives with every briefing (it is a global minimum,
+  // independent of the requested day), so it bounds backward navigation after
+  // the first fetch.
+  const earliest = data?.earliest_date ?? null;
+  const selectedDate = clampIsoDay(requestedDate, earliest, latest);
+
+  function selectDate(date: string) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("date", date);
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  // Canonicalize the URL when the requested day is out of range (a future or
+  // pre-data deep link), so the eyebrow, the briefing data, and the URL agree.
+  useEffect(() => {
+    if (selectedDate !== requestedDate) {
+      selectDate(selectedDate);
+    }
+    // selectDate is stable for our purposes; depend on the resolved values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, requestedDate]);
+
+  const atEarliest = isAtEarliest(selectedDate, earliest);
+  const atLatest = isAtLatest(selectedDate, latest);
+
+  const subject = greetSubject(selectedDate, latest);
   const headlineLines = deriveHeadlineLines(
     data?.state_class ?? "quiet",
     data?.headline ?? "Quiet day.",
+    subject,
   );
-  const pill = pillDescriptor(data?.voice_source, isFetching);
+  const isStale = data?.voice_source === "stale";
 
   return (
     <Page
@@ -182,52 +219,47 @@ export default function ChroniclesPage() {
       error={isError ? new Error("Failed to load chronicles briefing.") : null}
       onRetry={() => void refetch()}
     >
-      <div
-        className="grid max-w-[1280px] gap-10 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] lg:gap-14"
-      >
+      <div className="grid max-w-[1280px] gap-10 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] lg:gap-14">
         {/* Left column: Voice surface */}
         <div className="space-y-6">
-          <div className="flex items-baseline gap-3">
-            <p
-              className="tnum uppercase"
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "10px",
-                letterSpacing: "0.14em",
-                lineHeight: 1,
-                color: "var(--muted-foreground)",
-              }}
+          {/* Date eyebrow with a prev/next day stepper */}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => selectDate(prevIsoDay(selectedDate))}
+              disabled={atEarliest}
+              aria-label="Previous day"
             >
-              {eyebrowLabel}
-            </p>
-            <button
-              type="button"
-              onClick={() => void refetch()}
-              className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5"
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "9px",
-                letterSpacing: "0.08em",
-                color: "var(--muted-foreground)",
-                borderColor: "var(--border)",
-                background: "transparent",
-              }}
-              aria-label={`Briefing source: ${pill.label}`}
+              <ChevronLeft aria-hidden />
+            </Button>
+            <span
+              className="tnum"
+              style={EYEBROW_STYLE}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
             >
+              <Time value={selectedDate} mode="absolute" precision="short-date" showTitle={false} />
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => selectDate(nextIsoDay(selectedDate))}
+              disabled={atLatest}
+              aria-label="Next day"
+            >
+              <ChevronRight aria-hidden />
+            </Button>
+            {isStale ? (
               <span
-                aria-hidden
-                className="inline-block h-[6px] w-[6px] rounded-full"
-                style={{
-                  backgroundColor:
-                    pill.tone === "amber"
-                      ? "var(--severity-medium)"
-                      : pill.tone === "green"
-                      ? "var(--severity-low)"
-                      : "var(--muted-foreground)",
-                }}
-              />
-              <span>{pill.label}</span>
-            </button>
+                style={{ ...EYEBROW_STYLE, fontSize: "9px", letterSpacing: "0.08em" }}
+                title="The day-close summary may be out of date."
+                aria-label="Day-close summary may be out of date"
+              >
+                stale
+              </span>
+            ) : null}
           </div>
 
           <Headline greet={headlineLines.greet} body={headlineLines.body} />
@@ -238,17 +270,21 @@ export default function ChroniclesPage() {
           />
         </div>
 
-        {/* Right column: KPI strip, attention, and recent-days index */}
+        {/* Right column: attention leads, then KPI strip, then recent days */}
         <div className="space-y-8">
-          {data?.kpi ? <KpiStrip cells={buildKpiCells(data.kpi)} /> : null}
           <Section eyebrow="Attention">
             <AttentionList items={adaptAttention(data?.attention_items ?? [])} />
           </Section>
-          <RecentDaysIndex days={data?.recent_days ?? []} />
+          {data?.kpi ? <KpiStrip cells={buildKpiCells(data.kpi)} /> : null}
+          <RecentDaysIndex
+            days={data?.recent_days ?? []}
+            selectedDate={selectedDate}
+            onSelect={selectDate}
+          />
         </div>
       </div>
 
-      <ChroniclesDrilldownPanel />
+      <ChroniclesDrilldownPanel date={selectedDate} tz={ownerTz} />
     </Page>
   );
 }

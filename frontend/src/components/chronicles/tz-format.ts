@@ -114,3 +114,20 @@ export function endOfDayInTz(date: Date, tz: string): Date {
   const zoned = toZonedTime(date, tz)
   return fromZonedTime(endOfDay(zoned), tz)
 }
+
+/**
+ * Return the [from, to) UTC window for a calendar day given as "YYYY-MM-DD",
+ * interpreted in `tz`. Mirrors the backend's `day_window_utc`
+ * (datetime.combine(target, time.min, tzinfo=tz)) exactly for every zone,
+ * including UTC+13/+14: the day string is treated as a naive local midnight in
+ * `tz`, never reinterpreted through a UTC anchor, so the FE drilldown window
+ * matches the day the backend reconstructed.
+ */
+export function dayWindowInTz(isoDate: string, tz: string): { from: Date; to: Date } {
+  const [y, m, d] = isoDate.split("-").map(Number)
+  const nextIso = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10)
+  return {
+    from: fromZonedTime(`${isoDate}T00:00:00`, tz),
+    to: fromZonedTime(`${nextIso}T00:00:00`, tz),
+  }
+}

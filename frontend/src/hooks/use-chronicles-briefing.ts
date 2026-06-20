@@ -15,7 +15,6 @@ import { useQuery } from "@tanstack/react-query";
 import { getChroniclesBriefing } from "@/api/client.ts";
 import type { ChroniclesBriefing } from "@/api/types.ts";
 
-const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const THIRTY_SECONDS_MS = 30 * 1000;
 
 interface UseChroniclesBriefingArgs {
@@ -34,8 +33,12 @@ export function useChroniclesBriefing(args: UseChroniclesBriefingArgs = {}) {
   return useQuery<ChroniclesBriefing>({
     queryKey: chroniclesBriefingKeys.byDate(date, tz),
     queryFn: () => getChroniclesBriefing({ date, tz }),
+    // The archive shows only settled past days, which never change, so the
+    // briefing does not auto-refresh (per dashboard-chronicles "Auto-Refresh
+    // Adoption"). Staleness is surfaced via voice_source and the explicit
+    // day-close refresh path, not a background poll.
     staleTime: THIRTY_SECONDS_MS,
-    refetchInterval: FIVE_MINUTES_MS,
-    refetchOnWindowFocus: true,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
   });
 }

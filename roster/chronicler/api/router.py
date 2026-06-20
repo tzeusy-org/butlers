@@ -2204,6 +2204,7 @@ async def get_briefing(
         kpi=_kpi_to_pydantic(payload.kpi),
         attention_items=_attention_to_pydantic(payload.attention_items),
         recent_days=_recent_days_to_pydantic(payload.recent_days),
+        earliest_date=payload.earliest_date,
     )
 
 

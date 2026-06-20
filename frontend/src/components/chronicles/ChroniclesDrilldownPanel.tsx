@@ -1,31 +1,25 @@
 // ---------------------------------------------------------------------------
-// ChroniclesDrilldownPanel (bu-i29ix)
+// ChroniclesDrilldownPanel
 //
-// The editorial /chronicles landing surface keeps the page quiet: Voice
-// briefing, KPI strip, attention list, recent-days index. The Gantt, Map,
-// Scrubber, aggregations charts, source-state strip, streak callouts, and
-// EpisodeDrawer that used to be the primary view are mounted here as a
-// drilldown panel below the editorial fold.
+// The editorial /chronicles landing keeps the page quiet: Voice briefing, KPI
+// strip, attention list, recent-days index. The Gantt timeline, Map, Scrubber,
+// breakdown charts, source-state strip, streak callouts, and EpisodeDrawer live
+// here, below the editorial fold, disclosed on demand.
 //
-// The panel is always expanded. Its heavy widgets (Gantt and Map) remain
-// self-lazy via React.lazy / dynamic import.
+// The panel is driven by the page's selected day (a settled past day), so it is
+// static: no time-window picker, no auto-refresh. It mounts only when the owner
+// opens it (lazy-loaded on first interaction); its heavy widgets (Gantt and
+// Map) remain self-lazy via React.lazy / dynamic import.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useMemo, useState } from "react";
+import { ChevronRight } from "lucide-react";
 
-import { useTimeWindow } from "@/hooks/use-time-window";
-import {
-  useChroniclesAggregates,
-  useChroniclesPointEvents,
-} from "@/hooks/use-chronicles";
-import { useAutoRefresh } from "@/hooks/use-auto-refresh";
-import { useTimezone } from "@/components/ui/timezone-context";
-import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker";
+import { useChroniclesAggregates, useChroniclesPointEvents } from "@/hooks/use-chronicles";
+import { dayWindowInTz } from "@/components/chronicles/tz-format";
+import { Section } from "@/components/overview/Section";
 import { Scrubber } from "@/components/workspace/Scrubber";
-import {
-  MapPanContext,
-  useMapPanContextValue,
-} from "@/components/workspace/map-pan-store";
+import { MapPanContext, useMapPanContextValue } from "@/components/workspace/map-pan-store";
 import {
   interpolatePlayhead,
   type TimedTrailPoint,
@@ -38,35 +32,64 @@ import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar
 import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart";
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
-import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 
 import type { ChroniclerEventsParams } from "@/api/types";
 
-export function ChroniclesDrilldownPanel() {
+interface ChroniclesDrilldownPanelProps {
+  /** The selected day (owner-tz calendar date, YYYY-MM-DD). */
+  date: string;
+  /** Owner IANA timezone for resolving the day window. */
+  tz: string;
+}
+
+export function ChroniclesDrilldownPanel({ date, tz }: ChroniclesDrilldownPanelProps) {
+  const [open, setOpen] = useState(false);
   return (
-    <section aria-label="Chronicles drilldown" className="space-y-4">
-      <p
-        className="tnum uppercase"
+    <section
+      aria-label="Day detail"
+      className="space-y-6 border-t pt-8"
+      style={{ borderColor: "var(--border)" }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls="chronicles-day-detail"
+        className="inline-flex cursor-pointer items-center gap-2 tnum uppercase"
         style={{
           fontFamily: "var(--font-mono)",
           fontSize: "10px",
           letterSpacing: "0.14em",
           color: "var(--muted-foreground)",
+          background: "transparent",
+          border: 0,
+          padding: 0,
         }}
       >
-        Drilldown
-      </p>
-      <DrilldownBody />
+        <ChevronRight
+          aria-hidden
+          className="transition-transform duration-base ease-out-quart"
+          style={{ width: 12, height: 12, transform: open ? "rotate(90deg)" : "none" }}
+        />
+        {open ? "Hide the day in detail" : "Open the day in detail"}
+      </button>
+      {/* Wrapper always present so aria-controls resolves even when collapsed;
+          the heavy body mounts only on expand (lazy-loaded on first interaction). */}
+      <div id="chronicles-day-detail">{open ? <DrilldownBody date={date} tz={tz} /> : null}</div>
     </section>
   );
 }
 
-function DrilldownBody() {
-  // Timezone provided by AppTimezoneProvider (bu-ldj6y).
-  const ownerTz = useTimezone();
-  const timeWindow = useTimeWindow(ownerTz);
-  const autoRefreshControl = useAutoRefresh(30_000);
+function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
   const mapPanValue = useMapPanContextValue();
+
+  // The day window: tz-local midnight boundaries, identical to the backend's
+  // day_window_utc for every zone (the day string is treated as naive local
+  // midnight in tz, never reinterpreted through a UTC anchor).
+  const { from, to } = useMemo(() => dayWindowInTz(date, tz), [date, tz]);
+
+  // A settled past day never changes: polling is off.
+  const refetchInterval = false as const;
 
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
   const handleEpisodeClick = useCallback((episodeId: string) => {
@@ -76,12 +99,8 @@ function DrilldownBody() {
     setSelectedEpisodeId(null);
   }, []);
 
-  const refetchInterval = timeWindow.pollingDisabled
-    ? (false as const)
-    : autoRefreshControl.refetchInterval;
-
-  const windowFrom = timeWindow.from.toISOString();
-  const windowTo = timeWindow.to.toISOString();
+  const windowFrom = from.toISOString();
+  const windowTo = to.toISOString();
 
   const aggregateParams = useMemo(
     () => ({ start_at: windowFrom, end_at: windowTo }),
@@ -101,10 +120,7 @@ function DrilldownBody() {
   const { data: pointEventsData } = useChroniclesPointEvents(pointEventsParams, {
     refetchInterval,
   });
-  const pointEvents = useMemo(
-    () => pointEventsData?.data ?? [],
-    [pointEventsData],
-  );
+  const pointEvents = useMemo(() => pointEventsData?.data ?? [], [pointEventsData]);
 
   const timedTrail = useMemo<TimedTrailPoint[]>(() => {
     return pointEvents
@@ -130,24 +146,20 @@ function DrilldownBody() {
   const [snappedMs, setSnappedMs] = useState<number | null>(null);
   const [scrubberMs, setScrubberMs] = useState<number | null>(null);
 
-  const handleScrub = useCallback(
-    (newScrubberMs: number, newSnappedMs: number | null) => {
-      setSnappedMs(newSnappedMs);
-      setScrubberMs(newScrubberMs);
-    },
-    [],
-  );
+  const handleScrub = useCallback((newScrubberMs: number, newSnappedMs: number | null) => {
+    setSnappedMs(newSnappedMs);
+    setScrubberMs(newScrubberMs);
+  }, []);
 
   const playheadPoint = useMemo(() => {
     if (scrubberMs === null) return null;
     return interpolatePlayhead(scrubberMs, timedTrail);
   }, [scrubberMs, timedTrail]);
 
-  const { byCategory, byDay } = useChroniclesAggregates(
-    aggregateParams,
-    aggregateParams,
-    { refetchInterval, enabled: true },
-  );
+  const { byCategory, byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
+    refetchInterval,
+    enabled: true,
+  });
 
   const byDayRows = byDay.data ?? [];
   const categoryBuckets = byCategory.data?.data.buckets ?? [];
@@ -160,87 +172,56 @@ function DrilldownBody() {
   }
 
   return (
-    <div className="space-y-6 pb-72">
-      <div className="flex items-center justify-end gap-2">
-        <ManualRefreshButton timeWindow={timeWindow} />
-        {!timeWindow.pollingDisabled && (
-          <AutoRefreshToggle
-            enabled={autoRefreshControl.enabled}
-            interval={autoRefreshControl.interval}
-            onToggle={autoRefreshControl.setEnabled}
-            onIntervalChange={autoRefreshControl.setInterval}
-          />
-        )}
+    <div className="space-y-8">
+      <div className="flex items-center justify-end">
+        <ManualRefreshButton timeWindow={{ from, to }} />
       </div>
 
       <SourceStateBadgeStrip />
-      <TimeWindowPicker window={timeWindow} />
-
-      <section
-        aria-label="Scrubber"
-        className="rounded-lg border bg-card px-6 py-4"
-      >
-        <Scrubber
-          key={`${windowFrom}-${windowTo}`}
-          windowStart={timeWindow.from}
-          windowEnd={timeWindow.to}
-          snapMs={pointEvents.map((e) =>
-            new Date(e.canonical_occurred_at).getTime(),
-          )}
-          tz={ownerTz}
-          onScrub={handleScrub}
-        />
-      </section>
 
       <MapPanContext.Provider value={mapPanValue}>
-        <section
-          aria-label="Gantt area"
-          className="rounded-lg border bg-card p-6"
-        >
-          <h2 className="text-sm font-medium text-muted-foreground mb-4">
-            Gantt area
-          </h2>
-          <GanttSwimlane
-            windowStart={timeWindow.from}
-            windowEnd={timeWindow.to}
-            refetchInterval={refetchInterval}
-            onEpisodeClick={handleEpisodeClick}
-            cursorMs={snappedMs}
-          />
-        </section>
+        <Section eyebrow="Timeline">
+          <div className="space-y-4">
+            <Scrubber
+              key={`${windowFrom}-${windowTo}`}
+              windowStart={from}
+              windowEnd={to}
+              snapMs={pointEvents.map((e) => new Date(e.canonical_occurred_at).getTime())}
+              tz={tz}
+              onScrub={handleScrub}
+            />
+            <GanttSwimlane
+              windowStart={from}
+              windowEnd={to}
+              refetchInterval={refetchInterval}
+              onEpisodeClick={handleEpisodeClick}
+              cursorMs={snappedMs}
+            />
+          </div>
+        </Section>
 
-        <FloatingMapMinimap
-          playheadPoint={playheadPoint}
-          trailPoints={trailPoints}
-        />
+        <FloatingMapMinimap playheadPoint={playheadPoint} trailPoints={trailPoints} />
       </MapPanContext.Provider>
 
-      <section
-        aria-label="Aggregations area"
-        className="rounded-lg border bg-card p-6"
-      >
-        <h2 className="text-sm font-medium text-muted-foreground mb-4">
-          Aggregations area
-        </h2>
-        <StreakCallouts
-          episodeParams={episodesParams}
-          refetchInterval={refetchInterval}
-        />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <AggregateStackedBar
-            data={byDayRows}
-            isLoading={byDay.isLoading}
-            isError={byDay.isError}
-            onRetry={handleByDayRetry}
-          />
-          <AggregatePieChart
-            buckets={categoryBuckets}
-            isLoading={byCategory.isLoading}
-            isError={byCategory.isError}
-            onRetry={handleByCategoryRetry}
-          />
+      <Section eyebrow="Where the time went">
+        <div className="space-y-4">
+          <StreakCallouts episodeParams={episodesParams} refetchInterval={refetchInterval} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <AggregateStackedBar
+              data={byDayRows}
+              isLoading={byDay.isLoading}
+              isError={byDay.isError}
+              onRetry={handleByDayRetry}
+            />
+            <AggregatePieChart
+              buckets={categoryBuckets}
+              isLoading={byCategory.isLoading}
+              isError={byCategory.isError}
+              onRetry={handleByCategoryRetry}
+            />
+          </div>
         </div>
-      </section>
+      </Section>
 
       <EpisodeDrawer
         episodeId={selectedEpisodeId}
