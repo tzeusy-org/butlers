@@ -91,6 +91,23 @@ def upgrade() -> None:
     if exists is None:
         return
 
+    # Cross-chain DROP guard (cross-chain-migration-drop-hazard, bu-y6o7q):
+    # core_134 DROPs public.contacts as the FINAL step of the contacts-schema
+    # retirement. In a fresh schema-scoped provision the core chain reaches head —
+    # and that DROP runs — BEFORE this relationship chain, so public.contacts is
+    # already gone when rel_003 runs. There is then nothing to consolidate INTO,
+    # and (critically) the rest of the relationship chain creates child tables with
+    # FKs to the UNQUALIFIED ``contacts`` table (rel_005 addresses, rel_006 groups,
+    # …) which resolve to ``relationship.contacts`` via the search_path. So when
+    # public.contacts is absent we must LEAVE the relationship.contacts shadow in
+    # place (do NOT consolidate or drop it) so those downstream FKs keep resolving;
+    # rel_030 / rel_032 later drop the contact FK constraints by name. In
+    # production this branch never runs — rel_003 ran historically when
+    # public.contacts still existed — so the shadow only persists in fresh
+    # schema-scoped test provisions, where it is a harmless empty table.
+    if conn.execute(text("SELECT to_regclass('public.contacts')")).scalar() is None:
+        return
+
     # Step 1: Copy contacts from relationship.contacts → public.contacts.
     # No ID overlap (verified), so INSERT without conflict handling.
     #
@@ -220,24 +237,33 @@ def downgrade() -> None:
     # Select NULL for the recreated relationship.contacts.preferred_channel so the
     # downgrade stays order-independent (best-effort: the canonical store is the
     # entity-keyed prefers-channel fact, not this restored column).
-    pref_select = "preferred_channel" if _public_contacts_has_preferred_channel(conn) else "NULL"
-    conn.execute(
-        text(f"""
-        INSERT INTO relationship.contacts (
-            id, name, details, first_name, last_name, nickname,
-            company, job_title, gender, pronouns, avatar_url,
-            listed, archived_at, metadata, stay_in_touch_days,
-            entity_id, preferred_channel, created_at, updated_at
-        )
-        SELECT
-            id, name, details, first_name, last_name, nickname,
-            company, job_title, gender, pronouns, avatar_url,
-            listed, archived_at, metadata, stay_in_touch_days,
-            entity_id, {pref_select}, created_at, updated_at
-        FROM public.contacts
-        ON CONFLICT (id) DO NOTHING
-    """)
+    # Cross-chain DROP guard (mirror of upgrade): when core_134 has already
+    # dropped public.contacts there is nothing to copy back; recreate the empty
+    # relationship.contacts shadow and skip the copy (best-effort downgrade).
+    public_contacts_present = (
+        conn.execute(text("SELECT to_regclass('public.contacts')")).scalar() is not None
     )
+    if public_contacts_present:
+        pref_select = (
+            "preferred_channel" if _public_contacts_has_preferred_channel(conn) else "NULL"
+        )
+        conn.execute(
+            text(f"""
+            INSERT INTO relationship.contacts (
+                id, name, details, first_name, last_name, nickname,
+                company, job_title, gender, pronouns, avatar_url,
+                listed, archived_at, metadata, stay_in_touch_days,
+                entity_id, preferred_channel, created_at, updated_at
+            )
+            SELECT
+                id, name, details, first_name, last_name, nickname,
+                company, job_title, gender, pronouns, avatar_url,
+                listed, archived_at, metadata, stay_in_touch_days,
+                entity_id, {pref_select}, created_at, updated_at
+            FROM public.contacts
+            ON CONFLICT (id) DO NOTHING
+        """)
+        )
 
     # Re-point FKs back to relationship.contacts (only for tables that exist;
     # ``contacts_source_links`` may not be present depending on chain order).

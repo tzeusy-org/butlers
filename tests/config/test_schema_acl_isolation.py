@@ -252,10 +252,8 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
         "INSERT INTO public.entities (canonical_name, entity_type)"
         " VALUES ('acl-probe-entity', 'other')",
     ),
-    (
-        "contacts",
-        "INSERT INTO public.contacts (name) VALUES ('acl-probe-contact')",
-    ),
+    # public.contacts was dropped by core_134 (contacts-schema retirement); it is no
+    # longer a writable public table, so it is excluded from this write matrix.
     (
         "entity_info",
         "INSERT INTO public.entity_info (entity_id, type, value)"
