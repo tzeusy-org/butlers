@@ -991,3 +991,135 @@ class TestAmountPrecisionRegression:
         row = await pool.fetchrow("SELECT amount FROM bills WHERE id = $1", bill["id"])
         # Must be the exact Decimal returned by asyncpg, not a float-truncated value.
         assert row["amount"] == Decimal("49.99")
+
+
+# ---------------------------------------------------------------------------
+# bills= parameter — in-memory path (N+1 elimination)
+# ---------------------------------------------------------------------------
+
+
+class TestBillsParam:
+    """Verify the optional ``bills`` parameter to ``match_transaction_to_bills``.
+
+    When ``bills`` is provided the function skips the DB bill-fetch and
+    filters candidates in-memory by currency.  The settlement logic (window,
+    payee, amount, confidence tier) must be identical to the DB path.
+    """
+
+    async def test_bills_param_exact_match_auto_settle(self, pool):
+        """Passing a pre-fetched bills list yields auto_settle for an exact match."""
+        from butlers.tools.finance.reconciliation import match_transaction_to_bills
+
+        bill = await _insert_bill(
+            pool,
+            payee="Shopee",
+            amount=45.00,
+            currency="SGD",
+            due_date=date.today() - timedelta(days=3),
+        )
+        txn = await _insert_txn(
+            pool,
+            merchant="Shopee",
+            amount=45.00,
+            currency="SGD",
+        )
+        txn_dict = {
+            "id": str(txn["id"]),
+            "direction": "debit",
+            "merchant": "Shopee",
+            "currency": "SGD",
+            "amount": Decimal("45.00"),
+            "posted_at": txn["posted_at"],
+            "metadata": {},
+        }
+
+        result = await match_transaction_to_bills(pool, txn_dict, bills=[bill])
+
+        assert result["tier"] == "auto_settle"
+        assert str(result["bill"]["id"]) == str(bill["id"])
+
+    async def test_bills_param_currency_mismatch_filtered_in_memory(self, pool):
+        """Bills with mismatched currency are excluded in-memory when bills= is provided."""
+        from butlers.tools.finance.reconciliation import match_transaction_to_bills
+
+        usd_bill = await _insert_bill(
+            pool,
+            payee="Lazada",
+            amount=50.00,
+            currency="USD",
+            due_date=date.today() - timedelta(days=2),
+        )
+        txn_dict = {
+            "id": str(uuid.uuid4()),
+            "direction": "debit",
+            "merchant": "Lazada",
+            "currency": "SGD",  # mismatch
+            "amount": Decimal("50.00"),
+            "posted_at": datetime.now(UTC) - timedelta(days=1),
+            "metadata": {},
+        }
+
+        result = await match_transaction_to_bills(pool, txn_dict, bills=[usd_bill])
+
+        assert result["tier"] == "none"
+
+    async def test_bills_param_settled_bill_excluded_by_caller(self, pool):
+        """When the caller filters settled bills out of the list, they are not matched."""
+        from butlers.tools.finance.reconciliation import match_transaction_to_bills
+
+        await _insert_bill(
+            pool,
+            payee="Carousell",
+            amount=30.00,
+            currency="SGD",
+            due_date=date.today() - timedelta(days=2),
+        )
+        txn_dict = {
+            "id": str(uuid.uuid4()),
+            "direction": "debit",
+            "merchant": "Carousell",
+            "currency": "SGD",
+            "amount": Decimal("30.00"),
+            "posted_at": datetime.now(UTC) - timedelta(days=1),
+            "metadata": {},
+        }
+
+        # Caller passes an empty list (simulating all bills already settled)
+        result = await match_transaction_to_bills(pool, txn_dict, bills=[])
+
+        assert result["tier"] == "none"
+
+    async def test_bills_param_confirm_tier_multiple_candidates(self, pool):
+        """Two in-window bills passed via bills= still produce confirm tier."""
+        from butlers.tools.finance.reconciliation import match_transaction_to_bills
+
+        txn_date = date.today() - timedelta(days=10)
+        bill_a = await _insert_bill(
+            pool,
+            payee="DBS",
+            amount=100.00,
+            currency="SGD",
+            due_date=txn_date + timedelta(days=3),
+        )
+        bill_b = await _insert_bill(
+            pool,
+            payee="DBS",
+            amount=100.00,
+            currency="SGD",
+            due_date=txn_date + timedelta(days=8),
+        )
+        txn_dict = {
+            "id": str(uuid.uuid4()),
+            "direction": "debit",
+            "merchant": "DBS",
+            "currency": "SGD",
+            "amount": Decimal("100.00"),
+            "posted_at": datetime.combine(txn_date, datetime.min.time()).replace(tzinfo=UTC),
+            "metadata": {},
+        }
+
+        result = await match_transaction_to_bills(pool, txn_dict, bills=[bill_a, bill_b])
+
+        assert result["tier"] == "confirm"
+        assert result["bill"] is None
+        assert len(result["candidates"]) == 2
