@@ -1396,9 +1396,11 @@ class MessagePipeline:
                                 "request_id": request_id,
                                 "received_at": received_at.isoformat(),
                                 "source_channel": source,
-                                "source_endpoint_identity": source_metadata.get(
-                                    "identity", "unknown"
-                                ),
+                                # Policy bypass is a server-to-server call from the switchboard
+                                # pipeline — identify as "switchboard" so target butlers'
+                                # trusted_route_callers check passes.  The original ingestion
+                                # source is preserved in source_metadata and source_sender_identity.
+                                "source_endpoint_identity": "switchboard",
                                 "source_sender_identity": source_metadata.get(
                                     "identity", "unknown"
                                 ),

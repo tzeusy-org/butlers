@@ -1316,6 +1316,38 @@ class TestHomeAssistantArm:
         )
         mock_counter.labels.return_value.inc.assert_called_once()
 
+    async def test_xiaomi_scale_weight_writes_measurement_weight_fact(self) -> None:
+        """Xiaomi body-composition scale weight reading writes measurement_weight with provider=home_assistant.
+
+        Regression test for bu-aabi1: HA scale weight events (lifecycle_state='parsed')
+        produced zero health facts because (a) the policy bypass envelope used the HA
+        connector's endpoint_identity instead of 'switchboard', causing health butler
+        trusted_route_callers auth rejection, and (b) AGENTS.md said 'google_health
+        connector' only, so the LLM would skip wellness_ingest_envelope for HA events.
+        """
+        envelope = _make_ha_envelope(
+            metric="weight",
+            value=75.4,
+            unit="kg",
+            valid_at="2026-06-20T07:15:00+00:00",
+            source_entity_id="sensor.xiaomi_weighing_scale_weight",
+            device_class="weight",
+        )
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope)
+
+        assert result["status"] == "ok", result
+        assert result["facts_written"] == 1
+        assert result["predicate"] == "measurement_weight"
+
+        call = mock_store.call_args
+        assert call.kwargs.get("predicate") == "measurement_weight"
+        assert call.kwargs.get("scope") == "health"
+        meta = call.kwargs.get("metadata")
+        assert meta["provider"] == "home_assistant"
+        assert meta["source_entity_id"] == "sensor.xiaomi_weighing_scale_weight"
+        assert meta["unit"] == "kg"
+        assert meta["value"] == 75.4
+
 
 class TestHomeAssistantIdempotency:
     """Provider-agnostic idempotency key (design ADR-5)."""
