@@ -31,6 +31,7 @@ if _spec is not None and _spec.loader is not None:
     ConditionCreateRequest = _models.ConditionCreateRequest
     ConditionUpdateRequest = _models.ConditionUpdateRequest
     Dose = _models.Dose
+    DoseLogRequest = _models.DoseLogRequest
     LatestMeasurementEntry = _models.LatestMeasurementEntry
     LatestMeasurementsResponse = _models.LatestMeasurementsResponse
     Meal = _models.Meal
@@ -42,8 +43,11 @@ if _spec is not None and _spec.loader is not None:
     MeasurementSource = _models.MeasurementSource
     MeasurementSourcesResponse = _models.MeasurementSourcesResponse
     Medication = _models.Medication
+    MedicationAdherenceResponse = _models.MedicationAdherenceResponse
     MedicationCreateRequest = _models.MedicationCreateRequest
     MedicationUpdateRequest = _models.MedicationUpdateRequest
+    NutritionDailyAverage = _models.NutritionDailyAverage
+    NutritionSummaryResponse = _models.NutritionSummaryResponse
     Research = _models.Research
     ResearchCreateRequest = _models.ResearchCreateRequest
     ResearchUpdateRequest = _models.ResearchUpdateRequest
@@ -449,6 +453,117 @@ async def list_medication_doses(
             )
         )
     return data
+
+
+# ---------------------------------------------------------------------------
+# POST /medications/{medication_id}/doses — log (or skip) a dose
+#
+# Persists through the SAME fact-store path the Health butler's MCP tool uses:
+#   POST -> medication_log_dose (predicate 'took_dose', TEMPORAL fact,
+#           valid_at = taken_at, metadata carries medication_id/skipped/notes)
+# so a dashboard-logged dose is indistinguishable from a butler-logged one and
+# is read back by GET /medications/{medication_id}/doses above.  No new
+# predicates, tables, or DDL are introduced.
+# ---------------------------------------------------------------------------
+
+
+def _dose_response(result: dict, medication_id: str) -> Dose:
+    """Build the Dose response model from a write-tool result dict."""
+    return Dose(
+        id=str(result["id"]),
+        medication_id=str(result.get("medication_id", medication_id)),
+        taken_at=_isoformat(result.get("taken_at")),
+        skipped=bool(result.get("skipped", False)),
+        notes=result.get("notes"),
+        created_at=_isoformat(result.get("created_at")),
+    )
+
+
+@router.post(
+    "/medications/{medication_id}/doses",
+    response_model=Dose,
+    status_code=status.HTTP_201_CREATED,
+)
+async def log_medication_dose(
+    medication_id: str,
+    body: DoseLogRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Dose:
+    """Log a medication dose via the butler's ``medication_log_dose`` fact path.
+
+    Writes a temporal fact (predicate = ``took_dose``, scope = ``health``,
+    ``valid_at`` = taken_at) — the same surface the ``medication_log_dose`` MCP
+    tool writes — so the dose appears in GET /medications/{id}/doses immediately.
+    Set ``skipped=True`` to record a missed dose.  Returns 404 if the medication
+    does not exist.
+    """
+    from butlers.tools.health import medication_log_dose
+
+    pool = _pool(db)
+    try:
+        result = await medication_log_dose(
+            pool,
+            medication_id,
+            taken_at=body.taken_at,
+            skipped=body.skipped,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return _dose_response(result, medication_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /medications/{medication_id}/adherence — dose adherence summary
+#
+# Aggregates the `took_dose` facts scoped to one medication (the same surface
+# medication_log_dose writes) into total/taken/skipped counts plus an adherence
+# rate, via the `medication_history` tool.  Read-only; no DDL.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/medications/{medication_id}/adherence",
+    response_model=MedicationAdherenceResponse,
+)
+async def get_medication_adherence(
+    medication_id: str,
+    start: datetime | None = Query(None, description="Window start (inclusive)"),
+    end: datetime | None = Query(None, description="Window end (inclusive)"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> MedicationAdherenceResponse:
+    """Return dose-adherence stats for a single medication.
+
+    Aggregates ``took_dose`` facts (scope = ``health``) for this medication over
+    an optional ``start``/``end`` window via the ``medication_history`` tool.
+    ``adherence_rate`` is the percentage of non-skipped doses out of all logged
+    doses (``null`` when no doses exist).  Returns 404 if the medication does
+    not exist.
+    """
+    from butlers.tools.health import medication_history
+
+    pool = _pool(db)
+    try:
+        result = await medication_history(
+            pool,
+            medication_id,
+            start_date=start,
+            end_date=end,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+    doses = result.get("doses") or []
+    total = len(doses)
+    skipped = sum(1 for d in doses if d.get("skipped"))
+    taken = total - skipped
+    return MedicationAdherenceResponse(
+        medication_id=str(medication_id),
+        total_doses=total,
+        taken_doses=taken,
+        skipped_doses=skipped,
+        adherence_rate=result.get("adherence_rate"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1620,4 +1735,49 @@ async def get_measurements_trend(
         window_days=window_days,
         bucket=bucket,
         buckets=buckets,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /nutrition/summary — aggregate nutrition over a date range
+#
+# Thin HTTP wrapper over the existing `nutrition_summary(pool, start, end)` diet
+# tool, which aggregates `meal_*` facts (scope = 'health') that carry nutrition
+# metadata.  Read-only; reads the same surface the `meal_log` MCP tool writes.
+# No new predicates, tables, or DDL are introduced.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/nutrition/summary", response_model=NutritionSummaryResponse)
+async def get_nutrition_summary(
+    start: datetime = Query(..., description="Window start (inclusive)"),
+    end: datetime = Query(..., description="Window end (inclusive)"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> NutritionSummaryResponse:
+    """Return aggregate nutrition totals and daily averages over a window.
+
+    Aggregates ``meal_*`` facts with nutrition metadata (the same surface the
+    ``meal_log`` MCP tool writes) via the ``nutrition_summary`` diet tool.
+    Meals without nutrition data are excluded.  ``days`` is the inclusive span
+    used to compute the daily averages (minimum 1).
+    """
+    from butlers.tools.health import nutrition_summary
+
+    pool = _pool(db)
+    result = await nutrition_summary(pool, start, end)
+    days = max((end - start).days, 1)
+
+    return NutritionSummaryResponse(
+        total_calories=result["total_calories"],
+        total_protein_g=result["total_protein_g"],
+        total_carbs_g=result["total_carbs_g"],
+        total_fat_g=result["total_fat_g"],
+        daily_avg=NutritionDailyAverage(
+            calories=result["daily_avg_calories"],
+            protein_g=result["daily_avg_protein_g"],
+            carbs_g=result["daily_avg_carbs_g"],
+            fat_g=result["daily_avg_fat_g"],
+        ),
+        meal_count=result["meal_count"],
+        days=days,
     )

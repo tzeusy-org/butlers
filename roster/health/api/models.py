@@ -119,6 +119,39 @@ class Dose(BaseModel):
     created_at: str
 
 
+class DoseLogRequest(BaseModel):
+    """Request body for POST /medications/{id}/doses.
+
+    Persisted through the same ``medication_log_dose`` fact-store path the Health
+    butler's own MCP tool uses (predicate ``took_dose``, scope ``health``,
+    ``valid_at`` = taken_at), so a dashboard-logged dose is indistinguishable
+    from a butler-logged one and is read back by GET /medications/{id}/doses.
+    Doses are TEMPORAL facts: multiple entries coexist by design (no
+    supersession).  Set ``skipped=True`` to record a missed dose.  ``taken_at``
+    defaults to now when omitted.
+    """
+
+    taken_at: datetime | None = None
+    skipped: bool = False
+    notes: str | None = None
+
+
+class MedicationAdherenceResponse(BaseModel):
+    """Response for GET /medications/{id}/adherence.
+
+    Aggregated from the ``took_dose`` facts scoped to a single medication
+    (the same surface the ``medication_log_dose`` MCP tool writes), over an
+    optional ``start``/``end`` window.  ``adherence_rate`` is the percentage of
+    non-skipped doses out of all logged doses (``null`` when no doses exist).
+    """
+
+    medication_id: str
+    total_doses: int
+    taken_doses: int
+    skipped_doses: int
+    adherence_rate: float | None = None
+
+
 class Condition(BaseModel):
     """A health condition being tracked."""
 
@@ -409,3 +442,35 @@ class TrendResponse(BaseModel):
     window_days: int
     bucket: Literal["hourly", "daily"]
     buckets: list[TrendBucket]
+
+
+# ---------------------------------------------------------------------------
+# Nutrition — aggregate summary
+# ---------------------------------------------------------------------------
+
+
+class NutritionDailyAverage(BaseModel):
+    """Per-day average macros within a nutrition summary window."""
+
+    calories: float
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+
+
+class NutritionSummaryResponse(BaseModel):
+    """Response for GET /nutrition/summary?start=&end=.
+
+    Aggregates nutrition from ``meal_*`` facts (the same surface the ``meal_log``
+    MCP tool writes) over the requested window via the ``nutrition_summary``
+    tool.  Meals without nutrition metadata are excluded.  ``days`` is the
+    inclusive span used to compute the daily averages (minimum 1).
+    """
+
+    total_calories: float
+    total_protein_g: float
+    total_carbs_g: float
+    total_fat_g: float
+    daily_avg: NutritionDailyAverage
+    meal_count: int
+    days: int
