@@ -11,10 +11,8 @@ Covers:
 - GET /api/data/export/download/{id}: expired token returns 410.
 - GET /api/data/export/download/{id}: bad signature returns 401.
 - GET /api/data/export/download/{id}: wrong scope returns 401 (signature mismatch).
-- DELETE /api/data/wipe: exact phrase passes.
-- DELETE /api/data/wipe: trailing whitespace fails.
-- DELETE /api/data/wipe: lowercase phrase fails.
-- DELETE /api/data/wipe: missing phrase field returns 422.
+- DELETE /api/data/wipe: disabled — returns 503 wipe_disabled, no DB mutation.
+- DELETE /api/data/wipe: missing phrase field returns 422 (Pydantic, before handler).
 - Startup warning/error for unset DASHBOARD_EXPORT_SECRET env var.
 - _sign_token refuses to sign in production without DASHBOARD_EXPORT_SECRET.
 - _sign_token uses dev-mode fallback (not 'dev-secret') when secret is unset in dev.
@@ -572,17 +570,39 @@ async def test_download_negative_issued_at_returns_401(app):
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/data/wipe — phrase validation (§6.7)
+# DELETE /api/data/wipe — disabled (§6.7)
+#
+# The wipe endpoint is disabled (_WIPE_ENABLED = False).  All calls that reach
+# the handler return 503 wipe_disabled without touching the DB.  The phrase
+# validation and drop logic remain in the handler so re-enable is a one-line
+# flag flip; the Pydantic body validation still fires before the handler.
 # ---------------------------------------------------------------------------
 
 
-async def test_wipe_exact_phrase_passes(app):
-    """Exact phrase allows the wipe to proceed."""
+async def test_wipe_disabled_returns_503(app):
+    """Wipe with exact phrase returns 503 wipe_disabled (feature disabled)."""
     pool = _make_pool()
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
-    with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.request(
+            "DELETE",
+            "/api/data/wipe",
+            json={"phrase": _EXACT_PHRASE},
+        )
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "wipe_disabled"
+
+
+async def test_wipe_disabled_no_db_mutation(app):
+    """Wipe returns 503 without executing any DROP or audit call."""
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock) as mock_audit:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.request(
                 "DELETE",
@@ -590,44 +610,27 @@ async def test_wipe_exact_phrase_passes(app):
                 json={"phrase": _EXACT_PHRASE},
             )
 
-    assert resp.status_code == 200
-    assert resp.json()["data"]["wiped"] is True
+    assert resp.status_code == 503
+    pool.execute.assert_not_called()
+    mock_audit.assert_not_called()
 
 
-async def test_wipe_trailing_whitespace_fails(app):
-    """Phrase with trailing whitespace is rejected (no trim)."""
+async def test_wipe_any_phrase_returns_503(app):
+    """Any phrase (correct or not) returns 503 while wipe is disabled."""
     pool = _make_pool()
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.request(
-            "DELETE",
-            "/api/data/wipe",
-            json={"phrase": _EXACT_PHRASE + " "},
+    for phrase in [_EXACT_PHRASE, _EXACT_PHRASE + " ", _EXACT_PHRASE.lower(), "wrong"]:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.request("DELETE", "/api/data/wipe", json={"phrase": phrase})
+        assert resp.status_code == 503, (
+            f"expected 503 for phrase={phrase!r}, got {resp.status_code}"
         )
-
-    assert resp.status_code == 422
-
-
-async def test_wipe_lowercase_phrase_fails(app):
-    """Lowercase phrase is rejected (no case-fold)."""
-    pool = _make_pool()
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.request(
-            "DELETE",
-            "/api/data/wipe",
-            json={"phrase": _EXACT_PHRASE.lower()},
-        )
-
-    assert resp.status_code == 422
 
 
 async def test_wipe_missing_phrase_returns_422(app):
-    """Missing phrase field returns 422 (Pydantic validation error)."""
+    """Missing phrase field returns 422 (Pydantic validation fires before handler)."""
     pool = _make_pool()
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
@@ -637,22 +640,6 @@ async def test_wipe_missing_phrase_returns_422(app):
             "DELETE",
             "/api/data/wipe",
             json={},
-        )
-
-    assert resp.status_code == 422
-
-
-async def test_wipe_leading_whitespace_fails(app):
-    """Phrase with leading whitespace is rejected."""
-    pool = _make_pool()
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.request(
-            "DELETE",
-            "/api/data/wipe",
-            json={"phrase": " " + _EXACT_PHRASE},
         )
 
     assert resp.status_code == 422

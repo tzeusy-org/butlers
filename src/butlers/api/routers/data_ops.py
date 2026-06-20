@@ -98,6 +98,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/data", tags=["data-ops"])
 
 _WIPE_PHRASE = "WIPE EVERYTHING IRREVERSIBLY"
+_WIPE_ENABLED = False  # disabled pending atomic + authenticated reimplementation
 _EXPORT_TTL_SECONDS = 3600  # 60 minutes
 
 # ---------------------------------------------------------------------------
@@ -530,7 +531,21 @@ async def wipe_data(
     2. Public cross-butler tables (model_catalog, runtime_config, permissions,
        spend_ledger, webhooks, approvals_policy).
     3. ``public.audit_log`` — last, so the wipe entry itself survives.
+
+    .. note::
+        Wipe is currently disabled (``_WIPE_ENABLED = False``) because the
+        existing implementation is non-atomic and unauthenticated.  All calls
+        return HTTP 503 ``{"error": "wipe_disabled"}`` without touching the DB.
+        Re-enable by setting ``_WIPE_ENABLED = True`` once the replacement is
+        shipped.
     """
+    # --- Disabled guard — short-circuit before any DB access ---
+    if not _WIPE_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "wipe_disabled"},
+        )
+
     # --- Phase 1: exact-match guard ---
     if body.phrase != _WIPE_PHRASE:
         raise HTTPException(
