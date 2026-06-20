@@ -470,6 +470,30 @@ class TestDispatchApprovedActionById:
         assert result["status"] == "executed"
         assert calls == [("telegram_send_message", {"chat_id": "206570151", "text": "hi"})]
 
+    async def test_already_executed_replays_without_rerunning(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        """An already-executed action replays its stored result and does NOT
+        re-invoke the tool — the idempotency contract for a dashboard double-click.
+        """
+        await module.on_startup(config=None, db=mock_db)
+        action_id = uuid.uuid4()
+        mock_db._insert_action(
+            id=action_id,
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": "206570151", "text": "hi"},
+            status="executed",
+            execution_result={"success": True, "result": {"message_id": "tg-1"}},
+        )
+
+        async def boom_executor(tool_name, tool_args):  # pragma: no cover - must not run
+            raise AssertionError("executor must not re-run an already-executed action")
+
+        module.set_tool_executor(boom_executor)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["status"] == "executed"
+
     async def test_rejects_action_not_in_approved_state(
         self, module: ApprovalsModule, mock_db: MockDB
     ):

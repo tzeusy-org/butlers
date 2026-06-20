@@ -766,7 +766,9 @@ _MCP_DISPATCH_TIMEOUT_S = 30.0
 def _first_json_block(mcp_result: Any) -> Any:
     """Return the first JSON-decoded text block from an MCP tool result, or None.
 
-    Falls back to ``{"value": <text>}`` for a non-JSON text block.
+    Falls back to ``{"value": <text>}`` for a non-JSON text block. Note the
+    decoded value may be any JSON type, not necessarily a dict — callers that
+    expect an object must ``isinstance``-guard the result.
     """
     content = getattr(mcp_result, "content", None)
     if not content:
@@ -809,10 +811,15 @@ async def _dispatch_approved_action(
 
     Returns the updated action dict on success, or None if dispatch failed.
     """
+    # The two paths below differ in WHERE the action is marked executed: notify
+    # has no owning-butler executor, so it is marked executed here; every other
+    # tool is marked executed remotely by the owning butler's executor.
+
     # notify: bypass to switchboard deliver — notify()'s own recipient guard
     # would re-park the already-approved action.
     if tool_name == "notify":
         dispatch_args = dict(tool_args)
+        # deliver expects source_butler; notify's tool_args don't include it.
         dispatch_args.setdefault("source_butler", "switchboard")
         try:
             client = await asyncio.wait_for(
@@ -865,7 +872,8 @@ async def _dispatch_approved_action(
 
     # All other gated tools: run the original (un-gated) tool on the owning
     # butler via its dispatch_approved_action tool. The butler marks the action
-    # executed and returns its final state, which we relay verbatim.
+    # executed and returns its final state, which we relay (skipping butlers
+    # that error or decline).
     target_butlers: list[str] = []
     if action_butler is not None:
         target_butlers.append(action_butler)

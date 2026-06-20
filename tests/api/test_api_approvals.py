@@ -1648,6 +1648,109 @@ async def test_dispatch_approved_action_butler_error_returns_none():
     assert result is None
 
 
+def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
+    """Build a mock MCP tool result with a single text block (or no content)."""
+    result = MagicMock()
+    result.is_error = is_error
+    if text is None:
+        result.content = []
+    else:
+        block = MagicMock()
+        block.text = text
+        result.content = [block]
+    return result
+
+
+async def test_dispatch_approved_action_falls_back_to_next_butler():
+    """When the owning butler declines (error dict), the next butler is tried in
+    order and its successful execution is returned.
+    """
+    import json
+
+    from butlers.api.routers.approvals import _dispatch_approved_action
+
+    action_id = uuid4()
+    executed_payload = {
+        "id": str(action_id),
+        "tool_name": "telegram_send_message",
+        "tool_args": {},
+        "status": "executed",
+        "requested_at": _NOW.isoformat(),
+        "butler": "general",
+        "agent_summary": None,
+        "session_id": None,
+        "expires_at": None,
+        "decided_by": "human:dashboard",
+        "decided_at": _NOW.isoformat(),
+        "execution_result": {"success": True},
+        "approval_rule_id": None,
+    }
+
+    messenger_client = MagicMock()
+    messenger_client.call_tool = AsyncMock(
+        return_value=_mcp_result(json.dumps({"error": "No tool executor wired"}))
+    )
+    general_client = MagicMock()
+    general_client.call_tool = AsyncMock(return_value=_mcp_result(json.dumps(executed_payload)))
+    clients = {"messenger": messenger_client, "general": general_client}
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = ["messenger", "general"]
+    mock_mcp.get_client = AsyncMock(side_effect=lambda name: clients[name])
+
+    result = await _dispatch_approved_action(
+        mock_mcp,
+        MagicMock(),
+        MagicMock(),
+        str(action_id),
+        "telegram_send_message",
+        {},
+        "messenger",
+    )
+
+    assert result is not None
+    assert result["status"] == "executed"
+    # The owning butler is tried first, then the fallback — in order.
+    assert [c.args[0] for c in mock_mcp.get_client.await_args_list] == ["messenger", "general"]
+    messenger_client.call_tool.assert_awaited_once()
+    general_client.call_tool.assert_awaited_once()
+
+
+async def test_dispatch_approved_action_mcp_error_returns_none():
+    """An MCP-level error from the butler's tool is a failed dispatch (returns None),
+    leaving the action 'approved' for retry.
+    """
+    from butlers.api.routers.approvals import _dispatch_approved_action
+
+    action_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(return_value=_mcp_result("{}", is_error=True))
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = ["messenger"]
+    mock_mcp.get_client = AsyncMock(return_value=mock_client)
+
+    result = await _dispatch_approved_action(
+        mock_mcp,
+        MagicMock(),
+        MagicMock(),
+        str(action_id),
+        "telegram_send_message",
+        {"chat_id": "206570151", "text": "hi"},
+        "messenger",
+    )
+
+    assert result is None
+
+
+def test_first_json_block_handles_json_text_and_empty():
+    """_first_json_block: empty content → None, JSON text → decoded, non-JSON → {value}."""
+    from butlers.api.routers.approvals import _first_json_block
+
+    assert _first_json_block(_mcp_result(None)) is None
+    assert _first_json_block(_mcp_result('{"a": 1}')) == {"a": 1}
+    assert _first_json_block(_mcp_result("oops")) == {"value": "oops"}
+
+
 async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_action_id():
     """Re-gate guard: notify email-guard path keys the phantom id as pending_action_id.
 
