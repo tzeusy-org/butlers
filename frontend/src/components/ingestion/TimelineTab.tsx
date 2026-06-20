@@ -907,7 +907,9 @@ function HourGroup({
             event={event}
             isExpanded={drawerEventId === event.id}
             isSelected={selectedIds.has(event.id)}
-            onToggleExpand={() => onOpenDrawer(event.id)}
+            onToggleExpand={() =>
+              drawerEventId === event.id ? onCloseDrawer() : onOpenDrawer(event.id)
+            }
             onToggleSelect={() => onToggleSelect(event.id)}
             onOptimisticUpdate={onOptimisticUpdate}
           />
