@@ -337,6 +337,7 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
                   >
                     <button
                       onClick={() => onCellFlip(butler, perm, granted)}
+                      disabled={inherited}
                       className={cn(
                         "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors",
                         inherited
