@@ -11,7 +11,6 @@ import asyncpg
 from butlers.tools.relationship.addresses import address_add, address_list
 from butlers.tools.relationship.channel import channel_add, channel_list
 from butlers.tools.relationship.contacts import (
-    _parse_contact,
     contact_create,
     contact_get,
     contact_update,
@@ -20,6 +19,45 @@ from butlers.tools.relationship.dates import date_add, date_list
 from butlers.tools.relationship.notes import note_create, note_list
 
 logger = logging.getLogger(__name__)
+
+
+def _contact_from_entity_row(row: asyncpg.Record) -> dict[str, Any]:
+    """Build a contact-compatible dict from an entities + contact_entity_map row.
+
+    Extracts profile fields from ``entities.metadata['profile']`` (mirrored from
+    ``public.contacts`` by the EXPAND step in contact_create / contact_update,
+    bu-0mb6j).  Falls back to splitting ``canonical_name`` when profile name
+    parts are absent (entities that predate the profile-mirror or were created
+    outside contact_create).
+
+    Schema-qualification note: ``contact_entity_map`` is unqualified in the
+    query that produces this row, resolving via search_path — the same convention
+    used by ``_entity_resolve.py`` and ``resolve.py`` so the query works in both
+    production (search_path = relationship,public) and integration tests (all
+    relationship tables land in public).
+    """
+    d = dict(row)
+    first_name: str | None = d.get("first_name") or None
+    last_name: str | None = d.get("last_name") or None
+    canonical = str(d.get("canonical_name") or "").strip()
+    # Fallback: split canonical_name when no profile name parts are present.
+    # Keeps display names correct for entities that predate the profile-mirror
+    # or were created outside contact_create.
+    if not first_name and not last_name and canonical:
+        parts = canonical.split(None, 1)
+        first_name = parts[0] if parts else None
+        last_name = parts[1] if len(parts) > 1 else None
+    return {
+        "id": d["id"],  # contact_id from contact_entity_map
+        "entity_id": d.get("entity_id"),
+        "name": canonical,
+        "first_name": first_name,
+        "last_name": last_name,
+        "nickname": None,
+        "company": d.get("company") or None,
+        "job_title": d.get("job_title") or None,
+        "details": {},
+    }
 
 
 def _contact_full_name(contact: dict[str, Any]) -> str:
@@ -47,11 +85,29 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
         contact = await contact_get(pool, contact_id)
         contacts = [contact] if contact is not None else []
     else:
-        # Export all listed contacts
+        # Export all listed contacts — re-pointed off public.contacts (bu-vbbl3).
+        # Queries public.entities joined to contact_entity_map (unqualified;
+        # see _contact_from_entity_row docstring).  Profile fields come from
+        # entities.metadata['profile'] mirrored by the EXPAND step (bu-0mb6j).
+        # entity_type='person' restricts the export to people (not orgs/places).
         rows = await pool.fetch(
-            "SELECT * FROM contacts WHERE listed = true ORDER BY first_name, last_name, nickname"
+            """
+            SELECT
+                m.contact_id   AS id,
+                e.id           AS entity_id,
+                e.canonical_name,
+                e.metadata -> 'profile' ->> 'first_name' AS first_name,
+                e.metadata -> 'profile' ->> 'last_name'  AS last_name,
+                e.metadata -> 'profile' ->> 'company'    AS company,
+                e.metadata -> 'profile' ->> 'job_title'  AS job_title
+            FROM public.entities e
+            JOIN contact_entity_map m ON m.entity_id = e.id
+            WHERE e.listed = true
+              AND e.entity_type = 'person'
+            ORDER BY e.canonical_name
+            """
         )
-        contacts = [_parse_contact(row) for row in rows]
+        contacts = [_contact_from_entity_row(row) for row in rows]
 
     vcards = []
     for contact in contacts:
