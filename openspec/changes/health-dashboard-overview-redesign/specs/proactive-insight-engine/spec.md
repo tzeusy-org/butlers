@@ -4,7 +4,7 @@
 
 ### Requirement: [TARGET-STATE] Switchboard insight reader endpoint
 
-The Switchboard SHALL expose a read-only insight reader at `GET /api/insights` so dashboard surfaces
+The Switchboard SHALL expose a read-only insight reader at `GET /api/switchboard/insights` so dashboard surfaces
 can render pending insight candidates without each butler needing read access to the cross-butler
 `public.insight_candidates` table. The reader is hosted on the **Switchboard** because the insight
 broker (Switchboard) role is the only butler role that already holds SELECT on
@@ -22,7 +22,7 @@ allowed to see.
 
 #### Scenario: Read pending health candidates
 
-- **WHEN** the dashboard calls `GET /api/insights?butler=health&status=pending`
+- **WHEN** the dashboard calls `GET /api/switchboard/insights?butler=health&status=pending`
 - **THEN** the Switchboard MUST return insight candidates where `origin_butler = 'health'` and
   `status = 'pending'`
 - **AND** each returned item MUST include `id`, `category`, `priority`, `message`, `metadata`,
@@ -38,7 +38,7 @@ allowed to see.
 
 #### Scenario: Status filter defaults to pending
 
-- **WHEN** the dashboard calls `GET /api/insights?butler=health` with no `status` parameter
+- **WHEN** the dashboard calls `GET /api/switchboard/insights?butler=health` with no `status` parameter
 - **THEN** only candidates with `status = 'pending'` MUST be returned
 
 #### Scenario: Butler filter scopes the result

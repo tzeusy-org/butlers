@@ -201,4 +201,4 @@ MCP/Switchboard, never a direct cross-schema DB read.
 #### Scenario: Correlation candidates surface through the insight reader
 - **WHEN** a cross-signal correlation candidate is accepted into `public.insight_candidates`
 - **THEN** the `/health` Overview attention index SHALL surface it by reading
-  `GET /api/insights?butler=health&status=pending` (it MUST NOT recompute the correlation on read)
+  `GET /api/switchboard/insights?butler=health&status=pending` (it MUST NOT recompute the correlation on read)

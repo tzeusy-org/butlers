@@ -50,7 +50,7 @@ the insight broker (`butler_switchboard_rw`) holds full DML — and therefore SE
 **INSERT only** and has **no SELECT** on that table. There is no blanket public-SELECT rule for butler
 roles: `database-security` grants butler roles SELECT only on public tables *outside* the
 write-authorization matrix, and `public.insight_candidates` is *inside* it. Hosting the reader as
-`GET /api/insights?butler=health` on the **Switchboard** (the role that already has the read)
+`GET /api/switchboard/insights?butler=health` on the **Switchboard** (the role that already has the read)
 therefore needs **no grant migration** and preserves schema isolation. _Alternative considered:_
 `GET /api/health/insights` on the health role plus an idempotent grant-only migration — rejected
 because the health role has no SELECT today (it would need that new grant), widening grants for no
@@ -146,7 +146,7 @@ No schema migration. Deploy order follows the backend epic dependency graph:
 2. `POST /medications/{id}/doses` (dashboard dose-logging; invalidate briefing cache).
 3. `GET /nutrition/summary`.
 4. `GET /medications/{id}/adherence` (shared frequency helper).
-5. Insight reader on Switchboard (`GET /api/insights?butler=health`) — powers the deterministic
+5. Insight reader on Switchboard (`GET /api/switchboard/insights?butler=health`) — powers the deterministic
    attention list. Steps 1–5 deliver a fully deterministic, zero-LLM Overview.
 6. `GET /api/health/briefing` (LLM composer; depends on #5). Deferrable.
 7. Cross-signal correlation in the `insight-scan` job + cron → weekly (depends on #5 + `home` MCP).

@@ -29,7 +29,7 @@ migration anywhere.
 
 ## 5. Insight reader on the Switchboard (new read; powers the deterministic attention list)
 
-- [ ] 5.1 Add `GET /api/insights?butler=health&status=pending&limit=` on the Switchboard (runs under the broker role that already holds SELECT — no grant migration)
+- [ ] 5.1 Add `GET /api/switchboard/insights?butler=health&status=pending&limit=` on the Switchboard (runs under the broker role that already holds SELECT — no grant migration)
 - [ ] 5.2 Filter by `origin_butler` and default `status=pending`; return `{id, category, priority, message, metadata, created_at, status, expires_at}`
 - [ ] 5.3 Consume it for the Overview AttentionList (no auto-refresh; manual refresh only)
 

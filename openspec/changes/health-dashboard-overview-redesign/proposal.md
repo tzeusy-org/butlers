@@ -43,7 +43,7 @@ overall GREEN, ~$1/month/owner recommended design). Section 0 of that brief is b
   - `GET /api/health/briefing` — LLM Voice composer mirroring `GET /api/dashboard/briefing`;
     templated-only by default, LLM elaboration behind a cost flag, per-owner 5-min TTL cache,
     never raises (templated fallback), with a **non-diagnostic voice-lint** as acceptance criteria.
-- **Insight reader** on the Switchboard: `GET /api/insights?butler=health&status=pending` — the
+- **Insight reader** on the Switchboard: `GET /api/switchboard/insights?butler=health&status=pending` — the
   Switchboard role already holds SELECT on `public.insight_candidates`, so no grant migration and
   schema isolation is preserved.
 - **Insight-scan job extended**: emits **cross-signal correlation candidates** (Home Assistant
@@ -72,7 +72,7 @@ there.)
   `GET /briefing`); MODIFY the "Health Insight Scan Job" to also emit cross-signal correlation
   candidates via cross-butler MCP; MODIFY the schedule cron from monthly to weekly.
 - `proactive-insight-engine`: ADD a Switchboard insight **reader** endpoint
-  (`GET /api/insights?butler=health`) over the existing `public.insight_candidates` table.
+  (`GET /api/switchboard/insights?butler=health`) over the existing `public.insight_candidates` table.
 
 ## Impact
 

@@ -31,7 +31,7 @@ The Overview MUST contain, in the left column:
   never faked.
 
 The Overview MUST contain, in the right column, an **AttentionList** sourced from the Switchboard
-insight reader (`GET /api/insights?butler=health&status=pending`). Each attention item MUST link to
+insight reader (`GET /api/switchboard/insights?butler=health&status=pending`). Each attention item MUST link to
 the concerning signal (missed doses, severe symptom, drifting measurement) so it is reachable in one
 click. When no insight candidate is pending, the attention index MUST collapse to a single
 serif-italic line, with no empty-state decoration.
@@ -59,7 +59,7 @@ serif-italic line, with no empty-state decoration.
 
 #### Scenario: Empty attention index is one quiet line
 
-- **WHEN** `GET /api/insights?butler=health&status=pending` returns zero candidates
+- **WHEN** `GET /api/switchboard/insights?butler=health&status=pending` returns zero candidates
 - **THEN** the attention index MUST collapse to a single serif-italic line
 - **AND** it MUST NOT render placeholder cards, confetti, or celebratory styling
 
@@ -275,7 +275,7 @@ The `useMedicationDoses` and `useMedicationAdherence` hooks MUST be conditionall
 
 **Auto-refresh carve-out (binds the universal 30s rule):** the LLM Voice briefing hook
 (`use-health-briefing`, sourced from `GET /api/health/briefing`) and the insight feed hook (sourced
-from `GET /api/insights?butler=health`) MUST be **EXCLUDED** from the 30s auto-refresh. They MUST NOT
+from `GET /api/switchboard/insights?butler=health`) MUST be **EXCLUDED** from the 30s auto-refresh. They MUST NOT
 set a `refetchInterval`; instead they rely on the briefing's per-owner 5-minute TTL cache and a
 **manual** refresh triggered via the BriefingStatus pill. This is a permanent cost guard: an
 auto-refreshing LLM endpoint would multiply spawn cost.
@@ -299,7 +299,7 @@ Data freshness MUST follow domain-appropriate refresh intervals:
 |---|---|---|
 | Health data — deterministic (measurements, medications, conditions, symptoms, meals, research, latest, trend, adherence, nutrition summary) | 30s | Moderate update frequency from butler sessions |
 | Health Overview — LLM Voice briefing (`/api/health/briefing`) | None (5-min TTL cache + manual refresh) | LLM endpoint; auto-refresh would multiply spawn cost |
-| Health Overview — insight feed (`/api/insights?butler=health`) | None (manual refresh) | Reads candidates produced by the scheduled insight-scan job; no per-pageview cost |
+| Health Overview — insight feed (`/api/switchboard/insights?butler=health`) | None (manual refresh) | Reads candidates produced by the scheduled insight-scan job; no per-pageview cost |
 | Contact data (contacts, groups, labels) | None (on-demand) | Data changes infrequently; triggered by explicit sync |
 | Calendar workspace entries | 30s | Events may change from external calendar providers |
 | Calendar workspace metadata | 60s | Source/lane definitions change rarely |

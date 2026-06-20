@@ -2071,7 +2071,7 @@ async def _fetch_health_insights(sw_pool: Any) -> list[dict]:
     """Fetch pending health insight candidates from the Switchboard insight feed.
 
     Reads ``public.insight_candidates`` (origin_butler = 'health', status =
-    'pending') — the same surface the GET /api/insights Switchboard reader
+    'pending') — the same surface the GET /api/switchboard/insights Switchboard reader
     exposes. Only the Switchboard role has SELECT on this table, so the
     Switchboard pool is used. Returns [] on any failure; logs at WARNING.
     """
