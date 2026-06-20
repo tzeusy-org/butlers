@@ -1265,6 +1265,7 @@ CREATE TABLE IF NOT EXISTS relationship.entity_facts (
     src         TEXT        NOT NULL DEFAULT 'test',
     conf        FLOAT       NOT NULL DEFAULT 1.0,
     last_seen   TIMESTAMPTZ,
+    observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     weight      INT,
     verified    BOOL        NOT NULL DEFAULT false,
     "primary"   BOOL,
@@ -1273,6 +1274,35 @@ CREATE TABLE IF NOT EXISTS relationship.entity_facts (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 )
+"""
+
+# Unique partial index required by relationship_assert_fact's ON CONFLICT clause.
+CREATE_RELATIONSHIP_ENTITY_FACTS_UNIQUE_IDX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
+    ON relationship.entity_facts (subject, predicate, object)
+    WHERE validity = 'active'
+"""
+
+# Predicate registry used by relationship_assert_fact for validation.
+CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL = """
+CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
+    predicate   TEXT        NOT NULL PRIMARY KEY,
+    kind        TEXT        NOT NULL,
+    object_kind TEXT        NOT NULL,
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+# Seed just the predicates relevant to interaction_sync tests.
+SEED_RELATIONSHIP_PREDICATES_SQL = """
+INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
+VALUES
+    ('has-email',    'contact',    'literal', 'Email address'),
+    ('has-handle',   'contact',    'literal', 'Messaging handle'),
+    ('has-phone',    'contact',    'literal', 'Phone number'),
+    ('co-attended',  'relational', 'entity',  'Both entities attended the same event or place.')
+ON CONFLICT (predicate) DO NOTHING
 """
 
 
@@ -1289,8 +1319,14 @@ async def _setup_interaction_sync_schema(pool) -> None:
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_sync ON facts (subject, predicate)"
     )
-    # run_interaction_sync resolves sender identities via relationship.entity_facts (rel_013)
+    # run_interaction_sync resolves sender identities via relationship.entity_facts (rel_013).
+    # relationship_assert_fact also writes co-attended edges here, so schema must match
+    # production (observed_at column + unique index for ON CONFLICT dedup).
     await pool.execute(CREATE_RELATIONSHIP_ENTITY_FACTS_SQL)
+    await pool.execute(CREATE_RELATIONSHIP_ENTITY_FACTS_UNIQUE_IDX_SQL)
+    # relationship_assert_fact validates predicates against entity_predicate_registry.
+    await pool.execute(CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL)
+    await pool.execute(SEED_RELATIONSHIP_PREDICATES_SQL)
     # store_fact() requires predicate_registry and memory_links
     await pool.execute(CREATE_PREDICATE_REGISTRY_SQL)
     await pool.execute(CREATE_MEMORY_LINKS_SQL)
