@@ -945,3 +945,29 @@ class ConnectorSettingsUpdateRequest(BaseModel):
             if flush < 60 or flush > 7200:
                 raise ValueError("flush_interval_s must be between 60 and 7200 seconds")
         return v
+
+
+class InsightCandidate(BaseModel):
+    """A single proactive-insight candidate row from ``public.insight_candidates``.
+
+    Read-only projection used by ``GET /api/switchboard/insights``.  Mirrors the
+    columns created in migration ``core_010`` (plus ``delivery_attempt_count``
+    added in ``core_127``).  The Switchboard role is the only butler role with
+    SELECT on this table, which is why this reader is hosted on the switchboard
+    API surface.
+    """
+
+    id: str
+    origin_butler: str
+    priority: int
+    category: str
+    dedup_key: str
+    cooldown_days: int | None = None
+    expires_at: str | None = None
+    message: str
+    channel: str | None = None
+    metadata: dict | None = None
+    created_at: str | None = None
+    status: str
+    delivered_at: str | None = None
+    delivery_attempt_count: int = 0

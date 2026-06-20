@@ -92,6 +92,7 @@ if _spec is not None and _spec.loader is not None:
     BulkIngestionRuleResponse = _models.BulkIngestionRuleResponse
     validate_ingestion_action = _models.validate_ingestion_action
     validate_rule_type_for_scope = _models.validate_rule_type_for_scope
+    InsightCandidate = _models.InsightCandidate
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
@@ -413,6 +414,94 @@ async def list_registry(
         )
 
     return ApiResponse[list[RegistryEntry]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# GET /insights — read-only insight-candidate reader
+# ---------------------------------------------------------------------------
+
+# Valid status values for public.insight_candidates (see core_010 CHECK constraint).
+_INSIGHT_STATUSES = ("pending", "delivered", "expired", "filtered")
+
+
+@router.get("/insights", response_model=ApiResponse[list[InsightCandidate]])
+async def list_insight_candidates(
+    butler: str | None = Query(None, description="Filter by origin butler (origin_butler column)"),
+    status: str = Query(
+        "pending",
+        description="Filter by candidate status: pending, delivered, expired, or filtered",
+    ),
+    limit: int = Query(50, ge=1, le=500, description="Maximum number of rows to return"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[InsightCandidate]]:
+    """List proactive-insight candidates from ``public.insight_candidates``.
+
+    Read-only SELECT over the shared insight broker table.  This reader is
+    hosted on the Switchboard role because ``butler_switchboard_rw`` is the only
+    butler role granted SELECT on ``public.insight_candidates`` (see migration
+    ``core_010``); other butler roles have INSERT-only access.
+
+    Results are ordered highest-priority first, then oldest-created first —
+    matching the broker's delivery-cycle ordering.
+
+    Falls back gracefully to an empty list when the table does not exist
+    (degraded / partially migrated DB).
+    """
+    if status not in _INSIGHT_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid status '{status}'; expected one of {', '.join(_INSIGHT_STATUSES)}",
+        )
+
+    pool = _pool(db)
+
+    conditions = ["status = $1"]
+    args: list[object] = [status]
+    idx = 2
+    if butler is not None:
+        conditions.append(f"origin_butler = ${idx}")
+        args.append(butler)
+        idx += 1
+
+    where = " AND ".join(conditions)
+
+    try:
+        rows = await pool.fetch(
+            "SELECT id, origin_butler, priority, category, dedup_key, cooldown_days,"
+            " expires_at, message, channel, metadata, created_at, status,"
+            " delivered_at, delivery_attempt_count"
+            " FROM public.insight_candidates"
+            f" WHERE {where}"
+            " ORDER BY priority DESC, created_at ASC"
+            f" LIMIT ${idx}",
+            *args,
+            limit,
+        )
+    except Exception:
+        logger.warning("insight_candidates not available; returning empty list", exc_info=True)
+        return ApiResponse[list[InsightCandidate]](data=[])
+
+    data = [
+        InsightCandidate(
+            id=str(r["id"]),
+            origin_butler=r["origin_butler"],
+            priority=int(r["priority"]),
+            category=r["category"],
+            dedup_key=r["dedup_key"],
+            cooldown_days=r["cooldown_days"],
+            expires_at=str(r["expires_at"]) if r["expires_at"] else None,
+            message=r["message"],
+            channel=r["channel"],
+            metadata=r["metadata"],
+            created_at=str(r["created_at"]) if r["created_at"] else None,
+            status=r["status"],
+            delivered_at=str(r["delivered_at"]) if r["delivered_at"] else None,
+            delivery_attempt_count=int(r["delivery_attempt_count"] or 0),
+        )
+        for r in rows
+    ]
+
+    return ApiResponse[list[InsightCandidate]](data=data)
 
 
 # ---------------------------------------------------------------------------
