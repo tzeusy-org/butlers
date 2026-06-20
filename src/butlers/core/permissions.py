@@ -59,6 +59,24 @@ NOTIFY_PERMISSION = "notify"
 EMAIL_SEND_PERMISSION = "email.send"
 CALENDAR_WRITE_PERMISSION = "calendar.write"
 
+# ---------------------------------------------------------------------------
+# Canonical enforced permission vocabulary (SINGLE source of truth).
+# The dashboard matrix and its dense-matrix builder import from here.
+# ---------------------------------------------------------------------------
+
+#: Full set of enforced permissions shown in the dashboard matrix.
+ENFORCED_PERMISSIONS: tuple[str, ...] = (
+    CALENDAR_WRITE_PERMISSION,
+    CROSS_BUTLER_PERMISSION,
+    EMAIL_SEND_PERMISSION,
+    NOTIFY_PERMISSION,
+    SPAWN_PERMISSION,
+)
+
+#: Default granted value for a (butler, permission) pair with no explicit row.
+#: Reflects opt-in-deny semantics: no row → allowed.
+PERMISSION_DEFAULT_GRANTED: bool = True
+
 _PERMISSION_SELECT_SQL = """
 SELECT granted, reason
 FROM public.permissions

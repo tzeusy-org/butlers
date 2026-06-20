@@ -1,11 +1,16 @@
 /**
- * SettingsPermissionsPage — export section [bu-9q1dx.1]
+ * SettingsPermissionsPage — export section [bu-9q1dx.1] + dense matrix [bu-9q1dx.3]
  *
  * Verifies the data-export UI:
  *   - Export description copy is truthful (mentions "AES-256-GCM encrypted")
  *   - Scope picker renders the four expected scopes (all, memory, audit, config)
  *   - Export button is present and enabled by default
  *   - When export succeeds the signed URL link renders
+ *
+ * Verifies inherited cell semantics:
+ *   - Inherited cells are rendered dim (aria-label includes "(inherited)")
+ *   - Inherited cell buttons are disabled (non-editable)
+ *   - Explicit cells are enabled and editable
  */
 
 // @vitest-environment jsdom
@@ -76,6 +81,37 @@ function defaultFetch(url: string) {
     ok: true,
     json: () => Promise.resolve({ data: {} }),
   });
+}
+
+/** Dense matrix fixture: chronicler with spawn=explicit(revoked), notify=inherited */
+function denseMatrixFetch(url: string) {
+  if (url.includes("/api/permissions")) {
+    return Promise.resolve({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          data: {
+            butlers: ["chronicler"],
+            permissions: ["calendar.write", "cross_butler", "email.send", "notify", "spawn"],
+            cells: {
+              chronicler: {
+                "calendar.write": { granted: true, reason: null, updated_at: null, inherited: true },
+                "cross_butler": { granted: true, reason: null, updated_at: null, inherited: true },
+                "email.send": { granted: true, reason: null, updated_at: null, inherited: true },
+                notify: { granted: true, reason: null, updated_at: null, inherited: true },
+                spawn: {
+                  granted: false,
+                  reason: "revoked",
+                  updated_at: "2026-06-01T00:00:00Z",
+                  inherited: false,
+                },
+              },
+            },
+          },
+        }),
+    });
+  }
+  return defaultFetch(url);
 }
 
 // ---------------------------------------------------------------------------
@@ -180,5 +216,60 @@ describe("SettingsPermissionsPage — export section [bu-9q1dx.1]", () => {
     // Verify the scope select trigger is present (default = "All data")
     const trigger = await screen.findByRole("combobox");
     expect(trigger.textContent).toContain("All data");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dense matrix — inherited cell semantics [bu-9q1dx.3]
+// ---------------------------------------------------------------------------
+
+describe("SettingsPermissionsPage — inherited cell semantics [bu-9q1dx.3]", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => denseMatrixFetch(url));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("inherited cells have aria-label containing '(inherited)'", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    // "notify" is inherited in the fixture
+    const notifyCell = await screen.findByTestId("perm-cell-chronicler-notify");
+    expect(notifyCell.getAttribute("aria-label")).toContain("(inherited)");
+  });
+
+  it("inherited cells are disabled (non-editable)", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    const notifyCell = await screen.findByTestId("perm-cell-chronicler-notify");
+    expect((notifyCell as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("explicit cells are enabled (editable)", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    // "spawn" is explicit (inherited:false) in the fixture
+    const spawnCell = await screen.findByTestId("perm-cell-chronicler-spawn");
+    expect((spawnCell as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("explicit cells aria-label does NOT contain '(inherited)'", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    const spawnCell = await screen.findByTestId("perm-cell-chronicler-spawn");
+    expect(spawnCell.getAttribute("aria-label")).not.toContain("(inherited)");
   });
 });

@@ -19,6 +19,7 @@ from pydantic import BaseModel, field_validator
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
+from butlers.core.permissions import ENFORCED_PERMISSIONS, PERMISSION_DEFAULT_GRANTED
 
 logger = logging.getLogger(__name__)
 
@@ -84,35 +85,54 @@ async def get_permissions_matrix(
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    rows = await pool.fetch(
+    # All registered butlers (the "rows" of the matrix).
+    try:
+        registry_rows = await pool.fetch("SELECT name FROM butler_registry ORDER BY name")
+        butlers_from_registry: list[str] = [r["name"] for r in registry_rows]
+    except Exception:
+        logger.warning("Failed to query butler_registry; falling back to perm-table butlers only")
+        butlers_from_registry = []
+
+    # Explicit permission rows.
+    perm_rows = await pool.fetch(
         "SELECT butler, permission, granted, reason, updated_at "
         "FROM public.permissions "
         "ORDER BY butler, permission"
     )
 
-    # Build the matrix dimensions from existing rows.
-    butlers_set: set[str] = set()
-    permissions_set: set[str] = set()
-    cells: dict[str, dict[str, PermissionCell]] = {}
-
-    for row in rows:
+    # Index explicit rows; also collect any butler names present only in perm rows.
+    explicit: dict[tuple[str, str], PermissionCell] = {}
+    extra_butlers: set[str] = set()
+    for row in perm_rows:
         butler = row["butler"]
         perm = row["permission"]
-        butlers_set.add(butler)
-        permissions_set.add(perm)
-        cells.setdefault(butler, {})[perm] = PermissionCell(
+        extra_butlers.add(butler)
+        explicit[(butler, perm)] = PermissionCell(
             granted=row["granted"],
             reason=row["reason"],
             updated_at=row["updated_at"],
             inherited=False,
         )
 
-    butlers_list = sorted(butlers_set)
-    permissions_list = sorted(permissions_set)
+    all_butlers = sorted(set(butlers_from_registry) | extra_butlers)
+    permissions_list = sorted(ENFORCED_PERMISSIONS)
+
+    # Build DENSE matrix: every (butler × enforced-perm) cell is populated.
+    cells: dict[str, dict[str, PermissionCell]] = {}
+    for butler in all_butlers:
+        cells[butler] = {}
+        for perm in permissions_list:
+            if (butler, perm) in explicit:
+                cells[butler][perm] = explicit[(butler, perm)]
+            else:
+                cells[butler][perm] = PermissionCell(
+                    granted=PERMISSION_DEFAULT_GRANTED,
+                    inherited=True,
+                )
 
     return ApiResponse(
         data=PermissionsMatrix(
-            butlers=butlers_list,
+            butlers=all_butlers,
             permissions=permissions_list,
             cells=cells,
         )
