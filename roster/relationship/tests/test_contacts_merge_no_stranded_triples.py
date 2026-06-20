@@ -328,6 +328,15 @@ class TestContactsMergeNoStrandedTriples:
             "Bob (duplicate)",
             source_entity,
         )
+        # Cutover (bu-irphu): contact_merge resolves contacts via contact_entity_map
+        # (not public.contacts), so bridge both contacts to their entities.
+        await pool.execute(
+            "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2), ($3, $4)",
+            target_contact,
+            target_entity,
+            source_contact,
+            source_entity,
+        )
 
         await contact_merge(pool, source_id=source_contact, target_id=target_contact)
 

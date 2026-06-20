@@ -202,10 +202,15 @@ def _make_pool(
 
 
 def _patch_table_columns(cols: set[str] = _COLS):
-    return patch(
-        "butlers.tools.relationship.contacts.table_columns",
-        new=AsyncMock(return_value=cols),
-    )
+    """No-op context manager (retained for call-site compatibility).
+
+    The cutover (bu-irphu) removed the ``table_columns`` schema-probe from
+    ``contact_merge`` (the contact record now lives entirely on the entity-side
+    stores, so there are no ``public.contacts`` columns to discover).  There is
+    nothing left to patch, so this is a null context manager kept only so the
+    existing ``with _patch_table_columns(), ...`` call sites stay valid.
+    """
+    return nullcontext()
 
 
 def _patch_entity_merge():

@@ -58,6 +58,7 @@ async def pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
                 listed BOOLEAN NOT NULL DEFAULT true,
+                stay_in_touch_days INT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -838,7 +839,7 @@ async def test_multiple_types_per_contact(pool):
 async def test_contact_info_orphan_after_contact_delete(pool):
     """public.contact_info rows persist after contact deletion (no DB-level FK cascade).
 
-    public.contact_info intentionally has no REFERENCES contacts(id) ON DELETE CASCADE,
+    public.contact_info intentionally has no,
     since it lives in the shared schema and must be accessible from multiple butler schemas.
     Referential integrity is enforced at the application layer.  This test verifies the
     current DB behaviour: contact_info rows are NOT automatically removed when the parent

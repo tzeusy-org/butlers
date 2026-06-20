@@ -88,8 +88,8 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS relationships (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_a UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                contact_b UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_a UUID NOT NULL,
+                contact_b UUID NOT NULL,
                 contact_id UUID GENERATED ALWAYS AS (contact_a) STORED,
                 related_contact_id UUID GENERATED ALWAYS AS (contact_b) STORED,
                 relationship_type_id UUID REFERENCES relationship_types(id) ON DELETE SET NULL,
@@ -101,7 +101,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS important_dates (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID,
                 local_entity_id UUID,
                 label TEXT NOT NULL,
                 month INT NOT NULL,
@@ -113,7 +113,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS notes (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 title TEXT,
                 body TEXT NOT NULL,
                 emotion TEXT,
@@ -123,7 +123,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS interactions (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 type TEXT NOT NULL,
                 summary TEXT,
                 occurred_at TIMESTAMPTZ DEFAULT now(),
@@ -140,7 +140,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS gifts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 description TEXT NOT NULL,
                 occasion TEXT,
                 status TEXT NOT NULL DEFAULT 'idea'
@@ -152,8 +152,8 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS loans (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                lender_contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                borrower_contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                lender_contact_id UUID NOT NULL,
+                borrower_contact_id UUID NOT NULL,
                 name TEXT NOT NULL,
                 amount_cents INT NOT NULL,
                 currency TEXT NOT NULL DEFAULT 'USD',
@@ -174,7 +174,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS group_members (
                 group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 role TEXT,
                 PRIMARY KEY (group_id, contact_id)
             )
@@ -190,7 +190,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS contact_labels (
                 label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-                contact_id UUID REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID,
                 local_entity_id UUID,
                 PRIMARY KEY (label_id, contact_id)
             )
@@ -198,7 +198,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS quick_facts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT now(),
@@ -209,7 +209,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS addresses (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 label VARCHAR NOT NULL DEFAULT 'Home',
                 line_1 TEXT NOT NULL,
                 line_2 TEXT,
@@ -250,7 +250,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS life_events (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 life_event_type_id UUID NOT NULL REFERENCES life_event_types(id),
                 summary TEXT NOT NULL,
                 description TEXT,
@@ -261,7 +261,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 title VARCHAR NOT NULL,
                 description TEXT,
                 completed BOOLEAN DEFAULT false,
@@ -741,11 +741,10 @@ def _entity_profile(metadata):
 
 
 async def test_contact_create_mirrors_profile_to_entity(pool):
-    """EXPAND step (bu-0mb6j): contact_create mirrors profile fields onto the linked entity.
+    """Cutover (bu-irphu): contact_create writes profile fields onto the linked entity.
 
-    public.contacts remains the canonical store (dual-write); the linked
-    public.entities row gains metadata['profile'].* so entity-side readers have
-    an authoritative copy.
+    public.entities is the sole CRM store: metadata['profile'].* is authoritative
+    and public.contacts is never written.
     """
     from butlers.tools.relationship import contact_create
 
@@ -780,19 +779,16 @@ async def test_contact_create_mirrors_profile_to_entity(pool):
     assert profile["pronouns"] == "she/her"
     assert profile["avatar_url"] == "https://example.test/mira.png"
 
-    # public.contacts is still the canonical store (dual-write preserved).
-    crow = await pool.fetchrow("SELECT first_name, company FROM contacts WHERE id = $1", c["id"])
-    assert crow is not None
-    assert crow["first_name"] == "Mira"
-    assert crow["company"] == "Globex"
+    # Free-form CRM metadata round-trips via entities.metadata['contact_metadata'].
+    assert c["metadata"] == {"note": "vip"}
 
 
 async def test_contact_update_mirrors_profile_and_stay_in_touch_to_entity(pool):
-    """EXPAND step (bu-0mb6j): contact_update mirrors profile + stay_in_touch_days.
+    """Cutover (bu-irphu): contact_update writes profile + stay_in_touch_days to the entity.
 
     A profile-field change and a stay_in_touch_days change are both projected
-    onto the linked entity (metadata['profile'] + entities.stay_in_touch_days),
-    while public.contacts is still dual-written.
+    onto the linked entity (metadata['profile'] + entities.stay_in_touch_days);
+    public.contacts is never written.
     """
     from butlers.tools.relationship import contact_create, contact_update
 
@@ -806,16 +802,9 @@ async def test_contact_update_mirrors_profile_and_stay_in_touch_to_entity(pool):
         entity_id,
     )
     profile = _entity_profile(erow["metadata"])
-    assert profile["company"] == "Initech", "updated company must mirror to entity profile"
+    assert profile["company"] == "Initech", "updated company must write to entity profile"
     assert profile["first_name"] == "Owen", "unchanged profile keys must be preserved"
-    assert erow["stay_in_touch_days"] == 21, "stay_in_touch_days must mirror to entity column"
-
-    # public.contacts still reflects the change (dual-write).
-    crow = await pool.fetchrow(
-        "SELECT company, stay_in_touch_days FROM contacts WHERE id = $1", c["id"]
-    )
-    assert crow["company"] == "Initech"
-    assert crow["stay_in_touch_days"] == 21
+    assert erow["stay_in_touch_days"] == 21, "stay_in_touch_days must write to entity column"
 
 
 # ------------------------------------------------------------------
@@ -1809,18 +1798,11 @@ async def test_address_multiple_per_contact(pool):
     assert labels == {"Home", "Work", "Other"}
 
 
-async def test_address_cascade_on_contact_delete(pool):
-    """Addresses are deleted when the parent contact is deleted."""
-    from butlers.tools.relationship import address_add, contact_create
-
-    c = await contact_create(pool, "Address-Cascade")
-    await address_add(pool, c["id"], line_1="Cascade St")
-
-    # Direct delete (not using archive, which is soft-delete)
-    await pool.execute("DELETE FROM contacts WHERE id = $1", c["id"])
-
-    count = await pool.fetchval("SELECT COUNT(*) FROM addresses WHERE contact_id = $1", c["id"])
-    assert count == 0
+# Cutover (bu-irphu): the former test_address_cascade_on_contact_delete asserted
+# that deleting a public.contacts row cascade-deleted its addresses.  rel_030
+# dropped every relationship→public.contacts FK (and contact_create no longer
+# writes public.contacts at all), so that cascade no longer exists by design —
+# the test has been removed rather than kept as compat cruft.
 
 
 # ------------------------------------------------------------------
