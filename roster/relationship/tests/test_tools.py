@@ -331,6 +331,7 @@ async def pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
                 listed BOOLEAN NOT NULL DEFAULT true,
+                stay_in_touch_days INT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -712,6 +713,93 @@ async def test_contact_get_active_returns_not_stale_dunbar(pool):
     # Should have default Dunbar values since contact has no interactions
     assert fetched.get("dunbar_tier") == 1500
     assert fetched.get("dunbar_score") == 0.0
+
+
+def _entity_profile(metadata):
+    """Parse entities.metadata (jsonb may arrive as str) and return its 'profile' dict."""
+    import json as _json
+
+    meta = _json.loads(metadata) if isinstance(metadata, str) else (metadata or {})
+    profile = meta.get("profile") if isinstance(meta, dict) else None
+    return profile if isinstance(profile, dict) else {}
+
+
+async def test_contact_create_mirrors_profile_to_entity(pool):
+    """EXPAND step (bu-0mb6j): contact_create mirrors profile fields onto the linked entity.
+
+    public.contacts remains the canonical store (dual-write); the linked
+    public.entities row gains metadata['profile'].* so entity-side readers have
+    an authoritative copy.
+    """
+    from butlers.tools.relationship import contact_create
+
+    c = await contact_create(
+        pool,
+        first_name="Mira",
+        last_name="Patel",
+        company="Globex",
+        job_title="CTO",
+        gender="female",
+        pronouns="she/her",
+        avatar_url="https://example.test/mira.png",
+        metadata={"note": "vip"},
+    )
+    entity_id = c["entity_id"]
+    assert entity_id is not None, "contact_create must link an entity"
+
+    # contact_entity_map bridges the synthetic contact_id -> entity_id.
+    map_row = await pool.fetchrow(
+        "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", c["id"]
+    )
+    assert map_row is not None and map_row["entity_id"] == entity_id
+
+    # Entity profile mirror matches the input.
+    erow = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", entity_id)
+    profile = _entity_profile(erow["metadata"])
+    assert profile["first_name"] == "Mira"
+    assert profile["last_name"] == "Patel"
+    assert profile["company"] == "Globex"
+    assert profile["job_title"] == "CTO"
+    assert profile["gender"] == "female"
+    assert profile["pronouns"] == "she/her"
+    assert profile["avatar_url"] == "https://example.test/mira.png"
+
+    # public.contacts is still the canonical store (dual-write preserved).
+    crow = await pool.fetchrow("SELECT first_name, company FROM contacts WHERE id = $1", c["id"])
+    assert crow is not None
+    assert crow["first_name"] == "Mira"
+    assert crow["company"] == "Globex"
+
+
+async def test_contact_update_mirrors_profile_and_stay_in_touch_to_entity(pool):
+    """EXPAND step (bu-0mb6j): contact_update mirrors profile + stay_in_touch_days.
+
+    A profile-field change and a stay_in_touch_days change are both projected
+    onto the linked entity (metadata['profile'] + entities.stay_in_touch_days),
+    while public.contacts is still dual-written.
+    """
+    from butlers.tools.relationship import contact_create, contact_update
+
+    c = await contact_create(pool, first_name="Owen", company="Acme")
+    entity_id = c["entity_id"]
+
+    await contact_update(pool, c["id"], company="Initech", stay_in_touch_days=21)
+
+    erow = await pool.fetchrow(
+        "SELECT metadata, stay_in_touch_days FROM public.entities WHERE id = $1",
+        entity_id,
+    )
+    profile = _entity_profile(erow["metadata"])
+    assert profile["company"] == "Initech", "updated company must mirror to entity profile"
+    assert profile["first_name"] == "Owen", "unchanged profile keys must be preserved"
+    assert erow["stay_in_touch_days"] == 21, "stay_in_touch_days must mirror to entity column"
+
+    # public.contacts still reflects the change (dual-write).
+    crow = await pool.fetchrow(
+        "SELECT company, stay_in_touch_days FROM contacts WHERE id = $1", c["id"]
+    )
+    assert crow["company"] == "Initech"
+    assert crow["stay_in_touch_days"] == 21
 
 
 # ------------------------------------------------------------------

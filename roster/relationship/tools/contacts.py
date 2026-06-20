@@ -157,6 +157,110 @@ async def _ensure_entity(
     )
 
 
+# Profile fields mirrored from a contact onto its linked entity's
+# metadata['profile'] sub-document (Phase 7.4b EXPAND step, bu-0mb6j).  Shape
+# mirrors the Google Contacts backfill (src/butlers/modules/contacts/backfill.py)
+# and the rel_031 migration so entity-side readers see a consistent profile.
+_PROFILE_FIELDS = (
+    "first_name",
+    "last_name",
+    "company",
+    "job_title",
+    "gender",
+    "pronouns",
+    "avatar_url",
+)
+
+
+def _profile_from_row(row: Any) -> dict[str, Any]:
+    """Extract the CRM profile sub-document from a contact row/dict.
+
+    Only keys whose value is non-NULL are returned so the mirror is additive
+    (it never clobbers an existing entity profile key with NULL).
+    """
+    d = dict(row)
+    return {f: d[f] for f in _PROFILE_FIELDS if d.get(f) is not None}
+
+
+async def _mirror_contact_profile_to_entity(
+    pool: asyncpg.Pool,
+    entity_id: uuid.UUID,
+    *,
+    profile: dict[str, Any],
+    stay_in_touch_days: int | None = None,
+    listed: bool | None = None,
+) -> None:
+    """Mirror a contact's profile data onto its linked ``public.entities`` row.
+
+    EXPAND step (bu-0mb6j) of the ``public.contacts`` retirement: ``contacts``
+    remains the canonical store (still dual-written + read), and this projects
+    the same profile data onto ``public.entities`` so the reader re-points
+    (separate beads) have an authoritative entity-side mirror to read from.
+
+    Writes:
+      - ``entities.metadata['profile'].*`` — additive merge (new non-NULL keys
+        win, existing keys preserved).
+      - ``entities.stay_in_touch_days`` — when provided AND the column exists.
+      - ``entities.listed`` — when provided.
+
+    Best-effort: never raises.  A mirror failure must not block the canonical
+    ``public.contacts`` write that already succeeded.  ``name -> canonical_name``
+    and ``nickname -> aliases`` are mirrored separately by ``_ensure_entity``
+    (create) and ``_sync_entity_update`` (update); they are not repeated here.
+    """
+    profile_clean = {k: v for k, v in profile.items() if v is not None}
+    try:
+        await pool.execute(
+            """
+            UPDATE public.entities
+            SET metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object(
+                                'profile',
+                                COALESCE(metadata -> 'profile', '{}'::jsonb) || $2::jsonb
+                              ),
+                updated_at = now()
+            WHERE id = $1
+            """,
+            entity_id,
+            # Pass the dict directly: relationship pools register a jsonb codec
+            # (entity_create writes dicts to jsonb), so json.dumps() here would
+            # double-encode into a jsonb *string* and break the `||` merge.
+            profile_clean,
+        )
+        if listed is not None:
+            await pool.execute(
+                "UPDATE public.entities SET listed = $2, updated_at = now() WHERE id = $1",
+                entity_id,
+                listed,
+            )
+    except asyncpg.PostgresError:
+        logger.warning(
+            "mirror profile -> entity %s failed; entity profile may be stale",
+            entity_id,
+            exc_info=True,
+        )
+        return
+
+    if stay_in_touch_days is not None:
+        try:
+            await pool.execute(
+                "UPDATE public.entities SET stay_in_touch_days = $2, updated_at = now() "
+                "WHERE id = $1",
+                entity_id,
+                stay_in_touch_days,
+            )
+        except asyncpg.UndefinedColumnError:
+            # entities.stay_in_touch_days predates rel_031 in this schema; the
+            # profile mirror above already landed — degrade gracefully.
+            pass
+        except asyncpg.PostgresError:
+            logger.warning(
+                "mirror stay_in_touch_days -> entity %s failed",
+                entity_id,
+                exc_info=True,
+            )
+
+
 async def _sync_entity_update(
     pool: asyncpg.Pool,
     entity_id: str,
@@ -318,6 +422,18 @@ async def contact_create(
                 exc_info=True,
             )
 
+    # EXPAND step (bu-0mb6j): mirror the contact's profile + stay_in_touch_days +
+    # listed onto the linked entity so entity-side readers have an authoritative
+    # copy.  public.contacts above remains the canonical store (dual-write).
+    if entity_uuid is not None:
+        await _mirror_contact_profile_to_entity(
+            entity_pool,
+            entity_uuid,
+            profile=_profile_from_row(row),
+            stay_in_touch_days=dict(row).get("stay_in_touch_days"),
+            listed=dict(row).get("listed"),
+        )
+
     return result
 
 
@@ -378,6 +494,7 @@ async def contact_update(
         "avatar_url",
         "metadata",
         "listed",
+        "stay_in_touch_days",
     ):
         if col in fields and col in cols:
             to_update[col] = fields[col]
@@ -465,6 +582,23 @@ async def contact_update(
                 contact_id,
                 exc_info=True,
             )
+
+    # EXPAND step (bu-0mb6j): mirror the (post-update) profile + stay_in_touch_days
+    # + listed onto the linked entity.  Mirror to the *effective* entity — the
+    # newly-assigned one when entity_id was reassigned in this update, else the
+    # contact's existing entity.  public.contacts above remains canonical.
+    existing_dict_for_mirror = dict(existing) if not isinstance(existing, dict) else existing
+    effective_entity_id = to_update.get("entity_id") or existing_dict_for_mirror.get("entity_id")
+    if effective_entity_id is not None and "entity_id" in cols:
+        mirror_pool = memory_pool or pool
+        row_dict = dict(row)
+        await _mirror_contact_profile_to_entity(
+            mirror_pool,
+            effective_entity_id,
+            profile=_profile_from_row(row_dict),
+            stay_in_touch_days=row_dict.get("stay_in_touch_days"),
+            listed=row_dict.get("listed"),
+        )
 
     # Write-path cut-over (bu-k9ylx): contact_update modifies only the contact
     # RECORD (public.contacts) and the linked entity's name — no channel facts
