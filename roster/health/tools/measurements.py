@@ -16,6 +16,34 @@ logger = logging.getLogger(__name__)
 
 VALID_MEASUREMENT_TYPES = {"weight", "blood_pressure", "heart_rate", "blood_sugar", "temperature"}
 
+# Notes substrings that indicate a call originated from butler-generated
+# digest/briefing/summary output rather than a genuine user measurement.
+# Used by _is_passive_provenance() to block circular re-ingestion.
+_PASSIVE_PROVENANCE_MARKERS: frozenset[str] = frozenset(
+    {
+        "briefing",
+        "digest",
+        "passive",
+        "daily summary",
+        "weekly summary",
+        "health summary",
+        "trend report",
+    }
+)
+
+
+def _is_passive_provenance(notes: str | None) -> bool:
+    """Return True if notes text signals digest/briefing/passive provenance.
+
+    Measurements must come only from explicit user statements or structured
+    wellness ingestion — never from re-reading butler-generated summaries.
+    """
+    if not notes:
+        return False
+    notes_lower = notes.lower()
+    return any(marker in notes_lower for marker in _PASSIVE_PROVENANCE_MARKERS)
+
+
 _MEASUREMENT_UNITS: dict[str, str] = {
     "weight": "kg",
     "blood_pressure": "mmHg",
@@ -73,6 +101,13 @@ async def measurement_log(
         raise ValueError(
             f"Unrecognized measurement type: {type!r}. "
             f"Must be one of: {', '.join(sorted(VALID_MEASUREMENT_TYPES))}"
+        )
+
+    if _is_passive_provenance(notes):
+        raise ValueError(
+            "measurement_log rejected: notes indicate digest/briefing/passive-telegram "
+            "provenance. Measurements must originate from explicit user statements or "
+            "structured wellness ingestion only — never from butler-generated summaries."
         )
 
     from butlers.modules.memory.storage import store_fact
