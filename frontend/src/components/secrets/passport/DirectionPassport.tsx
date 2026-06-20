@@ -19,7 +19,7 @@ import { useSearchParams } from "react-router";
 import type { InventoryResponse, SpineSortMode } from "./types.ts";
 import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
-import { Spine } from "./Spine.tsx";
+import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
 import { needsHand } from "./constants.ts";
@@ -301,6 +301,7 @@ export function DirectionPassport({
                   onClick={() => {/* handled via spine */}}
                 />
               )}
+              <SpineAddButton onClick={() => setAddOpen(true)} active={addOpen} />
             </div>
             <div className="flex gap-3.5 items-baseline">
               <KpiCell
@@ -343,8 +344,6 @@ export function DirectionPassport({
             activeIdentityId={identityId}
             onIdentityChange={handleIdentityChange}
             providers={inventory.providers}
-            onAdd={() => setAddOpen(true)}
-            addOpen={addOpen}
           />
 
           <div className="overflow-y-auto min-w-0">

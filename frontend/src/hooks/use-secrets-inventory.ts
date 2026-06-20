@@ -241,6 +241,24 @@ function isCliAuthSystemCredential(credential: SystemCredential): boolean {
   return credential.category === "cli-auth" || credential.key.startsWith("cli-auth/");
 }
 
+/**
+ * Categories whose credentials are owned end-to-end by a provider-config drawer
+ * (generate/connect/OAuth), not the generic system-secret editor. Surfacing them
+ * as hand-editable system rows is a dead end — e.g. the OwnTracks webhook token
+ * is server-generated and write-only, and the Spotify tokens are OAuth runtime
+ * artifacts. They are configured via their drawers in the Add → providers flow.
+ *
+ * Keep this in sync with the drawer roster (DRAWER_PROVIDER_SLUGS in
+ * pages.tsx). (Home Assistant, Steam, and WhatsApp credentials are not stored
+ * as system secrets, so only the categories that actually appear in
+ * butler_secrets are listed.)
+ */
+const PROVIDER_MANAGED_SYSTEM_CATEGORIES = new Set(["owntracks", "spotify"]);
+
+function isProviderManagedSystemCredential(credential: SystemCredential): boolean {
+  return PROVIDER_MANAGED_SYSTEM_CATEGORIES.has(credential.category);
+}
+
 function systemCliAuthToCliCredential(credential: SystemCredential): CliCredential {
   return {
     id:             credential.key,
@@ -417,7 +435,11 @@ export function adaptInventoryResponse(data: {
   const ownerEntityId = identities.find((i) => i.role === "owner")?.id;
   return {
     user:          groupUserCredentials(user),
-    system:        system.filter((credential) => !isCliAuthSystemCredential(credential)),
+    system:        system.filter(
+      (credential) =>
+        !isCliAuthSystemCredential(credential) &&
+        !isProviderManagedSystemCredential(credential),
+    ),
     cli:           groupCliCredentials([
       ...data.cli.map(adaptCliCredential),
       ...cliFromSystem,

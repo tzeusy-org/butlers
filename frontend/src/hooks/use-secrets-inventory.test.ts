@@ -241,6 +241,44 @@ describe("adaptInventoryResponse: system credential grouping", () => {
   });
 });
 
+describe("adaptInventoryResponse: provider-managed system credentials are hidden", () => {
+  it("drops owntracks and spotify rows from the system family", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({ key: "owntracks_webhook_token", category: "owntracks", state: "shared" }),
+        makeSystem({ key: "SPOTIFY_ACCESS_TOKEN", category: "spotify", state: "shared" }),
+        makeSystem({ key: "SPOTIFY_CLIENT_ID", category: "spotify", state: "shared" }),
+        makeSystem({ key: "GOOGLE_OAUTH_CLIENT_ID", category: "google", state: "shared" }),
+      ],
+      user: [],
+      identities: [],
+    });
+
+    const systemKeys = result.system.map((credential) => credential.key);
+    expect(systemKeys).not.toContain("owntracks_webhook_token");
+    expect(systemKeys).not.toContain("SPOTIFY_ACCESS_TOKEN");
+    expect(systemKeys).not.toContain("SPOTIFY_CLIENT_ID");
+    // Genuine hand-set system config is untouched.
+    expect(systemKeys).toContain("GOOGLE_OAUTH_CLIENT_ID");
+  });
+
+  it("does not promote provider-managed rows into any other family", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({ key: "owntracks_webhook_token", category: "owntracks", state: "shared" }),
+      ],
+      user: [],
+      identities: [],
+    });
+
+    expect(result.system).toHaveLength(0);
+    expect(result.cli).toHaveLength(0);
+    expect(result.user).toHaveLength(0);
+  });
+});
+
 describe("adaptInventoryResponse: identity mapping from backend", () => {
   it("maps backend identities[] to frontend Identity[] with real names and roles", () => {
     const result = adaptInventoryResponse({

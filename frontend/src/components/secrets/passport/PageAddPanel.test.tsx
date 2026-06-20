@@ -10,7 +10,7 @@
 //   - Template suggestions populate category/type
 //   - useCreateUserSecret is wired for user creation
 //   - useSetSystemSecret is wired for system creation
-//   - SpineAddButton renders in the Spine footer
+//   - SpineAddButton renders in the page header
 //   - OAuth connect guard: undefined ownerEntityId → button disabled, no API call [bu-vzwnl]
 // ---------------------------------------------------------------------------
 
@@ -203,34 +203,12 @@ describe("SpineAddButton", () => {
   });
 });
 
-// ── Spine footer with add button ───────────────────────────────────────────────
+// ── Spine no longer owns the add button (moved to the page header) ─────────────
 
-describe("Spine: add button in footer", () => {
+describe("Spine: add button moved out of the spine", () => {
   const entries = buildSpineEntries(MOCK_INVENTORY, "tze");
 
-  it("renders add button when onAdd is provided", () => {
-    const html = renderToStaticMarkup(
-      <Spine
-        entries={entries}
-        activeKey=""
-        onSelect={() => {}}
-        sortMode="severity"
-        onSortChange={() => {}}
-        search=""
-        onSearchChange={() => {}}
-        identities={[MOCK_IDENTITIES[0]]}
-        activeIdentityId="tze"
-        onIdentityChange={() => {}}
-        providers={MOCK_PROVIDERS}
-        onAdd={() => {}}
-        addOpen={false}
-      />,
-    );
-    expect(html).toContain('data-spine-add="true"');
-    expect(html).toContain("+ add");
-  });
-
-  it("does NOT render add button when onAdd is omitted", () => {
+  it("does NOT render the add button inside the spine", () => {
     const html = renderToStaticMarkup(
       <Spine
         entries={entries}
@@ -248,36 +226,15 @@ describe("Spine: add button in footer", () => {
     );
     expect(html).not.toContain('data-spine-add="true"');
   });
-
-  it("add button is disabled when addOpen=true", () => {
-    const html = renderToStaticMarkup(
-      <Spine
-        entries={entries}
-        activeKey=""
-        onSelect={() => {}}
-        sortMode="severity"
-        onSortChange={() => {}}
-        search=""
-        onSearchChange={() => {}}
-        identities={[MOCK_IDENTITIES[0]]}
-        activeIdentityId="tze"
-        onIdentityChange={() => {}}
-        providers={MOCK_PROVIDERS}
-        onAdd={() => {}}
-        addOpen={true}
-      />,
-    );
-    // disabled attribute present
-    expect(html).toContain("disabled");
-  });
 });
 
-// ── DirectionPassport: add panel integration ───────────────────────────────────
+// ── DirectionPassport: add button in the page header ───────────────────────────
 
-describe("DirectionPassport: add panel wiring", () => {
-  it("renders spine with add button when using standard inventory", () => {
+describe("DirectionPassport: add button wiring", () => {
+  it("renders the add button in the page header", () => {
     const html = renderInRouter(<DirectionPassport inventory={MOCK_INVENTORY} />);
     expect(html).toContain('data-spine-add="true"');
+    expect(html).toContain("+ add");
   });
 });
 

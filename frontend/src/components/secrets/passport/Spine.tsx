@@ -325,8 +325,6 @@ export function Spine({
   activeIdentityId,
   onIdentityChange,
   providers,
-  onAdd,
-  addOpen,
 }: {
   entries: SpineEntry[];
   activeKey: string;
@@ -339,10 +337,6 @@ export function Spine({
   activeIdentityId: string;
   onIdentityChange: (id: string) => void;
   providers?: Record<string, { glyph: string; label: string }>;
-  /** Called when the + add commit-pill is clicked. */
-  onAdd?: () => void;
-  /** Whether the add panel is currently open (disables the button). */
-  addOpen?: boolean;
 }) {
   const cmp = SORTERS[sortMode] ?? SORTERS.severity;
 
@@ -481,9 +475,6 @@ export function Spine({
         <Mono size={9} color="var(--dim)">
           {filtered.length} of {entries.length}
         </Mono>
-        {onAdd && (
-          <SpineAddButton onClick={onAdd} active={addOpen ?? false} />
-        )}
       </div>
     </nav>
   );
