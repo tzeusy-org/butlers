@@ -141,14 +141,20 @@ class MedicationAdherenceResponse(BaseModel):
 
     Aggregated from the ``took_dose`` facts scoped to a single medication
     (the same surface the ``medication_log_dose`` MCP tool writes), over an
-    optional ``start``/``end`` window.  ``adherence_rate`` is the percentage of
-    non-skipped doses out of all logged doses (``null`` when no doses exist).
+    optional ``start``/``end`` window.
+
+    ``expected_doses`` is derived from the medication's prescribed frequency
+    over the window using the shared ``frequency_to_doses_per_day`` helper
+    (the same denominator the insight-scan job uses).  ``adherence_rate`` is
+    the percentage of non-skipped (taken) doses out of ``expected_doses``
+    (``null`` when ``expected_doses`` is zero).
     """
 
     medication_id: str
     total_doses: int
     taken_doses: int
     skipped_doses: int
+    expected_doses: int
     adherence_rate: float | None = None
 
 

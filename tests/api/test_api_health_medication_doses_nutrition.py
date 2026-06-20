@@ -5,6 +5,7 @@ Health butler's existing MCP tools (no new schema):
 
 - POST /api/health/medications/{id}/doses  -> medication_log_dose (took_dose fact)
 - GET  /api/health/medications/{id}/adherence -> medication_history (aggregate)
+  - expected_doses is computed from prescribed frequency (bu-ve69q)
 - GET  /api/health/nutrition/summary       -> nutrition_summary (meal_* facts)
 """
 
@@ -184,19 +185,24 @@ async def test_log_dose_503_when_pool_unavailable():
 
 
 async def test_adherence_aggregates_counts(monkeypatch):
-    """Adherence route reports total/taken/skipped counts plus the rate."""
+    """Adherence route reports total/taken/skipped/expected counts.
+
+    expected_doses is derived from prescribed frequency, NOT from len(doses).
+    For a "daily" medication over the default 30-day window: expected = 30.
+    adherence_rate = taken / expected * 100 = 2/30 * 100 ≈ 6.7.
+    """
     med_id = str(uuid.uuid4())
 
     async def fake_history(pool, medication_id, *, start_date, end_date):
         assert medication_id == med_id
         return {
-            "medication": {"id": med_id, "name": "Metformin"},
+            "medication": {"id": med_id, "name": "Metformin", "frequency": "daily"},
             "doses": [
                 {"skipped": False},
                 {"skipped": False},
                 {"skipped": True},
             ],
-            "adherence_rate": 66.7,
+            "adherence_rate": 66.7,  # naive ratio — route ignores this now
         }
 
     monkeypatch.setattr(health_tools, "medication_history", fake_history)
@@ -210,11 +216,120 @@ async def test_adherence_aggregates_counts(monkeypatch):
     assert body["total_doses"] == 3
     assert body["taken_doses"] == 2
     assert body["skipped_doses"] == 1
-    assert body["adherence_rate"] == 66.7
+    # expected_doses = 1.0 dose/day × 30 days = 30
+    assert body["expected_doses"] == 30
+    # adherence_rate = 2/30 * 100 ≈ 6.7
+    assert body["adherence_rate"] == pytest.approx(6.7, abs=0.1)
+
+
+async def test_adherence_twice_daily_frequency(monkeypatch):
+    """expected_doses scales with the prescribed frequency.
+
+    "twice daily" → 2 doses/day × 30 days = 60 expected.
+    """
+    med_id = str(uuid.uuid4())
+
+    async def fake_history(pool, medication_id, *, start_date, end_date):
+        return {
+            "medication": {"id": med_id, "name": "Metformin", "frequency": "twice daily"},
+            "doses": [{"skipped": False}] * 10,
+            "adherence_rate": None,
+        }
+
+    monkeypatch.setattr(health_tools, "medication_history", fake_history)
+
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get(f"/api/health/medications/{med_id}/adherence")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["expected_doses"] == 60  # 2/day × 30 days
+    assert body["taken_doses"] == 10
+    assert body["adherence_rate"] == pytest.approx(10 / 60 * 100, abs=0.1)
+
+
+async def test_adherence_window_days_param(monkeypatch):
+    """?window_days overrides the default 30-day window."""
+    med_id = str(uuid.uuid4())
+
+    async def fake_history(pool, medication_id, *, start_date, end_date):
+        return {
+            "medication": {"id": med_id, "name": "X", "frequency": "daily"},
+            "doses": [{"skipped": False}] * 7,
+            "adherence_rate": None,
+        }
+
+    monkeypatch.setattr(health_tools, "medication_history", fake_history)
+
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get(
+            f"/api/health/medications/{med_id}/adherence",
+            params={"window_days": "7"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["expected_doses"] == 7  # 1/day × 7 days
+    assert body["adherence_rate"] == pytest.approx(100.0, abs=0.1)
+
+
+async def test_adherence_window_from_start_end(monkeypatch):
+    """When start/end are given, window_days is derived from the span."""
+    med_id = str(uuid.uuid4())
+
+    async def fake_history(pool, medication_id, *, start_date, end_date):
+        return {
+            "medication": {"id": med_id, "name": "X", "frequency": "daily"},
+            "doses": [{"skipped": False}] * 14,
+            "adherence_rate": None,
+        }
+
+    monkeypatch.setattr(health_tools, "medication_history", fake_history)
+
+    app, _ = _make_app()
+    async with _client(app) as client:
+        # 14-day span
+        resp = await client.get(
+            f"/api/health/medications/{med_id}/adherence",
+            params={"start": "2026-01-01T00:00:00Z", "end": "2026-01-15T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    # (Jan 15 - Jan 1).days == 14 → expected = 14
+    assert body["expected_doses"] == 14
+    assert body["adherence_rate"] == pytest.approx(100.0, abs=0.1)
 
 
 async def test_adherence_empty_doses(monkeypatch):
-    """No doses -> zero counts and null adherence_rate."""
+    """No doses -> zero counts; expected_doses still computed; null adherence_rate
+    only when expected_doses is zero (which can't happen with a valid frequency)."""
+    med_id = str(uuid.uuid4())
+
+    async def fake_history(pool, medication_id, *, start_date, end_date):
+        return {
+            "medication": {"id": med_id, "frequency": "daily"},
+            "doses": [],
+            "adherence_rate": None,
+        }
+
+    monkeypatch.setattr(health_tools, "medication_history", fake_history)
+
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get(f"/api/health/medications/{med_id}/adherence")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_doses"] == 0
+    assert body["taken_doses"] == 0
+    assert body["skipped_doses"] == 0
+    # daily × 30 days = 30 expected even when 0 logged
+    assert body["expected_doses"] == 30
+    # adherence_rate = 0 / 30 * 100 = 0.0 (not null, because expected > 0)
+    assert body["adherence_rate"] == pytest.approx(0.0, abs=0.1)
+
+
+async def test_adherence_empty_medication_dict(monkeypatch):
+    """If medication dict is empty/missing frequency, defaults to 'daily'."""
     med_id = str(uuid.uuid4())
 
     async def fake_history(pool, medication_id, *, start_date, end_date):
@@ -227,10 +342,9 @@ async def test_adherence_empty_doses(monkeypatch):
         resp = await client.get(f"/api/health/medications/{med_id}/adherence")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total_doses"] == 0
-    assert body["taken_doses"] == 0
-    assert body["skipped_doses"] == 0
-    assert body["adherence_rate"] is None
+    # Defaults to "daily" → 30 expected
+    assert body["expected_doses"] == 30
+    assert body["adherence_rate"] == pytest.approx(0.0, abs=0.1)
 
 
 async def test_adherence_forwards_window(monkeypatch):
@@ -241,7 +355,11 @@ async def test_adherence_forwards_window(monkeypatch):
     async def fake_history(pool, medication_id, *, start_date, end_date):
         seen["start"] = start_date
         seen["end"] = end_date
-        return {"medication": {}, "doses": [], "adherence_rate": None}
+        return {
+            "medication": {"id": med_id, "frequency": "daily"},
+            "doses": [],
+            "adherence_rate": None,
+        }
 
     monkeypatch.setattr(health_tools, "medication_history", fake_history)
 
@@ -254,6 +372,58 @@ async def test_adherence_forwards_window(monkeypatch):
     assert resp.status_code == 200
     assert seen["start"] is not None
     assert seen["end"] is not None
+
+
+async def test_adherence_naive_start_with_no_end(monkeypatch):
+    """Naive start param + omitted end must not raise TypeError (timezone mismatch).
+
+    When ``start`` lacks timezone info and ``end`` is omitted, ``effective_end``
+    defaults to ``datetime.now(UTC)`` (timezone-aware).  Without normalisation the
+    subtraction raises ``TypeError: can't subtract offset-naive and offset-aware
+    datetimes``, producing a 500.  The route must normalise both sides to UTC and
+    return 200.
+    """
+    med_id = str(uuid.uuid4())
+
+    async def fake_history(pool, medication_id, *, start_date, end_date):
+        return {
+            "medication": {"id": med_id, "frequency": "daily"},
+            "doses": [],
+            "adherence_rate": None,
+        }
+
+    monkeypatch.setattr(health_tools, "medication_history", fake_history)
+
+    app, _ = _make_app()
+    async with _client(app) as client:
+        # Naive ISO-8601 (no trailing Z or offset) — FastAPI parses as naive datetime
+        resp = await client.get(
+            f"/api/health/medications/{med_id}/adherence",
+            params={"start": "2026-01-01T00:00:00"},
+        )
+    # Must not 500; effective window is today-minus-jan1 days (≥1)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["expected_doses"] >= 1
+
+
+async def test_adherence_start_after_end_returns_400(monkeypatch):
+    """start > end must return 400 Bad Request."""
+    med_id = str(uuid.uuid4())
+
+    async def fake_history(pool, medication_id, *, start_date, end_date):  # pragma: no cover
+        return {"medication": {}, "doses": [], "adherence_rate": None}
+
+    monkeypatch.setattr(health_tools, "medication_history", fake_history)
+
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get(
+            f"/api/health/medications/{med_id}/adherence",
+            params={"start": "2026-01-31T00:00:00Z", "end": "2026-01-01T00:00:00Z"},
+        )
+    assert resp.status_code == 400
+    assert "start" in resp.json()["detail"].lower()
 
 
 async def test_adherence_404_when_medication_missing(monkeypatch):
@@ -269,6 +439,37 @@ async def test_adherence_404_when_medication_missing(monkeypatch):
     async with _client(app) as client:
         resp = await client.get(f"/api/health/medications/{med_id}/adherence")
     assert resp.status_code == 404
+
+
+async def test_adherence_shared_helper_parity(monkeypatch):
+    """Route and insight-scan job produce the same expected_doses denominator.
+
+    Verifies the spec's "Shared denominator with insight job" requirement:
+    both callers import the same ``frequency_to_doses_per_day`` helper, so for
+    a given (frequency, window_days) pair the expected-dose count is identical.
+    """
+    from butlers.jobs._roster_loader import load_roster_jobs
+    from butlers.tools.health._medication_utils import frequency_to_doses_per_day
+
+    health_jobs = load_roster_jobs("health")
+    job_helper = health_jobs._frequency_to_doses_per_day
+
+    # Both must resolve to the same function (shared import).
+    test_cases = [
+        ("daily", 30),
+        ("twice daily", 7),
+        ("weekly", 30),
+        ("every other day", 14),
+        ("prn", 30),
+        ("unknown_frequency", 10),
+    ]
+    for freq, days in test_cases:
+        route_expected = round(frequency_to_doses_per_day(freq) * days)
+        job_expected = round(job_helper(freq) * days)
+        assert route_expected == job_expected, (
+            f"Denominator mismatch for freq={freq!r}, days={days}: "
+            f"route={route_expected}, job={job_expected}"
+        )
 
 
 # ---------------------------------------------------------------------------

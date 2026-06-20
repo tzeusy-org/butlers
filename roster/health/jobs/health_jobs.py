@@ -22,6 +22,10 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.health._medication_utils import (
+    frequency_to_doses_per_day as _frequency_to_doses_per_day,
+)
+
 # A reader that returns Home Assistant environmental readings owned by the
 # ``home`` butler. Each reading is a dict with at least::
 #     {"captured_at": datetime, "metric": str, "adverse": bool}
@@ -104,32 +108,6 @@ _CORRELATION_DRIFT_PRIORITY = 50
 _ENV_SLEEP_SHORT_HOURS = 6.0
 _ENV_CORRELATION_MIN_DAYS = 2
 _CORRELATION_ENV_PRIORITY = 50
-
-# Medication frequency factors (doses per day)
-_FREQUENCY_DOSES_PER_DAY: dict[str, float] = {
-    "daily": 1.0,
-    "once daily": 1.0,
-    "twice daily": 2.0,
-    "twice a day": 2.0,
-    "bid": 2.0,
-    "three times daily": 3.0,
-    "three times a day": 3.0,
-    "tid": 3.0,
-    "four times daily": 4.0,
-    "four times a day": 4.0,
-    "qid": 4.0,
-    "weekly": 1 / 7,
-    "once a week": 1 / 7,
-    "every other day": 0.5,
-    "as needed": 1.0,  # fallback: assume once daily
-    "prn": 1.0,
-}
-
-
-def _frequency_to_doses_per_day(frequency: str) -> float:
-    """Convert a textual frequency to doses per day. Defaults to 1.0 if unknown."""
-    normalized = frequency.strip().lower()
-    return _FREQUENCY_DOSES_PER_DAY.get(normalized, 1.0)
 
 
 async def run_insight_scan(

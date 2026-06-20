@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -555,9 +555,17 @@ async def log_medication_dose(
 # GET /medications/{medication_id}/adherence — dose adherence summary
 #
 # Aggregates the `took_dose` facts scoped to one medication (the same surface
-# medication_log_dose writes) into total/taken/skipped counts plus an adherence
-# rate, via the `medication_history` tool.  Read-only; no DDL.
+# medication_log_dose writes) into total/taken/skipped/expected counts plus an
+# adherence rate, via the `medication_history` tool.
+#
+# ``expected_doses`` is computed from the medication's prescribed frequency
+# over the query window using ``frequency_to_doses_per_day`` from the shared
+# helper module — the same denominator the insight-scan job uses (spec:
+# "Shared denominator with insight job").  Read-only; no DDL.
 # ---------------------------------------------------------------------------
+
+
+_DEFAULT_ADHERENCE_WINDOW_DAYS = 30
 
 
 @router.get(
@@ -568,25 +576,60 @@ async def get_medication_adherence(
     medication_id: str,
     start: datetime | None = Query(None, description="Window start (inclusive)"),
     end: datetime | None = Query(None, description="Window end (inclusive)"),
+    window_days: int | None = Query(
+        None,
+        description=(
+            f"Lookback window in days when start/end are not supplied "
+            f"(default {_DEFAULT_ADHERENCE_WINDOW_DAYS})"
+        ),
+        ge=1,
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> MedicationAdherenceResponse:
-    """Return dose-adherence stats for a single medication.
+    """Return frequency-expected dose-adherence stats for a single medication.
 
     Aggregates ``took_dose`` facts (scope = ``health``) for this medication over
-    an optional ``start``/``end`` window via the ``medication_history`` tool.
-    ``adherence_rate`` is the percentage of non-skipped doses out of all logged
-    doses (``null`` when no doses exist).  Returns 404 if the medication does
-    not exist.
+    an optional ``start``/``end`` window (or ``window_days`` lookback, defaulting
+    to 30 days) via the ``medication_history`` tool.
+
+    ``expected_doses`` is computed from the medication's prescribed frequency
+    over the window using the shared ``frequency_to_doses_per_day`` helper —
+    the same denominator the insight-scan job uses.  ``adherence_rate`` is the
+    percentage of non-skipped doses out of ``expected_doses`` (``null`` when
+    ``expected_doses`` is zero).  Returns 404 if the medication does not exist.
     """
     from butlers.tools.health import medication_history
+    from butlers.tools.health._medication_utils import frequency_to_doses_per_day
 
     pool = _pool(db)
+
+    # Determine the effective window boundaries and duration in days.
+    # Normalise all datetimes to UTC-aware so arithmetic never raises TypeError
+    # when a query param arrives without timezone info (e.g. "?start=2026-01-01T00:00:00").
+    now = datetime.now(UTC)
+    effective_end = end if end is not None else now
+    if effective_end.tzinfo is None:
+        effective_end = effective_end.replace(tzinfo=UTC)
+
+    if start is not None:
+        effective_start = start if start.tzinfo is not None else start.replace(tzinfo=UTC)
+        if effective_start > effective_end:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="start cannot be after end",
+            )
+        window = max((effective_end - effective_start).total_seconds() / 86400, 1.0)
+    else:
+        days = window_days if window_days is not None else _DEFAULT_ADHERENCE_WINDOW_DAYS
+        window = float(days)
+        effective_start = effective_end - timedelta(days=days)
+
     try:
         result = await medication_history(
             pool,
             medication_id,
-            start_date=start,
-            end_date=end,
+            start_date=effective_start,
+            end_date=effective_end,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
@@ -595,12 +638,24 @@ async def get_medication_adherence(
     total = len(doses)
     skipped = sum(1 for d in doses if d.get("skipped"))
     taken = total - skipped
+
+    # Compute expected doses from the prescribed frequency over the window.
+    medication = result.get("medication") or {}
+    frequency = medication.get("frequency") or "daily"
+    doses_per_day = frequency_to_doses_per_day(frequency)
+    expected = round(doses_per_day * window)
+
+    adherence_rate: float | None = None
+    if expected > 0:
+        adherence_rate = round(taken / expected * 100, 1)
+
     return MedicationAdherenceResponse(
         medication_id=str(medication_id),
         total_doses=total,
         taken_doses=taken,
         skipped_doses=skipped,
-        adherence_rate=result.get("adherence_rate"),
+        expected_doses=expected,
+        adherence_rate=adherence_rate,
     )
 
 
