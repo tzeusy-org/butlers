@@ -799,6 +799,13 @@ _INTERACTION_SYNC_STATE_KEY = "interaction_sync.last_scan_at"
 # Maximum lookback window (prevents unbounded backfill after long outages).
 _INTERACTION_SYNC_MAX_WINDOW_DAYS = 30
 
+# Minimum interaction_* fact count within _KNOWS_WINDOW_DAYS to derive a 'knows' edge.
+_KNOWS_THRESHOLD = 3
+
+# Lookback window (days) for counting interactions when deriving 'knows' edges.
+# Wider than _INTERACTION_SYNC_MAX_WINDOW_DAYS so occasional contacts still qualify.
+_KNOWS_WINDOW_DAYS = 90
+
 
 # ---------------------------------------------------------------------------
 # Interaction sync job
@@ -933,6 +940,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "skipped_group_too_large": 0,
         "calendar_events_scanned": 0,
         "co_attended_edges_minted": 0,
+        "knows_edges_minted": 0,
         "errors": checkpoint_errors,
     }
 
@@ -1509,6 +1517,100 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                             )
                             stats["errors"] += 1
 
+    # -----------------------------------------------------------------------
+    # Step 6: Derive 'knows' edges from cumulative interaction count.
+    #
+    # For each entity whose interaction_* fact count within the last
+    # _KNOWS_WINDOW_DAYS meets or exceeds _KNOWS_THRESHOLD, mint a
+    # bidirectional 'knows' edge with the owner entity.  Writing both
+    # (contact→owner) and (owner→contact) makes the edge symmetric for graph
+    # traversal.  relationship_assert_fact deduplicates on
+    # (subject, predicate, object) with validity='active', so repeated runs
+    # are idempotent.  The (owner→contact) direction is subject to the owner
+    # carve-out (RFC 0017 §2.3) and may park in pending_actions.
+    # -----------------------------------------------------------------------
+    _knows_window_start = now_utc - timedelta(days=_KNOWS_WINDOW_DAYS)
+    try:
+        _knows_count_rows = await db_pool.fetch(
+            """
+            SELECT
+                f.entity_id,
+                COUNT(f.id) AS interaction_count
+            FROM relationship.facts f
+            WHERE f.predicate LIKE 'interaction_%'
+              AND f.scope = 'relationship'
+              AND f.validity = 'active'
+              AND f.valid_at >= $1
+            GROUP BY f.entity_id
+            HAVING COUNT(f.id) >= $2
+            """,
+            _knows_window_start,
+            _KNOWS_THRESHOLD,
+        )
+    except Exception:
+        logger.exception("interaction_sync: failed to query interaction counts for knows edges")
+        stats["errors"] += 1
+        _knows_count_rows = []
+
+    if _knows_count_rows:
+        try:
+            _owner_row = await db_pool.fetchrow(
+                "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+            )
+        except Exception:
+            logger.exception("interaction_sync: failed to fetch owner entity for knows edges")
+            _owner_row = None
+            stats["errors"] += 1
+
+        if _owner_row is not None:
+            _owner_eid: uuid.UUID = _owner_row["id"]
+            if not isinstance(_owner_eid, uuid.UUID):
+                _owner_eid = uuid.UUID(str(_owner_eid))
+
+            from butlers.tools.relationship.relationship_assert_fact import (
+                AssertOutcome as _KnowsOutcome,
+            )
+            from butlers.tools.relationship.relationship_assert_fact import (
+                relationship_assert_fact as _knows_assert,
+            )
+
+            for _kr in _knows_count_rows:
+                _contact_eid = _kr["entity_id"]
+                if not isinstance(_contact_eid, uuid.UUID):
+                    try:
+                        _contact_eid = uuid.UUID(str(_contact_eid))
+                    except (ValueError, AttributeError):
+                        continue
+
+                if _contact_eid == _owner_eid:
+                    continue
+
+                for _subj, _obj in (
+                    (_contact_eid, _owner_eid),
+                    (_owner_eid, _contact_eid),
+                ):
+                    try:
+                        _kassert = await _knows_assert(
+                            db_pool,
+                            _subj,
+                            "knows",
+                            str(_obj),
+                            src="interaction_sync",
+                            object_kind="entity",
+                        )
+                        if _kassert.outcome in (
+                            _KnowsOutcome.inserted,
+                            _KnowsOutcome.superseded,
+                        ):
+                            stats["knows_edges_minted"] += 1
+                    except Exception:
+                        logger.exception(
+                            "interaction_sync: error minting knows edge subject=%s object=%s",
+                            _subj,
+                            _obj,
+                        )
+                        stats["errors"] += 1
+
     # Persist the end of this scan window as the next checkpoint. Fail-open for
     # the same reasons as the read above (interaction_log() dedups, scheduler
     # storm avoidance). Surface via stats["errors"] + WARNING logs so monitoring
@@ -1530,7 +1632,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "Interaction sync complete: processed=%d, logged=%d, "
         "skipped_unresolved=%d, skipped_owner=%d, "
         "skipped_ineligible=%d, skipped_group_too_large=%d, "
-        "calendar_events_scanned=%d, co_attended_edges_minted=%d, errors=%d",
+        "calendar_events_scanned=%d, co_attended_edges_minted=%d, "
+        "knows_edges_minted=%d, errors=%d",
         stats["processed"],
         stats["logged"],
         stats["skipped_unresolved"],
@@ -1539,6 +1642,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["skipped_group_too_large"],
         stats["calendar_events_scanned"],
         stats["co_attended_edges_minted"],
+        stats["knows_edges_minted"],
         stats["errors"],
     )
     return stats

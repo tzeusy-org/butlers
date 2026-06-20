@@ -166,6 +166,7 @@ async def _run_with_mocked_deps(
         contact_rows if contact_rows is not None else [],
         calendar_rows if calendar_rows is not None else [],
         [],  # calendar email resolution
+        [],  # knows-count query (Step 6)
     ]
     pool.fetch = AsyncMock(side_effect=fetch_returns)
 
@@ -223,6 +224,8 @@ async def test_stats_contains_all_required_keys():
         "skipped_ineligible",
         "skipped_group_too_large",
         "calendar_events_scanned",
+        "co_attended_edges_minted",
+        "knows_edges_minted",
         "errors",
     }
     assert required_keys.issubset(set(stats.keys()))
@@ -251,6 +254,7 @@ async def test_missing_calendar_table_is_skipped_without_error():
             asyncpg.exceptions.UndefinedTableError(
                 'relation "public.calendar_events" does not exist'
             ),
+            [],  # knows-count query (Step 6) — empty, no edges minted
         ]
     )
 
@@ -281,14 +285,14 @@ async def test_missing_calendar_table_is_skipped_without_error():
 
     assert stats["calendar_events_scanned"] == 0
     assert stats["errors"] == 0
-    assert pool.fetch.await_count == 2
+    assert pool.fetch.await_count == 3
     mock_log.assert_not_called()
 
 
 async def test_checkpoint_read_failure_uses_default_window_without_raising(caplog):
     """Checkpoint read failures are reported in stats instead of escaping to scheduler."""
     pool = _make_pool()
-    pool.fetch = AsyncMock(side_effect=[[], []])
+    pool.fetch = AsyncMock(side_effect=[[], [], []])
 
     mod = _get_rjobs()
     run_fn = mod.run_interaction_sync
@@ -333,7 +337,7 @@ async def test_checkpoint_read_failure_uses_default_window_without_raising(caplo
 async def test_checkpoint_write_failure_returns_error_stats_without_raising(caplog):
     """Checkpoint write failures do not make deterministic dispatch fail."""
     pool = _make_pool()
-    pool.fetch = AsyncMock(side_effect=[[], []])
+    pool.fetch = AsyncMock(side_effect=[[], [], []])
 
     mod = _get_rjobs()
     run_fn = mod.run_interaction_sync
@@ -797,3 +801,124 @@ def test_channel_hour_offsets_cover_all_sync_channels():
         assert outgoing == incoming + 12, (
             f"Channel {channel}: expected outgoing={incoming + 12}, got {outgoing}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: 'knows' edge derivation (Step 6)
+# ---------------------------------------------------------------------------
+
+
+def _make_knows_count_row(entity_id: uuid.UUID, count: int) -> MagicMock:
+    """Build a mock row mimicking a result from the knows-count query."""
+    row: dict[str, Any] = {"entity_id": entity_id, "interaction_count": count}
+    mock_row = MagicMock()
+    mock_row.__getitem__ = lambda self, k: row[k]
+    mock_row.get = lambda k, default=None: row.get(k, default)
+    return mock_row
+
+
+def _make_owner_entity_row(entity_id: uuid.UUID) -> MagicMock:
+    """Build a mock row mimicking a public.entities lookup result."""
+    row: dict[str, Any] = {"id": entity_id}
+    mock_row = MagicMock()
+    mock_row.__getitem__ = lambda self, k: row[k]
+    mock_row.get = lambda k, default=None: row.get(k, default)
+    return mock_row
+
+
+async def _run_with_knows_scenario(
+    *,
+    knows_count_rows: list,
+    assert_outcome: str = "inserted",
+) -> tuple[dict[str, Any], MagicMock]:
+    """Run interaction_sync with mocked knows-count query and relationship_assert_fact.
+
+    Uses empty inbox and empty calendar so only Step 6 (knows derivation) is
+    exercised.  Returns (stats, mock_assert_fact).
+
+    Pool.fetch side_effect order with empty inbox:
+      1. inbox rows  → []
+      2. calendar rows → []  (contact resolution step is skipped — no lookup_pairs)
+      3. knows-count rows → knows_count_rows
+    """
+    pool = _make_pool()
+    pool.fetch = AsyncMock(side_effect=[[], [], knows_count_rows])
+    pool.fetchrow = AsyncMock(return_value=_make_owner_entity_row(_ENTITY_OWNER))
+
+    mod = _get_rjobs()
+    run_fn = mod.run_interaction_sync
+
+    from butlers.tools.relationship.relationship_assert_fact import AssertOutcome, AssertResult
+
+    mock_result = MagicMock(spec=AssertResult)
+    mock_result.outcome = getattr(AssertOutcome, assert_outcome)
+    mock_assert = AsyncMock(return_value=mock_result)
+
+    with (
+        patch.object(mod, "state_get", AsyncMock(return_value=None)),
+        patch.object(mod, "state_set", AsyncMock()),
+        patch(
+            "butlers.tools.relationship.interactions.interaction_log",
+            AsyncMock(return_value={"id": str(uuid.uuid4()), "logged": True}),
+        ),
+        patch(
+            "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact",
+            mock_assert,
+        ),
+    ):
+        real_datetime = datetime
+
+        class _FixedDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return _NOW.replace(tzinfo=tz) if tz else _NOW
+
+        with patch.object(mod, "datetime", _FixedDatetime):
+            stats = await run_fn(pool)
+
+    return stats, mock_assert
+
+
+async def test_knows_edge_minted_when_threshold_reached():
+    """'knows' edges (both directions) are minted when count >= threshold."""
+    threshold = _rjobs_attr("_KNOWS_THRESHOLD")
+    knows_rows = [_make_knows_count_row(_ENTITY_A, threshold)]
+
+    stats, mock_assert = await _run_with_knows_scenario(knows_count_rows=knows_rows)
+
+    # Two edges per contact: contact→owner and owner→contact
+    assert mock_assert.call_count == 2
+    called_predicates = {c.args[2] for c in mock_assert.call_args_list}
+    assert called_predicates == {"knows"}
+    called_subjects = {c.args[1] for c in mock_assert.call_args_list}
+    assert called_subjects == {_ENTITY_A, _ENTITY_OWNER}
+    assert stats["knows_edges_minted"] == 2
+    assert stats["errors"] == 0
+
+
+async def test_knows_edge_not_minted_below_threshold():
+    """'knows' edges are NOT minted when interaction count is below threshold."""
+    # Return empty knows-count rows (HAVING filters out sub-threshold entities),
+    # simulating that the DB returned no qualifying rows.
+    stats, mock_assert = await _run_with_knows_scenario(knows_count_rows=[])
+
+    mock_assert.assert_not_called()
+    assert stats["knows_edges_minted"] == 0
+    assert stats["errors"] == 0
+
+
+async def test_knows_edge_idempotent_on_rerun():
+    """Re-running with unchanged outcome returns 'unchanged' and does not increment minted."""
+    threshold = _rjobs_attr("_KNOWS_THRESHOLD")
+    knows_rows = [_make_knows_count_row(_ENTITY_A, threshold)]
+
+    stats, mock_assert = await _run_with_knows_scenario(
+        knows_count_rows=knows_rows,
+        assert_outcome="unchanged",
+    )
+
+    # relationship_assert_fact is still called (idempotency is in that layer),
+    # but since outcome is 'unchanged', knows_edges_minted stays at 0.
+    assert mock_assert.call_count == 2
+    assert stats["knows_edges_minted"] == 0
+    assert stats["errors"] == 0
