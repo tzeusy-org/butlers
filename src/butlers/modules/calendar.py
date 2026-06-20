@@ -47,10 +47,27 @@ ApprovalEnqueuer = Callable[
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com/calendar/v3"
 
-# Credential store key for the auto-discovered/configured Google Calendar ID.
+# Credential store key for the IMMUTABLE Butlers calendar ID (auto-discovered or
+# created as the shared "Butlers" calendar).  This is the home for
+# butler-authored events and must never be overwritten by a user's
+# default-target selection.
 _CREDENTIAL_KEY_CALENDAR_ID = "GOOGLE_CALENDAR_ID"
+# Credential store key for the user-chosen DEFAULT-TARGET calendar — the
+# calendar used for user-facing MCP mutations when no explicit calendar_id is
+# passed.  Distinct from GOOGLE_CALENDAR_ID so that picking a default target
+# never clobbers the immutable Butlers calendar id.
+_CREDENTIAL_KEY_DEFAULT_TARGET_CALENDAR_ID = "GOOGLE_CALENDAR_DEFAULT_TARGET_ID"
 # Name used to discover or create the shared Butlers calendar.
 _CALENDAR_DISCOVERY_NAME = "Butlers"
+
+# Calendar-id "roles" — which distinct concern a resolved calendar id serves.
+# These two roles were historically conflated onto a single field/cred key.
+#   - BUTLERS: the immutable dedicated Butlers calendar (cred key
+#     GOOGLE_CALENDAR_ID); home for butler-authored events.
+#   - DEFAULT_TARGET: the user-chosen default for user-facing MCP mutations
+#     (cred key GOOGLE_CALENDAR_DEFAULT_TARGET_ID).
+CALENDAR_ROLE_BUTLERS = "butlers"
+CALENDAR_ROLE_DEFAULT_TARGET = "default_target"
 
 BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
 BUTLER_GENERATED_PRIVATE_KEY = "butler_generated"
@@ -2579,11 +2596,18 @@ class CalendarModule(Module):
         # All provider calendar IDs discovered at startup (for pull-all sync).
         self._all_provider_calendar_ids: list[str] = []
         self._provider_calendar_discovery_completed = False
-        # User's primary Google Calendar ID (email address).  Used as the
-        # default target for user-facing MCP tool mutations so that events
-        # land on the user's personal calendar rather than the shared
-        # "Butlers" group calendar.
+        # User's primary Google Calendar ID (email address), discovered from the
+        # provider's calendarList.  Used as the implicit default target for
+        # user-facing MCP tool mutations when the user has not explicitly chosen
+        # a default-target calendar.
         self._primary_calendar_id: str | None = None
+        # User-chosen DEFAULT-TARGET calendar id (set via ``calendar_set_primary``
+        # / the dashboard and persisted under GOOGLE_CALENDAR_DEFAULT_TARGET_ID).
+        # This is deliberately SEPARATE from ``_resolved_calendar_id`` (the
+        # immutable Butlers calendar): choosing a default target must never
+        # clobber the Butlers calendar id.  When set, it takes precedence over
+        # ``_primary_calendar_id`` for the default-target role.
+        self._default_target_calendar_id: str | None = None
 
     @property
     def name(self) -> str:
@@ -4392,11 +4416,18 @@ class CalendarModule(Module):
         async def calendar_set_primary(
             calendar_id: str,
         ) -> dict[str, Any]:
-            """Set the primary calendar used when no explicit calendar_id is passed.
+            """Set the user's DEFAULT-TARGET calendar for user-facing mutations.
 
-            The calendar_id must be one of the discovered provider calendars.
-            Updates both the in-memory default and the credential store so the
-            choice persists across restarts.
+            This is the calendar used when an MCP tool mutation passes no explicit
+            ``calendar_id``.  The ``calendar_id`` must be one of the discovered
+            provider calendars.  Updates the in-memory default-target field and
+            persists it under ``GOOGLE_CALENDAR_DEFAULT_TARGET_ID`` so the choice
+            survives restarts.
+
+            This MUST NOT touch ``_resolved_calendar_id`` — the immutable Butlers
+            calendar id (cred key ``GOOGLE_CALENDAR_ID``).  The two are distinct
+            concerns: the Butlers calendar is the home for butler-authored events,
+            while the default target is the user's preferred personal calendar.
             """
             normalized = calendar_id.strip()
             if not normalized:
@@ -4409,18 +4440,19 @@ class CalendarModule(Module):
                     "known_calendars": module._all_provider_calendar_ids,
                 }
 
-            old_id = module._resolved_calendar_id
-            module._resolved_calendar_id = normalized
-            module._calendar_is_butler_specific = True
+            # Update ONLY the default-target selection.  Never mutate
+            # ``_resolved_calendar_id`` (the immutable Butlers calendar id).
+            old_id = module._default_target_calendar_id
+            module._default_target_calendar_id = normalized
 
             persisted = False
             if module._credential_store is not None:
                 try:
                     await module._credential_store.store_shared(
-                        _CREDENTIAL_KEY_CALENDAR_ID,
+                        _CREDENTIAL_KEY_DEFAULT_TARGET_CALENDAR_ID,
                         normalized,
                         category="google",
-                        description="Primary Google Calendar ID (set via dashboard)",
+                        description="Default-target Google Calendar ID (set via dashboard)",
                         is_sensitive=False,
                     )
                     persisted = True
@@ -5230,6 +5262,30 @@ class CalendarModule(Module):
 
         if not self._all_provider_calendar_ids and self._resolved_calendar_id:
             self._all_provider_calendar_ids = [self._resolved_calendar_id]
+
+        # Restore the user's chosen DEFAULT-TARGET calendar (separate from the
+        # immutable Butlers calendar id) so the selection persists across
+        # restarts.  Only honour it if it is still a discovered calendar.
+        if credential_store is not None:
+            try:
+                stored_default_target = await credential_store.load_shared(
+                    _CREDENTIAL_KEY_DEFAULT_TARGET_CALENDAR_ID,
+                )
+            except Exception as exc:
+                stored_default_target = None
+                logger.warning("CalendarModule: failed to load default-target calendar id: %s", exc)
+            if stored_default_target:
+                if (
+                    not self._all_provider_calendar_ids
+                    or stored_default_target in self._all_provider_calendar_ids
+                ):
+                    self._default_target_calendar_id = stored_default_target
+                else:
+                    logger.warning(
+                        "CalendarModule: stored default-target calendar %s not found in "
+                        "current account's calendars — ignoring",
+                        stored_default_target,
+                    )
 
         if self._config.sync.enabled:
             self._sync_task = asyncio.create_task(
@@ -7081,17 +7137,39 @@ class CalendarModule(Module):
             raise RuntimeError("Calendar config is not initialized")
         return self._config
 
+    def _resolve_role_calendar_id(self, role: str) -> str | None:
+        """Resolve the calendar id that serves a given calendar-id role.
+
+        - ``CALENDAR_ROLE_BUTLERS`` → the immutable Butlers calendar id
+          (``_resolved_calendar_id``, cred key ``GOOGLE_CALENDAR_ID``).  This is
+          never affected by ``calendar_set_primary``.
+        - ``CALENDAR_ROLE_DEFAULT_TARGET`` → the user's chosen default target for
+          user-facing MCP mutations (``_default_target_calendar_id``), falling
+          back to the discovered primary calendar, then the Butlers calendar.
+
+        Returns ``None`` when no calendar id is available for the role (e.g.
+        before ``on_startup`` has run).
+        """
+        if role == CALENDAR_ROLE_BUTLERS:
+            return self._resolved_calendar_id
+        if role == CALENDAR_ROLE_DEFAULT_TARGET:
+            return (
+                self._default_target_calendar_id
+                or self._primary_calendar_id
+                or self._resolved_calendar_id
+            )
+        raise ValueError(f"Unknown calendar role: {role!r}")
+
     def _resolve_calendar_id(self, override_calendar_id: str | None) -> str:
         if override_calendar_id is None:
-            # Prefer the user's primary calendar for MCP tool mutations so
-            # events land on the personal calendar, not the shared "Butlers"
-            # group calendar.  Fall back to _resolved_calendar_id (the butler
-            # calendar) only when discovery hasn't found a primary.
-            if self._primary_calendar_id is not None:
-                return self._primary_calendar_id
-            if self._resolved_calendar_id is None:
+            # Resolve the user-facing DEFAULT-TARGET calendar: the user's chosen
+            # default target if set, else the discovered primary calendar, else
+            # the Butlers calendar.  The default-target selection is kept
+            # separate from the immutable Butlers calendar id.
+            target = self._resolve_role_calendar_id(CALENDAR_ROLE_DEFAULT_TARGET)
+            if target is None:
                 raise RuntimeError("Calendar ID not resolved; call on_startup first")
-            return self._resolved_calendar_id
+            return target
 
         normalized = override_calendar_id.strip()
         if not normalized:
