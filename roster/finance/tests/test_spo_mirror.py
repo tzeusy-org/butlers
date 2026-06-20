@@ -821,3 +821,167 @@ async def test_track_bill_spo_mirror_includes_reconciled_transaction_id():
 
     assert len(captured) == 1
     assert captured[0]["reconciled_transaction_id"] == reconciled_id
+
+
+# ---------------------------------------------------------------------------
+# reconcile_bills SPO mirror (bu-f8d11): settled state must be mirrored
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_reconcile_bills_mirrors_settled_status_to_spo():
+    """After reconcile_bills auto-settles a bill, _mirror_bill_to_spo is called
+    with status='paid' — the SPO mirror must not remain at stale 'pending'.
+    """
+    from datetime import UTC, datetime, timedelta
+    from datetime import date as _date
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    import asyncpg
+
+    from butlers.tools.finance.reconciliation import reconcile_bills
+
+    payee = "Telco Corp"
+    bill_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    txn_id = "bbbbbbbb-0000-0000-0000-000000000002"
+    due = _date.today() - timedelta(days=3)
+    posted_at = datetime.now(UTC) - timedelta(days=2)
+
+    bill_row = {
+        "id": bill_id,
+        "payee": payee,
+        "payee_key": "telco corp",
+        "amount": Decimal("55.00"),
+        "currency": "SGD",
+        "due_date": due,
+        "frequency": "monthly",
+        "status": "pending",
+        "payment_method": None,
+        "account_id": None,
+        "statement_period_start": None,
+        "statement_period_end": None,
+        "paid_at": None,
+        "source_message_id": None,
+        "metadata": {},
+        "reconciled_transaction_id": None,
+        "autopay": False,
+        "predicted": False,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    txn_row = {
+        "id": txn_id,
+        "direction": "debit",
+        "merchant": payee,
+        "currency": "SGD",
+        "amount": Decimal("55.00"),
+        "posted_at": posted_at,
+        "payment_method": None,
+        "metadata": {},
+    }
+
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.fetch = AsyncMock(
+        side_effect=[
+            [bill_row],  # pre-fetch all pending bills
+            [txn_row],  # fetch unlinked debit transactions
+        ]
+    )
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+
+    mirror_calls: list[dict] = []
+
+    async def _capture_mirror(**kwargs):
+        mirror_calls.append(kwargs)
+
+    with patch(
+        "butlers.tools.finance.reconciliation._mirror_bill_to_spo", side_effect=_capture_mirror
+    ):
+        result = await reconcile_bills(pool=pool)
+
+    assert len(result["auto_settled"]) == 1, "Expected one auto-settled bill"
+    assert len(mirror_calls) == 1, "_mirror_bill_to_spo should be called once after settlement"
+    kwargs = mirror_calls[0]
+    assert kwargs["status"] == "paid", f"Mirror must reflect 'paid', got {kwargs['status']!r}"
+    assert kwargs["payee"] == payee
+    assert kwargs["currency"] == "SGD"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_reconcile_bills_mirrors_backfilled_amount_for_placeholder():
+    """When a $0 placeholder bill is settled, the mirror receives the txn amount (backfill)."""
+    from datetime import UTC, datetime, timedelta
+    from datetime import date as _date
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    import asyncpg
+
+    from butlers.tools.finance.reconciliation import reconcile_bills
+
+    payee = "HSBC Credit Card"
+    bill_id = "cccccccc-0000-0000-0000-000000000003"
+    txn_id = "dddddddd-0000-0000-0000-000000000004"
+    due = _date.today() - timedelta(days=5)
+    posted_at = datetime.now(UTC) - timedelta(days=3)
+
+    bill_row = {
+        "id": bill_id,
+        "payee": payee,
+        "payee_key": "hsbc credit card",
+        "amount": Decimal("0.00"),  # placeholder
+        "currency": "SGD",
+        "due_date": due,
+        "frequency": "monthly",
+        "status": "pending",
+        "payment_method": None,
+        "account_id": None,
+        "statement_period_start": None,
+        "statement_period_end": None,
+        "paid_at": None,
+        "source_message_id": None,
+        "metadata": {},
+        "reconciled_transaction_id": None,
+        "autopay": False,
+        "predicted": False,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    txn_row = {
+        "id": txn_id,
+        "direction": "debit",
+        "merchant": payee,
+        "currency": "SGD",
+        "amount": Decimal("717.57"),
+        "posted_at": posted_at,
+        "payment_method": None,
+        "metadata": {},
+    }
+
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.fetch = AsyncMock(
+        side_effect=[
+            [bill_row],
+            [txn_row],
+        ]
+    )
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+
+    mirror_calls: list[dict] = []
+
+    async def _capture_mirror(**kwargs):
+        mirror_calls.append(kwargs)
+
+    with patch(
+        "butlers.tools.finance.reconciliation._mirror_bill_to_spo", side_effect=_capture_mirror
+    ):
+        await reconcile_bills(pool=pool)
+
+    assert len(mirror_calls) == 1
+    kwargs = mirror_calls[0]
+    assert kwargs["status"] == "paid"
+    # Placeholder: mirror amount must come from the transaction, not the $0 bill
+    assert abs(kwargs["amount"] - 717.57) < 0.01, (
+        f"Expected backfilled amount ~717.57, got {kwargs['amount']}"
+    )

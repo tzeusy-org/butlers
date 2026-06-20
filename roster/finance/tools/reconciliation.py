@@ -27,6 +27,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.finance.bills import _mirror_bill_to_spo
+
 # --- Spec constants -------------------------------------------------------
 LOOKBACK_DAYS = 45  # days before anchor that a payment can arrive early
 GRACE_DAYS = 7  # days after anchor that a payment can arrive late
@@ -521,6 +523,33 @@ async def reconcile_bills(
                         else None,
                         "txn_id": str(txn_row["id"]),
                     }
+                )
+                # Mirror the settled state to public.facts immediately.
+                # Amount post-settlement: txn amount backfills a $0 placeholder;
+                # otherwise the original bill amount is unchanged.
+                # Mirror the settled state to public.facts.
+                # Amount post-settlement: txn amount backfills a $0 placeholder;
+                # otherwise the original bill amount is unchanged.
+                # Awaited directly — pool.fetch() above materialized all rows
+                # into Python lists before the loop, so no connection is held
+                # open here and there is no re-entrancy risk.
+                bill_amount = Decimal(str(bill["amount"]))
+                settled_amount = (
+                    float(settle_txn["amount"]) if bill_amount == 0 else float(bill_amount)
+                )
+                await _mirror_bill_to_spo(
+                    pool=pool,
+                    payee=bill["payee"],
+                    amount=settled_amount,
+                    currency=bill["currency"],
+                    due_date=bill["due_date"],
+                    frequency=bill["frequency"],
+                    status="paid",
+                    payment_method=(settle_txn.get("payment_method") or bill.get("payment_method")),
+                    account_id=str(bill["account_id"]) if bill.get("account_id") else None,
+                    paid_at=txn_row["posted_at"],
+                    reconciled_transaction_id=txn_row["id"],
+                    source_message_id=bill.get("source_message_id"),
                 )
 
         elif tier == "confirm":
