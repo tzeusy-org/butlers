@@ -246,15 +246,23 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         paid_at: str | None = None,
         source_message_id: str | None = None,
         metadata: str | None = None,
+        autopay: bool | None = None,
+        predicted: bool | None = None,
     ) -> dict[str, Any]:
         """Create or update a bill obligation.
 
-        payee: Who the bill is owed to.
+        Dedupes on the normalized payee + due_date, so re-tracking the same payee
+        (even with case/spacing variants) updates the existing row.
+
+        payee: Who the bill is owed to. Use a consistent name for a given payee so
+            records don't fragment (e.g. always "Endowus", not sometimes
+            "Endowus CPF OA Investment").
         amount: Amount owed as a decimal number.
         currency: ISO-4217 code (e.g. "USD").
         due_date: ISO-8601 date string (YYYY-MM-DD) for payment due date.
         frequency: "one_time" (default), "monthly", "weekly", "quarterly", "yearly".
-        status: "pending" (default), "paid", or "overdue".
+        status: "pending" (default), "paid", or "overdue". A $0 placeholder may
+            not be "overdue".
         payment_method: Card or payment method label.
         account_id: Account identifier.
         statement_period_start: ISO-8601 date for statement period start.
@@ -262,8 +270,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         paid_at: ISO 8601 datetime when payment was made. Required when status="paid".
         source_message_id: Source provenance for deduplication.
         metadata: JSON string — dict of additional context.
+        autopay: Set true for auto-debited bills (GIRO / CPF / card autopay). These
+            are reported as no-action FYIs, never as action items. Omit to leave an
+            existing row unchanged.
+        predicted: Set true only for pattern-based predictions tracked as bills.
+            Prefer NOT tracking predictions (predict_bills is read-only); this keeps
+            any that are tracked out of the actionable list. Omit to leave unchanged.
 
-        Returns: {id, payee, amount, currency, due_date, frequency, status, ...}
+        Returns: {id, payee, amount, currency, due_date, frequency, status, autopay,
+            predicted, ...}
         """
         return await _bills.track_bill(
             module._get_pool(),
@@ -280,6 +295,8 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             paid_at=paid_at,
             source_message_id=source_message_id,
             metadata=_parse_metadata(metadata),
+            autopay=autopay,
+            predicted=predicted,
         )
 
     @_tool("bills")
@@ -287,13 +304,21 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         days_ahead: int = 14,
         include_overdue: bool = False,
     ) -> dict[str, Any]:
-        """Query bills due within the requested horizon with urgency classification.
+        """Query upcoming bills, segmented by whether the owner must act.
 
         days_ahead: Number of days to look ahead (default 14).
         include_overdue: Include past-due bills in results (default false).
 
-        Returns: {bills: [{id, payee, amount, due_date, status, urgency}], total}
-        Urgency values: "overdue", "due_today", "due_soon", "due_upcoming".
+        Returns a dict with three buckets plus totals:
+          - needs_action: confirmed bills the owner must pay manually
+            (not autopay, not predicted, amount > 0)
+          - autopay: auto-debited bills (GIRO/CPF/card) — FYI, no action
+          - predicted: pattern-based rows, not confirmed obligations
+          - suppressed_placeholders: count of $0 placeholders hidden
+          - totals: needs_action_count/amount, autopay_count/amount, predicted_count
+        Each item: {bill, urgency, days_until_due}.
+        Urgency values: "overdue", "due_today", "due_soon".
+        Only needs_action.amount is money the owner must actively move.
         """
         return await _bills.upcoming_bills(
             module._get_pool(),

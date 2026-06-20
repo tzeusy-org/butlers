@@ -386,6 +386,63 @@ class TestTrackBill:
         count = await pool.fetchval("SELECT COUNT(*) FROM bills WHERE payee = $1", "Internet")
         assert count == 2
 
+    async def test_payee_name_variants_collapse_to_one_row(self, pool):
+        """Case/whitespace/trailing-period variants of a payee dedupe via payee_key."""
+        from butlers.tools.finance import track_bill
+
+        due = date.today() + timedelta(days=9)
+        first = await track_bill(
+            pool=pool, payee="Tailscale Inc.", amount=5.00, currency="USD", due_date=due
+        )
+        second = await track_bill(
+            pool=pool, payee="tailscale  inc", amount=6.00, currency="USD", due_date=due
+        )
+
+        assert first["id"] == second["id"]
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM bills WHERE payee_key = $1", "tailscale inc"
+        )
+        assert count == 1
+        assert float(second["amount"]) == 6.00
+
+    async def test_autopay_and_predicted_persist(self, pool):
+        """autopay/predicted flags persist and default to false when omitted."""
+        from butlers.tools.finance import track_bill
+
+        due = date.today() + timedelta(days=4)
+        flagged = await track_bill(
+            pool=pool,
+            payee="Endowus",
+            amount=1702.00,
+            currency="SGD",
+            due_date=due,
+            autopay=True,
+        )
+        assert flagged["autopay"] is True
+        assert flagged["predicted"] is False
+
+        # Omitting autopay on a later upsert must NOT clobber the existing flag.
+        again = await track_bill(
+            pool=pool, payee="Endowus", amount=1702.00, currency="SGD", due_date=due
+        )
+        assert again["autopay"] is True
+
+    async def test_zero_amount_overdue_rejected(self, pool):
+        """A $0 placeholder cannot be overdue (storage-layer guard)."""
+        import asyncpg
+
+        from butlers.tools.finance import track_bill
+
+        with pytest.raises(asyncpg.IntegrityConstraintViolationError):
+            await track_bill(
+                pool=pool,
+                payee="Arta Finance",
+                amount=0.00,
+                currency="USD",
+                due_date=date.today() - timedelta(days=3),
+                status="overdue",
+            )
+
     async def test_status_paid(self, pool):
         """Paid status is accepted and persisted."""
         from butlers.tools.finance import track_bill
@@ -479,29 +536,37 @@ class TestTrackBill:
 
 
 class TestUpcomingBills:
-    """Tests for the upcoming_bills tool."""
+    """Tests for the segmented upcoming_bills tool.
 
-    async def test_empty_returns_empty_items(self, pool):
-        """No bills returns empty items list with zero totals."""
+    A plain bill (not autopay, not predicted, amount > 0) lands in the
+    ``needs_action`` bucket; ``autopay`` / ``predicted`` rows and $0 placeholders
+    are diverted out of it.
+    """
+
+    async def test_empty_returns_empty_buckets(self, pool):
+        """No bills returns empty buckets with zero totals."""
         from butlers.tools.finance import upcoming_bills
 
         result = await upcoming_bills(pool=pool)
 
-        assert result["items"] == []
-        assert result["totals"]["due_soon"] == 0
-        assert result["totals"]["overdue"] == 0
+        assert result["needs_action"] == []
+        assert result["autopay"] == []
+        assert result["predicted"] == []
+        assert result["suppressed_placeholders"] == 0
+        assert result["totals"]["needs_action_count"] == 0
+        assert result["totals"]["needs_action_amount"] == "0.00"
         assert result["window_days"] == 14
 
     async def test_bill_due_within_horizon_included(self, pool):
-        """Bill with due_date within days_ahead is included."""
+        """Bill with due_date within days_ahead is included in needs_action."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         due = date.today() + timedelta(days=5)
         await track_bill(pool=pool, payee="Rent", amount=1800.00, currency="USD", due_date=due)
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert len(result["items"]) == 1
-        assert result["items"][0]["bill"]["payee"] == "Rent"
+        assert len(result["needs_action"]) == 1
+        assert result["needs_action"][0]["bill"]["payee"] == "Rent"
 
     async def test_bill_beyond_horizon_excluded(self, pool):
         """Bill with due_date beyond horizon is not included."""
@@ -513,7 +578,7 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert len(result["items"]) == 0
+        assert len(result["needs_action"]) == 0
 
     async def test_urgency_due_today(self, pool):
         """Bill due today gets urgency=due_today."""
@@ -528,9 +593,9 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert len(result["items"]) == 1
-        assert result["items"][0]["urgency"] == "due_today"
-        assert result["items"][0]["days_until_due"] == 0
+        assert len(result["needs_action"]) == 1
+        assert result["needs_action"][0]["urgency"] == "due_today"
+        assert result["needs_action"][0]["days_until_due"] == 0
 
     async def test_urgency_due_soon(self, pool):
         """Bill due within horizon but not today gets urgency=due_soon."""
@@ -540,9 +605,9 @@ class TestUpcomingBills:
         await track_bill(pool=pool, payee="Internet", amount=60.00, currency="USD", due_date=due)
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert len(result["items"]) == 1
-        assert result["items"][0]["urgency"] == "due_soon"
-        assert result["items"][0]["days_until_due"] == 7
+        assert len(result["needs_action"]) == 1
+        assert result["needs_action"][0]["urgency"] == "due_soon"
+        assert result["needs_action"][0]["days_until_due"] == 7
 
     async def test_urgency_overdue_by_status(self, pool):
         """Bill with status=overdue gets urgency=overdue."""
@@ -559,7 +624,7 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        overdue_items = [i for i in result["items"] if i["urgency"] == "overdue"]
+        overdue_items = [i for i in result["needs_action"] if i["urgency"] == "overdue"]
         assert len(overdue_items) == 1
         assert overdue_items[0]["days_until_due"] < 0
 
@@ -578,7 +643,7 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        overdue_items = [i for i in result["items"] if i["urgency"] == "overdue"]
+        overdue_items = [i for i in result["needs_action"] if i["urgency"] == "overdue"]
         assert len(overdue_items) == 1
 
     async def test_include_overdue_false_excludes_past_bills(self, pool):
@@ -596,7 +661,7 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=False)
-        assert len(result["items"]) == 0
+        assert len(result["needs_action"]) == 0
 
     async def test_include_overdue_true_includes_past_bills(self, pool):
         """include_overdue=True includes bills that are past due."""
@@ -613,7 +678,7 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert len(result["items"]) == 1
+        assert len(result["needs_action"]) == 1
 
     async def test_paid_bills_excluded(self, pool):
         """Paid bills are not included in upcoming_bills."""
@@ -630,10 +695,10 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert len(result["items"]) == 0
+        assert len(result["needs_action"]) == 0
 
-    async def test_totals_due_soon_count(self, pool):
-        """totals.due_soon counts non-overdue items."""
+    async def test_totals_needs_action_count(self, pool):
+        """totals.needs_action_count counts actionable items."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         await track_bill(
@@ -652,36 +717,10 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert result["totals"]["due_soon"] == 2
-        assert result["totals"]["overdue"] == 0
+        assert result["totals"]["needs_action_count"] == 2
 
-    async def test_totals_overdue_count(self, pool):
-        """totals.overdue counts overdue items."""
-        from butlers.tools.finance import track_bill, upcoming_bills
-
-        past = date.today() - timedelta(days=3)
-        await track_bill(
-            pool=pool,
-            payee="Overdue A",
-            amount=50.00,
-            currency="USD",
-            due_date=past,
-            status="overdue",
-        )
-        await track_bill(
-            pool=pool,
-            payee="Due Soon B",
-            amount=80.00,
-            currency="USD",
-            due_date=date.today() + timedelta(days=5),
-        )
-
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert result["totals"]["overdue"] == 1
-        assert result["totals"]["due_soon"] == 1
-
-    async def test_totals_amount_due(self, pool):
-        """totals.amount_due sums all included bill amounts."""
+    async def test_totals_needs_action_amount(self, pool):
+        """totals.needs_action_amount sums only actionable bill amounts."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         await track_bill(
@@ -700,7 +739,71 @@ class TestUpcomingBills:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert Decimal(result["totals"]["amount_due"]) == pytest.approx(Decimal("1860.00"))
+        assert Decimal(result["totals"]["needs_action_amount"]) == Decimal("1860.00")
+
+    async def test_autopay_diverted_from_needs_action(self, pool):
+        """Autopay bills are FYIs, never actionable, and excluded from the owed total."""
+        from butlers.tools.finance import track_bill, upcoming_bills
+
+        due = date.today() + timedelta(days=4)
+        await track_bill(pool=pool, payee="Manual Bill", amount=63.00, currency="SGD", due_date=due)
+        await track_bill(
+            pool=pool,
+            payee="Endowus",
+            amount=1702.00,
+            currency="SGD",
+            due_date=due,
+            autopay=True,
+        )
+
+        result = await upcoming_bills(pool=pool, days_ahead=14)
+        assert len(result["needs_action"]) == 1
+        assert result["needs_action"][0]["bill"]["payee"] == "Manual Bill"
+        assert len(result["autopay"]) == 1
+        assert result["autopay"][0]["bill"]["payee"] == "Endowus"
+        # Owed total is the manual bill only — the autopay amount is excluded.
+        assert Decimal(result["totals"]["needs_action_amount"]) == Decimal("63.00")
+        assert Decimal(result["totals"]["autopay_amount"]) == Decimal("1702.00")
+
+    async def test_predicted_diverted_from_needs_action(self, pool):
+        """Predicted rows surface as heads-up, not as confirmed obligations."""
+        from butlers.tools.finance import track_bill, upcoming_bills
+
+        due = date.today() + timedelta(days=6)
+        await track_bill(
+            pool=pool,
+            payee="KCUTS",
+            amount=15.00,
+            currency="SGD",
+            due_date=due,
+            predicted=True,
+        )
+
+        result = await upcoming_bills(pool=pool, days_ahead=14)
+        assert result["needs_action"] == []
+        assert len(result["predicted"]) == 1
+        assert result["predicted"][0]["bill"]["payee"] == "KCUTS"
+        assert Decimal(result["totals"]["needs_action_amount"]) == Decimal("0.00")
+
+    async def test_zero_amount_placeholder_suppressed(self, pool):
+        """$0 placeholders are counted but never surfaced in any bucket."""
+        from butlers.tools.finance import track_bill, upcoming_bills
+
+        due = date.today() + timedelta(days=2)
+        await track_bill(
+            pool=pool,
+            payee="Arta Finance",
+            amount=0.00,
+            currency="USD",
+            due_date=due,
+            status="pending",
+        )
+
+        result = await upcoming_bills(pool=pool, days_ahead=14)
+        assert result["needs_action"] == []
+        assert result["autopay"] == []
+        assert result["predicted"] == []
+        assert result["suppressed_placeholders"] == 1
 
     async def test_response_has_as_of_and_window_days(self, pool):
         """Response includes as_of timestamp and window_days."""
@@ -730,11 +833,11 @@ class TestUpcomingBills:
         result_14 = await upcoming_bills(pool=pool, days_ahead=14)
         result_60 = await upcoming_bills(pool=pool, days_ahead=60)
 
-        assert len(result_14["items"]) == 0
-        assert len(result_60["items"]) == 1
+        assert len(result_14["needs_action"]) == 0
+        assert len(result_60["needs_action"]) == 1
 
-    async def test_items_sorted_by_due_date(self, pool):
-        """Items are returned sorted by due_date ascending."""
+    async def test_needs_action_sorted_by_due_date(self, pool):
+        """needs_action items are returned sorted by due_date ascending."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         due_a = date.today() + timedelta(days=8)
@@ -745,5 +848,5 @@ class TestUpcomingBills:
         await track_bill(pool=pool, payee="Bill C", amount=30.00, currency="USD", due_date=due_c)
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        due_dates = [item["bill"]["due_date"] for item in result["items"]]
+        due_dates = [item["bill"]["due_date"] for item in result["needs_action"]]
         assert due_dates == sorted(due_dates)

@@ -126,8 +126,13 @@ CREATE TABLE IF NOT EXISTS bills (
     statement_period_end   DATE,
     paid_at                TIMESTAMPTZ,
     metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
+    autopay                BOOLEAN NOT NULL DEFAULT false,
+    predicted              BOOLEAN NOT NULL DEFAULT false,
+    payee_key              TEXT,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT bills_zero_amount_not_overdue
+        CHECK (NOT (amount = 0 AND status = 'overdue'))
 )
 """
 
@@ -327,7 +332,7 @@ class TestBillPaymentWorkflow:
         )
         # Verify it appears initially
         result_before = await upcoming_bills(pool=pool, days_ahead=14)
-        ids_before = [item["bill"]["id"] for item in result_before["items"]]
+        ids_before = [item["bill"]["id"] for item in result_before["needs_action"]]
         assert bill["id"] in ids_before
 
         # Mark paid via upsert
@@ -342,7 +347,7 @@ class TestBillPaymentWorkflow:
         )
 
         result_after = await upcoming_bills(pool=pool, days_ahead=14)
-        ids_after = [item["bill"]["id"] for item in result_after["items"]]
+        ids_after = [item["bill"]["id"] for item in result_after["needs_action"]]
         assert bill["id"] not in ids_after
 
     async def test_overdue_bill_appears_then_is_marked_paid(self, pool):
@@ -361,7 +366,7 @@ class TestBillPaymentWorkflow:
 
         # Should appear as overdue
         result_overdue = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        overdue_ids = [item["bill"]["id"] for item in result_overdue["items"]]
+        overdue_ids = [item["bill"]["id"] for item in result_overdue["needs_action"]]
         assert bill["id"] in overdue_ids
 
         # Pay it
@@ -376,7 +381,7 @@ class TestBillPaymentWorkflow:
         )
 
         result_after = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        ids_after = [item["bill"]["id"] for item in result_after["items"]]
+        ids_after = [item["bill"]["id"] for item in result_after["needs_action"]]
         assert bill["id"] not in ids_after
 
     async def test_upcoming_bills_totals_decrease_when_bill_paid(self, pool):
@@ -390,7 +395,7 @@ class TestBillPaymentWorkflow:
         await track_bill(pool=pool, payee="Bill B", amount=100.00, currency="USD", due_date=due_b)
 
         result_before = await upcoming_bills(pool=pool, days_ahead=14)
-        assert Decimal(result_before["totals"]["amount_due"]) == Decimal("150.00")
+        assert Decimal(result_before["totals"]["needs_action_amount"]) == Decimal("150.00")
 
         # Pay Bill A
         await track_bill(
@@ -404,7 +409,7 @@ class TestBillPaymentWorkflow:
         )
 
         result_after = await upcoming_bills(pool=pool, days_ahead=14)
-        assert Decimal(result_after["totals"]["amount_due"]) == Decimal("100.00")
+        assert Decimal(result_after["totals"]["needs_action_amount"]) == Decimal("100.00")
 
     async def test_multiple_bills_same_payee_different_due_dates(self, pool):
         """Separate billing cycles for same payee are independent records."""
@@ -417,7 +422,7 @@ class TestBillPaymentWorkflow:
         await track_bill(pool=pool, payee="Comcast", amount=89.99, currency="USD", due_date=due_2)
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        comcast_items = [i for i in result["items"] if i["bill"]["payee"] == "Comcast"]
+        comcast_items = [i for i in result["needs_action"] if i["bill"]["payee"] == "Comcast"]
         assert len(comcast_items) == 1
         assert comcast_items[0]["bill"]["due_date"] == due_1
 
@@ -807,8 +812,8 @@ class TestBoundaryDates:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        assert len(result["items"]) == 1
-        item = result["items"][0]
+        assert len(result["needs_action"]) == 1
+        item = result["needs_action"][0]
         assert item["urgency"] == "due_today"
         assert item["days_until_due"] == 0
 
@@ -826,7 +831,7 @@ class TestBoundaryDates:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        payees = [i["bill"]["payee"] for i in result["items"]]
+        payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Horizon Bill" in payees
 
     async def test_bill_due_one_day_past_horizon_excluded(self, pool):
@@ -843,7 +848,7 @@ class TestBoundaryDates:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        payees = [i["bill"]["payee"] for i in result["items"]]
+        payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Beyond Bill" not in payees
 
     async def test_transaction_posted_at_end_of_day_captured_same_day(self, pool):
@@ -1379,7 +1384,7 @@ class TestConcurrentAndRapidOperations:
 
         # Should not appear in upcoming_bills (paid)
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        payees = [i["bill"]["payee"] for i in result["items"]]
+        payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Rapid Bill" not in payees
 
         # Verify final state
@@ -1555,7 +1560,7 @@ class TestUpcomingBillsEdgeCases:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=0)
-        payees = [i["bill"]["payee"] for i in result["items"]]
+        payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Today Only" in payees
         assert "Tomorrow Bill" not in payees
 
@@ -1574,9 +1579,9 @@ class TestUpcomingBillsEdgeCases:
             )
 
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        overdue = [i for i in result["items"] if i["urgency"] == "overdue"]
+        overdue = [i for i in result["needs_action"] if i["urgency"] == "overdue"]
         assert len(overdue) == 3
-        assert result["totals"]["overdue"] == 3
+        assert result["totals"]["needs_action_count"] == 3
 
     async def test_bill_due_date_as_string_accepted_by_track_bill(self, pool):
         """ISO string due_date in track_bill survives round-trip and appears in upcoming_bills."""
@@ -1592,7 +1597,7 @@ class TestUpcomingBillsEdgeCases:
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
-        payees = [i["bill"]["payee"] for i in result["items"]]
+        payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "String Date Bill" in payees
 
     async def test_as_of_timestamp_is_recent(self, pool):
