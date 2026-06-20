@@ -20,6 +20,12 @@ Commit, push, and open PRs from the worktree; the root checkout stays on `main`.
 When done, `git worktree remove <path>`. If you find the root on any branch other
 than `main`, switch it back to `main` before starting work.
 
+**Small, low-regression-risk changes are fine to commit directly to `main`** (the
+root checkout stays on `main` — you commit and push from it without ever moving
+HEAD off `main`), after a best-effort format/lint pass on the touched files. The
+worktree + PR flow above is for anything larger or riskier (features, migrations,
+broad refactors, architectural work). When in doubt, use a worktree.
+
 ## Project Overview
 
 Butlers is a personal AI agent system where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself via a locked-down MCP config.
