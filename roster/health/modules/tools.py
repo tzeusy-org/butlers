@@ -472,11 +472,12 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     @mcp.tool()
     async def wellness_ingest_envelope(context: dict[str, Any]) -> dict[str, Any]:
-        """Ingest a wellness/google_health envelope and persist it as a health fact.
+        """Ingest a structured wellness envelope and persist it as a health fact.
 
         Called exactly once when input.context carries a source.channel='wellness'
-        envelope from the google_health connector. Translates the ingest.v1 envelope
-        into a temporal fact stored in the health butler's memory store.
+        envelope from the google_health or home_assistant connector. Translates the
+        ingest.v1 envelope into a temporal fact stored in the health butler's memory
+        store.
 
         Returns a dict with 'status' (ok | rejected_non_owner_sender |
         skipped_unknown_predicate | skipped_malformed_payload | error), and on
