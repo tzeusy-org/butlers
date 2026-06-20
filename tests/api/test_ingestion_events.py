@@ -855,6 +855,49 @@ async def test_payload_200_returns_content_and_emits_audit(app):
     assert call_kwargs["response_status"] == 200
 
 
+async def test_payload_200_envelope_without_content_key(app):
+    """Connector envelopes (no top-level 'content' key) must not report 0 bytes.
+
+    home_assistant/wellness events store the full envelope
+    (event/sender/source/control/payload) with no ``content`` key. The reader
+    must fall back to the whole payload rather than returning an empty string.
+    """
+    event_id = str(uuid4())
+
+    main_pool = AsyncMock()
+    main_pool.fetchrow = AsyncMock(return_value=_make_event_row(event_id=event_id))
+
+    import json as _json
+
+    envelope = {
+        "event": {"external_event_id": "ha:sensor.weight:1"},
+        "source": {"channel": "wellness", "provider": "home_assistant"},
+        "payload": {"raw": {"new_state": {"state": "69.35"}}},
+    }
+    inbox_data = {"raw_payload": _json.dumps(envelope), "source_channel": "wellness"}
+
+    inbox_row = MagicMock()
+    inbox_row.__getitem__ = MagicMock(side_effect=lambda key: inbox_data[key])
+    inbox_row.get = MagicMock(side_effect=lambda key, default=None: inbox_data.get(key, default))
+
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchrow = AsyncMock(return_value=inbox_row)
+
+    _app_with_switchboard_pool(app, main_pool=main_pool, switchboard_pool=switchboard_pool)
+
+    with patch("butlers.api.routers.ingestion_events.emit_dashboard_audit", new_callable=AsyncMock):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{event_id}/payload")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["bytes"] > 0
+    assert "69.35" in body["data"]["content"]
+    assert body["data"]["channel"] == "wellness"
+
+
 async def test_payload_404_when_event_missing(app):
     """GET /payload returns 404 when the event does not exist in ingestion_events."""
     main_pool = AsyncMock()

@@ -232,6 +232,26 @@ describe("EventDrawer — per-session cost column", () => {
     expect(container.querySelector("[data-testid='sessions-tab-empty']")).not.toBeNull();
   });
 
+  it("explains a policy-bypass route in the empty state", () => {
+    mockSessions([]);
+    vi.mocked(useIngestionEventDetail).mockReturnValue({
+      data: {
+        data: {
+          ...makeEvent({ triage_decision: "route_to", triage_target: "health" }),
+          lifecycle_state: "parsed",
+          decomposition_output: { routed: ["health"], policy_bypass: true },
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionEventDetail>);
+    renderDrawer(makeEvent({ triage_decision: "route_to", triage_target: "health" }));
+    const empty = container.querySelector("[data-testid='sessions-tab-empty']");
+    expect(empty).not.toBeNull();
+    expect(empty!.textContent).toContain("health");
+    expect(empty!.textContent).toContain("policy-bypass");
+  });
+
   it("shows loading skeleton while sessions are loading", () => {
     vi.mocked(useIngestionEventLineage).mockReturnValue({
       sessions: {

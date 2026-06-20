@@ -1139,9 +1139,16 @@ async def ingestion_event_get_payload(
         except json.JSONDecodeError:
             pass
 
-    # Extract the human-readable text content.
+    # Extract the human-readable text content. Messaging connectors store the
+    # inbound text under a top-level ``content`` key. Other connectors (e.g.
+    # home_assistant) deliver a structured envelope keyed
+    # ``event/sender/source/control/payload`` with no ``content`` key — in that
+    # case fall back to pretty-printing the whole payload so the raw tab never
+    # reports a misleading 0 bytes when data is in fact present.
     if isinstance(raw, dict):
-        content = raw.get("content") or ""
+        content = raw.get("content")
+        if not content:
+            content = raw if raw else ""
     else:
         content = str(raw) if raw is not None else ""
 

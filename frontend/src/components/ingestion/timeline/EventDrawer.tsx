@@ -49,6 +49,43 @@ function truncateId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) + '…' : id
 }
 
+/**
+ * Explain *why* an event has no butler sessions. Not every ingested event spawns
+ * an LLM session: high-frequency sensor data (e.g. home_assistant wellness
+ * readings) is routed straight to a butler via a policy-bypass rule and ingested
+ * deterministically — no model is invoked. Skip/filter/error events never
+ * dispatch at all. This turns a bare "no sessions" into an honest reason.
+ */
+function emptySessionsReason(
+  event: IngestionEventSummary,
+  decompositionOutput: Record<string, unknown> | null,
+): string {
+  const policyBypass = decompositionOutput?.policy_bypass === true
+  const routed = decompositionOutput?.routed
+  const routedTarget = Array.isArray(routed) && typeof routed[0] === 'string' ? routed[0] : null
+  const target = event.triage_target ?? routedTarget
+
+  if (policyBypass || event.triage_decision === 'route_to') {
+    return target
+      ? `Routed directly to ${target} via a policy-bypass rule and ingested deterministically — no LLM session was spawned (and no model cost).`
+      : 'Routed via a policy-bypass rule and ingested deterministically — no LLM session was spawned (and no model cost).'
+  }
+  if (event.status === 'skipped' || event.triage_decision === 'skip') {
+    return 'This event matched a skip rule, so it was stored but never dispatched to a butler.'
+  }
+  if (event.status === 'filtered') {
+    return event.filter_reason
+      ? `Filtered before dispatch (${event.filter_reason}).`
+      : 'Filtered before dispatch, so no butler ran.'
+  }
+  if (event.status === 'error') {
+    return event.error_detail
+      ? `Dispatch failed before a session could start (${event.error_detail}).`
+      : 'Dispatch failed before a session could start.'
+  }
+  return 'This event was ingested but no butler session has been recorded for it.'
+}
+
 function formatDuration(startedAt: string | null, completedAt: string | null): string {
   if (!startedAt || !completedAt) return '—'
   try {
@@ -153,9 +190,13 @@ function KVRow({ label, value }: { label: string; value: React.ReactNode }) {
 function DrawerSessionsTab({
   requestId,
   contentRef,
+  event,
+  decompositionOutput,
 }: {
   requestId: string
   contentRef: React.RefObject<HTMLDivElement>
+  event: IngestionEventSummary
+  decompositionOutput: Record<string, unknown> | null
 }) {
   const { sessions } = useIngestionEventLineage(requestId, { enabled: true })
   const sessionList = sessions.data?.data ?? []
@@ -180,9 +221,14 @@ function DrawerSessionsTab({
 
   if (sessionList.length === 0) {
     return (
-      <p className="p-4 font-serif text-[15px] leading-[1.55] text-muted-foreground italic" data-testid="sessions-tab-empty">
-        No sessions were triggered by this event.
-      </p>
+      <div className="p-4 space-y-1.5" data-testid="sessions-tab-empty">
+        <p className="font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
+          No sessions were triggered by this event.
+        </p>
+        <p className="font-serif text-[13px] leading-[1.55] text-muted-foreground italic">
+          {emptySessionsReason(event, decompositionOutput)}
+        </p>
+      </div>
     )
   }
 
@@ -619,7 +665,12 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
           {/* Tab content */}
           <div className="overflow-auto" style={{ maxHeight: '24rem' }}>
             {activeTab === 'sessions' && (
-              <DrawerSessionsTab requestId={event.id} contentRef={contentRef} />
+              <DrawerSessionsTab
+                requestId={event.id}
+                contentRef={contentRef}
+                event={event}
+                decompositionOutput={detail?.decomposition_output ?? null}
+              />
             )}
             {activeTab === 'raw' && (
               <DrawerRawTab requestId={event.id} enabled={rawEnabled} />
