@@ -80,7 +80,6 @@ async def pool(postgres_container, migrated_db_url: str):
     await p.execute("TRUNCATE TABLE dashboard_audit_log CASCADE")
     # The owner-singleton partial unique index on public.entities persists across
     # tests; clear identity rows so each test can seed a fresh owner.
-    await p.execute("TRUNCATE TABLE public.contacts CASCADE")
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
     yield p
     await p.close()
@@ -269,16 +268,14 @@ def egress_app(pool: asyncpg.Pool) -> FastAPI:
 
 
 async def _seed_owner(pool: asyncpg.Pool) -> None:
-    """The egress endpoint gates on an owner entity; create one."""
-    ent_id = await pool.fetchval(
-        "INSERT INTO public.entities (canonical_name, roles) "
-        "VALUES ($1, ARRAY['owner']) RETURNING id",
-        "Owner",
-    )
+    """The egress endpoint gates on an owner entity; create one.
+
+    post-core_134: public.contacts is dropped. The owner assertion reads
+    public.entities.roles directly ('owner' = ANY(roles)).
+    """
     await pool.execute(
-        "INSERT INTO public.contacts (name, entity_id) VALUES ($1, $2)",
+        "INSERT INTO public.entities (canonical_name, roles) VALUES ($1, ARRAY['owner'])",
         "Owner",
-        ent_id,
     )
 
 
