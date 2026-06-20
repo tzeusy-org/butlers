@@ -332,6 +332,11 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - `dev.sh` gate and runtime code both read from `public.contact_info` so shell gating and runtime behavior cannot drift.
 - `scripts/compose.sh`/`oauth-gate` only proves the refresh token row exists; a revoked/expired token still lets the stack start, then Google-backed connectors/modules log `invalid_grant`/`Token has been expired or revoked` until the account is reauthorized with forced consent.
 
+### Google `public.google_accounts` is ONE shared row per account across all 4 connectors
+- Drive/Calendar/Gmail/Health each run their own account-sync loop that filters `WHERE status='active'` AND a qualifying scope in `granted_scopes` (`google_drive.py:1767`, `google_calendar.py:1833`, `gmail.py:3285`). A single account row backs all of them, so narrowing scopes or flipping `status` in one connector's flow cascades and silently drops the others at their next ~15-min sync (offline in the ingestion console).
+- Re-auth must request **incremental authorization** (`include_granted_scopes=true`, set on both authorize builders in `oauth.py`): the request stays minimal (esp. health, which needs a restricted-scope subset) while Google returns a token covering the union of all prior grants — the callback persists `token_data["scope"]` verbatim, so a non-incremental request *replaces* and narrows. The legacy `_widen_scopes()` only fired when both `scope_set` and `account_hint` were passed, which the Calendar/Drive/Gmail UI flows don't.
+- A single connector's credential error must NOT flip the shared `status` to `revoked` unless it's a genuine `invalid_grant` — only `GoogleHealthTokenRevokedError` gates `_mark_account_revoked` now; transient/scope-local failures stay connector-local (per-account `auth_error` flag only).
+
 ### WhatsApp module bridge DSN contract
 - The in-process `modules.whatsapp` bridge runs inside `butlers up` and receives the daemon `Database` object, not connector env vars; `_get_db_dsn` must build `WA_BRIDGE_DSN` from `Database` connection fields when no explicit DSN attr exists. The standalone `connector-whatsapp-user` still uses its separate env-based DSN helper.
 
