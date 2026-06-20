@@ -899,8 +899,6 @@ async def test_reconcile_bills_mirrors_settled_status_to_spo():
         "butlers.tools.finance.reconciliation._mirror_bill_to_spo", side_effect=_capture_mirror
     ):
         result = await reconcile_bills(pool=pool)
-        # Let the event loop run the background mirror task
-        await asyncio.sleep(0)
 
     assert len(result["auto_settled"]) == 1, "Expected one auto-settled bill"
     assert len(mirror_calls) == 1, "_mirror_bill_to_spo should be called once after settlement"
@@ -979,7 +977,6 @@ async def test_reconcile_bills_mirrors_backfilled_amount_for_placeholder():
         "butlers.tools.finance.reconciliation._mirror_bill_to_spo", side_effect=_capture_mirror
     ):
         await reconcile_bills(pool=pool)
-        await asyncio.sleep(0)
 
     assert len(mirror_calls) == 1
     kwargs = mirror_calls[0]
