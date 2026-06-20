@@ -1942,3 +1942,40 @@ async def test_urgency_top_n_none_returns_all(dunbar_pool):
     # Since filtering removes non-overdue zero-context, all_results could equal
     # default_results, so just verify top_n=None doesn't truncate artificially
     assert len(all_results) > 0
+
+
+# ===========================================================================
+# Write/read consistency — dunbar_tier_set → compute_tier_ranking
+# ===========================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_override_via_dunbar_tier_set_honored_by_compute_tier_ranking(simple_pool):
+    """Override written by dunbar_tier_set is honored by compute_tier_ranking.
+
+    dunbar_tier_set writes to relationship.facts (Store B) with entity_id set.
+    _fetch_overrides reads from the same table with the same entity_id filter.
+    compute_tier_ranking combines scores with overrides — the pinned tier must win
+    over the rank-based assignment even when the contact's score would place it lower.
+    """
+    from butlers.tools.relationship.dunbar import compute_tier_ranking, dunbar_tier_set
+
+    # Contact with a single old interaction so its score-based rank would be low (tier 1500).
+    contact = await _make_simple_contact(simple_pool, "PinnedPerson")
+    cid = uuid.UUID(str(contact["id"]))
+    await _log_simple_interaction(simple_pool, cid, 90.0)
+
+    # Pin to tier 5 via the MCP tool (canonical write path → facts table).
+    await dunbar_tier_set(simple_pool, cid, 5)
+
+    # compute_tier_ranking calls _fetch_overrides which reads the same facts table.
+    ranking = await compute_tier_ranking(simple_pool)
+    row = next((r for r in ranking if r["contact_id"] == cid), None)
+    assert row is not None, "pinned contact must appear in the ranking"
+    assert row["dunbar_tier"] == 5, (
+        f"expected tier 5 (override), got {row['dunbar_tier']} — "
+        "dunbar_tier_set write and _fetch_overrides read are split across stores"
+    )
+    assert row["dunbar_tier_override"] is True

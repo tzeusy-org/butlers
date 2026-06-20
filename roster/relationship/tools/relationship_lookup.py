@@ -171,11 +171,12 @@ async def _resolve_ref(
                       AND rf.validity = 'active'
                 ) AS last_seen,
                 (
-                    SELECT rf.object::int
-                    FROM relationship.entity_facts rf
-                    WHERE rf.subject = r.entity_id
-                      AND rf.predicate = 'dunbar_tier_override'
-                      AND rf.validity = 'active'
+                    SELECT f.content::int
+                    FROM facts f
+                    WHERE f.entity_id = r.entity_id
+                      AND f.predicate = 'dunbar_tier_override'
+                      AND f.scope     = 'relationship'
+                      AND f.validity  = 'active'
                     LIMIT 1
                 ) AS tier
             FROM ranked r
@@ -238,11 +239,12 @@ async def _fetch_entity_header(
             COALESCE(e.aliases, '{}') AS aliases,
             COALESCE(e.roles, '{}')   AS roles,
             (
-                SELECT rf.object::int
-                FROM relationship.entity_facts rf
-                WHERE rf.subject = e.id
-                  AND rf.predicate = 'dunbar_tier_override'
-                  AND rf.validity = 'active'
+                SELECT f.content::int
+                FROM facts f
+                WHERE f.entity_id = e.id
+                  AND f.predicate = 'dunbar_tier_override'
+                  AND f.scope     = 'relationship'
+                  AND f.validity  = 'active'
                 LIMIT 1
             ) AS tier
         FROM public.entities e
