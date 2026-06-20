@@ -472,6 +472,47 @@ export interface UnifiedCalendarEntry {
   sync_state: CalendarWorkspaceSyncState | null;
   editable: boolean;
   metadata: Record<string, unknown>;
+  /** core_076 provenance: which butler wrote this event (null for pre-migration rows). */
+  source_butler?: string | null;
+  /** core_076 provenance: session that triggered the write (null when unknown). */
+  source_session_id?: string | null;
+}
+
+/** Allowed status values for a calendar action log entry. */
+export type CalendarActionStatus = "pending" | "applied" | "failed" | "noop";
+
+/** One row from calendar_action_log, enriched with source provenance. */
+export interface CalendarAuditEntry {
+  id: string;
+  idempotency_key: string;
+  request_id: string | null;
+  action_type: string;
+  action_status: CalendarActionStatus;
+  origin_ref: string | null;
+  payload_summary: Record<string, unknown>;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  applied_at: string | null;
+  /** Butler that owns the schema containing this log row. */
+  source_butler: string | null;
+  /** Session ID that triggered the write (deep-links to /sessions/:id). */
+  source_session_id: string | null;
+}
+
+/** Response payload for GET /api/calendar/workspace/audit. */
+export interface CalendarAuditResponse {
+  entries: CalendarAuditEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+/** Query parameters for GET /api/calendar/workspace/audit. */
+export interface CalendarAuditParams {
+  limit?: number;
+  offset?: number;
+  butler?: string;
 }
 
 /** Source-level freshness metadata for workspace rendering. */

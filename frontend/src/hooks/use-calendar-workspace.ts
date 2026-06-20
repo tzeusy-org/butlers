@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getCalendarWorkspace,
+  getCalendarWorkspaceAudit,
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
@@ -13,6 +14,7 @@ import {
   syncCalendarWorkspace,
 } from "@/api/index.ts";
 import type {
+  CalendarAuditParams,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceParams,
   CalendarWorkspaceSyncRequest,
@@ -95,5 +97,23 @@ export function useSetPrimaryCalendar() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
+  });
+}
+
+interface CalendarAuditQueryOptions {
+  refetchInterval?: number | false;
+  enabled?: boolean;
+}
+
+/** Fetch paginated calendar mutation audit log entries. */
+export function useCalendarWorkspaceAudit(
+  params?: CalendarAuditParams,
+  options?: CalendarAuditQueryOptions,
+) {
+  return useQuery({
+    queryKey: ["calendar-workspace-audit", params],
+    queryFn: () => getCalendarWorkspaceAudit(params),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? 30_000,
   });
 }

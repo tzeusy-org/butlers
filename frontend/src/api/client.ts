@@ -32,6 +32,8 @@ import type {
   ButlerDetail,
   ButlerSkill,
   ButlerSummary,
+  CalendarAuditParams,
+  CalendarAuditResponse,
   CalendarWorkspaceMetaResponse,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
@@ -1114,6 +1116,21 @@ export function mutateCalendarWorkspaceButlerEvent(
     },
   );
 }
+
+/** Fetch paginated calendar mutation audit log entries. */
+export function getCalendarWorkspaceAudit(
+  params?: CalendarAuditParams,
+): Promise<ApiResponse<CalendarAuditResponse>> {
+  const sp = new URLSearchParams();
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.butler) sp.set("butler", params.butler);
+  const qs = sp.toString();
+  return apiFetch<ApiResponse<CalendarAuditResponse>>(
+    `/calendar/workspace/audit${qs ? `?${qs}` : ""}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Relationship / CRM
 // ---------------------------------------------------------------------------

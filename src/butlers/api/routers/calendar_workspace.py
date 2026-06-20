@@ -500,7 +500,9 @@ def _normalize_entry(
         editable=bool(row.get("writable") or False),
         metadata=metadata,
         source_butler=str(row.get("source_butler")) if row.get("source_butler") else None,
-        source_session_id=str(row.get("source_session_id")) if row.get("source_session_id") else None,
+        source_session_id=(
+            str(row.get("source_session_id")) if row.get("source_session_id") else None
+        ),
     )
 
 

@@ -50,6 +50,7 @@ def _audit_row(
 def _count_row(count: int) -> dict:
     return {"count": count}
 
+
 pytestmark = pytest.mark.unit
 
 
@@ -535,9 +536,7 @@ def _build_audit_app(
                 rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
             if "count(*)" in query:
                 # Return count rows
-                return {
-                    k: [{"count": len(v)}] for k, v in rows_to_scan.items()
-                }
+                return {k: [{"count": len(v)}] for k, v in rows_to_scan.items()}
             # Return data rows (limit already baked into LIMIT/OFFSET in SQL)
             return rows_to_scan
         return {}
