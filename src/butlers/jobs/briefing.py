@@ -560,16 +560,19 @@ async def run_relationship_briefing_contribution(
 
     # --- Birthdays in the next 7 days ---
     # important_dates has (month, day) — check if (month, day) falls in next 7 days.
-    # Surfaces both contact_id-anchored rows (legacy) and local_entity_id-anchored
-    # rows written by the contacts backfill after migration contacts_004.
+    # Surfaces both contact_id-anchored rows (via contact_entity_map → entities) and
+    # local_entity_id-anchored rows written by the contacts backfill after contacts_004.
+    # Both arms read entity.listed / entity.canonical_name — no JOIN contacts.
     birthday_rows = await pool.fetch(
         """
-        -- Contact-anchored path: contact_id → contacts
-        SELECT c.name AS name, id.label, id.month, id.day, id.year
+        -- Contact-anchored path: contact_id → contact_entity_map → entities
+        SELECT e.canonical_name AS name, id.label, id.month, id.day, id.year
         FROM important_dates id
-        JOIN contacts c ON c.id = id.contact_id
+        JOIN contact_entity_map cem ON cem.contact_id = id.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
         WHERE LOWER(id.label) LIKE '%birthday%'
           AND id.contact_id IS NOT NULL
+          AND e.listed = true
           AND EXISTS (
             SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
             WHERE t.m = id.month AND t.d = id.day
@@ -577,9 +580,8 @@ async def run_relationship_briefing_contribution(
 
         UNION ALL
 
-        -- Entity-anchored path (contacts_004): local_entity_id → entities directly
-        -- Guard: if this entity has contacts, require at least one to be listed=true,
-        -- so archived contacts' birthdays remain hidden even after the contacts_004 backfill.
+        -- Entity-anchored path (contacts_004): local_entity_id → entities directly.
+        -- e.listed is the canonical archive flag (set by contact_archive → entities.listed).
         SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
                id.label, id.month, id.day, id.year
         FROM important_dates id
@@ -587,13 +589,7 @@ async def run_relationship_briefing_contribution(
         WHERE LOWER(id.label) LIKE '%birthday%'
           AND id.contact_id IS NULL
           AND id.local_entity_id IS NOT NULL
-          AND (
-              NOT EXISTS (SELECT 1 FROM contacts c WHERE c.entity_id = id.local_entity_id)
-              OR EXISTS (
-                  SELECT 1 FROM contacts c
-                  WHERE c.entity_id = id.local_entity_id AND c.listed = true
-              )
-          )
+          AND e.listed = true
           AND EXISTS (
             SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
             WHERE t.m = id.month AND t.d = id.day
@@ -630,9 +626,10 @@ async def run_relationship_briefing_contribution(
     # table.  The contact UUID is embedded in the subject key as
     # "contact:{contact_id}:reminder:{uuid}".  Trigger time lives in
     # metadata->>'next_trigger_at' (or fallback metadata->>'due_at').
+    # Name is resolved via contact_entity_map → entities.canonical_name.
     reminder_rows = await pool.fetch(
         """
-        SELECT c.name,
+        SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
                f.content AS label,
                COALESCE(
                    (f.metadata->>'next_trigger_at')::timestamptz,
@@ -643,8 +640,9 @@ async def run_relationship_briefing_contribution(
                    (f.metadata->>'due_at')::timestamptz
                ) < now() AS is_overdue
         FROM facts f
-        JOIN contacts c
-          ON c.id = (split_part(f.subject, ':', 2))::uuid
+        JOIN contact_entity_map cem
+          ON cem.contact_id = (split_part(f.subject, ':', 2))::uuid
+        JOIN public.entities e ON e.id = cem.entity_id
         WHERE f.predicate = 'reminder'
           AND f.scope = 'relationship'
           AND f.validity = 'active'
@@ -690,28 +688,26 @@ async def run_relationship_briefing_contribution(
 
     # --- Interaction gaps exceeding stay_in_touch threshold ---
     # Interactions are stored as SPO facts with predicate LIKE 'interaction_%'.
+    # contact_entity_map bridges contact_id → entity_id; stay_in_touch_days lives on
+    # public.entities since rel_031; listed flag is the canonical archive indicator.
     gap_rows = await pool.fetch(
         """
         SELECT
-            COALESCE(
-                NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                c.nickname,
-                'Unknown'
-            ) AS name,
-            c.stay_in_touch_days,
+            COALESCE(e.canonical_name, 'Unknown') AS name,
+            e.stay_in_touch_days,
             EXTRACT(DAY FROM now() - MAX(f.valid_at)) AS days_since_last
-        FROM contacts c
+        FROM contact_entity_map cem
+        JOIN public.entities e ON e.id = cem.entity_id
         JOIN facts f
-            ON f.entity_id = c.entity_id
+            ON f.entity_id = cem.entity_id
            AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
-        WHERE c.stay_in_touch_days IS NOT NULL
-          AND c.listed = true
-          AND c.entity_id IS NOT NULL
-        GROUP BY c.id, c.first_name, c.last_name, c.nickname, c.stay_in_touch_days
-        HAVING EXTRACT(DAY FROM now() - MAX(f.valid_at)) > c.stay_in_touch_days
-        ORDER BY (EXTRACT(DAY FROM now() - MAX(f.valid_at)) - c.stay_in_touch_days) DESC
+        WHERE e.stay_in_touch_days IS NOT NULL
+          AND e.listed = true
+        GROUP BY cem.entity_id, e.canonical_name, e.stay_in_touch_days
+        HAVING EXTRACT(DAY FROM now() - MAX(f.valid_at)) > e.stay_in_touch_days
+        ORDER BY (EXTRACT(DAY FROM now() - MAX(f.valid_at)) - e.stay_in_touch_days) DESC
         LIMIT 5
         """,
     )

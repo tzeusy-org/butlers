@@ -156,15 +156,45 @@ async def _insert_contact(
     stay_in_touch_days: int | None = None,
     entity_id: str | None = None,
 ) -> str:
-    """Insert a contact and return its UUID string.
+    """Insert a contact, a matching public.entities row, and a contact_entity_map entry.
 
-    Always assigns an entity_id (auto-generated when not provided) so that
-    interaction facts inserted via _insert_interaction_fact can be keyed by
-    entity_id and matched by the reader queries that join on
-    ``f.entity_id = c.entity_id``.
+    Seeds entity-side fields (canonical_name, listed, stay_in_touch_days) directly so
+    re-pointed queries that JOIN contact_entity_map → public.entities find the right values
+    without depending on bu-0mb6j dual-write (may not yet be merged when tests run).
     """
     contact_id = str(uuid.uuid4())
     resolved_entity_id = uuid.UUID(entity_id) if entity_id else uuid.uuid4()
+
+    # Compose canonical_name the same way the old CONCAT_WS did
+    name_parts = [p for p in (first_name, last_name) if p]
+    canonical_name = " ".join(name_parts) if name_parts else "Unknown"
+
+    # Seed public.entities with listed + stay_in_touch_days (rel_031 columns)
+    await pool.execute(
+        """
+        INSERT INTO public.entities (id, canonical_name, name, listed, stay_in_touch_days)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        resolved_entity_id,
+        canonical_name,
+        canonical_name,
+        listed,
+        stay_in_touch_days,
+    )
+
+    # Seed contact_entity_map bridge (rel_029)
+    await pool.execute(
+        """
+        INSERT INTO contact_entity_map (contact_id, entity_id)
+        VALUES ($1::uuid, $2)
+        ON CONFLICT (contact_id) DO NOTHING
+        """,
+        contact_id,
+        resolved_entity_id,
+    )
+
+    # Keep contacts row so important_dates FK + _insert_interaction_fact entity_id lookup work
     await pool.execute(
         """
         INSERT INTO contacts (id, first_name, last_name, listed, stay_in_touch_days, entity_id)
