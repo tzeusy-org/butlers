@@ -288,6 +288,14 @@ async def list_audit_log(
             "Uses ix_audit_log_target_ts index for efficient lookup."
         ),
     ),
+    kind: str | None = Query(
+        None,
+        description=(
+            "Filter preset. 'privileged' excludes high-frequency operational noise "
+            "(*_heartbeat actions and routine GET-path traffic), surfacing only "
+            "mutation/security rows (permission.set, data.*, webhook.*, etc.)."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[AuditLogEntry]:
     """Return paginated audit log entries from ``public.audit_log``.
@@ -315,6 +323,13 @@ async def list_audit_log(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # Validate ?kind= — only "privileged" is currently supported.
+    kind = (kind or "").strip() or None
+    if kind is not None and kind != "privileged":
+        raise HTTPException(
+            status_code=422, detail=f"Unsupported kind: {kind!r}. Use 'privileged'."
+        )
+
     # Build dynamic WHERE clause
     conditions: list[str] = []
     args: list[object] = []
@@ -339,6 +354,13 @@ async def list_audit_log(
         conditions.append(f"target = ${idx}")
         args.append(normalised_key)
         idx += 1
+
+    # kind=privileged: exclude high-frequency operational noise.
+    # Filters out actions ending in _heartbeat (butler/switchboard heartbeats)
+    # and actions starting with "GET /" (routine HTTP-GET audit entries).
+    if kind == "privileged":
+        conditions.append("action NOT LIKE '%_heartbeat'")
+        conditions.append("action NOT LIKE 'GET /%'")
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 

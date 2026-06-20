@@ -1004,6 +1004,7 @@ export function getAuditLog(
   if (params?.action) sp.set("action", params.action);
   if (params?.since) sp.set("since", params.since);
   if (params?.key) sp.set("key", params.key);
+  if (params?.kind) sp.set("kind", params.kind);
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<AuditLogEntry>>(qs ? `/audit-log?${qs}` : "/audit-log");
 }

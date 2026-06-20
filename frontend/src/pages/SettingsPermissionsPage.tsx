@@ -4,7 +4,7 @@
  * Implements §6.8 of the settings-redesign OpenSpec:
  *  - Permissions × Butlers matrix with inherited (dim) vs explicit (foreground) cells
  *  - Cell-flip modal requires non-empty reason before submit
- *  - Audit reel — last 15 entries from GET /api/audit-log?limit=15
+ *  - Audit reel — last 15 privileged-action entries from GET /api/audit-log?limit=15&kind=privileged
  *  - Data ops sub-grid: export (scope picker → signed URL), wipe (phrase input)
  *  - Webhooks table: list, add, edit, test, delete
  *
@@ -373,7 +373,7 @@ function isDestructiveAction(action: string): boolean {
 }
 
 function AuditReelSection() {
-  const { data, isLoading } = useAuditLog({ limit: 15 });
+  const { data, isLoading } = useAuditLog({ limit: 15, kind: "privileged" });
   const entries = data?.data ?? [];
 
   return (
@@ -866,7 +866,7 @@ export default function SettingsPermissionsPage() {
       )}
 
       {/* Audit reel */}
-      <Section title="Audit reel" description="Last 15 entries from the audit log.">
+      <Section title="Audit reel" description="Last 15 privileged-action entries — permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.">
         <AuditReelSection />
       </Section>
 
