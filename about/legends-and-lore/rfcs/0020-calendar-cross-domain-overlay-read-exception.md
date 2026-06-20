@@ -1,7 +1,7 @@
 # RFC 0020: Calendar Cross-Domain Overlay Read Exception
 
-**Status:** Proposed
-**Date:** 2026-06-20
+**Status:** Accepted
+**Date:** 2026-06-20 (accepted 2026-06-21)
 
 ---
 
@@ -229,9 +229,18 @@ schema.
 
 ## Decision
 
-**Proposed.** This RFC records the RFC-0010-compliant overlay path
-(scheduled deterministic precompute → read-only cached view → zero-LLM render,
-with any synthesis batched and pre-rendered) as the recommended design, and
-documents why the naive per-open / on-demand / LLM-synthesis design is rejected
-under RFC 0010's reuse criteria. The owner accepts or rejects; no overlay build
-(`bu-1ajgg9`) proceeds until this decision is resolved.
+**Accepted (2026-06-21).** The owner adopted the **no-LLM structured variant**
+(the "drop synthesis entirely" path in §Design): scheduled deterministic
+contribution jobs → migration-tracked read-only cached view → zero-LLM
+structured render (ribbons/pills/lists, no generated prose). The naive per-open /
+on-demand / LLM-synthesis design is rejected under RFC 0010's reuse criteria #2
+and #3, as documented above.
+
+The optional batched pre-rendered LLM summary layer (§Design step 4 / the
+"variant B" enhancement) is **deferred** — tracked as `bu-jdrkbj` at P4, to be
+revisited only if structured overlays prove insufficient for v1. The fusion epic
+`bu-1ajgg9` is decomposed on this path (`bu-xcd1cp` is the contribution-jobs +
+cached-view foundation; overlay render, prep rail, and briefing card build on
+it). Any future calendar overlay feature MUST be re-evaluated against RFC 0010's
+criteria independently — this acceptance does not pre-authorize on-demand or
+LLM-in-the-read variants.
