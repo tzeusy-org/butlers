@@ -72,14 +72,6 @@ export const navSections: NavSection[] = [
   {
     title: 'Dedicated Butlers',
     items: [
-      {
-        kind: 'group',
-        label: 'Relationships',
-        butler: 'relationship',
-        children: [
-          { path: '/groups', label: 'Groups' },
-        ],
-      },
       { path: '/education', label: 'Education', butler: 'education' },
       { path: '/health/measurements', label: 'Health' },
       { path: '/calendar', label: 'Calendar' },

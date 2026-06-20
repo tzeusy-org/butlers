@@ -210,10 +210,20 @@ The dashboard SHALL render a Groups page at `/groups` displaying contact groups 
 
 The table MUST display columns: Name (bold), Description (truncated), Members (count), Labels (colored badges with deterministic hashing), Created (date).
 
+The Groups page is a read-and-label surface: groups and their membership are created and maintained through the relationship butler's tools (`group_create`, `group_add_member`), not from this page. The page additionally supports creating labels and assigning/removing labels on a group.
+
+The Groups page MUST NOT be surfaced in the primary sidebar navigation; it remains routable at `/groups` and is reachable via the relationship butler's CRM tab Quick Links.
+
 #### Scenario: Group with no labels
 
 - **WHEN** a group has zero associated labels
 - **THEN** the Labels column MUST display an em-dash
+
+#### Scenario: Not in sidebar navigation
+
+- **WHEN** the sidebar renders
+- **THEN** no Groups nav link (`/groups`) and no Relationships nav group appear
+- **AND** navigating directly to `/groups` still renders the Groups page
 
 ---
 

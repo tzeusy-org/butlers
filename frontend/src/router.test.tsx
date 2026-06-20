@@ -321,4 +321,18 @@ describe('nav-config', () => {
     )
     expect(contactsItem).toBeUndefined()
   })
+
+  // The Groups page remains routable (/groups), but is no longer surfaced in
+  // the sidebar navigation — see GroupsPage and the relationship CRM quick links.
+  it('does not contain a Groups entry', () => {
+    const allItems = navSections.flatMap((section) =>
+      section.items.flatMap((item) =>
+        item.kind === 'group' ? item.children : [item],
+      ),
+    )
+    const groupsItem = allItems.find(
+      (item) => item.label === 'Groups' || item.path === '/groups',
+    )
+    expect(groupsItem).toBeUndefined()
+  })
 })
