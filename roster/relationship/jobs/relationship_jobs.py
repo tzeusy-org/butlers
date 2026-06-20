@@ -1491,6 +1491,148 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Memory curation: object_entity_id authoring backfill
+# ---------------------------------------------------------------------------
+#
+# Relational facts in ``relationship.facts`` must carry ``object_entity_id``
+# for the edge-promotion sweep (``run_memory_curation``) to pick them up.
+# Historically, some callers stored direct relational predicates as plain
+# property facts (content = entity name, no ``object_entity_id``), bypassing
+# the resolver. This helper finds those facts and, where the content matches
+# exactly one entity by ``canonical_name``, writes the missing
+# ``object_entity_id``. The subsequent promotion sweep then treats them as
+# normal edge-fact candidates.
+#
+# Resolution is conservative: ambiguous content (> 1 entity match) and
+# unresolved content (0 matches) are skipped and counted. The update is
+# guarded on ``object_entity_id IS NULL`` so re-runs are idempotent.
+
+
+async def _backfill_object_entity_ids(db_pool: asyncpg.Pool) -> dict[str, int]:
+    """Resolve missing object_entity_id on relational facts from content.
+
+    Scans active ``relationship.facts`` rows whose predicate is in
+    ``_DIRECT_OR_ALIAS_PREDICATES`` and whose ``object_entity_id`` is ``NULL``.
+    For each such fact, the ``content`` field is treated as an entity name and
+    matched against ``public.entities.canonical_name`` (case-insensitive exact
+    match). When exactly one entity is found the fact's ``object_entity_id``
+    is updated in place; this makes the row visible to the edge-promotion sweep
+    that runs immediately afterwards in :func:`run_memory_curation`.
+
+    Args:
+        db_pool: Database connection pool.
+
+    Returns:
+        Dictionary with keys: backfill_scanned, backfill_resolved,
+        backfill_ambiguous, backfill_unresolved.
+    """
+    stats: dict[str, int] = {
+        "backfill_scanned": 0,
+        "backfill_resolved": 0,
+        "backfill_ambiguous": 0,
+        "backfill_unresolved": 0,
+    }
+
+    candidate_predicates = sorted(_DIRECT_OR_ALIAS_PREDICATES)
+
+    try:
+        rows = await db_pool.fetch(
+            """
+            SELECT id, content
+            FROM facts
+            WHERE validity        = 'active'
+              AND object_entity_id IS NULL
+              AND predicate        = ANY($1::text[])
+              AND TRIM(content)   != ''
+            ORDER BY created_at ASC NULLS LAST
+            """,
+            candidate_predicates,
+        )
+    except Exception:
+        logger.exception("memory_curation backfill: failed to query candidate facts")
+        return stats
+
+    stats["backfill_scanned"] = len(rows)
+    if not rows:
+        logger.debug("memory_curation backfill: no candidate facts — nothing to backfill")
+        return stats
+
+    logger.info(
+        "memory_curation backfill: resolving object_entity_id for %d relational facts",
+        len(rows),
+    )
+
+    for row in rows:
+        content: str = (row["content"] or "").strip()
+        fact_id = row["id"]
+
+        try:
+            matches = await db_pool.fetch(
+                """
+                SELECT id FROM public.entities
+                WHERE LOWER(TRIM(canonical_name)) = LOWER($1)
+                """,
+                content,
+            )
+        except Exception:
+            logger.exception(
+                "memory_curation backfill: entity lookup failed for fact %s content=%r",
+                fact_id,
+                content[:60],
+            )
+            stats["backfill_unresolved"] += 1
+            continue
+
+        if len(matches) == 1:
+            object_entity_id = matches[0]["id"]
+            try:
+                await db_pool.execute(
+                    """
+                    UPDATE facts
+                    SET object_entity_id = $1
+                    WHERE id              = $2
+                      AND object_entity_id IS NULL
+                    """,
+                    object_entity_id,
+                    fact_id,
+                )
+                stats["backfill_resolved"] += 1
+                logger.debug(
+                    "memory_curation backfill: fact %s content=%r → entity %s",
+                    fact_id,
+                    content[:60],
+                    object_entity_id,
+                )
+            except Exception:
+                logger.exception("memory_curation backfill: failed to update fact %s", fact_id)
+                stats["backfill_unresolved"] += 1
+        elif len(matches) > 1:
+            logger.debug(
+                "memory_curation backfill: skipping fact %s — ambiguous name %r (%d entities)",
+                fact_id,
+                content[:60],
+                len(matches),
+            )
+            stats["backfill_ambiguous"] += 1
+        else:
+            logger.debug(
+                "memory_curation backfill: no entity found for fact %s content=%r",
+                fact_id,
+                content[:60],
+            )
+            stats["backfill_unresolved"] += 1
+
+    logger.info(
+        "memory_curation backfill: scanned=%d resolved=%d ambiguous=%d unresolved=%d",
+        stats["backfill_scanned"],
+        stats["backfill_resolved"],
+        stats["backfill_ambiguous"],
+        stats["backfill_unresolved"],
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Memory curation job (behavior #1: backfill structured edges from prose facts)
 # ---------------------------------------------------------------------------
 
@@ -1535,6 +1677,12 @@ async def run_memory_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info("Running memory_curation job (backfill structured edges from prose facts)")
 
     stats: dict[str, Any] = {
+        # object_entity_id authoring backfill phase
+        "backfill_scanned": 0,
+        "backfill_resolved": 0,
+        "backfill_ambiguous": 0,
+        "backfill_unresolved": 0,
+        # edge-promotion phase
         "facts_scanned": 0,
         "edges_proposed": 0,
         "edges_inserted": 0,
@@ -1544,6 +1692,16 @@ async def run_memory_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "edges_skipped_already_exists": 0,
         "errors": 0,
     }
+
+    # -----------------------------------------------------------------------
+    # Step 0: Authoring backfill — resolve object_entity_id for relational
+    # facts stored without it (content = entity name, direct predicate).
+    #
+    # This runs BEFORE the promotion sweep so that facts resolved here are
+    # immediately available to the promotion loop below (same invocation).
+    # -----------------------------------------------------------------------
+    backfill_stats = await _backfill_object_entity_ids(db_pool)
+    stats.update(backfill_stats)
 
     # -----------------------------------------------------------------------
     # Step 1: Fetch candidate prose facts that carry an object_entity_id.
@@ -1731,9 +1889,15 @@ async def run_memory_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
 
     logger.info(
-        "memory_curation complete: scanned=%d proposed=%d inserted=%d "
+        "memory_curation complete: "
+        "backfill_scanned=%d backfill_resolved=%d backfill_ambiguous=%d backfill_unresolved=%d "
+        "scanned=%d proposed=%d inserted=%d "
         "pending_approval=%d unchanged=%d skipped_no_mapping=%d "
         "skipped_already_exists=%d errors=%d",
+        stats["backfill_scanned"],
+        stats["backfill_resolved"],
+        stats["backfill_ambiguous"],
+        stats["backfill_unresolved"],
         stats["facts_scanned"],
         stats["edges_proposed"],
         stats["edges_inserted"],

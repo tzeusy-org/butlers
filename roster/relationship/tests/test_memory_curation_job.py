@@ -28,6 +28,7 @@ import pytest
 # The roster job module is loaded by conftest.py via _load_roster_jobs and
 # registered in sys.modules as butlers.jobs._roster.relationship_jobs.
 from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
+    _backfill_object_entity_ids,
     _infer_predicate_from_prose,
     run_fact_retraction_curation,
     run_memory_curation,
@@ -790,6 +791,299 @@ class TestMemoryCurationMultipleFacts:
         assert result["edges_proposed"] == 3
         assert result["edges_inserted"] == 3
         assert result["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: object_entity_id authoring backfill (_backfill_object_entity_ids)
+# ---------------------------------------------------------------------------
+
+
+async def _insert_relational_fact_no_oid(
+    pool: asyncpg.Pool,
+    *,
+    predicate: str,
+    content: str,
+    subject_entity_id: uuid.UUID,
+) -> uuid.UUID:
+    """Insert a relational fact WITHOUT object_entity_id (old authoring style)."""
+    return await pool.fetchval(
+        """
+        INSERT INTO facts (predicate, content, entity_id, validity)
+        VALUES ($1, $2, $3, 'active')
+        RETURNING id
+        """,
+        predicate,
+        content,
+        subject_entity_id,
+    )
+
+
+class TestObjectEntityIdBackfill:
+    """Backfill helper resolves object_entity_id from content for relational facts."""
+
+    async def test_backfill_resolves_exact_canonical_name(self, pool: asyncpg.Pool):
+        """Content that exactly matches an entity canonical_name gets object_entity_id set."""
+        subject = await _make_entity(pool, name="Alice")
+        org = await _make_entity(pool, name="Acme Corp")
+
+        fact_id = await _insert_relational_fact_no_oid(
+            pool, predicate="works_at", content="Acme Corp", subject_entity_id=subject
+        )
+
+        result = await _backfill_object_entity_ids(pool)
+
+        assert result["backfill_scanned"] == 1
+        assert result["backfill_resolved"] == 1
+        assert result["backfill_ambiguous"] == 0
+        assert result["backfill_unresolved"] == 0
+
+        row = await pool.fetchrow("SELECT object_entity_id FROM facts WHERE id = $1", fact_id)
+        assert row["object_entity_id"] == org
+
+    async def test_backfill_resolves_case_insensitive_name(self, pool: asyncpg.Pool):
+        """canonical_name lookup is case-insensitive."""
+        subject = await _make_entity(pool, name="Bob")
+        org = await _make_entity(pool, name="Google Inc")
+
+        fact_id = await _insert_relational_fact_no_oid(
+            pool, predicate="works_at", content="google inc", subject_entity_id=subject
+        )
+
+        result = await _backfill_object_entity_ids(pool)
+
+        assert result["backfill_resolved"] == 1
+        row = await pool.fetchrow("SELECT object_entity_id FROM facts WHERE id = $1", fact_id)
+        assert row["object_entity_id"] == org
+
+    async def test_backfill_skips_ambiguous_names(self, pool: asyncpg.Pool):
+        """When two entities share a canonical_name, backfill skips (ambiguous)."""
+        subject = await _make_entity(pool, name="Carol")
+        await _make_entity(pool, name="Shared Name")
+        await _make_entity(pool, name="Shared Name")
+
+        fact_id = await _insert_relational_fact_no_oid(
+            pool, predicate="works_at", content="Shared Name", subject_entity_id=subject
+        )
+
+        result = await _backfill_object_entity_ids(pool)
+
+        assert result["backfill_ambiguous"] == 1
+        assert result["backfill_resolved"] == 0
+
+        row = await pool.fetchrow("SELECT object_entity_id FROM facts WHERE id = $1", fact_id)
+        assert row["object_entity_id"] is None
+
+    async def test_backfill_skips_unknown_content(self, pool: asyncpg.Pool):
+        """Content that matches no entity is counted as unresolved."""
+        subject = await _make_entity(pool, name="Dave")
+
+        await _insert_relational_fact_no_oid(
+            pool,
+            predicate="works_at",
+            content="NoSuchEntityEverXYZ",
+            subject_entity_id=subject,
+        )
+
+        result = await _backfill_object_entity_ids(pool)
+
+        assert result["backfill_unresolved"] == 1
+        assert result["backfill_resolved"] == 0
+
+    async def test_backfill_skips_non_relational_predicates(self, pool: asyncpg.Pool):
+        """Only _DIRECT_OR_ALIAS_PREDICATES are candidates — prose/property predicates
+        with complex content are not attempted (content is not a clean entity name)."""
+        subject = await _make_entity(pool, name="Eve")
+
+        await pool.execute(
+            "INSERT INTO facts (predicate, content, entity_id, validity) VALUES ($1, $2, $3, 'active')",
+            "birthday",
+            "March 15, 1990",
+            subject,
+        )
+
+        result = await _backfill_object_entity_ids(pool)
+
+        # birthday is not in _DIRECT_OR_ALIAS_PREDICATES, so scanned=0
+        assert result["backfill_scanned"] == 0
+
+    async def test_backfill_skips_facts_with_existing_object_entity_id(self, pool: asyncpg.Pool):
+        """Facts that already have object_entity_id are not re-processed."""
+        subject = await _make_entity(pool, name="Frank")
+        obj = await _make_entity(pool, name="Existing Org")
+
+        # Insert a fact WITH object_entity_id already set
+        await pool.execute(
+            "INSERT INTO facts (predicate, content, entity_id, object_entity_id, validity) "
+            "VALUES ($1, $2, $3, $4, 'active')",
+            "works_at",
+            "Existing Org",
+            subject,
+            obj,
+        )
+
+        result = await _backfill_object_entity_ids(pool)
+
+        assert result["backfill_scanned"] == 0  # excluded by IS NULL filter
+
+    async def test_backfill_skips_retracted_facts(self, pool: asyncpg.Pool):
+        """Retracted facts are not backfilled."""
+        subject = await _make_entity(pool, name="Grace")
+        await _make_entity(pool, name="Retracted Org")
+
+        await pool.execute(
+            "INSERT INTO facts (predicate, content, entity_id, validity) VALUES ($1, $2, $3, 'retracted')",
+            "works_at",
+            "Retracted Org",
+            subject,
+        )
+
+        result = await _backfill_object_entity_ids(pool)
+
+        assert result["backfill_scanned"] == 0
+
+    async def test_backfill_is_idempotent(self, pool: asyncpg.Pool):
+        """Running backfill twice doesn't double-update; second run finds 0 candidates."""
+        subject = await _make_entity(pool, name="Alice")
+        await _make_entity(pool, name="Idempotent Org")
+
+        await _insert_relational_fact_no_oid(
+            pool, predicate="works_at", content="Idempotent Org", subject_entity_id=subject
+        )
+
+        first = await _backfill_object_entity_ids(pool)
+        second = await _backfill_object_entity_ids(pool)
+
+        assert first["backfill_resolved"] == 1
+        # Second run: object_entity_id is now set, so the fact is excluded by IS NULL filter
+        assert second["backfill_scanned"] == 0
+        assert second["backfill_resolved"] == 0
+
+
+class TestMemoryCurationWithBackfill:
+    """End-to-end: backfill + promotion in a single run_memory_curation call.
+
+    Proves that relational edge-facts stored without object_entity_id (old
+    authoring style) are resolved by the backfill pass and then promoted to
+    entity_facts by the promotion sweep — all within one run_memory_curation
+    call.  After the fix, src='memory_curation' rows appear in entity_facts
+    (the job is no longer a structural no-op).
+    """
+
+    async def test_newly_authored_fact_with_object_entity_id_is_promoted(self, pool: asyncpg.Pool):
+        """New authoring path: fact with object_entity_id set → promoted to entity_facts
+        with src='memory_curation'.
+
+        This is acceptance criterion #1: new LLM-authored relational edge-facts
+        carrying object_entity_id are promoted by run_memory_curation.
+        """
+        subject = await _make_entity(pool, name="New Author Person")
+        obj = await _make_entity(pool, name="New Author Org")
+
+        # Simulate the new authoring path: prose fact WITH object_entity_id
+        await _insert_prose_fact(
+            pool,
+            predicate="works_at",
+            content="New Author Org",
+            subject_entity_id=subject,
+            object_entity_id=obj,
+        )
+
+        result = await run_memory_curation(pool)
+
+        # Promotion succeeds
+        assert result["edges_inserted"] == 1
+        assert result["errors"] == 0
+
+        # Verify src='memory_curation' row in entity_facts
+        edge = await pool.fetchrow(
+            """
+            SELECT src FROM relationship.entity_facts
+            WHERE subject   = $1
+              AND predicate = 'works-at'
+              AND object    = $2::text
+              AND validity  = 'active'
+            """,
+            subject,
+            str(obj),
+        )
+        assert edge is not None
+        assert edge["src"] == "memory_curation"
+
+    async def test_old_style_fact_without_object_entity_id_is_backfilled_then_promoted(
+        self, pool: asyncpg.Pool
+    ):
+        """Old authoring path: fact without object_entity_id but content matching an
+        entity → backfill resolves object_entity_id → promotion creates the edge.
+
+        This is acceptance criterion #2: backfill resolves existing object-less
+        relational facts.
+
+        Acceptance criterion #3: src='memory_curation' rows appear after the fix.
+        """
+        subject = await _make_entity(pool, name="Old Author Person")
+        obj = await _make_entity(pool, name="Old Author Org")
+
+        # Simulate old authoring: relational fact WITHOUT object_entity_id
+        await _insert_relational_fact_no_oid(
+            pool,
+            predicate="works_at",
+            content="Old Author Org",
+            subject_entity_id=subject,
+        )
+
+        result = await run_memory_curation(pool)
+
+        # Backfill phase resolved the entity
+        assert result["backfill_resolved"] == 1
+        # Promotion phase created the edge
+        assert result["edges_inserted"] == 1
+        assert result["errors"] == 0
+
+        # Verify src='memory_curation' row — job is no longer a no-op
+        edge = await pool.fetchrow(
+            """
+            SELECT src FROM relationship.entity_facts
+            WHERE subject   = $1
+              AND predicate = 'works-at'
+              AND object    = $2::text
+              AND validity  = 'active'
+            """,
+            subject,
+            str(obj),
+        )
+        assert edge is not None
+        assert edge["src"] == "memory_curation"
+
+    async def test_second_run_is_idempotent_with_backfill(self, pool: asyncpg.Pool):
+        """Two consecutive runs produce one edge, not two."""
+        subject = await _make_entity(pool, name="Idempotent Person")
+        obj = await _make_entity(pool, name="Idempotent Org")
+
+        await _insert_relational_fact_no_oid(
+            pool, predicate="works_at", content="Idempotent Org", subject_entity_id=subject
+        )
+
+        first = await run_memory_curation(pool)
+        second = await run_memory_curation(pool)
+
+        assert first["edges_inserted"] == 1
+        assert second["edges_unchanged"] == 1
+        assert second["edges_inserted"] == 0
+        assert second["backfill_scanned"] == 0  # already resolved on first run
+
+        count = await _count_entity_facts(
+            pool, subject=subject, predicate="works-at", object_entity=obj
+        )
+        assert count == 1
+
+    async def test_return_dict_includes_backfill_keys(self, pool: asyncpg.Pool):
+        """run_memory_curation result dict exposes all four backfill stat keys."""
+        result = await run_memory_curation(pool)
+
+        assert "backfill_scanned" in result
+        assert "backfill_resolved" in result
+        assert "backfill_ambiguous" in result
+        assert "backfill_unresolved" in result
 
 
 # ---------------------------------------------------------------------------

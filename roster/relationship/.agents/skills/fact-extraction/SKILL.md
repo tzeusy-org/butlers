@@ -291,6 +291,10 @@ being pure attribute facts. When you extract a property fact whose *content*
 names another person and describes a durable relationship, you MUST emit BOTH:
 
 1. The **property fact** via `memory_store_fact()` (for narrative record / search).
+   **Always include `object_entity_id`** in this call — set it to the resolved entity UUID
+   of the person/org named in the content. This lets the scheduled `memory_curation`
+   job pick up the prose fact and promote it to a structured edge even when the
+   dual-emit step below is skipped or repeated in a future session.
 2. The **registry-relational edge** via `relationship_assert_fact(object_kind='entity')` (for
    the entity graph).
 
@@ -346,11 +350,14 @@ else:
     chloe_entity_id = chloe["entity_id"]
 
 # Step 3: narrative property fact (self-contained description)
+# INCLUDE object_entity_id so memory_curation can promote this fact to entity_facts
+# even if the relationship_assert_fact call below is somehow missed.
 memory_store_fact(
     subject="owner",
     predicate="living_arrangement",
     content="Cohabiting partner with Chloe Wong",
     entity_id="<owner-entity-id>",
+    object_entity_id=chloe_entity_id,  # link object entity for memory_curation promoter
     permanence="stable",
     importance=8.0,
     tags=["relationship"],
@@ -855,11 +862,13 @@ You should still run Steps 1–3 for any *other* people mentioned in the message
 
 **Actions:**
 1. `memory_entity_resolve("Chloe", entity_type="person", context_hints={...})` → `entity_id="<uuid-chloe>"`, single match (HIGH conf)
-2. `memory_store_fact(subject="owner", predicate="living_arrangement", content="Cohabiting partner with Chloe Wong for 3 years", entity_id="<uuid-owner>", permanence="stable", importance=9.0, tags=["relationship", "family"])` — narrative property fact
+2. `memory_store_fact(subject="owner", predicate="living_arrangement", content="Cohabiting partner with Chloe Wong for 3 years", entity_id="<uuid-owner>", object_entity_id="<uuid-chloe>", permanence="stable", importance=9.0, tags=["relationship", "family"])` — narrative property fact **with object_entity_id** so memory_curation can promote it
 3. `relationship_assert_fact(subject="<uuid-owner>", predicate="partner-of", object="<uuid-chloe>", src="relationship", object_kind="entity", conf=1.0, weight=9)` — **MANDATORY dual-emit**: explicit partnership → full confidence registry-relational edge (owner entity → pending_approval via RFC 0017 §2.3, not written directly)
 4. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
 
 **Why dual-emit?** The `living_arrangement` property fact alone leaves the entity graph with zero partner-of edges. Searching for "who is the owner's partner?" finds nothing. The registry-relational edge is what populates `/entities/concentration` and makes the relationship graph useful.
+
+**Why include `object_entity_id` in `memory_store_fact`?** Prose predicates like `living_arrangement` are not registry-relational predicates so the writer accepts `object_entity_id` on them. Including it lets the `memory_curation` scheduled job find and promote this fact independently of the explicit `relationship_assert_fact` call, providing a safety net if the dual-emit is ever missed in a session.
 
 ### Example 14: Inferred Family Claim — Low-Confidence Gate
 
