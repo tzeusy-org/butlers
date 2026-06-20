@@ -285,7 +285,9 @@ class TestSweepCandidatesRemainPending:
 
         # Both bills still pending → appear in upcoming
         result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        assert len(result["needs_action"]) == 2, "unresolved ambiguous bills must remain in upcoming list"
+        assert len(result["needs_action"]) == 2, (
+            "unresolved ambiguous bills must remain in upcoming list"
+        )
 
     async def test_candidates_carry_required_digest_fields(self, pool):
         """Each candidate entry has the fields needed for the digest confirm section."""
@@ -514,7 +516,9 @@ class TestPaymentBeforeBillSwept:
         # 3. Without sweep, bill appears as overdue
         result_before = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
         assert len(result_before["needs_action"]) == 1
-        overdue_before = len([i for i in result_before["needs_action"] if i["urgency"] == "overdue"])
+        overdue_before = len(
+            [i for i in result_before["needs_action"] if i["urgency"] == "overdue"]
+        )
         assert overdue_before == 1
 
         # 4. Sweep catches and settles it
