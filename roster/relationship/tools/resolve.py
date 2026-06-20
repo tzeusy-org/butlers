@@ -44,11 +44,15 @@ GROUP_TYPE_WEIGHTS = {
 
 
 def _display_name_from_row(row: asyncpg.Record | dict[str, Any]) -> str:
-    first = (row.get("first_name") if isinstance(row, dict) else row["first_name"]) or ""
-    last = (row.get("last_name") if isinstance(row, dict) else row["last_name"]) or ""
-    nickname = (row.get("nickname") if isinstance(row, dict) else row["nickname"]) or ""
+    # asyncpg.Record and dict both support .get(); profile name parts may be
+    # absent on entities that predate a CRM profile, so fall back to the
+    # entity's canonical_name.
+    first = row.get("first_name") or ""
+    last = row.get("last_name") or ""
+    nickname = row.get("nickname") or ""
+    canonical = row.get("canonical_name") or ""
     full = " ".join(part for part in [first, last] if part).strip()
-    return full or nickname or first or "Unknown"
+    return full or nickname or canonical or first or "Unknown"
 
 
 def _generate_inferred_reason(candidate: dict[str, Any]) -> str:
@@ -139,20 +143,37 @@ async def contact_resolve(
             "inferred_reason": None,
         }
 
-    # Step 1: Exact match (case-insensitive, listed contacts only)
+    # Step 1: Exact match (case-insensitive, listed contacts only).
+    # Sourced from public.entities (canonical_name + aliases + profile) joined to
+    # contact_entity_map to recover the contact_id; public.contacts is retired.
     exact_rows = await pool.fetch(
         """
-        SELECT id, first_name, last_name, nickname, company, job_title, metadata, entity_id
-        FROM contacts
-        WHERE listed = true
+        SELECT
+            m.contact_id                              AS id,
+            e.id                                      AS entity_id,
+            e.canonical_name,
+            e.metadata,
+            e.metadata -> 'profile' ->> 'first_name' AS first_name,
+            e.metadata -> 'profile' ->> 'last_name'  AS last_name,
+            e.metadata -> 'profile' ->> 'company'    AS company,
+            e.metadata -> 'profile' ->> 'job_title'  AS job_title
+        FROM public.entities e
+        JOIN contact_entity_map m ON m.entity_id = e.id
+        WHERE e.listed = true
           AND (
-            LOWER(COALESCE(first_name, '')) = LOWER($1)
-            OR LOWER(COALESCE(nickname, '')) = LOWER($1)
+            LOWER(COALESCE(e.metadata -> 'profile' ->> 'first_name', '')) = LOWER($1)
+            OR LOWER(e.canonical_name) = LOWER($1)
+            OR EXISTS (
+                SELECT 1 FROM unnest(e.aliases) AS alias
+                WHERE LOWER(alias) = LOWER($1)
+            )
             OR LOWER(
-                TRIM(CONCAT_WS(' ', COALESCE(first_name, ''), COALESCE(last_name, '')))
+                TRIM(CONCAT_WS(' ',
+                    COALESCE(e.metadata -> 'profile' ->> 'first_name', ''),
+                    COALESCE(e.metadata -> 'profile' ->> 'last_name', '')))
             ) = LOWER($1)
           )
-        ORDER BY updated_at DESC
+        ORDER BY e.updated_at DESC
         """,
         name,
     )
@@ -213,25 +234,40 @@ async def contact_resolve(
     name_parts = name.split()
     partial_rows = await pool.fetch(
         """
-        SELECT id, first_name, last_name, nickname, company, job_title, metadata, entity_id
-        FROM contacts
-        WHERE listed = true
+        SELECT
+            m.contact_id                              AS id,
+            e.id                                      AS entity_id,
+            e.canonical_name,
+            e.metadata,
+            e.metadata -> 'profile' ->> 'first_name' AS first_name,
+            e.metadata -> 'profile' ->> 'last_name'  AS last_name,
+            e.metadata -> 'profile' ->> 'company'    AS company,
+            e.metadata -> 'profile' ->> 'job_title'  AS job_title
+        FROM public.entities e
+        JOIN contact_entity_map m ON m.entity_id = e.id
+        WHERE e.listed = true
           AND (
-            first_name ILIKE '%' || $1 || '%'
-            OR last_name ILIKE '%' || $1 || '%'
-            OR nickname ILIKE '%' || $1 || '%'
-            OR company ILIKE '%' || $1 || '%'
+            (e.metadata -> 'profile' ->> 'first_name') ILIKE '%' || $1 || '%'
+            OR (e.metadata -> 'profile' ->> 'last_name') ILIKE '%' || $1 || '%'
+            OR (e.metadata -> 'profile' ->> 'company') ILIKE '%' || $1 || '%'
+            OR e.canonical_name ILIKE '%' || $1 || '%'
+            OR EXISTS (
+                SELECT 1 FROM unnest(e.aliases) AS alias
+                WHERE alias ILIKE '%' || $1 || '%'
+            )
             OR EXISTS (
                 SELECT 1 FROM unnest(
                     string_to_array(
-                        TRIM(CONCAT_WS(' ', COALESCE(first_name, ''), COALESCE(last_name, ''))),
+                        TRIM(CONCAT_WS(' ',
+                            COALESCE(e.metadata -> 'profile' ->> 'first_name', ''),
+                            COALESCE(e.metadata -> 'profile' ->> 'last_name', ''))),
                         ' '
                     )
                 ) AS word
                 WHERE LOWER(word) = LOWER($1)
             )
           )
-        ORDER BY first_name, last_name, nickname
+        ORDER BY e.canonical_name
         """,
         name,
     )
@@ -242,15 +278,30 @@ async def contact_resolve(
         conditions = []
         params: list[Any] = []
         for i, part in enumerate(name_parts, start=1):
-            conditions.append(f"first_name ILIKE '%' || ${i} || '%'")
-            conditions.append(f"last_name ILIKE '%' || ${i} || '%'")
-            conditions.append(f"nickname ILIKE '%' || ${i} || '%'")
+            conditions.append(
+                f"(e.metadata -> 'profile' ->> 'first_name') ILIKE '%' || ${i} || '%'"
+            )
+            conditions.append(f"(e.metadata -> 'profile' ->> 'last_name') ILIKE '%' || ${i} || '%'")
+            conditions.append(f"e.canonical_name ILIKE '%' || ${i} || '%'")
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM unnest(e.aliases) AS alias "
+                f"WHERE alias ILIKE '%' || ${i} || '%')"
+            )
             params.append(part)
         query = f"""
-            SELECT id, first_name, last_name, nickname, company, job_title, metadata, entity_id
-            FROM contacts
-            WHERE listed = true AND ({" OR ".join(conditions)})
-            ORDER BY first_name, last_name, nickname
+            SELECT
+                m.contact_id                              AS id,
+                e.id                                      AS entity_id,
+                e.canonical_name,
+                e.metadata,
+                e.metadata -> 'profile' ->> 'first_name' AS first_name,
+                e.metadata -> 'profile' ->> 'last_name'  AS last_name,
+                e.metadata -> 'profile' ->> 'company'    AS company,
+                e.metadata -> 'profile' ->> 'job_title'  AS job_title
+            FROM public.entities e
+            JOIN contact_entity_map m ON m.entity_id = e.id
+            WHERE e.listed = true AND ({" OR ".join(conditions)})
+            ORDER BY e.canonical_name
         """
         partial_rows = await pool.fetch(query, *params)
 
@@ -468,7 +519,7 @@ async def _compute_salience(
     - relationships: type-to-user weight
     - interactions: count in last 90 days + recency
     - facts + notes: row count (density via entity_id)
-    - contacts.stay_in_touch_days: cadence importance
+    - entities.stay_in_touch_days: cadence importance (via contact_entity_map)
     - group_members → groups.type: group type weight
 
     Returns candidates with 'salience' field added and score updated.
@@ -476,9 +527,15 @@ async def _compute_salience(
     # Extract all candidate IDs for batch queries
     candidate_ids = [c["contact_id"] for c in candidates]
 
-    # Batch query 1: All contact data (stay_in_touch_days)
+    # Batch query 1: All contact data (stay_in_touch_days lives on public.entities
+    # since rel_031; recover contact_id via contact_entity_map).
     contact_data_rows = await pool.fetch(
-        "SELECT id, stay_in_touch_days FROM contacts WHERE id = ANY($1)",
+        """
+        SELECT m.contact_id AS id, e.stay_in_touch_days
+        FROM contact_entity_map m
+        JOIN public.entities e ON e.id = m.entity_id
+        WHERE m.contact_id = ANY($1)
+        """,
         candidate_ids,
     )
     contact_data = {row["id"]: row for row in contact_data_rows}
@@ -510,18 +567,17 @@ async def _compute_salience(
         interaction_rows = await pool.fetch(
             """
             SELECT
-                c.id AS contact_id,
+                m.contact_id AS contact_id,
                 COUNT(*) FILTER (WHERE f.valid_at >= NOW() - INTERVAL '90 days') as count_90d,
                 MAX(f.valid_at) as most_recent
-            FROM contacts c
+            FROM contact_entity_map m
             LEFT JOIN facts f
-                ON f.entity_id = c.entity_id
+                ON f.entity_id = m.entity_id
                AND f.predicate LIKE 'interaction_%'
                AND f.scope = 'relationship'
                AND f.validity = 'active'
-            WHERE c.id = ANY($1)
-              AND c.entity_id IS NOT NULL
-            GROUP BY c.id
+            WHERE m.contact_id = ANY($1)
+            GROUP BY m.contact_id
             """,
             candidate_ids,
         )
@@ -541,7 +597,7 @@ async def _compute_salience(
         fact_note_rows = await pool.fetch(
             """
             SELECT
-                c.id AS contact_id,
+                m.contact_id AS contact_id,
                 COUNT(*) FILTER (
                     WHERE f.predicate != 'contact_note'
                       AND f.predicate NOT LIKE 'interaction_%'
@@ -549,14 +605,13 @@ async def _compute_salience(
                 COUNT(*) FILTER (
                     WHERE f.predicate = 'contact_note'
                 ) as note_count
-            FROM contacts c
+            FROM contact_entity_map m
             LEFT JOIN facts f
-                ON f.entity_id = c.entity_id
+                ON f.entity_id = m.entity_id
                AND f.scope IN ('global', 'relationship')
                AND f.validity = 'active'
-            WHERE c.id = ANY($1)
-              AND c.entity_id IS NOT NULL
-            GROUP BY c.id
+            WHERE m.contact_id = ANY($1)
+            GROUP BY m.contact_id
             """,
             candidate_ids,
         )
@@ -667,12 +722,20 @@ async def _boost_single_by_context(
     context_words = [w.lower() for w in context.split() if len(w) > 2]
     cid = candidate["contact_id"]
 
-    # Check metadata and explicit profile fields
+    # Check metadata and explicit profile fields (sourced from public.entities,
+    # joined via contact_entity_map; public.contacts is retired).
     detail_row = await pool.fetchrow(
         """
-        SELECT metadata, company, job_title, first_name, last_name, nickname
-        FROM contacts
-        WHERE id = $1
+        SELECT
+            e.metadata,
+            e.canonical_name,
+            e.metadata -> 'profile' ->> 'company'    AS company,
+            e.metadata -> 'profile' ->> 'job_title'  AS job_title,
+            e.metadata -> 'profile' ->> 'first_name' AS first_name,
+            e.metadata -> 'profile' ->> 'last_name'  AS last_name
+        FROM public.entities e
+        JOIN contact_entity_map m ON m.entity_id = e.id
+        WHERE m.contact_id = $1
         """,
         cid,
     )
@@ -689,7 +752,7 @@ async def _boost_single_by_context(
                 str(detail_row["job_title"] or ""),
                 str(detail_row["first_name"] or ""),
                 str(detail_row["last_name"] or ""),
-                str(detail_row["nickname"] or ""),
+                str(detail_row["canonical_name"] or ""),
             ]
         ).lower()
         for word in context_words:
@@ -697,8 +760,11 @@ async def _boost_single_by_context(
                 candidate["score"] += 10
                 break
 
-    # Check notes and interactions via entity_id (SPO facts table)
-    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
+    # Check notes and interactions via entity_id (SPO facts table).
+    # entity_id is recovered from contact_entity_map (public.contacts is retired).
+    entity_id = await pool.fetchval(
+        "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", cid
+    )
     if entity_id is None:
         return
 
