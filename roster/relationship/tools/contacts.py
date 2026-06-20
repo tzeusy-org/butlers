@@ -170,6 +170,7 @@ def _parse_contact(row: Any) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": d.get("id"),
         "entity_id": d.get("entity_id"),
+        "canonical_name": canonical or None,
         "first_name": first_name or None,
         "last_name": last_name or None,
         "nickname": nickname or None,
