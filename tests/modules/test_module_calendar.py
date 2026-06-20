@@ -2202,3 +2202,110 @@ class TestCalendarModuleExtraStatusFields:
         result = await mod.extra_status_fields()
 
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# calendar_propose_event — proposal staging
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarProposeEvent:
+    """Tests for calendar_propose_event / _propose_event."""
+
+    def _make_pool(
+        self, *, insert_id: uuid.UUID | None = None, existing_id: uuid.UUID | None = None
+    ) -> MagicMock:
+        """Pool stub: fetchrow returns a row with insert_id (or None on conflict), fetchval returns existing_id."""
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": insert_id} if insert_id is not None else None)
+        pool.fetchval = AsyncMock(return_value=existing_id)
+        return pool
+
+    async def test_insert_creates_pending_row(self) -> None:
+        """_propose_event inserts a row and returns the new proposal id."""
+        proposal_id = uuid.uuid4()
+        pool = self._make_pool(insert_id=proposal_id)
+        mod = CalendarModule()
+        mod._butler_name = "finance"
+        mod._db = SimpleNamespace(pool=pool)
+
+        result = await mod._propose_event(
+            title="Budget Review",
+            start_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+
+        assert result == proposal_id
+        sql, *params = pool.fetchrow.await_args.args
+        assert "INSERT INTO calendar_event_proposals" in sql
+        assert "ON CONFLICT" in sql
+        assert "DO NOTHING" in sql
+        assert "finance" in params  # butler_name
+        assert "Budget Review" in params
+
+    async def test_duplicate_source_event_id_returns_existing(self) -> None:
+        """Duplicate source_event_id is a no-op — returns existing proposal id."""
+        existing_id = uuid.uuid4()
+        pool = self._make_pool(insert_id=None, existing_id=existing_id)
+        mod = CalendarModule()
+        mod._butler_name = "finance"
+        mod._db = SimpleNamespace(pool=pool)
+
+        result = await mod._propose_event(
+            title="Budget Review",
+            start_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 1, 11, 0, tzinfo=UTC),
+            source_event_id="evt-src-123",
+        )
+
+        assert result == existing_id
+        # fetchval called with the source_event_id to retrieve the existing row
+        pool.fetchval.assert_awaited_once()
+        fetchval_args = pool.fetchval.await_args.args
+        assert "evt-src-123" in fetchval_args
+
+    async def test_no_provider_call_made(self) -> None:
+        """_propose_event never touches the provider client."""
+        proposal_id = uuid.uuid4()
+        pool = self._make_pool(insert_id=proposal_id)
+        mod = CalendarModule()
+        mod._butler_name = "finance"
+        mod._db = SimpleNamespace(pool=pool)
+
+        provider = MagicMock()
+        mod._provider = provider
+
+        await mod._propose_event(
+            title="Quarterly Planning",
+            start_at=datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+        )
+
+        provider.create_event.assert_not_called()
+        provider.list_events.assert_not_called()
+        provider.get_event.assert_not_called()
+
+    async def test_mcp_tool_registered_and_returns_proposal_id(self) -> None:
+        """calendar_propose_event MCP tool is registered and returns proposal_id as string."""
+        proposal_id = uuid.uuid4()
+        pool = self._make_pool(insert_id=proposal_id)
+        mod = CalendarModule()
+        mod._butler_name = "finance"
+        mod._db = SimpleNamespace(pool=pool)
+
+        mcp = _StubMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google"},
+            db=SimpleNamespace(pool=pool),
+            butler_name="finance",
+        )
+
+        assert "calendar_propose_event" in mcp.tools
+        result = await mcp.tools["calendar_propose_event"](
+            title="Budget Review",
+            start_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 1, 11, 0, tzinfo=UTC),
+        )
+        assert result["proposal_id"] == str(proposal_id)
