@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
+  getCalendarWorkspaceEntry,
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
@@ -103,6 +104,18 @@ export function useSetPrimaryCalendar() {
 interface CalendarAuditQueryOptions {
   refetchInterval?: number | false;
   enabled?: boolean;
+}
+
+/** Fetch a single calendar workspace entry by instance ID. */
+export function useCalendarWorkspaceEntry(
+  entryId: string | null,
+  options?: { enabled?: boolean; timezone?: string },
+) {
+  return useQuery({
+    queryKey: ["calendar-workspace-entry", entryId],
+    queryFn: () => getCalendarWorkspaceEntry(entryId!, options?.timezone),
+    enabled: options?.enabled ?? !!entryId,
+  });
 }
 
 /** Fetch paginated calendar mutation audit log entries. */

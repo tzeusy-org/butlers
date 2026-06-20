@@ -38,6 +38,7 @@ import type {
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
+  UnifiedCalendarEntry,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceSyncResponse,
@@ -1115,6 +1116,19 @@ export function mutateCalendarWorkspaceButlerEvent(
       method: "POST",
       body: JSON.stringify(body),
     },
+  );
+}
+
+/** Fetch a single calendar workspace entry by instance ID. */
+export function getCalendarWorkspaceEntry(
+  entryId: string,
+  timezone?: string,
+): Promise<ApiResponse<UnifiedCalendarEntry>> {
+  const sp = new URLSearchParams();
+  if (timezone) sp.set("timezone", timezone);
+  const qs = sp.toString();
+  return apiFetch<ApiResponse<UnifiedCalendarEntry>>(
+    `/calendar/workspace/entries/${encodeURIComponent(entryId)}${qs ? `?${qs}` : ""}`,
   );
 }
 

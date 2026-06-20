@@ -362,6 +362,42 @@ async def query_calendar_sources(
     return rows
 
 
+async def query_calendar_workspace_entry(
+    db: DatabaseManager,
+    *,
+    entry_id: UUID,
+) -> CalendarWorkspaceRow | None:
+    """Fetch a single calendar event-instance by its instance ID.
+
+    Fans out across all calendar-enabled butler schemas and returns the
+    first matching row (instance IDs are UUIDs, so at most one exists).
+    Returns ``None`` when no matching row is found.
+    """
+    sql = f"""
+        SELECT {WORKSPACE_COLUMNS}
+        FROM calendar_event_instances AS i
+        JOIN calendar_events AS e ON e.id = i.event_id
+        JOIN calendar_sources AS s ON s.id = i.source_id
+        LEFT JOIN LATERAL (
+            SELECT cursor_name, last_synced_at, last_success_at, last_error_at, last_error,
+                   full_sync_required, updated_at
+            FROM calendar_sync_cursors
+            WHERE source_id = s.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+        ) AS c ON TRUE
+        WHERE i.id = $1
+        LIMIT 1
+    """
+
+    query_targets = db.butlers_with_module("calendar")
+    results = await db.fan_out(sql, (entry_id,), butler_names=query_targets)
+    for butler_name, raw_rows in results.items():
+        for row in raw_rows:
+            return row_to_workspace(row, db_butler=butler_name)
+    return None
+
+
 async def query_calendar_workspace(
     db: DatabaseManager,
     *,

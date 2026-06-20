@@ -43,6 +43,7 @@ from butlers.api.models.calendar_workspace import (
 from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_sources,
     query_calendar_workspace,
+    query_calendar_workspace_entry,
 )
 from butlers.api.routers.audit import log_audit_entry
 
@@ -604,6 +605,36 @@ async def get_workspace(
         lanes=_build_lane_definitions(source_freshness),
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
+
+
+@router.get("/entries/{entry_id}", response_model=ApiResponse[UnifiedCalendarEntry])
+async def get_entry_detail(
+    entry_id: UUID,
+    timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[UnifiedCalendarEntry]:
+    """Fetch a single calendar workspace entry by instance ID."""
+    import dataclasses
+
+    display_tz: ZoneInfo | None = None
+    if timezone is not None:
+        try:
+            display_tz = ZoneInfo(timezone.strip())
+        except ZoneInfoNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+
+    dto = await query_calendar_workspace_entry(db, entry_id=entry_id)
+    if dto is None:
+        raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
+
+    row = dataclasses.asdict(dto)
+    view = str(row.get("lane") or "user")
+    try:
+        entry = _normalize_entry(row, view=view, display_tz=display_tz)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Entry has missing timestamps") from exc
+
+    return ApiResponse[UnifiedCalendarEntry](data=entry)
 
 
 @router.get("/meta", response_model=ApiResponse[CalendarWorkspaceMetaResponse])

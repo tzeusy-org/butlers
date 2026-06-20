@@ -40,6 +40,7 @@ export {
   deleteCondition,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
+  getCalendarWorkspaceEntry,
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,

@@ -25,6 +25,12 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
     error: null,
     data: { data: { entries: [], total: 0, offset: 0, limit: 50 } },
   })),
+  useCalendarWorkspaceEntry: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: null,
+  })),
   useMutateCalendarWorkspaceButlerEvent: vi.fn(),
   useSyncCalendarWorkspace: vi.fn(),
   useMutateCalendarWorkspaceUserEvent: vi.fn(),
@@ -48,6 +54,7 @@ type UseSyncResult = ReturnType<typeof useSyncCalendarWorkspace>;
 type UseUserMutationResult = ReturnType<typeof useMutateCalendarWorkspaceUserEvent>;
 
 const mutateButlerEvent = vi.fn();
+const mutateUserEvent = vi.fn();
 
 function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -232,6 +239,7 @@ function setSyncState(state?: Partial<UseSyncResult>) {
 
 function setUserMutationState(state?: Partial<UseUserMutationResult>) {
   vi.mocked(useMutateCalendarWorkspaceUserEvent).mockReturnValue({
+    mutate: mutateUserEvent,
     mutateAsync: vi.fn().mockResolvedValue({
       data: {
         action: "create",
@@ -463,6 +471,7 @@ describe("CalendarWorkspacePage", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mutateButlerEvent.mockReset();
+    mutateUserEvent.mockReset();
     setWorkspaceState();
     setWorkspaceMetaState();
     setButlerMutationState();
@@ -726,50 +735,42 @@ describe("CalendarWorkspacePage", () => {
     expect(optionValues).not.toContain("google:orphan");
   });
 
-  it("updates user event through workspace mutation endpoint", async () => {
-    const mutateAsync = vi.fn().mockResolvedValue({
-      data: {
-        action: "update",
-        tool_name: "calendar_update_event",
-        request_id: "req-update",
-        result: { status: "updated" },
-        projection_version: null,
-        staleness_ms: null,
-        projection_freshness: null,
-      },
-      meta: {},
-    });
-    setUserMutationState({ mutateAsync });
-
+  it("updates user event title via detail panel inline edit", async () => {
     renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
 
-    const editButton = findButton("Edit");
-    expect(editButton).toBeDefined();
+    // "Detail" button in list view opens the panel
+    const detailButton = findButton("Detail");
+    expect(detailButton).toBeDefined();
 
     await act(async () => {
-      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      detailButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flush();
     });
 
-    const dialog = findDialogByTitle("Edit user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+    expect(panel).toBeDefined();
+
+    const titleInput = panel?.querySelector('[data-testid="detail-title-input"]') as HTMLInputElement;
+    expect(titleInput).toBeDefined();
+
+    // Update the title draft
     await act(async () => {
       setInputValue(titleInput, "Morning review");
       await flush();
     });
-
-    const form = titleInput.closest("form") as HTMLFormElement;
+    // Blur triggers save-on-blur mutation
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      titleInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
       await flush();
     });
 
-    expect(mutateAsync).toHaveBeenCalledWith(
+    expect(mutateUserEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         butler_name: "general",
         action: "update",
         payload: expect.objectContaining({
           event_id: "evt-1",
+          calendar_id: "primary",
           title: "Morning review",
         }),
       }),
@@ -1272,10 +1273,11 @@ describe("CalendarWorkspacePage", () => {
     );
   });
 
-  it("updates butler event through workspace mutation endpoint", async () => {
+  it("updates butler event title via detail panel inline edit", async () => {
     setButlerWorkspaceFixtures();
     renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
+    // Butler lane "Edit" button opens the detail panel
     const editButton = findButton("Edit");
     expect(editButton).toBeDefined();
     await act(async () => {
@@ -1283,19 +1285,18 @@ describe("CalendarWorkspacePage", () => {
       await flush();
     });
 
-    const dialog = findDialogByTitle("Edit butler event");
-    const titleInput = dialog?.querySelector("#calendar-event-title") as HTMLInputElement;
+    const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+    expect(panel).toBeDefined();
+
+    const titleInput = panel?.querySelector('[data-testid="detail-title-input"]') as HTMLInputElement;
     expect(titleInput).toBeDefined();
+
     await act(async () => {
       setInputValue(titleInput, "Updated daily prep");
       await flush();
     });
-
-    const saveButton = Array.from(dialog?.querySelectorAll("button") ?? []).find(
-      (button) => button.textContent?.trim() === "Save changes",
-    ) as HTMLButtonElement;
     await act(async () => {
-      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      titleInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
       await flush();
     });
 
@@ -1305,7 +1306,7 @@ describe("CalendarWorkspacePage", () => {
       expect.objectContaining({
         butler_name: "general",
         action: "update",
-        request_id: expect.stringMatching(/^calendar-update-/),
+        request_id: expect.stringMatching(/^detail-update-/),
         payload: expect.objectContaining({
           event_id: "sched-1",
           source_hint: "scheduled_task",
@@ -1514,6 +1515,92 @@ describe("CalendarWorkspacePage", () => {
 
     expect(toast.success).toHaveBeenCalledWith("Primary calendar updated");
     expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  describe("detail panel", () => {
+    it("renders provenance and sync state chip when entry has source_butler", async () => {
+      setWorkspaceState({
+        data: {
+          data: {
+            entries: [
+              {
+                entry_id: "entry-prov",
+                view: "user" as const,
+                source_type: "provider_event" as const,
+                source_key: "google:primary",
+                title: "Provenance test",
+                start_at: "2026-03-01T09:00:00Z",
+                end_at: "2026-03-01T09:30:00Z",
+                timezone: "UTC",
+                all_day: false,
+                calendar_id: "primary",
+                provider_event_id: "evt-prov",
+                butler_name: "general",
+                schedule_id: null,
+                reminder_id: null,
+                rrule: null,
+                cron: null,
+                until_at: null,
+                status: "active",
+                sync_state: "stale" as const,
+                editable: true,
+                metadata: {},
+                source_butler: "general",
+                source_session_id: "sess-abc",
+              },
+            ],
+            source_freshness: [],
+            lanes: [],
+          },
+          meta: {},
+        },
+      });
+
+      renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+      // Click Detail to open panel
+      const detailButton = findButton("Detail");
+      await act(async () => {
+        detailButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+      expect(panel).toBeDefined();
+
+      // Provenance: source_butler name visible
+      const sourceButlerEl = panel?.querySelector('[data-testid="detail-source-butler"]');
+      expect(sourceButlerEl).toBeDefined();
+      expect(sourceButlerEl?.textContent).toContain("general");
+
+      // Provenance: session link visible
+      const sessionLink = panel?.querySelector('[data-testid="detail-session-link"]');
+      expect(sessionLink).toBeDefined();
+
+      // sync_state chip visible (non-null sync_state → chip rendered)
+      expect(panel?.textContent).toContain("stale");
+    });
+
+    it("closes the panel when close button is pressed", async () => {
+      renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+      const detailButton = findButton("Detail");
+      await act(async () => {
+        detailButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      expect(container.querySelector('[data-testid="entry-detail-panel"]')).toBeDefined();
+
+      const closeBtn = container.querySelector('button[aria-label="Close detail panel"]') as HTMLButtonElement;
+      expect(closeBtn).toBeDefined();
+      await act(async () => {
+        closeBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      expect(container.querySelector('[data-testid="entry-detail-panel"]')).toBeNull();
+    });
   });
 
   describe("recurring instance capping", () => {

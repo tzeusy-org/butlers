@@ -637,3 +637,54 @@ async def test_audit_payload_summary_contains_key_fields(app):
     assert "title" in summary
     assert "start_at" in summary
     assert "internal_field" not in summary
+
+
+# ---------------------------------------------------------------------------
+# Single-entry lookup — GET /api/calendar/workspace/entries/{entry_id}
+# ---------------------------------------------------------------------------
+
+
+async def test_entry_detail_returns_entry(app):
+    """GET /entries/{id} returns 200 with the matching entry."""
+    from uuid import UUID
+
+    row = _workspace_event_row(
+        lane="user",
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event", "provider_event_id": "evt-detail"},
+    )
+    instance_id: UUID = row["instance_id"]
+
+    app, _, _ = _build_app(
+        app,
+        workspace_rows={"general": [row]},
+        calendar_butlers=["general"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/calendar/workspace/entries/{instance_id}")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["entry_id"] == str(instance_id)
+    assert data["title"] == "Calendar item"
+    assert data["view"] == "user"
+
+
+async def test_entry_detail_returns_404_when_not_found(app):
+    """GET /entries/{id} returns 404 when no matching instance exists."""
+    from uuid import uuid4
+
+    app, _, _ = _build_app(app, workspace_rows={}, calendar_butlers=["general"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/calendar/workspace/entries/{uuid4()}")
+
+    assert resp.status_code == 404

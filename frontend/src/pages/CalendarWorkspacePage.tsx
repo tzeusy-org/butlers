@@ -247,22 +247,6 @@ function toRRuleUntilToken(value: Date): string {
   return `${compact.slice(0, 15)}Z`;
 }
 
-function parseRRuleUntilToken(token: string): Date | null {
-  const dateTimeMatch = token.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
-  if (dateTimeMatch) {
-    const [, y, m, d, hh, mm, ss] = dateTimeMatch;
-    return new Date(Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss)));
-  }
-
-  const dateOnlyMatch = token.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (dateOnlyMatch) {
-    const [, y, m, d] = dateOnlyMatch;
-    return new Date(Date.UTC(Number(y), Number(m) - 1, Number(d), 0, 0, 0));
-  }
-
-  return null;
-}
-
 function buildRRule(
   frequency: RecurrenceFrequency,
   untilAt: Date | null,
@@ -275,59 +259,6 @@ function buildRRule(
     parts.push(`UNTIL=${toRRuleUntilToken(untilAt)}`);
   }
   return `RRULE:${parts.join(";")}`;
-}
-
-function parseRRule(
-  rule: string | null,
-  untilAtIso: string | null,
-): { frequency: RecurrenceFrequency; untilAtLocal: string; hasUntilAt: boolean } {
-  if (!rule) {
-    if (untilAtIso) {
-      const until = new Date(untilAtIso);
-      if (Number.isFinite(until.getTime())) {
-        return {
-          frequency: "NONE",
-          untilAtLocal: formatLocalDateTimeInput(until),
-          hasUntilAt: true,
-        };
-      }
-    }
-    return { frequency: "NONE", untilAtLocal: "", hasUntilAt: false };
-  }
-
-  const upper = rule.toUpperCase();
-  const freqMatch = upper.match(/FREQ=([A-Z]+)/);
-  const untilMatch = upper.match(/UNTIL=([0-9TZ]+)/);
-
-  let frequency: RecurrenceFrequency = "NONE";
-  if (
-    freqMatch?.[1] === "DAILY" ||
-    freqMatch?.[1] === "WEEKLY" ||
-    freqMatch?.[1] === "MONTHLY" ||
-    freqMatch?.[1] === "YEARLY"
-  ) {
-    frequency = freqMatch[1];
-  }
-
-  const untilCandidate = untilMatch?.[1]
-    ? parseRRuleUntilToken(untilMatch[1])
-    : untilAtIso
-      ? new Date(untilAtIso)
-      : null;
-
-  if (untilCandidate && Number.isFinite(untilCandidate.getTime())) {
-    return {
-      frequency,
-      untilAtLocal: formatLocalDateTimeInput(untilCandidate),
-      hasUntilAt: true,
-    };
-  }
-
-  return {
-    frequency,
-    untilAtLocal: "",
-    hasUntilAt: false,
-  };
 }
 
 function formatStaleness(stalenessMs: number | null): string {
@@ -357,14 +288,6 @@ function formatOptionalTimestamp(value: string | null): string | null {
   const parsed = parseISO(value);
   if (!isValid(parsed)) return null;
   return format(parsed, "MMM d, HH:mm");
-}
-
-function toLocalDateTimeValue(value: string): string {
-  const parsed = parseISO(value);
-  if (!isValid(parsed)) {
-    return "";
-  }
-  return format(parsed, "yyyy-MM-dd'T'HH:mm");
 }
 
 function toIsoFromLocalDateTime(value: string): string | null {
@@ -492,10 +415,6 @@ function createDefaultButlerDraft(timezone: string, butlerName: string): ButlerE
     untilAtLocal: "",
     cron: "",
   };
-}
-
-function inferEventKind(entry: UnifiedCalendarEntry): ButlerEventKind {
-  return entry.source_type === "scheduled_task" ? "scheduled_task" : "butler_reminder";
 }
 
 function resolveButlerEventTarget(
@@ -850,6 +769,304 @@ function CalendarActivityPanel({ auditQuery, offset, limit, onPageChange }: Cale
 }
 
 // ---------------------------------------------------------------------------
+// CalendarEntryDetailPanel
+// ---------------------------------------------------------------------------
+
+interface CalendarEntryDetailPanelProps {
+  entry: UnifiedCalendarEntry;
+  onClose: () => void;
+  onDelete?: (entry: UnifiedCalendarEntry) => void;
+  onUserEdit?: (entry: UnifiedCalendarEntry) => void;
+  onButlerEdit?: (entry: UnifiedCalendarEntry) => void;
+  userMutation: ReturnType<typeof useMutateCalendarWorkspaceUserEvent>;
+  butlerMutation: ReturnType<typeof useMutateCalendarWorkspaceButlerEvent>;
+}
+
+function CalendarEntryDetailPanel({
+  entry,
+  onClose,
+  onDelete,
+  userMutation,
+  butlerMutation,
+}: CalendarEntryDetailPanelProps) {
+  const isUserEvent = entry.source_type === "provider_event";
+  const isButlerEvent =
+    entry.source_type === "scheduled_task" || entry.source_type === "butler_reminder";
+  const isPending = userMutation.isPending || butlerMutation.isPending;
+
+  // Inline editable fields — initialized from entry, updated on server response
+  // Inline-editable drafts — state is reset on mount (key={entry.entry_id} at call site)
+  const [titleDraft, setTitleDraft] = useState(entry.title);
+  const [descriptionDraft, setDescriptionDraft] = useState(
+    typeof entry.metadata?.description === "string" ? entry.metadata.description : "",
+  );
+  const [locationDraft, setLocationDraft] = useState(
+    typeof entry.metadata?.location === "string" ? entry.metadata.location : "",
+  );
+
+  function fireUserUpdate(patch: Record<string, unknown>) {
+    const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
+    if (!butlerName || !entry.provider_event_id) return;
+    userMutation.mutate({
+      butler_name: butlerName,
+      action: "update",
+      request_id: `detail-update-${Date.now()}`,
+      payload: {
+        event_id: entry.provider_event_id,
+        calendar_id: calendarId ?? undefined,
+        ...patch,
+      },
+    });
+  }
+
+  function fireButlerUpdate(patch: Record<string, unknown>) {
+    const target = resolveButlerEventTarget(entry);
+    if (!target || !entry.butler_name) return;
+    butlerMutation.mutate({
+      butler_name: entry.butler_name,
+      action: "update",
+      request_id: `detail-update-${Date.now()}`,
+      payload: {
+        event_id: target.eventId,
+        source_hint: target.sourceHint,
+        ...patch,
+      },
+    });
+  }
+
+  function handleTitleBlur() {
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === entry.title) return;
+    if (isUserEvent) fireUserUpdate({ title: trimmed });
+    else if (isButlerEvent) fireButlerUpdate({ title: trimmed });
+  }
+
+  function handleDescriptionBlur() {
+    const trimmed = descriptionDraft.trim();
+    const current =
+      typeof entry.metadata?.description === "string" ? entry.metadata.description : "";
+    if (trimmed === current) return;
+    if (isUserEvent) fireUserUpdate({ description: trimmed });
+  }
+
+  function handleLocationBlur() {
+    const trimmed = locationDraft.trim();
+    const current = typeof entry.metadata?.location === "string" ? entry.metadata.location : "";
+    if (trimmed === current) return;
+    if (isUserEvent) fireUserUpdate({ location: trimmed });
+  }
+
+  const startDate = new Date(entry.start_at);
+  const endDate = new Date(entry.end_at);
+  const startFmt = entry.all_day
+    ? format(startDate, "EEE, MMM d")
+    : format(startDate, "EEE, MMM d · HH:mm");
+  const endFmt = entry.all_day ? format(endDate, "EEE, MMM d") : format(endDate, "HH:mm");
+
+  // Attendees from Google Calendar event metadata
+  const attendees = useMemo(() => {
+    const raw = entry.metadata?.event_metadata;
+    if (!raw || typeof raw !== "object") return [] as string[];
+    const list = (raw as Record<string, unknown>).attendees;
+    if (!Array.isArray(list)) return [] as string[];
+    return list.map((a) => {
+      if (typeof a === "string") return a;
+      if (typeof a === "object" && a !== null) {
+        const obj = a as Record<string, unknown>;
+        return typeof obj.email === "string" ? obj.email : typeof obj.displayName === "string" ? obj.displayName : "";
+      }
+      return "";
+    }).filter(Boolean);
+  }, [entry.metadata?.event_metadata]);
+
+  const canMutateUser =
+    isUserEvent && !!entry.provider_event_id && entry.editable;
+  const canMutateButler = isButlerEvent;
+
+  return (
+    <div
+      data-testid="entry-detail-panel"
+      className="flex min-h-0 flex-col gap-4 overflow-y-auto pb-4"
+    >
+      {/* Panel header */}
+      <div className="flex items-start justify-between gap-2">
+        <Eyebrow as="div">Event detail</Eyebrow>
+        <button
+          type="button"
+          aria-label="Close detail panel"
+          onClick={onClose}
+          className="font-mono text-[11px] text-[var(--mfg)] hover:text-[var(--fg)]"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Title */}
+      <div className="flex flex-col gap-1">
+        <label
+          htmlFor="detail-title"
+          className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]"
+        >
+          Title
+        </label>
+        {canMutateUser || canMutateButler ? (
+          <input
+            id="detail-title"
+            data-testid="detail-title-input"
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={handleTitleBlur}
+            disabled={isPending}
+            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm font-medium text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+          />
+        ) : (
+          <span className="text-sm font-medium text-[var(--fg)]">{entry.title}</span>
+        )}
+      </div>
+
+      {/* Time range */}
+      <div className="flex flex-col gap-0.5">
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
+          When
+        </span>
+        <Mono className="text-[var(--fg)]">
+          {startFmt}
+          {!entry.all_day && ` – ${endFmt}`}
+        </Mono>
+        <Mono muted>{entry.timezone}</Mono>
+      </div>
+
+      {/* Sync state chip */}
+      <div className="flex items-center gap-2">
+        <StateDot state={syncDotState(entry.sync_state ?? "stale")} />
+        <Mono muted>{entry.sync_state ?? "unknown"}</Mono>
+        <KindTag>{entry.source_type.replace(/_/g, " ")}</KindTag>
+      </div>
+
+      {/* Source + butler mark */}
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
+          Source
+        </span>
+        <div className="flex items-center gap-2">
+          {entry.butler_name ? <ButlerMark name={entry.butler_name} /> : null}
+          <Mono muted className="truncate">{entry.source_key}</Mono>
+        </div>
+      </div>
+
+      {/* Provenance */}
+      {(entry.source_butler || entry.source_session_id) ? (
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
+            Provenance
+          </span>
+          {entry.source_butler ? (
+            <Mono muted data-testid="detail-source-butler">{entry.source_butler}</Mono>
+          ) : null}
+          {entry.source_session_id ? (
+            <Link
+              to={`/sessions/${entry.source_session_id}`}
+              data-testid="detail-session-link"
+              className="font-mono text-[11px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
+              title={`Session ${entry.source_session_id}`}
+            >
+              session ›
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Attendees */}
+      {attendees.length > 0 ? (
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
+            Attendees
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {attendees.map((a) => (
+              <span
+                key={a}
+                data-testid="detail-attendee-chip"
+                className="inline-flex items-center rounded-[3px] border border-[var(--border-strong)] px-2 py-0.5 font-mono text-[10px] text-[var(--mfg)]"
+              >
+                {a}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Description (user events only) */}
+      {isUserEvent ? (
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor="detail-description"
+            className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]"
+          >
+            Description
+          </label>
+          <textarea
+            id="detail-description"
+            data-testid="detail-description-input"
+            value={descriptionDraft}
+            onChange={(e) => setDescriptionDraft(e.target.value)}
+            onBlur={handleDescriptionBlur}
+            disabled={isPending || !canMutateUser}
+            rows={3}
+            className="w-full resize-none rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+          />
+        </div>
+      ) : null}
+
+      {/* Location (user events only) */}
+      {isUserEvent ? (
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor="detail-location"
+            className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]"
+          >
+            Location
+          </label>
+          <input
+            id="detail-location"
+            data-testid="detail-location-input"
+            value={locationDraft}
+            onChange={(e) => setLocationDraft(e.target.value)}
+            onBlur={handleLocationBlur}
+            disabled={isPending || !canMutateUser}
+            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+          />
+        </div>
+      ) : null}
+
+      {/* Delete scope (user editable events only) */}
+      {canMutateUser && onDelete ? (
+        <div className="mt-auto border-t border-[var(--border)] pt-3">
+          <PillButton
+            data-testid="detail-delete-button"
+            className="hover:border-[var(--red)] hover:text-[var(--red)]"
+            disabled={isPending}
+            onClick={() => onDelete(entry)}
+          >
+            Delete event
+          </PillButton>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function resolveOwnerFromEntry(entry: UnifiedCalendarEntry): {
+  butlerName: string | null;
+  calendarId: string | null;
+} {
+  return {
+    butlerName: entry.butler_name ?? null,
+    calendarId: entry.calendar_id ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CalendarWorkspacePage
 // ---------------------------------------------------------------------------
 
@@ -984,6 +1201,16 @@ export default function CalendarWorkspacePage() {
   const [butlerEventDraft, setButlerEventDraft] = useState<ButlerEventDraft | null>(null);
   const [editingButlerEntry, setEditingButlerEntry] = useState<UnifiedCalendarEntry | null>(null);
   const timeGridRef = useRef<HTMLDivElement>(null);
+  // Detail panel — replaces modal-only editing with a right-docked panel
+  const [selectedEntry, setSelectedEntry] = useState<UnifiedCalendarEntry | null>(null);
+
+  function openDetailPanel(entry: UnifiedCalendarEntry) {
+    setSelectedEntry(entry);
+  }
+
+  function closeDetailPanel() {
+    setSelectedEntry(null);
+  }
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -1271,30 +1498,6 @@ export default function CalendarWorkspacePage() {
     setUserEventDialogOpen(true);
   }
 
-  function openUserEditDialog(entry: UnifiedCalendarEntry) {
-    if (!entry.provider_event_id) {
-      toast.error("This entry cannot be edited because it has no provider event id.");
-      return;
-    }
-
-    const fallbackSource = submittableCalendars[0]?.source_key ?? entry.source_key;
-
-    setUserEventDialogMode("edit");
-    setActiveUserEntry(entry);
-    setUserEventForm({
-      sourceKey: submittableCalendars.some((calendar) => calendar.source_key === entry.source_key)
-        ? entry.source_key
-        : fallbackSource,
-      title: entry.title,
-      startAtLocal: toLocalDateTimeValue(entry.start_at),
-      endAtLocal: toLocalDateTimeValue(entry.end_at),
-      timezone: entry.timezone || defaultTimezone,
-      description: maybeText(entry.metadata.description),
-      location: maybeText(entry.metadata.location),
-    });
-    setUserEventDialogOpen(true);
-  }
-
   async function handleSyncAll() {
     try {
       const result = await syncMutation.mutateAsync({ all: true });
@@ -1563,28 +1766,6 @@ export default function CalendarWorkspacePage() {
     setEditingButlerEntry(null);
     setButlerEventDialogMode("create");
     setButlerEventDraft(createDefaultButlerDraft(timezone, butlerName));
-    setButlerEventDialogOpen(true);
-  }
-
-  function openButlerEditDialog(entry: UnifiedCalendarEntry) {
-    const parsedRule = parseRRule(entry.rrule, entry.until_at);
-    const startAt = new Date(entry.start_at);
-    const endAt = new Date(entry.end_at);
-
-    setEditingButlerEntry(entry);
-    setButlerEventDialogMode("edit");
-    setButlerEventDraft({
-      butlerName: entry.butler_name ?? availableButlers[0] ?? "",
-      eventKind: inferEventKind(entry),
-      title: entry.title,
-      startAtLocal: formatLocalDateTimeInput(startAt),
-      endAtLocal: formatLocalDateTimeInput(endAt),
-      timezone: entry.timezone || timezone,
-      recurrenceFrequency: parsedRule.frequency,
-      hasUntilAt: parsedRule.hasUntilAt,
-      untilAtLocal: parsedRule.untilAtLocal,
-      cron: entry.cron ?? "",
-    });
     setButlerEventDialogOpen(true);
   }
 
@@ -1952,8 +2133,9 @@ export default function CalendarWorkspacePage() {
         </div>
       ) : null}
 
-      {/* Canvas */}
-      <div className={activityPanelOpen ? "hidden" : "flex min-h-0 flex-1 flex-col pt-5"}>
+      {/* Canvas + detail panel */}
+      <div className={activityPanelOpen ? "hidden" : "flex min-h-0 flex-1"}>
+      <div className="flex min-h-0 flex-1 flex-col pt-5">
         {workspaceQuery.isLoading ? (
           <Voice variant="italic" className="text-[var(--mfg)]">
             Drawing the calendar…
@@ -2029,7 +2211,7 @@ export default function CalendarWorkspacePage() {
                             meta={
                               <div className="flex items-center gap-1.5">
                                 <PillButton
-                                  onClick={() => openButlerEditDialog(item)}
+                                  onClick={() => openDetailPanel(item)}
                                   disabled={butlerMutation.isPending}
                                 >
                                   Edit
@@ -2123,9 +2305,7 @@ export default function CalendarWorkspacePage() {
                             key={entry.entry_id}
                             type="button"
                             title={entry.title}
-                            onClick={() => {
-                              if (view === "user") openUserEditDialog(entry);
-                            }}
+                            onClick={() => openDetailPanel(entry)}
                             className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
                           >
                             {!entry.all_day ? (
@@ -2213,7 +2393,7 @@ export default function CalendarWorkspacePage() {
                             title={entry.title}
                             onClick={(evt) => {
                               evt.stopPropagation();
-                              if (view === "user") openUserEditDialog(entry);
+                              openDetailPanel(entry);
                             }}
                             className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06]"
                           >
@@ -2298,9 +2478,7 @@ export default function CalendarWorkspacePage() {
                             )}
                             style={{ top: topPx, height: heightPx, minHeight: 16 }}
                             title={`${format(s, "HH:mm")}–${format(e, "HH:mm")} · ${entry.title}`}
-                            onClick={() => {
-                              if (view === "user") openUserEditDialog(entry);
-                            }}
+                            onClick={() => openDetailPanel(entry)}
                           >
                             <span className="block truncate text-[11px] font-medium leading-tight text-[var(--fg)]">
                               {entry.title}
@@ -2368,10 +2546,10 @@ export default function CalendarWorkspacePage() {
                           meta={
                             <div className="flex items-center gap-1.5">
                               <PillButton
-                                onClick={() => openUserEditDialog(entry)}
-                                disabled={!canMutate || userEventMutation.isPending}
+                                onClick={() => openDetailPanel(entry)}
+                                disabled={userEventMutation.isPending}
                               >
-                                Edit
+                                Detail
                               </PillButton>
                               <PillButton
                                 onClick={() => setDeleteCandidate(entry)}
@@ -2399,6 +2577,27 @@ export default function CalendarWorkspacePage() {
             })()}
           </div>
         )}
+      </div>
+
+      {/* Right-docked detail panel */}
+      {selectedEntry ? (
+        <aside
+          data-testid="entry-detail-panel-aside"
+          className="flex min-h-0 w-80 shrink-0 flex-col border-l border-[var(--border)] pl-5 pt-5"
+        >
+          <CalendarEntryDetailPanel
+            key={selectedEntry.entry_id}
+            entry={selectedEntry}
+            onClose={closeDetailPanel}
+            onDelete={(entry) => {
+              setDeleteCandidate(entry);
+              closeDetailPanel();
+            }}
+            userMutation={userEventMutation}
+            butlerMutation={butlerMutation}
+          />
+        </aside>
+      ) : null}
       </div>
 
       <Dialog open={sourcesDialogOpen} onOpenChange={setSourcesDialogOpen}>
