@@ -66,3 +66,38 @@ async def test_resolve_owner_entity_info():
     )
     with pytest.raises(Exception, match="not-null constraint"):
         await resolve_owner_entity_info(pool5, "telegram")
+
+
+async def test_resolve_owner_telegram_recipient_prefers_chat_id(monkeypatch):
+    """resolve_owner_telegram_recipient returns the numeric chat id when present,
+    even if a @username handle is also stored.
+    """
+    import butlers.credential_store as cs
+
+    async def fake_resolve(_pool, info_type):
+        return {"telegram_chat_id": "206570151", "telegram": "@Tzeusy"}.get(info_type)
+
+    monkeypatch.setattr(cs, "resolve_owner_entity_info", AsyncMock(side_effect=fake_resolve))
+    pool = MagicMock()
+    assert await cs.resolve_owner_telegram_recipient(pool) == "206570151"
+
+
+async def test_resolve_owner_telegram_recipient_falls_back_to_username(monkeypatch):
+    """Falls back to the @username handle only when no numeric chat id is stored."""
+    import butlers.credential_store as cs
+
+    async def fake_resolve(_pool, info_type):
+        return {"telegram": "@Tzeusy"}.get(info_type)
+
+    monkeypatch.setattr(cs, "resolve_owner_entity_info", AsyncMock(side_effect=fake_resolve))
+    pool = MagicMock()
+    assert await cs.resolve_owner_telegram_recipient(pool) == "@Tzeusy"
+
+
+async def test_resolve_owner_telegram_recipient_none_when_unconfigured(monkeypatch):
+    """Returns None when neither the chat id nor the username handle is stored."""
+    import butlers.credential_store as cs
+
+    monkeypatch.setattr(cs, "resolve_owner_entity_info", AsyncMock(return_value=None))
+    pool = MagicMock()
+    assert await cs.resolve_owner_telegram_recipient(pool) is None

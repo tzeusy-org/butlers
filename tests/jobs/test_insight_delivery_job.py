@@ -83,7 +83,8 @@ class TestBuildSwitchboardInsightNotifyFn:
             result = await notify_fn("Test insight", {"channel": "telegram", "intent": "insight"})
 
         assert result == deliver_return
-        mock_resolve.assert_awaited_once_with(pool, "telegram")
+        # Must resolve the deliverable numeric chat id, not the @username handle.
+        mock_resolve.assert_awaited_once_with(pool, "telegram_chat_id")
         mock_deliver.assert_awaited_once()
         call_kwargs = mock_deliver.call_args
         assert call_kwargs.kwargs["channel"] == "telegram"
@@ -112,7 +113,7 @@ class TestBuildSwitchboardInsightNotifyFn:
             # No "channel" key in metadata → should default to telegram
             await notify_fn("Insight without channel", {"intent": "insight"})
 
-        mock_resolve.assert_awaited_once_with(pool, "telegram")
+        mock_resolve.assert_awaited_once_with(pool, "telegram_chat_id")
         call_kwargs = mock_deliver.call_args
         assert call_kwargs.kwargs["channel"] == "telegram"
         assert call_kwargs.kwargs["recipient"] == "99887766"
@@ -160,7 +161,13 @@ class TestBuildSwitchboardInsightNotifyFn:
         ) as mock_resolve:
             result = await notify_fn("msg", {"channel": "telegram"})
 
-        mock_resolve.assert_awaited_once_with(pool, "telegram")
+        # Both the numeric chat id and the username fallback are exhausted.
+        from unittest.mock import call
+
+        assert mock_resolve.await_args_list == [
+            call(pool, "telegram_chat_id"),
+            call(pool, "telegram"),
+        ]
         assert result["status"] == "error"
         assert "telegram" in result["error"].lower()
 
@@ -191,6 +198,64 @@ class TestBuildSwitchboardInsightNotifyFn:
         assert mock_deliver.call_args.kwargs["recipient"] == "owner@example.com"
 
     @pytest.mark.asyncio
+    async def test_telegram_prefers_numeric_chat_id_over_username(self):
+        """Regression (bu-1q9wh): when both the numeric chat id and the @username
+        handle are stored, notify_fn must deliver to the numeric chat id.
+
+        Sending to a bare @username is undeliverable (Telegram addresses private
+        users by numeric id only) and trips the approval gate's owner-primacy
+        check, parking the owner's own notifications forever.
+        """
+        from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+        pool = _make_mock_pool()
+        notify_fn = _build_switchboard_insight_notify_fn(pool)
+
+        async def fake_resolve(_pool, info_type):
+            return {"telegram_chat_id": "206570151", "telegram": "@Tzeusy"}.get(info_type)
+
+        with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                new=AsyncMock(side_effect=fake_resolve),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                new=AsyncMock(return_value={"status": "sent"}),
+            ) as mock_deliver,
+        ):
+            await notify_fn("msg", {"channel": "telegram"})
+
+        assert mock_deliver.call_args.kwargs["recipient"] == "206570151"
+
+    @pytest.mark.asyncio
+    async def test_telegram_falls_back_to_username_when_no_chat_id(self):
+        """When only the @username handle is stored (no numeric chat id), notify_fn
+        falls back to it rather than failing outright.
+        """
+        from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+        pool = _make_mock_pool()
+        notify_fn = _build_switchboard_insight_notify_fn(pool)
+
+        async def fake_resolve(_pool, info_type):
+            return {"telegram": "@Tzeusy"}.get(info_type)
+
+        with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                new=AsyncMock(side_effect=fake_resolve),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                new=AsyncMock(return_value={"status": "sent"}),
+            ) as mock_deliver,
+        ):
+            await notify_fn("msg", {"channel": "telegram"})
+
+        assert mock_deliver.call_args.kwargs["recipient"] == "@Tzeusy"
+
+    @pytest.mark.asyncio
     async def test_unsupported_channel_falls_back_to_telegram(self):
         """Unknown channel falls back to telegram with a warning."""
         from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
@@ -210,8 +275,8 @@ class TestBuildSwitchboardInsightNotifyFn:
         ):
             await notify_fn("msg", {"channel": "whatsapp"})
 
-        # Should have fallen back to telegram
-        mock_resolve.assert_awaited_once_with(pool, "telegram")
+        # Should have fallen back to telegram (resolving the numeric chat id).
+        mock_resolve.assert_awaited_once_with(pool, "telegram_chat_id")
         assert mock_deliver.call_args.kwargs["channel"] == "telegram"
 
 
