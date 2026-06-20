@@ -449,3 +449,103 @@ async def upcoming_bills(
             "predicted_count": len(predicted_items),
         },
     }
+
+
+def compose_upcoming_bills_digest(
+    sweep: dict,
+    bills: dict,
+    predictions: dict,
+    *,
+    today: date | None = None,
+) -> str | None:
+    """Compose the weekly bills digest from reconcile/upcoming/predict results.
+
+    Implements the upcoming-bills-check SKILL.md Step 2 early-exit and Step 3 format.
+    Returns None when there is nothing worth sending (early exit).
+    Returns the formatted Telegram-ready digest string otherwise.
+
+    Parameters
+    ----------
+    sweep:
+        Output of ``reconcile_bills()`` — keys: ``auto_settled``, ``candidates``.
+    bills:
+        Output of ``upcoming_bills()`` — keys: ``needs_action``, ``autopay``,
+        ``predicted``, ``totals``.
+    predictions:
+        Output of ``predict_bills()`` — key: ``predictions`` (list).
+    today:
+        Reference date for the header; defaults to today.
+    """
+    if today is None:
+        today = date.today()
+
+    auto_settled = sweep.get("auto_settled", [])
+    candidates = sweep.get("candidates", [])
+    needs_action = bills.get("needs_action", [])
+    autopay = bills.get("autopay", [])
+    totals = bills.get("totals", {})
+    preds = [p for p in predictions.get("predictions", []) if not p.get("is_tracked")]
+
+    # Step 2: early exit — nothing worth sending
+    if not any([auto_settled, candidates, needs_action, autopay, preds]):
+        return None
+
+    # Step 3: compose the full digest before calling notify
+    sections: list[str] = [f"Bills — {today.strftime('%-d %b %Y')}"]
+
+    if auto_settled:
+        sections.append(
+            f"\n✅ Auto-settled ({len(auto_settled)}) — matched and settled in this sweep"
+        )
+        for s in auto_settled:
+            paid_str = (s.get("paid_at") or "")[:10] or "—"
+            sections.append(f"- {s['payee']}: {s['amount']} — paid {paid_str}")
+
+    if candidates:
+        sections.append(
+            f"\n❓ Confirm needed ({len(candidates)}) — ambiguous matches, please verify"
+        )
+        for c in candidates:
+            best = (c.get("candidates") or [{}])[0]
+            posted = (best.get("posted_at") or "")[:10] or "?"
+            txn_info = f"{best.get('amount', '?')} at {best.get('merchant', '?')} on {posted}"
+            sections.append(
+                f"- {c['payee']}: {c['amount']} due {c['due_date']} — possible match: {txn_info}"
+            )
+
+    if needs_action:
+        needs_action_amount = totals.get("needs_action_amount", "0.00")
+        sections.append(f"\n⚠️ Needs action ({len(needs_action)}) — {needs_action_amount}")
+        sorted_items = sorted(
+            needs_action,
+            key=lambda x: (
+                {"overdue": 0, "due_today": 1, "due_soon": 2}.get(x["urgency"], 3),
+                -Decimal(str(x["bill"].get("amount", 0))),
+            ),
+        )
+        for item in sorted_items:
+            bill = item["bill"]
+            days = item["days_until_due"]
+            urg = item["urgency"]
+            if urg == "overdue":
+                urg_str = f"overdue {abs(days)} day{'s' if abs(days) != 1 else ''}"
+            elif urg == "due_today":
+                urg_str = "due today"
+            else:
+                urg_str = f"due in {days} day{'s' if days != 1 else ''}"
+            sections.append(f"- {bill['payee']}: {bill['amount']} — {urg_str}")
+
+    if autopay:
+        sections.append("\n🔁 Auto-pays (no action)")
+        for item in autopay:
+            bill = item["bill"]
+            sections.append(f"- {bill['payee']}: {bill['amount']}")
+
+    if preds:
+        sections.append("\n👀 Heads-up (predicted, not yet tracked)")
+        for p in preds:
+            sections.append(
+                f"- {p['payee']}: ~{p['predicted_amount']} — expected {p['predicted_date']}"
+            )
+
+    return "\n".join(sections)
