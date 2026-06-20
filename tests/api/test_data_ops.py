@@ -40,6 +40,9 @@ from butlers.api.db import DatabaseManager
 from butlers.api.routers.data_ops import (
     _DEV_EXPORT_ENCRYPTION_KEY,
     _DEV_EXPORT_SECRET,
+    _KNOWN_SCOPES,
+    _SCOPE_ALIASES,
+    _SCOPE_MAP,
     _decrypt_export,
     _encrypt_export,
     _get_db_manager,
@@ -854,3 +857,61 @@ def test_decrypt_export_rejects_tampered_ciphertext():
     tampered[-1] ^= 0xFF  # flip last byte of GCM tag
     with pytest.raises((InvalidTag, Exception)):
         _decrypt_export(bytes(tampered), key=key)
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation: dashboard-permissions spec "Data Operations" (bu-9q1dx.8)
+#
+# These lock in the two spec guarantees the audit flagged as easy to silently
+# regress:
+#   1. "Encrypted export" — the served file is an encrypted blob, NOT plaintext
+#      NDJSON / a plaintext ZIP, so the FE "AES-256-GCM encrypted" copy is true.
+#   2. "Every export scope yields its real data" — a *known* scope MUST NOT
+#      silently map to "no tables".
+# ---------------------------------------------------------------------------
+
+
+def test_every_known_scope_resolves_to_real_tables():
+    """No known scope silently maps to 'no tables' (spec: a known scope MUST
+    cover the data its name promises)."""
+    assert len(_KNOWN_SCOPES) == 5, f"Expected 5 known scopes, got {len(_KNOWN_SCOPES)}"
+    for scope in _KNOWN_SCOPES:
+        resolved = _SCOPE_ALIASES.get(scope, scope)
+        if resolved == "all":
+            tables = [t for tbls in _SCOPE_MAP.values() for t in tbls]
+        else:
+            tables = _SCOPE_MAP[resolved]
+        assert len(tables) >= 1, f"scope {scope!r} resolves to zero tables"
+
+
+@pytest.mark.parametrize("scope", ["all", "memory", "audit", "config", "full"])
+async def test_download_bytes_are_encrypted_not_plaintext(app, scope):
+    """Each scope's download is an opaque encrypted blob — not plaintext NDJSON
+    and not a plaintext ZIP — yet decrypts to the scope's real rows.
+
+    A regression that served the raw NDJSON/ZIP (defeating the "encrypted"
+    promise in the UI copy) would be caught here.
+    """
+    sentinel = "SENTINEL_PLAINTEXT_MARKER_permission.set"
+    pool = _make_pool()
+    pool.fetch = AsyncMock(return_value=[{"id": 1, "action": sentinel, "actor": "owner"}])
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    url = _make_download_url(f"test-enc-{scope}", scope)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(url)
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+    raw = resp.content
+    # Not a plaintext ZIP archive (ZIP local-file magic is "PK\x03\x04").
+    assert not raw.startswith(b"PK"), "served bytes look like a plaintext ZIP"
+    # The plaintext sentinel must NOT appear in the served (encrypted) bytes.
+    assert sentinel.encode() not in raw, "plaintext row content leaked into the export blob"
+    # ...but once decrypted, the scope's real data is present.
+    files = _decrypt_zip_content(raw)
+    assert files, f"scope {scope!r} produced an empty archive"
+    assert any(sentinel in content for content in files.values()), (
+        f"scope {scope!r} decrypted archive missing the real row data"
+    )
