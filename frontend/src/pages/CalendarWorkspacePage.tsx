@@ -19,6 +19,9 @@ import { toast } from "sonner";
 import { useSearchParams } from "react-router";
 
 import type {
+  CalendarConflictEntry,
+  CalendarSuggestedSlot,
+  CalendarWorkspaceMutationResponse,
   CalendarWorkspaceSourceFreshness,
   CalendarWorkspaceUserMutationAction,
   CalendarWorkspaceView,
@@ -384,7 +387,9 @@ function maybeText(value: unknown): string {
  * gate is a denylist of known failure states rather than an `ok`-only allowlist
  * — that keeps every real success path intact while catching soft failures.
  */
-const CALENDAR_MUTATION_FAILURE_STATUSES = new Set(["error", "conflict", "not_found", "failed"]);
+// NOTE: 'conflict' is intentionally excluded — it is handled as an interactive
+// conflict-resolution flow (ConflictCard), not a terminal failure.
+const CALENDAR_MUTATION_FAILURE_STATUSES = new Set(["error", "not_found", "failed"]);
 
 /**
  * Inspect a calendar MCP mutation result envelope to distinguish genuine
@@ -799,6 +804,19 @@ export default function CalendarWorkspacePage() {
   const [activeUserEntry, setActiveUserEntry] = useState<UnifiedCalendarEntry | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<UnifiedCalendarEntry | null>(null);
   const [userEventForm, setUserEventForm] = useState<UserEventFormState | null>(null);
+  // Conflict state: set when the server returns status='conflict' for a user-event mutation.
+  // Holds the detected conflicts, suggested slots, and the pending mutation args so re-submission
+  // (slot pill or "Book anyway") can replay the same mutation with adjusted parameters.
+  const [userEventConflict, setUserEventConflict] = useState<{
+    conflicts: CalendarConflictEntry[];
+    suggested_slots: CalendarSuggestedSlot[];
+    pendingMutation: {
+      butler_name: string;
+      action: CalendarWorkspaceUserMutationAction;
+      payload: Record<string, unknown>;
+      request_id: string;
+    };
+  } | null>(null);
   const [butlerEventDialogOpen, setButlerEventDialogOpen] = useState(false);
   const [butlerEventDialogMode, setButlerEventDialogMode] =
     useState<ButlerEventDialogMode>("create");
@@ -1145,6 +1163,63 @@ export default function CalendarWorkspacePage() {
     }
   }
 
+  /**
+   * Shared result handler for all user-event mutations (initial submit, slot
+   * pill re-submit, and "Book anyway" override).  Handles the three outcomes:
+   *   - conflict → morph dialog into conflict card (keep open)
+   *   - other soft-failure → error toast, keep dialog open
+   *   - success → success toast, close dialog
+   */
+  function _handleUserMutationResult(
+    responseData: CalendarWorkspaceMutationResponse,
+    action: CalendarWorkspaceUserMutationAction,
+    pendingMutation: {
+      butler_name: string;
+      action: CalendarWorkspaceUserMutationAction;
+      payload: Record<string, unknown>;
+      request_id: string;
+    },
+  ) {
+    const rawResult = responseData.result;
+    const status = maybeText(rawResult?.status);
+
+    if (status === "conflict") {
+      // Surface the conflict card — do NOT close the dialog or show error toast.
+      setUserEventConflict({
+        conflicts: responseData.conflicts ?? [],
+        suggested_slots: responseData.suggested_slots ?? [],
+        pendingMutation,
+      });
+      return;
+    }
+
+    if (!isCalendarMutationOk(rawResult)) {
+      const detail = calendarMutationErrorMessage(
+        rawResult,
+        action === "create" ? "Failed to create calendar event." : "Failed to update calendar event.",
+      );
+      toast.error(
+        action === "create" ? `Failed to create event: ${detail}` : `Failed to update event: ${detail}`,
+      );
+      return;
+    }
+
+    // Success path: clear conflict state, close dialog.
+    setUserEventConflict(null);
+    toast.success(
+      action === "create"
+        ? status
+          ? `Created event (${status}).`
+          : "Created calendar event."
+        : status
+          ? `Updated event (${status}).`
+          : "Updated calendar event.",
+    );
+    setUserEventDialogOpen(false);
+    setUserEventForm(null);
+    setActiveUserEntry(null);
+  }
+
   async function submitUserEventForm(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!userEventForm) {
@@ -1209,39 +1284,71 @@ export default function CalendarWorkspacePage() {
       payload.event_id = activeUserEntry.provider_event_id;
     }
 
+    // Clear any stale conflict state from a previous attempt.
+    setUserEventConflict(null);
+
+    const requestId = buildRequestId(action);
+    const pendingMutation = { butler_name: butlerName, action, payload, request_id: requestId };
+
     try {
       const result = await userEventMutation.mutateAsync({
         butler_name: butlerName,
         action,
-        request_id: buildRequestId(action),
+        request_id: requestId,
         payload,
       });
-      const mutationResult = result.data.result;
-      if (!isCalendarMutationOk(mutationResult)) {
-        const detail = calendarMutationErrorMessage(
-          mutationResult,
-          action === "create" ? "Failed to create calendar event." : "Failed to update calendar event.",
-        );
-        toast.error(
-          action === "create"
-            ? `Failed to create event: ${detail}`
-            : `Failed to update event: ${detail}`,
-        );
-        return;
-      }
-      const status = maybeText(mutationResult?.status);
-      toast.success(
-        action === "create"
-          ? status
-            ? `Created event (${status}).`
-            : "Created calendar event."
-          : status
-            ? `Updated event (${status}).`
-            : "Updated calendar event.",
-      );
-      setUserEventDialogOpen(false);
-      setUserEventForm(null);
-      setActiveUserEntry(null);
+      _handleUserMutationResult(result.data, action, pendingMutation);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save calendar event.");
+    }
+  }
+
+  /**
+   * Re-submit the pending user-event mutation with a different time slot
+   * (suggested by the conflict response).  Preserves the original request_id
+   * so the audit log can correlate the retry with the initial attempt.
+   */
+  async function submitConflictSlot(slot: CalendarSuggestedSlot) {
+    if (!userEventConflict) {
+      return;
+    }
+    const { pendingMutation } = userEventConflict;
+    const updatedPayload = { ...pendingMutation.payload, start_at: slot.start_at, end_at: slot.end_at, timezone: slot.timezone };
+    const updatedPending = { ...pendingMutation, payload: updatedPayload };
+    try {
+      const result = await userEventMutation.mutateAsync({
+        butler_name: pendingMutation.butler_name,
+        action: pendingMutation.action,
+        request_id: pendingMutation.request_id, // same request_id per spec
+        payload: updatedPayload,
+      });
+      _handleUserMutationResult(result.data, pendingMutation.action, updatedPending);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save calendar event.");
+    }
+  }
+
+  /**
+   * Re-submit the pending user-event mutation with conflict_policy='allow_overlap',
+   * bypassing the conflict check and booking regardless of overlap.
+   */
+  async function submitConflictOverride() {
+    if (!userEventConflict) {
+      return;
+    }
+    const { pendingMutation } = userEventConflict;
+    const overridePayload = { ...pendingMutation.payload, conflict_policy: "allow_overlap" };
+    // Use a new request_id since this is a distinct user decision (override, not retry).
+    const overrideRequestId = buildRequestId(pendingMutation.action);
+    const overridePending = { ...pendingMutation, payload: overridePayload, request_id: overrideRequestId };
+    try {
+      const result = await userEventMutation.mutateAsync({
+        butler_name: pendingMutation.butler_name,
+        action: pendingMutation.action,
+        request_id: overrideRequestId,
+        payload: overridePayload,
+      });
+      _handleUserMutationResult(result.data, pendingMutation.action, overridePending);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to save calendar event.");
     }
@@ -2268,6 +2375,7 @@ export default function CalendarWorkspacePage() {
           if (!open) {
             setUserEventForm(null);
             setActiveUserEntry(null);
+            setUserEventConflict(null);
           }
         }}
       >
@@ -2407,6 +2515,78 @@ export default function CalendarWorkspacePage() {
                   disabled={userEventMutation.isPending}
                 />
               </div>
+
+              {/* Conflict card — rendered when the backend returns status='conflict' */}
+              {userEventConflict ? (
+                <div
+                  className="rounded-md border border-[var(--amber,#f59e0b)] bg-[color-mix(in_srgb,var(--amber,#f59e0b)_8%,transparent)] p-3 space-y-3"
+                  data-testid="conflict-card"
+                >
+                  {/* Amber chip */}
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center rounded-full bg-[var(--amber,#f59e0b)] px-2.5 py-0.5 text-xs font-medium text-white">
+                      Overlaps {userEventConflict.conflicts.length} event{userEventConflict.conflicts.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+
+                  {/* Conflicting events — muted ghost blocks */}
+                  {userEventConflict.conflicts.length > 0 ? (
+                    <ul className="space-y-1">
+                      {userEventConflict.conflicts.slice(0, 3).map((c) => (
+                        <li key={c.event_id} className="flex items-baseline gap-2 text-sm opacity-60">
+                          <span className="w-1.5 h-1.5 rounded-full bg-current shrink-0 mt-1.5" />
+                          <span className="min-w-0 truncate font-medium">{c.title}</span>
+                          <span className="shrink-0 tabular-nums text-xs">
+                            {format(parseISO(c.start_at), "h:mm a")}–{format(parseISO(c.end_at), "h:mm a")}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+
+                  {/* Suggested-slot pills */}
+                  {userEventConflict.suggested_slots.length > 0 ? (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium opacity-70">Suggested times:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {userEventConflict.suggested_slots.slice(0, 3).map((slot, idx) => {
+                          const originalDay = format(
+                            parseISO(userEventConflict.pendingMutation.payload.start_at as string),
+                            "yyyy-MM-dd",
+                          );
+                          const slotDay = format(parseISO(slot.start_at), "yyyy-MM-dd");
+                          const isDifferentDay = slotDay !== originalDay;
+                          return (
+                            <button
+                              key={idx}
+                              type="button"
+                              data-testid="conflict-slot-pill"
+                              onClick={() => submitConflictSlot(slot)}
+                              disabled={userEventMutation.isPending}
+                              className="rounded-full border border-[var(--amber,#f59e0b)] px-3 py-1 text-xs font-medium hover:bg-[color-mix(in_srgb,var(--amber,#f59e0b)_15%,transparent)] transition-colors disabled:opacity-40"
+                            >
+                              {isDifferentDay
+                                ? `${format(parseISO(slot.start_at), "MMM d, h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`
+                                : `${format(parseISO(slot.start_at), "h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Book anyway escape hatch */}
+                  <button
+                    type="button"
+                    data-testid="conflict-book-anyway"
+                    onClick={submitConflictOverride}
+                    disabled={userEventMutation.isPending}
+                    className="text-xs opacity-50 hover:opacity-80 underline underline-offset-2 transition-opacity disabled:pointer-events-none"
+                  >
+                    Book anyway (overlap)
+                  </button>
+                </div>
+              ) : null}
 
               <DialogFooter>
                 <PillButton

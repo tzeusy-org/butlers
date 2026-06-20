@@ -346,3 +346,132 @@ async def test_meta_writable_calendars_carry_owning_butler(app):
     assert len(writable) == 1
     assert writable[0]["butler_name"] == "general"
     assert writable[0]["calendar_id"] == "owner@example.com"
+
+
+# ---------------------------------------------------------------------------
+# Mutation response: conflicts and suggested_slots surfaced as first-class fields
+# ---------------------------------------------------------------------------
+
+
+async def test_mutate_user_event_conflict_response_surfaces_conflicts(app):
+    """When the MCP tool returns a conflict response, the API surfaces
+    ``conflicts`` and ``suggested_slots`` as first-class typed fields on the
+    mutation response — not just nested inside the opaque ``result`` dict."""
+    conflict_payload = [
+        {
+            "event_id": "evt-existing",
+            "title": "Existing event",
+            "start_at": "2026-06-20T10:00:00+00:00",
+            "end_at": "2026-06-20T11:00:00+00:00",
+            "timezone": "UTC",
+        }
+    ]
+    suggested_slots_payload = [
+        {
+            "start_at": "2026-06-20T11:00:00+00:00",
+            "end_at": "2026-06-20T11:30:00+00:00",
+            "timezone": "UTC",
+        }
+    ]
+    mcp_result = {
+        "status": "conflict",
+        "policy": "suggest",
+        "provider": "google",
+        "calendar_id": "primary",
+        "conflicts": conflict_payload,
+        "suggested_slots": suggested_slots_payload,
+    }
+
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
+
+    # status call for projection freshness
+    status_client = AsyncMock()
+    status_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "ok", "projection_freshness": None})
+    )
+
+    async def _get_client(name: str):
+        return mock_client
+
+    app, mock_db, mock_mgr = _build_app(app)
+    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/user-events",
+            json={
+                "butler_name": "general",
+                "action": "create",
+                "request_id": "req-conflict-1",
+                "payload": {
+                    "title": "New event",
+                    "start_at": "2026-06-20T10:00:00Z",
+                    "end_at": "2026-06-20T10:30:00Z",
+                    "timezone": "UTC",
+                },
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+
+    # result still has the raw MCP payload
+    assert data["result"]["status"] == "conflict"
+
+    # conflicts surfaced as first-class typed list
+    assert len(data["conflicts"]) == 1
+    c = data["conflicts"][0]
+    assert c["event_id"] == "evt-existing"
+    assert c["title"] == "Existing event"
+
+    # suggested_slots surfaced as first-class typed list
+    assert len(data["suggested_slots"]) == 1
+    s = data["suggested_slots"][0]
+    assert "start_at" in s
+    assert "end_at" in s
+
+
+async def test_mutate_user_event_success_response_has_empty_conflict_lists(app):
+    """On a successful create (no conflict), the response carries empty
+    ``conflicts`` and ``suggested_slots`` lists, not null."""
+    mcp_result = {
+        "status": "created",
+        "provider": "google",
+        "calendar_id": "primary",
+        "event": {"event_id": "evt-new"},
+    }
+
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
+
+    async def _get_client(name: str):
+        return mock_client
+
+    app, mock_db, mock_mgr = _build_app(app)
+    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/user-events",
+            json={
+                "butler_name": "general",
+                "action": "create",
+                "request_id": "req-ok-1",
+                "payload": {
+                    "title": "No conflict event",
+                    "start_at": "2026-06-20T10:00:00Z",
+                    "end_at": "2026-06-20T10:30:00Z",
+                },
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["result"]["status"] == "created"
+    assert data["conflicts"] == []
+    assert data["suggested_slots"] == []

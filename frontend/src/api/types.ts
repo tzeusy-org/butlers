@@ -611,12 +611,32 @@ export interface CalendarWorkspaceUserMutationRequest {
   payload: Record<string, unknown>;
 }
 
+/** A conflicting calendar event returned alongside a mutation conflict response. */
+export interface CalendarConflictEntry {
+  event_id: string;
+  title: string;
+  start_at: string; // ISO 8601
+  end_at: string; // ISO 8601
+  timezone: string;
+}
+
+/** A suggested alternative time slot returned alongside a mutation conflict response. */
+export interface CalendarSuggestedSlot {
+  start_at: string; // ISO 8601
+  end_at: string; // ISO 8601
+  timezone: string;
+}
+
 /** Response payload for calendar workspace mutation endpoints. */
 export interface CalendarWorkspaceMutationResponse {
   action: CalendarWorkspaceUserMutationAction | CalendarWorkspaceButlerMutationAction;
   tool_name: string;
   request_id: string | null;
   result: Record<string, unknown>;
+  /** Conflicting events surfaced when the mutation triggers a conflict check. Empty on success. */
+  conflicts: CalendarConflictEntry[];
+  /** Suggested alternative slots surfaced with a 'suggest' policy conflict. Empty on success. */
+  suggested_slots: CalendarSuggestedSlot[];
   projection_version: string | null;
   staleness_ms: number | null;
   projection_freshness: Record<string, unknown> | null;

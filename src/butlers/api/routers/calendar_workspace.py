@@ -23,8 +23,11 @@ from butlers.api.models.calendar import (
     CalendarWorkspaceUserMutationRequest,
 )
 from butlers.api.models.calendar_workspace import (
+    CalendarConflictEntry,
+    CalendarSuggestedSlot,
     CalendarWorkspaceLaneDefinition,
     CalendarWorkspaceMetaResponse,
+    CalendarWorkspaceMutationResponse,
     CalendarWorkspaceReadResponse,
     CalendarWorkspaceSourceFreshness,
     CalendarWorkspaceSyncRequest,
@@ -850,6 +853,42 @@ async def _call_mcp_tool(
     return {"result": parsed if parsed is not None else str(result)}
 
 
+def _extract_conflicts(
+    mutation_result: dict[str, Any],
+) -> tuple[list[CalendarConflictEntry], list[CalendarSuggestedSlot]]:
+    """Extract typed conflict and suggested-slot lists from a raw MCP mutation result.
+
+    The calendar MCP tools embed ``conflicts`` and ``suggested_slots`` inside
+    the returned dict when the conflict policy fires.  This helper coerces them
+    into the typed Pydantic models so the API response carries first-class
+    structured data instead of opaque dicts.
+    """
+    raw_conflicts = mutation_result.get("conflicts")
+    raw_slots = mutation_result.get("suggested_slots")
+
+    conflicts: list[CalendarConflictEntry] = []
+    if isinstance(raw_conflicts, list):
+        for entry in raw_conflicts:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                conflicts.append(CalendarConflictEntry.model_validate(entry))
+            except Exception:
+                logger.debug("Skipping malformed conflict entry: %r", entry)
+
+    suggested_slots: list[CalendarSuggestedSlot] = []
+    if isinstance(raw_slots, list):
+        for slot in raw_slots:
+            if not isinstance(slot, dict):
+                continue
+            try:
+                suggested_slots.append(CalendarSuggestedSlot.model_validate(slot))
+            except Exception:
+                logger.debug("Skipping malformed suggested slot: %r", slot)
+
+    return conflicts, suggested_slots
+
+
 def _projection_meta(
     projection_freshness: dict[str, Any] | None,
 ) -> tuple[str | None, int | None]:
@@ -892,12 +931,12 @@ async def _projection_freshness_after_mutation(
     return freshness if isinstance(freshness, dict) else None
 
 
-@router.post("/user-events", response_model=ApiResponse[dict[str, Any]])
+@router.post("/user-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])
 async def mutate_user_event(
     body: CalendarWorkspaceUserMutationRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict[str, Any]]:
+) -> ApiResponse[CalendarWorkspaceMutationResponse]:
     """Create/update/delete user-view provider events through calendar MCP tools."""
     tool_name = {
         "create": "calendar_create_event",
@@ -925,22 +964,25 @@ async def mutate_user_event(
             else None,
         )
         projection_version, staleness_ms = _projection_meta(freshness)
-        response_payload = {
-            "action": body.action,
-            "tool_name": tool_name,
-            "request_id": body.request_id,
-            "result": mutation_result,
-            "projection_version": projection_version,
-            "staleness_ms": staleness_ms,
-            "projection_freshness": freshness,
-        }
+        conflicts, suggested_slots = _extract_conflicts(mutation_result)
+        response_payload = CalendarWorkspaceMutationResponse(
+            action=body.action,
+            tool_name=tool_name,
+            request_id=body.request_id,
+            result=mutation_result,
+            conflicts=conflicts,
+            suggested_slots=suggested_slots,
+            projection_version=projection_version,
+            staleness_ms=staleness_ms,
+            projection_freshness=freshness,
+        )
         await log_audit_entry(
             db,
             body.butler_name,
             "calendar.workspace.user_events.mutate",
             summary,
         )
-        return ApiResponse[dict[str, Any]](data=response_payload)
+        return ApiResponse[CalendarWorkspaceMutationResponse](data=response_payload)
     except HTTPException:
         await log_audit_entry(
             db,
@@ -953,12 +995,12 @@ async def mutate_user_event(
         raise
 
 
-@router.post("/butler-events", response_model=ApiResponse[dict[str, Any]])
+@router.post("/butler-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])
 async def mutate_butler_event(
     body: CalendarWorkspaceButlerMutationRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict[str, Any]]:
+) -> ApiResponse[CalendarWorkspaceMutationResponse]:
     """Create/update/delete/toggle butler-view events through calendar MCP tools."""
     tool_name = {
         "create": "calendar_create_butler_event",
@@ -986,22 +1028,25 @@ async def mutate_butler_event(
             mutation_result=mutation_result,
         )
         projection_version, staleness_ms = _projection_meta(freshness)
-        response_payload = {
-            "action": body.action,
-            "tool_name": tool_name,
-            "request_id": body.request_id,
-            "result": mutation_result,
-            "projection_version": projection_version,
-            "staleness_ms": staleness_ms,
-            "projection_freshness": freshness,
-        }
+        conflicts, suggested_slots = _extract_conflicts(mutation_result)
+        response_payload = CalendarWorkspaceMutationResponse(
+            action=body.action,
+            tool_name=tool_name,
+            request_id=body.request_id,
+            result=mutation_result,
+            conflicts=conflicts,
+            suggested_slots=suggested_slots,
+            projection_version=projection_version,
+            staleness_ms=staleness_ms,
+            projection_freshness=freshness,
+        )
         await log_audit_entry(
             db,
             body.butler_name,
             "calendar.workspace.butler_events.mutate",
             summary,
         )
-        return ApiResponse[dict[str, Any]](data=response_payload)
+        return ApiResponse[CalendarWorkspaceMutationResponse](data=response_payload)
     except HTTPException:
         await log_audit_entry(
             db,

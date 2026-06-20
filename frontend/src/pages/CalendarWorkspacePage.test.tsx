@@ -232,6 +232,8 @@ function setUserMutationState(state?: Partial<UseUserMutationResult>) {
         tool_name: "calendar_create_event",
         request_id: "req-1",
         result: { status: "created" },
+        conflicts: [],
+        suggested_slots: [],
         projection_version: null,
         staleness_ms: null,
         projection_freshness: null,
@@ -815,13 +817,15 @@ describe("CalendarWorkspacePage", () => {
     );
   });
 
-  it("shows an error toast (not success) when create user event soft-fails", async () => {
+  it("shows an error toast (not success) when create user event hard-fails (status=error)", async () => {
     const mutateAsync = vi.fn().mockResolvedValue({
       data: {
         action: "create",
         tool_name: "calendar_create_event",
         request_id: "req-create",
-        result: { status: "conflict", error: "overlapping event" },
+        result: { status: "error", error: "calendar not accessible" },
+        conflicts: [],
+        suggested_slots: [],
         projection_version: null,
         staleness_ms: null,
         projection_freshness: null,
@@ -855,11 +859,329 @@ describe("CalendarWorkspacePage", () => {
 
     expect(mutateAsync).toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(
-      expect.stringContaining("overlapping event"),
+      expect.stringContaining("calendar not accessible"),
     );
     expect(toast.success).not.toHaveBeenCalled();
     // Dialog stays open on soft failure so the user can retry.
     expect(findDialogByTitle("Create user event")).toBeDefined();
+  });
+
+  it("shows conflict card (not error toast) when create user event returns status=conflict", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({
+      data: {
+        action: "create",
+        tool_name: "calendar_create_event",
+        request_id: "req-conflict",
+        result: { status: "conflict", policy: "suggest" },
+        conflicts: [
+          {
+            event_id: "evt-existing",
+            title: "Existing meeting",
+            start_at: "2026-03-01T10:00:00Z",
+            end_at: "2026-03-01T10:30:00Z",
+            timezone: "UTC",
+          },
+        ],
+        suggested_slots: [
+          {
+            start_at: "2026-03-01T10:30:00Z",
+            end_at: "2026-03-01T11:00:00Z",
+            timezone: "UTC",
+          },
+        ],
+        projection_version: null,
+        staleness_ms: null,
+        projection_freshness: null,
+      },
+      meta: {},
+    });
+    setUserMutationState({ mutateAsync });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    const openCreateButton = document.querySelector(
+      'button[aria-label="Create user event"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(titleInput, "Team review");
+      await flush();
+    });
+
+    const form = titleInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(mutateAsync).toHaveBeenCalled();
+    // status='conflict' must NOT toast an error — it shows the conflict card instead.
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    // Dialog stays open.
+    expect(findDialogByTitle("Create user event")).toBeDefined();
+    // Conflict card is visible.
+    const conflictCard = dialog?.querySelector('[data-testid="conflict-card"]');
+    expect(conflictCard).toBeDefined();
+    expect(conflictCard?.textContent).toContain("Overlaps 1 event");
+    expect(conflictCard?.textContent).toContain("Existing meeting");
+    // Suggested-slot pill is rendered.
+    const pills = dialog?.querySelectorAll('[data-testid="conflict-slot-pill"]');
+    expect(pills?.length).toBe(1);
+    // Book anyway button is rendered.
+    const bookAnyway = dialog?.querySelector('[data-testid="conflict-book-anyway"]');
+    expect(bookAnyway).toBeDefined();
+  });
+
+  it("slot pill shows date prefix when suggested slot is on a different day", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({
+      data: {
+        action: "create",
+        tool_name: "calendar_create_event",
+        request_id: "req-cross-day",
+        result: { status: "conflict", policy: "suggest" },
+        conflicts: [],
+        suggested_slots: [
+          {
+            // Same day as original request — no date prefix expected
+            start_at: "2026-03-01T10:30:00Z",
+            end_at: "2026-03-01T11:00:00Z",
+            timezone: "UTC",
+          },
+          {
+            // Different day — date prefix expected
+            start_at: "2026-03-02T09:00:00Z",
+            end_at: "2026-03-02T09:30:00Z",
+            timezone: "UTC",
+          },
+        ],
+        projection_version: null,
+        staleness_ms: null,
+        projection_freshness: null,
+      },
+      meta: {},
+    });
+    setUserMutationState({ mutateAsync });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    const openCreateButton = document.querySelector(
+      'button[aria-label="Create user event"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(titleInput, "Cross-day test");
+      await flush();
+    });
+
+    const form = titleInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    const pills = dialog?.querySelectorAll('[data-testid="conflict-slot-pill"]') as NodeListOf<HTMLButtonElement>;
+    expect(pills?.length).toBe(2);
+    // First pill: same day — time only, no date prefix
+    expect(pills[0].textContent).toMatch(/^\d+:\d+ [AP]M/);
+    expect(pills[0].textContent).not.toMatch(/Mar \d/);
+    // Second pill: different day — must include the date prefix
+    expect(pills[1].textContent).toContain("Mar 2");
+  });
+
+  it("slot pill re-submits with new start/end and same request_id", async () => {
+    const requestId = "req-slot-retry";
+    let callCount = 0;
+    const mutateAsync = vi.fn().mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        // First call: conflict
+        return Promise.resolve({
+          data: {
+            action: "create",
+            tool_name: "calendar_create_event",
+            request_id: requestId,
+            result: { status: "conflict" },
+            conflicts: [
+              {
+                event_id: "evt-x",
+                title: "Blocker",
+                start_at: "2026-03-01T10:00:00Z",
+                end_at: "2026-03-01T10:30:00Z",
+                timezone: "UTC",
+              },
+            ],
+            suggested_slots: [
+              {
+                start_at: "2026-03-01T11:00:00Z",
+                end_at: "2026-03-01T11:30:00Z",
+                timezone: "UTC",
+              },
+            ],
+            projection_version: null,
+            staleness_ms: null,
+            projection_freshness: null,
+          },
+          meta: {},
+        });
+      }
+      // Second call (pill click): success
+      return Promise.resolve({
+        data: {
+          action: "create",
+          tool_name: "calendar_create_event",
+          request_id: requestId,
+          result: { status: "created" },
+          conflicts: [],
+          suggested_slots: [],
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      });
+    });
+    setUserMutationState({ mutateAsync });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    const openCreateButton = document.querySelector(
+      'button[aria-label="Create user event"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(titleInput, "Team review");
+      await flush();
+    });
+
+    // First submit → conflict
+    const form = titleInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(callCount).toBe(1);
+    const pill = dialog?.querySelector('[data-testid="conflict-slot-pill"]') as HTMLButtonElement;
+    expect(pill).toBeDefined();
+
+    // Click the slot pill → re-submit
+    await act(async () => {
+      pill.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(callCount).toBe(2);
+    // Second call passes the slot's times (new start_at/end_at)
+    const secondCall = mutateAsync.mock.calls[1][0];
+    expect(secondCall.payload.start_at).toBe("2026-03-01T11:00:00Z");
+    expect(secondCall.payload.end_at).toBe("2026-03-01T11:30:00Z");
+    // request_id must match the original (same as first call)
+    expect(secondCall.request_id).toBe(mutateAsync.mock.calls[0][0].request_id);
+    // Dialog closes on success
+    expect(toast.success).toHaveBeenCalled();
+  });
+
+  it("Book anyway re-submits with conflict_policy=allow_overlap", async () => {
+    let callCount = 0;
+    const mutateAsync = vi.fn().mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve({
+          data: {
+            action: "create",
+            tool_name: "calendar_create_event",
+            request_id: "req-book",
+            result: { status: "conflict" },
+            conflicts: [
+              {
+                event_id: "evt-block",
+                title: "Blocked slot",
+                start_at: "2026-03-01T10:00:00Z",
+                end_at: "2026-03-01T10:30:00Z",
+                timezone: "UTC",
+              },
+            ],
+            suggested_slots: [],
+            projection_version: null,
+            staleness_ms: null,
+            projection_freshness: null,
+          },
+          meta: {},
+        });
+      }
+      return Promise.resolve({
+        data: {
+          action: "create",
+          tool_name: "calendar_create_event",
+          request_id: "req-override",
+          result: { status: "created" },
+          conflicts: [],
+          suggested_slots: [],
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      });
+    });
+    setUserMutationState({ mutateAsync });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    const openCreateButton = document.querySelector(
+      'button[aria-label="Create user event"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(titleInput, "Override test");
+      await flush();
+    });
+
+    const form = titleInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+
+    expect(callCount).toBe(1);
+
+    const bookAnyway = dialog?.querySelector('[data-testid="conflict-book-anyway"]') as HTMLButtonElement;
+    expect(bookAnyway).toBeDefined();
+
+    await act(async () => {
+      bookAnyway.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(callCount).toBe(2);
+    const overrideCall = mutateAsync.mock.calls[1][0];
+    expect(overrideCall.payload.conflict_policy).toBe("allow_overlap");
+    expect(toast.success).toHaveBeenCalled();
   });
 
   it("shows a success toast when create user event genuinely succeeds", async () => {

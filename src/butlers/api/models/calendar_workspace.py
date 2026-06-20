@@ -182,3 +182,41 @@ class SetPrimaryCalendarResponse(BaseModel):
     old_calendar_id: str | None = None
     new_calendar_id: str
     persisted: bool = False
+
+
+class CalendarConflictEntry(BaseModel):
+    """A conflicting calendar event returned by a mutation conflict check."""
+
+    event_id: str
+    title: str
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+
+
+class CalendarSuggestedSlot(BaseModel):
+    """A suggested alternative time slot returned alongside a conflict response."""
+
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+
+
+class CalendarWorkspaceMutationResponse(BaseModel):
+    """Typed response payload for calendar workspace mutation endpoints.
+
+    Surfaces ``conflicts`` and ``suggested_slots`` as first-class typed fields
+    so the frontend can render the conflict-resolution UX without digging into
+    the opaque ``result`` dict.  The raw MCP ``result`` is still included for
+    backward compatibility and diagnostic purposes.
+    """
+
+    action: str
+    tool_name: str
+    request_id: str | None = None
+    result: dict[str, Any]
+    conflicts: list[CalendarConflictEntry] = Field(default_factory=list)
+    suggested_slots: list[CalendarSuggestedSlot] = Field(default_factory=list)
+    projection_version: str | None = None
+    staleness_ms: int | None = None
+    projection_freshness: dict[str, Any] | None = None
