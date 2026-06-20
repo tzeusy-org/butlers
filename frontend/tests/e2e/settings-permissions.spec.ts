@@ -6,8 +6,9 @@
  *
  *   1. Matrix flip with reason   — open page, click a cell, fill reason, submit,
  *                                   assert PUT was called and matrix re-rendered.
- *   2. Wipe-phrase rejection     — type a wrong phrase, assert the "Wipe everything"
- *                                   button stays disabled; DELETE never called.
+ *   2. Wipe panel disabled       — assert the wipe panel renders as permanently
+ *                                   disabled (no phrase input, button disabled),
+ *                                   and DELETE /api/data/wipe is never called.
  *   3. Webhook test action       — mock webhook list + test endpoint, click the
  *                                   test-webhook button, assert the last-tested
  *                                   cell updates with a success indicator.
@@ -188,35 +189,32 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
 });
 
 // ---------------------------------------------------------------------------
-// Test 2: Wipe-phrase rejection keeps button disabled
+// Test 2: Wipe panel is permanently disabled — no phrase input, no endpoint call
 // ---------------------------------------------------------------------------
 
-test("permissions: wipe button stays disabled with wrong phrase", async ({ page }) => {
+test("permissions: wipe panel is permanently disabled — no phrase input, DELETE never called", async ({ page }) => {
   await installBaseMocks(page);
 
-  // Guard: DELETE /api/data/wipe must never be called in this test
+  // Guard: DELETE /api/data/wipe must never be called from the UI
   let wipeCalled = false;
   await page.route("**/api/data/wipe", (route) => {
     wipeCalled = true;
-    route.fulfill({ status: 500, contentType: "application/json", body: '{"detail": "should not reach server"}' });
+    route.fulfill({ status: 503, contentType: "application/json", body: '{"detail": {"error": "wipe_disabled"}}' });
   });
 
   await page.goto("/settings/permissions", { timeout: 10_000 });
 
-  // Locate the wipe input and button
-  const wipeInput = page.locator("#wipe-phrase");
-  await expect(wipeInput).toBeVisible();
+  // The disabled wipe panel must render
+  const wipePanel = page.getByTestId("wipe-panel-disabled");
+  await expect(wipePanel).toBeVisible();
 
+  // The "Wipe everything" button must be permanently disabled
   const wipeButton = page.getByRole("button", { name: /wipe everything/i });
   await expect(wipeButton).toBeDisabled();
 
-  // Type a wrong phrase
-  await wipeInput.fill("delete everything");
-  await expect(wipeButton).toBeDisabled();
-
-  // Type something closer but still wrong
-  await wipeInput.fill("WIPE EVERYTHING");
-  await expect(wipeButton).toBeDisabled();
+  // No phrase input should exist
+  const phraseInput = page.locator("#wipe-phrase");
+  await expect(phraseInput).not.toBeVisible();
 
   // Verify DELETE was never called
   expect(wipeCalled).toBe(false);
