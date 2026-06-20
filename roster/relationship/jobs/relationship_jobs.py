@@ -932,6 +932,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "skipped_ineligible": 0,
         "skipped_group_too_large": 0,
         "calendar_events_scanned": 0,
+        "co_attended_edges_minted": 0,
         "errors": checkpoint_errors,
     }
 
@@ -1400,7 +1401,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             if "owner" in roles:
                 calendar_owner_entity_ids.add(eid)
 
+    # Collects resolved non-owner entity IDs per event for co-attended edge derivation.
+    event_to_entities: dict[str, list[uuid.UUID]] = {}
+
     for event_id, event_title, event_starts_at, attendee_emails in event_tasks:
+        resolved_for_event: list[uuid.UUID] = []
         for email in attendee_emails:
             entity_id = email_to_entity.get(email)
             if entity_id is None:
@@ -1420,6 +1425,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     event_id,
                 )
                 continue
+
+            resolved_for_event.append(entity_id)
 
             try:
                 result = await interaction_log(
@@ -1456,6 +1463,52 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
                 stats["errors"] += 1
 
+        if len(resolved_for_event) >= 2:
+            event_to_entities[event_id] = resolved_for_event
+
+    # -----------------------------------------------------------------------
+    # Step 5: Derive co-attended edges from calendar event co-attendance.
+    #
+    # For each event where ≥ 2 non-owner attendees were resolved to entities,
+    # emit a ``co-attended`` edge in both directions for every pair. Writing
+    # both (A→B) and (B→A) makes the edge symmetric for graph traversal.
+    # ``relationship_assert_fact`` deduplicates on (subject, predicate, object)
+    # with validity='active', so repeated runs are idempotent.
+    # -----------------------------------------------------------------------
+    if event_to_entities:
+        from butlers.tools.relationship.relationship_assert_fact import (
+            AssertOutcome,
+            relationship_assert_fact,
+        )
+
+        for _co_event_id, _entity_ids in event_to_entities.items():
+            for _i, _entity_a in enumerate(_entity_ids):
+                for _entity_b in _entity_ids[_i + 1 :]:
+                    for _subj, _obj in ((_entity_a, _entity_b), (_entity_b, _entity_a)):
+                        try:
+                            _assert_result = await relationship_assert_fact(
+                                db_pool,
+                                _subj,
+                                "co-attended",
+                                str(_obj),
+                                src="interaction_sync",
+                                object_kind="entity",
+                            )
+                            if _assert_result.outcome in (
+                                AssertOutcome.inserted,
+                                AssertOutcome.superseded,
+                            ):
+                                stats["co_attended_edges_minted"] += 1
+                        except Exception:
+                            logger.exception(
+                                "interaction_sync: error minting co-attended edge "
+                                "subject=%s object=%s event=%s",
+                                _subj,
+                                _obj,
+                                _co_event_id,
+                            )
+                            stats["errors"] += 1
+
     # Persist the end of this scan window as the next checkpoint. Fail-open for
     # the same reasons as the read above (interaction_log() dedups, scheduler
     # storm avoidance). Surface via stats["errors"] + WARNING logs so monitoring
@@ -1477,7 +1530,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "Interaction sync complete: processed=%d, logged=%d, "
         "skipped_unresolved=%d, skipped_owner=%d, "
         "skipped_ineligible=%d, skipped_group_too_large=%d, "
-        "calendar_events_scanned=%d, errors=%d",
+        "calendar_events_scanned=%d, co_attended_edges_minted=%d, errors=%d",
         stats["processed"],
         stats["logged"],
         stats["skipped_unresolved"],
@@ -1485,6 +1538,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["skipped_ineligible"],
         stats["skipped_group_too_large"],
         stats["calendar_events_scanned"],
+        stats["co_attended_edges_minted"],
         stats["errors"],
     )
     return stats
