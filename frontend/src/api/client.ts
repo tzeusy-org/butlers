@@ -1653,6 +1653,23 @@ export function deleteMeal(mealId: string): Promise<void> {
   });
 }
 
+/**
+ * Fetch aggregate nutrition totals over a date range.
+ *
+ * GET /api/health/nutrition/summary?start=&end=
+ * Aggregates meal_* facts with nutrition metadata (the same surface the
+ * meal_log MCP tool writes). Meals without nutrition data are excluded.
+ * Both `start` and `end` are required ISO-8601 date or datetime strings.
+ */
+export function getNutritionSummary(
+  params: import("./types").NutritionSummaryParams,
+): Promise<import("./types").NutritionSummary> {
+  const sp = new URLSearchParams();
+  sp.set("start", params.start);
+  sp.set("end", params.end);
+  return apiFetch<import("./types").NutritionSummary>(`/health/nutrition/summary?${sp.toString()}`);
+}
+
 /** Fetch the latest measurement value for each requested type.
  *
  * GET /api/health/measurements/latest?types=glucose,hrv,steps

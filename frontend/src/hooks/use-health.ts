@@ -19,6 +19,7 @@ import {
   deleteSymptom,
   getConditions,
   getMeals,
+  getNutritionSummary,
   getMeasurements,
   getMeasurementsLatest,
   getMeasurementSources,
@@ -44,6 +45,7 @@ import type {
   MealCreateRequest,
   MealParams,
   MealUpdateRequest,
+  NutritionSummaryParams,
   MeasurementCreateRequest,
   MeasurementParams,
   MeasurementTrendParams,
@@ -381,6 +383,23 @@ export function useDeleteMeal() {
   return useMutation({
     mutationFn: (id: string) => deleteMeal(id),
     onSuccess: invalidate,
+  });
+}
+
+/**
+ * Fetch aggregate nutrition totals over a date range.
+ *
+ * Wraps GET /api/health/nutrition/summary?start=&end=.
+ * Both params are required; this hook is disabled when either is absent.
+ * Auto-refreshes every 30 seconds (deterministic endpoint, no LLM cost).
+ */
+export function useNutritionSummary(params: Partial<NutritionSummaryParams>) {
+  return useQuery({
+    queryKey: ["health-nutrition-summary", params],
+    queryFn: () =>
+      getNutritionSummary({ start: params.start!, end: params.end! }),
+    enabled: Boolean(params.start && params.end),
+    refetchInterval: 30_000,
   });
 }
 

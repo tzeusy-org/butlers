@@ -1477,6 +1477,39 @@ export interface MealUpdateRequest {
   notes?: string | null;
 }
 
+/** Query parameters for GET /health/nutrition/summary. */
+export interface NutritionSummaryParams {
+  /** Window start (ISO-8601 date or datetime, inclusive). */
+  start: string;
+  /** Window end (ISO-8601 date or datetime, inclusive). */
+  end: string;
+}
+
+/** Daily average breakdown inside NutritionSummary. */
+export interface NutritionDailyAverage {
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+}
+
+/**
+ * Response for GET /api/health/nutrition/summary.
+ *
+ * Aggregates meal_* facts with nutrition metadata over the requested window.
+ * Meals without nutrition data are excluded. days is the inclusive span used
+ * to compute daily averages (minimum 1).
+ */
+export interface NutritionSummary {
+  total_calories: number;
+  total_protein_g: number;
+  total_carbs_g: number;
+  total_fat_g: number;
+  daily_avg: NutritionDailyAverage;
+  meal_count: number;
+  days: number;
+}
+
 /** Query parameters for research endpoints. */
 export interface ResearchParams {
   q?: string;

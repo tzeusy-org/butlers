@@ -1,5 +1,5 @@
 /**
- * MealTracker — direct CRUD wiring [bu-5oeoq]
+ * MealTracker — direct CRUD wiring [bu-5oeoq, bu-w7b18.5]
  *
  * Verifies the meals page mirrors the symptoms foundation scaffolding:
  *   - "Log meal" opens the shared MealForm dialog and a valid submit calls the
@@ -9,6 +9,10 @@
  *
  * The use-health hooks are mocked so no real QueryClient / network is needed;
  * we assert the component wires user intent to the mutation hooks.
+ *
+ * Updated for bu-w7b18.5: MealTracker now accepts controlled filter props
+ * (typeFilter, since, until, setTypeFilter, setSince, setUntil) lifted from
+ * MealsPage so the right-column nutrition totals share the same date range.
  */
 
 // @vitest-environment jsdom
@@ -16,7 +20,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import MealTracker from "@/components/health/MealTracker";
+import MealTracker, { type MealTrackerProps } from "@/components/health/MealTracker";
 
 const createMutate = vi.fn().mockResolvedValue({});
 const updateMutate = vi.fn().mockResolvedValue({});
@@ -54,9 +58,23 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** Render MealTracker with controlled filter props (all empty/no-op by default). */
+function renderTracker(overrides: Partial<MealTrackerProps> = {}) {
+  const defaults: MealTrackerProps = {
+    typeFilter: "",
+    since: "",
+    until: "",
+    setTypeFilter: vi.fn(),
+    setSince: vi.fn(),
+    setUntil: vi.fn(),
+    ...overrides,
+  };
+  return render(<MealTracker {...defaults} />);
+}
+
 describe("MealTracker — direct CRUD", () => {
   it("logs a meal via the add dialog", async () => {
-    render(<MealTracker />);
+    renderTracker();
 
     fireEvent.click(screen.getByRole("button", { name: /^log meal$/i }));
 
@@ -82,7 +100,7 @@ describe("MealTracker — direct CRUD", () => {
   });
 
   it("requires a description before logging", async () => {
-    render(<MealTracker />);
+    renderTracker();
     fireEvent.click(screen.getByRole("button", { name: /^log meal$/i }));
     // Submit with an empty description — the submit button label inside the form.
     fireEvent.click(screen.getByRole("button", { name: /^log meal$/i }));
@@ -90,7 +108,7 @@ describe("MealTracker — direct CRUD", () => {
   });
 
   it("edits a meal via the edit dialog", async () => {
-    render(<MealTracker />);
+    renderTracker();
 
     fireEvent.click(screen.getByRole("button", { name: /edit grilled chicken salad/i }));
 
@@ -112,7 +130,7 @@ describe("MealTracker — direct CRUD", () => {
   });
 
   it("deletes a meal after confirmation", async () => {
-    render(<MealTracker />);
+    renderTracker();
 
     fireEvent.click(screen.getByRole("button", { name: /delete grilled chicken salad/i }));
 

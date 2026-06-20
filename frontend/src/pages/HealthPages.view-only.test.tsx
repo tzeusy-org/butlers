@@ -205,6 +205,18 @@ vi.mock("@/hooks/use-health", () => {
     useCreateMeal: noopMutation,
     useUpdateMeal: noopMutation,
     useDeleteMeal: noopMutation,
+    useNutritionSummary: () => ({
+      data: {
+        total_calories: 1800,
+        total_protein_g: 90,
+        total_carbs_g: 200,
+        total_fat_g: 60,
+        daily_avg: { calories: 1800, protein_g: 90, carbs_g: 200, fat_g: 60 },
+        meal_count: 3,
+        days: 1,
+      },
+      isLoading: false,
+    }),
     useResearch: () => ({
       data: {
         data: [
