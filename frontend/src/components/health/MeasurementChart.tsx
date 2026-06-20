@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 import { useMeasurements, useMeasurementTrend } from "@/hooks/use-health";
+import { butlerHueVar } from "@/components/ui/ButlerMark";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,10 +49,14 @@ const TREND_WINDOWS: { value: MeasurementTrendWindowDays; label: string }[] = [
 ];
 
 // Fallback hue used only when the computed CSS variable is unavailable (e.g.
-// jsdom in unit tests). Recharts needs a literal color, so we read the live
-// value of the health hue token `--category-4` at runtime; this mirrors that
-// token's light-mode value as a graceful default.
-const CATEGORY_4_FALLBACK = "oklch(0.706 0.120 183.5)";
+// jsdom in unit tests). Mirrors the light-mode value of the health hue token
+// (currently --category-5, rose). Recharts needs a literal color string.
+const HEALTH_HUE_FALLBACK = "oklch(0.641 0.140 11.2)";
+
+// Derive the CSS property name from the canonical butler-hue helper so this
+// always tracks the mark's slot — no separate constant to keep in sync.
+// butlerHueVar("health") returns e.g. "var(--category-5)"; slice off the wrapper.
+const HEALTH_HUE_PROP = butlerHueVar("health").slice(4, -1);
 
 // ---------------------------------------------------------------------------
 // Props
@@ -67,20 +72,18 @@ export interface MeasurementChartProps {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the live computed value of the health hue token `--category-4`.
- * Recharts cannot consume a CSS custom property directly (it needs a literal
- * color), so we resolve it once on mount. The diastolic line reuses the same
- * hue at reduced opacity, keeping both lines within the single health hue.
+ * Resolve the health butler's hue to a literal color string for Recharts.
+ * Recharts cannot consume a CSS custom property directly, so we read the live
+ * computed value of the token that `butlerHueVar("health")` resolves to.
+ * The diastolic line reuses the same hue at reduced opacity.
  */
 function useCategoryHue(): string {
-  // Read once on mount via a lazy initializer (no effect/setState churn).
-  // Recharts needs a literal color, so the token is resolved at render time.
   const [hue] = useState<string>(() => {
-    if (typeof document === "undefined") return CATEGORY_4_FALLBACK;
+    if (typeof document === "undefined") return HEALTH_HUE_FALLBACK;
     const value = getComputedStyle(document.documentElement)
-      .getPropertyValue("--category-4")
+      .getPropertyValue(HEALTH_HUE_PROP)
       .trim();
-    return value || CATEGORY_4_FALLBACK;
+    return value || HEALTH_HUE_FALLBACK;
   });
   return hue;
 }
