@@ -102,13 +102,19 @@ def _build_switchboard_insight_notify_fn(
     """
 
     async def _notify_fn(message: str, metadata: dict[str, Any]) -> dict[str, Any]:
-        from butlers.credential_store import resolve_owner_entity_info
+        from butlers.credential_store import (
+            resolve_owner_entity_info,
+            resolve_owner_telegram_recipient,
+        )
         from butlers.tools.switchboard.notification.deliver import deliver
 
         channel: str = metadata.get("channel") or "telegram"
 
         if channel == "telegram":
-            recipient = await resolve_owner_entity_info(pool, "telegram")
+            # Resolve the numeric chat id (telegram_chat_id), not the @username
+            # handle — the username is undeliverable and trips the approval
+            # gate's owner-primacy check, parking owner notifications forever.
+            recipient = await resolve_owner_telegram_recipient(pool)
             if not recipient:
                 logger.error(
                     "insight-delivery-cycle: no telegram recipient configured for owner — "
@@ -129,7 +135,7 @@ def _build_switchboard_insight_notify_fn(
                 channel,
             )
             channel = "telegram"
-            recipient = await resolve_owner_entity_info(pool, "telegram")
+            recipient = await resolve_owner_telegram_recipient(pool)
             if not recipient:
                 return {"status": "error", "error": "No telegram chat ID configured for owner"}
 

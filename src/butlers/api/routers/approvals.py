@@ -736,7 +736,7 @@ async def approve_action(
         tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
 
         dispatch_result = await _dispatch_approved_action(
-            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args
+            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
         )
         if dispatch_result is not None:
             result = dispatch_result
@@ -763,6 +763,23 @@ async def approve_action(
 _MCP_DISPATCH_TIMEOUT_S = 30.0
 
 
+def _first_json_block(mcp_result: Any) -> Any:
+    """Return the first JSON-decoded text block from an MCP tool result, or None.
+
+    Falls back to ``{"value": <text>}`` for a non-JSON text block.
+    """
+    content = getattr(mcp_result, "content", None)
+    if not content:
+        return None
+    for block in content:
+        if hasattr(block, "text"):
+            try:
+                return json.loads(block.text)
+            except (json.JSONDecodeError, TypeError):
+                return {"value": block.text}
+    return None
+
+
 async def _dispatch_approved_action(
     mcp_mgr: MCPClientManager,
     db_mgr: DatabaseManager,
@@ -770,115 +787,99 @@ async def _dispatch_approved_action(
     action_id: str,
     tool_name: str,
     tool_args: dict,
+    action_butler: str | None = None,
 ) -> dict | None:
-    """Dispatch an approved action via MCP and mark it as executed.
+    """Execute an approved action without re-entering the approval gate.
 
-    For ``notify`` actions, calls the switchboard's ``deliver`` tool directly
-    to bypass the daemon-side email guard (the action was already approved by
-    a human — re-running it through notify() would just re-park it).
+    The human approval (or a standing rule) already transitioned the action to
+    'approved'. Re-dispatching the gate-wrapped tool *by name* over MCP — the
+    old behaviour — silently re-parked the action: the gate intercepted the call
+    again, created a phantom pending action, and the underlying tool (e.g.
+    ``telegram_send_message``) never ran. Two un-gated paths avoid that:
 
-    For other tools, calls the tool by name on any available butler daemon.
+    * ``notify`` calls the switchboard's ``deliver`` tool directly (re-running
+      ``notify`` would re-check the recipient and re-park it).
+    * Every other gated tool is executed via the owning butler's un-gated
+      ``dispatch_approved_action`` tool, which invokes the *original* tool
+      function in-process and marks the action 'executed' itself.
 
-    Re-gate guard: if the re-dispatched tool call returns
-    ``{status: pending_approval}`` the gate wrapper intercepted the call again
-    instead of the original (un-gated) function running.  This is a silent
-    no-op that creates a phantom pending action while recording the original as
-    success.  The guard detects this sentinel and marks the execution as
-    *failed*, leaving the original action in 'approved' state for
-    retry/investigation rather than silently poisoning the audit trail.
-
-    If the daemon is unreachable or the call fails, the action remains in
-    'approved' state for later retry.
+    ``action_butler`` (the butler that owns the action / gated tool) is tried
+    first. If no butler executes it, the action stays 'approved' for retry and
+    this returns ``None``.
 
     Returns the updated action dict on success, or None if dispatch failed.
     """
-    # For notify actions, call switchboard deliver directly to bypass the
-    # email guard. notify() would re-check the recipient against contacts
-    # and park it again.
+    # notify: bypass to switchboard deliver — notify()'s own recipient guard
+    # would re-park the already-approved action.
     if tool_name == "notify":
-        dispatch_tool = "deliver"
         dispatch_args = dict(tool_args)
-        # deliver expects source_butler; notify tool_args don't include it
         dispatch_args.setdefault("source_butler", "switchboard")
-        target_butlers = ["switchboard"]
-    else:
-        dispatch_tool = tool_name
-        dispatch_args = tool_args
-        target_butlers = ["switchboard"] + [n for n in mcp_mgr.butler_names if n != "switchboard"]
+        try:
+            client = await asyncio.wait_for(
+                mcp_mgr.get_client("switchboard"), timeout=_MCP_DISPATCH_TIMEOUT_S
+            )
+            mcp_result = await asyncio.wait_for(
+                client.call_tool("deliver", dispatch_args), timeout=_MCP_DISPATCH_TIMEOUT_S
+            )
+        except Exception:
+            logger.warning(
+                "Failed to dispatch approved notify action %s via switchboard deliver",
+                action_id,
+                exc_info=True,
+            )
+            return None
+
+        tool_result = _first_json_block(mcp_result)
+        exec_result: dict = {"success": not mcp_result.is_error}
+        if tool_result is not None:
+            exec_result["result"] = tool_result
+        if mcp_result.is_error:
+            exec_result["error"] = (
+                tool_result.get("error") if isinstance(tool_result, dict) else None
+            ) or "MCP tool call returned error"
+
+        # Re-gate guard: deliver should never re-park, but if it ever does, do
+        # not record a phantom pending action as a successful delivery.
+        if isinstance(tool_result, dict) and tool_result.get("status") == "pending_approval":
+            phantom = (
+                tool_result.get("pending_action_id") or tool_result.get("action_id") or "<unknown>"
+            )
+            logger.error(
+                "Approved notify action %s re-entered the approval gate "
+                "(phantom pending_action=%s); message not delivered.",
+                action_id,
+                phantom,
+            )
+            exec_result["success"] = False
+            exec_result["error"] = (
+                f"notify re-entered the approval gate (phantom={phantom}); not delivered"
+            )
+
+        async with pool.acquire() as conn:
+            return await approvals_ops.mark_executed(
+                conn,
+                action_id=action_id,
+                execution_result=exec_result,
+                success=exec_result["success"],
+            )
+
+    # All other gated tools: run the original (un-gated) tool on the owning
+    # butler via its dispatch_approved_action tool. The butler marks the action
+    # executed and returns its final state, which we relay verbatim.
+    target_butlers: list[str] = []
+    if action_butler is not None:
+        target_butlers.append(action_butler)
+    target_butlers.extend(n for n in mcp_mgr.butler_names if n != action_butler)
 
     for butler_name in target_butlers:
         try:
             client = await asyncio.wait_for(
-                mcp_mgr.get_client(butler_name),
-                timeout=_MCP_DISPATCH_TIMEOUT_S,
+                mcp_mgr.get_client(butler_name), timeout=_MCP_DISPATCH_TIMEOUT_S
             )
             mcp_result = await asyncio.wait_for(
-                client.call_tool(dispatch_tool, dispatch_args),
+                client.call_tool("dispatch_approved_action", {"action_id": action_id}),
                 timeout=_MCP_DISPATCH_TIMEOUT_S,
             )
-
-            # Parse the MCP result
-            exec_result: dict = {"success": True}
-            if mcp_result.content:
-                for block in mcp_result.content:
-                    if hasattr(block, "text"):
-                        try:
-                            exec_result["result"] = json.loads(block.text)
-                        except (json.JSONDecodeError, TypeError):
-                            exec_result["result"] = {"value": block.text}
-                        break
-
-            if mcp_result.is_error:
-                exec_result["success"] = False
-                exec_result["error"] = exec_result.get("result", {}).get(
-                    "error", "MCP tool call returned error"
-                )
-
-            # Guard: detect re-gating. If the tool re-entered the approval gate
-            # (e.g. the gate-wrapped surface was called instead of the original
-            # fn), the gate returns {status: pending_approval, action_id: ...}
-            # which is NOT a success — the original action was not executed.
-            # Recording it as success would create a phantom pending action and
-            # silence the real failure. Treat re-gate as an explicit failure so
-            # the original action stays in 'approved' state for retry/investigation.
-            tool_result = exec_result.get("result") or {}
-            if isinstance(tool_result, dict) and tool_result.get("status") == "pending_approval":
-                # Both gate.py and the notify email-guard use {status: pending_approval}
-                # but they key the phantom id differently: gate.py uses 'action_id' while
-                # the notify email-guard uses 'pending_action_id'. Try both so the error
-                # message always names the phantom action regardless of which path fired.
-                _aid = tool_result.get("action_id")
-                _paid = tool_result.get("pending_action_id")
-                new_action_id = (
-                    _aid if _aid is not None else _paid if _paid is not None else "<unknown>"
-                )
-                logger.error(
-                    "Approved action %s (%s) re-entered the approval gate instead of executing "
-                    "— a new phantom pending action %s was created. "
-                    "The tool is running against a gate-wrapped surface; "
-                    "investigate the executor path. Original action left in 'approved' for retry.",
-                    action_id,
-                    tool_name,
-                    new_action_id,
-                )
-                exec_result["success"] = False
-                exec_result["error"] = (
-                    f"Executor re-entered the approval gate "
-                    f"(phantom pending_action={new_action_id}); "
-                    f"tool '{tool_name}' was not executed. "
-                    "Check that the executor bypasses gated tool wrappers."
-                )
-
-            # Mark as executed in DB
-            async with pool.acquire() as conn:
-                final = await approvals_ops.mark_executed(
-                    conn,
-                    action_id=action_id,
-                    execution_result=exec_result,
-                    success=exec_result["success"],
-                )
-            return final
-
         except Exception:
             logger.warning(
                 "Failed to dispatch approved action %s via butler %s",
@@ -888,8 +889,29 @@ async def _dispatch_approved_action(
             )
             continue
 
+        result = _first_json_block(mcp_result)
+        if mcp_result.is_error or not isinstance(result, dict):
+            logger.warning(
+                "Butler %s could not dispatch approved action %s: %s",
+                butler_name,
+                action_id,
+                result,
+            )
+            continue
+        if result.get("error"):
+            # This butler doesn't own the gated tool (no executor / unknown
+            # action) — try the next one.
+            logger.info(
+                "Butler %s declined approved action %s: %s; trying next butler",
+                butler_name,
+                action_id,
+                result.get("error"),
+            )
+            continue
+        return result
+
     logger.warning(
-        "Could not dispatch approved action %s — no reachable butler; "
+        "Could not dispatch approved action %s — no butler executed it; "
         "action remains in 'approved' state for retry",
         action_id,
     )
@@ -937,7 +959,7 @@ async def retry_action(
     tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
 
     dispatch_result = await _dispatch_approved_action(
-        mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args
+        mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
     )
 
     if dispatch_result is None:
@@ -2099,7 +2121,13 @@ async def approve_approval(
             tool_args_for_dispatch.update(request.edits)
 
         dispatch_result = await _dispatch_approved_action(
-            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args_for_dispatch
+            mcp_mgr,
+            db_mgr,
+            target_pool,
+            action_id,
+            tool_name,
+            tool_args_for_dispatch,
+            action_butler,
         )
         if dispatch_result is not None:
             result = dispatch_result
@@ -2290,7 +2318,7 @@ async def retry_approval(
     tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
 
     dispatch_result = await _dispatch_approved_action(
-        mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args
+        mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
     )
 
     if dispatch_result is None:

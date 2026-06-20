@@ -806,6 +806,27 @@ async def resolve_owner_entity_info(pool: asyncpg.Pool, info_type: str) -> str |
         raise
 
 
+async def resolve_owner_telegram_recipient(pool: asyncpg.Pool) -> str | None:
+    """Resolve the owner's *deliverable* Telegram identifier.
+
+    Prefers the numeric chat id (``entity_info`` type ``'telegram_chat_id'``),
+    which is the only form the Telegram send path can deliver to. Falls back to
+    the ``'telegram'`` handle (a ``@username``) only when no chat id is stored.
+
+    Sending to a bare ``@username`` fails both at the Telegram API (private
+    users are addressable only by numeric id) and at the approval gate's
+    owner-primacy check (the canonical primary handle in
+    ``relationship.entity_facts`` is the numeric chat id), so the chat id must
+    win when both are present.
+
+    Returns the resolved identifier, or ``None`` when neither is configured.
+    """
+    chat_id = await resolve_owner_entity_info(pool, "telegram_chat_id")
+    if chat_id:
+        return chat_id
+    return await resolve_owner_entity_info(pool, "telegram")
+
+
 async def upsert_owner_entity_info(
     pool: asyncpg.Pool,
     info_type: str,

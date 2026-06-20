@@ -333,6 +333,7 @@ class TestToolRegistration:
         for expected in {
             "list_pending_actions",
             "approve_action",
+            "dispatch_approved_action",
             "reject_action",
             "expire_stale_actions",
             "create_approval_rule",
@@ -430,6 +431,76 @@ class TestApproveLifecycle:
     ):
         await module.on_startup(config=None, db=mock_db)
         result = await module._approve_action("not-a-uuid", actor=human_actor)
+        assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Dashboard dispatch of an already-approved action (bu-1q9wh)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchApprovedActionById:
+    """``_dispatch_approved_action_by_id`` runs the ORIGINAL tool via the wired
+    executor — the un-gated path the dashboard uses so approving a gated action
+    does not re-enter the approval gate and re-park itself.
+    """
+
+    async def test_executes_original_tool_and_marks_executed(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        action_id = uuid.uuid4()
+        mock_db._insert_action(
+            id=action_id,
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": "206570151", "text": "hi"},
+            status="approved",
+        )
+
+        calls: list[tuple] = []
+
+        async def mock_executor(tool_name, tool_args):
+            calls.append((tool_name, tool_args))
+            return {"status": "sent", "message_id": "tg-1"}
+
+        module.set_tool_executor(mock_executor)
+
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["status"] == "executed"
+        assert calls == [("telegram_send_message", {"chat_id": "206570151", "text": "hi"})]
+
+    async def test_rejects_action_not_in_approved_state(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(tool_name="telegram_send_message", status="pending")
+
+        async def mock_executor(tool_name, tool_args):  # pragma: no cover - must not run
+            raise AssertionError("executor must not run for a non-approved action")
+
+        module.set_tool_executor(mock_executor)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert "error" in result
+        assert "approved" in result["error"]
+
+    async def test_no_executor_wired_returns_error(self, module: ApprovalsModule, mock_db: MockDB):
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(tool_name="telegram_send_message", status="approved")
+
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+        assert "error" in result
+        assert "executor" in result["error"]
+
+    async def test_missing_action_returns_error(self, module: ApprovalsModule, mock_db: MockDB):
+        await module.on_startup(config=None, db=mock_db)
+        result = await module._dispatch_approved_action_by_id(str(uuid.uuid4()))
+        assert "error" in result
+
+    async def test_invalid_uuid_returns_error(self, module: ApprovalsModule, mock_db: MockDB):
+        await module.on_startup(config=None, db=mock_db)
+        result = await module._dispatch_approved_action_by_id("not-a-uuid")
         assert "error" in result
 
 

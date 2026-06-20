@@ -364,6 +364,19 @@ class ApprovalsModule(Module):
             )
 
         @_tool("actions")
+        async def dispatch_approved_action(action_id: str) -> dict:
+            """Execute an already-approved action via its original (un-gated) tool.
+
+            For the dashboard dispatch path. The action must already be in
+            'approved' state (a human or standing rule approved it). This runs
+            the original tool function in-process so the call does NOT re-enter
+            the approval gate — re-dispatching the gate-wrapped tool would
+            silently re-park the action instead of executing it. Idempotent:
+            replays the stored result if the action is already 'executed'.
+            """
+            return await module._dispatch_approved_action_by_id(action_id)
+
+        @_tool("actions")
         async def reject_action(
             action_id: str,
             reason: str | None = None,
@@ -553,6 +566,64 @@ class ApprovalsModule(Module):
             return {"error": f"Action not found: {action_id}"}
 
         return PendingAction.from_row(row).to_dict()
+
+    async def _dispatch_approved_action_by_id(self, action_id: str) -> dict:
+        """Execute an already-approved action via the original (un-gated) tool.
+
+        The human approval (or standing rule) already transitioned the action to
+        'approved'. This runs the original tool function in-process via the wired
+        tool executor — NOT the gate-wrapped MCP surface, which would re-park the
+        action — and marks it 'executed'. Idempotent: replays the stored result
+        when the action is already 'executed'.
+
+        Returns the final pending-action dict, or ``{"error": ...}``.
+        """
+        try:
+            parsed_id = uuid.UUID(action_id)
+        except ValueError:
+            return {"error": f"Invalid action_id: {action_id}"}
+
+        row = await self._db.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+        if row is None:
+            return {"error": f"Action not found: {action_id}"}
+
+        action = PendingAction.from_row(row)
+        if action.status not in (ActionStatus.APPROVED, ActionStatus.EXECUTED):
+            return {
+                "error": (
+                    f"Action {action_id} is not executable from status "
+                    f"'{action.status.value}' (expected 'approved')"
+                )
+            }
+
+        if self._tool_executor is None:
+            return {
+                "error": (
+                    "No tool executor wired on this butler; cannot dispatch "
+                    f"approved action {action_id}"
+                )
+            }
+
+        _exec = self._tool_executor
+        _tname = action.tool_name
+
+        async def _tool_fn(**kwargs: Any) -> dict[str, Any]:
+            return await _exec(_tname, kwargs)
+
+        await execute_approved_action(
+            pool=self._db,
+            action_id=parsed_id,
+            tool_name=action.tool_name,
+            tool_args=action.tool_args,
+            tool_fn=_tool_fn,
+        )
+
+        final_row = await self._db.fetchrow(
+            "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+        )
+        if final_row is None:
+            return {"error": f"Action not found: {action_id}"}
+        return PendingAction.from_row(final_row).to_dict()
 
     async def _approve_action(
         self,
