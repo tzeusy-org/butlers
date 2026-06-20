@@ -9,6 +9,8 @@ Covers:
 - PUT returns 422 + {"error": "reason_required"} when reason is empty.
 - PUT returns 422 when reason is whitespace-only.
 - audit.append is called on successful mutation.
+- PUT returns 422 + {"error": "reason_contains_credential"} when reason matches a credential pattern.
+- No state change and no audit row when reason_contains_credential fires.
 """
 
 from __future__ import annotations
@@ -295,3 +297,108 @@ async def test_put_permission_whitespace_reason_returns_422(app):
         )
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# validate_no_secrets — unit tests for the security helper
+# ---------------------------------------------------------------------------
+
+
+def test_validate_no_secrets_clean_passes():
+    from butlers.api.security import validate_no_secrets
+
+    assert validate_no_secrets("Needed for scheduled sessions") is True
+    assert validate_no_secrets("Granting calendar access for butler") is True
+    assert validate_no_secrets("") is True
+
+
+def test_validate_no_secrets_rejects_credential_patterns():
+    from butlers.api.security import validate_no_secrets
+
+    assert validate_no_secrets("my password is here") is False
+    assert validate_no_secrets("auth token") is False
+    assert validate_no_secrets("SECRET value") is False
+    assert validate_no_secrets("api_key=abc123") is False
+    assert validate_no_secrets("api-key=abc123") is False
+    assert validate_no_secrets("apikey abc") is False
+    assert validate_no_secrets("credential leak") is False
+    assert validate_no_secrets("private_key data") is False
+    assert validate_no_secrets("private-key data") is False
+    assert validate_no_secrets("Privatekey") is False
+
+
+# ---------------------------------------------------------------------------
+# PUT — credential-pattern guard
+# ---------------------------------------------------------------------------
+
+
+async def test_put_permission_credential_reason_returns_422(app):
+    """Reason matching a credential pattern → 422 reason_contains_credential."""
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch(
+        "butlers.api.routers.permissions.audit.append", new_callable=AsyncMock
+    ) as mock_audit:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/permissions/chronicler/spawn",
+                json={"granted": True, "reason": "my token for this butler"},
+            )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "reason_contains_credential"
+    # No DB write and no audit entry must be emitted.
+    pool.execute.assert_not_called()
+    route_calls = [
+        c for c in mock_audit.call_args_list if len(c.args) >= 3 and c.args[2] == "permission.set"
+    ]
+    assert route_calls == [], f"No audit row expected, got: {mock_audit.call_args_list}"
+
+
+async def test_put_permission_credential_reason_no_state_change(app):
+    """Various credential patterns each produce 422 with no DB mutation."""
+    credential_reasons = [
+        "password required here",
+        "api_key=sk-1234",
+        "private_key material",
+        "SECRET bearer",
+    ]
+    for reason in credential_reasons:
+        pool = _make_pool()
+        db = _make_db(pool)
+        app.dependency_overrides[_get_db_manager] = lambda: db
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/permissions/chronicler/spawn",
+                json={"granted": True, "reason": reason},
+            )
+
+        assert resp.status_code == 422, f"Expected 422 for reason: {reason!r}"
+        assert resp.json()["detail"]["error"] == "reason_contains_credential"
+        pool.execute.assert_not_called()
+
+
+async def test_put_permission_clean_reason_still_succeeds(app):
+    """A reason with no credential keywords still goes through normally."""
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch(
+        "butlers.api.routers.permissions.audit.append", new_callable=AsyncMock
+    ) as mock_audit:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/permissions/chronicler/spawn",
+                json={"granted": True, "reason": "Granting access for automated scheduling"},
+            )
+
+    assert resp.status_code == 200
+    pool.execute.assert_called_once()
+    route_calls = [
+        c for c in mock_audit.call_args_list if len(c.args) >= 3 and c.args[2] == "permission.set"
+    ]
+    assert len(route_calls) == 1

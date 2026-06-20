@@ -19,6 +19,7 @@ from pydantic import BaseModel, field_validator
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
+from butlers.api.security import validate_no_secrets
 from butlers.core.permissions import ENFORCED_PERMISSIONS, PERMISSION_DEFAULT_GRANTED
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,9 @@ async def set_permission(
     # error body required by the spec.
     if not body.reason or not body.reason.strip():
         raise HTTPException(status_code=422, detail={"error": "reason_required"})
+
+    if not validate_no_secrets(body.reason):
+        raise HTTPException(status_code=422, detail={"error": "reason_contains_credential"})
 
     try:
         pool = db.pool("switchboard")
