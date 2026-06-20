@@ -141,11 +141,14 @@ def _amount_compatible(
 async def match_transaction_to_bills(
     pool: asyncpg.Pool,
     txn: dict[str, Any],
+    *,
+    bills: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Match a single debit transaction against open (pending/overdue) bills.
 
     Pure SQL/Python — no LLM.  Used by the post-``record_transaction`` hook
-    (Track C) for real-time inline settlement.
+    (Track C) for real-time inline settlement, and by ``reconcile_bills`` for
+    the batch sweep (N+1-free path via the ``bills`` parameter).
 
     Parameters
     ----------
@@ -156,6 +159,15 @@ async def match_transaction_to_bills(
         ``id``, ``direction``, ``merchant``, ``currency``, ``amount`` (absolute),
         ``posted_at`` (ISO string or datetime).  Optional: ``metadata`` dict with
         ``normalized_merchant``.
+    bills:
+        Optional pre-fetched list of pending/overdue bill dicts.  When provided,
+        candidate filtering by currency is performed in-memory and no DB query
+        is issued for bills — eliminating the per-transaction DB round-trip in
+        the ``reconcile_bills`` sweep.  The caller is responsible for excluding
+        already-settled bills from this list (e.g. by filtering on
+        ``settled_bill_ids``).  When ``None`` (standalone / Track C path), bills
+        are fetched from the DB with conservative date bounds derived from the
+        transaction date, and an "already used" guard query is also run.
 
     Returns
     -------
@@ -193,32 +205,49 @@ async def match_transaction_to_bills(
     if isinstance(meta, dict):
         txn_normalized = meta.get("normalized_merchant")
 
-    # Skip if this transaction already reconciled a bill
-    txn_id_raw = txn.get("id")
-    txn_uuid = uuid.UUID(str(txn_id_raw)) if isinstance(txn_id_raw, str) else txn_id_raw
-    already_used = await pool.fetchrow(
-        "SELECT id FROM bills WHERE reconciled_transaction_id = $1 LIMIT 1",
-        txn_uuid,
-    )
-    if already_used is not None:
-        return {"tier": "none", "bill": None, "candidates": []}
+    if bills is None:
+        # Standalone path (Track C inline hook): guard against a txn that already
+        # reconciled another bill, then fetch candidate bills from the DB.
+        txn_id_raw = txn.get("id")
+        txn_uuid = uuid.UUID(str(txn_id_raw)) if isinstance(txn_id_raw, str) else txn_id_raw
+        already_used = await pool.fetchrow(
+            "SELECT id FROM bills WHERE reconciled_transaction_id = $1 LIMIT 1",
+            txn_uuid,
+        )
+        if already_used is not None:
+            return {"tier": "none", "bill": None, "candidates": []}
 
-    # Fetch candidate bills: unreconciled, pending/overdue, same currency
-    rows = await pool.fetch(
-        """
-        SELECT * FROM bills
-        WHERE status IN ('pending', 'overdue')
-          AND reconciled_transaction_id IS NULL
-          AND currency = $1
-        ORDER BY due_date ASC
-        """,
-        txn_currency,
-    )
+        # Conservative date bounds derived from spec window constants:
+        #   anchor - LOOKBACK_DAYS <= txn_date  →  anchor <= txn_date + LOOKBACK_DAYS
+        #   txn_date <= anchor + GRACE_DAYS      →  anchor >= txn_date - GRACE_DAYS
+        # where anchor = COALESCE(statement_period_end, due_date).
+        date_lo = txn_date - timedelta(days=GRACE_DAYS)
+        date_hi = txn_date + timedelta(days=LOOKBACK_DAYS)
+
+        rows = await pool.fetch(
+            """
+            SELECT * FROM bills
+            WHERE status IN ('pending', 'overdue')
+              AND reconciled_transaction_id IS NULL
+              AND currency = $1
+              AND COALESCE(statement_period_end, due_date) >= $2
+              AND COALESCE(statement_period_end, due_date) <= $3
+            ORDER BY due_date ASC
+            """,
+            txn_currency,
+            date_lo,
+            date_hi,
+        )
+        bill_candidates: list[dict[str, Any]] = [dict(row) for row in rows]
+    else:
+        # Batch path (reconcile_bills sweep): filter pre-fetched bills by currency
+        # in-memory.  The caller has already excluded settled bills from this list.
+        bill_candidates = [b for b in bills if b.get("currency") == txn_currency]
 
     in_window: list[dict[str, Any]] = []
-    for row in rows:
+    for bill in bill_candidates:
         # Anchor: statement_period_end if set, else due_date
-        anchor = row["statement_period_end"] if row["statement_period_end"] else row["due_date"]
+        anchor = bill["statement_period_end"] if bill["statement_period_end"] else bill["due_date"]
         window_start = anchor - timedelta(days=LOOKBACK_DAYS)
         window_end = anchor + timedelta(days=GRACE_DAYS)
 
@@ -226,19 +255,19 @@ async def match_transaction_to_bills(
             continue
 
         # Payee match
-        is_match, is_exact = _payee_match(row["payee"], txn_merchant, txn_normalized)
+        is_match, is_exact = _payee_match(bill["payee"], txn_merchant, txn_normalized)
         if not is_match:
             continue
 
         # Amount compatibility
-        bill_amount = Decimal(str(row["amount"]))
+        bill_amount = Decimal(str(bill["amount"]))
         is_compatible, is_placeholder = _amount_compatible(bill_amount, txn_amount)
         if not is_compatible:
             continue
 
         in_window.append(
             {
-                "bill_row": dict(row),
+                "bill_row": bill,
                 "is_exact_payee": is_exact,
                 "is_placeholder": is_placeholder,
                 "anchor": anchor,
@@ -406,6 +435,19 @@ async def reconcile_bills(
 
     horizon_cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
 
+    # Pre-fetch all pending/overdue bills once to avoid N+1 queries.
+    # match_transaction_to_bills receives an active-bills slice each iteration
+    # (already-settled bills removed) and filters by currency in-memory.
+    all_bills_rows = await pool.fetch(
+        """
+        SELECT * FROM bills
+        WHERE status IN ('pending', 'overdue')
+          AND reconciled_transaction_id IS NULL
+        ORDER BY due_date ASC
+        """,
+    )
+    all_bills: list[dict[str, Any]] = [dict(row) for row in all_bills_rows]
+
     # Fetch all unlinked debit transactions in the outer lookback window.
     # These are the candidate payment events we want to match against bills.
     txn_rows = await pool.fetch(
@@ -441,7 +483,10 @@ async def reconcile_bills(
             "metadata": txn_row.get("metadata"),
         }
 
-        match = await match_transaction_to_bills(pool, txn_dict)
+        # Pass only bills not yet settled in this run so the matcher never
+        # sees a bill that was claimed by an earlier txn in the same sweep.
+        active_bills = [b for b in all_bills if b["id"] not in settled_bill_ids]
+        match = await match_transaction_to_bills(pool, txn_dict, bills=active_bills)
 
         tier = match["tier"]
 
