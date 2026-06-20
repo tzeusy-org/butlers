@@ -331,6 +331,7 @@ async def pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
                 listed BOOLEAN NOT NULL DEFAULT true,
+                stay_in_touch_days INT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -2522,8 +2523,17 @@ async def test_contact_resolve_salience_scoring(pool):
     await note_create(pool, chloe_wong["id"], "Works at Google")
     await note_create(pool, chloe_wong["id"], "Birthday is March 15")
 
-    # Give Chloe Wong stay-in-touch cadence (weekly = +10)
+    # Give Chloe Wong stay-in-touch cadence (weekly = +10).
+    # contact_resolve salience reads stay_in_touch_days from public.entities
+    # (rel_031) via contact_entity_map, so mirror the cadence onto the entity.
     await stay_in_touch_set(pool, chloe_wong["id"], 7)
+    await pool.execute(
+        """
+        UPDATE public.entities SET stay_in_touch_days = 7
+        WHERE id = (SELECT entity_id FROM contact_entity_map WHERE contact_id = $1)
+        """,
+        chloe_wong["id"],
+    )
 
     # Give Chloe Wong group membership (couple = +15)
     couple_group = await group_create(pool, "The Wongs")
