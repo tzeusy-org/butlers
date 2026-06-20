@@ -207,10 +207,10 @@ async def test_loan_create_stores_entity_id(pool):
     assert row is not None
     assert row["entity_id"] is not None, "entity_id must not be NULL on loan fact"
 
-    # Verify entity_id matches lender's entity (actor_contact = lender_contact_id)
-    lender_entity = await pool.fetchval(
-        "SELECT entity_id FROM contacts WHERE id = $1", lender["id"]
-    )
+    # Verify entity_id matches lender's entity (actor_contact = lender_contact_id).
+    # Cutover (bu-irphu): the contact's entity is the linked entity returned by
+    # contact_create (public.contacts is no longer written).
+    lender_entity = lender["entity_id"]
     assert row["entity_id"] == lender_entity
 
 
@@ -232,9 +232,7 @@ async def test_loan_create_contact_id_resolves_entity(pool):
     assert row is not None
     assert row["entity_id"] is not None
 
-    contact_entity = await pool.fetchval(
-        "SELECT entity_id FROM contacts WHERE id = $1", contact["id"]
-    )
+    contact_entity = contact["entity_id"]
     assert row["entity_id"] == contact_entity
 
 
