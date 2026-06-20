@@ -17,6 +17,7 @@ B5: Matcher unit tests for all spec-required edge cases:
       yields zero rows on second concurrent attempt
     - same-payee duplicate bills: two in-window → confirm; one in-window → auto_settle
     - payment-recorded-before-bill: sweep settles it
+    - precision regression: amount path must never go through float (bu-1loc3)
 
 Spec: openspec/changes/finance-bill-payment-reconciliation/design.md
 """
@@ -26,6 +27,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import asyncpg
 import pytest
@@ -920,3 +922,72 @@ class TestPaymentRecordedBeforeBill:
         assert len(result["auto_settled"]) == 1
         row = await pool.fetchrow("SELECT status FROM bills WHERE id = $1", bill["id"])
         assert row["status"] == "paid"
+
+
+class TestAmountPrecisionRegression:
+    """Regression (bu-1loc3): amount path must never go through float.
+
+    Converting Decimal → float → str → Decimal silently loses precision for
+    values with more significant digits than float64 can represent (~15.7 decimal
+    digits). The fix is abs(Decimal(str(x))) which stays in exact Decimal
+    arithmetic throughout.
+    """
+
+    async def test_decimal_str_path_preserves_precision(self):
+        """Demonstrates the float round-trip precision loss and that the fix avoids it.
+
+        Uses a Decimal value whose last significant digit is dropped when
+        converted to float64. This is the concrete bug the fix addresses.
+        """
+        # 18 significant digits — more than float64 can represent exactly (~15.7).
+        # float(this) rounds to 0.1, silently dropping the trailing '1'.
+        precise = Decimal("0.10000000000000001")
+
+        # Old (broken) path: the last digit is lost through float conversion.
+        via_float = Decimal(str(abs(float(precise))))
+        assert via_float == Decimal("0.1")  # precision dropped — this is the bug
+        assert via_float != precise
+
+        # New (correct) path: str(Decimal) preserves all significant digits.
+        via_str = abs(Decimal(str(precise)))
+        assert via_str == precise  # exact match — the fix works
+
+    async def test_settle_bill_backfill_preserves_exact_decimal(self, pool):
+        """_settle_bill writes the exact Decimal amount when backfilling a $0 placeholder.
+
+        The CASE WHEN amount=0 THEN $3 branch in the guarded UPDATE must receive
+        the exact Decimal amount from the transaction, not a float-derived value.
+        asyncpg returns NUMERIC columns as Decimal; the fix ensures that Decimal
+        flows through to the DB parameter unchanged.
+        """
+        from butlers.tools.finance.reconciliation import _settle_bill
+
+        # Placeholder bill — amount will be backfilled from the transaction.
+        bill = await _insert_bill(
+            pool,
+            payee="Precision Test",
+            amount=0.00,
+            currency="USD",
+            due_date=date.today() - timedelta(days=1),
+        )
+        txn = await _insert_txn(
+            pool,
+            merchant="Precision Test",
+            amount=49.99,
+            currency="USD",
+        )
+
+        # Simulate what asyncpg gives back: a Decimal, not a float.
+        txn_dict = {
+            "id": txn["id"],
+            "amount": Decimal("49.99"),
+            "posted_at": txn["posted_at"],
+            "payment_method": None,
+        }
+
+        settled = await _settle_bill(pool, bill["id"], txn_dict)
+        assert settled is True
+
+        row = await pool.fetchrow("SELECT amount FROM bills WHERE id = $1", bill["id"])
+        # Must be the exact Decimal returned by asyncpg, not a float-truncated value.
+        assert row["amount"] == Decimal("49.99")

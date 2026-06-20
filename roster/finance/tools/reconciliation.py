@@ -170,7 +170,7 @@ async def match_transaction_to_bills(
 
     txn_merchant = txn.get("merchant", "")
     txn_currency = txn.get("currency", "")
-    txn_amount = Decimal(str(abs(float(txn.get("amount", 0)))))
+    txn_amount = abs(Decimal(str(txn.get("amount", 0))))
 
     # Parse posted_at
     txn_posted_at = txn.get("posted_at")
@@ -310,7 +310,7 @@ async def _settle_bill(
     txn_id_raw = txn.get("id")
     txn_uuid = uuid.UUID(str(txn_id_raw)) if not isinstance(txn_id_raw, uuid.UUID) else txn_id_raw
 
-    txn_abs_amount = Decimal(str(abs(float(txn.get("amount", 0)))))
+    txn_abs_amount = abs(Decimal(str(txn.get("amount", 0))))
 
     txn_posted_at = txn.get("posted_at")
     if isinstance(txn_posted_at, str):
@@ -436,7 +436,7 @@ async def reconcile_bills(
             "direction": txn_row["direction"],
             "merchant": txn_row["merchant"],
             "currency": txn_row["currency"],
-            "amount": float(abs(float(txn_row["amount"]))),
+            "amount": abs(Decimal(str(txn_row["amount"]))),
             "posted_at": txn_row["posted_at"],
             "metadata": txn_row.get("metadata"),
         }
@@ -459,7 +459,7 @@ async def reconcile_bills(
 
             settle_txn: dict[str, Any] = {
                 "id": txn_row["id"],
-                "amount": float(abs(float(txn_row["amount"]))),
+                "amount": abs(Decimal(str(txn_row["amount"]))),
                 "posted_at": txn_row["posted_at"],
                 "payment_method": txn_row.get("payment_method"),
             }
@@ -470,7 +470,7 @@ async def reconcile_bills(
                     {
                         "bill_id": str(bill_id),
                         "payee": bill["payee"],
-                        "amount": float(abs(float(txn_row["amount"]))),
+                        "amount": float(txn_row["amount"]),
                         "paid_at": txn_row["posted_at"].isoformat()
                         if txn_row["posted_at"]
                         else None,
@@ -508,7 +508,7 @@ async def reconcile_bills(
                             {
                                 "txn_id": str(txn_row["id"]),
                                 "merchant": txn_row["merchant"],
-                                "amount": float(abs(float(txn_row["amount"]))),
+                                "amount": float(txn_row["amount"]),
                                 "posted_at": txn_row["posted_at"].isoformat()
                                 if txn_row["posted_at"]
                                 else None,
