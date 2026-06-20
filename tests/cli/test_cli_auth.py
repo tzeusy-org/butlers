@@ -355,3 +355,54 @@ async def test_codex_backend_probe_network_error_keeps_authenticated(tmp_path):
         result = await probe_provider(codex)
 
     assert result.state == AuthHealthState.authenticated
+
+
+# ---------------------------------------------------------------------------
+# /test endpoint: device_code providers probe live health (no api_key reject)
+# ---------------------------------------------------------------------------
+
+
+async def test_test_endpoint_probes_device_code_provider():
+    """POST /cli-auth/{provider}/test must not 400 device_code providers.
+
+    The frontend probe button calls this endpoint for every auth mode. For a
+    device_code provider (e.g. Codex) it should run the live health probe and
+    map an authenticated result to success=True instead of rejecting.
+    """
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    healthy = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.authenticated,
+        detail="Logged in using ChatGPT",
+    )
+    with patch(
+        "butlers.api.routers.cli_auth.probe_provider",
+        AsyncMock(return_value=healthy),
+    ):
+        resp = await test_api_key("codex", db_manager=None)
+
+    assert resp.provider == "codex"
+    assert resp.success is True
+    assert resp.detail == "Logged in using ChatGPT"
+
+
+async def test_test_endpoint_device_code_not_authenticated_reports_failure():
+    """A not_authenticated probe result maps to success=False with the detail."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    revoked = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.not_authenticated,
+        detail="OpenAI rejected the stored token (401) — re-login required.",
+    )
+    with patch(
+        "butlers.api.routers.cli_auth.probe_provider",
+        AsyncMock(return_value=revoked),
+    ):
+        resp = await test_api_key("codex", db_manager=None)
+
+    assert resp.success is False
+    assert "re-login required" in resp.detail

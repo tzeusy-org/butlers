@@ -29,7 +29,7 @@ from butlers.api.models.cli_auth import (
     CLIAuthStartResponse,
     CLIAuthTestResponse,
 )
-from butlers.cli_auth.health import probe_all
+from butlers.cli_auth.health import AuthHealthState, probe_all, probe_provider
 from butlers.cli_auth.persistence import persist_token
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.cli_auth.session import (
@@ -347,16 +347,32 @@ async def delete_api_key(
 )
 async def test_api_key(
     provider: str,
+    db_manager: Any = Depends(_get_db_manager),
 ) -> CLIAuthTestResponse:
-    """Run the provider's test command to validate the stored API key."""
+    """Validate a provider's stored credential.
+
+    For ``api_key`` providers this runs the provider's configured test command.
+    For ``device_code`` providers (e.g. Codex) there is no API key to test
+    against — instead we run the live health probe, which executes the
+    provider's status command and (for Codex) validates the stored token
+    against the backend. The frontend "probe" button calls this endpoint for
+    every auth mode, so device_code providers must return a result rather than
+    a 400.
+    """
     provider_def = PROVIDERS.get(provider)
     if provider_def is None:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+
     if provider_def.auth_mode != "api_key":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
+        # device_code (and any non-api_key) provider: probe live auth health.
+        store = _make_credential_store(db_manager)
+        health = await probe_provider(provider_def, store)
+        return CLIAuthTestResponse(
+            provider=provider_def.name,
+            success=health.state == AuthHealthState.authenticated,
+            detail=health.detail or health.state.value,
         )
+
     if not provider_def.test_command:
         raise HTTPException(status_code=400, detail=f"No test command configured for {provider}.")
 
