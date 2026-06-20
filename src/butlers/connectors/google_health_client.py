@@ -94,6 +94,25 @@ class GoogleHealthCredentialError(GoogleHealthError):
 
     The connector treats this as a terminal auth failure — it transitions to
     ``degraded`` and re-checks scopes / credentials periodically.
+
+    NOTE: this is *per-connector* and does NOT imply the shared
+    ``public.google_accounts`` row should be marked revoked.  Many causes are
+    transient or connector-local (missing refresh token mid-DB-sync, app
+    credentials not yet configured, a non-200 from Google's token endpoint that
+    is not an ``invalid_grant``).  Only :class:`GoogleHealthTokenRevokedError`
+    means the underlying grant is actually gone for the whole account.
+    """
+
+
+class GoogleHealthTokenRevokedError(GoogleHealthCredentialError):
+    """Raised when Google's token endpoint reports ``invalid_grant``.
+
+    This is the *only* credential failure that genuinely indicates the account's
+    refresh token has been revoked or expired.  Because the
+    ``public.google_accounts`` row is shared across every Google connector
+    (Drive/Calendar/Gmail/Health), only this terminal signal may flip the
+    account-wide ``status`` to ``revoked`` — a transient or scope-local failure
+    must not, or one connector's hiccup would knock the others offline.
     """
 
 

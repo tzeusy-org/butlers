@@ -52,6 +52,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthForbiddenError,
     GoogleHealthRateLimitError,
     GoogleHealthSourcePreconditionError,
+    GoogleHealthTokenRevokedError,
     exponential_backoff_delay,
 )
 from butlers.google_account_registry import HealthScopedAccount
@@ -1878,6 +1879,85 @@ async def test_main_loop_credential_error_sets_per_account_auth_error(
 
     # Heartbeat was triggered for the failing account (once per resource error, or at least once).
     assert hb_a_mock._send_heartbeat.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_main_loop_transient_credential_error_does_not_revoke_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-revocation GoogleHealthCredentialError must NOT flip the shared account row.
+
+    The google_accounts row is read by every Google connector's account-sync
+    (status='active' filter), so revoking it on a transient/scope-local failure
+    would knock Drive/Calendar/Gmail offline (Bug B).  Only invalid_grant may.
+    """
+    connector, ctx_a, _ctx_b = _make_two_account_connector()
+    connector._running = True
+    connector._mcp_client = MagicMock()
+
+    revoke_mock = AsyncMock()
+    monkeypatch.setattr(connector, "_mark_account_revoked", revoke_mock)
+    monkeypatch.setattr(connector, "_drain_replay", AsyncMock())
+    monkeypatch.setattr(connector, "_flush_filtered_events", AsyncMock())
+    monkeypatch.setattr(connector, "_resolve_owner_and_scopes", AsyncMock())
+
+    polled: list[uuid.UUID] = []
+
+    async def _poll(acct_id: uuid.UUID, _state: ResourceState) -> None:
+        polled.append(acct_id)
+        all_resources = len(RESOURCE_BUNDLES) * 2
+        if len(polled) >= all_resources:
+            connector._shutdown_event.set()
+        if acct_id == _UUID_A:
+            raise GoogleHealthCredentialError("no refresh token yet (DB sync race)")
+
+    monkeypatch.setattr(connector, "_poll_resource", _poll)
+    hb = MagicMock()
+    hb._send_heartbeat = AsyncMock()
+    connector._heartbeats[_UUID_A] = hb
+
+    await connector._main_loop()
+
+    # Per-account auth_error is still set for observability...
+    assert ctx_a.auth_error is True
+    # ...but the shared account row was NOT revoked.
+    revoke_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_main_loop_token_revoked_error_marks_account_revoked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine GoogleHealthTokenRevokedError (invalid_grant) DOES revoke the account."""
+    connector, ctx_a, _ctx_b = _make_two_account_connector()
+    connector._running = True
+    connector._mcp_client = MagicMock()
+
+    revoke_mock = AsyncMock()
+    monkeypatch.setattr(connector, "_mark_account_revoked", revoke_mock)
+    monkeypatch.setattr(connector, "_drain_replay", AsyncMock())
+    monkeypatch.setattr(connector, "_flush_filtered_events", AsyncMock())
+    monkeypatch.setattr(connector, "_resolve_owner_and_scopes", AsyncMock())
+
+    polled: list[uuid.UUID] = []
+
+    async def _poll(acct_id: uuid.UUID, _state: ResourceState) -> None:
+        polled.append(acct_id)
+        all_resources = len(RESOURCE_BUNDLES) * 2
+        if len(polled) >= all_resources:
+            connector._shutdown_event.set()
+        if acct_id == _UUID_A:
+            raise GoogleHealthTokenRevokedError("refresh token revoked/expired: invalid_grant")
+
+    monkeypatch.setattr(connector, "_poll_resource", _poll)
+    hb = MagicMock()
+    hb._send_heartbeat = AsyncMock()
+    connector._heartbeats[_UUID_A] = hb
+
+    await connector._main_loop()
+
+    assert ctx_a.auth_error is True
+    revoke_mock.assert_awaited_with(_UUID_A)
 
 
 @pytest.mark.asyncio

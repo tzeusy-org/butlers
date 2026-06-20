@@ -106,6 +106,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthForbiddenError,
     GoogleHealthRateLimitError,
     GoogleHealthSourcePreconditionError,
+    GoogleHealthTokenRevokedError,
     exponential_backoff_delay,
 )
 from butlers.connectors.health_socket import make_health_socket
@@ -1331,7 +1332,15 @@ class GoogleHealthConnector:
 
         if resp.status_code != 200:
             body = resp.text[:200]
-            # Treat any non-200 as terminal for this account.
+            # Distinguish a genuine grant revocation (``invalid_grant``) from any
+            # other non-200.  Only the former may flip the shared, cross-connector
+            # google_accounts row to revoked; everything else stays connector-local
+            # so a transient blip never knocks Drive/Calendar/Gmail offline.
+            if "invalid_grant" in body:
+                raise GoogleHealthTokenRevokedError(
+                    f"Google refresh token revoked/expired for {ctx.email}: "
+                    f"HTTP {resp.status_code}: {body}"
+                )
             raise GoogleHealthCredentialError(
                 f"Google token refresh failed for {ctx.email}: HTTP {resp.status_code}: {body}"
             )
@@ -1550,10 +1559,19 @@ class GoogleHealthConnector:
                 try:
                     await self._poll_resource(acct_id, state)
                 except GoogleHealthCredentialError as exc:
+                    # Only a genuine grant revocation (invalid_grant) may flip the
+                    # shared google_accounts row — the row is read by every Google
+                    # connector's account-sync (status='active' filter), so revoking
+                    # it on a transient/scope-local failure would knock Drive/
+                    # Calendar/Gmail offline too.  Other credential errors stay
+                    # connector-local: poll stops for this account, status untouched.
+                    token_revoked = isinstance(exc, GoogleHealthTokenRevokedError)
                     logger.error(
-                        "GoogleHealthConnector: credential error account=%s — "
-                        "marking revoked and skipping: %s",
+                        "GoogleHealthConnector: credential error account=%s "
+                        "(token_revoked=%s) — skipping%s: %s",
                         ctx.email,
+                        token_revoked,
+                        " and marking account revoked" if token_revoked else "",
                         exc,
                     )
                     # Isolate: only this account's polls stop; others continue.
@@ -1568,7 +1586,8 @@ class GoogleHealthConnector:
                     self._auth_error = bool(self._accounts) and all(
                         c.auth_error for c in self._accounts.values()
                     )
-                    await self._mark_account_revoked(acct_id)
+                    if token_revoked:
+                        await self._mark_account_revoked(acct_id)
                     # Reschedule after one full recheck cycle so we don't tight-loop.
                     state.next_poll_monotonic = time.monotonic() + self._config.scope_recheck_s
                     next_due = min(next_due, state.next_poll_monotonic)
