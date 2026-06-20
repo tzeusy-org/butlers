@@ -394,6 +394,42 @@ def test_switchboard_runtime_role_can_ensure_message_inbox_partitions(postgres_c
     assert _table_exists_in_schema(db_url, "switchboard", "message_inbox_p209901")
 
 
+def test_connector_writer_can_ensure_filtered_events_partition(postgres_container):
+    """connector_writer can create filtered_events partitions without owning the parent table.
+
+    Regression guard for bu-0qmj7: connectors_filtered_events_ensure_partition()
+    must be SECURITY DEFINER so that the restricted connector_writer role can
+    call it to create new monthly partitions even though it is not the owner of
+    connectors.filtered_events.
+    """
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    # Verify the schema-qualified function is SECURITY DEFINER.
+    assert _function_is_security_definer(
+        db_url,
+        "connectors",
+        "connectors_filtered_events_ensure_partition",
+    )
+
+    # Call the function as connector_writer for a far-future month that was
+    # NOT pre-created by the migration (guarantees we're testing a genuine DDL
+    # execution path, not a no-op IF NOT EXISTS).
+    partition_name = _execute_as_role(
+        db_url,
+        "connector_writer",
+        "SELECT connectors.connectors_filtered_events_ensure_partition("
+        "'2099-03-15T00:00:00+00:00'::timestamptz"
+        ")",
+        scalar=True,
+    )
+    assert partition_name == "filtered_events_209903"
+    assert _table_exists_in_schema(db_url, "connectors", "filtered_events_209903")
+
+
 def test_core_scheduled_tasks_schema_and_constraints(postgres_container):
     """scheduled_tasks has dispatch/calendar columns; constraints enforced; calendar linkage columns present."""
     from butlers.migrations import run_migrations
