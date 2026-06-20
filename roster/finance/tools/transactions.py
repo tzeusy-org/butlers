@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import uuid as _uuid_mod
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -565,6 +565,7 @@ async def record_transaction(
     extra_cols_sql = f", {cols_clause}" if extra_cols else ""
     extra_vals_sql = f", {vals_clause}" if extra_vals else ""
 
+    is_fresh_insert = True
     try:
         row = await pool.fetchrow(
             f"""
@@ -607,6 +608,7 @@ async def record_transaction(
         )
     except asyncpg.UniqueViolationError:
         # Race condition: another insert beat us to it; return the existing row.
+        is_fresh_insert = False
         row = None
         if source_message_id is not None:
             row = await pool.fetchrow(
@@ -665,7 +667,89 @@ async def record_transaction(
         )
     )
 
-    return _row_to_dict(row)
+    result = _row_to_dict(row)
+
+    # --- Bill reconciliation hook (Track C / bu-y6gpw) ---
+    # Synchronous and in-process for fresh debit inserts only.  The try/except
+    # makes this best-effort: any reconciliation failure is logged but never
+    # propagates to the caller — the primary insert is always returned intact.
+    if is_fresh_insert and effective_direction == "debit":
+        try:
+            from butlers.tools.finance.reconciliation import (  # noqa: PLC0415
+                _settle_bill,
+                match_transaction_to_bills,
+            )
+
+            # Ensure posted_at is timezone-aware (defensive: callers should pass
+            # TZ-aware datetimes, but guard against naive inputs so that
+            # astimezone(UTC) inside match_transaction_to_bills never silently
+            # shifts the date by assuming the system local timezone).
+            _posted_at_tz = (
+                posted_at if posted_at.tzinfo is not None else posted_at.replace(tzinfo=UTC)
+            )
+
+            _txn_for_match: dict[str, Any] = {
+                "id": str(row["id"]),
+                "direction": effective_direction,
+                "merchant": merchant,
+                "currency": currency.upper(),
+                "amount": stored_amount,  # keep Decimal; reconciliation converts internally
+                "posted_at": _posted_at_tz,
+                "metadata": meta_dict,
+            }
+            _match = await match_transaction_to_bills(pool, _txn_for_match)
+            _tier = _match.get("tier", "none")
+
+            if _tier == "auto_settle":
+                _bill = _match["bill"]
+                _settled = await _settle_bill(
+                    pool,
+                    _bill["id"],
+                    {
+                        "id": str(row["id"]),
+                        "amount": stored_amount,  # keep Decimal; _settle_bill converts internally
+                        "posted_at": _posted_at_tz,
+                        "payment_method": payment_method,
+                    },
+                )
+                if _settled:
+                    result["bill_reconciliation"] = {
+                        "auto_settled": {
+                            "bill_id": str(_bill["id"]),
+                            "payee": _bill["payee"],
+                            "amount": float(stored_amount),
+                            "paid_at": _posted_at_tz.isoformat(),
+                            "txn_id": str(row["id"]),
+                        }
+                    }
+            elif _tier == "confirm":
+                _candidates = _match.get("candidates", [])
+                if _candidates:
+                    result["bill_reconciliation"] = {
+                        "candidates": [
+                            {
+                                "bill_id": str(_c["id"]),
+                                "payee": _c["payee"],
+                                "due_date": (
+                                    _c["due_date"].isoformat()
+                                    if hasattr(_c["due_date"], "isoformat")
+                                    else str(_c["due_date"])
+                                ),
+                                "amount": float(_c["amount"]),
+                            }
+                            for _c in _candidates
+                        ]
+                    }
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "record_transaction: bill reconciliation hook failed for txn %s merchant=%r; "
+                "primary insert is unaffected",
+                row["id"],
+                merchant,
+                exc_info=True,
+            )
+
+    return result
 
 
 async def list_transactions(
