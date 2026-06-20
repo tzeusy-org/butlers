@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ class _LegacySchedulerPool:
     def __init__(self) -> None:
         self.fetch_queries: list[str] = []
         self.execute_queries: list[str] = []
+        self.fetchrow_queries: list[str] = []
         self.column_probe_args: list[tuple[Any, ...]] = []
 
     async def fetchval(self, query: str, *args: Any) -> bool:
@@ -28,6 +30,8 @@ class _LegacySchedulerPool:
             requested = set(args[1])
             return [{"column_name": column} for column in requested if column == "task_type"]
         if "FROM scheduled_tasks" in query and "next_run_at <= $1" in query:
+            from datetime import datetime
+
             return [
                 {
                     "id": "task-id",
@@ -39,9 +43,18 @@ class _LegacySchedulerPool:
                     "job_args": None,
                     "complexity": "medium",
                     "until_at": None,
+                    "next_run_at": datetime(2024, 1, 1, 0, 0, tzinfo=UTC),
                 }
             ]
         return []
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        """Claim UPDATE — always succeeds in this test pool."""
+        self.fetchrow_queries.append(query)
+        if "UPDATE scheduled_tasks" in query and "IS NOT DISTINCT FROM" in query:
+            # Simulate a successful claim: return a non-None row with the task id.
+            return {"id": args[0]}
+        return None
 
     async def execute(self, query: str, *args: Any) -> str:
         self.execute_queries.append(query)

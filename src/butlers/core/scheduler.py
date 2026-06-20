@@ -1752,7 +1752,7 @@ async def tick(
             rows = await pool.fetch(
                 f"""
                 SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
-                       complexity, timezone{_until_at_select}{_budget_col_select}
+                       complexity, timezone, next_run_at{_until_at_select}{_budget_col_select}
                 FROM scheduled_tasks
                 WHERE enabled = true
                   {cron_filter}
@@ -1768,6 +1768,7 @@ async def tick(
         dispatched = 0
         for row in rows:
             task_id = row["id"]
+            original_next_run_at = row["next_run_at"]
             name = row["name"]
             prompt = row["prompt"]
             cron = row["cron"]
@@ -1783,6 +1784,59 @@ async def tick(
             task_timezone = _effective_schedule_timezone(row.get("timezone"), default_timezone)
 
             until_at = row["until_at"]
+
+            # --- Compute next_run_at before claiming ---
+            # We need it in the claim UPDATE so the DB transition is atomic.
+            next_run_at = _next_run(
+                cron,
+                timezone=task_timezone,
+                stagger_key=stagger_key,
+                max_stagger_seconds=max_stagger_seconds,
+            )
+            should_auto_disable = until_at is not None and next_run_at > until_at
+
+            # --- Claim this occurrence atomically (idempotency guard) ---
+            # Use next_run_at as an optimistic version field.  The UPDATE succeeds
+            # only when next_run_at still matches the value we read, meaning no
+            # concurrent tick (MCP tick tool, force-tick API, or a rapid second
+            # loop iteration) has already claimed this occurrence.
+            # If the claim returns nothing, skip silently — the occurrence was
+            # handled elsewhere.
+            if should_auto_disable:
+                claim_row = await pool.fetchrow(
+                    """
+                    UPDATE scheduled_tasks
+                    SET enabled = false, next_run_at = NULL, updated_at = now()
+                    WHERE id = $1 AND next_run_at IS NOT DISTINCT FROM $2
+                    RETURNING id
+                    """,
+                    task_id,
+                    original_next_run_at,
+                )
+            else:
+                claim_row = await pool.fetchrow(
+                    """
+                    UPDATE scheduled_tasks
+                    SET next_run_at = $2, updated_at = now()
+                    WHERE id = $1 AND next_run_at IS NOT DISTINCT FROM $3
+                    RETURNING id
+                    """,
+                    task_id,
+                    next_run_at,
+                    original_next_run_at,
+                )
+
+            if claim_row is None:
+                logger.debug(
+                    "Scheduled task %r already claimed by a concurrent tick; skipping",
+                    name,
+                )
+                continue
+
+            if should_auto_disable:
+                logger.info(
+                    "Scheduled task %s has passed until_at (%s); auto-disabling", name, until_at
+                )
 
             result_json: str | None = None
             dispatch_result: Any = None
@@ -1844,43 +1898,18 @@ async def tick(
                             "Completion hook for scheduled task %r raised; continuing", name
                         )
 
-            # Always advance next_run_at whether dispatch succeeded or failed.
-            # If the computed next run would exceed until_at, auto-disable the task.
-            next_run_at = _next_run(
-                cron,
-                timezone=task_timezone,
-                stagger_key=stagger_key,
-                max_stagger_seconds=max_stagger_seconds,
+            # Record the dispatch outcome.  next_run_at was already advanced in the
+            # claim step above; only last_run_at and last_result need updating here.
+            await pool.execute(
+                """
+                UPDATE scheduled_tasks
+                SET last_run_at = $2, last_result = $3, updated_at = now()
+                WHERE id = $1
+                """,
+                task_id,
+                now,
+                result_json,
             )
-            if until_at is not None and next_run_at > until_at:
-                logger.info(
-                    "Scheduled task %s has passed until_at (%s); auto-disabling", name, until_at
-                )
-                await pool.execute(
-                    """
-                    UPDATE scheduled_tasks
-                    SET enabled = false, next_run_at = NULL,
-                        last_run_at = $2, last_result = $3,
-                        updated_at = now()
-                    WHERE id = $1
-                    """,
-                    task_id,
-                    now,
-                    result_json,
-                )
-            else:
-                await pool.execute(
-                    """
-                    UPDATE scheduled_tasks
-                    SET next_run_at = $2, last_run_at = $3, last_result = $4,
-                        updated_at = now()
-                    WHERE id = $1
-                    """,
-                    task_id,
-                    next_run_at,
-                    now,
-                    result_json,
-                )
 
         span.set_attribute("tasks_run", dispatched)
 

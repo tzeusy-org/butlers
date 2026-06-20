@@ -114,6 +114,11 @@ MUTATION_STATUS_FAILED = "failed"
 MUTATION_STATUS_NOOP = "noop"
 BUTLER_EVENT_SOURCE_SCHEDULED = "scheduled_task"
 BUTLER_EVENT_SOURCE_REMINDER = "butler_reminder"
+# Default action string used when no explicit action is provided for a butler calendar event.
+# When the stored prompt equals this sentinel (or is empty), the scheduler fires with no
+# meaningful context, causing the session to improvise.  calendar_create_butler_event detects
+# this and replaces it with a descriptive prompt built from the event title and start time.
+_CALENDAR_EVENT_DEFAULT_ACTION = "Run butler event"
 MUTATION_HIGH_IMPACT_ACTIONS = {
     "workspace_butler_delete",
     "workspace_butler_toggle",
@@ -3570,7 +3575,7 @@ class CalendarModule(Module):
             recurrence_rule: str | None = None,
             cron: str | None = None,
             until_at: datetime | None = None,
-            action: str = "Run butler event",
+            action: str = _CALENDAR_EVENT_DEFAULT_ACTION,
             action_args: dict[str, Any] | None = None,
             source_hint: str | None = None,
             request_id: str | None = None,
@@ -3713,11 +3718,33 @@ class CalendarModule(Module):
                             stagger_key=module._butler_name,
                         )
                     else:
+                        # Build a meaningful firing prompt when action is the generic default.
+                        # The default "Run butler event" carries no context; the scheduled
+                        # session would improvise, causing off-cron freelancing (bu-0g76b).
+                        # Replace it with a prompt derived from the event title and start time.
+                        effective_action = action.strip()
+                        if not effective_action or (
+                            effective_action == _CALENDAR_EVENT_DEFAULT_ACTION
+                        ):
+                            try:
+                                _tz_obj = ZoneInfo(effective_timezone)
+                                _local_start = start_at.astimezone(_tz_obj)
+                                _time_str = _local_start.strftime("%H:%M %Z")
+                            except Exception:
+                                _time_str = start_at.isoformat()
+                            _notes = str((action_args or {}).get("notes") or "").strip()
+                            _notes_suffix = f" {_notes}" if _notes else ""
+                            effective_prompt = (
+                                f"Scheduled event: {normalized_title} at {_time_str}."
+                                f"{_notes_suffix}"
+                            )
+                        else:
+                            effective_prompt = effective_action
                         task_id = await _schedule_create(
                             pool,
                             schedule_name,
                             effective_cron,
-                            action,
+                            effective_prompt,
                             dispatch_mode="prompt",
                             timezone=effective_timezone,
                             start_at=start_at,
