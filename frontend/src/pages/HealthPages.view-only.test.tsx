@@ -56,6 +56,23 @@ vi.mock("@/hooks/use-health", () => {
       },
       isLoading: false,
     }),
+    useMeasurementTrend: () => ({
+      data: {
+        type: "weight",
+        window_days: 14,
+        bucket: "daily",
+        buckets: [
+          {
+            bucket_start: "2026-01-01T00:00:00Z",
+            value_mean: 70,
+            value_min: 70,
+            value_max: 70,
+            sample_count: 1,
+          },
+        ],
+      },
+      isLoading: false,
+    }),
     useCreateMeasurement: noopMutation,
     useUpdateMeasurement: noopMutation,
     useDeleteMeasurement: noopMutation,

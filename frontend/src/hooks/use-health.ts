@@ -22,6 +22,7 @@ import {
   getMeasurements,
   getMeasurementsLatest,
   getMeasurementSources,
+  getMeasurementsTrend,
   getMedicationDoses,
   getMedications,
   getResearch,
@@ -42,6 +43,7 @@ import type {
   MealUpdateRequest,
   MeasurementCreateRequest,
   MeasurementParams,
+  MeasurementTrendParams,
   MeasurementUpdateRequest,
   MedicationCreateRequest,
   MedicationParams,
@@ -60,6 +62,21 @@ export function useMeasurements(params?: MeasurementParams) {
     queryKey: ["health-measurements", params],
     queryFn: () => getMeasurements(params),
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Fetch the bucketed mean/min/max trend for a single measurement type.
+ *
+ * Deterministic read — auto-refreshes every 30s per the health auto-refresh
+ * contract. Disabled until a `type` is supplied.
+ */
+export function useMeasurementTrend(params: MeasurementTrendParams) {
+  return useQuery({
+    queryKey: ["health-measurement-trend", params],
+    queryFn: () => getMeasurementsTrend(params),
+    refetchInterval: 30_000,
+    enabled: !!params.type,
   });
 }
 

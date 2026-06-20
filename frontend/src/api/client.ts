@@ -1629,6 +1629,23 @@ export function getMeasurementsLatest(
   );
 }
 
+/** Fetch bucketed mean/min/max trend aggregation for a single measurement type.
+ *
+ * GET /api/health/measurements/trend?type=weight&window_days=14&bucket=daily
+ * Returns { type, window_days, bucket, buckets: [{ bucket_start, value_mean, ... }] }.
+ */
+export function getMeasurementsTrend(
+  params: import("./types").MeasurementTrendParams,
+): Promise<import("./types").MeasurementTrendResponse> {
+  const sp = new URLSearchParams();
+  sp.set("type", params.type);
+  if (params.window_days != null) sp.set("window_days", String(params.window_days));
+  if (params.bucket) sp.set("bucket", params.bucket);
+  return apiFetch<import("./types").MeasurementTrendResponse>(
+    `/health/measurements/trend?${sp.toString()}`,
+  );
+}
+
 /** Fetch the latest sleep session with stage breakdown.
  *
  * GET /api/health/measurements/sleep/latest

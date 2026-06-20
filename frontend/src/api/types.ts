@@ -1249,6 +1249,41 @@ export interface MeasurementParams {
   limit?: number;
 }
 
+/** Allowed lookback windows for the measurement trend endpoint (days). */
+export type MeasurementTrendWindowDays = 1 | 7 | 14 | 30 | 90;
+
+/** Query parameters for GET /health/measurements/trend. */
+export interface MeasurementTrendParams {
+  /** Measurement type (e.g. "weight", "blood_pressure"). */
+  type: string;
+  /** Lookback window in days. One of 1, 7, 14, 30, 90. Defaults to 14. */
+  window_days?: MeasurementTrendWindowDays;
+  /** Bucket granularity. Defaults to "daily". */
+  bucket?: "hourly" | "daily";
+}
+
+/**
+ * A single time bucket in a measurement trend response.
+ *
+ * Backed by a `date_trunc('day' | 'hour', valid_at)` aggregation over the fact
+ * store. `bucket_start` is an ISO-8601 timestamp (UTC) for the start of the bucket.
+ */
+export interface MeasurementTrendBucket {
+  bucket_start: string;
+  value_mean: number;
+  value_min: number;
+  value_max: number;
+  sample_count: number;
+}
+
+/** Response shape for GET /health/measurements/trend. */
+export interface MeasurementTrendResponse {
+  type: string;
+  window_days: number;
+  bucket: "hourly" | "daily";
+  buckets: MeasurementTrendBucket[];
+}
+
 /** The five measurement types the Health butler recognizes for direct CRUD. */
 export type MeasurementType =
   | "weight"

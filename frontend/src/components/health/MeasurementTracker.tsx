@@ -1,14 +1,12 @@
 // ---------------------------------------------------------------------------
 // MeasurementTracker — direct add/edit/delete for logged measurements [bu-mqhas]
 //
-// Mirrors SymptomTracker (bu-gk38e): a list surface with a "Log measurement"
-// toolbar affordance, per-row Edit / Delete actions, a delete confirmation
-// dialog, and an add/edit dialog wrapping the shared MeasurementForm. All
-// writes go through the /api/health/measurements fact-store path, so dashboard
-// edits and butler edits stay in sync.
-//
-// Measurements are TEMPORAL facts (reading log): the type + date-range filters
-// are preserved here. The completes the last of the six health-CRUD pages.
+// Reframed to the Dispatch language [bu-w7b18.2]: the reading log renders as a
+// rule-list (mono-time / type+value / notes / actions) rather than a shadcn
+// Table, with a serif-italic empty line. All writes still go through the
+// /api/health/measurements fact-store path, so dashboard edits and butler edits
+// stay in sync. Measurements are TEMPORAL facts (a reading log): the type +
+// date-range filters are preserved here.
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
@@ -34,16 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Time } from "@/components/ui/time";
 import { useDeleteMeasurement, useMeasurements } from "@/hooks/use-health";
 
@@ -99,24 +88,21 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
   return (
     <>
       {Array.from({ length: count }, (_, i) => (
-        <TableRow key={i}>
-          <TableCell><Skeleton className="h-4 w-28" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-48" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-        </TableRow>
+        <div key={i} className="py-3">
+          <Skeleton className="h-4 w-full" />
+        </div>
       ))}
     </>
   );
 }
 
-function EmptyState() {
+/** Single serif-italic empty line — Dispatch empty state (no decorated chrome). */
+function EmptyLine() {
   return (
-    <EmptyStateUI
-      title="No measurements found."
-      description="Log a measurement with the button above, or record one by talking to your Health butler."
-    />
+    <p className="py-8 font-serif text-sm italic text-muted-foreground">
+      No measurements logged yet. Log one with the button above, or record one by
+      talking to your Health butler.
+    </p>
   );
 }
 
@@ -147,36 +133,40 @@ function MeasurementRow({
   const label = typeLabel(measurement.type);
 
   return (
-    <TableRow>
-      <TableCell className="font-medium">{label}</TableCell>
-      <TableCell className="tabular-nums">{formatValue(measurement)}</TableCell>
-      <TableCell className="text-muted-foreground text-sm">
-        <Time value={measurement.measured_at} mode="absolute" />
-      </TableCell>
-      <TableCell className="text-muted-foreground max-w-xs truncate text-sm">
-        {measurement.notes ?? "—"}
-      </TableCell>
-      <TableCell>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onEdit(measurement)}
-            aria-label={`Edit ${label}`}
-          >
-            Edit
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            onClick={() => setConfirmingDelete(true)}
-            aria-label={`Delete ${label}`}
-          >
-            Delete
-          </Button>
+    <div className="grid grid-cols-[1fr_auto] items-center gap-4 py-3">
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-2">
+          <span className="font-sans text-[13px] font-medium text-foreground">{label}</span>
+          <span className="font-mono text-[12.5px] text-foreground tnum">
+            {formatValue(measurement)}
+          </span>
         </div>
-      </TableCell>
+        <div className="mt-1 flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted-foreground tnum">
+          <Time value={measurement.measured_at} mode="absolute" />
+          {measurement.notes && (
+            <span className="truncate font-sans text-muted-foreground">· {measurement.notes}</span>
+          )}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onEdit(measurement)}
+          aria-label={`Edit ${label}`}
+        >
+          Edit
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          onClick={() => setConfirmingDelete(true)}
+          aria-label={`Delete ${label}`}
+        >
+          Delete
+        </Button>
+      </div>
 
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
         <AlertDialogContent>
@@ -201,7 +191,7 @@ function MeasurementRow({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </TableRow>
+    </div>
   );
 }
 
@@ -249,7 +239,7 @@ export default function MeasurementTracker() {
               setTypeFilter(e.target.value as "" | MeasurementType);
               setPage(0);
             }}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-44 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-44 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           >
             {TYPE_FILTERS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -258,7 +248,9 @@ export default function MeasurementTracker() {
             ))}
           </select>
           <div className="flex items-center gap-2">
-            <label className="text-muted-foreground text-sm">From</label>
+            <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              From
+            </label>
             <input
               type="date"
               value={since}
@@ -266,11 +258,13 @@ export default function MeasurementTracker() {
                 setSince(e.target.value);
                 setPage(0);
               }}
-              className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+              className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-muted-foreground text-sm">To</label>
+            <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              To
+            </label>
             <input
               type="date"
               value={until}
@@ -278,7 +272,7 @@ export default function MeasurementTracker() {
                 setUntil(e.target.value);
                 setPage(0);
               }}
-              className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+              className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
             />
           </div>
           {(typeFilter || since || until) && (
@@ -302,38 +296,27 @@ export default function MeasurementTracker() {
       </div>
 
       {!isLoading && measurements.length === 0 ? (
-        <EmptyState />
+        <EmptyLine />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Type</TableHead>
-              <TableHead>Value</TableHead>
-              <TableHead>Measured</TableHead>
-              <TableHead>Notes</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <SkeletonRows />
-            ) : (
-              measurements.map((measurement) => (
-                <MeasurementRow
-                  key={measurement.id}
-                  measurement={measurement}
-                  onEdit={setFormTarget}
-                />
-              ))
-            )}
-          </TableBody>
-        </Table>
+        <div className="divide-y divide-border/60 border-y border-border/60">
+          {isLoading ? (
+            <SkeletonRows />
+          ) : (
+            measurements.map((measurement) => (
+              <MeasurementRow
+                key={measurement.id}
+                measurement={measurement}
+                onEdit={setFormTarget}
+              />
+            ))
+          )}
+        </div>
       )}
 
       {/* Pagination */}
       {total > 0 && (
         <div className="flex items-center justify-between">
-          <p className="text-muted-foreground text-sm">
+          <p className="font-mono text-[11px] text-muted-foreground tnum">
             Showing {rangeStart}–{rangeEnd} of {total.toLocaleString()}
           </p>
           <div className="flex gap-2">
