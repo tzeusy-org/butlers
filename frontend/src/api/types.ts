@@ -792,6 +792,8 @@ export interface AuditLogParams {
   since?: string;
   /** Filter by canonical credential key (e.g. "u:google"). Forwarded as ?key= to GET /api/audit-log. */
   key?: string;
+  /** Filter preset. "privileged" excludes heartbeat/GET noise, surfaces mutation/security rows only. */
+  kind?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -818,3 +818,100 @@ def test_non_normalised_target_not_returned_for_canonical_key_filter():
     assert resp.status_code == 200
     body = resp.json()
     assert body["meta"]["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# GET /api/audit-log?kind=privileged — operational-noise filter (bu-9q1dx.5)
+# ---------------------------------------------------------------------------
+# kind=privileged excludes *_heartbeat and GET /... action patterns so that
+# the permissions-page audit reel surfaces only mutation/security rows.
+# ---------------------------------------------------------------------------
+
+
+def test_kind_privileged_sql_excludes_heartbeat_pattern():
+    """SQL for kind=privileged contains NOT LIKE '%_heartbeat'."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?kind=privileged")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "NOT LIKE '%_heartbeat'" in sql
+
+
+def test_kind_privileged_sql_excludes_get_path_pattern():
+    """SQL for kind=privileged contains NOT LIKE 'GET /%' to strip routine GET noise."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?kind=privileged")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "NOT LIKE 'GET /%'" in sql
+
+
+def test_kind_privileged_returns_200():
+    """kind=privileged is a valid parameter and returns HTTP 200."""
+    app, _, _ = _make_audit_app([])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?kind=privileged")
+    assert resp.status_code == 200
+
+
+def test_kind_unknown_returns_422():
+    """An unrecognised kind value is rejected with HTTP 422."""
+    app, _, _ = _make_audit_app([])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?kind=foobar")
+    assert resp.status_code == 422
+
+
+def test_kind_absent_does_not_add_noise_filters():
+    """Without ?kind=, the SQL must NOT contain the privileged-filter clauses."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "NOT LIKE '%_heartbeat'" not in sql
+    assert "NOT LIKE 'GET /%'" not in sql
+
+
+def test_kind_privileged_combined_with_limit():
+    """kind=privileged works alongside limit; trailing args remain (limit, offset)."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?kind=privileged&limit=15")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "NOT LIKE '%_heartbeat'" in sql
+    args = fetch_call[1:]
+    assert args[-2] == 15  # limit
+    assert args[-1] == 0  # offset
+
+
+def test_kind_privileged_empty_state_returns_empty_page():
+    """kind=privileged with no matching rows returns an empty data list, not an error."""
+    app, _, _ = _make_audit_app([], total=0)
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?kind=privileged&limit=15")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+
+
+def test_kind_privileged_returns_mutation_rows():
+    """kind=privileged returns mutation rows (permission.set, data.export, webhook.*)."""
+    mutation_rows = [
+        _sample_row(row_id=1, action="permission.set"),
+        _sample_row(row_id=2, action="data.export"),
+        _sample_row(row_id=3, action="webhook.create"),
+    ]
+    app, _, _ = _make_audit_app(mutation_rows, total=3)
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?kind=privileged&limit=15")
+    assert resp.status_code == 200
+    body = resp.json()
+    actions = [e["action"] for e in body["data"]]
+    assert "permission.set" in actions
+    assert "data.export" in actions
+    assert "webhook.create" in actions
