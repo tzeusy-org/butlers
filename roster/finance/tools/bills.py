@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -21,6 +22,25 @@ _VALID_STATUSES = ("pending", "paid", "overdue")
 _VALID_FREQUENCIES = ("one_time", "weekly", "monthly", "quarterly", "yearly", "custom")
 
 _DEFAULT_DAYS_AHEAD = 14
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _payee_key(payee: str) -> str:
+    """Normalize a payee name into a dedup key.
+
+    Collapses case/whitespace/trailing-period variants so the same payee stops
+    proliferating into duplicate bill rows on each ingest ("Tailscale Inc." and
+    "Tailscale Inc" map to the same key).
+
+    Kept in sync with the SQL backfill in migration ``010_bills_action_semantics``
+    (lower + collapse whitespace + trim + strip trailing period). It deliberately
+    does NOT attempt semantic alias merging (e.g. "Endowus" vs "Endowus CPF OA
+    Investment") — those are handled by the one-time data cleanup and by the
+    caller supplying a consistent payee name.
+    """
+    collapsed = _WHITESPACE_RE.sub(" ", payee.lower()).strip()
+    return collapsed.rstrip(".").strip()
 
 
 def _normalize_date(value: str | date) -> date:
@@ -113,11 +133,16 @@ async def track_bill(
     paid_at: datetime | str | None = None,
     source_message_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    autopay: bool | None = None,
+    predicted: bool | None = None,
 ) -> dict[str, Any]:
     """Create or update a bill obligation in finance.bills.
 
-    Upsert logic: match on (payee, due_date). If a record is found, update
-    all provided fields and refresh updated_at. If no record exists, insert.
+    Upsert logic: match on (payee_key, due_date) where ``payee_key`` is the
+    normalized payee. This collapses case/whitespace variants of the same payee
+    so re-ingesting "Tailscale Inc." after "Tailscale Inc" updates the existing
+    row instead of inserting a duplicate. If a record is found, update all
+    provided fields and refresh updated_at; otherwise insert.
 
     Parameters
     ----------
@@ -150,6 +175,16 @@ async def track_bill(
         Source email or provider message ID for provenance.
     metadata:
         Arbitrary JSON metadata for extended attributes.
+    autopay:
+        Whether the bill is auto-debited (GIRO / CPF / card autopay). When
+        true, the bill is informational — the owner takes no action. ``None``
+        (default) leaves an existing row's flag unchanged and inserts ``false``.
+    predicted:
+        Whether the row originated from a pattern-based prediction rather than a
+        confirmed obligation. Predictions should normally stay out of the bills
+        table (``predict_bills`` is read-only); this flag exists to quarantine
+        any that are tracked from the actionable list. ``None`` (default) leaves
+        an existing row's flag unchanged and inserts ``false``.
 
     Returns
     -------
@@ -166,6 +201,7 @@ async def track_bill(
     period_end = _normalize_date(statement_period_end) if statement_period_end else None
     metadata_value: dict[str, Any] = dict(metadata) if metadata is not None else {}
     account_uuid = uuid.UUID(str(account_id)) if account_id is not None else None
+    payee_key = _payee_key(payee)
 
     # Normalize paid_at to datetime if provided as string
     paid_at_dt: datetime | None = None
@@ -175,11 +211,16 @@ async def track_bill(
         else:
             paid_at_dt = paid_at
 
-    # Upsert: match on (payee, due_date)
+    # Upsert: match on (payee_key, due_date) so payee name variants collapse.
+    # Fall back to legacy payee match for rows predating the payee_key backfill.
     existing = await pool.fetchrow(
-        "SELECT id FROM bills WHERE payee = $1 AND due_date = $2 LIMIT 1",
-        payee,
+        "SELECT id FROM bills"
+        " WHERE due_date = $2 AND (payee_key = $1 OR (payee_key IS NULL AND payee = $3))"
+        " ORDER BY payee_key IS NULL"
+        " LIMIT 1",
+        payee_key,
         due,
+        payee,
     )
 
     if existing is not None:
@@ -187,21 +228,27 @@ async def track_bill(
             """
             UPDATE bills
             SET
-                amount                = $1,
-                currency              = $2,
-                frequency             = $3,
-                status                = $4,
-                payment_method        = COALESCE($5, payment_method),
-                account_id            = COALESCE($6, account_id),
-                statement_period_start = COALESCE($7, statement_period_start),
-                statement_period_end   = COALESCE($8, statement_period_end),
-                paid_at               = COALESCE($9, paid_at),
-                source_message_id     = COALESCE($10, source_message_id),
-                metadata              = metadata || $11,
+                payee                 = $1,
+                payee_key             = $2,
+                amount                = $3,
+                currency              = $4,
+                frequency             = $5,
+                status                = $6,
+                payment_method        = COALESCE($7, payment_method),
+                account_id            = COALESCE($8, account_id),
+                statement_period_start = COALESCE($9, statement_period_start),
+                statement_period_end   = COALESCE($10, statement_period_end),
+                paid_at               = COALESCE($11, paid_at),
+                source_message_id     = COALESCE($12, source_message_id),
+                metadata              = metadata || $13,
+                autopay               = COALESCE($14, autopay),
+                predicted             = COALESCE($15, predicted),
                 updated_at            = now()
-            WHERE id = $12
+            WHERE id = $16
             RETURNING *
             """,
+            payee,
+            payee_key,
             amount,
             currency,
             frequency,
@@ -213,24 +260,29 @@ async def track_bill(
             paid_at_dt,
             source_message_id,
             metadata_value,
+            autopay,
+            predicted,
             existing["id"],
         )
     else:
         row = await pool.fetchrow(
             """
             INSERT INTO bills (
-                payee, amount, currency, due_date, frequency, status,
+                payee, payee_key, amount, currency, due_date, frequency, status,
                 payment_method, account_id, statement_period_start,
-                statement_period_end, paid_at, source_message_id, metadata
+                statement_period_end, paid_at, source_message_id, metadata,
+                autopay, predicted
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6,
-                $7, $8, $9,
-                $10, $11, $12, $13
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10,
+                $11, $12, $13, $14,
+                COALESCE($15, false), COALESCE($16, false)
             )
             RETURNING *
             """,
             payee,
+            payee_key,
             amount,
             currency,
             due,
@@ -243,6 +295,8 @@ async def track_bill(
             paid_at_dt,
             source_message_id,
             metadata_value,
+            autopay,
+            predicted,
         )
 
     result = _deserialize_row(row)
@@ -278,16 +332,26 @@ async def upcoming_bills(
     days_ahead: int = _DEFAULT_DAYS_AHEAD,
     include_overdue: bool = False,
 ) -> dict[str, Any]:
-    """Query bills due within the requested horizon with urgency classification.
+    """Query upcoming bills, segmented by whether the owner must act.
 
-    Bills that are due within ``days_ahead`` days from today are included.
-    Optionally includes already-overdue obligations (status='overdue' or
-    due_date < today and status='pending').
+    Bills due within ``days_ahead`` days (and, when ``include_overdue`` is set,
+    already-overdue obligations) are partitioned into three buckets so a digest
+    can lead with what actually needs doing instead of burying it:
 
-    Urgency classification:
-    - ``due_today``: due_date == today
-    - ``due_soon``: due_date is within the horizon but not today
-    - ``overdue``: status is 'overdue' OR due_date < today and status='pending'
+    - ``needs_action``: real, confirmed obligations the owner must pay manually
+      (not autopay, not predicted, amount > 0).
+    - ``autopay``: bills that auto-debit (GIRO / CPF / card autopay) — surfaced
+      as informational FYIs, never as action items.
+    - ``predicted``: pattern-based rows that are not confirmed obligations.
+
+    Zero-amount placeholders (statements awaiting an amount) are excluded from
+    every bucket and only counted in ``suppressed_placeholders`` — per the
+    placeholder doctrine, they are not actionable until reconciliation backfills
+    the amount.
+
+    Each item carries an ``urgency`` (``overdue`` / ``due_today`` / ``due_soon``)
+    and ``days_until_due``. Only ``needs_action`` contributes to
+    ``totals.needs_action_amount`` — the money the owner must actively move.
 
     Parameters
     ----------
@@ -301,8 +365,8 @@ async def upcoming_bills(
     Returns
     -------
     dict
-        UpcomingBillsResponse with ``as_of``, ``window_days``, ``items``,
-        and ``totals``.
+        Segmented response with ``as_of``, ``window_days``, ``needs_action``,
+        ``autopay``, ``predicted``, ``suppressed_placeholders``, and ``totals``.
     """
     # Local date for comparing against plain-date due_date columns.
     today = date.today()
@@ -332,45 +396,56 @@ async def upcoming_bills(
             horizon,
         )
 
-    items: list[dict[str, Any]] = []
-    total_due_soon = 0
-    total_overdue = 0
-    amount_due = Decimal("0.00")
+    needs_action: list[dict[str, Any]] = []
+    autopay_items: list[dict[str, Any]] = []
+    predicted_items: list[dict[str, Any]] = []
+    suppressed_placeholders = 0
+    needs_action_amount = Decimal("0.00")
+    autopay_amount = Decimal("0.00")
 
     for row in rows:
         bill = _deserialize_row(row)
         due = row["due_date"]
         bill_status = row["status"]
 
-        is_overdue = bill_status == "overdue" or (due < today and bill_status == "pending")
-        urgency = _urgency(due, today, is_overdue)
-        days_until_due = (due - today).days
-
-        items.append(
-            {
-                "bill": bill,
-                "urgency": urgency,
-                "days_until_due": days_until_due,
-            }
-        )
-
-        if urgency == "overdue":
-            total_overdue += 1
-        else:
-            total_due_soon += 1
-
         try:
-            amount_due += Decimal(str(row["amount"]))
+            amount = Decimal(str(row["amount"]))
         except Exception:
-            pass
+            amount = Decimal("0.00")
+
+        # Zero-amount placeholders are not actionable — count and skip.
+        if amount == 0:
+            suppressed_placeholders += 1
+            continue
+
+        is_overdue = bill_status == "overdue" or (due < today and bill_status == "pending")
+        item = {
+            "bill": bill,
+            "urgency": _urgency(due, today, is_overdue),
+            "days_until_due": (due - today).days,
+        }
+
+        if row["autopay"]:
+            autopay_items.append(item)
+            autopay_amount += amount
+        elif row["predicted"]:
+            predicted_items.append(item)
+        else:
+            needs_action.append(item)
+            needs_action_amount += amount
 
     return {
         "as_of": datetime.now(UTC).isoformat(),
         "window_days": days_ahead,
-        "items": items,
+        "needs_action": needs_action,
+        "autopay": autopay_items,
+        "predicted": predicted_items,
+        "suppressed_placeholders": suppressed_placeholders,
         "totals": {
-            "due_soon": total_due_soon,
-            "overdue": total_overdue,
-            "amount_due": str(amount_due),
+            "needs_action_count": len(needs_action),
+            "needs_action_amount": str(needs_action_amount),
+            "autopay_count": len(autopay_items),
+            "autopay_amount": str(autopay_amount),
+            "predicted_count": len(predicted_items),
         },
     }

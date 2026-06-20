@@ -85,26 +85,33 @@ Record a payable obligation.
 | `currency` | string | Yes | ISO-4217 code. |
 | `due_date` | date string | Yes | Payment due date. |
 | `frequency` | string | No | `"one_time"` (default), `"monthly"`, `"annual"`, etc. |
-| `status` | string | No | `"pending"` (default), `"paid"`, or `"overdue"`. |
+| `status` | string | No | `"pending"` (default), `"paid"`, or `"overdue"`. A $0 placeholder may not be `"overdue"`. |
 | `paid_at` | TIMESTAMPTZ string | No | When payment was made. Required when setting `status="paid"`. |
 | `source_message_id` | string | No | Provenance for deduplication. |
 | `metadata` | JSONB dict | No | Raw context for partial data. |
+| `autopay` | bool | No | Auto-debited bill (GIRO/CPF/card). Surfaced as a no-action FYI. Omit to leave unchanged. |
+| `predicted` | bool | No | Pattern-based prediction tracked as a bill. Omit to leave unchanged; prefer not tracking predictions. |
 
 **Notes:**
+- Dedupes on the normalized payee + `due_date`; use a consistent payee name to avoid fragmenting records.
 - Create a calendar reminder 3 days before `due_date` (configurable via user's `bill_reminder_preference` memory fact).
 
 ---
 
 ## upcoming_bills
 
-Surface bills due within a time horizon.
+Surface upcoming bills, segmented by whether the owner must act.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `days_ahead` | int | No | Horizon in days (default: 14). |
 | `include_overdue` | bool | No | Include past-due bills (default: true). |
 
-Returns bills with urgency classification: `"overdue"`, `"due_today"`, `"due_soon"`, `"due_upcoming"`.
+Returns three buckets — `needs_action` (manual, confirmed, amount > 0), `autopay` (FYI), and
+`predicted` (heads-up) — plus `suppressed_placeholders` (count of hidden $0 rows) and `totals`
+(`needs_action_count`/`needs_action_amount`, `autopay_count`/`autopay_amount`, `predicted_count`).
+Each item is `{bill, urgency, days_until_due}` with `urgency` ∈ `"overdue"`, `"due_today"`,
+`"due_soon"`. Only `needs_action_amount` is money the owner must actively move.
 
 ---
 
