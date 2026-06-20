@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -61,18 +62,29 @@ def test_health_insight_scan_schedule_has_registered_handler() -> None:
 
 @pytest.mark.asyncio
 async def test_health_insight_scan_handler_dispatches_roster_job(monkeypatch) -> None:
-    """The registry wrapper should call the Health roster job implementation."""
+    """The registry wrapper should call the Health roster job implementation.
+
+    The handler now builds an HA environment reader before dispatching, so both
+    ``load_roster_jobs`` and ``build_ha_environment_reader`` must be stubbed.
+    The reader is None here (no HA credentials) — the key assertion is that the
+    pool is forwarded and the roster job is actually called.
+    """
     from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
     calls: dict[str, Any] = {}
 
-    async def run_insight_scan(pool: Any) -> dict[str, Any]:
+    async def run_insight_scan(pool: Any, *, ha_environment_reader: Any = None) -> dict[str, Any]:
         calls["pool"] = pool
+        calls["ha_environment_reader"] = ha_environment_reader
         return {"candidates_proposed": 0}
 
     monkeypatch.setattr(
         "butlers.jobs._roster_loader.load_roster_jobs",
         lambda name: SimpleNamespace(run_insight_scan=run_insight_scan),
+    )
+    monkeypatch.setattr(
+        "butlers.jobs.health_ha_reader.build_ha_environment_reader",
+        AsyncMock(return_value=None),
     )
 
     pool = object()
@@ -80,5 +92,6 @@ async def test_health_insight_scan_handler_dispatches_roster_job(monkeypatch) ->
 
     result = await handler(pool, {"ignored": True})
 
-    assert calls == {"pool": pool}
+    assert calls["pool"] is pool
+    assert calls["ha_environment_reader"] is None
     assert result == {"candidates_proposed": 0}

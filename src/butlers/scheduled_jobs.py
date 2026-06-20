@@ -493,12 +493,21 @@ async def _run_health_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run health butler insight scan job."""
+    """Run health butler insight scan job.
+
+    Builds a concrete ``HaEnvironmentReader`` from the health butler's own HA
+    credentials (stored in ``public.entity_info``) and passes it into the scan
+    so that ``_scan_environment_correlation`` can run in production.  When HA
+    credentials are absent the reader is ``None`` and the correlation section is
+    skipped cleanly — same behaviour as before this fix.
+    """
     del job_args
     from butlers.jobs._roster_loader import load_roster_jobs
+    from butlers.jobs.health_ha_reader import build_ha_environment_reader
 
     mod = load_roster_jobs("health")
-    return await mod.run_insight_scan(pool)
+    ha_reader = await build_ha_environment_reader(pool)
+    return await mod.run_insight_scan(pool, ha_environment_reader=ha_reader)
 
 
 async def _run_relationship_insight_scan_job(
