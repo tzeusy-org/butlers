@@ -4639,6 +4639,111 @@ class CalendarModule(Module):
             result = await module._dismiss_reminder(parsed_event_id)
             return result
 
+        @_tool("core")
+        async def calendar_propose_event(
+            title: str,
+            start_at: datetime,
+            end_at: datetime,
+            description: str | None = None,
+            location: str | None = None,
+            timezone: str = "UTC",
+            source_event_id: str | None = None,
+            source_snippet: str | None = None,
+            confidence: float | None = None,
+            entity_ids: list[str] | None = None,
+            butler_name: str | None = None,
+        ) -> dict[str, Any]:
+            """Propose a calendar event for review without writing to any provider.
+
+            Inserts a PENDING row into calendar_event_proposals and returns its id.
+            Idempotent: if ``source_event_id`` is supplied and a proposal with that
+            id already exists, the existing proposal id is returned (no duplicate,
+            no error).
+            """
+            resolved_entity_ids = []
+            if entity_ids:
+                for raw in entity_ids:
+                    try:
+                        resolved_entity_ids.append(uuid.UUID(raw.strip()))
+                    except (ValueError, AttributeError) as exc:
+                        raise ValueError(f"Invalid entity_id: {raw!r}") from exc
+
+            proposal_id = await module._propose_event(
+                butler_name=butler_name,
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                description=description,
+                location=location,
+                timezone=timezone,
+                source_event_id=source_event_id,
+                source_snippet=source_snippet,
+                confidence=confidence,
+                entity_ids=resolved_entity_ids,
+            )
+            return {"proposal_id": str(proposal_id)}
+
+    async def _propose_event(
+        self,
+        *,
+        butler_name: str | None = None,
+        title: str,
+        start_at: datetime,
+        end_at: datetime,
+        description: str | None = None,
+        location: str | None = None,
+        timezone: str = "UTC",
+        source_event_id: str | None = None,
+        source_snippet: str | None = None,
+        confidence: float | None = None,
+        entity_ids: list[uuid.UUID] | None = None,
+    ) -> uuid.UUID:
+        """Insert a PENDING calendar_event_proposals row; return existing id on duplicate source_event_id."""  # noqa: E501
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+
+        resolved_butler_name = self._resolve_effective_butler_name(butler_name)
+        resolved_entity_ids = entity_ids or []
+
+        row = await pool.fetchrow(
+            """
+            INSERT INTO calendar_event_proposals (
+                butler_name, title, start_at, end_at, description, location,
+                timezone, source_event_id, source_snippet, confidence, entity_ids
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (source_event_id) WHERE source_event_id IS NOT NULL
+            DO NOTHING
+            RETURNING id
+            """,
+            resolved_butler_name,
+            title,
+            start_at,
+            end_at,
+            description,
+            location,
+            timezone,
+            source_event_id,
+            source_snippet,
+            confidence,
+            resolved_entity_ids,
+        )
+
+        if row is not None:
+            return row["id"]
+
+        # Conflict on source_event_id — return the existing proposal id.
+        existing_id = await pool.fetchval(
+            "SELECT id FROM calendar_event_proposals WHERE source_event_id = $1",
+            source_event_id,
+        )
+        if existing_id is None:
+            raise RuntimeError(
+                f"Expected existing proposal for source_event_id={source_event_id!r}"
+            )
+        return existing_id
+
     async def _resolve_credentials(
         self,
         *,
