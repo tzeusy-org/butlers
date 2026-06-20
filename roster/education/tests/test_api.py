@@ -8,6 +8,7 @@ Issue: butlers-2kmd.11
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
@@ -19,6 +20,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_mcp_manager
 
 pytestmark = pytest.mark.unit
 
@@ -160,8 +162,14 @@ def _analytics_snapshot_record(
 def _app_with_mock_pool(
     mock_pool: AsyncMock,
     pool_available: bool = True,
+    mcp_manager: AsyncMock | None = None,
 ):
-    """Build a FastAPI test app with the education pool mocked."""
+    """Build a FastAPI test app with the education pool mocked.
+
+    The MCP manager dependency is always overridden (curriculum-request submission
+    triggers an education session through it); pass ``mcp_manager`` to inspect the
+    trigger call, otherwise a no-op AsyncMock is used.
+    """
     mock_db = MagicMock(spec=DatabaseManager)
     if pool_available:
         mock_db.pool.return_value = mock_pool
@@ -169,6 +177,9 @@ def _app_with_mock_pool(
         mock_db.pool.side_effect = KeyError("No pool for butler: education")
 
     app = create_app()
+
+    mgr = mcp_manager if mcp_manager is not None else AsyncMock()
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     # Override the dependency for the dynamically-loaded education router
     for butler_name, router_module in app.state.butler_routers:
@@ -1222,9 +1233,12 @@ class TestUpdateMindMapStatus:
 
 class TestSubmitCurriculumRequest:
     async def test_submit_new_request(self):
-        """New curriculum request should return 202 with pending status."""
+        """New curriculum request should return 202 and trigger an education session."""
         mock_pool = AsyncMock()
-        app = _app_with_mock_pool(mock_pool)
+        mock_client = AsyncMock()
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+        app = _app_with_mock_pool(mock_pool, mcp_manager=mock_mgr)
         edu = _get_education_module(app)
 
         with (
@@ -1238,11 +1252,21 @@ class TestSubmitCurriculumRequest:
                     "/api/education/curriculum-requests",
                     json={"topic": "Python", "goal": "Learn web development"},
                 )
+            # Drain the fire-and-forget trigger task spawned by the handler.
+            if edu._DRAIN_TASKS:
+                await asyncio.gather(*list(edu._DRAIN_TASKS))
 
         assert resp.status_code == 202
         body = resp.json()
         assert body["status"] == "pending"
         assert body["topic"] == "Python"
+
+        # Event-driven: the handler triggered an education session immediately
+        # (no polling drain schedule) via the butler's `trigger` MCP tool.
+        mock_mgr.get_client.assert_awaited_once_with("education")
+        tool_name, tool_args = mock_client.call_tool.await_args.args
+        assert tool_name == "trigger"
+        assert "Python" in tool_args["prompt"]
 
     async def test_submit_without_goal(self):
         """Request without goal should still return 202."""

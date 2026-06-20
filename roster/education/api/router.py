@@ -7,6 +7,7 @@ queried directly from the education butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import sys
@@ -17,8 +18,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
-from butlers.core.state import state_get, state_set
+from butlers.core.state import state_delete, state_get, state_set
 from butlers.tools.education.analytics import (
     analytics_get_cross_topic,
     analytics_get_snapshot,
@@ -628,6 +630,77 @@ async def update_mind_map_status(
 
 _CURRICULUM_REQUEST_KEY = "pending_curriculum_request"
 
+# Background tasks fired from the request handler must outlive the response, so we
+# hold strong references until they finish (asyncio only keeps weak refs otherwise).
+_DRAIN_TASKS: set[asyncio.Task] = set()
+
+
+def _drain_prompt(topic: str, goal: str | None) -> str:
+    """Build the prompt for the ephemeral session that starts the curriculum.
+
+    Triggered directly when the request is submitted (event-driven; there is no
+    polling drain schedule). The session starts the curriculum for ``topic`` and
+    then clears the ``pending_curriculum_request`` lock so the dashboard's
+    one-pending-at-a-time guard releases.
+    """
+    goal_line = f"Goal: {goal}" if goal else "Goal: (none specified)"
+    return f"""\
+A user submitted a curriculum request from the dashboard. Start it now.
+
+Topic: {topic}
+{goal_line}
+
+1) Avoid duplicates: call mind_map_list(status="active"). If an active map already
+   covers this topic, prefer extending it over creating a new one (see the
+   curriculum-planning skill); do NOT create a redundant map.
+2) Actually start the curriculum:
+   teaching_flow_start(topic="{topic}", goal=<goal above, or omit if none>)
+   This creates the mind map and advances the flow to DIAGNOSING.
+3) Tell the user it started:
+   notify(channel="telegram", intent="send",
+          message="Starting your {topic} curriculum. I'll run a quick calibration
+          first to see what you already know — answer when you're ready.")
+4) ALWAYS clear the request lock at the end, whether you started a new map or
+   intentionally skipped as a duplicate:
+   state_delete(key="{_CURRICULUM_REQUEST_KEY}")
+   This releases the dashboard's one-pending-at-a-time guard. Do this even on the
+   duplicate-skip path; the only case where you leave it set is if
+   teaching_flow_start itself errors — then report the error and exit so the user
+   can retry.
+"""
+
+
+async def _trigger_curriculum_drain(
+    mcp_manager: MCPClientManager,
+    pool,
+    topic: str,
+    goal: str | None,
+) -> None:
+    """Fire an ephemeral education session to start the requested curriculum.
+
+    Runs as a detached background task so the POST returns 202 immediately rather
+    than blocking on the (slow) session spawn. The session itself clears the
+    ``pending_curriculum_request`` lock on success; if we cannot even reach the
+    butler to spawn it, we clear the lock here so the user is not wedged behind a
+    permanent 409 (there is no polling fallback to retry).
+    """
+    try:
+        client = await mcp_manager.get_client("education")
+        await client.call_tool(
+            "trigger",
+            {"prompt": _drain_prompt(topic, goal), "complexity": "workhorse"},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to trigger curriculum drain session for topic %r; "
+            "clearing the pending lock so the request can be retried",
+            topic,
+        )
+        try:
+            await state_delete(pool, _CURRICULUM_REQUEST_KEY)
+        except Exception:
+            logger.exception("Failed to clear pending curriculum lock after trigger failure")
+
 
 @router.post(
     "/curriculum-requests",
@@ -638,14 +711,15 @@ async def submit_curriculum_request(
     request: Request,
     body: CurriculumRequestBody = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
+    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> CurriculumRequestResponse:
     """Submit a request for the butler to create a new curriculum.
 
-    The request is stored under the ``pending_curriculum_request`` state key and is
-    drained by the ``drain-curriculum-request`` scheduled task (see
-    ``roster/education/butler.toml``), which calls ``teaching_flow_start`` to actually
-    create the mind map + kick off diagnostic calibration, then clears the key. The
-    one-pending-at-a-time guard (409 below) releases once the drain consumes the key.
+    The request is stored under the ``pending_curriculum_request`` state key as a
+    short-lived in-flight lock, then an ephemeral education session is triggered
+    immediately (event-driven — see ``_trigger_curriculum_drain``) to call
+    ``teaching_flow_start`` and kick off diagnostic calibration. That session clears
+    the key when done, releasing the one-pending-at-a-time guard (409 below).
     """
     pool = _pool(db)
 
@@ -674,6 +748,12 @@ async def submit_curriculum_request(
             "requested_at": datetime.now(UTC).isoformat(),
         },
     )
+
+    # Fire the curriculum-start session in the background; return 202 without
+    # waiting for the (slow) session to complete.
+    task = asyncio.create_task(_trigger_curriculum_drain(mcp_manager, pool, topic, body.goal))
+    _DRAIN_TASKS.add(task)
+    task.add_done_callback(_DRAIN_TASKS.discard)
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(

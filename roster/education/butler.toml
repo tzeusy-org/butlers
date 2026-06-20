@@ -80,44 +80,6 @@ Delivery:
 """
 
 [[butler.schedule]]
-name = "drain-curriculum-request"
-cron = "*/5 * * * *"
-dispatch_mode = "prompt"
-prompt = """
-Drain a pending curriculum request submitted from the dashboard.
-
-This task wires the dashboard's "Request curriculum" button to real action. The
-endpoint stores the request under the state key "pending_curriculum_request"; your
-job is to consume it, actually start the curriculum, and clear the key so the user
-is no longer blocked by the one-pending-at-a-time guard.
-
-1) Read the request: state_get(key="pending_curriculum_request").
-   - If value is null/empty: do nothing, exit silently. There is nothing to drain.
-2) Extract `topic` (required) and `goal` (optional) from the value.
-3) Avoid duplicates: call mind_map_list(status="active"). If an active map already
-   covers this topic, prefer extending it over creating a new one (see the
-   curriculum-planning skill); do NOT create a redundant map.
-4) Actually start the curriculum:
-   teaching_flow_start(topic=<topic>, goal=<goal>)
-   This creates the mind map and advances the flow to DIAGNOSING. The user's request
-   is now real, not just a stored key.
-5) Clear the key so the request is consumed and the pending-guard releases:
-   state_delete(key="pending_curriculum_request").
-   ALWAYS clear the key once you have started (or intentionally skipped as a
-   duplicate) — otherwise the request is stuck pending forever and the dashboard
-   keeps returning 409 on new requests.
-6) Tell the user it started:
-   notify(channel="telegram", intent="send",
-          message="Starting your <topic> curriculum. I'll run a quick calibration first
-          to see what you already know — answer when you're ready.")
-
-Guardrails:
-- Only ONE request is ever pending at a time, so process exactly one per run.
-- If teaching_flow_start fails, do NOT delete the key (leave it for the next run to
-  retry); report the error and exit.
-"""
-
-[[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"
 dispatch_mode = "job"
