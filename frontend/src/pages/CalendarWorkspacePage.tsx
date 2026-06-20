@@ -33,15 +33,6 @@ import {
   useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
 } from "@/hooks/use-calendar-workspace";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -51,22 +42,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { EmptyState } from "@/components/ui/empty-state";
+import { ButlerMark } from "@/components/ui/ButlerMark";
+import { Display } from "@/components/ui/Display";
+import { Eyebrow } from "@/components/ui/Eyebrow";
+import { Mono } from "@/components/ui/Mono";
+import { Row } from "@/components/ui/Row";
+import { StateDot } from "@/components/ui/StateDot";
+import { Voice } from "@/components/ui/Voice";
 import { cn } from "@/lib/utils";
 
 type CalendarRange = "month" | "week" | "day" | "list";
 
-type SyncBadgeVariant = "default" | "secondary" | "destructive" | "outline";
 type ButlerEventKind = "scheduled_task" | "butler_reminder";
 type RecurrenceFrequency = "NONE" | "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY";
 
@@ -174,28 +162,23 @@ function shiftAnchor(anchor: Date, range: CalendarRange, direction: -1 | 1): Dat
   }
 }
 
-function windowLabel(range: CalendarRange, start: Date, end: Date): string {
+/** Compact period headline for the masthead Display line. The year lives in the eyebrow. */
+function headlineLabel(range: CalendarRange, start: Date, end: Date): string {
   if (range === "month") {
     return format(start, "MMMM yyyy");
   }
   if (range === "day") {
-    return format(start, "EEE, MMM d, yyyy");
+    return format(start, "EEEE, MMM d");
   }
-  return `${format(start, "MMM d, yyyy")} – ${format(addDays(end, -1), "MMM d, yyyy")}`;
-}
-
-function formatEntryWindow(entry: UnifiedCalendarEntry): string {
-  if (entry.all_day) return "All day";
-  const start = new Date(entry.start_at);
-  const end = new Date(entry.end_at);
-  return `${format(start, "MMM d, HH:mm")} - ${format(end, "HH:mm")}`;
-}
-
-function syncBadgeVariant(syncState: string): SyncBadgeVariant {
-  if (syncState === "fresh") return "secondary";
-  if (syncState === "failed") return "destructive";
-  if (syncState === "syncing") return "default";
-  return "outline";
+  if (range === "list") {
+    return "Next 30 days";
+  }
+  // week
+  const last = addDays(end, -1);
+  if (isSameMonth(start, last)) {
+    return `${format(start, "MMM d")} – ${format(last, "d")}`;
+  }
+  return `${format(start, "MMM d")} – ${format(last, "MMM d")}`;
 }
 
 /** Titleize a raw identifier: replace separators, capitalize words. Skip email addresses. */
@@ -624,6 +607,93 @@ function capLaneEntriesByDay(entries: UnifiedCalendarEntry[], cap: number): Lane
     }
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch presentational helpers (calendar-local)
+//
+// The calendar is drawn in the Dispatch language: surfaces not cards, hairline
+// rules, hierarchy from type and rule, butler hue only on the letter-mark,
+// state color only when state demands. These local pieces compose the shipped
+// Dispatch kit (Eyebrow / Mono / Voice / Row / StateDot / ButlerMark) into the
+// calendar-specific chrome.
+// ---------------------------------------------------------------------------
+
+/** Shared pill geometry per Design Language §4c (4px 10px / 1px border / 3px radius / mono 11px). */
+const PILL_BASE =
+  "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
+  "font-mono text-[11px] leading-none transition-colors " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 " +
+  "disabled:pointer-events-none disabled:opacity-40";
+
+/** Pill button (§4c). `active` inverts bg/fg for the selected state. Never colored. */
+function PillButton({
+  active = false,
+  className,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        PILL_BASE,
+        active
+          ? "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)]"
+          : "bg-transparent text-[var(--mfg)] border-[var(--border-strong)] hover:text-[var(--fg)]",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+/** Commit button (§4c) — fg background, bg text. At most one per surface. */
+function CommitButton({ className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        PILL_BASE,
+        "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)] hover:opacity-90",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+/** Mono uppercase kind tag (§4d) — labels a kind, never celebrates it. */
+function KindTag({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "font-mono text-[10px] uppercase tracking-[0.08em] leading-none text-[var(--mfg)]",
+        className,
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Native <select> in the toolbar's hairline-pill register. */
+const SELECT_CLASS =
+  "h-7 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2 " +
+  "font-mono text-[11px] text-[var(--fg)] " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30";
+
+/** Form <select> (taller, full-width) used inside dialogs. */
+const FIELD_SELECT_CLASS =
+  "flex h-9 w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 " +
+  "text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 " +
+  "disabled:cursor-not-allowed disabled:opacity-50";
+
+/** Map a source sync_state to a Dispatch StateDot state. Benign in-progress reads as waiting. */
+function syncDotState(syncState: string): "ok" | "degraded" | "error" | "waiting" {
+  if (syncState === "fresh") return "ok";
+  if (syncState === "failed") return "error";
+  if (syncState === "stale") return "degraded";
+  return "waiting";
 }
 
 export default function CalendarWorkspacePage() {
@@ -1444,144 +1514,114 @@ export default function CalendarWorkspacePage() {
   const canCreateUserEvents = view === "user" && submittableCalendars.length > 0;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Calendar Workspace</h1>
-          <p className="text-muted-foreground mt-1">
-            Unified user and butler calendar surface backed by workspace APIs.
-          </p>
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* Masthead */}
+      <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 pb-5">
+        <div className="min-w-0">
+          <Eyebrow as="div" className="mb-2.5">
+            Calendar · {view === "user" ? "User" : "Butler"} view · {timezone} · {format(anchor, "yyyy")}
+          </Eyebrow>
+          <Display>{headlineLabel(range, start, end)}</Display>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {view === "butler" ? (
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => openButlerCreateDialog()}
-              disabled={butlerMutation.isPending}
-            >
-              Create butler event
-            </Button>
-          ) : null}
-          <Badge variant="outline">{timezone}</Badge>
-          <Badge variant="outline">{entries.length} entries</Badge>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
+          <Mono muted className="mr-1 tabular-nums">
+            {entries.length} {entries.length === 1 ? "event" : "events"}
+          </Mono>
+          <PillButton
             onClick={handleSyncAll}
             disabled={syncMutation.isPending}
             aria-label="Sync all sources now"
           >
             {syncButtonLabel}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => setSourcesDialogOpen(true)}
-            aria-label="Configure sources"
-          >
-            Configure sources
+          </PillButton>
+          <PillButton onClick={() => setSourcesDialogOpen(true)} aria-label="Configure sources">
+            Sources
             {disabledSources.size > 0 ? (
-              <Badge variant="secondary" className="ml-1.5">
-                {disabledSources.size} hidden
-              </Badge>
+              <span className="tabular-nums text-[var(--dim)]">· {disabledSources.size} hidden</span>
             ) : null}
-          </Button>
-          {view === "user" ? (
-            <Button
-              type="button"
-              size="sm"
+          </PillButton>
+          {view === "butler" ? (
+            <CommitButton onClick={() => openButlerCreateDialog()} disabled={butlerMutation.isPending}>
+              Create butler event
+            </CommitButton>
+          ) : (
+            <CommitButton
               onClick={() => openUserCreateDialog()}
               disabled={!canCreateUserEvents || userEventMutation.isPending}
               aria-label="Create user event"
             >
               Create event
-            </Button>
-          ) : null}
+            </CommitButton>
+          )}
         </div>
-      </div>
+      </header>
 
-      <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">View</span>
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-y border-[var(--border)] py-3">
+        <div className="flex items-center gap-2">
+          <Eyebrow>View</Eyebrow>
+          <div className="flex items-center gap-1">
             {VIEW_OPTIONS.map((option) => (
-              <Button
+              <PillButton
                 key={option.value}
-                type="button"
-                size="sm"
-                variant={view === option.value ? "default" : "outline"}
+                active={view === option.value}
                 aria-pressed={view === option.value}
                 onClick={() => updateQuery({ view: option.value })}
               >
                 {option.label}
-              </Button>
+              </PillButton>
             ))}
           </div>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Range</span>
+        <div className="flex items-center gap-2">
+          <Eyebrow>Range</Eyebrow>
+          <div className="flex items-center gap-1">
             {RANGE_OPTIONS.map((option) => (
-              <Button
+              <PillButton
                 key={option.value}
-                type="button"
-                size="sm"
-                variant={range === option.value ? "default" : "outline"}
+                active={range === option.value}
                 aria-pressed={range === option.value}
                 onClick={() => updateQuery({ range: option.value })}
               >
                 {option.label}
-              </Button>
+              </PillButton>
             ))}
           </div>
+        </div>
 
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              aria-label="Previous range"
-              onClick={() => updateQuery({ anchor: shiftAnchor(anchor, range, -1) })}
-            >
-              Prev
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              aria-label="Jump to today"
-              onClick={() => updateQuery({ anchor: new Date() })}
-            >
-              Today
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              aria-label="Next range"
-              onClick={() => updateQuery({ anchor: shiftAnchor(anchor, range, 1) })}
-            >
-              Next
-            </Button>
-          </div>
+        <div className="flex items-center gap-1">
+          <PillButton
+            aria-label="Previous range"
+            onClick={() => updateQuery({ anchor: shiftAnchor(anchor, range, -1) })}
+          >
+            ‹
+          </PillButton>
+          <PillButton aria-label="Jump to today" onClick={() => updateQuery({ anchor: new Date() })}>
+            Today
+          </PillButton>
+          <PillButton
+            aria-label="Next range"
+            onClick={() => updateQuery({ anchor: shiftAnchor(anchor, range, 1) })}
+          >
+            ›
+          </PillButton>
+        </div>
 
-          {view === "user" ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <label htmlFor="calendar-filter" className="text-xs font-medium text-muted-foreground">
+        {view === "user" ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:ml-auto">
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="calendar-filter"
+                className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+              >
                 Calendar
               </label>
               <select
                 id="calendar-filter"
-                className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 rounded-md border px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                className={SELECT_CLASS}
                 value={selectedCalendarId}
-                onChange={(event) =>
-                  updateQuery({
-                    calendar: event.target.value,
-                    source: "all",
-                  })
-                }
+                onChange={(event) => updateQuery({ calendar: event.target.value, source: "all" })}
               >
                 <option value="all">All calendars</option>
                 {calendarFilterOptions.map((option) => (
@@ -1590,13 +1630,18 @@ export default function CalendarWorkspacePage() {
                   </option>
                 ))}
               </select>
+            </div>
 
-              <label htmlFor="source-filter" className="text-xs font-medium text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="source-filter"
+                className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+              >
                 Source
               </label>
               <select
                 id="source-filter"
-                className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 rounded-md border px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                className={SELECT_CLASS}
                 value={selectedSourceKey}
                 onChange={(event) => updateQuery({ source: event.target.value })}
               >
@@ -1612,377 +1657,458 @@ export default function CalendarWorkspacePage() {
                   ))}
               </select>
             </div>
-          ) : null}
-        </CardContent>
-      </Card>
+          </div>
+        ) : null}
+      </div>
 
-      <Card className="flex flex-col flex-1 min-h-0 overflow-hidden">
-          <CardHeader className="shrink-0">
-            <CardTitle>{windowLabel(range, start, end)}</CardTitle>
-            <CardDescription>
-              {view === "user" ? "User calendar view" : "Butler lane view"} • {range} mode
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col flex-1 min-h-0 space-y-4">
-            {workspaceQuery.isLoading ? (
-              <p className="text-sm text-muted-foreground">Loading calendar workspace...</p>
-            ) : workspaceQuery.isError ? (
-              <p className="text-sm text-destructive">
-                Failed to load calendar workspace. {workspaceQuery.error instanceof Error
+      {/* Canvas */}
+      <div className="flex min-h-0 flex-1 flex-col pt-5">
+        {workspaceQuery.isLoading ? (
+          <Voice variant="italic" className="text-[var(--mfg)]">
+            Drawing the calendar…
+          </Voice>
+        ) : workspaceQuery.isError ? (
+          <div role="alert" className="flex items-start gap-2 py-1">
+            <StateDot state="error" className="mt-[7px]" />
+            <p className="text-sm text-[var(--fg)]">
+              The calendar workspace failed to load.{" "}
+              <span className="text-[var(--mfg)]">
+                {workspaceQuery.error instanceof Error
                   ? workspaceQuery.error.message
                   : "Unknown error"}
-              </p>
-            ) : view === "butler" ? (
-              <div className="space-y-4">
-                {butlerLaneRows.length === 0 ? (
-                  <EmptyState
-                    title="No butler lanes found."
-                    description="Butler lanes appear when a butler has scheduled events."
-                  />
-                ) : (
-                  butlerLaneRows.map((lane) => (
-                    <div key={lane.laneId} className="rounded-md border border-border p-3">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-semibold">{lane.title}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {lane.entries.length} event{lane.entries.length === 1 ? "" : "s"}
-                          </p>
-                        </div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => openButlerCreateDialog(lane.butlerName)}
-                          disabled={butlerMutation.isPending}
-                        >
-                          Add event
-                        </Button>
-                      </div>
-                      {lane.entries.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">No events in this lane.</p>
-                      ) : (
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Time</TableHead>
-                              <TableHead>Title</TableHead>
-                              <TableHead>Type</TableHead>
-                              <TableHead>Status</TableHead>
-                              <TableHead className="text-right">Actions</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {capLaneEntriesByDay(lane.entries, RECURRING_INSTANCE_CAP).map((item) =>
-                              isOverflowSentinel(item) ? (
-                                <TableRow key={item.sentinelKey} className="bg-muted/30">
-                                  <TableCell colSpan={5} className="py-1 text-center text-xs text-muted-foreground">
-                                    ... and {item.hiddenCount} more instance{item.hiddenCount === 1 ? "" : "s"} of &ldquo;{item.title}&rdquo;
-                                  </TableCell>
-                                </TableRow>
-                              ) : (
-                                <TableRow key={item.entry_id}>
-                                  <TableCell>{formatEntryWindow(item)}</TableCell>
-                                  <TableCell>{item.title}</TableCell>
-                                  <TableCell>
-                                    {item.source_type === "scheduled_task" ? "Schedule" : "Reminder"}
-                                  </TableCell>
-                                  <TableCell>
-                                    <Badge variant="outline">{item.status}</Badge>
-                                  </TableCell>
-                                  <TableCell className="text-right">
-                                    <div className="flex justify-end gap-2">
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => openButlerEditDialog(item)}
-                                        disabled={butlerMutation.isPending}
-                                      >
-                                        Edit
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => handleButlerToggle(item)}
-                                        disabled={butlerMutation.isPending}
-                                      >
-                                        {isPausedEntry(item) ? "Resume" : "Pause"}
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        variant="destructive"
-                                        size="sm"
-                                        onClick={() => handleButlerDelete(item)}
-                                        disabled={butlerMutation.isPending}
-                                      >
-                                        Delete
-                                      </Button>
-                                    </div>
-                                  </TableCell>
-                                </TableRow>
-                              )
-                            )}
-                          </TableBody>
-                        </Table>
+              </span>
+            </p>
+          </div>
+        ) : view === "butler" ? (
+          /* ---- Butler lanes ---- */
+          butlerLaneRows.length === 0 ? (
+            <Voice variant="italic" className="text-[var(--mfg)]">
+              No butler lanes yet.
+            </Voice>
+          ) : (
+            <div className="min-h-0 flex-1 space-y-8 overflow-y-auto pr-1">
+              {butlerLaneRows.map((lane) => (
+                <section key={lane.laneId}>
+                  <div className="mb-1 flex items-center justify-between gap-3 border-b border-[var(--border)] pb-2">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <ButlerMark name={lane.butlerName} tone="fill" />
+                      <span className="truncate text-[15px] font-medium text-[var(--fg)]">
+                        {lane.title}
+                      </span>
+                      <Mono muted className="tabular-nums">
+                        {lane.entries.length} {lane.entries.length === 1 ? "event" : "events"}
+                      </Mono>
+                    </div>
+                    <PillButton
+                      onClick={() => openButlerCreateDialog(lane.butlerName)}
+                      disabled={butlerMutation.isPending}
+                    >
+                      Add event
+                    </PillButton>
+                  </div>
+
+                  {lane.entries.length === 0 ? (
+                    <Voice variant="italic" className="py-2 text-[var(--mfg)]">
+                      No events in this lane.
+                    </Voice>
+                  ) : (
+                    <div role="list">
+                      {capLaneEntriesByDay(lane.entries, RECURRING_INSTANCE_CAP).map((item) =>
+                        isOverflowSentinel(item) ? (
+                          <div
+                            key={item.sentinelKey}
+                            data-testid="butler-lane-row"
+                            className="border-b border-[var(--border-soft)] py-2 pl-[68px]"
+                          >
+                            <span className="font-serif text-[13px] italic text-[var(--mfg)]">
+                              and {item.hiddenCount} more instance{item.hiddenCount === 1 ? "" : "s"} of
+                              {" "}
+                              &ldquo;{item.title}&rdquo;
+                            </span>
+                          </div>
+                        ) : (
+                          <Row
+                            key={item.entry_id}
+                            data-testid="butler-lane-row"
+                            mark={
+                              <Mono muted className="inline-block w-14 tabular-nums">
+                                {item.all_day ? "all day" : format(new Date(item.start_at), "HH:mm")}
+                              </Mono>
+                            }
+                            meta={
+                              <div className="flex items-center gap-1.5">
+                                <PillButton
+                                  onClick={() => openButlerEditDialog(item)}
+                                  disabled={butlerMutation.isPending}
+                                >
+                                  Edit
+                                </PillButton>
+                                <PillButton
+                                  onClick={() => handleButlerToggle(item)}
+                                  disabled={butlerMutation.isPending}
+                                >
+                                  {isPausedEntry(item) ? "Resume" : "Pause"}
+                                </PillButton>
+                                <PillButton
+                                  onClick={() => handleButlerDelete(item)}
+                                  disabled={butlerMutation.isPending}
+                                  className="hover:border-[var(--red)] hover:text-[var(--red)]"
+                                >
+                                  Delete
+                                </PillButton>
+                              </div>
+                            }
+                          >
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="truncate text-sm text-[var(--fg)]">{item.title}</span>
+                              <KindTag>
+                                {item.source_type === "scheduled_task" ? "schedule" : "reminder"}
+                              </KindTag>
+                              {isPausedEntry(item) ? (
+                                <KindTag className="text-[var(--mfg)]">paused</KindTag>
+                              ) : null}
+                            </div>
+                          </Row>
+                        ),
                       )}
                     </div>
-                  ))
-                )}
-              </div>
-            ) : range === "month" ? (
-              <div className="flex flex-col flex-1 min-h-0">
-                <div className="grid grid-cols-7 gap-1 text-xs font-medium text-muted-foreground mb-1">
-                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
-                    <div key={label} className="px-2">
-                      {label}
-                    </div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-7 grid-rows-6 gap-1 flex-1 min-h-0 overflow-y-auto">
-                  {monthDays.map((day) => {
-                    const key = format(day, "yyyy-MM-dd");
-                    const dayEntries = entriesByDay.get(key) ?? [];
-                    return (
-                      <div
-                        key={key}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => view === "user" && openUserCreateDialog(day)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            if (view === "user") openUserCreateDialog(day);
-                          }
-                        }}
-                        className={cn(
-                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors min-h-[5.5rem] overflow-hidden",
-                          !isSameMonth(day, start) && "bg-muted/30 text-muted-foreground",
+                  )}
+                </section>
+              ))}
+            </div>
+          )
+        ) : range === "month" ? (
+          /* ---- Month matrix ---- */
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="mb-2 grid grid-cols-7">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
+                <Eyebrow key={label} as="div" className="px-2">
+                  {label}
+                </Eyebrow>
+              ))}
+            </div>
+            <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 overflow-y-auto border-l border-t border-[var(--border)]">
+              {monthDays.map((day) => {
+                const key = format(day, "yyyy-MM-dd");
+                const dayEntries = entriesByDay.get(key) ?? [];
+                const inMonth = isSameMonth(day, start);
+                const today = isToday(day);
+                return (
+                  <div
+                    key={key}
+                    className={cn(
+                      "relative min-h-[5.5rem] overflow-hidden border-b border-r border-[var(--border)] p-1.5",
+                      !inMonth && "bg-foreground/[0.02]",
+                    )}
+                  >
+                    {view === "user" ? (
+                      <button
+                        type="button"
+                        aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
+                        onClick={() => openUserCreateDialog(day)}
+                        className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
+                      />
+                    ) : null}
+                    <div className="pointer-events-none relative z-10">
+                      <div className="mb-1 flex items-center justify-between">
+                        {today ? (
+                          <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-[4px] bg-[var(--fg)] px-1 font-mono text-[11px] tabular-nums text-[var(--bg)]">
+                            {format(day, "d")}
+                          </span>
+                        ) : (
+                          <span
+                            className={cn(
+                              "font-mono text-[11px] tabular-nums",
+                              inMonth ? "text-[var(--fg)]" : "text-[var(--dim)]",
+                            )}
+                          >
+                            {format(day, "d")}
+                          </span>
                         )}
-                      >
-                        <p className="text-xs font-medium">{format(day, "d")}</p>
-                        <div className="mt-1 space-y-1">
-                          {dayEntries.slice(0, 2).map((entry) => (
-                            <p
-                              key={entry.entry_id}
-                              className="truncate rounded bg-accent/50 px-1 py-0.5 text-xs cursor-pointer hover:bg-accent/80 transition-colors"
-                              title={entry.title}
-                              onClick={(evt) => {
-                                evt.stopPropagation();
-                                if (view === "user") openUserEditDialog(entry);
-                              }}
-                            >
-                              {entry.title}
-                            </p>
-                          ))}
-                          {dayEntries.length > 2 ? (
-                            <p className="text-[11px] text-muted-foreground">
-                              +{dayEntries.length - 2} more
-                            </p>
-                          ) : null}
-                        </div>
+                      </div>
+                      <div className="space-y-0.5">
+                        {dayEntries.slice(0, 3).map((entry) => (
+                          <button
+                            key={entry.entry_id}
+                            type="button"
+                            title={entry.title}
+                            onClick={() => {
+                              if (view === "user") openUserEditDialog(entry);
+                            }}
+                            className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                          >
+                            {!entry.all_day ? (
+                              <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+                                {format(new Date(entry.start_at), "HH:mm")}
+                              </span>
+                            ) : null}
+                            <span className="truncate">{entry.title}</span>
+                          </button>
+                        ))}
+                        {dayEntries.length > 3 ? (
+                          <button
+                            type="button"
+                            aria-label={`${dayEntries.length - 3} more on ${format(day, "MMM d")} — open day view`}
+                            onClick={() => updateQuery({ range: "day", anchor: day })}
+                            className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                          >
+                            +{dayEntries.length - 3} more
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : range === "week" || range === "day" ? (
+          /* ---- Time grid — mono gutter, no hour rules (Design Language: Calendar) ---- */
+          <div className="flex min-h-0 flex-1 flex-col">
+            {/* Column headers */}
+            <div
+              className="mb-2 grid"
+              style={{
+                gridTemplateColumns:
+                  range === "week" ? "3.25rem repeat(7, minmax(0, 1fr))" : "3.25rem minmax(0, 1fr)",
+              }}
+            >
+              <div />
+              {weekDays.map((day) => (
+                <div key={format(day, "yyyy-MM-dd")} className="px-2 text-center">
+                  <Eyebrow className={cn(isToday(day) && "text-[var(--fg)]")}>
+                    {format(day, "EEE")}
+                  </Eyebrow>{" "}
+                  <span
+                    className={cn(
+                      "font-mono text-[12px] tabular-nums",
+                      isToday(day) ? "text-[var(--fg)]" : "text-[var(--mfg)]",
+                    )}
+                  >
+                    {format(day, "d")}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* All-day row */}
+            {(() => {
+              const hasAllDay = weekDays.some((day) =>
+                (entriesByDay.get(format(day, "yyyy-MM-dd")) ?? []).some((e) => e.all_day),
+              );
+              if (!hasAllDay) return null;
+              return (
+                <div
+                  className="mb-2 grid border-b border-[var(--border)] pb-2"
+                  style={{
+                    gridTemplateColumns:
+                      range === "week"
+                        ? "3.25rem repeat(7, minmax(0, 1fr))"
+                        : "3.25rem minmax(0, 1fr)",
+                  }}
+                >
+                  <div className="pr-2 pt-0.5 text-right">
+                    <Eyebrow>All day</Eyebrow>
+                  </div>
+                  {weekDays.map((day) => {
+                    const key = format(day, "yyyy-MM-dd");
+                    const allDayEntries = (entriesByDay.get(key) ?? []).filter((e) => e.all_day);
+                    return (
+                      <div key={key} className="space-y-1 px-1">
+                        {allDayEntries.map((entry) => (
+                          <button
+                            key={entry.entry_id}
+                            type="button"
+                            title={entry.title}
+                            onClick={(evt) => {
+                              evt.stopPropagation();
+                              if (view === "user") openUserEditDialog(entry);
+                            }}
+                            className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06]"
+                          >
+                            {entry.title}
+                          </button>
+                        ))}
                       </div>
                     );
                   })}
                 </div>
-              </div>
-            ) : range === "week" || range === "day" ? (
-              <div className="flex flex-col flex-1 min-h-0">
-                {/* Column headers */}
-                <div className={cn("grid text-xs font-medium text-muted-foreground mb-1", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")}>
-                  <div />{/* spacer for y-axis gutter */}
-                  {weekDays.map((day) => (
-                    <div key={format(day, "yyyy-MM-dd")} className={cn("px-2 text-center", isToday(day) && "text-primary font-semibold")}>
-                      {format(day, "EEE d")}
+              );
+            })()}
+
+            {/* Scrollable time grid */}
+            <div ref={timeGridRef} className="min-h-0 flex-1 overflow-y-auto">
+              <div
+                className="grid h-[var(--calendar-grid-height)]"
+                style={{
+                  gridTemplateColumns:
+                    range === "week"
+                      ? "3.25rem repeat(7, minmax(0, 1fr))"
+                      : "3.25rem minmax(0, 1fr)",
+                }}
+              >
+                {/* Hour gutter */}
+                <div className="relative">
+                  {HOURS.map((h) => (
+                    <div
+                      key={h}
+                      className="absolute right-2 -translate-y-1/2 font-mono text-[10px] leading-none tabular-nums text-[var(--mfg)]"
+                      style={{ top: h * HOUR_HEIGHT_PX }}
+                    >
+                      {h === 0 ? "" : format(new Date(2000, 0, 1, h), "HH:mm")}
                     </div>
                   ))}
                 </div>
 
-                {/* All-day events row */}
-                {(() => {
-                  const hasAllDay = weekDays.some((day) => {
-                    const dayEntries = entriesByDay.get(format(day, "yyyy-MM-dd")) ?? [];
-                    return dayEntries.some((e) => e.all_day);
-                  });
-                  if (!hasAllDay) return null;
+                {/* Day columns */}
+                {weekDays.map((day) => {
+                  const key = format(day, "yyyy-MM-dd");
+                  const dayEntries = (entriesByDay.get(key) ?? []).filter((e) => !e.all_day);
                   return (
-                    <div className={cn("grid border-b border-border mb-1 pb-1", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")}>
-                      <div className="text-[10px] text-muted-foreground pr-1 text-right pt-0.5">all day</div>
-                      {weekDays.map((day) => {
-                        const key = format(day, "yyyy-MM-dd");
-                        const allDayEntries = (entriesByDay.get(key) ?? []).filter((e) => e.all_day);
-                        return (
-                          <div key={key} className="px-0.5 space-y-0.5">
-                            {allDayEntries.map((entry) => (
-                              <p
-                                key={entry.entry_id}
-                                className="truncate rounded bg-primary/15 px-1 py-0.5 text-[11px] cursor-pointer hover:bg-primary/25 transition-colors"
-                                title={entry.title}
-                                onClick={(evt) => {
-                                  evt.stopPropagation();
-                                  if (view === "user") openUserEditDialog(entry);
-                                }}
-                              >
-                                {entry.title}
-                              </p>
-                            ))}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
-
-                {/* Scrollable time grid */}
-                <div
-                  ref={timeGridRef}
-                  className="flex-1 min-h-0 overflow-y-auto"
-                >
-                  <div className={cn("grid h-[var(--calendar-grid-height)]", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")}>
-                    {/* Y-axis hour labels */}
-                    <div className="relative">
-                      {HOURS.map((h) => (
-                        <div
-                          key={h}
-                          className="absolute right-1 text-[10px] text-muted-foreground leading-none -translate-y-1/2"
-                          style={{ top: h * HOUR_HEIGHT_PX }}
-                        >
-                          {h === 0 ? "" : format(new Date(2000, 0, 1, h), "h a")}
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Day columns */}
-                    {weekDays.map((day) => {
-                      const key = format(day, "yyyy-MM-dd");
-                      const dayEntries = (entriesByDay.get(key) ?? []).filter((e) => !e.all_day);
-                      return (
-                        <div
-                          key={key}
-                          className={cn("relative border-l border-border", isToday(day) && "bg-primary/5")}
-                          role="button"
-                          tabIndex={0}
+                    <div key={key} className="relative border-l border-[var(--border)]">
+                      {view === "user" ? (
+                        <button
+                          type="button"
+                          aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
+                          className="absolute inset-0 z-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
                           onClick={(evt) => {
-                            if (view !== "user") return;
                             const rect = evt.currentTarget.getBoundingClientRect();
+                            // Keyboard activation (detail === 0) carries no pointer Y — default to the day.
+                            if (evt.detail === 0) {
+                              openUserCreateDialog(day);
+                              return;
+                            }
                             const yPx = evt.clientY - rect.top;
-                            const snappedMin = Math.floor((yPx / HOUR_HEIGHT_PX) * 60 / 30) * 30;
+                            const snappedMin = Math.max(
+                              0,
+                              Math.floor(((yPx / HOUR_HEIGHT_PX) * 60) / 30) * 30,
+                            );
                             const clickedDate = new Date(day);
                             clickedDate.setHours(Math.floor(snappedMin / 60), snappedMin % 60, 0, 0);
                             openUserCreateDialog(clickedDate);
                           }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              if (view === "user") openUserCreateDialog(day);
-                            }
-                          }}
-                        >
-                          {/* Hour gridlines */}
-                          {HOURS.map((h) => (
-                            <div
-                              key={h}
-                              className="absolute left-0 right-0 border-t border-border/40"
-                              style={{ top: h * HOUR_HEIGHT_PX }}
-                            />
-                          ))}
-
-                          {/* Timed events */}
-                          {dayEntries.map((entry) => {
-                            const s = new Date(entry.start_at);
-                            const e = new Date(entry.end_at);
-                            const topMin = getHours(s) * 60 + getMinutes(s);
-                            const durationMin = Math.max(differenceInMinutes(e, s), 15);
-                            const topPx = (topMin / 60) * HOUR_HEIGHT_PX;
-                            const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
-                            return (
-                              <div
-                                key={entry.entry_id}
-                                className="absolute left-0.5 right-0.5 rounded bg-accent/70 border border-accent px-1 py-0.5 overflow-hidden cursor-pointer hover:bg-accent transition-colors"
-                                style={{ top: topPx, height: heightPx, minHeight: 16 }}
-                                title={`${formatEntryWindow(entry)}: ${entry.title}`}
-                                onClick={(evt) => {
-                                  evt.stopPropagation();
-                                  if (view === "user") openUserEditDialog(entry);
-                                }}
-                              >
-                                <p className="text-[11px] font-medium truncate">{entry.title}</p>
-                                {heightPx >= 32 && (
-                                  <p className="text-[10px] text-muted-foreground truncate">
-                                    {format(s, "h:mm a")} – {format(e, "h:mm a")}
-                                  </p>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                        />
+                      ) : null}
+                      {dayEntries.map((entry) => {
+                        const s = new Date(entry.start_at);
+                        const e = new Date(entry.end_at);
+                        const topMin = getHours(s) * 60 + getMinutes(s);
+                        const durationMin = Math.max(differenceInMinutes(e, s), 15);
+                        const topPx = (topMin / 60) * HOUR_HEIGHT_PX;
+                        const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
+                        const paused = isPausedEntry(entry);
+                        return (
+                          <button
+                            key={entry.entry_id}
+                            type="button"
+                            className={cn(
+                              "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                              paused && "opacity-50",
+                            )}
+                            style={{ top: topPx, height: heightPx, minHeight: 16 }}
+                            title={`${format(s, "HH:mm")}–${format(e, "HH:mm")} · ${entry.title}`}
+                            onClick={() => {
+                              if (view === "user") openUserEditDialog(entry);
+                            }}
+                          >
+                            <span className="block truncate text-[11px] font-medium leading-tight text-[var(--fg)]">
+                              {entry.title}
+                            </span>
+                            {heightPx >= 32 ? (
+                              <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+                                {format(s, "HH:mm")}–{format(e, "HH:mm")}
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
               </div>
-            ) : entries.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No events in the selected range.</p>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Title</TableHead>
-                    <TableHead>Source</TableHead>
-                    <TableHead>Status</TableHead>
-                    {view === "user" ? <TableHead className="text-right">Actions</TableHead> : null}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {entries.map((entry) => {
-                    const canMutate =
-                      view === "user" &&
-                      entry.source_type === "provider_event" &&
-                      !!entry.provider_event_id &&
-                      entry.editable;
-
-                    return (
-                      <TableRow key={entry.entry_id}>
-                        <TableCell>{formatEntryWindow(entry)}</TableCell>
-                        <TableCell>{entry.title}</TableCell>
-                        <TableCell>{entry.butler_name ?? entry.source_key}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{entry.status}</Badge>
-                        </TableCell>
-                        {view === "user" ? (
-                          <TableCell className="text-right">
-                            <div className="flex justify-end gap-2">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
+            </div>
+          </div>
+        ) : entries.length === 0 ? (
+          <Voice variant="italic" className="text-[var(--mfg)]">
+            No events in this range.
+          </Voice>
+        ) : (
+          /* ---- Agenda list, grouped by day ---- */
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            {(() => {
+              const groups: Array<{ day: string; date: Date; items: UnifiedCalendarEntry[] }> = [];
+              const groupIndex = new Map<string, number>();
+              for (const entry of entries) {
+                const d = new Date(entry.start_at);
+                const dayKey = format(d, "yyyy-MM-dd");
+                let gi = groupIndex.get(dayKey);
+                if (gi === undefined) {
+                  gi = groups.length;
+                  groupIndex.set(dayKey, gi);
+                  groups.push({ day: dayKey, date: startOfDay(d), items: [] });
+                }
+                groups[gi].items.push(entry);
+              }
+              return groups.map((group) => (
+                <section key={group.day} className="mb-6">
+                  <div className="mb-1 flex items-baseline gap-2 border-b border-[var(--border)] pb-1.5">
+                    <Eyebrow className={cn(isToday(group.date) && "text-[var(--fg)]")}>
+                      {format(group.date, "EEE · MMM d")}
+                    </Eyebrow>
+                    {isToday(group.date) ? (
+                      <KindTag className="text-[var(--mfg)]">today</KindTag>
+                    ) : null}
+                  </div>
+                  <div role="list">
+                    {group.items.map((entry) => {
+                      const canMutate =
+                        view === "user" &&
+                        entry.source_type === "provider_event" &&
+                        !!entry.provider_event_id &&
+                        entry.editable;
+                      return (
+                        <Row
+                          key={entry.entry_id}
+                          mark={
+                            <Mono muted className="inline-block w-14 tabular-nums">
+                              {entry.all_day ? "all day" : format(new Date(entry.start_at), "HH:mm")}
+                            </Mono>
+                          }
+                          meta={
+                            <div className="flex items-center gap-1.5">
+                              <PillButton
                                 onClick={() => openUserEditDialog(entry)}
                                 disabled={!canMutate || userEventMutation.isPending}
                               >
                                 Edit
-                              </Button>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
+                              </PillButton>
+                              <PillButton
                                 onClick={() => setDeleteCandidate(entry)}
                                 disabled={!canMutate || userEventMutation.isPending}
+                                className="hover:border-[var(--red)] hover:text-[var(--red)]"
                               >
                                 Delete
-                              </Button>
+                              </PillButton>
                             </div>
-                          </TableCell>
-                        ) : null}
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
+                          }
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            {entry.butler_name ? <ButlerMark name={entry.butler_name} /> : null}
+                            <span className="truncate text-sm text-[var(--fg)]">{entry.title}</span>
+                            <Mono muted className="hidden truncate sm:inline">
+                              {entry.butler_name ?? entry.source_key}
+                            </Mono>
+                          </div>
+                        </Row>
+                      );
+                    })}
+                  </div>
+                </section>
+              ));
+            })()}
+          </div>
+        )}
+      </div>
 
       <Dialog open={sourcesDialogOpen} onOpenChange={setSourcesDialogOpen}>
         <DialogContent className="w-[90vw] max-w-[90vw] sm:w-[80vw] sm:max-w-[80vw] max-h-[80vh] overflow-y-auto">
@@ -1993,149 +2119,144 @@ export default function CalendarWorkspacePage() {
             </DialogDescription>
           </DialogHeader>
           {metaQuery.isLoading && connectedSources.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Loading source metadata...</p>
+            <Voice variant="italic" className="text-[var(--mfg)]">
+              Reading source metadata…
+            </Voice>
           ) : connectedSources.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No connected sources reported.</p>
+            <Voice variant="italic" className="text-[var(--mfg)]">
+              No connected sources.
+            </Voice>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-10">On</TableHead>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Account / Calendar ID</TableHead>
-                  <TableHead>Lane</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Freshness</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {[...connectedSources].sort((a, b) => {
-                  // Sort: primary first, then user-email calendars, then enabled, then disabled
-                  const aPrimary = (a.lane === "user" && a.calendar_id === primaryCalendarId) ? 1 : 0;
-                  const bPrimary = (b.lane === "user" && b.calendar_id === primaryCalendarId) ? 1 : 0;
-                  if (aPrimary !== bPrimary) return bPrimary - aPrimary;
+            <div role="list">
+              {[...connectedSources].sort((a, b) => {
+                // Sort: primary first, then user-email calendars, then enabled, then disabled
+                const aPrimary = (a.lane === "user" && a.calendar_id === primaryCalendarId) ? 1 : 0;
+                const bPrimary = (b.lane === "user" && b.calendar_id === primaryCalendarId) ? 1 : 0;
+                if (aPrimary !== bPrimary) return bPrimary - aPrimary;
 
-                  const aIsAcct = (a.provider === "google" && a.calendar_id && googleAccountEmails.has(a.calendar_id)) ? 1 : 0;
-                  const bIsAcct = (b.provider === "google" && b.calendar_id && googleAccountEmails.has(b.calendar_id)) ? 1 : 0;
-                  if (aIsAcct !== bIsAcct) return bIsAcct - aIsAcct;
+                const aIsAcct = (a.provider === "google" && a.calendar_id && googleAccountEmails.has(a.calendar_id)) ? 1 : 0;
+                const bIsAcct = (b.provider === "google" && b.calendar_id && googleAccountEmails.has(b.calendar_id)) ? 1 : 0;
+                if (aIsAcct !== bIsAcct) return bIsAcct - aIsAcct;
 
-                  const aOff = disabledSources.has(a.source_key) ? 1 : 0;
-                  const bOff = disabledSources.has(b.source_key) ? 1 : 0;
-                  return aOff - bOff;
-                }).map((source) => {
-                  const isPrimary =
-                    source.lane === "user" &&
-                    source.calendar_id != null &&
-                    source.calendar_id === primaryCalendarId;
-                  const canSetPrimary =
-                    source.lane === "user" &&
-                    source.writable &&
-                    source.calendar_id != null &&
-                    source.calendar_id !== primaryCalendarId &&
-                    source.butler_name != null;
-                  const isEnabled = !disabledSources.has(source.source_key);
-                  const acctEmail = typeof source.metadata?.account_email === "string" ? source.metadata.account_email : undefined;
-                  const calIdDisplay = (() => {
-                    if (acctEmail && source.calendar_id && source.calendar_id !== acctEmail) {
-                      return `${acctEmail} ${truncateCalendarId(source.calendar_id)}`;
+                const aOff = disabledSources.has(a.source_key) ? 1 : 0;
+                const bOff = disabledSources.has(b.source_key) ? 1 : 0;
+                return aOff - bOff;
+              }).map((source) => {
+                const isPrimary =
+                  source.lane === "user" &&
+                  source.calendar_id != null &&
+                  source.calendar_id === primaryCalendarId;
+                const canSetPrimary =
+                  source.lane === "user" &&
+                  source.writable &&
+                  source.calendar_id != null &&
+                  source.calendar_id !== primaryCalendarId &&
+                  source.butler_name != null;
+                const isEnabled = !disabledSources.has(source.source_key);
+                const acctEmail = typeof source.metadata?.account_email === "string" ? source.metadata.account_email : undefined;
+                const calIdDisplay = (() => {
+                  if (acctEmail && source.calendar_id && source.calendar_id !== acctEmail) {
+                    return `${acctEmail} ${truncateCalendarId(source.calendar_id)}`;
+                  }
+                  return truncateCalendarId(source.calendar_id ?? source.provider ?? source.source_kind);
+                })();
+
+                return (
+                  <Row
+                    key={source.source_key}
+                    className={cn(!isEnabled && "opacity-50")}
+                    mark={
+                      <Checkbox
+                        checked={isEnabled}
+                        onCheckedChange={() => toggleSourceEnabled(source.source_key)}
+                        aria-label={`Toggle ${sourceName(source)}`}
+                      />
                     }
-                    return truncateCalendarId(source.calendar_id ?? source.provider ?? source.source_kind);
-                  })();
-
-                  return (
-                    <TableRow key={source.source_key} className={cn(!isEnabled && "opacity-50")}>
-                      <TableCell>
-                        <Checkbox
-                          checked={isEnabled}
-                          onCheckedChange={() => toggleSourceEnabled(source.source_key)}
-                          aria-label={`Toggle ${sourceName(source)}`}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-sm font-medium" title={sourceName(source)}>
+                    meta={
+                      <div className="flex items-center gap-1.5">
+                        {canSetPrimary ? (
+                          <PillButton
+                            onClick={() => {
+                              primaryMutation.mutate(
+                                {
+                                  butler_name: source.butler_name!,
+                                  calendar_id: source.calendar_id!,
+                                },
+                                {
+                                  onSuccess: (response) => {
+                                    if (response.data.persisted === false) {
+                                      toast.error(
+                                        "Failed to set primary: change was not persisted",
+                                      );
+                                      return;
+                                    }
+                                    toast.success("Primary calendar updated");
+                                  },
+                                  onError: (err) =>
+                                    toast.error(`Failed to set primary: ${err.message}`),
+                                },
+                              );
+                            }}
+                            disabled={primaryMutation.isPending}
+                          >
+                            Set as primary
+                          </PillButton>
+                        ) : null}
+                        <PillButton
+                          onClick={() => handleSyncSource(source)}
+                          disabled={syncMutation.isPending || !source.butler_name}
+                        >
+                          {syncingSourceKey === source.source_key ? "Syncing..." : "Sync now"}
+                        </PillButton>
+                      </div>
+                    }
+                  >
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {source.butler_name ? <ButlerMark name={source.butler_name} /> : null}
+                        <span
+                          className="truncate text-sm font-medium text-[var(--fg)]"
+                          title={sourceName(source)}
+                        >
                           {sourceName(source)}
                         </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs text-muted-foreground" title={source.calendar_id ?? undefined}>
-                          {calIdDisplay}
+                        {isPrimary ? <KindTag className="text-[var(--fg)]">primary</KindTag> : null}
+                        <KindTag>{source.lane}</KindTag>
+                      </div>
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="min-w-0 max-w-full truncate" title={source.calendar_id ?? undefined}>
+                          <Mono muted>{calIdDisplay}</Mono>
                         </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs">{source.lane}</span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          {isPrimary ? <Badge variant="default">Primary</Badge> : null}
-                          <Badge variant={syncBadgeVariant(source.sync_state)}>{source.sync_state}</Badge>
-                        </div>
-                        {source.last_error ? (
-                          <p className="mt-1 max-w-48 truncate text-xs text-destructive" title={source.last_error}>{source.last_error}</p>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1.5">
+                          <StateDot state={syncDotState(source.sync_state)} />
+                          <Mono muted>{source.sync_state}</Mono>
+                        </span>
+                        <Mono muted>
                           {formatStaleness(source.staleness_ms)}
                           {formatOptionalTimestamp(source.last_success_at)
-                            ? ` \u2022 ${formatOptionalTimestamp(source.last_success_at)}`
+                            ? ` \u00b7 ${formatOptionalTimestamp(source.last_success_at)}`
                             : ""}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {canSetPrimary ? (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => {
-                                primaryMutation.mutate(
-                                  {
-                                    butler_name: source.butler_name!,
-                                    calendar_id: source.calendar_id!,
-                                  },
-                                  {
-                                    onSuccess: (response) => {
-                                      if (response.data.persisted === false) {
-                                        toast.error(
-                                          "Failed to set primary: change was not persisted",
-                                        );
-                                        return;
-                                      }
-                                      toast.success("Primary calendar updated");
-                                    },
-                                    onError: (err) =>
-                                      toast.error(`Failed to set primary: ${err.message}`),
-                                  },
-                                );
-                              }}
-                              disabled={primaryMutation.isPending}
-                            >
-                              Set as primary
-                            </Button>
-                          ) : null}
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleSyncSource(source)}
-                            disabled={syncMutation.isPending || !source.butler_name}
+                        </Mono>
+                        {source.last_error ? (
+                          <span
+                            className="inline-flex min-w-0 items-center gap-1.5"
+                            title={source.last_error}
                           >
-                            {syncingSourceKey === source.source_key ? "Syncing..." : "Sync now"}
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                            <StateDot state="error" />
+                            <span className="max-w-[16rem] truncate text-[11px] text-[var(--red)]">
+                              {source.last_error}
+                            </span>
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </Row>
+                );
+              })}
+            </div>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setSourcesDialogOpen(false)}>
-              Close
-            </Button>
+            <PillButton onClick={() => setSourcesDialogOpen(false)}>Close</PillButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2170,7 +2291,7 @@ export default function CalendarWorkspacePage() {
                 </label>
                 <select
                   id="event-source"
-                  className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                  className={FIELD_SELECT_CLASS}
                   value={userEventForm.sourceKey}
                   onChange={(event) =>
                     setUserEventForm((current) =>
@@ -2288,21 +2409,19 @@ export default function CalendarWorkspacePage() {
               </div>
 
               <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
+                <PillButton
                   onClick={() => setUserEventDialogOpen(false)}
                   disabled={userEventMutation.isPending}
                 >
                   Cancel
-                </Button>
-                <Button type="submit" disabled={userEventMutation.isPending}>
+                </PillButton>
+                <CommitButton type="submit" disabled={userEventMutation.isPending}>
                   {userEventMutation.isPending
                     ? "Saving..."
                     : userEventDialogMode === "create"
                       ? "Create event"
                       : "Update event"}
-                </Button>
+                </CommitButton>
               </DialogFooter>
             </form>
           ) : null}
@@ -2339,7 +2458,7 @@ export default function CalendarWorkspacePage() {
                           : current,
                       )
                     }
-                    className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className={FIELD_SELECT_CLASS}
                   >
                     {availableButlers.length === 0 ? <option value="">No butlers available</option> : null}
                     {availableButlers.map((butlerName) => (
@@ -2366,7 +2485,7 @@ export default function CalendarWorkspacePage() {
                           : current,
                       )
                     }
-                    className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className={FIELD_SELECT_CLASS}
                   >
                     <option value="butler_reminder">Reminder</option>
                     <option value="scheduled_task">Scheduled task</option>
@@ -2493,7 +2612,7 @@ export default function CalendarWorkspacePage() {
                           : current,
                       )
                     }
-                    className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                    className={FIELD_SELECT_CLASS}
                     disabled={butlerMutation.isPending}
                   >
                     <option value="NONE">None</option>
@@ -2553,16 +2672,13 @@ export default function CalendarWorkspacePage() {
           ) : null}
 
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
+            <PillButton
               onClick={() => closeButlerEventDialog(false)}
               disabled={butlerMutation.isPending}
             >
               Cancel
-            </Button>
-            <Button
-              type="button"
+            </PillButton>
+            <CommitButton
               onClick={handleSaveButlerEvent}
               disabled={butlerMutation.isPending || !butlerEventDraft}
             >
@@ -2573,7 +2689,7 @@ export default function CalendarWorkspacePage() {
                 : butlerEventDialogMode === "create"
                   ? "Create event"
                   : "Save changes"}
-            </Button>
+            </CommitButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2589,22 +2705,16 @@ export default function CalendarWorkspacePage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setDeleteCandidate(null)}
-              disabled={userEventMutation.isPending}
-            >
+            <PillButton onClick={() => setDeleteCandidate(null)} disabled={userEventMutation.isPending}>
               Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
+            </PillButton>
+            <PillButton
               onClick={confirmDelete}
               disabled={userEventMutation.isPending}
+              className="border-[var(--red)] text-[var(--red)] hover:opacity-80"
             >
               {userEventMutation.isPending ? "Deleting..." : "Delete"}
-            </Button>
+            </PillButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

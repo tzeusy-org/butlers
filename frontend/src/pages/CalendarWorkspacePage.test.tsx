@@ -1267,9 +1267,9 @@ describe("CalendarWorkspacePage", () => {
       // Should see overflow indicator
       expect(container.textContent).toContain("2 more instances");
       // Should not show all 12
-      const rows = Array.from(container.querySelectorAll("tr")).filter(
-        (r) => r.textContent?.includes("Hourly check"),
-      );
+      const rows = Array.from(
+        container.querySelectorAll('[data-testid="butler-lane-row"]'),
+      ).filter((r) => r.textContent?.includes("Hourly check"));
       // 10 visible rows + 1 overflow row
       expect(rows.length).toBe(11);
     });
@@ -1320,9 +1320,9 @@ describe("CalendarWorkspacePage", () => {
       renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
       expect(container.textContent).not.toContain("more instance");
-      const rows = Array.from(container.querySelectorAll("tr")).filter(
-        (r) => r.textContent?.includes("Hourly check"),
-      );
+      const rows = Array.from(
+        container.querySelectorAll('[data-testid="butler-lane-row"]'),
+      ).filter((r) => r.textContent?.includes("Hourly check"));
       expect(rows.length).toBe(10);
     });
 
@@ -1375,9 +1375,9 @@ describe("CalendarWorkspacePage", () => {
 
       // sched-A: 10 visible + 1 overflow; sched-B: 6 visible, no overflow
       // Total visible rows: 16 + 1 overflow row
-      const overflowText = Array.from(container.querySelectorAll("td, p")).filter((el) =>
-        el.textContent?.includes("more instance"),
-      );
+      const overflowText = Array.from(
+        container.querySelectorAll('[data-testid="butler-lane-row"]'),
+      ).filter((el) => el.textContent?.includes("more instance"));
       expect(overflowText.length).toBe(1);
       expect(overflowText[0]?.textContent).toContain("2 more instance");
     });
@@ -1430,9 +1430,9 @@ describe("CalendarWorkspacePage", () => {
       renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
       // Each day: 10 visible + 1 overflow = 2 overflow rows total
-      const overflowText = Array.from(container.querySelectorAll("td, p")).filter((el) =>
-        el.textContent?.includes("more instance"),
-      );
+      const overflowText = Array.from(
+        container.querySelectorAll('[data-testid="butler-lane-row"]'),
+      ).filter((el) => el.textContent?.includes("more instance"));
       expect(overflowText.length).toBe(2);
     });
   });
