@@ -23,8 +23,10 @@ import {
   getMeasurementsLatest,
   getMeasurementSources,
   getMeasurementsTrend,
+  getMedicationAdherence,
   getMedicationDoses,
   getMedications,
+  logMedicationDose,
   getResearch,
   getSleepLatest,
   getSymptoms,
@@ -38,6 +40,7 @@ import {
 import type {
   ConditionCreateRequest,
   ConditionUpdateRequest,
+  DoseLogRequest,
   MealCreateRequest,
   MealParams,
   MealUpdateRequest,
@@ -141,6 +144,45 @@ export function useMedicationDoses(
     queryKey: ["health-medication-doses", medicationId, params],
     queryFn: () => getMedicationDoses(medicationId, params),
     enabled: !!medicationId,
+  });
+}
+
+/**
+ * Fetch the server-computed adherence summary for a medication.
+ *
+ * Reads GET /health/medications/{id}/adherence — the frequency-expected
+ * adherence rate, NOT a naive client-side taken/total ratio. Conditionally
+ * enabled so it never fires for an empty/placeholder id.
+ */
+export function useMedicationAdherence(
+  medicationId: string,
+  params?: { start?: string; end?: string },
+) {
+  return useQuery({
+    queryKey: ["health-medication-adherence", medicationId, params],
+    queryFn: () => getMedicationAdherence(medicationId, params),
+    enabled: !!medicationId,
+  });
+}
+
+/**
+ * Log (or skip) a dose for a medication. On success, invalidates that
+ * medication's dose-log and adherence queries so the row reflects the new dose
+ * immediately.
+ */
+export function useLogMedicationDose() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body?: DoseLogRequest }) =>
+      logMedicationDose(id, body),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["health-medication-doses", variables.id],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["health-medication-adherence", variables.id],
+      });
+    },
   });
 }
 

@@ -96,6 +96,8 @@ vi.mock("@/hooks/use-health", () => {
       isLoading: false,
     }),
     useMedicationDoses: () => ({ data: [], isLoading: false }),
+    useMedicationAdherence: () => ({ data: undefined, isLoading: false }),
+    useLogMedicationDose: noopMutation,
     useCreateMedication: noopMutation,
     useUpdateMedication: noopMutation,
     useDeleteMedication: noopMutation,

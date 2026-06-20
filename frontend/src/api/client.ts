@@ -82,6 +82,8 @@ import type {
   ConditionCreateRequest,
   ConditionUpdateRequest,
   Dose,
+  DoseLogRequest,
+  MedicationAdherence,
   HealthCondition,
   HealthResearch,
   Meal,
@@ -1461,6 +1463,44 @@ export function getMedicationDoses(medicationId: string, params?: { since?: stri
   const qs = sp.toString();
   const base = `/health/medications/${encodeURIComponent(medicationId)}/doses`;
   return apiFetch<Dose[]>(qs ? `${base}?${qs}` : base);
+}
+
+/**
+ * Fetch the server-computed adherence summary for a medication
+ * (GET /health/medications/{id}/adherence). `adherence_rate` is the
+ * frequency-expected percentage — the authoritative figure to render, never a
+ * naive client-side taken/total ratio.
+ */
+export function getMedicationAdherence(
+  medicationId: string,
+  params?: { start?: string; end?: string },
+): Promise<MedicationAdherence> {
+  const sp = new URLSearchParams();
+  if (params?.start) sp.set("start", params.start);
+  if (params?.end) sp.set("end", params.end);
+  const qs = sp.toString();
+  const base = `/health/medications/${encodeURIComponent(medicationId)}/adherence`;
+  return apiFetch<MedicationAdherence>(qs ? `${base}?${qs}` : base);
+}
+
+/**
+ * Log (or skip) a dose for a medication. Persists through the Health butler's
+ * own fact-store path (POST /health/medications/{id}/doses -> medication_log_dose,
+ * a `took_dose` temporal fact), so the dose is read back by getMedicationDoses
+ * and reflected in getMedicationAdherence immediately. Set `skipped` to record
+ * a missed dose; `taken_at` defaults to now when omitted.
+ */
+export function logMedicationDose(
+  medicationId: string,
+  body: DoseLogRequest = {},
+): Promise<Dose> {
+  return apiFetch<Dose>(
+    `/health/medications/${encodeURIComponent(medicationId)}/doses`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 /**

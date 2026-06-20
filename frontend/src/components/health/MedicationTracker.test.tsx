@@ -43,6 +43,11 @@ vi.mock("@/hooks/use-health", () => ({
     isLoading: false,
   }),
   useMedicationDoses: () => ({ data: [], isLoading: false }),
+  useMedicationAdherence: () => ({ data: undefined, isLoading: false }),
+  useLogMedicationDose: () => ({
+    mutateAsync: vi.fn().mockResolvedValue({}),
+    isPending: false,
+  }),
   useCreateMedication: () => ({ mutateAsync: createMutate, isPending: false }),
   useUpdateMedication: () => ({ mutateAsync: updateMutate, isPending: false }),
   useDeleteMedication: () => ({ mutateAsync: deleteMutate, isPending: false }),

@@ -1104,6 +1104,33 @@ export interface Dose {
   created_at: string;
 }
 
+/**
+ * Aggregated dose-adherence stats for a medication
+ * (GET /health/medications/{id}/adherence).
+ *
+ * `adherence_rate` is the frequency-expected percentage of non-skipped doses
+ * (server-computed), or `null` when no doses have been logged. This is the
+ * authoritative adherence figure — never recompute it as a naive client-side
+ * taken/total ratio.
+ */
+export interface MedicationAdherence {
+  medication_id: string;
+  total_doses: number;
+  taken_doses: number;
+  skipped_doses: number;
+  adherence_rate: number | null;
+}
+
+/**
+ * Request body for logging a dose (POST /health/medications/{id}/doses).
+ * `taken_at` defaults to now when omitted; set `skipped` to record a miss.
+ */
+export interface DoseLogRequest {
+  taken_at?: string | null;
+  skipped?: boolean;
+  notes?: string | null;
+}
+
 /** A health condition record. */
 export interface HealthCondition {
   id: string;
