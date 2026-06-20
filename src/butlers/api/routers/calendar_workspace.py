@@ -23,6 +23,8 @@ from butlers.api.models.calendar import (
     CalendarWorkspaceUserMutationRequest,
 )
 from butlers.api.models.calendar_workspace import (
+    CalendarAuditEntry,
+    CalendarAuditResponse,
     CalendarConflictEntry,
     CalendarSuggestedSlot,
     CalendarWorkspaceLaneDefinition,
@@ -497,6 +499,10 @@ def _normalize_entry(
         sync_state=sync_state,
         editable=bool(row.get("writable") or False),
         metadata=metadata,
+        source_butler=str(row.get("source_butler")) if row.get("source_butler") else None,
+        source_session_id=(
+            str(row.get("source_session_id")) if row.get("source_session_id") else None
+        ),
     )
 
 
@@ -1057,3 +1063,112 @@ async def mutate_butler_event(
             error="MCP call failed",
         )
         raise
+
+
+# ---------------------------------------------------------------------------
+# Audit trail read — GET /api/calendar/workspace/audit
+# ---------------------------------------------------------------------------
+
+_AUDIT_SQL = """
+    SELECT
+        cal.id,
+        cal.idempotency_key,
+        cal.request_id,
+        cal.action_type,
+        cal.action_status,
+        cal.origin_ref,
+        cal.action_payload,
+        cal.error,
+        cal.created_at,
+        cal.updated_at,
+        cal.applied_at,
+        e.source_butler,
+        e.source_session_id
+    FROM calendar_action_log AS cal
+    LEFT JOIN calendar_events AS e ON e.id = cal.event_id
+    ORDER BY cal.created_at DESC
+    LIMIT $1 OFFSET $2
+"""
+
+_AUDIT_COUNT_SQL = "SELECT count(*) FROM calendar_action_log"
+
+_PAYLOAD_SUMMARY_KEYS = frozenset(
+    {
+        "title",
+        "event_id",
+        "start_at",
+        "end_at",
+        "timezone",
+        "calendar_id",
+        "action",
+        "source_hint",
+        "butler_name",
+    }
+)
+
+
+def _extract_payload_summary(raw_payload: object) -> dict[str, Any]:
+    """Return a condensed subset of the action_payload JSONB."""
+    if not isinstance(raw_payload, dict):
+        return {}
+    return {k: v for k, v in raw_payload.items() if k in _PAYLOAD_SUMMARY_KEYS}
+
+
+@router.get("/audit", response_model=ApiResponse[CalendarAuditResponse])
+async def get_calendar_audit(
+    limit: int = Query(50, ge=1, le=200, description="Max entries to return"),
+    offset: int = Query(0, ge=0, description="Number of entries to skip"),
+    butler: str | None = Query(None, description="Restrict to a single butler schema"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarAuditResponse]:
+    """Return paginated calendar mutation audit log entries.
+
+    Fans out across all calendar-enabled butler schemas and merges results,
+    sorted newest first.  Each row comes from ``calendar_action_log`` and is
+    enriched with ``source_butler`` / ``source_session_id`` from the linked
+    ``calendar_events`` row (core_076 provenance columns).
+    """
+    query_targets: list[str] | None
+    if butler:
+        if butler not in db.butler_names:
+            raise HTTPException(status_code=404, detail=f"Unknown butler: {butler}")
+        query_targets = [butler]
+    else:
+        query_targets = db.butlers_with_module("calendar")
+
+    # Fan out — gather raw rows from every calendar butler schema.
+    results = await db.fan_out(_AUDIT_SQL, (limit + offset, 0), butler_names=query_targets)
+    count_results = await db.fan_out(_AUDIT_COUNT_SQL, (), butler_names=query_targets)
+
+    raw_rows: list[dict[str, Any]] = []
+    for butler_rows in results.values():
+        for row in butler_rows:
+            payload = _normalize_json_object(row["action_payload"])
+            raw_rows.append(
+                {
+                    "id": row["id"],
+                    "idempotency_key": row["idempotency_key"],
+                    "request_id": row["request_id"],
+                    "action_type": row["action_type"],
+                    "action_status": row["action_status"],
+                    "origin_ref": row["origin_ref"],
+                    "payload_summary": _extract_payload_summary(payload),
+                    "error": row["error"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "applied_at": row["applied_at"],
+                    "source_butler": row["source_butler"],
+                    "source_session_id": row["source_session_id"],
+                }
+            )
+
+    # Total across all schemas
+    total = sum(int(rows[0]["count"]) if rows else 0 for rows in count_results.values())
+
+    # Sort newest-first across all schemas, then slice the requested page.
+    raw_rows.sort(key=lambda r: r["created_at"], reverse=True)
+    page = raw_rows[offset : offset + limit]
+
+    entries = [CalendarAuditEntry.model_validate(row) for row in page]
+    data = CalendarAuditResponse(entries=entries, total=total, offset=offset, limit=limit)
+    return ApiResponse[CalendarAuditResponse](data=data)

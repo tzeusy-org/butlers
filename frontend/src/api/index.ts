@@ -39,6 +39,7 @@ export {
   updateCondition,
   deleteCondition,
   getCalendarWorkspace,
+  getCalendarWorkspaceAudit,
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,

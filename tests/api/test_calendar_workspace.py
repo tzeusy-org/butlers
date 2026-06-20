@@ -19,6 +19,38 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.routers.calendar_workspace import _get_db_manager
 
+
+def _audit_row(
+    *,
+    action_type: str = "workspace_user_create",
+    action_status: str = "applied",
+    source_butler: str | None = None,
+    source_session_id: str | None = None,
+    request_id: str | None = None,
+    origin_ref: str | None = None,
+) -> dict:
+    now = datetime.now(tz=UTC)
+    return {
+        "id": uuid4(),
+        "idempotency_key": f"key-{uuid4()}",
+        "request_id": request_id,
+        "action_type": action_type,
+        "action_status": action_status,
+        "origin_ref": origin_ref,
+        "action_payload": {"title": "Test event", "start_at": "2026-06-20T10:00:00Z"},
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+        "applied_at": now if action_status == "applied" else None,
+        "source_butler": source_butler,
+        "source_session_id": source_session_id,
+    }
+
+
+def _count_row(count: int) -> dict:
+    return {"count": count}
+
+
 pytestmark = pytest.mark.unit
 
 
@@ -475,3 +507,133 @@ async def test_mutate_user_event_success_response_has_empty_conflict_lists(app):
     assert data["result"]["status"] == "created"
     assert data["conflicts"] == []
     assert data["suggested_slots"] == []
+
+
+# ---------------------------------------------------------------------------
+# Audit trail — GET /api/calendar/workspace/audit
+# ---------------------------------------------------------------------------
+
+
+def _build_audit_app(
+    app,
+    *,
+    audit_rows: dict[str, list[dict]] | None = None,
+    calendar_butlers: list[str] | None = None,
+):
+    """Build a test app wired with a fan_out mock that handles audit queries."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.butlers_with_module = MagicMock(
+        return_value=calendar_butlers if calendar_butlers is not None else ["general"]
+    )
+
+    _audit_rows = audit_rows or {}
+
+    async def _fan_out(query: str, args=(), butler_names=None):
+        if "FROM calendar_action_log" in query:
+            rows_to_scan = _audit_rows
+            if butler_names is not None:
+                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
+            if "count(*)" in query:
+                # Return count rows
+                return {k: [{"count": len(v)}] for k, v in rows_to_scan.items()}
+            # Return data rows (limit already baked into LIMIT/OFFSET in SQL)
+            return rows_to_scan
+        return {}
+
+    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+
+    mock_mgr = AsyncMock(spec=MCPClientManager)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
+    return app, mock_db
+
+
+async def test_audit_returns_entries_and_total(app):
+    """GET /api/calendar/workspace/audit returns entries + total count."""
+    session_id = "sess-abc123"
+    rows = {
+        "general": [
+            _audit_row(
+                action_type="workspace_user_create",
+                action_status="applied",
+                source_butler="general",
+                source_session_id=session_id,
+                origin_ref="evt-google-1",
+            ),
+            _audit_row(
+                action_type="workspace_user_delete",
+                action_status="failed",
+                source_butler=None,
+                source_session_id=None,
+            ),
+        ]
+    }
+    app, _ = _build_audit_app(app, audit_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/audit")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total"] == 2
+    assert len(data["entries"]) == 2
+
+    # Verify provenance fields are surfaced
+    applied_entry = next(e for e in data["entries"] if e["action_status"] == "applied")
+    assert applied_entry["action_type"] == "workspace_user_create"
+    assert applied_entry["source_butler"] == "general"
+    assert applied_entry["source_session_id"] == session_id
+    assert applied_entry["origin_ref"] == "evt-google-1"
+
+    failed_entry = next(e for e in data["entries"] if e["action_status"] == "failed")
+    assert failed_entry["source_butler"] is None
+    assert failed_entry["source_session_id"] is None
+
+
+async def test_audit_empty_when_no_rows(app):
+    """GET /api/calendar/workspace/audit returns empty list when no log rows exist."""
+    app, _ = _build_audit_app(app, audit_rows={"general": []})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/audit")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total"] == 0
+    assert data["entries"] == []
+
+
+async def test_audit_payload_summary_contains_key_fields(app):
+    """The payload_summary in audit entries carries recognised key fields only."""
+    rows = {
+        "general": [
+            _audit_row(
+                action_type="workspace_user_create",
+                action_status="applied",
+            )
+        ]
+    }
+    # Override the payload to contain mixed fields
+    rows["general"][0]["action_payload"] = {
+        "title": "My event",
+        "start_at": "2026-06-20T10:00:00Z",
+        "internal_field": "should-not-appear",
+    }
+    app, _ = _build_audit_app(app, audit_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/audit")
+
+    assert resp.status_code == 200
+    entry = resp.json()["data"]["entries"][0]
+    summary = entry["payload_summary"]
+    assert "title" in summary
+    assert "start_at" in summary
+    assert "internal_field" not in summary

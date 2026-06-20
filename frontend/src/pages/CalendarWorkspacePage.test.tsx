@@ -19,6 +19,12 @@ import {
 vi.mock("@/hooks/use-calendar-workspace", () => ({
   useCalendarWorkspace: vi.fn(),
   useCalendarWorkspaceMeta: vi.fn(),
+  useCalendarWorkspaceAudit: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: { data: { entries: [], total: 0, offset: 0, limit: 50 } },
+  })),
   useMutateCalendarWorkspaceButlerEvent: vi.fn(),
   useSyncCalendarWorkspace: vi.fn(),
   useMutateCalendarWorkspaceUserEvent: vi.fn(),
