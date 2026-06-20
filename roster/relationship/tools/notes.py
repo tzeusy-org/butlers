@@ -158,8 +158,8 @@ async def note_search(
             SELECT f.id, f.content, f.created_at, f.metadata,
                    COALESCE(e.canonical_name, 'Unknown') AS contact_name
             FROM facts f
-            JOIN contacts c ON f.subject = 'contact:' || c.id::text
-            LEFT JOIN public.entities e ON e.id = c.entity_id
+            JOIN contact_entity_map cem ON f.subject = 'contact:' || cem.contact_id::text
+            JOIN public.entities e ON e.id = cem.entity_id
             WHERE f.subject = $1
               AND f.predicate = 'contact_note'
               AND f.scope = 'relationship'
@@ -181,10 +181,10 @@ async def note_search(
         """
         SELECT f.id, f.content, f.created_at, f.metadata,
                COALESCE(e.canonical_name, 'Unknown') AS contact_name,
-               c.id AS _contact_id
+               cem.contact_id AS _contact_id
         FROM facts f
-        JOIN contacts c ON f.subject = 'contact:' || c.id::text
-        LEFT JOIN public.entities e ON e.id = c.entity_id
+        JOIN contact_entity_map cem ON f.subject = 'contact:' || cem.contact_id::text
+        JOIN public.entities e ON e.id = cem.entity_id
         WHERE f.predicate = 'contact_note'
           AND f.scope = 'relationship'
           AND f.validity = 'active'

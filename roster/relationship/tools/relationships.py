@@ -159,19 +159,17 @@ async def relationship_add(
 
 
 async def relationship_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[dict[str, Any]]:
-    """List all relationships for a contact, using entity canonical_name for display (bead 7)."""
+    """List all relationships for a contact, using entity canonical_name for display (bead 7).
+
+    Resolves the related contact's display name via contact_entity_map → public.entities.
+    """
     rows = await pool.fetch(
         """
         SELECT r.*,
-               COALESCE(
-                   e.canonical_name,
-                   NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS related_name
+               COALESCE(e.canonical_name, 'Unknown') AS related_name
         FROM relationships r
-        JOIN contacts c ON r.contact_b = c.id
-        LEFT JOIN public.entities e ON e.id = c.entity_id
+        JOIN contact_entity_map cem ON cem.contact_id = r.contact_b
+        JOIN public.entities e ON e.id = cem.entity_id
         WHERE r.contact_a = $1
         ORDER BY r.created_at
         """,
