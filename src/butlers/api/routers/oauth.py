@@ -1282,6 +1282,13 @@ async def oauth_google_start(
         "response_type": "code",
         "scope": scopes,
         "access_type": "offline",
+        # Incremental authorization: keep this request's scope minimal (e.g. a
+        # health re-auth asks for only the health scopes) while Google merges it
+        # with every scope this client was previously granted for the user and
+        # returns a token covering the union.  This prevents a single-connector
+        # re-auth from narrowing the shared google_accounts.granted_scopes set
+        # and knocking the other Google connectors offline.
+        "include_granted_scopes": "true",
         "state": state,
     }
 
@@ -2702,6 +2709,10 @@ async def oauth_provider_start(
 
     if provider == "google":
         params["access_type"] = "offline"
+        # Incremental authorization — see the note in start_google_oauth_flow:
+        # keeps the per-connector request minimal while Google returns a token
+        # covering the union of all previously-granted scopes for this client.
+        params["include_granted_scopes"] = "true"
         if force_consent:
             params["prompt"] = "consent"
         if account_hint:

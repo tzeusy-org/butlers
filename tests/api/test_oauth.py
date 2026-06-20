@@ -230,6 +230,26 @@ async def test_start_select_account_and_force_consent_emit_google_prompt(app):
     assert prompt == "consent select_account"
 
 
+async def test_start_sets_include_granted_scopes_for_incremental_auth(app):
+    """Google authorize URL requests incremental authorization.
+
+    include_granted_scopes=true keeps each connector's request minimal while
+    Google merges it with previously-granted scopes and returns a token covering
+    the union — so a single-connector re-auth never narrows the shared
+    google_accounts.granted_scopes set (regression guard for the scope-narrowing
+    bug that knocked Drive/Calendar/Gmail offline).
+    """
+    _make_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/oauth/google/start", params={"redirect": "false"})
+    assert resp.status_code == 200
+    assert (
+        _extract_query_param(resp.json()["authorization_url"], "include_granted_scopes") == "true"
+    )
+
+
 async def test_start_missing_credentials_returns_503(app):
     app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
     async with httpx.AsyncClient(
