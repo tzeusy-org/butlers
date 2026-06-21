@@ -46,6 +46,44 @@ export function formatEventTime(
 }
 
 /**
+ * Format an instant as a `yyyy-MM-dd'T'HH:mm` value for a `datetime-local`
+ * input, rendered in `tz` (the workspace wall clock). Returns `fallback` when
+ * the value is missing/unparseable so the form never shows "Invalid Date".
+ *
+ * Inverse of {@link dateTimeLocalToIso}; keeps create/edit form prefill in the
+ * workspace zone rather than the browser's local zone.
+ */
+export function tzDateTimeLocalInput(
+  value: string | number | Date | null | undefined,
+  tz: string,
+  fallback = "",
+): string {
+  if (value === null || value === undefined || value === "") return fallback;
+  const date = toDate(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  try {
+    return formatInTimeZone(date, tz, "yyyy-MM-dd'T'HH:mm");
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Parse a `datetime-local` wall-clock string (`yyyy-MM-dd'T'HH:mm`) as an
+ * instant interpreted in `tz`, returning a UTC ISO string. Returns null when
+ * blank or unparseable. Inverse of {@link tzDateTimeLocalInput}.
+ */
+export function dateTimeLocalToIso(value: string, tz: string): string | null {
+  if (!value.trim()) return null;
+  try {
+    const instant = fromZonedTime(value, tz);
+    return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Calendar-day key (`yyyy-MM-dd`) for an instant, evaluated in `tz`. Used to
  * bucket events into the correct day column/section under the workspace zone.
  */

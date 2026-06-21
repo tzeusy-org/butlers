@@ -3357,17 +3357,20 @@ describe("CalendarWorkspacePage", () => {
       });
       const dialog = findDialogByTitle("Create user event");
       expect(dialog).toBeDefined();
-      const toLocalInput = (iso: string) => {
+      // The form prefills in the WORKSPACE timezone (UTC here), not browser-local,
+      // so the datetime-local values are the UTC wall clock of the slot window —
+      // deterministic regardless of the machine running the test.
+      const toWorkspaceInput = (iso: string) => {
         const d = new Date(iso);
         const pad = (n: number) => String(n).padStart(2, "0");
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
       };
       expect(
         (dialog?.querySelector("#event-start") as HTMLInputElement).value,
-      ).toBe(toLocalInput("2026-03-02T09:00:00Z"));
+      ).toBe(toWorkspaceInput("2026-03-02T09:00:00Z"));
       expect(
         (dialog?.querySelector("#event-end") as HTMLInputElement).value,
-      ).toBe(toLocalInput("2026-03-02T09:30:00Z"));
+      ).toBe(toWorkspaceInput("2026-03-02T09:30:00Z"));
       // Selecting closes the panel, which clears the overlays.
       expect(
         document.querySelector('[data-testid="find-time-overlay"]'),

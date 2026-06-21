@@ -85,6 +85,7 @@ import { StateDot } from "@/components/ui/StateDot";
 import { Voice } from "@/components/ui/Voice";
 import { cn } from "@/lib/utils";
 import {
+  dateTimeLocalToIso,
   formatEventTime,
   HOUR_HEIGHT_PX,
   isoAtMinuteInTz,
@@ -96,6 +97,7 @@ import {
   shiftWindow,
   SNAP_MINUTES,
   snapMinutes,
+  tzDateTimeLocalInput,
   tzDayKey,
 } from "@/lib/calendar-grid";
 import {
@@ -349,17 +351,6 @@ function formatOptionalTimestamp(value: string | null): string | null {
   return format(parsed, "MMM d, HH:mm");
 }
 
-function toIsoFromLocalDateTime(value: string): string | null {
-  if (!value.trim()) {
-    return null;
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-  return parsed.toISOString();
-}
-
 function maybeText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -446,6 +437,11 @@ function buildRequestId(action: CalendarWorkspaceUserMutationAction): string {
   return `calendar-${action}-${Date.now()}`;
 }
 
+// Default window for a toolbar "create" with no explicit time. `anchor` is the
+// displayed calendar day (browser-local midnight from the query param); the
+// emitted wall-clock values sit on that day and are interpreted in the form's
+// timezone at submit. Slot/drag opens supply an explicit instant instead and
+// bypass this (rendered directly in the workspace zone — see openUserCreateDialog).
 function defaultFormWindow(anchor: Date): {
   startAtLocal: string;
   endAtLocal: string;
@@ -2863,11 +2859,22 @@ export default function CalendarWorkspacePage() {
       submittableCalendars.some((c) => c.source_key === selectedSourceKey)
         ? selectedSourceKey
         : submittableCalendars[0].source_key;
-    const { startAtLocal, endAtLocal } = defaultFormWindow(forDate ?? anchor);
-    // A drag gesture supplies an explicit end; prefer it over the default window.
-    const resolvedEndLocal = endDate
-      ? format(endDate, "yyyy-MM-dd'T'HH:mm")
-      : endAtLocal;
+    let startAtLocal: string;
+    let endAtLocal: string;
+    if (forDate) {
+      // Explicit instant from a suggested slot or a grid drag: render the exact
+      // window in the WORKSPACE timezone so the prefilled inputs match the times
+      // shown on the grid (and how the submit path parses them back).
+      startAtLocal = tzDateTimeLocalInput(forDate, defaultTimezone);
+      endAtLocal = tzDateTimeLocalInput(
+        endDate ?? new Date(forDate.getTime() + 30 * 60 * 1_000),
+        defaultTimezone,
+      );
+    } else {
+      // Toolbar "create" with no explicit time: a default window on the anchor's
+      // displayed calendar day (parsed in the form timezone at submit).
+      ({ startAtLocal, endAtLocal } = defaultFormWindow(anchor));
+    }
 
     setUserEventDialogMode("create");
     setActiveUserEntry(null);
@@ -2875,7 +2882,7 @@ export default function CalendarWorkspacePage() {
       sourceKey: preferredSource,
       title: "",
       startAtLocal,
-      endAtLocal: resolvedEndLocal,
+      endAtLocal,
       timezone: defaultTimezone,
       description: "",
       location: "",
@@ -3154,12 +3161,14 @@ export default function CalendarWorkspacePage() {
         pointerMin,
       );
       const day = weekDays[origin.dayIndex] ?? weekDays[0];
-      const startDate = new Date(day);
-      startDate.setHours(0, 0, 0, 0);
-      startDate.setMinutes(startMin);
-      const endDate = new Date(day);
-      endDate.setHours(0, 0, 0, 0);
-      endDate.setMinutes(endMin);
+      // The grid renders in the workspace timezone, so the dragged minute marks
+      // are workspace-tz wall clock. Resolve them to instants in that zone (as
+      // move/resize already do) so the prefilled create form — which also reads
+      // the workspace zone — shows the times the user dragged over.
+      const startDate = parseISO(
+        isoAtMinuteInTz(day, startMin, defaultTimezone),
+      );
+      const endDate = parseISO(isoAtMinuteInTz(day, endMin, defaultTimezone));
       openUserCreateDialog(startDate, endDate);
     } else if (origin.mode === "move") {
       const dayIndex = pointerToDayIndex(event.clientX);
@@ -3402,8 +3411,12 @@ export default function CalendarWorkspacePage() {
       return;
     }
 
-    const startIso = toIsoFromLocalDateTime(userEventForm.startAtLocal);
-    const endIso = toIsoFromLocalDateTime(userEventForm.endAtLocal);
+    // The datetime-local inputs hold WORKSPACE-tz wall clock, so parse them in
+    // the form's selected timezone (defaulting to the workspace zone) — not the
+    // browser-local frame.
+    const formTimezone = userEventForm.timezone.trim() || defaultTimezone;
+    const startIso = dateTimeLocalToIso(userEventForm.startAtLocal, formTimezone);
+    const endIso = dateTimeLocalToIso(userEventForm.endAtLocal, formTimezone);
     const trimmedTitle = userEventForm.title.trim();
 
     if (!trimmedTitle) {
@@ -3440,7 +3453,7 @@ export default function CalendarWorkspacePage() {
       title: trimmedTitle,
       start_at: startIso,
       end_at: endIso,
-      timezone: userEventForm.timezone.trim() || defaultTimezone,
+      timezone: formTimezone,
     };
     if (calendarId) {
       payload.calendar_id = calendarId;
@@ -5783,23 +5796,19 @@ export default function CalendarWorkspacePage() {
                           .slice(0, 3)
                           .map((slot, idx) => {
                             // "Different day than requested" is judged against
-                            // the day the user entered in the create form, which
-                            // is captured in browser-local wall clock (the create
-                            // form is not yet tz-aware). Comparing both in the
-                            // same browser-local frame keeps this prefix decision
-                            // stable; the slot label itself still renders in the
-                            // workspace timezone below. (Follow-up: make the
-                            // create form workspace-tz aware.)
-                            const originalDay = format(
-                              parseISO(
-                                userEventConflict.pendingMutation.payload
-                                  .start_at as string,
-                              ),
-                              "yyyy-MM-dd",
+                            // the day the user entered in the create form. Both
+                            // the requested start and the suggested slot are
+                            // bucketed by their WORKSPACE-tz calendar day so the
+                            // prefix agrees with the slot label rendered below
+                            // (which is already in the workspace timezone).
+                            const originalDay = tzDayKey(
+                              userEventConflict.pendingMutation.payload
+                                .start_at as string,
+                              defaultTimezone,
                             );
-                            const slotDay = format(
-                              parseISO(slot.start_at),
-                              "yyyy-MM-dd",
+                            const slotDay = tzDayKey(
+                              slot.start_at,
+                              defaultTimezone,
                             );
                             const isDifferentDay = slotDay !== originalDay;
                             return (

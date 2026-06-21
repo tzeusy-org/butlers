@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dateTimeLocalToIso,
   formatEventTime,
   HOUR_HEIGHT_PX,
   isoAtMinuteInTz,
@@ -11,6 +12,7 @@ import {
   resizeWindowEnd,
   shiftWindow,
   snapMinutes,
+  tzDateTimeLocalInput,
   tzDayKey,
 } from "./calendar-grid";
 
@@ -128,6 +130,43 @@ describe("tzDayKey", () => {
     expect(tzDayKey("2026-02-28T20:00:00Z", SGT)).toBe("2026-03-01");
     // Same instant is still Feb 28 in NYC.
     expect(tzDayKey("2026-02-28T20:00:00Z", NYC)).toBe("2026-02-28");
+  });
+});
+
+describe("tzDateTimeLocalInput / dateTimeLocalToIso", () => {
+  it("prefills a datetime-local input in the workspace timezone, not local", () => {
+    // 09:00Z is 17:00 in SGT and 04:00 in NYC.
+    const iso = "2026-03-01T09:00:00Z";
+    expect(tzDateTimeLocalInput(iso, SGT)).toBe("2026-03-01T17:00");
+    expect(tzDateTimeLocalInput(iso, NYC)).toBe("2026-03-01T04:00");
+  });
+
+  it("parses a wall-clock value as an instant in the workspace timezone", () => {
+    // 17:00 wall clock in SGT (UTC+8) is 09:00Z.
+    expect(dateTimeLocalToIso("2026-03-01T17:00", SGT)).toBe(
+      "2026-03-01T09:00:00.000Z",
+    );
+    // The same wall-clock numbers mean a different instant in NYC (UTC-5).
+    expect(dateTimeLocalToIso("2026-03-01T17:00", NYC)).toBe(
+      "2026-03-01T22:00:00.000Z",
+    );
+  });
+
+  it("round-trips a form value through a non-local timezone", () => {
+    // Editing "2pm" in the workspace zone must come back as 2pm in that zone,
+    // independent of the browser's local zone.
+    const tz = SGT;
+    const wall = "2026-07-04T14:00";
+    const iso = dateTimeLocalToIso(wall, tz);
+    expect(iso).not.toBeNull();
+    expect(tzDateTimeLocalInput(iso as string, tz)).toBe(wall);
+  });
+
+  it("returns null/fallback for blank or unparseable values", () => {
+    expect(dateTimeLocalToIso("", SGT)).toBeNull();
+    expect(dateTimeLocalToIso("   ", SGT)).toBeNull();
+    expect(tzDateTimeLocalInput(null, SGT)).toBe("");
+    expect(tzDateTimeLocalInput("not-a-date", SGT, "—")).toBe("—");
   });
 });
 
