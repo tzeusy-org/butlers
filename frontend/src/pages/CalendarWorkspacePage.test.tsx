@@ -13,6 +13,7 @@ import {
   useCalendarWorkspaceMeta,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
+  usePreviewCalendarWorkspaceButlerEvent,
   useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
   useToggleCalendarSource,
@@ -53,6 +54,7 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
     isPending: false,
     reset: vi.fn(),
   })),
+  usePreviewCalendarWorkspaceButlerEvent: vi.fn(),
   useSetPrimaryCalendar: vi.fn(),
   useCalendarAccounts: vi.fn(() => ({
     isLoading: false,
@@ -68,6 +70,12 @@ vi.mock("sonner", () => ({
     success: vi.fn(),
     error: vi.fn(),
   },
+}));
+
+// Collapse the recurrence-preview debounce to identity so the dialog reacts
+// synchronously to recurrence changes (no 400ms timer to advance in tests).
+vi.mock("@/hooks/use-debounce", () => ({
+  useDebounce: <T,>(value: T) => value,
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -252,6 +260,31 @@ function setButlerMutationState(state?: Partial<UseButlerMutationResult>) {
     isPending: false,
     ...state,
   } as UseButlerMutationResult);
+}
+
+type UsePreviewResult = ReturnType<typeof usePreviewCalendarWorkspaceButlerEvent>;
+const previewMutate = vi.fn();
+
+function setRecurrencePreviewState(
+  data: unknown = {
+    data: {
+      occurrences: ["2026-03-02T09:00:00+00:00", "2026-03-09T09:00:00+00:00"],
+      total_in_window: 13,
+      more_count: 7,
+      window_start: "2026-03-01T09:00:00+00:00",
+      window_end: "2026-05-30T09:00:00+00:00",
+      effective_cron: "0 9 * * 1",
+      notes: ["INTERVAL=2 is not supported by the butler scheduler — will fire every week."],
+    },
+  },
+) {
+  vi.mocked(usePreviewCalendarWorkspaceButlerEvent).mockReturnValue({
+    mutate: previewMutate,
+    reset: vi.fn(),
+    data,
+    isError: false,
+    isPending: false,
+  } as unknown as UsePreviewResult);
 }
 
 function setSyncState(state?: Partial<UseSyncResult>) {
@@ -522,6 +555,8 @@ describe("CalendarWorkspacePage", () => {
     setSyncState();
     setUserMutationState();
     setPrimaryCalendarState();
+    previewMutate.mockReset();
+    setRecurrencePreviewState();
     vi.stubGlobal("confirm", vi.fn(() => true));
 
     container = document.createElement("div");
@@ -1422,6 +1457,48 @@ describe("CalendarWorkspacePage", () => {
           source_hint: "butler_reminder",
         }),
       }),
+    );
+  });
+
+  it("renders a live recurrence preview strip when a recurrence is set", async () => {
+    setButlerWorkspaceFixtures();
+    renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
+
+    const createButton = findButton("Create butler event");
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create butler event");
+    expect(dialog).toBeDefined();
+
+    // No recurrence yet -> no preview strip.
+    expect(dialog?.querySelector('[data-testid="recurrence-preview"]')).toBeNull();
+
+    const frequencySelect = dialog?.querySelector("#calendar-frequency") as HTMLSelectElement;
+    expect(frequencySelect).toBeDefined();
+    await act(async () => {
+      frequencySelect.value = "WEEKLY";
+      frequencySelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    });
+
+    // Preview fired with an RRULE carrying the chosen frequency.
+    expect(previewMutate).toHaveBeenCalled();
+    const [previewBody] = previewMutate.mock.calls.at(-1) ?? [];
+    expect(previewBody).toEqual(
+      expect.objectContaining({ rrule: expect.stringContaining("FREQ=WEEKLY"), limit: 6 }),
+    );
+
+    // Strip renders projected dates, the +N sentinel, and the lossy note.
+    const strip = dialog?.querySelector('[data-testid="recurrence-preview"]');
+    expect(strip).not.toBeNull();
+    expect(strip?.querySelector('[data-testid="recurrence-preview-more"]')?.textContent).toContain(
+      "+7 more in 90 days",
+    );
+    expect(strip?.querySelector('[data-testid="recurrence-preview-note"]')?.textContent).toContain(
+      "INTERVAL=2",
     );
   });
 

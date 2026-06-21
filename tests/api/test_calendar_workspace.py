@@ -1671,3 +1671,167 @@ async def test_find_time_rejects_inverted_window(app):
             },
         )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Butler-event recurrence dry-run preview (bu-15srd1)
+#
+# The preview endpoint is a pure recurrence projection — no DB / MCP / LLM — so
+# these tests hit the bare app without _build_app().
+# ---------------------------------------------------------------------------
+
+
+async def test_butler_event_preview_returns_dates_no_write(app):
+    """A valid weekly RRULE returns weekly projected dates and writes nothing.
+
+    The endpoint takes no DB/MCP dependency, so reaching a 200 with projected
+    dates is itself the no-write guarantee — there is no persistence path to hit.
+    """
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={
+                "rrule": "RRULE:FREQ=WEEKLY",
+                "start_at": "2026-06-22T09:00:00Z",
+                "limit": 6,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # First occurrence is the start date itself; subsequent ones are 7 days apart.
+    occ = [datetime.fromisoformat(s) for s in data["occurrences"]]
+    assert len(occ) == 6
+    assert occ[0] == datetime(2026, 6, 22, 9, 0, tzinfo=UTC)
+    assert (occ[1] - occ[0]) == timedelta(days=7)
+    assert data["effective_cron"] == "0 9 * * 1"  # Monday 09:00
+    assert data["notes"] == []
+    # 90-day window holds ~13 weekly hits; the cap leaves "+N more".
+    assert data["total_in_window"] > 6
+    assert data["more_count"] == data["total_in_window"] - 6
+
+
+async def test_butler_event_preview_caps_daily_with_more_sentinel(app):
+    """A daily rule fills the 90-day window and surfaces the +N more sentinel."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={
+                "rrule": "RRULE:FREQ=DAILY",
+                "start_at": "2026-06-22T09:00:00Z",
+                "limit": 6,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data["occurrences"]) == 6
+    # Daily over a 90-day window (inclusive of the start) -> 91 occurrences.
+    assert data["total_in_window"] == 91
+    assert data["more_count"] == 85
+
+
+async def test_butler_event_preview_until_truncates_window(app):
+    """An ``until_at`` earlier than the 90-day horizon bounds the projection."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={
+                "rrule": "RRULE:FREQ=DAILY",
+                "start_at": "2026-06-22T09:00:00Z",
+                "until_at": "2026-06-25T09:00:00Z",
+                "limit": 10,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # 22, 23, 24, 25 -> 4 occurrences, none beyond the until bound.
+    assert data["total_in_window"] == 4
+    assert data["more_count"] == 0
+    assert len(data["occurrences"]) == 4
+
+
+async def test_butler_event_preview_lossy_interval_note(app):
+    """A biweekly INTERVAL degrades to weekly and the loss is surfaced in notes."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={
+                "rrule": "RRULE:FREQ=WEEKLY;INTERVAL=2",
+                "start_at": "2026-06-22T09:00:00Z",
+                "limit": 6,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    occ = [datetime.fromisoformat(s) for s in data["occurrences"]]
+    # The scheduler ignores INTERVAL -> the projection fires every week, not every 2.
+    assert (occ[1] - occ[0]) == timedelta(days=7)
+    assert any("INTERVAL=2" in note for note in data["notes"])
+
+
+async def test_butler_event_preview_cron_passthrough(app):
+    """A raw cron expression is expanded verbatim with no lossy notes."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={
+                "cron": "0 9 * * *",
+                "start_at": "2026-06-22T00:00:00Z",
+                "limit": 3,
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["effective_cron"] == "0 9 * * *"
+    assert data["notes"] == []
+    assert len(data["occurrences"]) == 3
+
+
+async def test_butler_event_preview_invalid_rrule_422(app):
+    """An unparseable RRULE (no FREQ) fails fast with 422 and no partial result."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={"rrule": "totally-not-a-rule", "start_at": "2026-06-22T09:00:00Z"},
+        )
+    assert resp.status_code == 422
+
+
+async def test_butler_event_preview_invalid_cron_422(app):
+    """An unparseable cron expression returns 422."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={"cron": "not a cron", "start_at": "2026-06-22T09:00:00Z"},
+        )
+    assert resp.status_code == 422
+
+
+async def test_butler_event_preview_requires_exactly_one_recurrence(app):
+    """Supplying both (or neither) rrule and cron is a 422 validation error."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        both = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={"rrule": "RRULE:FREQ=DAILY", "cron": "0 9 * * *"},
+        )
+        neither = await client.post(
+            "/api/calendar/workspace/butler-events/preview",
+            json={},
+        )
+    assert both.status_code == 422
+    assert neither.status_code == 422

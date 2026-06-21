@@ -47,6 +47,8 @@ import type {
   CalendarWorkspaceSearchResponse,
   UnifiedCalendarEntry,
   CalendarWorkspaceButlerMutationRequest,
+  CalendarWorkspaceButlerEventPreviewRequest,
+  CalendarWorkspaceButlerEventPreviewResponse,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceSyncResponse,
   CalendarWorkspaceUserMutationRequest,
@@ -1219,6 +1221,23 @@ export function mutateCalendarWorkspaceButlerEvent(
 ): Promise<ApiResponse<CalendarWorkspaceMutationResponse>> {
   return apiFetch<ApiResponse<CalendarWorkspaceMutationResponse>>(
     "/calendar/workspace/butler-events",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/**
+ * Dry-run a draft butler event's recurrence expansion. Returns projected
+ * occurrence dates + a "+N more" sentinel + lossy-conversion notes. Persists
+ * nothing.
+ */
+export function previewCalendarWorkspaceButlerEvent(
+  body: CalendarWorkspaceButlerEventPreviewRequest,
+): Promise<ApiResponse<CalendarWorkspaceButlerEventPreviewResponse>> {
+  return apiFetch<ApiResponse<CalendarWorkspaceButlerEventPreviewResponse>>(
+    "/calendar/workspace/butler-events/preview",
     {
       method: "POST",
       body: JSON.stringify(body),

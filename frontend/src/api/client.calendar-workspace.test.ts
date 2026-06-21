@@ -116,3 +116,43 @@ describe("findCalendarWorkspaceTime — POST /calendar/workspace/find-time", () 
     expect(res.data.slots[0].start_at).toBe(slot.start_at);
   });
 });
+
+import { previewCalendarWorkspaceButlerEvent } from "./client.ts";
+
+describe("previewCalendarWorkspaceButlerEvent — POST /calendar/workspace/butler-events/preview", () => {
+  it("POSTs the draft recurrence and returns the projection envelope", async () => {
+    const body = {
+      data: {
+        occurrences: ["2026-06-22T09:00:00+00:00", "2026-06-29T09:00:00+00:00"],
+        total_in_window: 13,
+        more_count: 7,
+        window_start: "2026-06-22T09:00:00+00:00",
+        window_end: "2026-09-20T09:00:00+00:00",
+        effective_cron: "0 9 * * 1",
+        notes: ["INTERVAL=2 is not supported by the butler scheduler — ..."],
+      },
+    };
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+      headers: { get: () => "application/json" },
+    });
+
+    const res = await previewCalendarWorkspaceButlerEvent({
+      rrule: "RRULE:FREQ=WEEKLY;INTERVAL=2",
+      start_at: "2026-06-22T09:00:00Z",
+      limit: 6,
+    });
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain("/calendar/workspace/butler-events/preview");
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string);
+    expect(sent.rrule).toBe("RRULE:FREQ=WEEKLY;INTERVAL=2");
+    expect(sent.limit).toBe(6);
+    expect(res.data.more_count).toBe(7);
+    expect(res.data.notes).toHaveLength(1);
+  });
+});

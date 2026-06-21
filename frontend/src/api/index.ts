@@ -47,6 +47,7 @@ export {
   toggleCalendarSource,
   findCalendarWorkspaceTime,
   mutateCalendarWorkspaceButlerEvent,
+  previewCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
   parseCalendarQuickAdd,
   getCostSummary,

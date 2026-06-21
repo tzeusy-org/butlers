@@ -31,6 +31,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarAccountsResponse,
     CalendarAuditEntry,
     CalendarAuditResponse,
+    CalendarButlerEventPreviewRequest,
+    CalendarButlerEventPreviewResponse,
     CalendarConflictEntry,
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
@@ -67,13 +69,30 @@ from butlers.api.read_models.calendar_workspace_v1 import (
 )
 from butlers.api.routers.audit import log_audit_entry
 from butlers.google_account_registry import list_google_accounts
-from butlers.modules.calendar import classify_sync_error_kind
+from butlers.modules.calendar import (
+    CalendarModule,
+    _cron_occurrences_in_window,
+    classify_sync_error_kind,
+)
 
 router = APIRouter(prefix="/api/calendar/workspace", tags=["calendar", "workspace"])
 logger = logging.getLogger(__name__)
 
 _WORKSPACE_STALE_THRESHOLD = timedelta(minutes=10)
 _WORKSPACE_MAX_RANGE = timedelta(days=90)
+
+# Dry-run recurrence preview projects over the same 90-day window the workspace
+# read uses, so the preview matches the dates the user will actually see.
+_PREVIEW_WINDOW = timedelta(days=90)
+
+# Human-readable units used when warning that a lossy RRULE->cron conversion
+# collapses an INTERVAL down to the base frequency.
+_RRULE_FREQ_UNIT = {
+    "DAILY": "day",
+    "WEEKLY": "week",
+    "MONTHLY": "month",
+    "YEARLY": "year",
+}
 
 # Keyset pagination bounds for the workspace read.
 _WORKSPACE_DEFAULT_LIMIT = 200
@@ -1579,6 +1598,182 @@ async def mutate_user_event(
             error="MCP call failed",
         )
         raise
+
+
+def _rrule_cron_lossy_notes(recurrence_rule: str) -> list[str]:
+    """Return warnings for RRULE features the cron projection silently drops.
+
+    Butler scheduled-task events project recurrence through
+    ``CalendarModule._rrule_to_cron``, which only understands ``FREQ`` plus a
+    weekly ``BYDAY`` and a monthly ``BYMONTHDAY``. Every other RRULE component is
+    discarded, so the scheduler can fire on dates the author never intended. We
+    surface those degradations as quiet notes the dialog renders before saving —
+    the mitigation for the lossy-cron footgun.
+    """
+    components = CalendarModule._rrule_components(recurrence_rule)
+    freq = (components.get("FREQ") or "").upper()
+    unit = _RRULE_FREQ_UNIT.get(freq, "period")
+    notes: list[str] = []
+
+    interval = (components.get("INTERVAL") or "").strip()
+    if interval and interval != "1":
+        notes.append(
+            f"INTERVAL={interval} is not supported by the butler scheduler — "
+            f"the series will fire every {unit} instead of every {interval} {unit}s."
+        )
+
+    count = (components.get("COUNT") or "").strip()
+    if count:
+        notes.append(
+            f"COUNT={count} is not supported — the series will not auto-stop after "
+            f"{count} occurrences (set an 'until' date instead)."
+        )
+
+    if (components.get("BYSETPOS") or "").strip():
+        notes.append("BYSETPOS is not supported by the butler scheduler and will be ignored.")
+
+    byday = (components.get("BYDAY") or "").strip()
+    if byday:
+        has_ordinal = any(
+            re.match(r"^[+-]?\d", token.strip()) for token in byday.split(",") if token.strip()
+        )
+        if has_ordinal:
+            notes.append(
+                "Ordinal BYDAY (e.g. '2MO', '-1FR') is not supported — the scheduler will "
+                "fall back to the start date's day-of-month."
+            )
+        elif freq and freq != "WEEKLY":
+            notes.append(
+                f"BYDAY is only honoured for WEEKLY rules; on a {freq.title()} rule it is "
+                "ignored and the start date's day is used."
+            )
+
+    bymonthday = (components.get("BYMONTHDAY") or "").strip()
+    if bymonthday and freq and freq != "MONTHLY":
+        notes.append(
+            f"BYMONTHDAY is only honoured for MONTHLY rules; on a {freq.title()} rule it is "
+            "ignored."
+        )
+
+    for extra in ("BYMONTH", "BYWEEKNO", "BYYEARDAY", "BYHOUR", "BYMINUTE", "BYSECOND"):
+        if not (components.get(extra) or "").strip():
+            continue
+        # YEARLY rules already encode the month via the start date, so BYMONTH is
+        # redundant rather than lossy there.
+        if extra == "BYMONTH" and freq == "YEARLY":
+            continue
+        notes.append(f"{extra} is not supported by the butler scheduler and will be ignored.")
+
+    return notes
+
+
+def _build_butler_event_preview(
+    body: CalendarButlerEventPreviewRequest,
+) -> CalendarButlerEventPreviewResponse:
+    """Dry-run a draft butler event's recurrence and project its firing dates.
+
+    Reuses the scheduler's own ``_rrule_to_cron`` conversion and croniter
+    expansion so the preview reflects exactly what the scheduler would fire —
+    including any lossy degradation. Nothing is persisted and no LLM runs.
+    """
+
+    def _localize(dt: datetime) -> datetime:
+        """Coerce a naive datetime to UTC via the request timezone; fail fast on a bad tz.
+
+        Both ``start_at`` and ``until_at`` flow through here so a naive pair is
+        always interpreted in the *same* zone — otherwise a naive ``until_at``
+        would silently fall back to UTC while ``start_at`` honoured ``timezone``,
+        producing off-by-hours truncation of the window.
+        """
+        if dt.tzinfo is None:
+            if body.timezone:
+                try:
+                    dt = dt.replace(tzinfo=ZoneInfo(body.timezone))
+                except ZoneInfoNotFoundError as exc:
+                    raise HTTPException(
+                        status_code=422, detail=f"Unknown timezone {body.timezone!r}"
+                    ) from exc
+            else:
+                dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+
+    start = _localize(body.start_at or datetime.now(UTC))
+
+    window_start = start
+    window_end = start + _PREVIEW_WINDOW
+
+    until_bound: datetime | None = None
+    if body.until_at is not None:
+        until_bound = _localize(body.until_at)
+
+    notes: list[str] = []
+    if body.cron:
+        effective_cron = body.cron.strip()
+    else:
+        rrule = (body.rrule or "").strip()
+        embedded_until = CalendarModule._rrule_until(rrule)
+        if embedded_until is not None:
+            until_bound = (
+                embedded_until if until_bound is None else min(until_bound, embedded_until)
+            )
+        notes = _rrule_cron_lossy_notes(rrule)
+        try:
+            effective_cron = CalendarModule._rrule_to_cron(start, rrule)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid recurrence rule: {exc}") from exc
+
+    if until_bound is not None and until_bound < window_end:
+        window_end = until_bound
+
+    if window_end < window_start:
+        return CalendarButlerEventPreviewResponse(
+            occurrences=[],
+            total_in_window=0,
+            more_count=0,
+            window_start=window_start,
+            window_end=window_end,
+            effective_cron=effective_cron,
+            notes=notes,
+        )
+
+    try:
+        pairs = _cron_occurrences_in_window(
+            effective_cron, window_start, window_end, body.duration_minutes
+        )
+    except ValueError as exc:
+        # croniter's errors subclass ValueError; bad cron -> fail fast, persist nothing.
+        raise HTTPException(status_code=422, detail=f"Invalid cron expression: {exc}") from exc
+
+    starts = [pair[0] for pair in pairs]
+    total = len(starts)
+    capped = starts[: body.limit]
+    return CalendarButlerEventPreviewResponse(
+        occurrences=capped,
+        total_in_window=total,
+        more_count=max(0, total - len(capped)),
+        window_start=window_start,
+        window_end=window_end,
+        effective_cron=effective_cron,
+        notes=notes,
+    )
+
+
+@router.post(
+    "/butler-events/preview",
+    response_model=ApiResponse[CalendarButlerEventPreviewResponse],
+)
+async def preview_butler_event_recurrence(
+    body: CalendarButlerEventPreviewRequest,
+) -> ApiResponse[CalendarButlerEventPreviewResponse]:
+    """Dry-run a draft butler event's recurrence expansion.
+
+    Returns the projected occurrence datetimes within the 90-day projection
+    window (capped, with a ``more_count`` "+N more" sentinel) plus ``notes``
+    describing any lossy RRULE->cron degradations. Persists nothing, creates no
+    event, and spawns no LLM session. Unparseable ``rrule``/``cron`` -> HTTP 422.
+    """
+    preview = _build_butler_event_preview(body)
+    return ApiResponse[CalendarButlerEventPreviewResponse](data=preview)
 
 
 @router.post("/butler-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])

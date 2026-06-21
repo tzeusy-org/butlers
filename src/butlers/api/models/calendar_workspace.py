@@ -310,6 +310,50 @@ class CalendarWorkspaceFindTimeResponse(BaseModel):
     calendar_ids: list[str] = Field(default_factory=list)
 
 
+class CalendarButlerEventPreviewRequest(BaseModel):
+    """Request payload for POST /api/calendar/workspace/butler-events/preview.
+
+    Dry-runs the recurrence expansion for a *draft* butler event so the user can
+    see which dates the scheduler will actually fire before saving. Exactly one
+    of ``rrule`` or ``cron`` must be supplied; nothing is persisted.
+    """
+
+    rrule: str | None = None
+    cron: str | None = None
+    start_at: datetime | None = None
+    until_at: datetime | None = None
+    timezone: str | None = None
+    duration_minutes: int = Field(default=15, gt=0, le=24 * 60)
+    limit: int = Field(default=6, gt=0, le=100)
+
+    @model_validator(mode="after")
+    def _validate_recurrence(self) -> CalendarButlerEventPreviewRequest:
+        has_rrule = bool(self.rrule and self.rrule.strip())
+        has_cron = bool(self.cron and self.cron.strip())
+        if has_rrule == has_cron:
+            raise ValueError("Specify exactly one of rrule or cron")
+        return self
+
+
+class CalendarButlerEventPreviewResponse(BaseModel):
+    """Response payload for the recurrence dry-run preview.
+
+    ``occurrences`` is the capped list (at most ``limit``) of projected start
+    datetimes within the 90-day projection window. ``more_count`` counts the
+    additional occurrences inside the window beyond the cap — the "+N more in
+    90 days" sentinel. ``notes`` records any lossy RRULE->cron degradations the
+    butler scheduler would apply (e.g. an unsupported INTERVAL).
+    """
+
+    occurrences: list[datetime] = Field(default_factory=list)
+    total_in_window: int = 0
+    more_count: int = 0
+    window_start: datetime
+    window_end: datetime
+    effective_cron: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
 class CalendarWorkspaceMutationResponse(BaseModel):
     """Typed response payload for calendar workspace mutation endpoints.
 

@@ -927,6 +927,38 @@ export interface QuickAddParseResponse {
   reason: string | null;
 }
 
+/**
+ * Request payload for POST /api/calendar/workspace/butler-events/preview.
+ *
+ * Dry-runs a draft butler event's recurrence expansion. Exactly one of
+ * ``rrule`` or ``cron`` must be supplied; nothing is persisted.
+ */
+export interface CalendarWorkspaceButlerEventPreviewRequest {
+  rrule?: string | null;
+  cron?: string | null;
+  start_at?: string | null; // ISO 8601
+  until_at?: string | null; // ISO 8601
+  timezone?: string | null;
+  duration_minutes?: number;
+  limit?: number;
+}
+
+/** Response payload for the recurrence dry-run preview. */
+export interface CalendarWorkspaceButlerEventPreviewResponse {
+  /** Capped list (<= limit) of projected start datetimes within the window. */
+  occurrences: string[]; // ISO 8601
+  /** Total occurrences inside the 90-day window (before the cap). */
+  total_in_window: number;
+  /** Occurrences beyond the cap — the "+N more in 90 days" sentinel. */
+  more_count: number;
+  window_start: string; // ISO 8601
+  window_end: string; // ISO 8601
+  /** The effective cron the scheduler would run, after any RRULE conversion. */
+  effective_cron: string | null;
+  /** Quiet warnings about lossy RRULE->cron degradations. */
+  notes: string[];
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------

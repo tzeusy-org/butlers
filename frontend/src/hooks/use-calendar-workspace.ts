@@ -14,6 +14,7 @@ import {
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
   parseCalendarQuickAdd,
+  previewCalendarWorkspaceButlerEvent,
   searchCalendarWorkspace,
   setPrimaryCalendar,
   syncCalendarWorkspace,
@@ -23,6 +24,7 @@ import type {
   ApiResponse,
   CalendarAuditParams,
   CalendarSourceToggleRequest,
+  CalendarWorkspaceButlerEventPreviewRequest,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceFindTimeRequest,
   CalendarWorkspaceParams,
@@ -201,6 +203,17 @@ export function useMutateCalendarWorkspaceButlerEvent() {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
+  });
+}
+
+/**
+ * Dry-run a draft butler event's recurrence expansion. Read-only preview — no
+ * cache invalidation, since nothing is persisted.
+ */
+export function usePreviewCalendarWorkspaceButlerEvent() {
+  return useMutation({
+    mutationFn: (body: CalendarWorkspaceButlerEventPreviewRequest) =>
+      previewCalendarWorkspaceButlerEvent(body),
   });
 }
 

@@ -28,6 +28,7 @@ import type {
   CalendarFindTimeConstraints,
   CalendarFindTimePartOfDay,
   CalendarSuggestedSlot,
+  CalendarWorkspaceButlerEventPreviewRequest,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSourceFreshness,
@@ -49,10 +50,12 @@ import {
   useFindCalendarWorkspaceTime,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
+  usePreviewCalendarWorkspaceButlerEvent,
   useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
   useToggleCalendarSource,
 } from "@/hooks/use-calendar-workspace";
+import { useDebounce } from "@/hooks/use-debounce";
 import {
   Dialog,
   DialogContent,
@@ -1865,6 +1868,52 @@ export default function CalendarWorkspacePage() {
     useState<ButlerEventDialogMode>("create");
   const [butlerEventDraft, setButlerEventDraft] = useState<ButlerEventDraft | null>(null);
   const [editingButlerEntry, setEditingButlerEntry] = useState<UnifiedCalendarEntry | null>(null);
+
+  // Live recurrence dry-run preview for the butler-event dialog. Debounced so we
+  // don't fire a request on every keystroke; only runs when a recurrence is set.
+  const recurrencePreview = usePreviewCalendarWorkspaceButlerEvent();
+  const debouncedButlerDraft = useDebounce(butlerEventDraft, 400);
+  const recurrencePreviewRequest = useMemo<CalendarWorkspaceButlerEventPreviewRequest | null>(() => {
+    if (!debouncedButlerDraft) return null;
+    const startAt = parseLocalDateTimeInput(debouncedButlerDraft.startAtLocal);
+    if (!startAt) return null;
+    const untilAt = debouncedButlerDraft.hasUntilAt
+      ? parseLocalDateTimeInput(debouncedButlerDraft.untilAtLocal)
+      : null;
+    const tz = debouncedButlerDraft.timezone.trim() || timezone;
+    if (debouncedButlerDraft.recurrenceFrequency !== "NONE") {
+      return {
+        rrule: buildRRule(debouncedButlerDraft.recurrenceFrequency, untilAt),
+        start_at: startAt.toISOString(),
+        timezone: tz,
+        limit: 6,
+      };
+    }
+    if (debouncedButlerDraft.eventKind === "scheduled_task" && debouncedButlerDraft.cron.trim()) {
+      return {
+        cron: debouncedButlerDraft.cron.trim(),
+        start_at: startAt.toISOString(),
+        until_at: untilAt ? untilAt.toISOString() : null,
+        timezone: tz,
+        limit: 6,
+      };
+    }
+    return null;
+  }, [debouncedButlerDraft, timezone]);
+  const { mutate: runRecurrencePreview, reset: resetRecurrencePreview } = recurrencePreview;
+  useEffect(() => {
+    if (!butlerEventDialogOpen || !recurrencePreviewRequest) {
+      resetRecurrencePreview();
+      return;
+    }
+    runRecurrencePreview(recurrencePreviewRequest);
+  }, [
+    recurrencePreviewRequest,
+    butlerEventDialogOpen,
+    runRecurrencePreview,
+    resetRecurrencePreview,
+  ]);
+  const recurrencePreviewData = recurrencePreview.data?.data ?? null;
   const timeGridRef = useRef<HTMLDivElement>(null);
   // Detail panel — replaces modal-only editing with a right-docked panel
   const [selectedEntry, setSelectedEntry] = useState<UnifiedCalendarEntry | null>(null);
@@ -4683,6 +4732,55 @@ export default function CalendarWorkspacePage() {
                     }
                     disabled={butlerMutation.isPending}
                   />
+                </div>
+              ) : null}
+
+              {recurrencePreviewRequest ? (
+                <div
+                  data-testid="recurrence-preview"
+                  className="space-y-1.5 rounded-[3px] border border-[var(--border)] p-3"
+                >
+                  <Eyebrow>Preview ({Intl.DateTimeFormat().resolvedOptions().timeZone})</Eyebrow>
+                  {recurrencePreview.isError ? (
+                    <p className="text-sm text-[var(--mfg)]">
+                      Couldn’t preview this recurrence — check the rule or cron expression.
+                    </p>
+                  ) : recurrencePreviewData ? (
+                    recurrencePreviewData.occurrences.length === 0 ? (
+                      <p className="text-sm text-[var(--mfg)]">No occurrences in the next 90 days.</p>
+                    ) : (
+                      <>
+                        <ul className="space-y-0.5 text-sm tabular-nums text-[var(--fg)]">
+                          {recurrencePreviewData.occurrences.map((iso) => (
+                            <li key={iso}>{format(parseISO(iso), "EEE, MMM d · h:mm a")}</li>
+                          ))}
+                        </ul>
+                        {recurrencePreviewData.more_count > 0 ? (
+                          <p
+                            data-testid="recurrence-preview-more"
+                            className="font-serif text-[13px] italic text-[var(--mfg)]"
+                          >
+                            +{recurrencePreviewData.more_count} more in 90 days
+                          </p>
+                        ) : null}
+                        {recurrencePreviewData.notes.length > 0 ? (
+                          <div className="space-y-0.5 pt-1">
+                            {recurrencePreviewData.notes.map((note) => (
+                              <p
+                                key={note}
+                                data-testid="recurrence-preview-note"
+                                className="text-xs italic text-[var(--mfg)]"
+                              >
+                                {note}
+                              </p>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    )
+                  ) : (
+                    <p className="text-sm text-[var(--mfg)]">Calculating…</p>
+                  )}
                 </div>
               ) : null}
             </div>
