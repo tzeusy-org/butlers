@@ -284,16 +284,6 @@ class TestForgetEntity:
         resp = await _delete(app, _DELETE_PATH)
         assert resp.status_code == 204, f"Expected 204, got {resp.status_code}: {resp.text}"
 
-    async def test_forget_retracts_subject_facts(self):
-        """Delete retracts facts where entity is the subject (conn.execute called)."""
-        app, mock_pool, _ = _make_delete_app()
-        await _delete(app, _DELETE_PATH)
-
-        # Verify the transaction's conn.execute was called for subject retraction.
-        # We can't directly inspect conn.execute calls through the mock_pool reference,
-        # but we verify the DELETE returned 204 which implies the transaction completed.
-        assert mock_pool.acquire.called, "Expected pool.acquire to be called for the transaction"
-
     async def test_forget_returns_403_when_no_owner_entity(self):
         """Returns 403 owner_required when no owner entity is registered."""
         app, _, _ = _make_delete_app(owner_exists=False)

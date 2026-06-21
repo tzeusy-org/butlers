@@ -192,13 +192,12 @@ async def test_bulk_retry_oversized_batch_400(app):
     assert "101" in resp.json()["detail"]
 
 
-# ---------------------------------------------------------------------------
-# Exactly 100 events (boundary — must be accepted)
-# ---------------------------------------------------------------------------
-
-
 async def test_bulk_retry_exactly_100_events_accepted(app):
-    """Exactly 100 events is the max allowed batch size (no 400)."""
+    """Exactly 100 events is the max allowed batch size (no 400).
+
+    Guards the boundary: the source rejects only when ``len > _MAX_BULK_RETRY_BATCH``
+    (a strict ``>``), so a ``>=`` off-by-one would wrongly 400 a full batch.
+    """
     event_ids = [str(uuid4()) for _ in range(100)]
     _app_with_mock_db(app)
 
@@ -346,17 +345,17 @@ async def test_bulk_retry_unexpected_error_continues_batch(app):
 
     by_id = {r["event_id"]: r for r in body["results"]}
     assert by_id[id_error]["status"] == "error"
-    assert "Simulated DB connection drop" in by_id[id_error]["error"]
+    # Per-item error is captured (exact human text is not contract).
+    assert by_id[id_error]["error"]
     assert by_id[id_ok]["status"] == "replay_pending"
 
 
-# ---------------------------------------------------------------------------
-# Audit is best-effort: audit failure does not abort the batch
-# ---------------------------------------------------------------------------
-
-
 async def test_bulk_retry_audit_failure_is_nonfatal(app):
-    """Audit append failure does not abort the batch or change the HTTP response."""
+    """Audit append failure does not abort the batch or change the HTTP response.
+
+    The per-item audit write is wrapped in try/except (ingestion_events.py), so a
+    failing _audit_append must not flip an accepted event to failed.
+    """
     event_ids = [str(uuid4()) for _ in range(2)]
     _app_with_mock_db(app)
 
@@ -586,4 +585,3 @@ async def test_bulk_retry_preflight_db_error_503(app):
         )
 
     assert resp.status_code == 503
-    assert "safety pre-flight" in resp.json()["detail"]

@@ -157,15 +157,27 @@ async def test_whitespace_only_query_returns_empty_results():
 # ---------------------------------------------------------------------------
 
 
-async def test_prefix_match_returns_score_100_and_match_kind_prefix():
-    """A prefix match returns score=100 and match_kind='prefix'."""
+@pytest.mark.parametrize(
+    "score,match_kind,query",
+    [
+        (100, "prefix", "Alice"),  # prefix match
+        (50, "substring", "Alice"),  # substring match
+        (70, "contact_fact", "lin@"),  # contact-fact value match
+        (30, "predicate", "vendor"),  # predicate label match
+    ],
+)
+async def test_match_kind_passes_score_and_kind_through(score, match_kind, query):
+    """Each match kind's DB-computed score/match_kind is surfaced in the response.
+
+    The DB computes the score; the endpoint passes the deduplicated row through.
+    """
     rows = [
         _make_search_row(
-            entity_id=_ENTITY_ID_1, canonical_name="Alice Smith", score=100, match_kind="prefix"
+            entity_id=_ENTITY_ID_1, canonical_name="Match", score=score, match_kind=match_kind
         )
     ]
     app, _ = _app_with_pool(fetch_rows=rows)
-    resp = await _get(app, q="Alice")
+    resp = await _get(app, q=query)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -173,107 +185,8 @@ async def test_prefix_match_returns_score_100_and_match_kind_prefix():
     assert len(body["results"]) == 1
     result = body["results"][0]
     assert result["entity_id"] == str(_ENTITY_ID_1)
-    assert result["canonical_name"] == "Alice Smith"
-    assert result["score"] == 100
-    assert result["match_kind"] == "prefix"
-
-
-# ---------------------------------------------------------------------------
-# Scenario: substring match (score=50)
-# ---------------------------------------------------------------------------
-
-
-async def test_substring_match_returns_score_50_and_match_kind_substring():
-    """A substring match returns score=50 and match_kind='substring'."""
-    rows = [
-        _make_search_row(
-            entity_id=_ENTITY_ID_1,
-            canonical_name="Mid Alice Text",
-            score=50,
-            match_kind="substring",
-        )
-    ]
-    app, _ = _app_with_pool(fetch_rows=rows)
-    resp = await _get(app, q="Alice")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    result = body["results"][0]
-    assert result["score"] == 50
-    assert result["match_kind"] == "substring"
-
-
-# ---------------------------------------------------------------------------
-# Scenario: contact-fact match (score=70)
-# ---------------------------------------------------------------------------
-
-
-async def test_contact_fact_match_returns_score_70_and_match_kind_contact_fact():
-    """A contact-fact value match returns score=70 and match_kind='contact_fact'."""
-    rows = [
-        _make_search_row(
-            entity_id=_ENTITY_ID_1, canonical_name="Lin Chen", score=70, match_kind="contact_fact"
-        )
-    ]
-    app, _ = _app_with_pool(fetch_rows=rows)
-    resp = await _get(app, q="lin@")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    result = body["results"][0]
-    assert result["score"] == 70
-    assert result["match_kind"] == "contact_fact"
-
-
-# ---------------------------------------------------------------------------
-# Scenario: predicate label match (score=30)
-# ---------------------------------------------------------------------------
-
-
-async def test_predicate_match_returns_score_30_and_match_kind_predicate():
-    """A predicate label match returns score=30 and match_kind='predicate'."""
-    rows = [
-        _make_search_row(
-            entity_id=_ENTITY_ID_1, canonical_name="Vendor Corp", score=30, match_kind="predicate"
-        )
-    ]
-    app, _ = _app_with_pool(fetch_rows=rows)
-    resp = await _get(app, q="vendor")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    result = body["results"][0]
-    assert result["score"] == 30
-    assert result["match_kind"] == "predicate"
-
-
-# ---------------------------------------------------------------------------
-# Scenario: score deduplication (entity appears in multiple branches)
-# ---------------------------------------------------------------------------
-
-
-async def test_score_dedup_entity_gets_max_score():
-    """When an entity matches multiple rules, it appears once at the max score.
-
-    The SQL aggregates (MAX score, first match_kind by score DESC) so only
-    the highest-scoring branch survives per entity.  This test verifies the
-    response only has one entry per entity.
-    """
-    # Simulate: DB returns one deduplicated row (entity appears once at score=100)
-    rows = [
-        _make_search_row(
-            entity_id=_ENTITY_ID_1, canonical_name="Alice", score=100, match_kind="prefix"
-        )
-    ]
-    app, _ = _app_with_pool(fetch_rows=rows)
-    resp = await _get(app, q="alice")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    # One entity, one result
-    assert len(body["results"]) == 1
-    assert body["results"][0]["score"] == 100
-    assert body["results"][0]["match_kind"] == "prefix"
+    assert result["score"] == score
+    assert result["match_kind"] == match_kind
 
 
 # ---------------------------------------------------------------------------

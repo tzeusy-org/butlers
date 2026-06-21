@@ -332,64 +332,42 @@ class TestModuleStatusOAuthFields:
             assert ms.oauth_expires_at is None
             assert ms.credential_health is None
 
-    async def test_get_module_health_invalid_oauth_expires_at_yields_none(self):
-        """Unparseable oauth_expires_at string is silently dropped; no exception raised."""
-        payload = {
-            "health": "ok",
-            "modules": {
-                "gcal": {
-                    "status": "active",
+    @pytest.mark.parametrize(
+        "bad_field,fields,expect",
+        [
+            # Unparseable oauth_expires_at is dropped; other fields survive.
+            (
+                "oauth_expires_at",
+                {
                     "oauth_status": "granted",
                     "oauth_expires_at": "not-a-date",
                     "credential_health": "ok",
-                }
-            },
-        }
-        mgr = _make_mcp_client_with_status(payload)
-
-        results = await _get_module_health_via_mcp("general", mgr, ["gcal"])
-
-        ms = results[0]
-        assert ms.oauth_expires_at is None
-        assert ms.oauth_status == "granted"
-        assert ms.credential_health == "ok"
-
-    async def test_get_module_health_unknown_oauth_status_yields_none(self):
-        """Unknown oauth_status enum value is coerced to None without raising."""
-        payload = {
-            "health": "ok",
-            "modules": {
-                "gmail": {
-                    "status": "active",
-                    "oauth_status": "pending",  # not a known enum value
-                    "credential_health": "ok",
-                }
-            },
-        }
-        mgr = _make_mcp_client_with_status(payload)
-
-        results = await _get_module_health_via_mcp("general", mgr, ["gmail"])
-
-        ms = results[0]
-        assert ms.oauth_status is None
-        assert ms.credential_health == "ok"
-
-    async def test_get_module_health_unknown_credential_health_yields_none(self):
-        """Unknown credential_health enum value is coerced to None without raising."""
-        payload = {
-            "health": "ok",
-            "modules": {
-                "gmail": {
-                    "status": "active",
-                    "oauth_status": "granted",
-                    "credential_health": "degraded",  # not a known enum value
-                }
-            },
-        }
+                },
+                {"oauth_expires_at": None, "oauth_status": "granted", "credential_health": "ok"},
+            ),
+            # Unknown oauth_status enum coerced to None.
+            (
+                "oauth_status",
+                {"oauth_status": "pending", "credential_health": "ok"},
+                {"oauth_status": None, "credential_health": "ok"},
+            ),
+            # Unknown credential_health enum coerced to None.
+            (
+                "credential_health",
+                {"oauth_status": "granted", "credential_health": "degraded"},
+                {"oauth_status": "granted", "credential_health": None},
+            ),
+        ],
+    )
+    async def test_get_module_health_invalid_fields_coerced_to_none(
+        self, bad_field, fields, expect
+    ):
+        """Invalid/unknown OAuth field values are defensively coerced to None, never raise."""
+        payload = {"health": "ok", "modules": {"gmail": {"status": "active", **fields}}}
         mgr = _make_mcp_client_with_status(payload)
 
         results = await _get_module_health_via_mcp("general", mgr, ["gmail"])
 
         ms = results[0]
-        assert ms.oauth_status == "granted"
-        assert ms.credential_health is None
+        for key, value in expect.items():
+            assert getattr(ms, key) == value

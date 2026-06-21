@@ -322,19 +322,20 @@ class TestActivityFeedLimit:
         events = resp.json()["events"]
         assert len(events) == 5
 
-    async def test_limit_max_50_enforced(self):
-        """limit > 50 should return 422."""
+    @pytest.mark.parametrize("limit", [0, 51])
+    async def test_limit_out_of_bounds_is_422(self, limit):
+        """limit must be within 1..50; below or above bounds returns 422."""
         app = _make_app()
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/butlers/atlas/activity-feed?limit=51")
+            resp = await client.get(f"/api/butlers/atlas/activity-feed?limit={limit}")
 
         assert resp.status_code == 422
 
     async def test_limit_1_is_valid(self):
-        """limit=1 should return at most one event."""
+        """limit=1 (lower bound) is accepted and returns at most one event."""
         sessions = [_session_row(offset_minutes=i) for i in range(5)]
         app = _make_app(session_rows=sessions)
 
@@ -346,17 +347,6 @@ class TestActivityFeedLimit:
         assert resp.status_code == 200
         events = resp.json()["events"]
         assert len(events) == 1
-
-    async def test_limit_0_is_invalid(self):
-        """limit=0 should return 422."""
-        app = _make_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/butlers/atlas/activity-feed?limit=0")
-
-        assert resp.status_code == 422
 
     async def test_limit_caps_merged_results(self):
         """With 3 events from different sources, limit=2 returns only 2."""
@@ -480,17 +470,17 @@ class TestActivityFeedSummaryTruncation:
 class TestNormalizeTz:
     """_normalize_tz converts naive datetimes to UTC-aware; leaves aware and None unchanged."""
 
-    def test_naive_datetime_gets_utc_tzinfo(self):
+    def test_normalize_tz_variants(self):
+        # Naive datetime gains UTC tzinfo (sole guard of this conversion).
         naive = datetime(2026, 1, 15, 12, 0, 0)
         result = _normalize_tz(naive)
         assert result is not None
         assert result.tzinfo == UTC
         assert result.replace(tzinfo=None) == naive
 
-    def test_aware_datetime_is_unchanged(self):
+        # Aware datetime is returned unchanged.
         aware = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
-        result = _normalize_tz(aware)
-        assert result is aware
+        assert _normalize_tz(aware) is aware
 
-    def test_none_returns_none(self):
+        # None passes through.
         assert _normalize_tz(None) is None

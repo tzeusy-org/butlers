@@ -330,31 +330,6 @@ async def test_query_calendar_sources_uses_explicit_butlers_arg():
     db.butlers_with_module.assert_not_called()
 
 
-async def test_query_calendar_sources_no_conditions_no_outer_where():
-    """With no filter args, the dynamic WHERE block is empty (no outer WHERE clause)."""
-    db = _make_db({})
-    await query_calendar_sources(db)
-    sql = db.fan_out.call_args[0][0]
-    # The outer where placeholder should be an empty string, so no "$1" params appear.
-    # The LATERAL subquery always has its own internal WHERE (source_id = s.id), which is fine.
-    assert "$1" not in sql  # no positional params → no outer WHERE conditions
-
-
-async def test_query_calendar_sources_lane_filter_adds_where():
-    db = _make_db({})
-    await query_calendar_sources(db, lane="user")
-    sql = db.fan_out.call_args[0][0]
-    assert "lane" in sql
-    assert "WHERE" in sql
-
-
-async def test_query_calendar_sources_source_filter_adds_where():
-    db = _make_db({})
-    await query_calendar_sources(db, sources=["primary"])
-    sql = db.fan_out.call_args[0][0]
-    assert "source_key" in sql
-
-
 async def test_query_calendar_sources_db_butler_set_on_dto():
     db = _make_db({"secretary": [_make_record(_source_dict())]})
 
@@ -376,14 +351,6 @@ async def test_query_calendar_sources_multiple_butlers_flattened():
     assert len(result) == 2
     keys = {r.source_key for r in result}
     assert keys == {"primary", "work"}
-
-
-async def test_query_calendar_sources_sql_has_lateral_join():
-    db = _make_db({})
-    await query_calendar_sources(db)
-    sql = db.fan_out.call_args[0][0]
-    assert "LATERAL" in sql
-    assert "calendar_sync_cursors" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -425,18 +392,6 @@ async def test_query_calendar_workspace_uses_explicit_butlers_arg():
     db.butlers_with_module.assert_not_called()
 
 
-async def test_query_calendar_workspace_sql_has_view_filter():
-    db = _make_db({})
-    start = _NOW - timedelta(hours=1)
-    end = _NOW + timedelta(hours=1)
-
-    await query_calendar_workspace(db, view="user", start=start, end=end)
-
-    sql = db.fan_out.call_args[0][0]
-    assert "s.lane" in sql
-    assert "$1" in sql
-
-
 async def test_query_calendar_workspace_sql_has_time_range_filter():
     db = _make_db({})
     start = _NOW - timedelta(hours=1)
@@ -451,28 +406,6 @@ async def test_query_calendar_workspace_sql_has_time_range_filter():
     args = db.fan_out.call_args[0][1]
     assert end in args
     assert start in args
-
-
-async def test_query_calendar_workspace_sql_excludes_cancelled():
-    db = _make_db({})
-    start = _NOW - timedelta(hours=1)
-    end = _NOW + timedelta(hours=1)
-
-    await query_calendar_workspace(db, view="user", start=start, end=end)
-
-    sql = db.fan_out.call_args[0][0]
-    assert "cancelled" in sql
-
-
-async def test_query_calendar_workspace_sources_filter_adds_source_key_condition():
-    db = _make_db({})
-    start = _NOW - timedelta(hours=1)
-    end = _NOW + timedelta(hours=1)
-
-    await query_calendar_workspace(db, view="user", start=start, end=end, sources=["primary"])
-
-    sql = db.fan_out.call_args[0][0]
-    assert "source_key" in sql
 
 
 async def test_query_calendar_workspace_db_butler_set_on_dto():

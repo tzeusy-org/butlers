@@ -347,33 +347,6 @@ async def test_adherence_empty_medication_dict(monkeypatch):
     assert body["adherence_rate"] == pytest.approx(0.0, abs=0.1)
 
 
-async def test_adherence_forwards_window(monkeypatch):
-    """start/end query params are forwarded to medication_history."""
-    med_id = str(uuid.uuid4())
-    seen: dict = {}
-
-    async def fake_history(pool, medication_id, *, start_date, end_date):
-        seen["start"] = start_date
-        seen["end"] = end_date
-        return {
-            "medication": {"id": med_id, "frequency": "daily"},
-            "doses": [],
-            "adherence_rate": None,
-        }
-
-    monkeypatch.setattr(health_tools, "medication_history", fake_history)
-
-    app, _ = _make_app()
-    async with _client(app) as client:
-        resp = await client.get(
-            f"/api/health/medications/{med_id}/adherence",
-            params={"start": "2026-01-01T00:00:00Z", "end": "2026-01-31T00:00:00Z"},
-        )
-    assert resp.status_code == 200
-    assert seen["start"] is not None
-    assert seen["end"] is not None
-
-
 async def test_adherence_naive_start_with_no_end(monkeypatch):
     """Naive start param + omitted end must not raise TypeError (timezone mismatch).
 

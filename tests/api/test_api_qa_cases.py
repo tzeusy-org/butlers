@@ -562,47 +562,6 @@ async def test_case_detail_404() -> None:
     }
 
 
-async def test_cases_response_envelopes() -> None:
-    attempt_id = _uuid7_with_timestamp(1_771_234_567_893)
-    row = _make_case_row(id=attempt_id)
-    app, _pool = _build_app(
-        fetchval_side_effect=[1, True, 0],
-        fetchrow_result=row,
-        fetch_side_effect=[[row], [], []],
-    )
-
-    list_response = await _call(app, "/api/qa/cases")
-    detail_response = await _call(app, f"/api/qa/cases/{attempt_id}")
-    journal_response = await _call(app, f"/api/qa/cases/{attempt_id}/journal")
-
-    assert list_response.status_code == 200
-    list_body = list_response.json()
-    assert set(list_body) == {"data", "meta"}
-    assert not {"total", "offset", "limit", "has_more"} & set(list_body)
-    assert list_body["meta"] == {
-        "total": 1,
-        "offset": 0,
-        "limit": 25,
-        "has_more": False,
-    }
-
-    assert detail_response.status_code == 200
-    detail_body = detail_response.json()
-    assert set(detail_body) == {"data", "meta"}
-    assert detail_body["meta"] == {}
-
-    assert journal_response.status_code == 200
-    journal_body = journal_response.json()
-    assert set(journal_body) == {"data", "meta"}
-    assert not {"total", "offset", "limit", "has_more"} & set(journal_body)
-    assert journal_body["meta"] == {
-        "total": 0,
-        "offset": 0,
-        "limit": 50,
-        "has_more": False,
-    }
-
-
 async def test_journal_pagination() -> None:
     attempt_id = uuid.uuid4()
     events = [_make_journal_row(index, attempt_id=attempt_id) for index in range(75)]

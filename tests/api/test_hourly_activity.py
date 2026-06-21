@@ -225,25 +225,18 @@ async def test_hourly_activity_bucket_structure() -> None:
 async def test_hourly_activity_sql_uses_single_positional_arg() -> None:
     """_HOURLY_ACTIVITY_SQL uses exactly one positional parameter ($1) for window_hours.
 
-    Verifies the pool.fetch call is invoked with (sql, window_hours) only —
-    no butler_name column filter is injected.  The sessions table is already
-    butler-scoped via the DB pool; adding ``WHERE butler_name = $N`` would be
-    a schema error because that column does not exist on the sessions table.
+    Verifies the pool.fetch call is invoked with (sql, window_hours) only — no
+    butler_name column filter is injected.  The sessions table is already
+    butler-scoped via the DB pool; adding ``WHERE butler_name = $N`` would be a
+    schema error because that column does not exist on the sessions table.
     """
     now = datetime.datetime(2026, 5, 11, 12, 0, 0, tzinfo=datetime.UTC)
     rows = [_make_hourly_row(hour_start=now, sessions_count=1)]
-
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=rows)
-
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = mock_pool
-
-    app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app = _make_app_with_rows(rows)
+    mock_pool = app.dependency_overrides[_get_db_manager]().pool()
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE) as client:
         await client.get(f"{_URL}?window_hours=6")
 
-    # pool.fetch must be called with exactly (sql, window_hours) — no extra args
+    # pool.fetch must be called with exactly (sql, window_hours) — no extra args.
     mock_pool.fetch.assert_called_once_with(_HOURLY_ACTIVITY_SQL, 6)

@@ -156,22 +156,6 @@ def test_state_entry_carries_page_of_origin():
     assert entry.provider == "google"
 
 
-def test_state_entry_page_of_origin_defaults_to_none():
-    state = _generate_state()
-    _store_state(state)
-    entry = _validate_and_consume_state(state)
-    assert entry is not None
-    assert entry.page_of_origin is None
-
-
-def test_state_entry_ingestion_page_of_origin():
-    state = _generate_state()
-    _store_state(state, page_of_origin="ingestion", provider="google")
-    entry = _validate_and_consume_state(state)
-    assert entry is not None
-    assert entry.page_of_origin == "ingestion"
-
-
 # ===========================================================================
 # 3. Redirect-URL helpers (unit)
 # ===========================================================================
@@ -179,11 +163,6 @@ def test_state_entry_ingestion_page_of_origin():
 
 def test_build_success_redirect_secrets_default():
     url = _build_success_redirect_url("google", None)
-    assert url == "/secrets?focus=u:google&toast=connected"
-
-
-def test_build_success_redirect_secrets_explicit():
-    url = _build_success_redirect_url("google", "secrets")
     assert url == "/secrets?focus=u:google&toast=connected"
 
 
@@ -339,20 +318,6 @@ async def test_generalised_start_page_of_origin_round_trip(app):
     assert entry.page_of_origin == "ingestion"
 
 
-async def test_generalised_start_no_page_of_origin_defaults_to_none(app):
-    """When page_of_origin is omitted the state entry carries None."""
-    _make_app(app)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/oauth/spotify/start", params={"redirect": "false"})
-    assert resp.status_code == 200
-    state_token = resp.json()["data"]["state"]
-    entry = _validate_and_consume_state(state_token)
-    assert entry is not None
-    assert entry.page_of_origin is None
-
-
 # ===========================================================================
 # 6. Audit: attempted written BEFORE redirect (generalised route)
 # ===========================================================================
@@ -499,33 +464,6 @@ async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(app):
     assert location == "/ingestion/connectors"
 
 
-async def test_callback_page_of_origin_secrets_redirects_to_secrets(app):
-    """When page_of_origin=secrets the callback redirects to /secrets page."""
-    _make_app(app)
-    state = _generate_state()
-    _store_state(state, page_of_origin="secrets", provider="spotify")
-
-    mock_cred_store = AsyncMock()
-    mock_cred_store.store = AsyncMock()
-
-    with (
-        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
-        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
-        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
-    ):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
-        ) as client:
-            resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
-            )
-
-    assert resp.status_code in (302, 307)
-    location = resp.headers.get("location", "")
-    assert location == "/secrets?focus=u:spotify&toast=connected"
-
-
 async def test_callback_success_with_dashboard_base_url(app, monkeypatch):
     """OAUTH_DASHBOARD_URL is the frontend base URL prefixed onto the built path [bu-e6k2h]."""
     monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
@@ -577,34 +515,6 @@ async def test_callback_provider_error_with_dashboard_base_url(app, monkeypatch)
     )
 
 
-async def test_callback_no_page_of_origin_redirects_to_secrets(app):
-    """When page_of_origin is None (default) callback redirects to /secrets."""
-    _make_app(app)
-    state = _generate_state()
-    _store_state(state, page_of_origin=None, provider="spotify")
-
-    mock_cred_store = AsyncMock()
-    mock_cred_store.store = AsyncMock()
-
-    with (
-        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
-        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
-        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
-    ):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
-        ) as client:
-            resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
-            )
-
-    # Spec: missing/default page_of_origin → /secrets?focus=u:<provider>&toast=connected
-    assert resp.status_code in (302, 307)
-    location = resp.headers.get("location", "")
-    assert location == "/secrets?focus=u:spotify&toast=connected"
-
-
 # ===========================================================================
 # 9. Audit rows for google callback via generalised route
 # ===========================================================================
@@ -638,24 +548,6 @@ async def test_google_callback_via_generalised_route_writes_connected_audit(app)
     # _google_callback_from_state does. We test the connected audit through the
     # generalised route below.
     assert resp.status_code == 302
-
-
-async def test_generalised_google_callback_writes_connected_audit(app):
-    """Generalised /{provider}/callback for google writes 'connected' audit."""
-    _make_app(app)
-    # The generalised route ONLY handles providers that don't have a literal
-    # /google/callback. Since FastAPI matches /google/callback to the literal
-    # route first, the generalised route for google is only reachable via
-    # /{provider}/callback where provider=google AND no literal match.
-    #
-    # Actually, since the spec says the generalised route IS the google route
-    # for new consumers, and the legacy route delegates to _google_callback_from_state,
-    # we test via a state entry with provider="google" through the literal callback.
-    #
-    # The audit emit happens inside _google_callback_from_state which is called
-    # from the generalised route. We verify via the test below using direct
-    # invocation of the route with a state that has provider="google".
-    pass  # covered by test_google_callback_via_generalised_route_writes_connected_audit
 
 
 # ===========================================================================

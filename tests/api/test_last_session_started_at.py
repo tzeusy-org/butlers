@@ -99,6 +99,19 @@ class TestLastSessionStartedAt:
         assert "last_session_started_at" in data
         assert data["last_session_started_at"] is None
 
+        # Isolation invariant (only guard for this): the butler-scoped pool is
+        # queried and the SQL carries no butler_name column filter.
+        pool_calls = [call.args[0] for call in db.pool.call_args_list]
+        assert "general" in pool_calls
+        butler_pool = db.pool("general")
+        fetchval_calls = butler_pool.fetchval.call_args_list
+        assert fetchval_calls, "fetchval should have been called on the butler pool"
+        for fv_call in fetchval_calls:
+            sql = fv_call.args[0] if fv_call.args else ""
+            assert "butler_name" not in sql, (
+                f"SQL must not filter by butler_name column (schema-scoped): {sql!r}"
+            )
+
     async def test_returns_max_started_at_when_sessions_exist(self, app, roster_dir):
         """last_session_started_at equals the MAX started_at from sessions."""
         expected_dt = datetime(2025, 5, 10, 14, 30, 0, tzinfo=UTC)
@@ -115,31 +128,3 @@ class TestLastSessionStartedAt:
         # Response is an ISO-8601 string; parse and compare
         returned_dt = datetime.fromisoformat(data["last_session_started_at"])
         assert returned_dt == expected_dt
-
-    async def test_fetchval_called_with_schema_scoped_pool_no_butler_name_filter(
-        self, app, roster_dir
-    ):
-        """fetchval is called on the butler-scoped pool; no butler_name column filter in SQL."""
-        _make_butler_dir(roster_dir, "general", 41101)
-        configs = [ButlerConnectionInfo("general", 41101)]
-        db = _mock_db(last_session_started_at=None)
-        app.dependency_overrides[get_butler_configs] = lambda: configs
-        app.dependency_overrides[get_mcp_manager] = lambda: make_mock_mcp_manager(online=True)
-        app.dependency_overrides[_get_roster_dir] = lambda: roster_dir
-        app.dependency_overrides[_get_db_manager] = lambda: db
-
-        await _get_detail(app, "general")
-
-        # pool was called at least once with the butler name (not "switchboard")
-        pool_calls = [call.args[0] for call in db.pool.call_args_list]
-        assert "general" in pool_calls
-
-        # The SQL passed to fetchval must not contain a butler_name column filter
-        butler_pool = db.pool("general")
-        fetchval_calls = butler_pool.fetchval.call_args_list
-        assert fetchval_calls, "fetchval should have been called on the butler pool"
-        for call in fetchval_calls:
-            sql = call.args[0] if call.args else ""
-            assert "butler_name" not in sql, (
-                f"SQL must not filter by butler_name column (schema-scoped): {sql!r}"
-            )

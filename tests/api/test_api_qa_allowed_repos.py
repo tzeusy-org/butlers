@@ -140,11 +140,18 @@ async def test_list_allowed_repos_populated():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "owner_repo,norm_owner,norm_repo",
+    [
+        ("acme/my-repo", "acme", "my-repo"),  # bare owner/repo
+        ("https://github.com/ACME/My-Repo.git", "acme", "my-repo"),  # HTTPS URL, lowercased
+        ("git@github.com:org/proj.git", "org", "proj"),  # SSH URL
+    ],
+)
 @pytest.mark.asyncio
-async def test_create_allowed_repo_bare_format():
-    """Accepts owner/repo format and returns the created entry."""
-    created_id = uuid.uuid4()
-    repo_row = _make_repo_row(owner="acme", repo="my-repo", repo_id=created_id)
+async def test_create_allowed_repo_normalizes_formats(owner_repo, norm_owner, norm_repo):
+    """POST accepts bare/HTTPS/SSH forms and normalises to lowercase owner/repo."""
+    repo_row = _make_repo_row(owner=norm_owner, repo=norm_repo)
     app, mock_pool = _build_app(fetchrow_result=repo_row)
 
     async with httpx.AsyncClient(
@@ -152,52 +159,17 @@ async def test_create_allowed_repo_bare_format():
     ) as client:
         response = await client.post(
             "/api/qa/settings/allowed-repos",
-            json={"owner_repo": "acme/my-repo", "enabled": True},
+            json={"owner_repo": owner_repo, "enabled": True},
         )
 
     assert response.status_code == 201
     data = response.json()["data"]
-    assert data["owner"] == "acme"
-    assert data["repo"] == "my-repo"
-    assert data["enabled"] is True
-
-
-@pytest.mark.asyncio
-async def test_create_allowed_repo_https_url():
-    """Accepts a full HTTPS GitHub URL and normalises to owner/repo."""
-    repo_row = _make_repo_row(owner="acme", repo="my-repo")
-    app, mock_pool = _build_app(fetchrow_result=repo_row)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/api/qa/settings/allowed-repos",
-            json={"owner_repo": "https://github.com/ACME/My-Repo.git"},
-        )
-
-    assert response.status_code == 201
-    # Verify the DB call used lowercase values
+    assert data["owner"] == norm_owner
+    assert data["repo"] == norm_repo
+    # Normalised values are what hit the DB.
     call_args = mock_pool.fetchrow.call_args
-    assert "acme" in call_args[0]
-    assert "my-repo" in call_args[0]
-
-
-@pytest.mark.asyncio
-async def test_create_allowed_repo_ssh_url():
-    """Accepts an SSH GitHub URL."""
-    repo_row = _make_repo_row(owner="org", repo="proj")
-    app, mock_pool = _build_app(fetchrow_result=repo_row)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/api/qa/settings/allowed-repos",
-            json={"owner_repo": "git@github.com:org/proj.git"},
-        )
-
-    assert response.status_code == 201
+    assert norm_owner in call_args[0]
+    assert norm_repo in call_args[0]
 
 
 @pytest.mark.asyncio

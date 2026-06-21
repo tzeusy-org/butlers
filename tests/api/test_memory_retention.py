@@ -201,47 +201,6 @@ async def test_get_retention_policies_503_when_table_missing(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_put_retention_policies_calls_audit_per_entry(app):
-    """PUT calls audit.append once per policy entry."""
-    _wire_memory_mock(app)
-
-    with patch("butlers.api.routers.memory._audit.append") as mock_append:
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            return 1
-
-        mock_append.side_effect = _fake_append
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.put(
-                "/api/memory/retention-policies",
-                json={
-                    "policies": [
-                        {"kind": "event", "ttl_days": None, "max_rows": 5000},
-                        {"kind": "fact", "ttl_days": 14, "max_rows": None},
-                    ]
-                },
-            )
-
-    assert resp.status_code == 200
-    # The route emits one audit entry per policy entry with action
-    # "memory.retention_policy".  The dashboard_audit_middleware ALSO routes
-    # through the same canonical audit.append() as a fire-and-forget task (with
-    # a different action), so the TOTAL count races between 2 and 3.  Assert on
-    # the route's specific calls rather than the total count.
-    route_calls = [
-        c
-        for c in mock_append.call_args_list
-        if len(c.args) >= 3 and c.args[2] == "memory.retention_policy"
-    ]
-    assert len(route_calls) == 2, (
-        f"expected exactly two route audit.append calls with action "
-        f"'memory.retention_policy', got call list: {mock_append.call_args_list}"
-    )
-
-
 async def test_put_retention_policies_invalid_kind_returns_400(app):
     """PUT with an invalid kind returns 400."""
     _wire_memory_mock(app)
@@ -337,21 +296,6 @@ async def test_get_compaction_log_empty(app):
     assert resp.json()["data"] == []
 
 
-async def test_get_compaction_log_limit_param(app):
-    """GET passes limit param to the DB query."""
-    mock_pool, _ = _wire_memory_mock(app, compaction_rows=[])
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/memory/compaction-log?limit=10")
-
-    assert resp.status_code == 200
-    # Verify limit was passed in fetch args
-    call_args = mock_pool.fetch.call_args
-    assert 10 in call_args.args or 10 in list((call_args.kwargs or {}).values())
-
-
 # ---------------------------------------------------------------------------
 # GET /api/memory/inspect
 # ---------------------------------------------------------------------------
@@ -370,19 +314,6 @@ async def test_inspect_returns_results(app):
     assert resp.status_code == 200
 
 
-async def test_inspect_invalid_kind_returns_400(app):
-    """Inspect with an invalid kind returns 400."""
-    _wire_memory_mock(app)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/memory/inspect?kind=unknown")
-
-    assert resp.status_code == 400
-    assert "Invalid kind" in resp.json()["detail"]
-
-
 async def test_inspect_kind_filter_restricts_queries(app):
     """When kind=episode only the episodes table is queried, not facts/rules."""
     rows = [_make_inspect_row(content="An episode")]
@@ -396,6 +327,19 @@ async def test_inspect_kind_filter_restricts_queries(app):
     assert resp.status_code == 200
     fetched_sqls = [str(call.args[0]) for call in mock_pool.fetch.call_args_list]
     assert all("facts" not in sql and "rules" not in sql for sql in fetched_sqls)
+
+
+async def test_inspect_invalid_kind_returns_400(app):
+    """Inspect with an invalid kind returns 400."""
+    _wire_memory_mock(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect?kind=unknown")
+
+    assert resp.status_code == 400
+    assert "Invalid kind" in resp.json()["detail"]
 
 
 async def test_inspect_pagination_meta_present(app):

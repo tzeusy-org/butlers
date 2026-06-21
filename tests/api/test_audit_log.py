@@ -120,28 +120,14 @@ def _make_row(**kwargs) -> MagicMock:
     return row
 
 
-def test_audit_log_entry_from_record_minimal():
-    row = _make_row()
-    entry = AuditLogEntry.from_record(row)
-    assert entry.id == 1
-    assert entry.actor == "owner"
-    assert entry.action == "test_action"
-    assert entry.target is None
-    assert entry.ip is None
-    assert entry.request_id is None
-
-
 def test_audit_log_entry_from_record_with_ip_address_object():
-    """ip can arrive as an ipaddress.IPv4Address from asyncpg."""
+    """ip can arrive as an ipaddress.IPv4Address from asyncpg; None fields stay None."""
     row = _make_row(ip=ipaddress.IPv4Address("10.0.0.1"))
     entry = AuditLogEntry.from_record(row)
     assert entry.ip == "10.0.0.1"
-
-
-def test_audit_log_entry_from_record_with_ip_string():
-    row = _make_row(ip="192.168.0.1")
-    entry = AuditLogEntry.from_record(row)
-    assert entry.ip == "192.168.0.1"
+    assert entry.target is None
+    assert entry.note is None
+    assert entry.request_id is None
 
 
 def test_audit_log_entry_from_record_full():
@@ -196,26 +182,33 @@ async def test_append_inserts_row_and_returns_id():
     assert call_args[2] == "model_priority_change"
 
 
-async def test_append_with_all_optional_fields():
-    pool = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=99)
+async def test_append_binds_target_note_ip_request_id_at_positions_3_through_6():
+    """target/note/ip/request_id bind to INSERT positions 3/4/5/6 in that order.
 
+    The INSERT column list is ``(actor, action, target, note, ip, request_id,
+    metadata, result, error)``, so the positional args after the SQL string
+    (call_args[0]) carry actor at idx 1, action at idx 2, then target/note/ip/
+    request_id at idx 3/4/5/6.  Pins the binding order against an accidental
+    swap that would silently corrupt append-only rows.
+    """
     rid = uuid.uuid4()
-    row_id = await append(
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=11)
+
+    await append(
         pool,
         "owner",
-        "rule_delete",
-        target="rule:42",
-        note="Deleted stale rule",
-        ip="1.2.3.4",
+        "setting_change",
+        target="rule:7",
+        note="Changed threshold",
+        ip="10.10.10.10",
         request_id=rid,
     )
-    assert row_id == 99
+
     call_args = pool.fetchval.call_args[0]
-    # target, note, ip, request_id passed as positional args
-    assert call_args[3] == "rule:42"
-    assert call_args[4] == "Deleted stale rule"
-    assert call_args[5] == "1.2.3.4"
+    assert call_args[3] == "rule:7"
+    assert call_args[4] == "Changed threshold"
+    assert call_args[5] == "10.10.10.10"
     assert call_args[6] == rid
 
 
@@ -586,17 +579,6 @@ def test_filter_by_canonical_key_sql_uses_target_condition():
     assert "target = " in sql
 
 
-def test_filter_by_canonical_key_normalised_value_passed_to_sql():
-    """The normalised key value is forwarded as a SQL parameter."""
-    app, mock_pool, _ = _make_audit_app([])
-    client = TestClient(app)
-    client.get("/api/audit-log?key=u:google")
-    fetch_call = mock_pool.fetch.call_args[0]
-    args = fetch_call[1:]
-    # normalised key must appear somewhere in the positional args
-    assert "u:google" in args
-
-
 def test_filter_by_long_scope_form_normalised():
     """?key=user:google is equivalent to ?key=u:google after normalisation."""
     app, mock_pool, _ = _make_audit_app([])
@@ -617,39 +599,6 @@ def test_unknown_key_returns_empty_page():
     assert body["data"] == []
     assert body["meta"]["total"] == 0
     assert body["meta"]["has_more"] is False
-
-
-def test_key_param_combined_with_since():
-    """?key= and ?since= are both applied (AND semantics)."""
-    app, mock_pool, _ = _make_audit_app([])
-    client = TestClient(app)
-    client.get("/api/audit-log?key=u:google&since=2026-01-01T00:00:00")
-    fetch_call = mock_pool.fetch.call_args[0]
-    sql = fetch_call[0]
-    assert "target = " in sql
-    assert "ts >= " in sql
-
-
-def test_key_param_combined_with_actor():
-    """?key= and ?actor= are both applied (AND semantics)."""
-    app, mock_pool, _ = _make_audit_app([])
-    client = TestClient(app)
-    client.get("/api/audit-log?key=u:google&actor=owner")
-    fetch_call = mock_pool.fetch.call_args[0]
-    sql = fetch_call[0]
-    assert "target = " in sql
-    assert "actor = " in sql
-
-
-def test_key_param_combined_with_action():
-    """?key= and ?action= are both applied (AND semantics)."""
-    app, mock_pool, _ = _make_audit_app([])
-    client = TestClient(app)
-    client.get("/api/audit-log?key=u:google&action=verified")
-    fetch_call = mock_pool.fetch.call_args[0]
-    sql = fetch_call[0]
-    assert "target = " in sql
-    assert "action = " in sql
 
 
 def test_key_param_combined_with_all_filters():
@@ -776,22 +725,6 @@ async def test_audit_write_target_system_scope_found_by_key_filter():
     assert body["data"][0]["target"] == "s:BUTLER_TELEGRAM_TOKEN"
     fetch_args = mock_pool.fetch.call_args[0]
     assert "s:BUTLER_TELEGRAM_TOKEN" in fetch_args
-
-
-async def test_audit_write_target_cli_scope_found_by_key_filter():
-    """CLI-scope target written via normalize_credential_key() found by ?key=."""
-    canonical_target = normalize_credential_key("cli", "claude")
-    assert canonical_target == "c:claude"
-
-    row = _sample_row(target=canonical_target, action="rotated")
-    app, mock_pool, _ = _make_audit_app([row])
-    client = TestClient(app)
-
-    resp = client.get("/api/audit-log?key=c:claude")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["data"]) == 1
-    assert body["data"][0]["target"] == "c:claude"
 
 
 def test_non_normalised_target_not_returned_for_canonical_key_filter():

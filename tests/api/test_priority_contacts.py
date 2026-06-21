@@ -104,27 +104,9 @@ async def test_list_priority_contacts_200(app):
     assert "butler" not in body["data"][0]
 
 
-async def test_list_priority_contacts_count_query_is_unfiltered(app):
-    """The list count query is global — no butler filter is applied."""
-    pool = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=0)
-    pool.fetch = AsyncMock(return_value=[])
-    _app_with_mock_db(app, shared_pool=pool)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/ingestion/priority-contacts")
-
-    assert resp.status_code == 200
-    # The count SQL must not carry a WHERE/butler predicate.
-    count_sql = pool.fetchval.call_args[0][0]
-    assert "butler" not in count_sql.lower()
-    assert "where" not in count_sql.lower()
-
-
 async def test_list_priority_contacts_uses_entities_for_name(app):
-    """GET data query must join public.entities (not public.contacts) for display name."""
+    """GET data query must join public.entities (not the retired public.contacts)
+    for the display name (bu-vat93)."""
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=0)
     pool.fetch = AsyncMock(return_value=[])

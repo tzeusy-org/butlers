@@ -195,27 +195,22 @@ async def test_bulk_delete_ok(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_bulk_not_found_id_returns_not_found_outcome(app):
-    """Unknown rule id returns per-id 'not_found' outcome, not HTTP 404."""
+@pytest.mark.parametrize(
+    "missing_kind",
+    ["unknown-id", "already-deleted"],
+    ids=["unknown-id", "already-deleted"],
+)
+async def test_bulk_missing_rule_returns_not_found(app, missing_kind):
+    """Unknown id (fetchrow None) and already-deleted rows both yield per-id
+    'not_found' (affected=0), never HTTP 404."""
     rule_id = str(uuid4())
-    app, _ = _app_with_mock(app, fetchrow_result=None)  # rule not found
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(_BULK_URL, json={"op": "disable", "ids": [rule_id]})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["affected"] == 0
-    assert body["results"][0]["outcome"] == "not_found"
-
-
-async def test_bulk_already_deleted_returns_not_found(app):
-    """Already-deleted rule returns 'not_found' per-id outcome."""
-    rule_id = str(uuid4())
-    row = _rule_row(rule_id, deleted_at=datetime.datetime.now(datetime.UTC))
-    app, _ = _app_with_mock(app, fetchrow_result=_make_row(row))
+    if missing_kind == "unknown-id":
+        fetchrow_result = None
+    else:
+        fetchrow_result = _make_row(
+            _rule_row(rule_id, deleted_at=datetime.datetime.now(datetime.UTC))
+        )
+    app, _ = _app_with_mock(app, fetchrow_result=fetchrow_result)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

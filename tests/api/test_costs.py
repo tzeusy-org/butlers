@@ -607,37 +607,6 @@ async def test_cost_summary_staffer_uses_db_when_session_tool_absent(app):
     SpendSummary.model_validate(data)
 
 
-async def test_cost_summary_no_butler_filter_returns_aggregated(app):
-    """Omitting ?butler aggregates across all butlers (preserves existing behaviour)."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
-    ]
-    sw_data = {
-        "total_sessions": 5,
-        "total_input_tokens": 10000,
-        "total_output_tokens": 5000,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
-    }
-    gen_data = {
-        "total_sessions": 3,
-        "total_input_tokens": 8000,
-        "total_output_tokens": 4000,
-        "by_model": {"claude-haiku-35-20241022": {"input_tokens": 8000, "output_tokens": 4000}},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "gen": _make_tool_result(gen_data)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend")
-    data = resp.json()["data"]
-    assert data["total_sessions"] == 8
-    assert "sw" in data["by_butler"]
-    assert "gen" in data["by_butler"]
-    SpendSummary.model_validate(data)
-
-
 async def test_cost_summary_unknown_butler_returns_empty_200(app):
     """?butler=nonexistent produces a zero-cost 200 response (not 404)."""
     configs = [

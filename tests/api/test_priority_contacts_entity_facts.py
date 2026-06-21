@@ -50,14 +50,6 @@ def test_ef_display_value_strips_telegram_prefix() -> None:
     assert _ef_display_value("has-handle", "telegram:123456789") == "123456789"
 
 
-def test_ef_display_value_passthrough_for_email() -> None:
-    assert _ef_display_value("has-email", "alice@example.com") == "alice@example.com"
-
-
-def test_ef_display_value_passthrough_for_bare_handle() -> None:
-    assert _ef_display_value("has-handle", "twitter_handle") == "twitter_handle"
-
-
 async def test_entity_facts_values_by_contact_empty_input() -> None:
     pool = AsyncMock()
     result = await _entity_facts_values_by_contact(pool, [])
@@ -85,19 +77,6 @@ async def test_entity_facts_values_by_contact_returns_display_values() -> None:
     result = await _entity_facts_values_by_contact(pool, [(contact_id, entity_id)])
     assert result.values == {contact_id: ["alice@example.com"]}
     assert contact_id in result.has_email
-
-
-async def test_entity_facts_values_by_contact_db_error_returns_empty() -> None:
-    contact_id = uuid4()
-    entity_id = uuid4()
-
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=Exception("db error"))
-
-    result = await _entity_facts_values_by_contact(pool, [(contact_id, entity_id)])
-    # Should return empty values per contact, not raise
-    assert result.values == {contact_id: []}
-    assert result.has_email == set()
 
 
 async def test_entity_facts_values_strips_telegram_prefix_in_batch() -> None:

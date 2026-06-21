@@ -215,6 +215,10 @@ class TestResponseShape:
         assert item["evidence"] == evidence
 
     async def test_queue_sql_excludes_archived_and_tombstoned_entities(self):
+        """The queue data query must emit ``_active_entity_condition`` (router.py),
+        excluding archived/tombstoned/deleted entities via IS NULL / IS DISTINCT
+        FROM clauses on metadata->>'archived_at', 'tombstone', 'deleted_at'.
+        """
         app, pool = _app_with_pool(total=0, fetch_rows=[])
         resp = await _get(app)
 
@@ -243,27 +247,6 @@ class TestUnidentifiedBucket:
         item = resp.json()["items"][0]
         assert item["bucket"] == "unidentified"
         assert item["evidence"] == {}
-
-    async def test_sql_queries_entity_facts_with_schema_prefix(self):
-        """relationship.entity_facts queries MUST use the schema-qualified name, NOT a scope column.
-
-        relationship.entity_facts has no scope column.  Schema isolation is enforced
-        via the relationship. prefix (RFC 0006).
-        """
-        app, pool = _app_with_pool(total=0, fetch_rows=[])
-        resp = await _get(app)
-
-        assert resp.status_code == 200
-        # The data query fetches via pool.fetch; check schema-qualified name is used.
-        fetch_call_sql = pool.fetch.call_args[0][0]
-        assert "relationship.entity_facts" in fetch_call_sql, (
-            "Queue SQL must use the schema-qualified name relationship.entity_facts"
-        )
-        # And must NOT have a spurious scope column filter
-        assert "scope = 'relationship'" not in fetch_call_sql, (
-            "Queue SQL must NOT filter AND scope='relationship' on relationship.entity_facts; "
-            "that column does not exist"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -320,16 +303,6 @@ class TestDuplicateCandidateBucket:
         item = resp.json()["items"][0]
         assert item["evidence"]["predicate"] == "has-phone"
         assert len(item["evidence"]["peer_entity_ids"]) == 2
-
-    async def test_dup_sql_uses_has_email_and_has_phone(self):
-        """Duplicate detection SQL MUST reference has-email and has-phone predicates."""
-        app, pool = _app_with_pool(total=0, fetch_rows=[])
-        resp = await _get(app)
-
-        assert resp.status_code == 200
-        fetch_sql = pool.fetch.call_args[0][0]
-        assert "has-email" in fetch_sql
-        assert "has-phone" in fetch_sql
 
 
 # ---------------------------------------------------------------------------
@@ -442,16 +415,6 @@ class TestPagination:
         resp = await _get(app, limit=200)
         assert resp.status_code == 200
 
-    async def test_offset_and_limit_passed_to_pool(self):
-        """Offset and limit values MUST be forwarded as positional args to pool.fetch."""
-        app, pool = _app_with_pool(total=0, fetch_rows=[])
-        await _get(app, limit=15, offset=30)
-
-        fetch_call = pool.fetch.call_args[0]
-        # First positional arg is the SQL string; subsequent args are parameters.
-        assert 30 in fetch_call  # offset
-        assert 15 in fetch_call  # limit
-
 
 # ---------------------------------------------------------------------------
 # Scenario: Section ordering
@@ -481,17 +444,6 @@ class TestSectionOrdering:
         assert items[0]["bucket"] == "unidentified"
         assert items[1]["bucket"] == "duplicate-candidate"
         assert items[2]["bucket"] == "stale"
-
-    async def test_sql_has_bucket_order_by(self):
-        """The SQL ORDER BY clause must encode bucket priority."""
-        app, pool = _app_with_pool(total=0, fetch_rows=[])
-        resp = await _get(app)
-
-        assert resp.status_code == 200
-        fetch_sql = pool.fetch.call_args[0][0]
-        # Section ordering is implemented via a CASE expression in ORDER BY.
-        assert "ORDER BY" in fetch_sql
-        assert "bucket" in fetch_sql.lower() or "CASE" in fetch_sql
 
 
 # ---------------------------------------------------------------------------

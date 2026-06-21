@@ -49,31 +49,24 @@ async def test_available_connectors_schema(app):
         assert isinstance(profile["supports_backfill"], bool)
 
 
-async def test_available_connectors_includes_gmail(app):
-    """Gmail connector profile must be present in the catalog."""
+@pytest.mark.parametrize(
+    "connector_type,expected",
+    [
+        ("gmail", {"channel": "email", "provider": "google", "supports_backfill": True}),
+        ("telegram_bot", {"channel": "telegram"}),
+    ],
+)
+async def test_available_connectors_catalog_membership(app, connector_type, expected):
+    """Known connector profiles are present with their catalog fields."""
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/ingestion/connectors/available")
 
     profiles = {p["connector_type"]: p for p in resp.json()["data"]}
-    assert "gmail" in profiles
-    gmail = profiles["gmail"]
-    assert gmail["channel"] == "email"
-    assert gmail["provider"] == "google"
-    assert gmail["supports_backfill"] is True
-
-
-async def test_available_connectors_includes_telegram_bot(app):
-    """Telegram bot connector profile must be present."""
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/ingestion/connectors/available")
-
-    profiles = {p["connector_type"]: p for p in resp.json()["data"]}
-    assert "telegram_bot" in profiles
-    assert profiles["telegram_bot"]["channel"] == "telegram"
+    assert connector_type in profiles
+    for key, value in expected.items():
+        assert profiles[connector_type][key] == value
 
 
 async def test_available_connectors_no_db_dependency(app):

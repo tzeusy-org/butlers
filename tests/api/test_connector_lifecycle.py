@@ -115,8 +115,8 @@ def _wire_db(app, pool, *, pool_available: bool = True):
 # ---------------------------------------------------------------------------
 
 
-async def test_connector_pause_200(app):
-    """POST pause on a healthy connector returns 200 and sets state='paused'."""
+async def test_connector_pause_200_sets_state_and_audits(app):
+    """POST pause on a healthy connector returns 200, sets state='paused', and audits."""
     returned_row = _make_row(_connector_row(state="paused"))
     conn = _make_conn(fetchrow_results=[returned_row])
     pool = _make_pool(conn)
@@ -125,7 +125,7 @@ async def test_connector_pause_200(app):
     with patch(
         "butlers.api.routers.ingestion_connectors._audit_append",
         new_callable=AsyncMock,
-    ):
+    ) as mock_audit:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -134,6 +134,9 @@ async def test_connector_pause_200(app):
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["state"] == "paused"
+    # Audit-action contract for pause.
+    mock_audit.assert_awaited_once()
+    assert mock_audit.call_args.kwargs["action"] == "connector.pause"
 
 
 async def test_connector_pause_404_not_found(app):
@@ -151,35 +154,13 @@ async def test_connector_pause_404_not_found(app):
     assert resp.status_code == 404
 
 
-async def test_connector_pause_emits_audit(app):
-    """POST pause emits audit entry with action='connector.pause'."""
-    returned_row = _make_row(_connector_row(state="paused"))
-    conn = _make_conn(fetchrow_results=[returned_row])
-    pool = _make_pool(conn)
-    _wire_db(app, pool)
-
-    with patch(
-        "butlers.api.routers.ingestion_connectors._audit_append",
-        new_callable=AsyncMock,
-    ) as mock_audit:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post("/api/ingestion/connectors/gmail/user@example.com/pause")
-
-    assert resp.status_code == 200
-    mock_audit.assert_awaited_once()
-    _, audit_kwargs = mock_audit.call_args
-    assert audit_kwargs["action"] == "connector.pause"
-
-
 # ---------------------------------------------------------------------------
 # POST /api/ingestion/connectors/{type}/{identity}/run-now
 # ---------------------------------------------------------------------------
 
 
-async def test_connector_run_now_200_when_paused(app):
-    """POST run-now on a paused connector returns 200 and clears pause."""
+async def test_connector_run_now_200_when_paused_and_audits(app):
+    """POST run-now on a paused connector returns 200, clears pause, and audits."""
     # run-now does two fetchrow calls: SELECT FOR UPDATE (returns paused row), then UPDATE RETURNING
     paused_row = _make_row(_connector_row(state="paused"))
     updated_row = _make_row(_connector_row(state="unknown"))
@@ -190,13 +171,16 @@ async def test_connector_run_now_200_when_paused(app):
     with patch(
         "butlers.api.routers.ingestion_connectors._audit_append",
         new_callable=AsyncMock,
-    ):
+    ) as mock_audit:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.post("/api/ingestion/connectors/gmail/user@example.com/run-now")
 
     assert resp.status_code == 200
+    # Audit-action contract for run-now.
+    mock_audit.assert_awaited_once()
+    assert mock_audit.call_args.kwargs["action"] == "connector.run_now"
 
 
 async def test_connector_run_now_409_when_not_paused(app):
@@ -212,26 +196,3 @@ async def test_connector_run_now_409_when_not_paused(app):
         resp = await client.post("/api/ingestion/connectors/gmail/user@example.com/run-now")
 
     assert resp.status_code == 409
-
-
-async def test_connector_run_now_emits_audit_on_paused(app):
-    """POST run-now on paused connector emits audit with action='connector.run_now'."""
-    paused_row = _make_row(_connector_row(state="paused"))
-    updated_row = _make_row(_connector_row(state="unknown"))
-    conn = _make_conn(fetchrow_results=[paused_row, updated_row])
-    pool = _make_pool(conn)
-    _wire_db(app, pool)
-
-    with patch(
-        "butlers.api.routers.ingestion_connectors._audit_append",
-        new_callable=AsyncMock,
-    ) as mock_audit:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post("/api/ingestion/connectors/gmail/user@example.com/run-now")
-
-    assert resp.status_code == 200
-    mock_audit.assert_awaited_once()
-    _, audit_kwargs = mock_audit.call_args
-    assert audit_kwargs["action"] == "connector.run_now"

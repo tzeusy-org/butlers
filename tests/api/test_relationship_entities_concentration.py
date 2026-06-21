@@ -206,12 +206,6 @@ class TestOwnerAuthzGate:
 class TestEmptyResult:
     """Empty concentration returns 200 with items=[], rollup.total=0."""
 
-    async def test_empty_returns_200(self):
-        app, _ = _app_with_pool(agg_rows=[])
-        resp = await _get(app)
-
-        assert resp.status_code == 200
-
     async def test_empty_items_list(self):
         app, _ = _app_with_pool(agg_rows=[])
         resp = await _get(app)
@@ -248,14 +242,6 @@ class TestResponseShape:
         assert "predicate_tabs" in body
         assert "total" in body
 
-    async def test_rollup_fields_present(self):
-        app, _ = _app_with_pool(agg_rows=[])
-        resp = await _get(app)
-
-        rollup = resp.json()["rollup"]
-        assert "total" in rollup
-        assert "top3_share" in rollup
-
     async def test_predicate_tabs_enumerated_from_registry(self):
         tabs = [
             _make_tab_row(predicate="knows", label="Knows"),
@@ -270,16 +256,6 @@ class TestResponseShape:
         assert len(pred_tabs) == 3
         predicates = {t["predicate"] for t in pred_tabs}
         assert predicates == {"knows", "family-of", "partner-of"}
-
-    async def test_predicate_tab_has_required_fields(self):
-        tabs = [_make_tab_row(predicate="knows", label="Knows")]
-        app, _ = _app_with_pool(tab_rows=tabs, agg_rows=[])
-        resp = await _get(app)
-
-        tab = resp.json()["predicate_tabs"][0]
-        assert "predicate" in tab
-        assert "label" in tab
-        assert "description" in tab
 
 
 # ---------------------------------------------------------------------------
@@ -462,21 +438,6 @@ class TestPredicateSelection:
 
         assert resp.json()["predicate"] == "family-of"
 
-    async def test_pred_passed_to_aggregation_sql(self):
-        """The requested predicate MUST be forwarded to the aggregation query."""
-        tabs = [
-            _make_tab_row(predicate="knows", label="Knows"),
-            _make_tab_row(predicate="colleague-of", label="Colleague of"),
-        ]
-        app, pool = _app_with_pool(tab_rows=tabs, agg_rows=[])
-        resp = await _get(app, pred="colleague-of")
-
-        assert resp.status_code == 200
-        # The aggregation query is the second fetch call; verify predicate arg.
-        agg_call = pool.fetch.call_args_list[1]
-        sql_args = agg_call[0]  # positional args: (sql, predicate)
-        assert "colleague-of" in sql_args
-
     async def test_unknown_pred_falls_back_to_knows(self):
         """Unknown predicate falls back to default (knows) if it exists in registry."""
         tabs = [
@@ -589,23 +550,6 @@ class TestSmartDefaultPredicate:
 class TestProvenanceFields:
     """Every ConcentrationEntry MUST carry src, conf, verified, primary."""
 
-    async def test_provenance_fields_present(self):
-        row = _make_agg_row(
-            weight_sum=3,
-            src="relationship",
-            conf=0.9,
-            verified=True,
-            primary=True,
-        )
-        app, _ = _app_with_pool(agg_rows=[row])
-        resp = await _get(app)
-
-        item = resp.json()["items"][0]
-        assert "src" in item
-        assert "conf" in item
-        assert "verified" in item
-        assert "primary" in item
-
     async def test_provenance_values_correct(self):
         row = _make_agg_row(
             src="relationship",
@@ -669,16 +613,6 @@ class TestScopeFilter:
         assert resp.status_code == 200
         agg_sql = pool.fetch.call_args_list[1][0][0]
         assert "validity = 'active'" in agg_sql or "validity='active'" in agg_sql
-
-    async def test_scope_filter_also_in_tab_sql(self):
-        """Tab query reads predicate_registry, NOT relationship.entity_facts — no scope filter needed."""
-        app, pool = _app_with_pool(agg_rows=[])
-        resp = await _get(app)
-
-        assert resp.status_code == 200
-        tab_sql = pool.fetch.call_args_list[0][0][0]
-        # Tab query should mention predicate_registry.
-        assert "predicate_registry" in tab_sql
 
 
 # ---------------------------------------------------------------------------

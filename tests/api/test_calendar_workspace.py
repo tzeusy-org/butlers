@@ -926,8 +926,13 @@ async def test_audit_empty_when_no_rows(app):
     assert data["entries"] == []
 
 
-async def test_audit_payload_summary_contains_key_fields(app):
-    """The payload_summary in audit entries carries recognised key fields only."""
+async def test_audit_payload_summary_redacts_to_allowlist(app):
+    """The audit payload_summary carries only allowlisted keys, never raw internal fields.
+
+    Guards _extract_payload_summary: action_payload JSONB may contain arbitrary
+    fields, but the audit response must surface only the recognised allowlist
+    (title/start_at/...) and drop anything else (e.g. internal_field).
+    """
     rows = {
         "general": [
             _audit_row(
@@ -936,7 +941,7 @@ async def test_audit_payload_summary_contains_key_fields(app):
             )
         ]
     }
-    # Override the payload to contain mixed fields
+    # Override the payload to contain a mix of allowlisted + internal fields.
     rows["general"][0]["action_payload"] = {
         "title": "My event",
         "start_at": "2026-06-20T10:00:00Z",
@@ -954,7 +959,9 @@ async def test_audit_payload_summary_contains_key_fields(app):
     summary = entry["payload_summary"]
     assert "title" in summary
     assert "start_at" in summary
+    # Non-allowlisted internal field is redacted out of the summary.
     assert "internal_field" not in summary
+    assert set(summary) == {"title", "start_at"}
 
 
 # ---------------------------------------------------------------------------

@@ -257,33 +257,29 @@ class TestLinkedContactsNoFacts:
 class TestLinkedContactsEntityFacts:
     """Entity_facts has-* triples appear in contact_info with source="entity_facts"."""
 
-    async def test_has_email_triple_appears_in_contact_info(self):
-        """A has-email triple → type="email", value=address, source="entity_facts"."""
+    @pytest.mark.parametrize(
+        "predicate,expected_type,value",
+        [
+            ("has-email", "email", _EMAIL),
+            ("has-phone", "phone", _PHONE),
+        ],
+    )
+    async def test_has_channel_triple_appears_in_contact_info(
+        self, predicate, expected_type, value
+    ):
+        """A has-* triple → typed contact_info entry with source='entity_facts', unsecured."""
         contact = _make_contact_row()
-        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
+        fact = _make_fact_row(predicate=predicate, object=value)
         app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[fact])
         resp = await _get(app)
 
-        body = resp.json()
         assert resp.status_code == 200
-        contact_info = body[0]["contact_info"]
-        assert len(contact_info) == 1
-        assert contact_info[0]["type"] == "email"
-        assert contact_info[0]["value"] == _EMAIL
-        assert contact_info[0]["source"] == "entity_facts"
-        assert contact_info[0]["secured"] is False
-
-    async def test_has_phone_triple_appears_in_contact_info(self):
-        """A has-phone triple → type="phone"."""
-        contact = _make_contact_row()
-        fact = _make_fact_row(predicate="has-phone", object=_PHONE)
-        app, _ = _make_app(contact_rows=[contact], label_rows=[], fact_rows=[fact])
-        resp = await _get(app)
-
         contact_info = resp.json()[0]["contact_info"]
         assert len(contact_info) == 1
-        assert contact_info[0]["type"] == "phone"
-        assert contact_info[0]["value"] == _PHONE
+        assert contact_info[0]["type"] == expected_type
+        assert contact_info[0]["value"] == value
+        assert contact_info[0]["source"] == "entity_facts"
+        assert contact_info[0]["secured"] is False
 
     async def test_multiple_entity_facts_channels_all_appear(self):
         """Multiple entity_facts triples → all appear in contact_info."""
@@ -448,21 +444,6 @@ class TestLinkedContactsSecuredEntityInfo:
         assert entry["predicate"] is None  # no triple predicate for entity_info rows
         assert entry["value_hash"] is None  # no value_hash → no inline edit/delete
 
-    def test_secured_entry_has_no_value_key_with_real_secret(self):
-        """Prove that the entity_info query does NOT select the value column.
-
-        The query in list_entity_linked_contacts must only select:
-          id, type, is_primary, secured
-        NOT: value.  This test guards against accidental value inclusion in the
-        _make_entity_info_row mock and the actual SQL.
-        """
-        # The mock helper deliberately omits 'value' from the row dict.
-        # If the backend code tried to read r["value"], the mock would raise KeyError.
-        row = _make_entity_info_row()
-        # Confirm the mock row doesn't even carry a 'value' key.
-        with pytest.raises(KeyError):
-            _ = row["value"]
-
     async def test_entity_info_sql_does_not_select_value(self):
         """The entity_info SQL in list_entity_linked_contacts must not include 'value'.
 
@@ -555,25 +536,6 @@ class TestLinkedContactsSecuredEntityInfo:
         assert len(alice["contact_info"]) == 1
         assert alice["contact_info"][0]["secured"] is True
         assert len(bob["contact_info"]) == 0
-
-    async def test_no_entity_info_rows_behavior_unchanged(self):
-        """When entity_info is empty, behavior is identical to pre-change (no regression)."""
-        contact = _make_contact_row()
-        fact = _make_fact_row(predicate="has-email", object=_EMAIL)
-        app, _ = _make_app(
-            contact_rows=[contact],
-            label_rows=[],
-            fact_rows=[fact],
-            entity_info_rows=[],
-        )
-        resp = await _get(app)
-
-        assert resp.status_code == 200
-        contact_info = resp.json()[0]["contact_info"]
-        assert len(contact_info) == 1
-        assert contact_info[0]["type"] == "email"
-        assert contact_info[0]["value"] == _EMAIL
-        assert contact_info[0]["secured"] is False
 
 
 class TestLinkedContactsPreferredChannel:

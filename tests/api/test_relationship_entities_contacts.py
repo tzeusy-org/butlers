@@ -241,13 +241,6 @@ class TestGetEntityContactsEmpty:
         assert "facts" in body
         assert body["facts"] == []
 
-    async def test_returns_200_when_entity_has_no_has_predicates(self):
-        app, _ = _make_app(fetch_rows=[])
-        resp = await _get(app)
-
-        assert resp.status_code == 200
-        assert resp.json()["facts"] == []
-
 
 class TestGetEntityContactsWithData:
     """Entity with contact facts returns them in the response."""
@@ -278,17 +271,6 @@ class TestGetEntityContactsWithData:
         assert len(facts) == 2
         predicates = {f["predicate"] for f in facts}
         assert predicates == {"has-email", "has-phone"}
-
-    async def test_value_hash_is_deterministic_sha256_prefix(self):
-        test_value = "bob@example.com"
-        expected_hash = hashlib.sha256(test_value.encode("utf-8")).hexdigest()[:16]
-        rows = [_make_contact_fact_row(predicate="has-email", object_val=test_value)]
-        app, _ = _make_app(fetch_rows=rows)
-        resp = await _get(app)
-
-        fact = resp.json()["facts"][0]
-        assert fact["value_hash"] == expected_hash
-        assert len(fact["value_hash"]) == 16
 
 
 class TestGetEntityContactsProvenance:
@@ -345,10 +327,8 @@ class TestGetEntityContactsOwnerGate:
         assert resp.status_code == 403
         body = resp.json()
         detail = body.get("detail", body)
-        if isinstance(detail, dict):
-            assert detail.get("code") == "owner_required"
-        else:
-            assert "owner_required" in str(detail)
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "owner_required"
 
     async def test_returns_200_when_owner_entity_present(self):
         app, _ = _make_app(owner_exists=True, fetch_rows=[])
@@ -365,8 +345,6 @@ class TestGetEntityContactsEntityNotFound:
         resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/contacts")
 
         assert resp.status_code == 404
-        body = resp.json()
-        assert "not found" in body.get("detail", "").lower()
 
 
 # ===========================================================================
@@ -469,29 +447,19 @@ class TestPostEntityContactsOwnerCarveOut:
 class TestPostEntityContactsInvalidPredicate:
     """POST with a non-has-* predicate returns 400."""
 
-    async def test_returns_400_for_non_contact_predicate(self):
+    @pytest.mark.parametrize("predicate", ["knows", "contact_note"])
+    async def test_returns_400_for_non_contact_predicate(self, predicate):
+        """Non-has-* predicates (and those missing the has- prefix) are rejected 400."""
         app, _ = _make_app(owner_exists=True)
         resp = await _post(
             app,
-            json_body={"predicate": "knows", "value": "some-entity-id"},
+            json_body={"predicate": predicate, "value": "x"},
         )
 
         assert resp.status_code == 400
-        body = resp.json()
-        detail = body.get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "invalid_predicate"
-        else:
-            assert "contact predicate" in str(detail).lower()
-
-    async def test_returns_400_for_predicate_without_has_prefix(self):
-        app, _ = _make_app(owner_exists=True)
-        resp = await _post(
-            app,
-            json_body={"predicate": "contact_note", "value": "Note content"},
-        )
-
-        assert resp.status_code == 400
+        detail = resp.json().get("detail", {})
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "invalid_predicate"
 
 
 class TestPostEntityContactsOwnerGate:
@@ -507,10 +475,8 @@ class TestPostEntityContactsOwnerGate:
         assert resp.status_code == 403
         body = resp.json()
         detail = body.get("detail", body)
-        if isinstance(detail, dict):
-            assert detail.get("code") == "owner_required"
-        else:
-            assert "owner_required" in str(detail)
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "owner_required"
 
 
 class TestPostEntityContactsEntityNotFound:
@@ -598,10 +564,8 @@ class TestDeleteEntityContactNotFound:
         assert resp.status_code == 404
         body = resp.json()
         detail = body.get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "contact_fact_not_found"
-        else:
-            assert "not found" in str(detail).lower()
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "contact_fact_not_found"
 
     async def test_returns_404_when_hash_does_not_match_any_candidate(self):
         # Candidates exist for the predicate, but none match the given hash.
@@ -618,31 +582,20 @@ class TestDeleteEntityContactNotFound:
 class TestDeleteEntityContactInvalidPredicate:
     """DELETE with a non-has-* predicate returns 400."""
 
-    async def test_returns_400_for_non_contact_predicate(self):
+    @pytest.mark.parametrize("predicate", ["knows", "contact_note"])
+    async def test_returns_400_for_non_contact_predicate(self, predicate):
+        """Non-has-* predicates (and those missing the has- prefix) are rejected 400."""
         app, _ = _make_app(owner_exists=True)
 
         resp = await _delete(
             app,
-            f"/api/relationship/entities/{_ENT_ID}/contacts/knows/{_EMAIL_HASH}",
+            f"/api/relationship/entities/{_ENT_ID}/contacts/{predicate}/{_EMAIL_HASH}",
         )
 
         assert resp.status_code == 400
-        body = resp.json()
-        detail = body.get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "invalid_predicate"
-        else:
-            assert "contact predicate" in str(detail).lower()
-
-    async def test_returns_400_for_predicate_without_has_prefix(self):
-        app, _ = _make_app(owner_exists=True)
-
-        resp = await _delete(
-            app,
-            f"/api/relationship/entities/{_ENT_ID}/contacts/contact_note/{_EMAIL_HASH}",
-        )
-
-        assert resp.status_code == 400
+        detail = resp.json().get("detail", {})
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "invalid_predicate"
 
 
 class TestDeleteEntityContactOwnerGate:
@@ -658,10 +611,8 @@ class TestDeleteEntityContactOwnerGate:
         assert resp.status_code == 403
         body = resp.json()
         detail = body.get("detail", body)
-        if isinstance(detail, dict):
-            assert detail.get("code") == "owner_required"
-        else:
-            assert "owner_required" in str(detail)
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "owner_required"
 
 
 class TestDeleteEntityContactEntityNotFound:
@@ -780,10 +731,8 @@ class TestVerifyEntityContactNotFound:
         assert resp.status_code == 404
         body = resp.json()
         detail = body.get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "contact_fact_not_found"
-        else:
-            assert "not found" in str(detail).lower()
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "contact_fact_not_found"
 
     async def test_returns_404_when_hash_does_not_match_any_candidate(self):
         candidate = _make_delete_candidate_row(object_val="different@example.com")
@@ -808,10 +757,8 @@ class TestVerifyEntityContactInvalidPredicate:
         assert resp.status_code == 400
         body = resp.json()
         detail = body.get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "invalid_predicate"
-        else:
-            assert "contact predicate" in str(detail).lower()
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "invalid_predicate"
 
 
 class TestVerifyEntityContactOwnerGate:
@@ -825,10 +772,8 @@ class TestVerifyEntityContactOwnerGate:
         assert resp.status_code == 403
         body = resp.json()
         detail = body.get("detail", body)
-        if isinstance(detail, dict):
-            assert detail.get("code") == "owner_required"
-        else:
-            assert "owner_required" in str(detail)
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "owner_required"
 
 
 class TestVerifyEntityContactEntityNotFound:

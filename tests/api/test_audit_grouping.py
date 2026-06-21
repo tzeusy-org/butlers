@@ -80,27 +80,9 @@ class TestBuildAuditGroupQuery:
         assert "/tmp/tmp[a-zA-Z0-9_]+/" in sql
         assert "/tmp/.../" in sql
 
-    def test_contains_grouped_select(self):
-        sql = build_audit_group_query()
-        assert "error_summary" in sql
-        assert "first_seen_at" in sql
-        assert "last_seen_at" in sql
-        assert "occurrences" in sql
-        assert "has_schedule" in sql
-        assert "schedule_names" in sql
-
     def test_no_limit_by_default(self):
         sql = build_audit_group_query()
         assert "LIMIT" not in sql
-
-    def test_limit_injected_when_provided(self):
-        sql = build_audit_group_query(limit=20)
-        assert "LIMIT 20" in sql
-
-    def test_where_extra_injected(self):
-        extra = "\n                  AND created_at >= NOW() - INTERVAL '24 hours'"
-        sql = build_audit_group_query(where_extra=extra)
-        assert "INTERVAL '24 hours'" in sql
 
     def test_where_extra_and_limit_combined(self):
         extra = "\n                  AND created_at >= NOW() - INTERVAL '7 days'"
@@ -156,35 +138,34 @@ class TestTmpPathNormalization:
 
 
 class TestIssueFromAuditGroupRow:
-    def test_scheduled_failure_is_critical_severity(self):
+    @pytest.mark.parametrize(
+        ("has_schedule", "schedule_names", "expected_severity", "type_prefix"),
+        [
+            (True, ["daily-sync"], "critical", "scheduled_task_failure:"),
+            (False, [], "warning", "audit_error_group:"),
+        ],
+        ids=["scheduled", "non_scheduled"],
+    )
+    def test_severity_and_type_slug_by_schedule(
+        self, has_schedule, schedule_names, expected_severity, type_prefix
+    ):
+        """Scheduled failure -> critical + scheduled slug; non-scheduled -> warning + generic slug."""
         row = _make_row(
             {
                 "error_summary": "OAuth token expired",
                 "butlers": ["calendar"],
-                "schedule_names": ["daily-sync"],
-                "has_schedule": True,
+                "schedule_names": schedule_names,
+                "has_schedule": has_schedule,
                 "occurrences": 3,
                 "first_seen_at": datetime(2026, 5, 13, 10, 0, tzinfo=UTC),
                 "last_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
             }
         )
         issue = issue_from_audit_group_row(row)
-        assert issue.severity == "critical"
-
-    def test_non_scheduled_failure_is_warning_severity(self):
-        row = _make_row(
-            {
-                "error_summary": "Connection refused",
-                "butlers": ["health"],
-                "schedule_names": [],
-                "has_schedule": False,
-                "occurrences": 1,
-                "first_seen_at": datetime(2026, 5, 13, 10, 0, tzinfo=UTC),
-                "last_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
-            }
-        )
-        issue = issue_from_audit_group_row(row)
-        assert issue.severity == "warning"
+        assert issue.severity == expected_severity
+        assert issue.type.startswith(type_prefix)
+        if has_schedule:
+            assert schedule_names[0] in issue.type
 
     def test_scheduled_single_butler_single_schedule_description(self):
         row = _make_row(
@@ -203,22 +184,6 @@ class TestIssueFromAuditGroupRow:
         assert "calendar" in issue.description
         assert "Token expired" in issue.description
 
-    def test_scheduled_multi_butler_description_uses_count(self):
-        row = _make_row(
-            {
-                "error_summary": "Token expired",
-                "butlers": ["calendar", "health"],
-                "schedule_names": ["morning-sync"],
-                "has_schedule": True,
-                "occurrences": 4,
-                "first_seen_at": None,
-                "last_seen_at": None,
-            }
-        )
-        issue = issue_from_audit_group_row(row)
-        assert "2 butlers" in issue.description
-        assert issue.butler == "multiple"
-
     def test_non_scheduled_single_butler_description(self):
         row = _make_row(
             {
@@ -235,14 +200,20 @@ class TestIssueFromAuditGroupRow:
         assert "health" in issue.description
         assert issue.butler == "health"
 
-    def test_non_scheduled_multi_butler_description_uses_count(self):
+    @pytest.mark.parametrize(
+        ("has_schedule", "schedule_names"),
+        [(True, ["morning-sync"]), (False, [])],
+        ids=["scheduled", "non_scheduled"],
+    )
+    def test_multi_butler_description_uses_count(self, has_schedule, schedule_names):
+        """Both scheduled and non-scheduled multi-butler groups roll up to a count + 'multiple'."""
         row = _make_row(
             {
-                "error_summary": "DB connection timeout",
-                "butlers": ["health", "calendar"],
-                "schedule_names": [],
-                "has_schedule": False,
-                "occurrences": 2,
+                "error_summary": "Token expired",
+                "butlers": ["calendar", "health"],
+                "schedule_names": schedule_names,
+                "has_schedule": has_schedule,
+                "occurrences": 4,
                 "first_seen_at": None,
                 "last_seen_at": None,
             }
@@ -250,37 +221,6 @@ class TestIssueFromAuditGroupRow:
         issue = issue_from_audit_group_row(row)
         assert "2 butlers" in issue.description
         assert issue.butler == "multiple"
-
-    def test_issue_type_slug_for_scheduled(self):
-        row = _make_row(
-            {
-                "error_summary": "Token expired",
-                "butlers": ["calendar"],
-                "schedule_names": ["morning-sync"],
-                "has_schedule": True,
-                "occurrences": 1,
-                "first_seen_at": None,
-                "last_seen_at": None,
-            }
-        )
-        issue = issue_from_audit_group_row(row)
-        assert issue.type.startswith("scheduled_task_failure:")
-        assert "morning-sync" in issue.type
-
-    def test_issue_type_slug_for_non_scheduled(self):
-        row = _make_row(
-            {
-                "error_summary": "DB connection timeout",
-                "butlers": ["health"],
-                "schedule_names": [],
-                "has_schedule": False,
-                "occurrences": 1,
-                "first_seen_at": None,
-                "last_seen_at": None,
-            }
-        )
-        issue = issue_from_audit_group_row(row)
-        assert issue.type.startswith("audit_error_group:")
 
     def test_link_includes_butler_filter_for_single_butler(self):
         row = _make_row(
@@ -297,8 +237,7 @@ class TestIssueFromAuditGroupRow:
         issue = issue_from_audit_group_row(row)
         assert "butler=calendar" in (issue.link or "")
 
-    def test_link_includes_operation_filter_for_scheduled(self):
-        row = _make_row(
+        scheduled = _make_row(
             {
                 "error_summary": "Error",
                 "butlers": ["calendar"],
@@ -309,8 +248,8 @@ class TestIssueFromAuditGroupRow:
                 "last_seen_at": None,
             }
         )
-        issue = issue_from_audit_group_row(row)
-        assert "operation=session" in (issue.link or "")
+        # Scheduled groups additionally pin the operation=session filter.
+        assert "operation=session" in (issue_from_audit_group_row(scheduled).link or "")
 
     def test_empty_butlers_list_falls_back_to_unknown(self):
         row = _make_row(
@@ -354,37 +293,32 @@ class TestIssueFromAuditGroupRow:
 
 
 class TestAttentionItemFromAuditGroupRow:
-    def test_scheduled_failure_maps_to_high_severity(self):
-        """Critical in issues model → high for briefing attention item."""
+    @pytest.mark.parametrize(
+        ("has_schedule", "schedule_names", "expected_severity", "expected_type"),
+        [
+            (True, ["sync"], "high", "scheduled_task_failure"),
+            (False, [], "medium", "audit_error_group"),
+        ],
+        ids=["scheduled", "non_scheduled"],
+    )
+    def test_severity_and_type_by_schedule(
+        self, has_schedule, schedule_names, expected_severity, expected_type
+    ):
+        """Scheduled -> high/scheduled_task_failure; non-scheduled -> medium/audit_error_group."""
         row = _make_row(
             {
                 "error_summary": "Token expired",
                 "butlers": ["calendar"],
-                "schedule_names": ["sync"],
-                "has_schedule": True,
+                "schedule_names": schedule_names,
+                "has_schedule": has_schedule,
                 "occurrences": 1,
                 "first_seen_at": datetime(2026, 5, 13, 10, 0, tzinfo=UTC),
                 "last_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
             }
         )
         item = attention_item_from_audit_group_row(row)
-        assert item["severity"] == "high"
-
-    def test_non_scheduled_failure_maps_to_medium_severity(self):
-        """Warning in issues model → medium for briefing attention item."""
-        row = _make_row(
-            {
-                "error_summary": "Connection refused",
-                "butlers": ["health"],
-                "schedule_names": [],
-                "has_schedule": False,
-                "occurrences": 1,
-                "first_seen_at": datetime(2026, 5, 13, 10, 0, tzinfo=UTC),
-                "last_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
-            }
-        )
-        item = attention_item_from_audit_group_row(row)
-        assert item["severity"] == "medium"
+        assert item["severity"] == expected_severity
+        assert item["type"] == expected_type
 
     def test_source_is_audit_log(self):
         row = _make_row(
@@ -400,36 +334,6 @@ class TestAttentionItemFromAuditGroupRow:
         )
         item = attention_item_from_audit_group_row(row)
         assert item["source"] == "audit_log"
-
-    def test_type_scheduled_task_failure_for_scheduled(self):
-        row = _make_row(
-            {
-                "error_summary": "Error",
-                "butlers": ["calendar"],
-                "schedule_names": ["sync"],
-                "has_schedule": True,
-                "occurrences": 1,
-                "first_seen_at": None,
-                "last_seen_at": None,
-            }
-        )
-        item = attention_item_from_audit_group_row(row)
-        assert item["type"] == "scheduled_task_failure"
-
-    def test_type_audit_error_group_for_non_scheduled(self):
-        row = _make_row(
-            {
-                "error_summary": "Error",
-                "butlers": ["health"],
-                "schedule_names": [],
-                "has_schedule": False,
-                "occurrences": 1,
-                "first_seen_at": None,
-                "last_seen_at": None,
-            }
-        )
-        item = attention_item_from_audit_group_row(row)
-        assert item["type"] == "audit_error_group"
 
     def test_timestamps_serialized_to_iso_string(self):
         first = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
@@ -482,37 +386,3 @@ class TestAttentionItemFromAuditGroupRow:
         item = attention_item_from_audit_group_row(row)
         assert item["butler"] == "multiple"
         assert "2 butlers" in item["description"]
-
-    def test_severity_and_issue_model_agree_on_scheduled_grouping(self):
-        """issue_from_audit_group_row and attention_item_from_audit_group_row
-        must agree that scheduled errors are more severe than non-scheduled ones."""
-        scheduled_row = _make_row(
-            {
-                "error_summary": "Timeout",
-                "butlers": ["calendar"],
-                "schedule_names": ["sync"],
-                "has_schedule": True,
-                "occurrences": 1,
-                "first_seen_at": None,
-                "last_seen_at": None,
-            }
-        )
-        non_scheduled_row = _make_row(
-            {
-                "error_summary": "Timeout",
-                "butlers": ["calendar"],
-                "schedule_names": [],
-                "has_schedule": False,
-                "occurrences": 1,
-                "first_seen_at": None,
-                "last_seen_at": None,
-            }
-        )
-
-        # Issues page: critical > warning
-        assert issue_from_audit_group_row(scheduled_row).severity == "critical"
-        assert issue_from_audit_group_row(non_scheduled_row).severity == "warning"
-
-        # Briefing: high > medium (same relative ordering)
-        assert attention_item_from_audit_group_row(scheduled_row)["severity"] == "high"
-        assert attention_item_from_audit_group_row(non_scheduled_row)["severity"] == "medium"

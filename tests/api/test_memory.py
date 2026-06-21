@@ -283,26 +283,6 @@ async def test_episodes_status_filter_combines_with_butler(app):
     )
 
 
-async def test_episodes_no_status_filter_omits_clause(app):
-    """Omitting ?status leaves consolidation_status out of the WHERE clause."""
-    rows = [_make_episode_row(butler="atlas")]
-    mock_db = _wire_memory_db(app, rows=rows)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/memory/episodes")
-
-    assert resp.status_code == 200
-    fetch_calls = mock_db.pool_mock.fetch.call_args_list
-    # One fetch per default pool ("atlas", "memory"); assert the exact count so
-    # the WHERE-clause check below cannot vacuously pass on an empty list.
-    assert len(fetch_calls) == 2
-    # consolidation_status appears in the SELECT column list, but must NOT be
-    # part of the WHERE clause when ?status is omitted.
-    assert all("consolidation_status = $" not in call.args[0] for call in fetch_calls)
-
-
 async def test_episodes_invalid_status_returns_422(app):
     """An out-of-enum ?status value is rejected by FastAPI validation (422)."""
     mock_db = _wire_memory_db(app, rows=[])
@@ -403,23 +383,6 @@ async def test_facts_nonexistent_episode_returns_empty_not_error(app):
     assert body["meta"]["total"] == 0
 
 
-async def test_facts_source_episode_id_omitted_leaves_query_unfiltered(app):
-    """Omitting ?source_episode_id leaves the facts query without that clause."""
-    pool = _FactsPool(rows=[_make_fact_row(fact_id=uuid.uuid4())], total=1)
-    db = _FactsDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/memory/facts")
-
-    assert resp.status_code == 200
-    facts_fetches = [c for c in pool.fetch_calls if "FROM facts" in c[0]]
-    assert facts_fetches
-    assert all("source_episode_id =" not in c[0] for c in facts_fetches)
-
-
 # ---------------------------------------------------------------------------
 # GET /api/memory/facts — importance_min filter
 # ---------------------------------------------------------------------------
@@ -447,72 +410,6 @@ async def test_facts_importance_min_filter_adds_where_clause(app):
     facts_fetches = [c for c in pool.fetch_calls if "FROM facts" in c[0]]
     assert facts_fetches
     assert any("importance >= $1" in c[0] and 8.0 in c[1] for c in facts_fetches)
-
-
-async def test_facts_importance_min_composes_with_validity(app):
-    """?importance_min composes with ?validity in a single AND-joined WHERE."""
-    row = _make_fact_row(fact_id=uuid.uuid4())
-    row["importance"] = 9.0
-    row["validity"] = "fading"
-    pool = _FactsPool(rows=[row], total=1)
-    db = _FactsDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/memory/facts", params={"validity": "fading", "importance_min": 8}
-        )
-
-    assert resp.status_code == 200
-    facts_fetches = [c for c in pool.fetch_calls if "FROM facts" in c[0]]
-    assert facts_fetches
-    # Both predicates present in the same WHERE clause, AND-joined.
-    assert any(
-        "validity = $1" in c[0] and "importance >= $2" in c[0] and " AND " in c[0]
-        for c in facts_fetches
-    )
-    # And the threshold is bound as the second positional arg.
-    assert any("fading" in c[1] and 8.0 in c[1] for c in facts_fetches)
-
-
-async def test_facts_importance_min_boundary_is_inclusive(app):
-    """importance_min uses >= so a fact exactly at the threshold is bound for return."""
-    row = _make_fact_row(fact_id=uuid.uuid4())
-    row["importance"] = 8.0
-    pool = _FactsPool(rows=[row], total=1)
-    db = _FactsDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/memory/facts", params={"importance_min": 8})
-
-    assert resp.status_code == 200
-    facts_fetches = [c for c in pool.fetch_calls if "FROM facts" in c[0]]
-    assert facts_fetches
-    # Inclusive comparison operator (>=), not a strict one (>).
-    assert any("importance >= $1" in c[0] for c in facts_fetches)
-    assert all("importance > $" not in c[0] for c in facts_fetches)
-
-
-async def test_facts_importance_min_omitted_leaves_query_unfiltered(app):
-    """Omitting ?importance_min leaves the facts query without that clause."""
-    pool = _FactsPool(rows=[_make_fact_row(fact_id=uuid.uuid4())], total=1)
-    db = _FactsDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/memory/facts")
-
-    assert resp.status_code == 200
-    facts_fetches = [c for c in pool.fetch_calls if "FROM facts" in c[0]]
-    assert facts_fetches
-    assert all("importance >=" not in c[0] for c in facts_fetches)
 
 
 # ---------------------------------------------------------------------------

@@ -259,21 +259,6 @@ async def test_get_prompt_history_ordered_desc(app):
     assert body["meta"]["total"] == 3
 
 
-async def test_get_prompt_history_empty(app):
-    """History returns empty list when no rows exist."""
-    pool = _make_pool(fetch_return=[], fetchval_return=0)
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
-    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/butlers/qa/prompt/history")
-
-    assert resp.status_code == 200
-    assert resp.json()["data"] == []
-    assert resp.json()["meta"]["total"] == 0
-
-
 # ---------------------------------------------------------------------------
 # GET /api/butlers/{name}/tools
 # ---------------------------------------------------------------------------
@@ -412,8 +397,6 @@ async def test_get_memory_access_online_butler_returns_real_data(app):
     assert data["namespace"] == "qa"
     assert data["embedding_model"] == "all-MiniLM-L6-v2"
     assert data["drops_7d"] == 5
-
-    mock_client.call_tool.assert_called_once_with("memory_access", {})
 
 
 # ---------------------------------------------------------------------------

@@ -225,33 +225,8 @@ async def test_memory_stats_butler_not_found_returns_404() -> None:
     assert resp.status_code == 404
 
 
-async def test_memory_stats_all_fields_present_in_response() -> None:
-    """Response schema includes all 8 fields from ButlerMemoryStats."""
-    pool = _make_pool_with_counts()
-    app = _make_app_with_butler("atlas", pool)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/butlers/atlas/memory/stats")
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    expected_fields = {
-        "total_episodes",
-        "episodes_24h",
-        "total_facts",
-        "facts_24h",
-        "total_entities",
-        "entities_24h",
-        "total_rules",
-        "rules_24h",
-    }
-    assert set(data.keys()) >= expected_fields
-
-
-async def test_memory_stats_response_wrapped_in_api_response() -> None:
-    """Response is wrapped in standard ApiResponse envelope with 'data' key."""
+async def test_memory_stats_envelope_and_schema() -> None:
+    """Response is wrapped in the ApiResponse envelope and exposes all 8 stat fields."""
     pool = _make_pool_with_counts(total_episodes=7)
     app = _make_app_with_butler("atlas", pool)
 
@@ -263,4 +238,16 @@ async def test_memory_stats_response_wrapped_in_api_response() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert "data" in body
-    assert body["data"]["total_episodes"] == 7
+    data = body["data"]
+    assert data["total_episodes"] == 7
+    expected_fields = {
+        "total_episodes",
+        "episodes_24h",
+        "total_facts",
+        "facts_24h",
+        "total_entities",
+        "entities_24h",
+        "total_rules",
+        "rules_24h",
+    }
+    assert set(data.keys()) >= expected_fields

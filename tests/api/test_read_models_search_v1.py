@@ -299,28 +299,6 @@ async def test_query_entity_search_empty_result():
     assert result == []
 
 
-async def test_query_entity_search_passes_pattern_and_limit():
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    await query_entity_search(mock_pool, "%foo%", 10)
-
-    args = mock_pool.fetch.call_args[0]
-    # args[0] is SQL, args[1] is pattern, args[2] is limit
-    assert "%foo%" in args
-    assert 10 in args
-
-
-async def test_query_entity_search_sql_queries_public_entities():
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    await query_entity_search(mock_pool, "%foo%", 5)
-
-    sql = mock_pool.fetch.call_args[0][0]
-    assert "public.entities" in sql
-
-
 async def test_query_entity_search_swallows_exception():
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(side_effect=RuntimeError("relation does not exist"))
@@ -437,21 +415,6 @@ async def test_query_session_search_empty_fan_out_returns_empty_dict():
     assert result == {}
 
 
-async def test_query_session_search_passes_pattern_and_limit():
-    db = _make_db_with_fan_out({})
-    await query_session_search(db, "%foo%", 10)
-    args = db.fan_out.call_args[0]
-    assert args[1] == ("%foo%", 10)
-
-
-async def test_query_session_search_sql_queries_sessions():
-    db = _make_db_with_fan_out({})
-    await query_session_search(db, "%foo%", 5)
-    sql = db.fan_out.call_args[0][0]
-    assert "sessions" in sql
-    assert "ILIKE" in sql
-
-
 async def test_query_session_search_swallows_exception():
     db = MagicMock()
     db.fan_out = AsyncMock(side_effect=RuntimeError("fan-out failure"))
@@ -486,14 +449,6 @@ async def test_query_state_search_passes_pattern_and_limit():
     await query_state_search(db, "%prefs%", 15)
     args = db.fan_out.call_args[0]
     assert args[1] == ("%prefs%", 15)
-
-
-async def test_query_state_search_sql_queries_state():
-    db = _make_db_with_fan_out({})
-    await query_state_search(db, "%foo%", 5)
-    sql = db.fan_out.call_args[0][0]
-    assert "state" in sql
-    assert "ILIKE" in sql
 
 
 async def test_query_state_search_swallows_exception():

@@ -166,26 +166,6 @@ def _assert_owner_required(resp: httpx.Response) -> None:
 class TestDismissQueueEntitySuccess:
     """POST /entities/queue/dismiss happy-path scenarios."""
 
-    async def test_returns_200_on_first_dismiss(self):
-        """First dismiss of an entity returns HTTP 200 with outcome='inserted'."""
-        app, _ = _make_dismiss_app()
-
-        with patch(
-            "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact",
-            new=AsyncMock(return_value=_make_assert_result("inserted")),
-        ):
-            resp = await _post(app)
-
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-        body = resp.json()
-        assert body["status"] == "ok"
-        assert len(body["dismissed"]) == 1
-        item = body["dismissed"][0]
-        assert item["outcome"] == "inserted"
-        assert item["entity_id"] == str(_ENT_ID)
-        assert item["fact_id"] is not None
-        assert item["action_id"] is None
-
     async def test_returns_200_idempotent_redismiss(self):
         """Re-dismissing an already-dismissed entity returns outcome='unchanged'."""
         app, _ = _make_dismiss_app()

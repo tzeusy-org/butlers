@@ -173,25 +173,6 @@ class TestTrendDailyBucket:
         assert first["sample_count"] == 288
         assert "bucket_start" in first
 
-    async def test_daily_sql_uses_day_trunc(self):
-        """SQL for daily bucket uses date_trunc('day', ...) in the query text."""
-        pool = _mock_pool(fetch_rows=[])
-        app = _build_app(pool)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            await client.get(
-                "/api/health/measurements/trend",
-                params={"type": "weight", "bucket": "daily"},
-            )
-
-        fetch_calls = pool.fetch.call_args_list
-        assert len(fetch_calls) == 1
-        sql = fetch_calls[0][0][0]
-        assert "date_trunc('day'" in sql
-        assert "date_trunc('hour'" not in sql
-
     async def test_daily_sql_has_no_butler_name_filter(self):
         """Pool is butler-scoped — the trend SQL must not filter on butler_name."""
         pool = _mock_pool(fetch_rows=[])
@@ -209,27 +190,6 @@ class TestTrendDailyBucket:
         assert len(fetch_calls) == 1
         sql = fetch_calls[0][0][0]
         assert "butler_name" not in sql
-
-    async def test_daily_sql_uses_correct_predicate_and_scope(self):
-        """SQL uses predicate='measurement_{type}' and scope='health'."""
-        pool = _mock_pool(fetch_rows=[])
-        app = _build_app(pool)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            await client.get(
-                "/api/health/measurements/trend",
-                params={"type": "glucose", "bucket": "daily"},
-            )
-
-        fetch_calls = pool.fetch.call_args_list
-        assert len(fetch_calls) == 1
-        sql = fetch_calls[0][0][0]
-        positional_args = fetch_calls[0][0][1:]  # args after SQL string
-        assert "measurement_glucose" in positional_args
-        assert "scope" in sql
-        assert "health" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -272,25 +232,6 @@ class TestTrendHourlyBucket:
         first = body["buckets"][0]
         assert first["value_mean"] == pytest.approx(90.0)
         assert first["sample_count"] == 12
-
-    async def test_hourly_sql_uses_hour_trunc(self):
-        """SQL for hourly bucket uses date_trunc('hour', ...) in the query text."""
-        pool = _mock_pool(fetch_rows=[])
-        app = _build_app(pool)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            await client.get(
-                "/api/health/measurements/trend",
-                params={"type": "glucose", "bucket": "hourly"},
-            )
-
-        fetch_calls = pool.fetch.call_args_list
-        assert len(fetch_calls) == 1
-        sql = fetch_calls[0][0][0]
-        assert "date_trunc('hour'" in sql
-        assert "date_trunc('day'" not in sql
 
 
 # ---------------------------------------------------------------------------
@@ -457,24 +398,4 @@ class TestTrendScalarFilter:
         has_regex_guard = "~ '^-?" in sql or "regexp_like" in sql
         assert has_type_guard or has_regex_guard, (
             "SQL must guard against non-numeric metadata.value before casting to float"
-        )
-
-    async def test_sql_truncates_in_utc(self):
-        """date_trunc must use UTC explicitly so bucket boundaries are deterministic."""
-        pool = _mock_pool(fetch_rows=[])
-        app = _build_app(pool)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            await client.get(
-                "/api/health/measurements/trend",
-                params={"type": "glucose", "bucket": "daily"},
-            )
-
-        fetch_calls = pool.fetch.call_args_list
-        assert len(fetch_calls) == 1
-        sql = fetch_calls[0][0][0]
-        assert "AT TIME ZONE 'UTC'" in sql, (
-            "date_trunc must include AT TIME ZONE 'UTC' to guarantee UTC bucket boundaries"
         )

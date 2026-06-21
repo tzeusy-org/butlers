@@ -214,18 +214,6 @@ async def _put(
 class TestPutEntityContactDifferentValue:
     """PUT with a new value different from the old retracts + asserts atomically."""
 
-    async def test_returns_200_on_success(self):
-        candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
-        app, _ = _make_app(candidate_rows=[candidate])
-        new_fact_id = uuid4()
-        with patch(
-            "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact",
-            new=AsyncMock(return_value=_make_assert_result("superseded", fact_id=new_fact_id)),
-        ):
-            resp = await _put(app, json_body={"new_value": _NEW_EMAIL})
-
-        assert resp.status_code == 200
-
     async def test_response_has_outcome_and_retracted_fact_id(self):
         candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
         app, _ = _make_app(candidate_rows=[candidate])
@@ -236,28 +224,14 @@ class TestPutEntityContactDifferentValue:
         ):
             resp = await _put(app, json_body={"new_value": _NEW_EMAIL})
 
+        assert resp.status_code == 200
         body = resp.json()
         assert body["outcome"] == "superseded"
         assert body["retracted_fact_id"] == str(_FACT_ID)
         assert body["fact"] is not None
         assert body["action_id"] is None
 
-    async def test_new_fact_value_in_response(self):
-        candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
-        # New fact row returns new email as object
-        new_fact_id = uuid4()
-        new_row = _make_contact_fact_row(fact_id=new_fact_id, object_val=_NEW_EMAIL)
-        app, _ = _make_app(candidate_rows=[candidate], new_fact_row=new_row)
-        with patch(
-            "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact",
-            new=AsyncMock(return_value=_make_assert_result("superseded", fact_id=new_fact_id)),
-        ):
-            resp = await _put(app, json_body={"new_value": _NEW_EMAIL})
-
-        body = resp.json()
-        assert body["fact"]["object"] == _NEW_EMAIL
-
-    async def test_value_hash_in_response_matches_new_object(self):
+    async def test_new_fact_value_and_hash_in_response(self):
         candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
         new_fact_id = uuid4()
         new_row = _make_contact_fact_row(fact_id=new_fact_id, object_val=_NEW_EMAIL)
@@ -270,6 +244,7 @@ class TestPutEntityContactDifferentValue:
             resp = await _put(app, json_body={"new_value": _NEW_EMAIL})
 
         body = resp.json()
+        assert body["fact"]["object"] == _NEW_EMAIL
         assert body["fact"]["value_hash"] == expected_hash
 
 
@@ -336,10 +311,8 @@ class TestPutEntityContactNotFound:
         resp = await _put(app, json_body={"new_value": _NEW_EMAIL})
         assert resp.status_code == 404
         detail = resp.json().get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "contact_fact_not_found"
-        else:
-            assert "not found" in str(detail).lower()
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "contact_fact_not_found"
 
     async def test_returns_404_when_hash_does_not_match(self):
         # Candidate exists but hash is for a different value.
@@ -366,45 +339,30 @@ class TestPutEntityContactNotFound:
 class TestPutEntityContactInvalidInput:
     """Malformed requests return 400."""
 
-    async def test_returns_400_for_non_contact_predicate(self):
+    @pytest.mark.parametrize("predicate", ["knows", "email"])
+    async def test_returns_400_for_non_contact_predicate(self, predicate):
+        """Non-has-* predicates (and those missing the has- prefix) are rejected 400."""
         app, _ = _make_app()
         resp = await _put(
             app,
-            path=f"/api/relationship/entities/{_ENT_ID}/contacts/knows/{_OLD_HASH}",
+            path=f"/api/relationship/entities/{_ENT_ID}/contacts/{predicate}/{_OLD_HASH}",
             json_body={"new_value": _NEW_EMAIL},
         )
         assert resp.status_code == 400
         detail = resp.json().get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "invalid_predicate"
-        else:
-            assert "contact predicate" in str(detail).lower()
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "invalid_predicate"
 
-    async def test_returns_400_for_predicate_without_has_prefix(self):
-        app, _ = _make_app()
-        resp = await _put(
-            app,
-            path=f"/api/relationship/entities/{_ENT_ID}/contacts/email/{_OLD_HASH}",
-            json_body={"new_value": _NEW_EMAIL},
-        )
-        assert resp.status_code == 400
-
-    async def test_returns_400_for_empty_new_value(self):
+    @pytest.mark.parametrize("new_value", ["", "   "])
+    async def test_returns_400_for_empty_new_value(self, new_value):
+        """Empty or whitespace-only new_value is rejected 400 (invalid_value)."""
         candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
         app, _ = _make_app(candidate_rows=[candidate])
-        resp = await _put(app, json_body={"new_value": ""})
+        resp = await _put(app, json_body={"new_value": new_value})
         assert resp.status_code == 400
         detail = resp.json().get("detail", {})
-        if isinstance(detail, dict):
-            assert detail.get("code") == "invalid_value"
-        else:
-            assert "empty" in str(detail).lower()
-
-    async def test_returns_400_for_whitespace_only_new_value(self):
-        candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
-        app, _ = _make_app(candidate_rows=[candidate])
-        resp = await _put(app, json_body={"new_value": "   "})
-        assert resp.status_code == 400
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "invalid_value"
 
 
 # ===========================================================================
@@ -423,10 +381,8 @@ class TestPutEntityContactOwnerGate:
         body = resp.json()
         # The 403 response body may be the detail dict directly or wrapped under "detail"
         detail = body.get("detail", body)
-        if isinstance(detail, dict):
-            assert detail.get("code") == "owner_required"
-        else:
-            assert "owner_required" in str(detail)
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "owner_required"
 
 
 # ===========================================================================

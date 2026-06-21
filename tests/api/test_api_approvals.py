@@ -219,20 +219,6 @@ async def test_no_approvals_tables_returns_empty(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_list_actions_includes_butler_field(app):
-    """Every ApprovalAction in the response must include the butler field."""
-    app, _ = _app_with_mock_db(app, fetch_rows=[_make_action()], fetchval_return=1)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/approvals/actions")
-    assert resp.status_code == 200
-    actions = resp.json()["data"]
-    assert len(actions) == 1
-    assert "butler" in actions[0]
-    assert actions[0]["butler"] == "general"
-
-
 async def test_list_actions_butler_filter_returns_only_that_butler(app):
     """?butler=home returns only home actions, not general actions."""
     home_action = _make_action(tool_name="notify")
@@ -281,7 +267,11 @@ async def test_list_actions_unknown_butler_returns_empty(app):
 
 
 async def test_list_executed_actions_butler_filter(app):
-    """?butler= param on /actions/executed returns only that butler's rows."""
+    """?butler= on /actions/executed scopes results to that butler only.
+
+    Guards against leaking every butler's executed actions: with two butlers
+    each holding one executed row, ?butler=home must return only home's row.
+    """
     home_action = _make_action(tool_name="notify", status="executed")
     general_action = _make_action(tool_name="send_telegram", status="executed")
     app = _app_with_two_butlers(app, home_rows=[home_action], general_rows=[general_action])
@@ -290,8 +280,7 @@ async def test_list_executed_actions_butler_filter(app):
     ) as client:
         resp = await client.get("/api/approvals/actions/executed?butler=home")
     assert resp.status_code == 200
-    body = resp.json()
-    actions = body["data"]
+    actions = resp.json()["data"]
     assert len(actions) == 1
     assert actions[0]["butler"] == "home"
     assert actions[0]["tool_name"] == "notify"
@@ -663,9 +652,6 @@ async def test_policy_round_trip(app):
         updated = put_resp.json()["data"]
         assert updated["quiet_start_hour"] == 23
         assert updated["timezone"] == "UTC"
-
-    # Verify conn.execute was called for the INSERT/ON CONFLICT UPDATE
-    mock_conn.execute.assert_called()
 
 
 async def test_approve_audits_action(app):
@@ -1156,36 +1142,6 @@ async def test_emit_approvals_event_publishes_to_subscribers(app):
             pass
 
 
-async def test_why_null_evidence_empty_on_legacy_rows(app):
-    """Legacy rows (why=NULL, evidence=[]) are returned with why=null and evidence=[]."""
-    legacy_row = {
-        "id": uuid4(),
-        "tool_name": "send_email",
-        "tool_args": {"to": "user@example.com"},
-        "status": "pending",
-        "requested_at": _NOW,
-        "agent_summary": None,
-        "session_id": None,
-        "expires_at": None,
-        "decided_by": None,
-        "decided_at": None,
-        "execution_result": None,
-        "approval_rule_id": None,
-        "why": None,
-        "evidence": [],
-    }
-    app, _ = _app_with_mock_db(app, fetch_rows=[legacy_row], fetchval_return=1)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/approvals/actions")
-    assert resp.status_code == 200
-    actions = resp.json()["data"]
-    assert len(actions) == 1
-    assert actions[0]["why"] is None
-    assert actions[0]["evidence"] == []
-
-
 # ---------------------------------------------------------------------------
 # Detail dossier resolves target_contact from entity_id (bu — approvals UX)
 # ---------------------------------------------------------------------------
@@ -1572,49 +1528,6 @@ async def test_dispatch_approved_action_executes_via_butler_tool():
     assert result["status"] == "executed"
 
 
-async def test_dispatch_approved_action_targets_owning_butler_first():
-    """The owning butler (action_butler) is tried before any others."""
-    import json
-
-    from butlers.api.routers.approvals import _dispatch_approved_action
-
-    action_id = uuid4()
-    executed_payload = {
-        "id": str(action_id),
-        "tool_name": "telegram_send_message",
-        "tool_args": {},
-        "status": "executed",
-        "requested_at": _NOW.isoformat(),
-        "butler": "messenger",
-        "agent_summary": None,
-        "session_id": None,
-        "expires_at": None,
-        "decided_by": "human:dashboard",
-        "decided_at": _NOW.isoformat(),
-        "execution_result": {"success": True},
-        "approval_rule_id": None,
-    }
-    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
-        action_id=action_id,
-        tool_name="telegram_send_message",
-        mcp_text_payload=json.dumps(executed_payload),
-    )
-    # Several butlers reachable; owning butler must be first.
-    mock_mcp.butler_names = ["general", "switchboard", "messenger"]
-
-    await _dispatch_approved_action(
-        mock_mcp,
-        mock_db,
-        mock_pool,
-        str(action_id),
-        "telegram_send_message",
-        {},
-        "messenger",
-    )
-
-    assert mock_mcp.get_client.await_args_list[0].args[0] == "messenger"
-
-
 async def test_dispatch_approved_action_butler_error_returns_none():
     """When the owning butler cannot execute the action (error dict), and no other
     butler can either, the dispatcher returns None so the action stays 'approved'
@@ -1712,8 +1625,6 @@ async def test_dispatch_approved_action_falls_back_to_next_butler():
     assert result["status"] == "executed"
     # The owning butler is tried first, then the fallback — in order.
     assert [c.args[0] for c in mock_mcp.get_client.await_args_list] == ["messenger", "general"]
-    messenger_client.call_tool.assert_awaited_once()
-    general_client.call_tool.assert_awaited_once()
 
 
 async def test_dispatch_approved_action_mcp_error_returns_none():

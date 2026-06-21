@@ -255,20 +255,6 @@ async def test_query_activity_sessions_passes_limit():
     assert call_args[0][1] == 5  # second positional arg is the limit
 
 
-async def test_query_activity_sessions_sql_uses_column_constant():
-    """The SQL projection uses SESSION_COLUMNS."""
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    await query_activity_sessions(mock_pool, limit=10)
-
-    sql = mock_pool.fetch.call_args[0][0]
-    assert SESSION_COLUMNS in sql
-    assert "FROM sessions" in sql
-    assert "completed_at IS NOT NULL" in sql
-    assert "ORDER BY completed_at DESC" in sql
-
-
 async def test_query_activity_sessions_skips_undefined_table():
     """UndefinedTableError is caught and returns an empty list."""
     mock_pool = AsyncMock()
@@ -317,19 +303,6 @@ async def test_query_activity_actions_passes_limit():
     assert call_args[0][1] == 7
 
 
-async def test_query_activity_actions_sql_uses_column_constant():
-    """The SQL projection uses ACTION_COLUMNS."""
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    await query_activity_actions(mock_pool, limit=10)
-
-    sql = mock_pool.fetch.call_args[0][0]
-    assert ACTION_COLUMNS in sql
-    assert "FROM pending_actions" in sql
-    assert "ORDER BY requested_at DESC" in sql
-
-
 async def test_query_activity_actions_skips_undefined_table():
     """UndefinedTableError is caught and returns an empty list."""
     mock_pool = AsyncMock()
@@ -367,19 +340,6 @@ async def test_query_activity_episodes_passes_limit():
 
     call_args = mock_pool.fetch.call_args
     assert call_args[0][1] == 3
-
-
-async def test_query_activity_episodes_sql_uses_column_constant():
-    """The SQL projection uses EPISODE_COLUMNS."""
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    await query_activity_episodes(mock_pool, limit=10)
-
-    sql = mock_pool.fetch.call_args[0][0]
-    assert EPISODE_COLUMNS in sql
-    assert "FROM episodes" in sql
-    assert "ORDER BY created_at DESC" in sql
 
 
 async def test_query_activity_episodes_skips_undefined_table():

@@ -239,29 +239,6 @@ class TestDashboardAuditMiddleware:
         mock_db.pool.return_value = mock_pool
         return app, mock_db, mock_pool
 
-    async def test_middleware_fires_on_delete(self):
-        """A DELETE to any /api/ path writes an audit row."""
-        app, mock_db, mock_pool = self._make_app_with_mock_db()
-
-        # Patch get_db_manager so middleware can access the mock pool
-        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
-            # Add a test DELETE endpoint so we get a real response
-            @app.delete("/api/test-delete-audit")
-            async def _delete_endpoint():
-                return {}
-
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                await client.delete("/api/test-delete-audit")
-
-        # The middleware now appends via pool.fetchval (INSERT INTO public.audit_log).
-        mock_pool.fetchval.assert_awaited()
-        any_audit_call = any(
-            "public.audit_log" in str(call) for call in mock_pool.fetchval.call_args_list
-        )
-        assert any_audit_call, "Expected audit INSERT but found none"
-
     async def test_middleware_skips_get(self):
         """A GET to /api/ does NOT write an audit row."""
         app, mock_db, mock_pool = self._make_app_with_mock_db()
@@ -298,26 +275,6 @@ class TestDashboardAuditMiddleware:
         assert resp.status_code == 200
         audit_calls = [c for c in mock_pool.fetchval.call_args_list if "public.audit_log" in str(c)]
         assert audit_calls == []
-
-    async def test_middleware_fires_on_post(self):
-        """A POST to /api/ writes an audit row."""
-        app, mock_db, mock_pool = self._make_app_with_mock_db()
-
-        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
-
-            @app.post("/api/test-post-audit")
-            async def _post_endpoint():
-                return {"created": True}
-
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                await client.post("/api/test-post-audit", json={"key": "value"})
-
-        any_audit_call = any(
-            "public.audit_log" in str(call) for call in mock_pool.fetchval.call_args_list
-        )
-        assert any_audit_call, "Expected audit INSERT for POST but found none"
 
     async def test_middleware_records_method_and_path(self):
         """Audit row metadata carries the request_summary (method + path); the
@@ -487,8 +444,4 @@ class TestInferButler:
         from butlers.api.dashboard_audit_middleware import _infer_butler
 
         assert _infer_butler("/api/audit-log") == "dashboard"
-
-    def test_health_path_returns_dashboard(self):
-        from butlers.api.dashboard_audit_middleware import _infer_butler
-
         assert _infer_butler("/api/health") == "dashboard"

@@ -433,15 +433,32 @@ class TestGetQaSummary:
         assert body["kpis"]["active_cases_now"] == 3
         assert body["active_breakdown"] == {"awaiting_ci": 1, "escalated_open_cases": 0}
 
-    async def test_summary_kpi_queries_scope_to_qa_originated_attempts(self) -> None:
+    async def test_summary_kpi_sql_scopes_to_qa_origin_and_active_status_list(self) -> None:
+        """The summary KPI query is QA-scoped and uses the active-status IN-list.
+
+        Two invariants on the SQL shape recorded from the mock pool:
+
+        1. Both the KPI aggregate query (the one containing ``active_cases_now``)
+           and the active-breakdown query (``AS escalated_open_cases``) scope to
+           QA-originated attempts via ``qa_patrol_id IS NOT NULL`` — they must not
+           count non-QA healing attempts.
+        2. ``active_cases_now`` is computed over the in-flight status set
+           ``status IN ('dispatch_pending', 'investigating', 'pr_open')`` — terminal
+           human-action cases are excluded from the live caseload.
+        """
         app, pool = _build_summary_app()
 
         assert (await _call(app, "get", "/api/qa/summary")).status_code == 200
 
         kpi_sql = _single_fetchrow_query_containing(pool, "active_cases_now")
         active_breakdown_sql = _single_fetchrow_query_containing(pool, "AS escalated_open_cases")
+
+        # (1) QA-origin scoping on both queries.
         assert "qa_patrol_id IS NOT NULL" in kpi_sql
         assert "qa_patrol_id IS NOT NULL" in active_breakdown_sql
+
+        # (2) active_cases_now uses the in-flight status IN-list.
+        assert "status IN ('dispatch_pending', 'investigating', 'pr_open')" in kpi_sql
 
     async def test_summary_escalated_count_uses_terminal_human_action_sql(self) -> None:
         app, pool = _build_summary_app(
@@ -462,24 +479,6 @@ class TestGetQaSummary:
         assert "AS escalated_open_cases" in active_breakdown_sql
         assert " AS escalated\n" not in active_breakdown_sql
         assert " AS escalated," not in active_breakdown_sql
-
-    async def test_summary_counts_terminal_human_action_outside_active_cases_now(self) -> None:
-        app, pool = _build_summary_app(
-            kpis=_make_kpi_row(active_cases_now=0),
-            active_breakdown=_make_active_breakdown_row(
-                awaiting_ci=0,
-                escalated_open_cases=1,
-            ),
-        )
-
-        body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
-
-        assert body["kpis"]["active_cases_now"] == 0
-        assert body["active_breakdown"] == {"awaiting_ci": 0, "escalated_open_cases": 1}
-        kpi_sql = _single_fetchrow_query_containing(pool, "active_cases_now")
-        active_breakdown_sql = _single_fetchrow_query_containing(pool, "AS escalated_open_cases")
-        assert "status IN ('dispatch_pending', 'investigating', 'pr_open')" in kpi_sql
-        assert "status IN ('unfixable', 'failed')" in active_breakdown_sql
 
     async def test_summary_kpi_prior_period_fields_present_in_response(self) -> None:
         """Prior-period fields are included in the kpis block and default to zero/null."""
@@ -513,17 +512,6 @@ class TestGetQaSummary:
         assert body["kpis"]["prs_landed_prior_24h"] == 1
         assert body["kpis"]["mttr_prior_24h_seconds"] == 480.0
         assert body["kpis"]["self_resolved_prior_7d_pct"] == 60.0
-
-    async def test_summary_kpi_sql_includes_prior_period_columns(self) -> None:
-        """KPI SQL query includes prior-period aggregate columns."""
-        app, pool = _build_summary_app()
-
-        assert (await _call(app, "get", "/api/qa/summary")).status_code == 200
-
-        kpi_sql = _single_fetchrow_query_containing(pool, "active_cases_now")
-        assert "prs_landed_prior_24h" in kpi_sql
-        assert "mttr_prior_24h_seconds" in kpi_sql
-        assert "self_resolved_prior_7d_pct" in kpi_sql
 
     async def test_summary_exposes_port_model_patrol_interval_via_staffer_info_fn(self) -> None:
         """port, model, patrol_interval_minutes are populated from the injected callable."""

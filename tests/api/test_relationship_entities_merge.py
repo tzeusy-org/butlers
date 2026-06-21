@@ -329,22 +329,8 @@ class TestOwnerOnlyGate:
 class TestKeepAsA:
     """keepAs='A' keeps entityA and tombstones entityB."""
 
-    async def test_keepas_a_returns_200(self):
-        """keepAs='A' should return HTTP 200 with correct response shape."""
-        # source=entityB, target=entityA
-        src = _make_entity_row(entity_id=ENTITY_B_ID)
-        tgt = _make_entity_row(entity_id=ENTITY_A_ID)
-        app, _ = _app_with_pool(source_row=src, target_row=tgt)
-
-        resp = await _post(
-            app,
-            {"entityA": str(ENTITY_A_ID), "entityB": str(ENTITY_B_ID), "keepAs": "A"},
-        )
-
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-
     async def test_keepas_a_response_shape(self):
-        """Response identifies the kept entity (A) and tombstoned entity (B)."""
+        """keepAs='A' returns 200 and identifies the kept entity (A) and tombstoned entity (B)."""
         src = _make_entity_row(entity_id=ENTITY_B_ID)
         tgt = _make_entity_row(entity_id=ENTITY_A_ID)
         app, _ = _app_with_pool(source_row=src, target_row=tgt, subject_rewired=3, object_rewired=1)
@@ -370,22 +356,8 @@ class TestKeepAsA:
 class TestKeepAsB:
     """keepAs='B' keeps entityB and tombstones entityA."""
 
-    async def test_keepas_b_returns_200(self):
-        """keepAs='B' should return HTTP 200 with correct response shape."""
-        # source=entityA, target=entityB
-        src = _make_entity_row(entity_id=ENTITY_A_ID)
-        tgt = _make_entity_row(entity_id=ENTITY_B_ID)
-        app, _ = _app_with_pool(source_row=src, target_row=tgt)
-
-        resp = await _post(
-            app,
-            {"entityA": str(ENTITY_A_ID), "entityB": str(ENTITY_B_ID), "keepAs": "B"},
-        )
-
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-
     async def test_keepas_b_response_shape(self):
-        """Response identifies the kept entity (B) and tombstoned entity (A)."""
+        """keepAs='B' returns 200 and identifies the kept entity (B) and tombstoned entity (A)."""
         src = _make_entity_row(entity_id=ENTITY_A_ID)
         tgt = _make_entity_row(entity_id=ENTITY_B_ID)
         app, _ = _app_with_pool(source_row=src, target_row=tgt, subject_rewired=5, object_rewired=2)
@@ -523,28 +495,13 @@ class TestInvalidInput:
 class TestRewireCounts:
     """The response accurately reports subject and object rewire counts."""
 
-    async def test_zero_rewires_when_no_facts(self):
-        """Zero subject_facts_rewired and object_facts_rewired is a valid response."""
-        src = _make_entity_row(entity_id=ENTITY_B_ID)
-        tgt = _make_entity_row(entity_id=ENTITY_A_ID)
-        app, _ = _app_with_pool(source_row=src, target_row=tgt, subject_rewired=0, object_rewired=0)
-
-        resp = await _post(
-            app,
-            {"entityA": str(ENTITY_A_ID), "entityB": str(ENTITY_B_ID), "keepAs": "A"},
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["subject_facts_rewired"] == 0
-        assert body["object_facts_rewired"] == 0
-
-    async def test_rewire_counts_match_db_result(self):
-        """subject_facts_rewired and object_facts_rewired reflect actual DB update counts."""
+    @pytest.mark.parametrize("subject,obj", [(0, 0), (10, 4)])
+    async def test_rewire_counts_match_db_result(self, subject, obj):
+        """Response rewire counts reflect actual DB update counts (incl. the zero case)."""
         src = _make_entity_row(entity_id=ENTITY_B_ID)
         tgt = _make_entity_row(entity_id=ENTITY_A_ID)
         app, _ = _app_with_pool(
-            source_row=src, target_row=tgt, subject_rewired=10, object_rewired=4
+            source_row=src, target_row=tgt, subject_rewired=subject, object_rewired=obj
         )
 
         resp = await _post(
@@ -554,8 +511,8 @@ class TestRewireCounts:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["subject_facts_rewired"] == 10
-        assert body["object_facts_rewired"] == 4
+        assert body["subject_facts_rewired"] == subject
+        assert body["object_facts_rewired"] == obj
 
 
 class TestMergeReviewAuditRowIsInTransaction:

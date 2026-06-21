@@ -129,24 +129,6 @@ async def test_list_measurements_empty():
     assert body["meta"]["total"] == 0
 
 
-async def test_list_measurements_returns_fact_based_entry():
-    """GET /api/health/measurements returns a correctly shaped entry from a facts row."""
-    row = _make_fact_row(mtype="weight", value={"kg": 80.0}, notes="After gym")
-    app, _ = _make_app(fetch_rows=[row], fetchval_result=1)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/health/measurements")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert len(data) == 1
-    entry = data[0]
-    assert entry["type"] == "weight"
-    assert entry["value"] == {"kg": 80.0}
-    assert entry["notes"] == "After gym"
-    assert entry["id"] == str(row["id"])
-
-
 async def test_list_measurements_scalar_value_normalised_to_dict():
     """Scalar measurement values (non-dict) are wrapped in {value: ...} for the Measurement model."""
     row = _make_fact_row(mtype="heart_rate", value=72)

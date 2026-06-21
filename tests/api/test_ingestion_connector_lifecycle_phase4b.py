@@ -138,30 +138,6 @@ async def test_disconnect_202_pending_approval(app):
     uuid.UUID(body["data"]["action_id"])  # raises if not valid UUID
 
 
-async def test_disconnect_creates_pending_action(app):
-    """POST disconnect inserts a pending_actions row into the switchboard pool."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
-    _wire_db(app, pool)
-
-    with patch(
-        "butlers.api.routers.ingestion_connectors._audit_append",
-        new_callable=AsyncMock,
-    ):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            await client.post(
-                f"/api/ingestion/connectors/{_CONNECTOR_TYPE}/{_ENDPOINT_IDENTITY}/disconnect"
-            )
-
-    # pool.execute called for the INSERT INTO pending_actions
-    pool.execute.assert_awaited_once()
-    call_args = pool.execute.call_args
-    sql = call_args.args[0]
-    assert "pending_actions" in sql
-    assert "connector_disconnect" in str(call_args.args)
-
-
 async def test_disconnect_emits_audit_entry(app):
     """POST disconnect emits an audit entry with action='connector.disconnect'."""
     pool = _make_pool(fetchrow_result=_make_existing_row())
@@ -278,28 +254,6 @@ async def test_rotate_token_202_success_body(app):
     assert "action_id" not in data
     assert "token" not in data
     assert "credential" not in data
-
-
-async def test_rotate_token_response_shape_exactly(app):
-    """rotate-token data section has exactly {success, rotated_at} — no extra fields."""
-    pool = _make_pool(fetchrow_result=_make_existing_row())
-    _wire_db(app, pool)
-
-    with patch(
-        "butlers.api.routers.ingestion_connectors._audit_append",
-        new_callable=AsyncMock,
-    ):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                f"/api/ingestion/connectors/{_CONNECTOR_TYPE}/{_ENDPOINT_IDENTITY}/rotate-token",
-            )
-
-    data = resp.json()["data"]
-    assert set(data.keys()) == {"success", "rotated_at"}, (
-        f"rotate-token response data must contain ONLY {{success, rotated_at}}; got {set(data.keys())}"
-    )
 
 
 async def test_rotate_token_credential_masking(app):

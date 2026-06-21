@@ -319,23 +319,8 @@ class TestOwnerOnlyGate:
 class TestPromotePath:
     """Promote an existing unidentified entity by providing entity_id + canonical_name."""
 
-    async def test_promote_returns_201(self):
-        """Successful promotion returns HTTP 201."""
-        entity = _make_entity_row(entity_id=_ENTITY_ID, metadata={"unidentified": "true"})
-        promoted = _make_entity_row(
-            entity_id=_ENTITY_ID, canonical_name="Alice Promoted", metadata={}
-        )
-        app, _ = _app_with_pool(entity_row=entity, updated_row=promoted)
-
-        resp = await _post(
-            app,
-            {"canonical_name": "Alice Promoted", "entity_id": str(_ENTITY_ID)},
-        )
-
-        assert resp.status_code == 201, f"Expected 201, got {resp.status_code}: {resp.text}"
-
     async def test_promote_returns_entity_summary(self):
-        """Response body contains EntitySummary fields."""
+        """Successful promotion returns HTTP 201 with EntitySummary fields."""
         entity = _make_entity_row(entity_id=_ENTITY_ID, metadata={"unidentified": "true"})
         promoted = _make_entity_row(
             entity_id=_ENTITY_ID,

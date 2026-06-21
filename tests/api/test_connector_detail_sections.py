@@ -234,18 +234,6 @@ async def test_connector_events_limit_enforced(app):
     assert resp.status_code == 422
 
 
-async def test_connector_events_503_pool_unavailable(app):
-    """Returns 503 when the switchboard pool is unavailable."""
-    _wire_pool_unavailable(app)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/ingestion/connectors/gmail/user@example.com/events")
-
-    assert resp.status_code == 503
-
-
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/connectors/{type}/{identity}/incidents
 # ---------------------------------------------------------------------------
@@ -323,18 +311,6 @@ async def test_connector_incidents_limit_enforced(app):
         )
 
     assert resp.status_code == 422
-
-
-async def test_connector_incidents_503_pool_unavailable(app):
-    """Returns 503 when the switchboard pool is unavailable."""
-    _wire_pool_unavailable(app)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/ingestion/connectors/gmail/user@example.com/incidents")
-
-    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -419,13 +395,23 @@ async def test_connector_routing_rules_uses_structured_scope(app):
     assert args[1] == "connector:gmail:user@example.com"
 
 
-async def test_connector_routing_rules_503_pool_unavailable(app):
-    """Returns 503 when the switchboard pool is unavailable."""
+# ---------------------------------------------------------------------------
+# 503 pool-unavailable — every section returns 503 when the pool is missing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "section",
+    ["events", "incidents", "routing-rules"],
+    ids=["events", "incidents", "routing-rules"],
+)
+async def test_connector_section_503_pool_unavailable(app, section):
+    """Each connector section returns 503 when the switchboard pool is unavailable."""
     _wire_pool_unavailable(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/ingestion/connectors/gmail/user@example.com/routing-rules")
+        resp = await client.get(f"/api/ingestion/connectors/gmail/user@example.com/{section}")
 
     assert resp.status_code == 503

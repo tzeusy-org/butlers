@@ -281,34 +281,22 @@ async def test_logs_default_limit_is_100() -> None:
     assert 100 in captured_args
 
 
-async def test_logs_accepts_limit_1000() -> None:
-    """limit=1000 is accepted (maximum allowed)."""
+@pytest.mark.parametrize(
+    "limit,expected_status",
+    [
+        (1000, 200),  # upper bound accepted
+        (1001, 422),  # above bound rejected
+        (0, 422),  # below bound rejected
+    ],
+)
+async def test_logs_limit_bounds(limit, expected_status) -> None:
+    """limit must be within 1..1000; boundary values accepted/rejected accordingly."""
     app = _make_app([])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/butlers/general/logs?limit=1000")
-    assert resp.status_code == 200
-
-
-async def test_logs_rejects_limit_above_1000() -> None:
-    """limit=1001 is rejected with 422."""
-    app = _make_app([])
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/butlers/general/logs?limit=1001")
-    assert resp.status_code == 422
-
-
-async def test_logs_rejects_limit_zero() -> None:
-    """limit=0 is rejected with 422."""
-    app = _make_app([])
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/butlers/general/logs?limit=0")
-    assert resp.status_code == 422
+        resp = await client.get(f"/api/butlers/general/logs?limit={limit}")
+    assert resp.status_code == expected_status
 
 
 async def test_logs_large_result_trimmed_by_limit() -> None:

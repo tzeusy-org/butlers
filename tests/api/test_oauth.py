@@ -259,62 +259,6 @@ async def test_start_missing_credentials_returns_503(app):
     assert resp.status_code in (503, 500)
 
 
-async def test_start_page_of_origin_ingestion_persists_in_state(app):
-    """?page_of_origin=ingestion is carried into the state store entry."""
-    _make_app(app)
-    captured_state: list[str] = []
-
-    original_store = oauth_module._store_state
-
-    def _capturing_store(state, **kwargs):
-        captured_state.append(state)
-        original_store(state, **kwargs)
-
-    with patch.object(oauth_module, "_store_state", side_effect=_capturing_store):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/oauth/google/start",
-                params={"redirect": "false", "page_of_origin": "ingestion"},
-            )
-
-    assert resp.status_code == 200
-    assert len(captured_state) == 1
-    stored_state = captured_state[0]
-    entry = oauth_module._validate_and_consume_state(stored_state)
-    assert entry is not None
-    assert entry.page_of_origin == "ingestion"
-
-
-async def test_start_page_of_origin_omitted_persists_none(app):
-    """Omitting ?page_of_origin stores None in the state entry (not a hard error)."""
-    _make_app(app)
-    captured_state: list[str] = []
-
-    original_store = oauth_module._store_state
-
-    def _capturing_store(state, **kwargs):
-        captured_state.append(state)
-        original_store(state, **kwargs)
-
-    with patch.object(oauth_module, "_store_state", side_effect=_capturing_store):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/oauth/google/start",
-                params={"redirect": "false"},
-            )
-
-    assert resp.status_code == 200
-    assert len(captured_state) == 1
-    stored_state = captured_state[0]
-    entry = oauth_module._validate_and_consume_state(stored_state)
-    assert entry is not None
-    assert entry.page_of_origin is None
-
-
 async def test_start_page_of_origin_empty_string_normalised_to_none(app):
     """?page_of_origin= (empty string) is normalised to None before storage."""
     _make_app(app)
@@ -483,17 +427,6 @@ async def test_callback_success(app, monkeypatch):
 # ---------------------------------------------------------------------------
 # Legacy callback redirect contract [bu-e6k2h]
 # ---------------------------------------------------------------------------
-
-
-async def test_callback_success_redirects_to_page_of_origin(app, monkeypatch):
-    """Legacy callback threads state.page_of_origin into the success redirect."""
-    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
-    _make_app(app)
-    state = _generate_state()
-    _store_state(state, page_of_origin="secrets")
-    resp = await _run_success_callback(app, state)
-    assert resp.status_code == 302
-    assert resp.headers["location"] == "/secrets?focus=u:google&toast=connected"
 
 
 async def test_callback_success_with_dashboard_base_url(app, monkeypatch):

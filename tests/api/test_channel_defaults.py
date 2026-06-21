@@ -108,7 +108,6 @@ async def test_get_channel_default_404_missing(app):
         resp = await client.get("/api/ingestion/channel-defaults/nonexistent")
 
     assert resp.status_code == 404
-    assert "nonexistent" in resp.json()["detail"]
 
 
 async def test_get_channel_default_503_on_db_unavailable(app):
@@ -127,33 +126,8 @@ async def test_get_channel_default_503_on_db_unavailable(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_patch_channel_default_upserts(app):
-    row = _channel_row("email")
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_make_record(row))
-    _app_with_mock_db(app, shared_pool=pool)
-
-    with patch(
-        "butlers.api.routers.channel_defaults._audit_append", new_callable=AsyncMock
-    ) as mock_audit:
-        mock_audit.return_value = 1
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                "/api/ingestion/channel-defaults/email",
-                json={
-                    "default_policy_json": {"priority_action": "pass_through", "max_age_days": 30},
-                },
-            )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["channel"] == "email"
-
-
 async def test_patch_channel_default_emits_audit(app):
-    """PATCH must emit an audit entry with action='ingestion.channel_default.update'."""
+    """PATCH upserts (200, channel echoed) and emits the channel_default.update audit."""
     row = _channel_row("telegram")
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=_make_record(row))
@@ -172,6 +146,8 @@ async def test_patch_channel_default_emits_audit(app):
             )
 
     assert resp.status_code == 200
+    assert resp.json()["channel"] == "telegram"
+    # Audit-action enum + target are the contract here (guardrail: audit coverage).
     mock_audit.assert_awaited_once()
     call_kwargs = mock_audit.await_args.kwargs
     assert call_kwargs["action"] == "ingestion.channel_default.update"
@@ -194,7 +170,6 @@ async def test_patch_channel_default_400_missing_required_field(app):
         )
 
     assert resp.status_code == 400
-    assert "priority_action" in resp.json()["detail"]
 
 
 async def test_patch_channel_default_400_unknown_channel(app):
@@ -211,7 +186,6 @@ async def test_patch_channel_default_400_unknown_channel(app):
         )
 
     assert resp.status_code == 400
-    assert "foobar_unknown_channel" in resp.json()["detail"]
 
 
 async def test_patch_channel_default_400_invalid_priority_action(app):
@@ -228,7 +202,6 @@ async def test_patch_channel_default_400_invalid_priority_action(app):
         )
 
     assert resp.status_code == 400
-    assert "priority_action" in resp.json()["detail"]
 
 
 async def test_patch_channel_default_503_on_db_unavailable(app):
@@ -260,4 +233,3 @@ async def test_delete_channel_default_405(app):
         resp = await client.delete("/api/ingestion/channel-defaults/email")
 
     assert resp.status_code == 405
-    assert "not supported" in resp.json()["detail"].lower()

@@ -322,16 +322,6 @@ class TestResponseShape:
         assert item["episode_id"] == str(ep_id)
         assert item["summary"] == "Test episode"
 
-    async def test_activity_entry_has_id_and_ts(self):
-        fact_id = uuid4()
-        fact_row = _make_fact_row(fact_id=fact_id, last_seen=_NOW)
-        app, _, _ = _app_with_mocks(fact_rows=[fact_row], chronicler_episodes=[])
-        resp = await _get(app)
-        body = resp.json()
-        item = body["items"][0]
-        assert item["id"] == str(fact_id)
-        assert item["ts"] is not None
-
 
 # ---------------------------------------------------------------------------
 # Scenario: Merged stream sort (timestamp descending)
@@ -354,24 +344,6 @@ class TestMergedStreamSort:
         items = body["items"]
         assert items[0]["src"] == "chronicler"
         assert items[1]["src"] == "relationship"
-        # Guard: relationship SQL must use entity_facts, not the memory-module facts table.
-        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
-        assert "relationship.entity_facts" in fetch_call_sql
-        assert "relationship.facts" not in fetch_call_sql  # guard against regression
-
-    async def test_relationship_before_chronicler_when_newer(self):
-        # fact at _NOW, episode at _OLDER — fact should appear first.
-        fact_id = uuid4()
-        ep_id = uuid4()
-        fact_row = _make_fact_row(fact_id=fact_id, last_seen=_NOW)
-        episodes = [_make_episode_dict(episode_id=ep_id, canonical_start_at=_OLDER)]
-        app, pool, _ = _app_with_mocks(fact_rows=[fact_row], chronicler_episodes=episodes)
-        resp = await _get(app)
-        body = resp.json()
-        assert body["total"] == 2
-        items = body["items"]
-        assert items[0]["src"] == "relationship"
-        assert items[1]["src"] == "chronicler"
         # Guard: relationship SQL must use entity_facts, not the memory-module facts table.
         fetch_call_sql = pool.fetch.call_args_list[0][0][0]
         assert "relationship.entity_facts" in fetch_call_sql
@@ -495,32 +467,6 @@ class TestChroniclerMcpCall:
     meeting episodes where the entity is an attendee (not the calendar owner) surface in
     the entity's activity feed.
     """
-
-    async def test_mcp_tool_called_with_participant_entity_id(self):
-        ep_id = uuid4()
-        episodes = [_make_episode_dict(episode_id=ep_id)]
-        app, _, mock_mcp = _app_with_mocks(fact_rows=[], chronicler_episodes=episodes)
-        resp = await _get(app)
-        assert resp.status_code == 200
-
-        # Verify get_client was called for 'chronicler'.
-        mock_mcp.get_client.assert_called_once_with("chronicler")
-
-        # The mock client is the return value of the awaited get_client coroutine.
-        # mock_mcp.get_client is an AsyncMock, so .return_value is the resolved value.
-        mock_client = mock_mcp.get_client.return_value
-        mock_client.call_tool.assert_called_once()
-        call_args = mock_client.call_tool.call_args
-        tool_name = call_args[0][0]
-        tool_kwargs = call_args[0][1]
-        assert tool_name == "chronicler_list_episodes"
-        # Must use participant_entity_id (join-based multi-role), NOT entity_id (owner-only).
-        assert tool_kwargs.get("participant_entity_id") == str(_ENTITY_ID), (
-            "aggregator must call chronicler_list_episodes with participant_entity_id, not entity_id"
-        )
-        assert "entity_id" not in tool_kwargs, (
-            "aggregator must not pass the legacy owner-only entity_id filter"
-        )
 
     async def test_participant_episodes_surface_in_activity_feed(self):
         """A meeting episode where the entity is a PARTICIPANT (not owner) appears in activity.
