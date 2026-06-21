@@ -10,6 +10,7 @@ import {
   findCalendarWorkspaceTime,
   getCalendarAccounts,
   getCalendarDayBriefing,
+  getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
   getCalendarWorkspaceEntry,
@@ -146,6 +147,26 @@ export function useCalendarDayBriefing(
       }),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 60_000,
+  });
+}
+
+/**
+ * Fetch the meeting-prep rail context for a selected calendar event. Reads the
+ * precomputed prep view (attendees + relationship notes + last-met + per-attendee
+ * message context) — NO per-open LLM call. Fail-open server-side: an event with
+ * no prep contribution yields the honest empty-state (`has_prep_context: false`),
+ * never an error. The query is disabled until an `eventId` is provided so the
+ * rail only fetches once an event is selected.
+ */
+export function useCalendarMeetingPrep(
+  eventId: string | null | undefined,
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  return useQuery({
+    queryKey: ["calendar-meeting-prep", eventId],
+    queryFn: () => getCalendarMeetingPrep(eventId as string),
+    enabled: (options?.enabled ?? true) && !!eventId,
+    refetchInterval: options?.refetchInterval ?? false,
   });
 }
 

@@ -36,6 +36,7 @@ import type {
   CalendarAuditParams,
   CalendarAuditResponse,
   CalendarDayBriefingResponse,
+  CalendarPrepResponse,
   CalendarSourceToggleRequest,
   CalendarProposalAcceptRequest,
   CalendarProposalActionResponse,
@@ -1134,6 +1135,22 @@ export function getCalendarDayBriefing(params: {
   });
   return apiFetch<ApiResponse<CalendarDayBriefingResponse>>(
     `/calendar/workspace/day-briefing?${sp.toString()}`,
+  );
+}
+
+/**
+ * Fetch the meeting-prep rail context for a selected calendar event. Reads the
+ * precomputed `calendar.v_prep_contributions` view (attendees + relationship
+ * notes + last-met + per-attendee message context, merged across contributing
+ * butlers) — no per-open LLM call. Fail-open server-side: an event with no prep
+ * contribution yields the honest empty-state (`has_prep_context: false`), never
+ * an error.
+ */
+export function getCalendarMeetingPrep(
+  eventId: string,
+): Promise<ApiResponse<CalendarPrepResponse>> {
+  return apiFetch<ApiResponse<CalendarPrepResponse>>(
+    `/calendar/workspace/prep/${encodeURIComponent(eventId)}`,
   );
 }
 

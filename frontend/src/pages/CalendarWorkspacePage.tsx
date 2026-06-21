@@ -72,6 +72,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
+import { MeetingPrepRailContainer } from "@/components/calendar/MeetingPrepRail";
 import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsPanel";
 import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
@@ -1848,6 +1849,20 @@ function CalendarEntryDetailPanel({
             ))}
           </div>
         </div>
+      ) : null}
+
+      {/* Meeting-prep rail (bu-rct3g): attendee relationships, notes, last-met,
+          and per-attendee message context for an entity-linked meeting. Reads the
+          precomputed prep view — fail-open to an honest "No prep context yet"
+          empty-state (the expected state for most events today). Shown only for
+          provider (user-calendar) meetings, where attendee prep is meaningful.
+          NOTE: `UnifiedCalendarEntry` exposes only the instance id (`entry_id`),
+          not the underlying `calendar_events.id` the prep contributions are keyed
+          on; passing it relies on the endpoint's fail-open empty-state. A
+          backend follow-up should surface `event_id` on the entry so the rail
+          matches contributions once coverage is populated. */}
+      {isUserEvent ? (
+        <MeetingPrepRailContainer eventId={entry.entry_id} heading={entry.title} />
       ) : null}
 
       {/* Description (user events only) */}

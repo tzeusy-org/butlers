@@ -714,6 +714,57 @@ export interface CalendarDayBriefingResponse {
   entries: UnifiedCalendarEntry[];
 }
 
+/** A single durable relationship note surfaced on the meeting-prep rail. */
+export interface CalendarPrepNote {
+  /** Note category (e.g. `preference`, `context`). */
+  kind: string;
+  text: string;
+}
+
+/**
+ * Precomputed prep context for one resolved attendee of a selected event.
+ *
+ * All fields are drawn from contribution-sourced cached data (the relationship
+ * butler's deterministic prep job). `dunbar_tier` is the relationship
+ * letter-mark source (the FE maps the integer tier to its letter via
+ * {@link tierLabel}); `notes` are durable CRM notes; `last_met` /
+ * `last_met_event` come from the most recent prior co-attended event;
+ * `message_context` is the email/message-owning butlers' per-attendee
+ * contribution (empty until the message-context job — bu-tmtpb — lands).
+ */
+export interface CalendarPrepAttendee {
+  entity_id: string;
+  name: string;
+  dunbar_tier: number | null;
+  notes: CalendarPrepNote[];
+  last_met: string | null;
+  last_met_event: string | null;
+  /** Opaque per-attendee message/email context items; shape owned by the
+   * contributing butler (rendered defensively, gracefully empty if absent). */
+  message_context: Record<string, unknown>[];
+}
+
+/**
+ * Response payload for GET /api/calendar/workspace/prep/{event_id} — the
+ * meeting-prep rail context for a selected entity-linked event, assembled
+ * exclusively from the cached `calendar.v_prep_contributions` view (no direct
+ * `relationship.*` / `health.*` read, no per-open LLM call).
+ *
+ * Honest empty-state: `has_prep_context` is `true` when at least one
+ * contributing specialist wrote a prep contribution for the event;
+ * `false` when none exists (co-attended / contact-link coverage not yet
+ * populated, jobs not run, or the view is absent) — the expected state for most
+ * events today, rendered as "No prep context yet" rather than an error. The
+ * read is fail-open and does NOT use the `aggregates_available` envelope.
+ */
+export interface CalendarPrepResponse {
+  event_id: string;
+  has_prep_context: boolean;
+  attendees: CalendarPrepAttendee[];
+  /** Butlers that contributed prep context for this event. */
+  source_butlers: string[];
+}
+
 /** Sync capability flags in workspace metadata. */
 export interface CalendarWorkspaceCapabilitiesSync {
   global: boolean;

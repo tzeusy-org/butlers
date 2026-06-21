@@ -45,6 +45,20 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
       },
     },
   })),
+  useCalendarMeetingPrep: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    isFetched: false,
+    error: null,
+    data: {
+      data: {
+        event_id: "00000000-0000-0000-0000-000000000000",
+        has_prep_context: false,
+        attendees: [],
+        source_butlers: [],
+      },
+    },
+  })),
   useCalendarWorkspaceMeta: vi.fn(),
   useCalendarWorkspaceAudit: vi.fn(() => ({
     isLoading: false,
