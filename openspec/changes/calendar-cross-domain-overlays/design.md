@@ -2,48 +2,119 @@
 
 ## Context
 
-RFC-0020 (accepted 2026-06-21) permits the calendar workspace to read specialist
-domain state through a migration-tracked read-only UNION view, following the
-same five-guardrail pattern RFC 0010 established for `general.v_briefing_contributions`
-(Alembic migration `core_063_v_briefing_contributions.py`). The pattern is:
+RFC-0020 (Accepted 2026-06-21) permits the calendar workspace to read specialist
+domain state through a migration-tracked read-only UNION view, reusing the
+five-guardrail pattern RFC 0010 established for `general.v_briefing_contributions`
+(Alembic migration `core_063_v_briefing_contributions.py`). The owner adopted the
+**no-LLM structured variant**: drop synthesis entirely, write structured overlay
+entries (not prose), render them as ribbons / pills / lists with zero LLM at
+render.
 
-1. Each specialist writes deterministic, no-LLM overlay contributions into its
-   own `state` store under a filtered key prefix.
-2. An Alembic migration creates a read-only UNION view in the calendar reader's
-   schema that aggregates those contributions.
-3. The workspace API reads the cached view at render — zero LLM, zero cross-schema
-   fan-out at request time.
+The proven briefing pattern this change mirrors has three moving parts:
 
-RFC-0020 §Decision selected the **no-LLM structured variant**: drop synthesis
-entirely, write structured overlay entries (not prose), render them as ribbons /
-pills / lists. This design implements that path.
+1. **Per-butler deterministic contribution jobs** (`daily_briefing_contribution`)
+   registered in `_DETERMINISTIC_SCHEDULE_JOB_REGISTRY` with `dispatch_mode="job"`
+   that write structured envelopes into each butler's own `state` store under a
+   filtered key prefix (`briefing/daily/<date>`), at zero LLM cost.
+2. **A read-only cross-schema UNION view** (`general.v_briefing_contributions`,
+   created by `core_063`) in the reader's schema, with a hardcoded `butler`
+   source literal per UNION term, a key filter, and migration-tracked reversible
+   SELECT grants.
+3. **A read of the cached view** with no LLM in the path.
+
+This design applies all three to the calendar overlay.
 
 ## Decisions
 
-### D1 — Key prefix: `calendar/overlay/<YYYY-MM-DD>` mirrors the briefing pattern
+### D1 — REUSE, do not rebuild
 
-The briefing contribution key convention is `briefing/daily/<YYYY-MM-DD>` (per the
-`cross-butler-briefing-contribution` spec). The overlay key convention mirrors it:
-`calendar/overlay/<YYYY-MM-DD>`.
+This is the load-bearing decision. The overlay foundation is the briefing
+foundation pointed at a new key prefix and reader schema:
 
-**Why this prefix?**
+- **Contribution jobs register in the EXISTING registry.** Each contributing
+  specialist's `calendar_overlay_contribution` handler is added to the same
+  `_DETERMINISTIC_SCHEDULE_JOB_REGISTRY` (`src/butlers/scheduled_jobs.py`) that
+  already holds `daily_briefing_contribution`, under the specialist's butler
+  name, with `dispatch_mode="job"`. No new dispatch system, no new scheduler
+  path, no new job-registry mechanism is introduced.
+- **The view MIRRORS `general.v_briefing_contributions` (core_063).** Same
+  shape: `SELECT '<butler>' AS butler, key, value FROM <schema>.state WHERE key
+  LIKE '<prefix>/%'`, UNION ALL across the contributing schemas, with the
+  `butler` value a hardcoded string literal per term (not from the payload).
+- **The migration reuses `core_063`'s optional-schema guard contract** (AGENTS.md
+  "Core migration optional-schema guard"): `_state_table_exists` via
+  `to_regclass`, `_ensure_role_exists` best-effort role creation, and a
+  NULL-returning stub UNION term (`SELECT NULL::text AS butler ... WHERE FALSE`)
+  for any specialist whose `state` table is absent at migration time. This is why
+  the view is safe on fresh/core-only databases and in tests.
 
-- `calendar/` namespace scopes overlay keys away from briefing keys in the same
-  `state` table — they never collide and can be queried or pruned independently.
-- `overlay/` distinguishes this access pattern from a possible future
-  `calendar/prep-rail/<event-id>` pattern for the meeting-prep rail.
-- `<YYYY-MM-DD>` is the date in SGT (UTC+8, the operator timezone) at job
-  execution time, matching the briefing convention and keeping cross-feature key
-  interpretation consistent.
+The only intentional differences from briefing are: the reader schema is
+`calendar` (not `general`), the key prefix is `calendar/overlay/` (not
+`briefing/daily/`), the contributing set is four specialists (not seven), and the
+envelope carries typed `entries` instead of `highlights` + `summary` (no prose;
+see D3).
 
-The view key filter is `key LIKE 'calendar/overlay/%'` — it is deliberately
-narrow (Guardrail #3 of RFC 0010: bounded key access, not whole-table).
+### D2 — The SPLIT: one view+grants unit + one contribution job per butler
 
-### D2 — Contribution envelope: structured `entries` array, no `summary`
+The foundation decomposes into independently-shippable, parallelizable units that
+map 1:1 onto split beads:
 
-The briefing contribution envelope has a `summary` (pre-rendered prose). The
-overlay envelope does NOT — RFC-0020 §Decision explicitly defers the narrative
-layer to `bu-jdrkbj` (P4). The v1 envelope is:
+| Unit | Scope |
+|------|-------|
+| **view** | The `calendar.v_overlay_contributions` UNION view + reversible SELECT grants, in one Alembic migration (mirrors `core_063`). |
+| **job-finance** | `finance.calendar_overlay_contribution` deterministic job (bills / subscription renewals). |
+| **job-travel** | `travel.calendar_overlay_contribution` deterministic job (departures / arrivals / check-ins / check-outs). |
+| **job-relationship** | `relationship.calendar_overlay_contribution` deterministic job (birthdays / important dates / follow-ups). |
+| **job-health** | `health.calendar_overlay_contribution` deterministic job (appointments / medication reminders). |
+| **render** | `view=overlays` workspace projection → overlay ribbons/pills from the cached view. |
+| **prep-rail** | Meeting-prep rail read (attendee / notes / last-met), contribution-sourced. |
+| **briefing** | Day-briefing card read (structured "tomorrow at a glance"). |
+
+The view unit has no dependency on any job (it returns zero rows until jobs run —
+the empty-when-none contract). Each job unit depends only on the key convention
+(D4), not on the view or on other jobs. The render/prep-rail/briefing reads depend
+on the view existing but degrade fail-open before it does. This is what lets the
+beads be worked in parallel after this gate lands.
+
+### D3 — Option A: no LLM at render; any narrative is batch pre-rendered (deferred)
+
+Per RFC-0020 §Decision, the v1 path is the structured variant — **no LLM anywhere
+in the read path**:
+
+- Contribution jobs are pure deterministic SQL/Python (the same class of work as
+  the briefing contribution jobs). They produce structured `entries`, not prose.
+- The `view=overlays`, prep-rail, and day-briefing reads are pure DB projections
+  of the cached view. They construct entries/cards from already-computed fields;
+  they do not call an LLM, and they do not fan out to sibling schemas at request
+  time.
+
+The v1 envelope therefore has **no `summary` field**. The briefing envelope's
+pre-rendered `summary` exists because the EOD briefing has a single daily LLM
+session that consumes it; the overlay render has none. If batched pre-rendered
+prose is ever wanted, RFC-0020 step 4 / `bu-jdrkbj` (P4) specifies it as **one
+scheduled session** that writes a pre-rendered `summary` into the contribution —
+an additive envelope field, displayed verbatim, never a per-open session. That
+layer is **deferred** and out of scope here.
+
+### D4 — Contribution key convention: `calendar/overlay/<date>`
+
+The briefing key convention is `briefing/daily/<YYYY-MM-DD>`. The overlay
+convention mirrors it exactly: `calendar/overlay/<YYYY-MM-DD>`, where `<date>` is
+the target calendar date in SGT (UTC+8) at job execution time.
+
+- The `calendar/` namespace scopes overlay keys away from `briefing/daily/` keys
+  in the same `state` table — they never collide and prune independently.
+- `overlay/` distinguishes this from a possible future `calendar/prep/<event-id>`
+  prefix for the prep-rail's own precomputed cache.
+- The view key filter is `key LIKE 'calendar/overlay/%'` — deliberately narrow
+  (RFC 0010 Guardrail #3: bounded key access, not whole-table).
+
+A single job run MAY write multiple keys (one per date in a rolling lookahead
+window), overwriting via `state_set` (upsert), and prunes keys whose date suffix
+is older than the retention window — exactly the briefing contribution cleanup
+pattern.
+
+### D5 — Contribution envelope: structured `entries`, no prose
 
 ```json
 {
@@ -61,145 +132,72 @@ layer to `bu-jdrkbj` (P4). The v1 envelope is:
 }
 ```
 
-**Fields:**
-- `butler` (TEXT): string literal matching the source schema. The aggregation
-  layer validates `value->>'butler' == butler` column (same as briefing
-  aggregation) — a mismatch treats the entry as malformed.
-- `date` (TEXT, ISO YYYY-MM-DD): the target calendar date these entries appear on.
-- `has_entries` (boolean): quick "did this specialist have anything today" signal
-  for the empty-state card without parsing `entries`.
-- `entries` (array): ordered by priority descending (high → medium → low).
-- `entries[].kind` (TEXT): domain-specific type string; see D4 for the canonical
-  kind set per specialist.
-- `entries[].label` (TEXT): human-readable short description suitable for a
-  calendar pill. Never generated prose — always deterministically formatted from
-  domain data.
-- `entries[].priority` ("high" | "medium" | "low"): visual weight.
-- `entries[].meta` (JSONB, optional): kind-specific structured data for FE
-  rendering. Content is specialist-owned; the overlay layer does not interpret it.
+- `butler` (TEXT): string literal matching the source schema; the projection
+  validates `value->>'butler'` equals the view's `butler` source column (the
+  briefing aggregation does the same) — a mismatch marks the entry malformed.
+- `date` (TEXT, ISO YYYY-MM-DD): the target calendar date.
+- `has_entries` (boolean): "did this specialist have anything for this date" —
+  lets the empty-state card distinguish "ran, found nothing" from "hasn't run".
+- `entries[]`: ordered priority-descending; each has `kind` (FE
+  icon/color discriminator), `label` (deterministically formatted, never prose),
+  `priority` (`high|medium|low`), and an optional kind-specific `meta` object the
+  overlay layer does not interpret.
 
-**No `summary` field.** If `bu-jdrkbj` is ever promoted, it will add `summary`
-as an ADDITIVE field to the envelope — backward compatible since the v1 consumer
-only reads `has_entries` + `entries`.
+### D6 — Honest empty-state: `has_domain_context` on the read responses
 
-### D3 — View lives in `calendar` schema (the reader), not `public`
+The `view=overlays` and day-briefing reads must distinguish:
 
-`general.v_briefing_contributions` is in the `general` schema (the reader). The
-overlay view is `calendar.v_overlay_contributions` — in the calendar schema (the
-reader).
+1. **"Nothing today"** — jobs ran, specialists found nothing (`has_entries=false`).
+2. **"Context unavailable"** — view absent / query failed / no contribution key
+   for the date yet.
 
-**Why not `public`?**
+Both yield `entries: []`. The difference surfaces in a response-level
+`has_domain_context: bool` (`true` only when the view was reachable AND at least
+one specialist had a contribution for the date). The FE renders `false` as
+"No domain context for this day" rather than silently dropping the card section.
 
-RFC-0020 §Alternatives explicitly rejects the shared-`public`-table approach:
-"it introduces cross-butler write coupling to the `public` schema (read-only for
-most butlers under RFC 0006) and sets precedent for arbitrary shared tables."
-The same reasoning applies to the view. The view is in the reader's schema;
-specialists only need SELECT grants on their own `state` tables — no `public`
-write.
+### D7 — Prep-rail is contribution-sourced, never a direct cross-butler read
 
-The SELECT grants are issued to the database role used by the calendar butler
-(e.g. `butler_general_rw` pattern → `butler_calendar_rw`). If that role does not
-exist at migration time, the migration creates it best-effort (matching the
-`_ensure_role_exists` pattern in `core_063`).
-
-### D4 — Contributing butler set: finance, travel, relationship, health
-
-RFC-0020 §Design lists four specialist types that produce date-keyed calendar
-events: finance (bills/renewals), travel (departures/check-ins), relationship
-(birthdays/follow-ups), health (appointments).
-
-**Education, Home, Lifestyle are excluded** because:
-- Education contributions (review counts, streaks) are not date-bound in a
-  calendar-day sense — they are relevant every day, not on specific future dates.
-- Home contributions (sensor outliers, device alerts) are real-time, not
-  future-date calendar events.
-- Lifestyle contributions (consumption facts, taste preferences) are retrospective
-  log entries, not calendar-forward events.
-
-**Canonical `kind` values per specialist:**
-
-| Specialist   | kind values |
-|--------------|-------------|
-| `finance`    | `bill_due`, `subscription_renewal` |
-| `travel`     | `departure`, `arrival`, `check_in`, `check_out` |
-| `relationship` | `birthday`, `important_date`, `follow_up` |
-| `health`     | `appointment`, `medication_reminder` |
-
-The `kind` is a discriminator for FE icon/color selection; the implementation is
-NOT required to enumerate these values — additional kinds can be added additively
-without a spec change, as long as `label` remains human-readable.
-
-### D5 — Contribution job: one entry per future date in a rolling window
-
-Each specialist job runs on a fixed cron (`50 6 * * *` = 06:50 UTC, before the
-briefing pipeline at 06:55 UTC) and writes entries for today through
-`+OVERLAY_LOOKAHEAD_DAYS` (proposed: 30 days). This means:
-
-- The view always has contributions for the next ~30 days, refreshed daily.
-- A new appointment booked mid-day may not appear until the next job run. This
-  is acceptable for v1 (structured overlay, no live sync), matching the
-  briefing pattern.
-- Each job run **overwrites** the existing entry for each date (upsert semantics
-  via `state_set`).
-- Entries for dates more than 30 days past are pruned in the same job run to
-  bound state store growth.
-
-Cron `50 6 * * *` is chosen to precede the briefing contribution job at `55 6 * * *`
-so that the combined briefing card (`briefing/combined/*`) can optionally
-incorporate overlay data from the same day's run in the future.
-
-### D6 — Honest empty-state: `has_domain_context` in the workspace response
-
-`GET /api/calendar/workspace?view=overlays` must signal the difference between:
-
-1. **"No events today"** — job ran, specialist found nothing, `has_entries=false`.
-2. **"Job hasn't run yet or view missing"** — view absent / query failed / no
-   contribution key for this date.
-
-Both return `entries: []` in the unified projection. The difference surfaces in a
-new response-level field `has_domain_context: bool`:
-
-- `true`: the view was reachable and at least one specialist had a contribution
-  for this date (even if all had `has_entries=false`).
-- `false`: either the view was unreachable OR no specialist had a contribution
-  for the requested date. In the FE, `false` renders "No domain context for this
-  day" rather than silently omitting the section.
-
-This field belongs on the workspace response envelope, not on individual
-`UnifiedCalendarEntry` rows, because it is per-date metadata, not per-entry.
+The meeting-prep rail (attendees + relationship notes + last-met for a selected
+event) is exactly the kind of cross-domain data RFC-0020 forbids reading
+on-demand at calendar-open time. Its read endpoint therefore reads only
+**precomputed contribution data** through the same cached-view discipline (a
+`calendar/prep/<event-id>` contribution prefix, populated by a future
+deterministic job once co-attended edges `bu-xgz7g.1` and contact-link coverage
+`bu-mcz0o9` exist). Until that coverage lands, the prep-rail read returns its
+honest empty-state. It MUST NOT issue a live `SELECT ... FROM relationship.*` at
+request time and MUST NOT spawn an LLM session — both are the RFC-0020-rejected
+naive paths.
 
 ## Degraded-mode behavior
 
-The `view=overlays` endpoint reads `calendar.v_overlay_contributions`. This view
-does not call Prometheus, so it is NOT in the aggregate-metrics degraded-envelope
-family (`aggregates_available`).
+The overlay reads project `calendar.v_overlay_contributions`. The view does not
+call Prometheus, so these endpoints are NOT in the aggregate-metrics
+degraded-envelope family (`aggregates_available`).
 
-- **Read is fail-open.** If the view is absent (pre-migration), the contributing
-  specialist schemas don't have state tables yet, or the query fails, the endpoint
-  returns `entries: []` with `has_domain_context: false` — never HTTP 500.
-- **Per-specialist failures are independent.** The UNION view's PostgreSQL
-  execution does not fail the whole query if one UNION term's source table is
-  missing (handled by `to_regclass`-style guards in the migration, matching
-  `core_063`'s `_state_table_exists` pattern).
+- **Reads are fail-open.** If the view is absent (pre-migration), a contributing
+  specialist's `state` table is missing, or the query fails, the endpoint returns
+  `entries: []` with `has_domain_context: false` — never HTTP 500.
+- **Per-specialist failures are independent.** The migration's
+  `to_regclass`/optional-schema guard emits a NULL-returning stub term for any
+  missing specialist, so one absent schema never fails the whole view query.
 - **No write path.** Overlay contributions are written by each specialist to its
-  own state store via `state_set`; no overlay write goes through the calendar
-  schema. There is no calendar-side write degradation mode.
+  own `state` store via `state_set`; nothing is written through the calendar
+  schema, and the view is a UNION (not updatable) — there is no calendar-side
+  write degradation mode.
 
 ## Risks / Trade-offs
 
 - **Contribution lag.** Overlays are batch-precomputed daily; an appointment
-  booked at 08:00 SGT won't appear on the overlay until 06:50 UTC the next day.
-  Acceptable for v1 structured overlays. If live currency is needed, the path is
-  Switchboard fan-out at render time — explicitly the RFC-0020-rejected naive
-  design — so it remains out of scope.
-- **Lookahead window tuning.** 30 days is proposed; if specialist butlers generate
-  many entries per day (e.g. a travel-heavy user), the state store could grow.
-  Mitigated by the pruning step; the window can be narrowed to 14 days if needed.
-- **New `source_type` value.** Adding `"overlay_contribution"` to the literal
-  touches the workspace model and any exhaustive `source_type` switch, exactly as
-  `"proposed_event"` did for `calendar-event-proposals`. Mitigated by it only
-  being emitted on the `overlays` view.
-- **Migration order.** The view references specialist state tables that may not
-  exist at migration time (calendar module enabled before finance, etc.). Mitigated
-  by the same `_state_table_exists` guard pattern from `core_063` — unavailable
-  specialists emit a NULL-returning stub UNION term, and grants silently no-op.
+  booked mid-day won't appear until the next job run. Acceptable for v1 (the
+  briefing has the same property); the live alternative is the RFC-0020-rejected
+  naive design.
+- **Lookahead window growth.** A travel-heavy day could write many entries per
+  date; bounded by the per-run prune step and a tunable lookahead window.
+- **New `source_type` value.** `"overlay_contribution"` touches the workspace
+  model and any exhaustive `source_type` switch, exactly as `"proposed_event"`
+  did for `calendar-event-proposals`; mitigated by it only being emitted on the
+  `overlays` view.
+- **Migration order.** The view references specialist `state` tables that may not
+  exist when the calendar migration runs; mitigated entirely by the reused
+  `core_063` optional-schema guard (stub UNION term + best-effort grants).
