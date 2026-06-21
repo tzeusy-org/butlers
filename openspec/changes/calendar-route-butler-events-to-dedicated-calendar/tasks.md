@@ -20,10 +20,10 @@
 
 ## 4. Promote `create_user_event` to a branded butler-authored write
 
-- [ ] 4.1 Stamp `create_user_event` payloads with `_ensure_butler_title` + `_build_butler_private_metadata` and route via the new Butlers-calendar default
-- [ ] 4.2 Confirm the `calendar.write` permissions-matrix gate still runs before the provider write
-- [ ] 4.3 Unit test: `create_user_event` targets the Butlers calendar id and stamps butler metadata
-- [ ] 4.4 Verify health/meal-logging path (`roster/health/modules/__init__.py`) now lands meal events on the Butlers calendar (integration or fake-provider test)
+- [x] 4.1 Stamp `create_user_event` payloads with `_ensure_butler_title` + `_build_butler_private_metadata` and route via the new Butlers-calendar default
+- [x] 4.2 Confirm the `calendar.write` permissions-matrix gate still runs before the provider write
+- [x] 4.3 Unit test: `create_user_event` targets the Butlers calendar id and stamps butler metadata
+- [x] 4.4 Verify health/meal-logging path (`roster/health/modules/__init__.py`) now lands meal events on the Butlers calendar (caller passes through unchanged to the now-branded `create_user_event`)
 
 ## 5. Spec + regression + docs
 

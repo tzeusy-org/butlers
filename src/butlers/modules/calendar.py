@@ -8231,6 +8231,13 @@ class CalendarModule(Module):
 
         Silently returns if the provider is not initialised (calendar module not ready).
 
+        Branded as butler-authored: the title is stamped with the butler-event
+        prefix via :meth:`_ensure_butler_title` and butler-generated/name private
+        metadata is attached via :meth:`_build_butler_private_metadata`, matching
+        the blessed MCP ``calendar_create_event`` path. The event defaults to the
+        dedicated Butlers calendar via ``_resolve_calendar_id(None,
+        for_create=True)``.
+
         Permissions-matrix enforcement (public.permissions: calendar.write): this
         path writes to the provider without going through the 3 blessed MCP
         calendar tools, so it must consult the matrix itself. Reuses the same
@@ -8244,10 +8251,11 @@ class CalendarModule(Module):
         await self._require_calendar_write_permission()
         calendar_id = self._resolve_calendar_id(None, for_create=True)
         payload = CalendarEventCreate(
-            title=title,
+            title=self._ensure_butler_title(title),
             start_at=start_at,
             end_at=end_at,
             description=description,
+            private_metadata=self._build_butler_private_metadata(butler_name=self._butler_name),
         )
         await self._provider.create_event(calendar_id=calendar_id, payload=payload)
 

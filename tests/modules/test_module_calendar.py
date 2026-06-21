@@ -42,6 +42,7 @@ from butlers.modules.base import Module
 from butlers.modules.calendar import (
     _CREDENTIAL_KEY_CALENDAR_ID,
     _CREDENTIAL_KEY_DEFAULT_TARGET_CALENDAR_ID,
+    BUTLER_EVENT_TITLE_PREFIX,
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
     CALENDAR_ROLE_BUTLERS,
@@ -746,6 +747,42 @@ class TestCalendarWritePermissionEnforcement:
                 end_at=datetime(2026, 2, 20, 13, 0, tzinfo=UTC),
             )
         assert len(provider.create_calls) == 1
+
+    async def test_create_user_event_branded_and_routed_to_butlers_calendar(self):
+        """create_user_event stamps butler branding and defaults to the Butlers calendar.
+
+        The sibling create path (meal logging in roster/health) must match the
+        blessed MCP create_event: the title gets the BUTLER: prefix, butler
+        private metadata is attached, and the event lands on the dedicated
+        Butlers calendar (for_create default), NOT the user's primary.
+        """
+        mod, provider, _ = await self._make_module()
+        # Distinguish the Butlers calendar from the user's primary so routing is
+        # unambiguous: for_create defaults must pick the Butlers calendar.
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        mod._primary_calendar_id = "owner@example.com"
+        with patch(
+            "butlers.modules.calendar.require_permission",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            await mod.create_user_event(
+                title="Lunch",
+                start_at=datetime(2026, 2, 20, 12, 0, tzinfo=UTC),
+                end_at=datetime(2026, 2, 20, 13, 0, tzinfo=UTC),
+            )
+
+        assert len(provider.create_calls) == 1
+        call = provider.create_calls[0]
+        # Routed to the dedicated Butlers calendar, not the user's primary.
+        assert call["calendar_id"] == "butlers@group.calendar.google.com"
+        payload = call["payload"]
+        # Title branded with the butler-event prefix.
+        assert payload.title.startswith(BUTLER_EVENT_TITLE_PREFIX)
+        assert "Lunch" in payload.title
+        # Butler-authored private metadata attached.
+        assert payload.private_metadata[BUTLER_GENERATED_PRIVATE_KEY] == "true"
+        assert payload.private_metadata[BUTLER_NAME_PRIVATE_KEY] == mod._butler_name
 
 
 # ---------------------------------------------------------------------------
