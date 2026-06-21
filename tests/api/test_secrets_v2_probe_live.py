@@ -286,7 +286,7 @@ def test_google_probe_calls_token_exchange_then_userinfo(monkeypatch):
 
 
 def test_google_probe_userinfo_200_returns_probe_ok_true(monkeypatch):
-    """Google probe with userinfo HTTP 200 → probe_ok=True."""
+    """Google probe with userinfo HTTP 200 → probe_ok=True; audit note probe_status=live_ok."""
     row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
     mock_db = _make_db(user_row=row)
 
@@ -301,16 +301,27 @@ def test_google_probe_userinfo_200_returns_probe_ok_true(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
     monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
     client = _build_app(mock_db)
     resp = client.post("/api/secrets/user/google/probe")
 
     assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["ok"] is True
+    assert resp.json()["data"]["ok"] is True
+    assert audit_calls, "Expected at least one audit call"
+    assert "probe_status=live_ok" in audit_calls[0].get("note", "")
 
 
 def test_google_probe_userinfo_401_returns_probe_ok_false_with_code(monkeypatch):
-    """Google probe with userinfo HTTP 401 → probe_ok=False with code=401."""
+    """Google probe userinfo HTTP 401 → probe_ok=False, code=401; note probe_status=live_failed."""
     row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
     mock_db = _make_db(user_row=row)
 
@@ -325,6 +336,16 @@ def test_google_probe_userinfo_401_returns_probe_ok_false_with_code(monkeypatch)
     monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
     monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
     client = _build_app(mock_db)
     resp = client.post("/api/secrets/user/google/probe")
 
@@ -332,6 +353,8 @@ def test_google_probe_userinfo_401_returns_probe_ok_false_with_code(monkeypatch)
     data = resp.json()["data"]
     assert data["ok"] is False
     assert data["code"] == 401
+    assert audit_calls, "Expected at least one audit call"
+    assert "probe_status=live_failed" in audit_calls[0].get("note", "")
 
 
 def test_google_probe_token_exchange_failure_returns_probe_ok_false(monkeypatch):
@@ -431,6 +454,16 @@ def test_network_error_on_token_exchange_falls_back_to_local_check(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
     monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
     client = _build_app(mock_db)
     resp = client.post("/api/secrets/user/google/probe")
 
@@ -439,6 +472,9 @@ def test_network_error_on_token_exchange_falls_back_to_local_check(monkeypatch):
     # Network error → skipped_local_check → local state wins.
     # last_test_ok=True + value set → state='ok' → probe_ok=True.
     assert data["ok"] is True
+    # Audit note records the skipped-local-check fallback status.
+    assert audit_calls, "Expected at least one audit call"
+    assert "probe_status=skipped_local_check" in audit_calls[0].get("note", "")
 
 
 def test_network_error_on_userinfo_falls_back_to_local_check(monkeypatch):
@@ -469,114 +505,6 @@ def test_network_error_on_userinfo_falls_back_to_local_check(monkeypatch):
     data = resp.json()["data"]
     # Network error on userinfo → skipped_local_check → local state wins.
     assert data["ok"] is True
-
-
-def test_probe_audit_note_includes_probe_status_live_ok(monkeypatch):
-    """Audit note includes probe_status=live_ok when Google userinfo returns 200."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
-    mock_db = _make_db(user_row=row)
-
-    fake_client, _ = _make_fake_httpx_client(userinfo_status=200)
-
-    async def _fake_aenter(self):
-        return fake_client
-
-    async def _fake_aexit(self, *args):
-        pass
-
-    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-    client = _build_app(mock_db)
-    client.post("/api/secrets/user/google/probe")
-
-    assert audit_calls, "Expected at least one audit call"
-    note = audit_calls[0].get("note", "")
-    assert "probe_status=live_ok" in note, (
-        f"Expected 'probe_status=live_ok' in audit note; got: {note!r}"
-    )
-
-
-def test_probe_audit_note_includes_probe_status_live_failed(monkeypatch):
-    """Audit note includes probe_status=live_failed when userinfo returns 401."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
-    mock_db = _make_db(user_row=row)
-
-    fake_client, _ = _make_fake_httpx_client(userinfo_status=401)
-
-    async def _fake_aenter(self):
-        return fake_client
-
-    async def _fake_aexit(self, *args):
-        pass
-
-    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-    client = _build_app(mock_db)
-    client.post("/api/secrets/user/google/probe")
-
-    assert audit_calls, "Expected at least one audit call"
-    note = audit_calls[0].get("note", "")
-    assert "probe_status=live_failed" in note, (
-        f"Expected 'probe_status=live_failed' in audit note; got: {note!r}"
-    )
-
-
-def test_probe_audit_note_includes_probe_status_skipped_on_network_error(monkeypatch):
-    """Audit note includes probe_status=skipped_local_check on network error fallback."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
-    mock_db = _make_db(user_row=row)
-
-    fake_client, _ = _make_fake_httpx_client(network_error_on="token_exchange")
-
-    async def _fake_aenter(self):
-        return fake_client
-
-    async def _fake_aexit(self, *args):
-        pass
-
-    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-    client = _build_app(mock_db)
-    client.post("/api/secrets/user/google/probe")
-
-    assert audit_calls, "Expected at least one audit call"
-    note = audit_calls[0].get("note", "")
-    assert "probe_status=skipped_local_check" in note, (
-        f"Expected 'probe_status=skipped_local_check' in audit note; got: {note!r}"
-    )
 
 
 def test_google_probe_missing_app_credentials_falls_back_to_local_check(monkeypatch):
@@ -785,42 +713,6 @@ def test_github_pat_probe_network_error_falls_back_to_local_check(monkeypatch):
     # Network error → skipped_local_check → local state wins.
     # last_test_ok=True + value set → state='ok' → probe_ok=True.
     assert data["ok"] is True
-
-
-def test_github_pat_probe_no_token_exchange_called(monkeypatch):
-    """Verify that GitHub PAT probe never triggers a token exchange POST."""
-    mock_db = _make_github_db()
-
-    post_calls: list[str] = []
-
-    async def _fake_post(url, **kwargs):
-        post_calls.append(str(url))
-        raise AssertionError(f"Unexpected POST to {url}")
-
-    async def _fake_get(url, **kwargs):
-        fake_resp = MagicMock(spec=httpx.Response)
-        fake_resp.status_code = 200
-        fake_resp.json = MagicMock(return_value={"login": "tzeusy"})
-        return fake_resp
-
-    fake_client = AsyncMock()
-    fake_client.post = AsyncMock(side_effect=_fake_post)
-    fake_client.get = AsyncMock(side_effect=_fake_get)
-
-    async def _fake_aenter(self):
-        return fake_client
-
-    async def _fake_aexit(self, *args):
-        pass
-
-    monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-    monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-    client = _build_app(mock_db)
-    resp = client.post("/api/secrets/user/github/probe")
-
-    assert resp.status_code == 200
-    assert not post_calls, f"No POST calls expected for GitHub PAT probe; got: {post_calls}"
 
 
 def test_github_pat_type_not_accepted_for_google(monkeypatch):

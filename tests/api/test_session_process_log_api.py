@@ -49,36 +49,6 @@ def test_process_log_with_retry_provenance() -> None:
     assert plog.attempt_count == 2
 
 
-def test_process_log_retry_succeeded_true() -> None:
-    """ProcessLog correctly stores retry_succeeded=True and result_source='retry'."""
-    from butlers.api.models.session import ProcessLog
-
-    plog = ProcessLog(
-        pid=100,
-        exit_code=0,
-        runtime_type="codex",
-        retry_attempted=True,
-        retry_succeeded=True,
-        result_source="retry",
-        attempt_count=2,
-    )
-    assert plog.retry_attempted is True
-    assert plog.retry_succeeded is True
-    assert plog.result_source == "retry"
-    assert plog.attempt_count == 2
-
-
-def test_process_log_single_attempt() -> None:
-    """ProcessLog with attempt_count=1 and no retry fields."""
-    from butlers.api.models.session import ProcessLog
-
-    plog = ProcessLog(pid=77, exit_code=0, runtime_type="codex", attempt_count=1)
-    assert plog.attempt_count == 1
-    assert plog.retry_attempted is None
-    assert plog.retry_succeeded is None
-    assert plog.result_source is None
-
-
 def test_process_log_json_serialization() -> None:
     """ProcessLog.model_dump() includes null retry fields; non-null fields serialize correctly."""
     from butlers.api.models.session import ProcessLog

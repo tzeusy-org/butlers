@@ -126,13 +126,26 @@ async def test_list_saved_views_200_returns_entries(app):
     assert "updated_at" in entry
 
 
-async def test_list_saved_views_503_on_db_unavailable(app):
+@pytest.mark.parametrize(
+    ("method", "path_suffix", "json_body"),
+    [
+        ("get", "", None),
+        ("post", "", {"name": "Test"}),
+        ("patch", "/{vid}", {"name": "Updated"}),
+        ("delete", "/{vid}", None),
+    ],
+    ids=["list", "create", "patch", "delete"],
+)
+async def test_saved_views_503_on_db_unavailable(app, method, path_suffix, json_body):
+    """Every saved-views CRUD route maps a missing shared pool to 503."""
     _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
+    path = "/api/timeline/saved-views" + path_suffix.format(vid=uuid4())
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/timeline/saved-views")
+        kwargs = {"json": json_body} if json_body is not None else {}
+        resp = await getattr(client, method)(path, **kwargs)
 
     assert resp.status_code == 503
 
@@ -191,37 +204,17 @@ async def test_create_saved_view_default_filter_spec(app):
     assert call_args[2] == {}
 
 
-async def test_create_saved_view_400_on_empty_name(app):
+@pytest.mark.parametrize("name", ["", "x" * 101], ids=["empty", "too-long"])
+async def test_create_saved_view_422_on_invalid_name(app, name):
+    """Pydantic min_length=1 / max_length=100 reject empty and over-long names."""
     _app_with_mock_db(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post("/api/timeline/saved-views", json={"name": ""})
+        resp = await client.post("/api/timeline/saved-views", json={"name": name})
 
-    assert resp.status_code == 422  # Pydantic min_length=1 validation
-
-
-async def test_create_saved_view_400_on_name_too_long(app):
-    _app_with_mock_db(app)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post("/api/timeline/saved-views", json={"name": "x" * 101})
-
-    assert resp.status_code == 422  # Pydantic max_length=100 validation
-
-
-async def test_create_saved_view_503_on_db_unavailable(app):
-    _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post("/api/timeline/saved-views", json={"name": "Test"})
-
-    assert resp.status_code == 503
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -301,21 +294,6 @@ async def test_patch_saved_view_404_not_found(app):
     assert resp.status_code == 404
 
 
-async def test_patch_saved_view_503_on_db_unavailable(app):
-    view_id = uuid4()
-    _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.patch(
-            f"/api/timeline/saved-views/{view_id}",
-            json={"name": "Updated"},
-        )
-
-    assert resp.status_code == 503
-
-
 # ---------------------------------------------------------------------------
 # DELETE /api/timeline/saved-views/{id}
 # ---------------------------------------------------------------------------
@@ -347,18 +325,6 @@ async def test_delete_saved_view_404_not_found(app):
         resp = await client.delete(f"/api/timeline/saved-views/{view_id}")
 
     assert resp.status_code == 404
-
-
-async def test_delete_saved_view_503_on_db_unavailable(app):
-    view_id = uuid4()
-    _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.delete(f"/api/timeline/saved-views/{view_id}")
-
-    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

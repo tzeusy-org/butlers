@@ -236,79 +236,41 @@ def _build_app(mock_db: MagicMock) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_user_credential_hit_returns_200():
-    """Hit case: matching entity_info row returns 200 with UserSecretDetail."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
-    mock_db = _make_db_manager_for_per_credential(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/user/google")
-    assert resp.status_code == 200
-
-
-def test_user_credential_hit_envelope_shape():
-    """Hit case: response has {data, meta} envelope and required data fields."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh")
+def test_user_credential_hit_returns_200_envelope():
+    """Hit case: 200 with {data, meta} envelope; required UserSecretDetail fields
+    present, provider matches path, fingerprint is 8-char hex, state=ok."""
+    row = _make_entity_info_row(
+        info_type="google_oauth_refresh", value="mytoken", last_test_ok=True
+    )
     mock_db = _make_db_manager_for_per_credential(user_row=row)
     client = _build_app(mock_db)
 
     resp = client.get("/api/secrets/user/google")
     assert resp.status_code == 200
     body = resp.json()
-
-    # Envelope conformance
-    assert "data" in body
     assert "meta" in body
     data = body["data"]
 
     # Required fields per spec
-    assert "id" in data
-    assert "entity_id" in data
-    assert "type" in data
-    assert "provider" in data
-    assert "state" in data
-    assert "fingerprint" in data or data.get("fingerprint") is None
-    # Future fields default to None/[]
-    assert "issued" in data or data.get("issued") is None
-    assert "scopes_required" in data
-    assert "scopes_granted" in data
-    assert "feeds" in data
-    assert "breaks" in data
-    assert "audit" in data
+    for field in (
+        "id",
+        "entity_id",
+        "type",
+        "provider",
+        "state",
+        "scopes_required",
+        "scopes_granted",
+        "feeds",
+        "breaks",
+        "audit",
+    ):
+        assert field in data, f"missing field {field!r}"
 
-
-def test_user_credential_hit_provider_field():
-    """Hit case: provider field in response matches path parameter."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", value="tok")
-    mock_db = _make_db_manager_for_per_credential(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/user/google")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["provider"] == "google"
-
-
-def test_user_credential_hit_fingerprint_present():
-    """Hit case: fingerprint is a non-None 8-char hex string when value is set."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", value="mytoken")
-    mock_db = _make_db_manager_for_per_credential(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/user/google")
-    fp = resp.json()["data"]["fingerprint"]
-    assert fp is not None
-    assert len(fp) == 8
+    assert data["provider"] == "google"
+    assert data["state"] == "ok"
+    fp = data["fingerprint"]
+    assert fp is not None and len(fp) == 8
     int(fp, 16)  # validates it's hex
-
-
-def test_user_credential_hit_state_ok():
-    """Hit case: state=ok when last_test_ok=True."""
-    row = _make_entity_info_row(last_test_ok=True)
-    mock_db = _make_db_manager_for_per_credential(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/user/google")
-    assert resp.json()["data"]["state"] == "ok"
 
 
 def test_user_credential_hit_with_probe_test_result():
@@ -370,77 +332,31 @@ def test_user_credential_miss_no_shared_pool_returns_404():
     assert resp.status_code == 404
 
 
-def test_user_credential_miss_unknown_provider_returns_404():
-    """Miss case: provider not in entity_info returns 404."""
-    mock_db = _make_db_manager_for_per_credential(user_row=None)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/user/nonexistent-provider")
-    assert resp.status_code == 404
-
-
 # ---------------------------------------------------------------------------
 # Tests: GET /api/secrets/system/<key> — hit cases
 # ---------------------------------------------------------------------------
 
 
-def test_system_credential_hit_returns_200():
-    """Hit case: matching butler_secrets row returns 200."""
-    row = _make_system_row(key="OPENAI_API_KEY", last_test_ok=True)
+def test_system_credential_hit_returns_200_envelope():
+    """Hit case: 200 with {data, meta} envelope; required SystemSecretDetail fields
+    present, key matches path, fingerprint is 8-char hex, row_state='shared'."""
+    row = _make_system_row(key="OPENAI_API_KEY", value="secretvalue", last_test_ok=True)
     mock_db = _make_db_manager_for_per_credential(system_row=row)
     client = _build_app(mock_db)
 
     resp = client.get("/api/secrets/system/OPENAI_API_KEY")
     assert resp.status_code == 200
-
-
-def test_system_credential_hit_envelope_shape():
-    """Hit case: response has {data, meta} envelope and required data fields."""
-    row = _make_system_row(key="TELEGRAM_BOT_TOKEN")
-    mock_db = _make_db_manager_for_per_credential(system_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/system/TELEGRAM_BOT_TOKEN")
-    assert resp.status_code == 200
     body = resp.json()
-
-    assert "data" in body
     assert "meta" in body
     data = body["data"]
 
-    # Required fields per spec
-    assert "key" in data
-    assert "category" in data
-    assert "state" in data
-    assert "fingerprint" in data or data.get("fingerprint") is None
-    assert "row_state" in data
-    assert "description" in data or data.get("description") is None
-    assert "last_verified" in data or data.get("last_verified") is None
-    assert "used_by" in data
-    assert "breaks" in data
-    assert "audit" in data
+    for field in ("key", "category", "state", "row_state", "used_by", "breaks", "audit"):
+        assert field in data, f"missing field {field!r}"
 
-
-def test_system_credential_hit_key_matches():
-    """Hit case: key in response matches path parameter."""
-    row = _make_system_row(key="MY_API_KEY")
-    mock_db = _make_db_manager_for_per_credential(system_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/system/MY_API_KEY")
-    assert resp.json()["data"]["key"] == "MY_API_KEY"
-
-
-def test_system_credential_hit_fingerprint_present():
-    """Hit case: fingerprint is 8-char hex when value is set."""
-    row = _make_system_row(key="SOME_KEY", value="secretvalue")
-    mock_db = _make_db_manager_for_per_credential(system_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/system/SOME_KEY")
-    fp = resp.json()["data"]["fingerprint"]
-    assert fp is not None
-    assert len(fp) == 8
+    assert data["key"] == "OPENAI_API_KEY"
+    assert data["row_state"] == "shared"
+    fp = data["fingerprint"]
+    assert fp is not None and len(fp) == 8
     int(fp, 16)
 
 
@@ -466,16 +382,6 @@ def test_system_credential_hit_with_probe():
     assert data["test"] is not None
     assert data["test"]["ok"] is False
     assert data["test"]["code"] == 401
-
-
-def test_system_credential_hit_row_state_is_shared():
-    """Hit case: row_state defaults to 'shared'."""
-    row = _make_system_row(key="SHARED_KEY")
-    mock_db = _make_db_manager_for_per_credential(system_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/system/SHARED_KEY")
-    assert resp.json()["data"]["row_state"] == "shared"
 
 
 def test_system_credential_no_raw_value_in_response():
@@ -512,99 +418,36 @@ def test_system_credential_miss_no_butlers_returns_404():
     assert resp.status_code == 404
 
 
-def test_system_credential_miss_unknown_key_returns_404():
-    """Miss case: completely unknown key returns 404."""
-    mock_db = _make_db_manager_for_per_credential(system_row=None)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/system/I_DO_NOT_EXIST")
-    assert resp.status_code == 404
-
-
 # ---------------------------------------------------------------------------
 # Tests: GET /api/secrets/cli/<id> — hit cases
 # ---------------------------------------------------------------------------
 
 
-def test_cli_credential_hit_returns_200():
-    """Hit case: matching CLI token returns 200."""
-    row = _make_cli_row(key="cli-abc123", last_test_ok=True)
-    mock_db = _make_db_manager_for_per_credential(cli_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/cli/cli-abc123")
-    assert resp.status_code == 200
-
-
-def test_cli_credential_hit_envelope_shape():
-    """Hit case: response has {data, meta} envelope and required data fields."""
-    row = _make_cli_row(key="cli-xyz789")
+def test_cli_credential_hit_returns_200_envelope():
+    """Hit case: 200 with {data, meta} envelope; required CLISecretDetail fields
+    present, id matches path, fingerprint 8-char hex, label from description, expires set."""
+    expires = _NOW + timedelta(days=30)
+    row = _make_cli_row(
+        key="cli-xyz789", value="mysecretclitoken", description="My Dev Token", expires_at=expires
+    )
     mock_db = _make_db_manager_for_per_credential(cli_row=row)
     client = _build_app(mock_db)
 
     resp = client.get("/api/secrets/cli/cli-xyz789")
     assert resp.status_code == 200
     body = resp.json()
-
-    assert "data" in body
     assert "meta" in body
     data = body["data"]
 
-    # Required fields per spec
-    assert "id" in data
-    assert "label" in data or data.get("label") is None
-    assert "state" in data
-    assert "fingerprint" in data or data.get("fingerprint") is None
-    assert "issued" in data or data.get("issued") is None
-    assert "expires" in data or data.get("expires") is None
-    assert "last_used" in data or data.get("last_used") is None
-    assert "scopes_required" in data
-    assert "scopes_granted" in data
+    for field in ("id", "state", "scopes_required", "scopes_granted"):
+        assert field in data, f"missing field {field!r}"
 
-
-def test_cli_credential_hit_id_matches():
-    """Hit case: id in response matches path parameter."""
-    row = _make_cli_row(key="cli-my-token")
-    mock_db = _make_db_manager_for_per_credential(cli_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/cli/cli-my-token")
-    assert resp.json()["data"]["id"] == "cli-my-token"
-
-
-def test_cli_credential_hit_fingerprint_present():
-    """Hit case: fingerprint is 8-char hex when token value is set."""
-    row = _make_cli_row(key="cli-fp-test", value="mysecretclitoken")
-    mock_db = _make_db_manager_for_per_credential(cli_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/cli/cli-fp-test")
-    fp = resp.json()["data"]["fingerprint"]
-    assert fp is not None
-    assert len(fp) == 8
-    int(fp, 16)
-
-
-def test_cli_credential_hit_label_from_description():
-    """Hit case: label field maps from butler_secrets.description."""
-    row = _make_cli_row(key="cli-tok", description="My Dev Token")
-    mock_db = _make_db_manager_for_per_credential(cli_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/cli/cli-tok")
-    assert resp.json()["data"]["label"] == "My Dev Token"
-
-
-def test_cli_credential_hit_expires_returned():
-    """Hit case: expires field is populated from expires_at column."""
-    expires = _NOW + timedelta(days=30)
-    row = _make_cli_row(key="cli-exp", expires_at=expires)
-    mock_db = _make_db_manager_for_per_credential(cli_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/cli/cli-exp")
-    data = resp.json()["data"]
+    assert data["id"] == "cli-xyz789"
+    assert data["label"] == "My Dev Token"
     assert data["expires"] is not None
+    fp = data["fingerprint"]
+    assert fp is not None and len(fp) == 8
+    int(fp, 16)
 
 
 def test_cli_credential_hit_state_expired():
@@ -662,15 +505,6 @@ def test_cli_credential_miss_no_shared_pool_returns_404():
     client = _build_app(mock_db)
 
     resp = client.get("/api/secrets/cli/any-id")
-    assert resp.status_code == 404
-
-
-def test_cli_credential_miss_unknown_id_returns_404():
-    """Miss case: completely unknown CLI ID returns 404."""
-    mock_db = _make_db_manager_for_per_credential(cli_row=None)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/cli/i-dont-exist")
     assert resp.status_code == 404
 
 

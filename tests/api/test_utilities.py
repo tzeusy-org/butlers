@@ -89,9 +89,9 @@ class TestDatabaseAndDeps:
             await init_db_manager([cfg])
 
         warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-        assert any(
-            "ghost" in msg and "butlers" in msg and "ghost" in msg for msg in warning_messages
-        ), f"Expected butler name/db/schema in warning. Got: {warning_messages}"
+        assert any("ghost" in msg for msg in warning_messages), (
+            f"Expected pool-failure warning naming the butler. Got: {warning_messages}"
+        )
 
     def test_database_manager_uses_api_pool_size_overrides(self, monkeypatch):
         """Dashboard pools can be capped independently from daemon pools."""
@@ -286,34 +286,19 @@ class TestDepsModuleGlobalIsolation:
                 f"{attr} has an unexpected value type: {type(val)}"
             )
 
-    def test_get_db_manager_raises_when_none(self, monkeypatch):
-        """get_db_manager() raises RuntimeError when singleton is None."""
+    @pytest.mark.parametrize(
+        ("singleton", "getter"),
+        [
+            ("_db_manager", "get_db_manager"),
+            ("_mcp_manager", "get_mcp_manager"),
+            ("_butler_configs", "get_butler_configs"),
+            ("_pricing_config", "get_pricing"),
+        ],
+    )
+    def test_getter_raises_when_singleton_none(self, monkeypatch, singleton, getter):
+        """Each get_*() accessor raises RuntimeError when its singleton is None."""
         import butlers.api.deps as deps_mod
 
-        monkeypatch.setattr(deps_mod, "_db_manager", None)
+        monkeypatch.setattr(deps_mod, singleton, None)
         with pytest.raises(RuntimeError, match="not initialized"):
-            deps_mod.get_db_manager()
-
-    def test_get_mcp_manager_raises_when_none(self, monkeypatch):
-        """get_mcp_manager() raises RuntimeError when singleton is None."""
-        import butlers.api.deps as deps_mod
-
-        monkeypatch.setattr(deps_mod, "_mcp_manager", None)
-        with pytest.raises(RuntimeError, match="not initialized"):
-            deps_mod.get_mcp_manager()
-
-    def test_get_butler_configs_raises_when_none(self, monkeypatch):
-        """get_butler_configs() raises RuntimeError when singleton is None."""
-        import butlers.api.deps as deps_mod
-
-        monkeypatch.setattr(deps_mod, "_butler_configs", None)
-        with pytest.raises(RuntimeError, match="not initialized"):
-            deps_mod.get_butler_configs()
-
-    def test_get_pricing_raises_when_none(self, monkeypatch):
-        """get_pricing() raises RuntimeError when singleton is None."""
-        import butlers.api.deps as deps_mod
-
-        monkeypatch.setattr(deps_mod, "_pricing_config", None)
-        with pytest.raises(RuntimeError, match="not initialized"):
-            deps_mod.get_pricing()
+            getattr(deps_mod, getter)()

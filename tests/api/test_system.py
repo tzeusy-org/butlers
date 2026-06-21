@@ -32,9 +32,6 @@ from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.routers.system import (
     _get_db_manager,
     _read_backup_facts_from_dir,
-    system_backups_reads_total,
-    system_butlers_heartbeat_reads_total,
-    system_database_reads_total,
     system_egress_reads_total,
     system_instance_reads_total,
 )
@@ -216,42 +213,10 @@ async def test_backups_reachable_with_files(tmp_path: Path, monkeypatch: pytest.
 
 # ---------------------------------------------------------------------------
 # _read_backup_facts_from_dir unit tests (no HTTP stack needed)
+#
+# The missing/empty/with-files paths are covered through the /backups endpoint
+# tests above; only the file-glob filtering invariant is unique here.
 # ---------------------------------------------------------------------------
-
-
-def test_read_backup_facts_dir_missing(tmp_path: Path):
-    """A non-existent directory returns degraded facts, not an exception."""
-    missing = tmp_path / "missing"
-    facts = _read_backup_facts_from_dir(missing)
-    assert facts.backup_source_reachable is False
-    assert facts.last_backup_at is None
-    assert facts.backup_history == []
-
-
-def test_read_backup_facts_empty_dir(tmp_path: Path):
-    facts = _read_backup_facts_from_dir(tmp_path)
-    assert facts.backup_source_reachable is True
-    assert facts.last_backup_at is None
-    assert facts.backup_history == []
-
-
-def test_read_backup_facts_with_dumps(tmp_path: Path):
-    f1 = tmp_path / "butlers_2026-05-01T01-00-00.sql.gz"
-    f2 = tmp_path / "butlers_2026-05-07T02-00-00.sql.gz"
-    f1.write_bytes(b"a" * 512)
-    f2.write_bytes(b"b" * 1024)
-    ts_old = time.time() - 200
-    ts_new = time.time()
-    os.utime(f1, (ts_old, ts_old))
-    os.utime(f2, (ts_new, ts_new))
-
-    facts = _read_backup_facts_from_dir(tmp_path)
-    assert facts.backup_source_reachable is True
-    assert facts.last_backup_size_bytes == 1024
-    assert len(facts.backup_history) == 2
-    # history sorted newest-first
-    assert facts.backup_history[0].size_bytes == 1024
-    assert facts.backup_history[1].size_bytes == 512
 
 
 def test_read_backup_facts_ignores_non_matching_files(tmp_path: Path):
@@ -764,35 +729,14 @@ class TestPrometheusCounters:
         assert resp.status_code == 200
         assert self._counter_value(system_instance_reads_total) == before + 1
 
-    async def test_database_counter_exists_and_increments(self):
-        """system_database_reads_total increments on GET /api/system/database."""
-        mock_db = MagicMock(spec=DatabaseManager)
-        pool = AsyncMock()
-        pool.fetchval = AsyncMock(return_value=1024)
-        pool.fetch = AsyncMock(return_value=[])
-        mock_db.pool.return_value = pool
-        app = _make_app_with_db(mock_db)
-        before = self._counter_value(system_database_reads_total)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/system/database")
-        assert resp.status_code == 200
-        assert self._counter_value(system_database_reads_total) == before + 1
+    async def test_egress_counter_increments_even_on_403(self):
+        """system_egress_reads_total bumps on GET /api/system/egress even when it 403s.
 
-    async def test_backups_counter_exists_and_increments(self):
-        """system_backups_reads_total increments on GET /api/system/backups."""
-        app = create_app()
-        before = self._counter_value(system_backups_reads_total)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/system/backups")
-        assert resp.status_code == 200
-        assert self._counter_value(system_backups_reads_total) == before + 1
-
-    async def test_egress_counter_exists_and_increments(self):
-        """system_egress_reads_total increments on GET /api/system/egress (even on 403)."""
+        Retained alongside the instance counter test as the representative
+        observability-wiring guard for the error-path branch (counter must bump
+        before the 403 gate). The other per-endpoint counter tests were redundant
+        copies of this same increment-on-read pattern.
+        """
         mock_db = MagicMock(spec=DatabaseManager)
         pool = AsyncMock()
         # Simulate missing owner -> 403, but counter still bumps
@@ -808,23 +752,3 @@ class TestPrometheusCounters:
         # 403 is expected (no owner), but the counter must still have bumped
         assert resp.status_code == 403
         assert self._counter_value(system_egress_reads_total) == before + 1
-
-    async def test_heartbeat_counter_exists_and_increments(self):
-        """system_butlers_heartbeat_reads_total increments on GET /api/system/butlers/heartbeat."""
-        sw_pool = AsyncMock()
-        sw_pool.fetch = AsyncMock(return_value=[])
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.butler_names = []
-
-        def _pool(name: str):
-            return sw_pool
-
-        mock_db.pool.side_effect = _pool
-        app = _make_heartbeat_app(mock_db, [])
-        before = self._counter_value(system_butlers_heartbeat_reads_total)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/system/butlers/heartbeat")
-        assert resp.status_code == 200
-        assert self._counter_value(system_butlers_heartbeat_reads_total) == before + 1

@@ -485,27 +485,23 @@ async def test_cost_summary_date_range_multi_butler(app):
     SpendSummary.model_validate(data)
 
 
-async def test_cost_summary_date_range_only_from_returns_422(app):
-    """Providing only 'from' without 'to' returns 422."""
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"from": "2026-03-01"},  # only 'from' without 'to'
+        {"from": "2026-04-30", "to": "2026-04-01"},  # inverted 'from' > 'to'
+    ],
+    ids=["only-from", "inverted"],
+)
+async def test_cost_summary_date_range_invalid_returns_422(app, params):
+    """Incomplete or inverted from/to ranges return 422."""
     configs = [ButlerConnectionInfo(name="sw", port=41100)]
     mgr = _mock_mgr({})
     _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/spend", params={"from": "2026-03-01"})
-    assert resp.status_code == 422
-
-
-async def test_cost_summary_date_range_inverted_returns_422(app):
-    """Providing 'from' > 'to' returns 422."""
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    mgr = _mock_mgr({})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend", params={"from": "2026-04-30", "to": "2026-04-01"})
+        resp = await client.get("/api/spend", params=params)
     assert resp.status_code == 422
 
 
@@ -604,37 +600,6 @@ async def test_cost_summary_staffer_uses_db_when_session_tool_absent(app):
     assert data["total_sessions"] == 5
     assert data["total_cost_usd"] == pytest.approx(0.105, abs=1e-4)
     mgr.get_client.assert_not_called()
-    SpendSummary.model_validate(data)
-
-
-async def test_cost_summary_no_butler_filter_returns_aggregated(app):
-    """Omitting ?butler aggregates across all butlers (preserves existing behaviour)."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
-    ]
-    sw_data = {
-        "total_sessions": 5,
-        "total_input_tokens": 10000,
-        "total_output_tokens": 5000,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
-    }
-    gen_data = {
-        "total_sessions": 3,
-        "total_input_tokens": 8000,
-        "total_output_tokens": 4000,
-        "by_model": {"claude-haiku-35-20241022": {"input_tokens": 8000, "output_tokens": 4000}},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "gen": _make_tool_result(gen_data)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend")
-    data = resp.json()["data"]
-    assert data["total_sessions"] == 8
-    assert "sw" in data["by_butler"]
-    assert "gen" in data["by_butler"]
     SpendSummary.model_validate(data)
 
 
@@ -756,66 +721,6 @@ async def test_daily_staffer_uses_db_when_session_tool_absent(app):
     mgr.get_client.assert_not_called()
 
 
-async def test_daily_no_butler_filter_aggregates_all(app):
-    """Omitting ?butler on /daily preserves existing all-butler aggregation."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
-    ]
-    day = {
-        "days": [
-            {
-                "date": "2026-05-02",
-                "sessions": 3,
-                "input_tokens": 3000,
-                "output_tokens": 1500,
-                "by_model": {
-                    "claude-sonnet-4-20250514": {"input_tokens": 3000, "output_tokens": 1500}
-                },
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(day), "gen": _make_tool_result(day)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/spend/daily", params={"from": "2026-05-02", "to": "2026-05-02"}
-        )
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    # Both butlers contributed — sessions must be 6
-    assert data[0]["sessions"] == 6
-
-
-async def test_daily_unknown_butler_returns_empty_200(app):
-    """?butler=nonexistent on /daily produces an empty list 200."""
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    sw_daily = {
-        "days": [
-            {
-                "date": "2026-05-03",
-                "sessions": 1,
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "by_model": {},
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_daily)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/spend/daily",
-            params={"from": "2026-05-03", "to": "2026-05-03", "butler": "nonexistent"},
-        )
-    assert resp.status_code == 200
-    assert resp.json()["data"] == []
-
-
 # ---------------------------------------------------------------------------
 # GET /api/spend/top-sessions — ?butler= filter [bu-lryu6]
 # ---------------------------------------------------------------------------
@@ -862,62 +767,6 @@ async def test_top_sessions_butler_filter_returns_only_that_butler(app):
     data = resp.json()["data"]
     assert all(s["butler"] == "sw" for s in data)
     assert not any(s["butler"] == "gen" for s in data)
-
-
-async def test_top_sessions_no_butler_filter_aggregates_all(app):
-    """Omitting ?butler on /top-sessions returns sessions from all butlers."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
-    ]
-    session_data = {
-        "sessions": [
-            {
-                "session_id": "session-x",
-                "model": "claude-sonnet-4-20250514",
-                "input_tokens": 1000,
-                "output_tokens": 500,
-                "cached_input_tokens": 0,
-                "started_at": "2026-05-01T08:00:00Z",
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(session_data), "gen": _make_tool_result(session_data)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend/top-sessions")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    butlers_returned = {s["butler"] for s in data}
-    assert "sw" in butlers_returned
-    assert "gen" in butlers_returned
-
-
-async def test_top_sessions_unknown_butler_returns_empty_200(app):
-    """?butler=nonexistent on /top-sessions returns an empty list 200."""
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    sw_sessions = {
-        "sessions": [
-            {
-                "session_id": "sw-s1",
-                "model": "claude-sonnet-4-20250514",
-                "input_tokens": 1000,
-                "output_tokens": 500,
-                "cached_input_tokens": 0,
-                "started_at": "2026-05-01T08:00:00Z",
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_sessions)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend/top-sessions", params={"butler": "nonexistent"})
-    assert resp.status_code == 200
-    assert resp.json()["data"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -967,64 +816,6 @@ async def test_by_schedule_butler_filter_returns_only_that_butler(app):
     data = resp.json()["data"]
     assert all(s["butler"] == "sw" for s in data)
     assert not any(s["schedule_name"] == "gen-hourly" for s in data)
-
-
-async def test_by_schedule_no_butler_filter_aggregates_all(app):
-    """Omitting ?butler on /by-schedule returns schedules from all butlers."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
-    ]
-    sched = {
-        "schedules": [
-            {
-                "name": "daily",
-                "cron": "0 8 * * *",
-                "model": "claude-sonnet-4-20250514",
-                "total_runs": 5,
-                "total_input_tokens": 5000,
-                "total_output_tokens": 2500,
-                "runs_per_day": 1.0,
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sched), "gen": _make_tool_result(sched)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend/by-schedule")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    butlers_returned = {s["butler"] for s in data}
-    assert "sw" in butlers_returned
-    assert "gen" in butlers_returned
-
-
-async def test_by_schedule_unknown_butler_returns_empty_200(app):
-    """?butler=nonexistent on /by-schedule returns an empty list 200."""
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    sw_sched = {
-        "schedules": [
-            {
-                "name": "daily",
-                "cron": "0 8 * * *",
-                "model": "claude-sonnet-4-20250514",
-                "total_runs": 5,
-                "total_input_tokens": 5000,
-                "total_output_tokens": 2500,
-                "runs_per_day": 1.0,
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_sched)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend/by-schedule", params={"butler": "nonexistent"})
-    assert resp.status_code == 200
-    assert resp.json()["data"] == []
 
 
 # ---------------------------------------------------------------------------

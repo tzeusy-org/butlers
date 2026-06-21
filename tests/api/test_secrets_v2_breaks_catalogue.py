@@ -122,30 +122,6 @@ def test_breaks_catalogue_hit_returns_rows_for_provider():
     assert data[1]["severity"] == "medium"
 
 
-def test_breaks_catalogue_rows_contain_all_required_fields():
-    """Each BreakEntry has butler, feature, severity, required_scopes."""
-    rows = [
-        _make_catalogue_row(
-            provider="telegram",
-            butler="*",
-            feature="Telegram messaging",
-            severity="high",
-            required_scopes=[],
-        )
-    ]
-    mock_db = _make_db_manager_with_catalogue_rows(rows)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/breaks-catalogue?provider=telegram")
-    assert resp.status_code == 200
-    entry = resp.json()["data"][0]
-
-    assert entry["butler"] == "*"
-    assert entry["feature"] == "Telegram messaging"
-    assert entry["severity"] == "high"
-    assert entry["required_scopes"] == []
-
-
 def test_breaks_catalogue_sorted_severity_desc():
     """Rows are ordered high → medium → low when DB returns them in mixed order."""
     # DB returns them in any order; the SQL ORDER BY clause handles sorting.
@@ -183,32 +159,6 @@ def test_breaks_catalogue_miss_returns_empty_list():
 # ---------------------------------------------------------------------------
 # Scenario 3: Full catalogue — omitting ?provider= returns all rows
 # ---------------------------------------------------------------------------
-
-
-def test_breaks_catalogue_full_returns_all_rows():
-    """Omitting ?provider= returns the full catalogue."""
-    rows = [
-        _make_catalogue_row(
-            provider="google", butler="health", feature="Google Health ingestion", severity="high"
-        ),
-        _make_catalogue_row(
-            provider="telegram", butler="*", feature="Telegram messaging", severity="high"
-        ),
-        _make_catalogue_row(
-            provider="spotify",
-            butler="lifestyle",
-            feature="Spotify listening history",
-            severity="high",
-        ),
-    ]
-    mock_db = _make_db_manager_with_catalogue_rows(rows)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/breaks-catalogue")
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-
-    assert len(body["data"]) == 3
 
 
 def test_breaks_catalogue_full_includes_by_provider_meta():
@@ -417,8 +367,8 @@ async def test_catalogue_upsert_skips_when_table_absent():
 # ---------------------------------------------------------------------------
 
 
-def test_break_entry_model_fields():
-    """BreakEntry has all required spec fields."""
+def test_break_entry_model_fields_and_default_scopes():
+    """BreakEntry round-trips its spec fields and defaults required_scopes to []."""
     entry = BreakEntry(
         butler="health",
         feature="Google Health ingestion",
@@ -430,8 +380,5 @@ def test_break_entry_model_fields():
     assert entry.severity == "high"
     assert len(entry.required_scopes) == 1
 
-
-def test_break_entry_required_scopes_defaults_to_empty():
-    """required_scopes defaults to empty list when omitted."""
-    entry = BreakEntry(butler="*", feature="Telegram messaging", severity="high")
-    assert entry.required_scopes == []
+    default = BreakEntry(butler="*", feature="Telegram messaging", severity="high")
+    assert default.required_scopes == []

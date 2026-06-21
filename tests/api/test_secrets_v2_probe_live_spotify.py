@@ -267,7 +267,7 @@ class TestSpotifyProbe:
         )
 
     def test_spotify_probe_200_returns_live_ok(self, monkeypatch):
-        """Spotify probe: token refresh + /v1/me 200 → probe_ok=True."""
+        """Spotify probe: token refresh + /v1/me 200 → probe_ok=True; note probe_status=live_ok."""
         mock_db = self._make_spotify_db()
         fake_client, _ = _make_fake_httpx_client()
 
@@ -280,12 +280,23 @@ class TestSpotifyProbe:
         monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
         monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+        audit_calls: list[dict] = []
+
+        async def _fake_append(pool, actor, action, **kwargs):
+            audit_calls.append({"actor": actor, "action": action, **kwargs})
+            return 1
+
+        import butlers.api.routers.audit as _audit_mod
+
+        monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
         client = _build_app(mock_db)
         resp = client.post("/api/secrets/user/spotify/probe")
 
         assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["ok"] is True
+        assert resp.json()["data"]["ok"] is True
+        assert audit_calls, "Expected at least one audit call"
+        assert "probe_status=live_ok" in audit_calls[0].get("note", "")
 
     def test_spotify_probe_calls_token_refresh_then_me(self, monkeypatch):
         """Spotify probe calls POST token endpoint then GET /v1/me in order."""
@@ -377,7 +388,7 @@ class TestSpotifyProbe:
         assert data["code"] == 400
 
     def test_spotify_probe_me_401_returns_live_failed(self, monkeypatch):
-        """/v1/me HTTP 401 → probe_ok=False, code=401."""
+        """/v1/me HTTP 401 → probe_ok=False, code=401; note probe_status=live_failed."""
         mock_db = self._make_spotify_db()
         fake_client, _ = _make_fake_httpx_client(me_status=401)
 
@@ -390,6 +401,16 @@ class TestSpotifyProbe:
         monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
         monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+        audit_calls: list[dict] = []
+
+        async def _fake_append(pool, actor, action, **kwargs):
+            audit_calls.append({"actor": actor, "action": action, **kwargs})
+            return 1
+
+        import butlers.api.routers.audit as _audit_mod
+
+        monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
         client = _build_app(mock_db)
         resp = client.post("/api/secrets/user/spotify/probe")
 
@@ -397,6 +418,8 @@ class TestSpotifyProbe:
         data = resp.json()["data"]
         assert data["ok"] is False
         assert data["code"] == 401
+        assert audit_calls, "Expected at least one audit call"
+        assert "probe_status=live_failed" in audit_calls[0].get("note", "")
 
     def test_spotify_probe_me_403_returns_live_failed(self, monkeypatch):
         """/v1/me HTTP 403 → probe_ok=False, code=403."""
@@ -492,6 +515,16 @@ class TestSpotifyProbe:
         monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
         monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+        audit_calls: list[dict] = []
+
+        async def _fake_append(pool, actor, action, **kwargs):
+            audit_calls.append({"actor": actor, "action": action, **kwargs})
+            return 1
+
+        import butlers.api.routers.audit as _audit_mod
+
+        monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
         client = _build_app(mock_db)
         resp = client.post("/api/secrets/user/spotify/probe")
 
@@ -500,104 +533,9 @@ class TestSpotifyProbe:
         # Falls back to local state: last_test_ok=True + value set → ok → True.
         assert data["ok"] is True
         assert not http_calls, f"No HTTP calls expected; got: {http_calls}"
-
-    def test_spotify_probe_audit_note_includes_live_ok(self, monkeypatch):
-        """Audit note includes probe_status=live_ok when /v1/me returns 200."""
-        mock_db = self._make_spotify_db()
-        fake_client, _ = _make_fake_httpx_client()
-
-        async def _fake_aenter(self):
-            return fake_client
-
-        async def _fake_aexit(self, *args):
-            pass
-
-        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-        audit_calls: list[dict] = []
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            audit_calls.append({"actor": actor, "action": action, **kwargs})
-            return 1
-
-        import butlers.api.routers.audit as _audit_mod
-
-        monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-        client = _build_app(mock_db)
-        client.post("/api/secrets/user/spotify/probe")
-
+        # Audit note records the skipped-local-check fallback status.
         assert audit_calls, "Expected at least one audit call"
-        note = audit_calls[0].get("note", "")
-        assert "probe_status=live_ok" in note, (
-            f"Expected 'probe_status=live_ok' in audit note; got: {note!r}"
-        )
-
-    def test_spotify_probe_audit_note_includes_live_failed(self, monkeypatch):
-        """Audit note includes probe_status=live_failed when /v1/me returns 401."""
-        mock_db = self._make_spotify_db()
-        fake_client, _ = _make_fake_httpx_client(me_status=401)
-
-        async def _fake_aenter(self):
-            return fake_client
-
-        async def _fake_aexit(self, *args):
-            pass
-
-        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-        audit_calls: list[dict] = []
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            audit_calls.append({"actor": actor, "action": action, **kwargs})
-            return 1
-
-        import butlers.api.routers.audit as _audit_mod
-
-        monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-        client = _build_app(mock_db)
-        client.post("/api/secrets/user/spotify/probe")
-
-        assert audit_calls, "Expected at least one audit call"
-        note = audit_calls[0].get("note", "")
-        assert "probe_status=live_failed" in note, (
-            f"Expected 'probe_status=live_failed' in audit note; got: {note!r}"
-        )
-
-    def test_spotify_probe_audit_note_skipped_when_no_client_id(self, monkeypatch):
-        """Audit note includes probe_status=skipped_local_check when client_id missing."""
-        mock_db = self._make_spotify_db(spotify_client_id=None, last_test_ok=True)
-
-        async def _fake_aenter(self):
-            return AsyncMock()
-
-        async def _fake_aexit(self, *args):
-            pass
-
-        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-        audit_calls: list[dict] = []
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            audit_calls.append({"actor": actor, "action": action, **kwargs})
-            return 1
-
-        import butlers.api.routers.audit as _audit_mod
-
-        monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-        client = _build_app(mock_db)
-        client.post("/api/secrets/user/spotify/probe")
-
-        assert audit_calls, "Expected at least one audit call"
-        note = audit_calls[0].get("note", "")
-        assert "probe_status=skipped_local_check" in note, (
-            f"Expected 'probe_status=skipped_local_check' in audit note; got: {note!r}"
-        )
+        assert "probe_status=skipped_local_check" in audit_calls[0].get("note", "")
 
     def test_spotify_probe_never_returns_503(self, monkeypatch):
         """Even when everything fails, Spotify probe returns HTTP 200 (never 503)."""

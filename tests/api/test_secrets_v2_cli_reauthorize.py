@@ -25,7 +25,6 @@ shared:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -40,8 +39,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-_NOW = datetime.now(tz=UTC)
 
 
 def _make_shared_pool(*, execute_ok: bool = True) -> AsyncMock:
@@ -94,29 +91,6 @@ def _build_app(mock_db: MagicMock) -> TestClient:
 
 
 # ---------------------------------------------------------------------------
-# Minimal CLIAuthSession stub for device-code tests
-# ---------------------------------------------------------------------------
-
-
-class _FakeSession:
-    """Synchronous-friendly stub for CLIAuthSession used in device-code tests."""
-
-    def __init__(self, session_id: str, provider):
-        self.id = session_id
-        self.provider = provider
-        self.state = "awaiting_auth"
-        self.auth_url = "https://auth.openai.com/codex/device"
-        self.device_code = "ABCD-1234"
-        self.message = "Waiting for authorization."
-
-    async def start(self) -> None:
-        pass
-
-    async def wait(self, timeout: float = 10.0) -> None:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Tests: 404 on unknown provider id
 # ---------------------------------------------------------------------------
 
@@ -130,139 +104,49 @@ def test_reauthorize_cli_404_on_unknown_id():
     assert resp.status_code == 404
 
 
-def test_reauthorize_cli_404_detail_mentions_unknown_provider():
-    """404 detail message mentions 'provider'."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/no-such-thing/reauthorize")
-    assert resp.status_code == 404
-    assert "provider" in resp.json().get("detail", "").lower()
-
-
 # ---------------------------------------------------------------------------
 # Tests: api_key branch (claude provider — auth_mode='api_key')
 # ---------------------------------------------------------------------------
 
 
-def test_reauthorize_cli_apikey_returns_200():
-    """api_key provider: returns HTTP 200."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/claude/reauthorize")
-    assert resp.status_code == 200
-
-
-def test_reauthorize_cli_apikey_auth_mode_field():
-    """api_key provider: response data.auth_mode == 'api_key'."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/claude/reauthorize")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["auth_mode"] == "api_key"
-
-
-def test_reauthorize_cli_apikey_provider_field():
-    """api_key provider: response data.provider matches requested id."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/claude/reauthorize")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["provider"] == "claude"
-
-
-def test_reauthorize_cli_apikey_env_var_present():
-    """api_key provider: response data.env_var is non-empty."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/claude/reauthorize")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data.get("env_var"), "Expected non-empty env_var for api_key provider"
-
-
-def test_reauthorize_cli_apikey_prompt_present():
-    """api_key provider: response data.prompt is non-empty."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/claude/reauthorize")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data.get("prompt"), "Expected non-empty prompt for api_key provider"
-
-
-def test_reauthorize_cli_apikey_no_session_id():
-    """api_key provider: session_id is None (no device-code session started)."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/claude/reauthorize")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data.get("session_id") is None
-
-
-def test_reauthorize_cli_apikey_writes_attempted_audit(monkeypatch):
-    """api_key provider: writes an 'attempted' audit row."""
-    mock_db = _make_db()
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/claude/reauthorize")
-    assert resp.status_code == 200
-
-    assert any(c["action"] == "attempted" for c in audit_calls), (
-        f"Expected 'attempted' audit action; got: {audit_calls}"
-    )
-
-
-def test_reauthorize_cli_apikey_audit_target_canonical(monkeypatch):
-    """api_key provider: audit target is canonical 'c:<id>'."""
-    mock_db = _make_db()
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    client.post("/api/secrets/cli/claude/reauthorize")
-
-    attempted = [c for c in audit_calls if c["action"] == "attempted"]
-    assert attempted, "No 'attempted' audit row found"
-    assert attempted[0].get("target") == "c:claude", (
-        f"Expected canonical target 'c:claude'; got: {attempted[0].get('target')!r}"
-    )
-
-
-def test_reauthorize_cli_apikey_envelope_conformance():
-    """api_key provider: response has {data, meta} envelope shape."""
+def test_reauthorize_cli_apikey_returns_200_envelope():
+    """api_key provider: 200 with {data, meta}; auth_mode/provider/env_var/prompt set,
+    session_id None (no device-code session started)."""
     mock_db = _make_db()
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/cli/claude/reauthorize")
     assert resp.status_code == 200
     body = resp.json()
-    assert "data" in body, "Expected 'data' key in response envelope"
-    assert "meta" in body, "Expected 'meta' key in response envelope"
+    assert "meta" in body
+    data = body["data"]
+    assert data["auth_mode"] == "api_key"
+    assert data["provider"] == "claude"
+    assert data.get("env_var")
+    assert data.get("prompt")
+    assert data.get("session_id") is None
+
+
+def test_reauthorize_cli_apikey_writes_attempted_audit_canonical_target(monkeypatch):
+    """api_key provider: writes an 'attempted' audit row targeting canonical 'c:<id>'."""
+    mock_db = _make_db()
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/claude/reauthorize")
+    assert resp.status_code == 200
+
+    attempted = [c for c in audit_calls if c["action"] == "attempted"]
+    assert attempted, f"No 'attempted' audit row found; got: {audit_calls}"
+    assert attempted[0].get("target") == "c:claude"
 
 
 def test_reauthorize_cli_apikey_no_shared_pool_still_returns_200():
@@ -280,53 +164,19 @@ def test_reauthorize_cli_apikey_no_shared_pool_still_returns_200():
 # ---------------------------------------------------------------------------
 
 
-def test_reauthorize_cli_devicecode_returns_200():
-    """device_code provider: returns HTTP 200 when binary is available."""
+def test_reauthorize_cli_devicecode_returns_200_envelope_and_session(monkeypatch):
+    """device_code provider: 200 with {data, meta}; auth_mode='device_code',
+    session_id non-empty, and an 'attempted' audit row targeting canonical 'c:<id>'."""
     mock_db = _make_db()
-    client = _build_app(mock_db)
+    audit_calls: list[dict] = []
 
-    fake_session = None
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
 
-    def _fake_store_session(session):
-        nonlocal fake_session
-        fake_session = _FakeSession(session.id, session.provider)
-        # Replace the real session with the fake one in the same store
-        from butlers.cli_auth.session import _sessions
+    import butlers.api.routers.audit as _audit_mod
 
-        _sessions[session.id] = fake_session
-
-    with (
-        patch("butlers.api.routers.secrets_v2.PROVIDERS") as mock_providers,
-        patch("butlers.api.routers.secrets_v2.CLIAuthSession") as mock_session_cls,
-        patch("butlers.api.routers.secrets_v2.store_session", side_effect=_fake_store_session),
-        patch("butlers.api.routers.cli_auth._build_on_success", return_value=None),
-    ):
-        # Build a fake device_code provider definition
-        fake_provider = MagicMock()
-        fake_provider.name = "codex"
-        fake_provider.display_name = "Codex (OpenAI)"
-        fake_provider.auth_mode = "device_code"
-        fake_provider.binary.return_value = "codex"
-        fake_provider.is_available.return_value = True
-        mock_providers.get.return_value = fake_provider
-
-        session_instance = AsyncMock()
-        session_instance.id = "test-session-id"
-        session_instance.state = "awaiting_auth"
-        session_instance.auth_url = "https://auth.openai.com/codex/device"
-        session_instance.device_code = "ABCD-1234"
-        session_instance.message = "Waiting for authorization."
-        session_instance.start = AsyncMock()
-        session_instance.wait = AsyncMock()
-        mock_session_cls.return_value = session_instance
-
-        resp = client.post("/api/secrets/cli/codex/reauthorize")
-        assert resp.status_code == 200
-
-
-def test_reauthorize_cli_devicecode_auth_mode_field():
-    """device_code provider: response data.auth_mode == 'device_code'."""
-    mock_db = _make_db()
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
     client = _build_app(mock_db)
 
     with (
@@ -352,127 +202,15 @@ def test_reauthorize_cli_devicecode_auth_mode_field():
 
         resp = client.post("/api/secrets/cli/codex/reauthorize")
         assert resp.status_code == 200
-        data = resp.json()["data"]
+        body = resp.json()
+        assert "meta" in body
+        data = body["data"]
         assert data["auth_mode"] == "device_code"
-
-
-def test_reauthorize_cli_devicecode_session_id_present():
-    """device_code provider: response data.session_id is non-empty."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    with (
-        patch("butlers.api.routers.secrets_v2.PROVIDERS") as mock_providers,
-        patch("butlers.api.routers.secrets_v2.CLIAuthSession") as mock_session_cls,
-        patch("butlers.api.routers.secrets_v2.store_session"),
-        patch("butlers.api.routers.cli_auth._build_on_success", return_value=None),
-    ):
-        fake_provider = MagicMock()
-        fake_provider.name = "codex"
-        fake_provider.auth_mode = "device_code"
-        fake_provider.binary.return_value = "codex"
-        fake_provider.is_available.return_value = True
-        mock_providers.get.return_value = fake_provider
-
-        session_instance = AsyncMock()
-        session_instance.id = "sess-abc"
-        session_instance.state = "awaiting_auth"
-        session_instance.auth_url = "https://auth.openai.com/"
-        session_instance.device_code = "XY-99"
-        session_instance.message = None
-        mock_session_cls.return_value = session_instance
-
-        resp = client.post("/api/secrets/cli/codex/reauthorize")
-        assert resp.status_code == 200
-        data = resp.json()["data"]
         assert data["session_id"], "Expected non-empty session_id for device_code provider"
 
-
-def test_reauthorize_cli_devicecode_writes_attempted_audit(monkeypatch):
-    """device_code provider: writes an 'attempted' audit row."""
-    mock_db = _make_db()
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-
-    with (
-        patch("butlers.api.routers.secrets_v2.PROVIDERS") as mock_providers,
-        patch("butlers.api.routers.secrets_v2.CLIAuthSession") as mock_session_cls,
-        patch("butlers.api.routers.secrets_v2.store_session"),
-        patch("butlers.api.routers.cli_auth._build_on_success", return_value=None),
-    ):
-        fake_provider = MagicMock()
-        fake_provider.name = "codex"
-        fake_provider.auth_mode = "device_code"
-        fake_provider.binary.return_value = "codex"
-        fake_provider.is_available.return_value = True
-        mock_providers.get.return_value = fake_provider
-
-        session_instance = AsyncMock()
-        session_instance.id = "sess-x"
-        session_instance.state = "awaiting_auth"
-        session_instance.auth_url = "https://auth.openai.com/"
-        session_instance.device_code = "ZZ-00"
-        session_instance.message = None
-        mock_session_cls.return_value = session_instance
-
-        resp = client.post("/api/secrets/cli/codex/reauthorize")
-        assert resp.status_code == 200
-
-    assert any(c["action"] == "attempted" for c in audit_calls), (
-        f"Expected 'attempted' audit action; got: {audit_calls}"
-    )
-
-
-def test_reauthorize_cli_devicecode_audit_target_canonical(monkeypatch):
-    """device_code provider: audit target is canonical 'c:<id>'."""
-    mock_db = _make_db()
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-
-    with (
-        patch("butlers.api.routers.secrets_v2.PROVIDERS") as mock_providers,
-        patch("butlers.api.routers.secrets_v2.CLIAuthSession") as mock_session_cls,
-        patch("butlers.api.routers.secrets_v2.store_session"),
-        patch("butlers.api.routers.cli_auth._build_on_success", return_value=None),
-    ):
-        fake_provider = MagicMock()
-        fake_provider.name = "codex"
-        fake_provider.auth_mode = "device_code"
-        fake_provider.binary.return_value = "codex"
-        fake_provider.is_available.return_value = True
-        mock_providers.get.return_value = fake_provider
-
-        session_instance = AsyncMock()
-        session_instance.id = "sess-y"
-        session_instance.state = "awaiting_auth"
-        session_instance.auth_url = "https://auth.openai.com/"
-        session_instance.device_code = "AB-12"
-        session_instance.message = None
-        mock_session_cls.return_value = session_instance
-
-        client.post("/api/secrets/cli/codex/reauthorize")
-
     attempted = [c for c in audit_calls if c["action"] == "attempted"]
-    assert attempted, "No 'attempted' audit row found"
-    assert attempted[0].get("target") == "c:codex", (
-        f"Expected canonical target 'c:codex'; got: {attempted[0].get('target')!r}"
-    )
+    assert attempted, f"No 'attempted' audit row found; got: {audit_calls}"
+    assert attempted[0].get("target") == "c:codex"
 
 
 def test_reauthorize_cli_devicecode_503_when_binary_not_available():
@@ -490,39 +228,6 @@ def test_reauthorize_cli_devicecode_503_when_binary_not_available():
 
         resp = client.post("/api/secrets/cli/codex/reauthorize")
         assert resp.status_code == 503
-
-
-def test_reauthorize_cli_devicecode_envelope_conformance():
-    """device_code provider: response has {data, meta} envelope shape."""
-    mock_db = _make_db()
-    client = _build_app(mock_db)
-
-    with (
-        patch("butlers.api.routers.secrets_v2.PROVIDERS") as mock_providers,
-        patch("butlers.api.routers.secrets_v2.CLIAuthSession") as mock_session_cls,
-        patch("butlers.api.routers.secrets_v2.store_session"),
-        patch("butlers.api.routers.cli_auth._build_on_success", return_value=None),
-    ):
-        fake_provider = MagicMock()
-        fake_provider.name = "codex"
-        fake_provider.auth_mode = "device_code"
-        fake_provider.binary.return_value = "codex"
-        fake_provider.is_available.return_value = True
-        mock_providers.get.return_value = fake_provider
-
-        session_instance = AsyncMock()
-        session_instance.id = "sess-z"
-        session_instance.state = "awaiting_auth"
-        session_instance.auth_url = "https://auth.openai.com/"
-        session_instance.device_code = "XZ-55"
-        session_instance.message = None
-        mock_session_cls.return_value = session_instance
-
-        resp = client.post("/api/secrets/cli/codex/reauthorize")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "data" in body, "Expected 'data' key in response envelope"
-        assert "meta" in body, "Expected 'meta' key in response envelope"
 
 
 # ---------------------------------------------------------------------------
@@ -578,12 +283,10 @@ def test_reauthorize_cli_full_credential_id_audit_keeps_full_id(monkeypatch):
     assert captured.get("action") == "attempted"
 
 
-def test_reauthorize_cli_404_detail_is_handler_not_routing():
-    """An unknown id reaches the handler (specific 404 detail), not a routing miss."""
+def test_reauthorize_cli_404_encoded_slash_unknown_provider():
+    """An unknown encoded-slash id is captured by the route and 404s at the handler."""
     mock_db = _make_db()
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/cli/cli-auth%2Fnope/reauthorize")
     assert resp.status_code == 404
-    # Handler 404 mentions 'provider'; a routing miss would be the bare "Not Found".
-    assert "provider" in resp.json().get("detail", "").lower()

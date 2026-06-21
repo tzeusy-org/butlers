@@ -161,64 +161,32 @@ def _build_app(mock_db: MagicMock) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_rotate_returns_200_and_updated_credential():
-    """rotate returns 200 with ApiResponse<UserSecretDetail> envelope."""
+def test_rotate_returns_200_and_writes_canonical_audit(monkeypatch):
+    """rotate returns 200 with ApiResponse<UserSecretDetail> envelope and appends a
+    'rotated' audit row targeting the canonical key 'u:google'."""
     row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
     mock_db = _make_db(user_row=row)
-    client = _build_app(mock_db)
 
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
+    client = _build_app(mock_db)
     resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-tok3n"})
     assert resp.status_code == 200
     body = resp.json()
-    assert "data" in body
     assert "meta" in body
     assert body["data"]["provider"] == "google"
     assert "type" in body["data"]
 
-
-def test_rotate_writes_audit_row(monkeypatch):
-    """rotate appends a 'rotated' audit row to public.audit_log."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
-    mock_db = _make_db(user_row=row)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-    client = _build_app(mock_db)
-    resp = client.post("/api/secrets/user/google/rotate", json={"value": "newval"})
-    assert resp.status_code == 200
-
-    assert any(c["action"] == "rotated" for c in audit_calls), (
-        f"Expected 'rotated' audit action; got: {audit_calls}"
-    )
-
-
-def test_rotate_audit_target_is_canonical_key(monkeypatch):
-    """rotate audit row target is the canonical key 'u:google'."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
-    mock_db = _make_db(user_row=row)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    client.post("/api/secrets/user/google/rotate", json={"value": "newval"})
-
     rotated = [c for c in audit_calls if c["action"] == "rotated"]
-    assert rotated, "No 'rotated' audit row"
+    assert rotated, f"Expected 'rotated' audit action; got: {audit_calls}"
     assert rotated[0].get("target") == "u:google"
 
 
@@ -236,21 +204,9 @@ def test_rotate_404_on_missing_credential():
 # ---------------------------------------------------------------------------
 
 
-def test_disconnect_returns_200_with_disconnected_status():
-    """disconnect returns 200 with {status: 'disconnected'} payload."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh")
-    mock_db = _make_db(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/user/google/disconnect")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert body["data"]["status"] == "disconnected"
-
-
-def test_disconnect_writes_audit_row(monkeypatch):
-    """disconnect appends a 'disconnected' audit row to public.audit_log."""
+def test_disconnect_returns_200_and_writes_audit(monkeypatch):
+    """disconnect returns 200 with {status: 'disconnected'} and appends a
+    'disconnected' audit row to public.audit_log."""
     row = _make_entity_info_row(info_type="google_oauth_refresh")
     mock_db = _make_db(user_row=row)
 
@@ -267,6 +223,7 @@ def test_disconnect_writes_audit_row(monkeypatch):
 
     resp = client.post("/api/secrets/user/google/disconnect")
     assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "disconnected"
     assert any(c["action"] == "disconnected" for c in audit_calls), (
         f"Expected 'disconnected' audit action; got: {audit_calls}"
     )
@@ -423,30 +380,19 @@ def test_disconnect_non_oauth_provider_does_not_call_revoke(monkeypatch):
 
 
 def test_probe_returns_200_with_test_result():
-    """probe returns 200 with ApiResponse<TestResult> envelope."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True)
-    mock_db = _make_db(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/user/google/probe")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert "meta" in body
-    data = body["data"]
-    assert "ok" in data
-    assert "at" in data
-
-
-def test_probe_ok_credential_returns_true():
-    """probe returns ok=True for a credential with last_test_ok=True."""
+    """probe returns 200 with ApiResponse<TestResult> envelope; ok=True for a
+    credential whose last_test_ok=True."""
     row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True, value="tok")
     mock_db = _make_db(user_row=row)
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/google/probe")
     assert resp.status_code == 200
-    assert resp.json()["data"]["ok"] is True
+    body = resp.json()
+    assert "meta" in body
+    data = body["data"]
+    assert "at" in data
+    assert data["ok"] is True
 
 
 def test_probe_writes_both_probe_log_and_cache_in_transaction():
@@ -491,29 +437,6 @@ def test_probe_writes_both_probe_log_and_cache_in_transaction():
     entity_info_updates = [s for s in fake_conn_calls if "entity_info" in s and "UPDATE" in s]
     assert probe_log_inserts, "Expected INSERT into secret_probe_log"
     assert entity_info_updates, "Expected UPDATE on entity_info"
-
-
-def test_probe_writes_audit_row(monkeypatch):
-    """probe appends a 'verified' (ok) or 'failed' audit row."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True, value="tok")
-    mock_db = _make_db(user_row=row)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/user/google/probe")
-    assert resp.status_code == 200
-    assert any(c["action"] in {"verified", "failed"} for c in audit_calls), (
-        f"Expected 'verified' or 'failed' audit action; got: {audit_calls}"
-    )
 
 
 def test_probe_verified_action_when_ok(monkeypatch):
@@ -576,56 +499,18 @@ def test_probe_404_on_missing_credential():
 
 
 def test_reauthorize_returns_200_with_redirect_url():
-    """reauthorize returns 200 with ApiResponse<{redirect_url: str}> envelope."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh")
-    mock_db = _make_db(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/user/google/reauthorize")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert "redirect_url" in body["data"]
-
-
-def test_reauthorize_redirect_url_contains_page_of_origin_secrets():
-    """reauthorize redirect_url contains page_of_origin=secrets."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    """reauthorize returns 200 with ApiResponse<{redirect_url}>; the redirect points to
+    /api/oauth/<provider>/start, carries page_of_origin=secrets, and includes an
+    account_hint when the credential has a label."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", label="user@example.com")
     mock_db = _make_db(user_row=row)
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/google/reauthorize")
     assert resp.status_code == 200
     redirect_url = resp.json()["data"]["redirect_url"]
-    assert "page_of_origin=secrets" in redirect_url, (
-        f"Expected 'page_of_origin=secrets' in redirect_url: {redirect_url!r}"
-    )
-
-
-def test_reauthorize_redirect_url_points_to_oauth_start():
-    """reauthorize redirect_url points to /api/oauth/<provider>/start."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh")
-    mock_db = _make_db(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/user/google/reauthorize")
-    redirect_url = resp.json()["data"]["redirect_url"]
-    assert "/api/oauth/google/start" in redirect_url, (
-        f"Expected '/api/oauth/google/start' in redirect_url: {redirect_url!r}"
-    )
-
-
-def test_reauthorize_redirect_url_includes_account_hint_when_label_present():
-    """reauthorize redirect_url includes account_hint when the credential has a label."""
-    row = _make_entity_info_row(
-        info_type="google_oauth_refresh",
-        label="user@example.com",
-    )
-    mock_db = _make_db(user_row=row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/user/google/reauthorize")
-    redirect_url = resp.json()["data"]["redirect_url"]
+    assert "/api/oauth/google/start" in redirect_url, redirect_url
+    assert "page_of_origin=secrets" in redirect_url, redirect_url
     assert (
         "account_hint=user%40example.com" in redirect_url
         or "account_hint=user@example.com" in redirect_url

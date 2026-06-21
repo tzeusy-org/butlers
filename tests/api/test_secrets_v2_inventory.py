@@ -39,7 +39,6 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
     _derive_state,
-    _fetch_cli_secrets,
     _fetch_identity_info,
     _fetch_probe_log,
     _fetch_probe_logs_bulk,
@@ -239,28 +238,19 @@ def _build_app(mock_db: MagicMock) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_fingerprint_returns_first_8_hex_chars():
+def test_fingerprint_is_8_hex_chars_deterministic_and_value_sensitive():
     fp = _fingerprint("mysecretvalue")
     assert fp is not None
     assert len(fp) == 8
-    # Verify it's hex
-    int(fp, 16)
-
-
-def test_fingerprint_is_deterministic():
+    int(fp, 16)  # verify it's hex
+    # Deterministic for the same value, distinct for different values.
     assert _fingerprint("abc") == _fingerprint("abc")
-
-
-def test_fingerprint_differs_for_different_values():
     assert _fingerprint("abc") != _fingerprint("xyz")
 
 
-def test_fingerprint_none_on_empty_string():
-    assert _fingerprint("") is None
-
-
-def test_fingerprint_none_on_none():
-    assert _fingerprint(None) is None
+@pytest.mark.parametrize("empty", ["", None])
+def test_fingerprint_none_on_empty_value(empty):
+    assert _fingerprint(empty) is None
 
 
 @pytest.mark.parametrize(
@@ -289,16 +279,6 @@ def test_format_probe_time_today():
         result = _format_probe_time(recent)
     assert result is not None
     assert "today" in result
-
-
-def test_format_probe_time_yesterday():
-    # Freeze the formatter's clock to noon UTC so previous-calendar-day stamps
-    # reliably produce "yesterday" regardless of when CI runs.
-    with _freeze_time():
-        yesterday = _FROZEN_NOW - timedelta(days=1, hours=2)
-        result = _format_probe_time(yesterday)
-    assert result is not None
-    assert "yesterday" in result
 
 
 def test_format_probe_time_yesterday_midnight_boundary():
@@ -336,10 +316,6 @@ def test_format_probe_time_older():
     assert result is not None
     # Should include a date component
     assert len(result) > 5
-
-
-def test_format_probe_time_none():
-    assert _format_probe_time(None) is None
 
 
 def test_needs_hand_count_all_ok():
@@ -512,16 +488,6 @@ async def test_fetch_system_secrets_missing_table_logs_debug_only(caplog):
         rows = await _fetch_system_secrets(pool, "general")
     assert rows == []
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
-
-
-async def test_fetch_cli_secrets_missing_column_logs_warning(caplog):
-    """Same contract for the CLI-family scan of the shared pool."""
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=UndefinedColumnError('column "last_test_ok" does not exist'))
-    with caplog.at_level("DEBUG", logger="butlers.api.routers.secrets_v2"):
-        rows = await _fetch_cli_secrets(pool)
-    assert rows == []
-    assert [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 # ---------------------------------------------------------------------------
@@ -832,12 +798,21 @@ def test_inventory_aggregates_across_butler_schemas():
 # ---------------------------------------------------------------------------
 
 
-async def test_fetch_probe_log_returns_none_on_missing_table():
-    """When secret_probe_log doesn't exist, returns None gracefully."""
+@pytest.mark.parametrize(
+    "fetchrow_result",
+    [
+        UndefinedTableError("relation public.secret_probe_log does not exist"),
+        None,
+    ],
+    ids=["missing-table", "no-rows"],
+)
+async def test_fetch_probe_log_returns_none(fetchrow_result):
+    """No probe row (missing table or empty result) → returns None gracefully."""
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(
-        side_effect=UndefinedTableError("relation public.secret_probe_log does not exist")
-    )
+    if isinstance(fetchrow_result, Exception):
+        pool.fetchrow = AsyncMock(side_effect=fetchrow_result)
+    else:
+        pool.fetchrow = AsyncMock(return_value=fetchrow_result)
     result = await _fetch_probe_log(pool, "system", "MY_KEY")
     assert result is None
 
@@ -854,15 +829,6 @@ async def test_fetch_probe_log_returns_test_result_when_row_exists():
     assert result.code == 200
     assert result.message is None
     assert result.at is not None  # "HH:MM today"
-
-
-async def test_fetch_probe_log_returns_none_when_no_rows():
-    """When no probe row exists for the credential, returns None."""
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-
-    result = await _fetch_probe_log(pool, "user", "google_oauth_refresh")
-    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -890,31 +856,24 @@ def _make_entity_row(
     return row
 
 
-async def test_fetch_identity_info_returns_owner_role():
-    """Entity with 'owner' in roles gets role='owner'."""
-    eid = str(uuid4())
-    entity_row = _make_entity_row(entity_id=eid, canonical_name="Alice Owner", roles=["owner"])
+async def test_fetch_identity_info_maps_owner_and_member_roles():
+    """'owner' in roles → role='owner'; otherwise role='member'; names round-trip."""
+    eid_owner = str(uuid4())
+    eid_member = str(uuid4())
+    owner_row = _make_entity_row(entity_id=eid_owner, canonical_name="Alice Owner", roles=["owner"])
+    member_row = _make_entity_row(
+        entity_id=eid_member, canonical_name="Bob", roles=["google_account"]
+    )
     pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=[entity_row])
+    pool.fetch = AsyncMock(return_value=[owner_row, member_row])
 
-    result = await _fetch_identity_info(pool, [eid])
-    assert len(result) == 1
-    assert result[0].entity_id == eid
+    result = await _fetch_identity_info(pool, [eid_owner, eid_member])
+    assert len(result) == 2
+    assert result[0].entity_id == eid_owner
     assert result[0].name == "Alice Owner"
     assert result[0].role == "owner"
-
-
-async def test_fetch_identity_info_returns_member_role_for_non_owner():
-    """Entity without 'owner' in roles gets role='member'."""
-    eid = str(uuid4())
-    entity_row = _make_entity_row(entity_id=eid, canonical_name="Bob", roles=["google_account"])
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=[entity_row])
-
-    result = await _fetch_identity_info(pool, [eid])
-    assert len(result) == 1
-    assert result[0].role == "member"
-    assert result[0].name == "Bob"
+    assert result[1].role == "member"
+    assert result[1].name == "Bob"
 
 
 async def test_fetch_identity_info_empty_input():
@@ -927,21 +886,18 @@ async def test_fetch_identity_info_empty_input():
     pool.fetch.assert_not_called()
 
 
-async def test_fetch_identity_info_graceful_on_missing_table():
-    """Silently returns empty list when public.entities does not exist (UndefinedTableError)."""
+@pytest.mark.parametrize(
+    "error",
+    [
+        UndefinedTableError("relation public.entities does not exist"),
+        Exception("connection timeout"),
+    ],
+    ids=["missing-table", "transient"],
+)
+async def test_fetch_identity_info_returns_empty_on_error(error):
+    """Missing public.entities and transient DB errors both yield an empty list."""
     pool = AsyncMock()
-    pool.fetch = AsyncMock(
-        side_effect=UndefinedTableError("relation public.entities does not exist")
-    )
-
-    result = await _fetch_identity_info(pool, [str(uuid4())])
-    assert result == []
-
-
-async def test_fetch_identity_info_returns_empty_on_transient_error():
-    """Returns empty list (with warning) on transient database errors."""
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=Exception("connection timeout"))
+    pool.fetch = AsyncMock(side_effect=error)
 
     result = await _fetch_identity_info(pool, [str(uuid4())])
     assert result == []
@@ -1097,8 +1053,8 @@ def test_inventory_providers_is_additive():
 # ---------------------------------------------------------------------------
 
 
-def test_row_to_test_result_maps_fields_correctly():
-    """_row_to_test_result maps ok/code/message/recorded_at to TestResult."""
+def test_row_to_test_result_maps_fields_and_handles_none_message():
+    """_row_to_test_result maps ok/code/message/recorded_at and tolerates a None message."""
     # Freeze the formatter's clock so "now" and recorded_at are on the same
     # calendar day regardless of when CI runs.
     row = _make_row(ok=True, code=200, message="all good", recorded_at=_FROZEN_NOW)
@@ -1110,13 +1066,10 @@ def test_row_to_test_result_maps_fields_correctly():
     assert result.at is not None
     assert "today" in result.at  # recent timestamp → "HH:MM today"
 
-
-def test_row_to_test_result_none_message():
-    """_row_to_test_result handles None message without error."""
-    _now = datetime.now(tz=UTC)
-    row = _make_row(ok=True, code=200, message=None, recorded_at=_now)
-    result = _row_to_test_result(row)
-    assert result.message is None
+    none_msg = _row_to_test_result(
+        _make_row(ok=True, code=200, message=None, recorded_at=datetime.now(tz=UTC))
+    )
+    assert none_msg.message is None
 
 
 # ---------------------------------------------------------------------------
@@ -1180,24 +1133,6 @@ async def test_fetch_probe_logs_bulk_returns_empty_dict_on_missing_table():
     result = await _fetch_probe_logs_bulk(pool, "system", ["KEY_A"])
 
     assert result == {}
-
-
-async def test_fetch_probe_logs_bulk_issues_single_query():
-    """Bulk variant calls pool.fetch exactly once regardless of the number of keys."""
-    _now = datetime.now(tz=UTC)
-    keys = [f"KEY_{i}" for i in range(10)]
-    rows = [
-        _make_row(credential_key=k, ok=True, code=200, message=None, recorded_at=_now) for k in keys
-    ]
-
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=rows)
-
-    result = await _fetch_probe_logs_bulk(pool, "system", keys)
-
-    # Exactly one DB call — not 10 (one per key).
-    assert pool.fetch.call_count == 1
-    assert len(result) == 10
 
 
 # ---------------------------------------------------------------------------

@@ -159,60 +159,9 @@ def _build_app(mock_db: MagicMock) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_rotate_cli_returns_200():
-    """rotate returns HTTP 200."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/cli-token-abc123/rotate")
-    assert resp.status_code == 200
-
-
-def test_rotate_cli_returns_value_and_fingerprint():
-    """rotate response body contains both 'value' and 'fingerprint' fields."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/cli-token-abc123/rotate")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert "value" in body["data"]
-    assert "fingerprint" in body["data"]
-
-
-def test_rotate_cli_value_is_non_empty():
-    """rotate returns a non-empty value string."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/cli-token-abc123/rotate")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert len(data["value"]) > 0, "Expected non-empty value from rotate"
-
-
-def test_rotate_cli_fingerprint_matches_value():
-    """rotate fingerprint is sha256[:8] hex of the returned value."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/cli-token-abc123/rotate")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    value = data["value"]
-    expected_fp = hashlib.sha256(value.encode()).hexdigest()[:8]
-    assert data["fingerprint"] == expected_fp, (
-        f"Fingerprint mismatch: expected {expected_fp!r}, got {data['fingerprint']!r}"
-    )
-
-
-def test_rotate_cli_value_differs_from_old_value():
-    """rotate generates a new value (not the same as the old stored value)."""
+def test_rotate_cli_returns_value_and_fingerprint_envelope():
+    """rotate returns 200 with a {data, meta} envelope whose value is fresh and
+    whose fingerprint is sha256[:8] of that value."""
     old_value = "old_cli_secret_value"
     cli_row = _make_cli_row(key="cli-token-abc123", value=old_value)
     mock_db = _make_db(cli_row=cli_row)
@@ -220,12 +169,19 @@ def test_rotate_cli_value_differs_from_old_value():
 
     resp = client.post("/api/secrets/cli/cli-token-abc123/rotate")
     assert resp.status_code == 200
-    new_value = resp.json()["data"]["value"]
-    assert new_value != old_value, "Expected a freshly-generated value, not the old one"
+    body = resp.json()
+    assert "meta" in body
+    data = body["data"]
+    value = data["value"]
+    # Freshly generated, non-empty, and different from the old stored value.
+    assert value
+    assert value != old_value
+    # Fingerprint is sha256[:8] hex of the returned value.
+    assert data["fingerprint"] == hashlib.sha256(value.encode()).hexdigest()[:8]
 
 
-def test_rotate_cli_writes_rotated_audit_row(monkeypatch):
-    """rotate appends a 'rotated' audit row to public.audit_log."""
+def test_rotate_cli_writes_rotated_audit_row_with_canonical_target(monkeypatch):
+    """rotate appends a 'rotated' audit row targeting the canonical key 'c:<id>'."""
     cli_row = _make_cli_row(key="cli-token-abc123")
     mock_db = _make_db(cli_row=cli_row)
 
@@ -243,33 +199,9 @@ def test_rotate_cli_writes_rotated_audit_row(monkeypatch):
     resp = client.post("/api/secrets/cli/cli-token-abc123/rotate")
     assert resp.status_code == 200
 
-    assert any(c["action"] == "rotated" for c in audit_calls), (
-        f"Expected 'rotated' audit action; got: {audit_calls}"
-    )
-
-
-def test_rotate_cli_audit_target_is_canonical_key(monkeypatch):
-    """rotate audit row target is the canonical key 'c:<id>'."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    client.post("/api/secrets/cli/cli-token-abc123/rotate")
-
     rotated = [c for c in audit_calls if c["action"] == "rotated"]
-    assert rotated, "No 'rotated' audit row"
-    assert rotated[0].get("target") == "c:cli-token-abc123", (
-        f"Expected canonical target 'c:cli-token-abc123'; got: {rotated[0].get('target')!r}"
-    )
+    assert rotated, f"Expected 'rotated' audit action; got: {audit_calls}"
+    assert rotated[0].get("target") == "c:cli-token-abc123"
 
 
 def test_rotate_cli_404_on_unknown_id():
@@ -279,19 +211,6 @@ def test_rotate_cli_404_on_unknown_id():
 
     resp = client.post("/api/secrets/cli/does-not-exist/rotate")
     assert resp.status_code == 404
-
-
-def test_rotate_cli_envelope_conformance():
-    """rotate response has {data, meta} envelope shape."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/cli-token-abc123/rotate")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body, "Expected 'data' key in response envelope"
-    assert "meta" in body, "Expected 'meta' key in response envelope"
 
 
 # ---------------------------------------------------------------------------
@@ -457,18 +376,8 @@ def test_rotate_cli_get_inventory_does_not_return_raw_value():
 # ---------------------------------------------------------------------------
 
 
-def test_revoke_cli_returns_200():
-    """revoke returns HTTP 200."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/cli-token-abc123/revoke")
-    assert resp.status_code == 200
-
-
-def test_revoke_cli_returns_revoked_status():
-    """revoke response body contains {status: 'revoked'}."""
+def test_revoke_cli_returns_revoked_status_envelope():
+    """revoke returns 200 with a {data, meta} envelope and {status: 'revoked'}."""
     cli_row = _make_cli_row(key="cli-token-abc123")
     mock_db = _make_db(cli_row=cli_row)
     client = _build_app(mock_db)
@@ -476,11 +385,12 @@ def test_revoke_cli_returns_revoked_status():
     resp = client.post("/api/secrets/cli/cli-token-abc123/revoke")
     assert resp.status_code == 200
     body = resp.json()
+    assert "meta" in body
     assert body["data"]["status"] == "revoked"
 
 
-def test_revoke_cli_writes_disconnected_audit_row(monkeypatch):
-    """revoke appends a 'disconnected' audit row to public.audit_log."""
+def test_revoke_cli_writes_disconnected_audit_row_with_canonical_target(monkeypatch):
+    """revoke appends a 'disconnected' audit row targeting the canonical key 'c:<id>'."""
     cli_row = _make_cli_row(key="cli-token-abc123")
     mock_db = _make_db(cli_row=cli_row)
 
@@ -498,33 +408,9 @@ def test_revoke_cli_writes_disconnected_audit_row(monkeypatch):
     resp = client.post("/api/secrets/cli/cli-token-abc123/revoke")
     assert resp.status_code == 200
 
-    assert any(c["action"] == "disconnected" for c in audit_calls), (
-        f"Expected 'disconnected' audit action; got: {audit_calls}"
-    )
-
-
-def test_revoke_cli_audit_target_is_canonical_key(monkeypatch):
-    """revoke audit row target is the canonical key 'c:<id>'."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    client.post("/api/secrets/cli/cli-token-abc123/revoke")
-
     disconnected = [c for c in audit_calls if c["action"] == "disconnected"]
-    assert disconnected, "No 'disconnected' audit row"
-    assert disconnected[0].get("target") == "c:cli-token-abc123", (
-        f"Expected canonical target 'c:cli-token-abc123'; got: {disconnected[0].get('target')!r}"
-    )
+    assert disconnected, f"Expected 'disconnected' audit action; got: {audit_calls}"
+    assert disconnected[0].get("target") == "c:cli-token-abc123"
 
 
 def test_revoke_cli_404_on_unknown_id():
@@ -534,16 +420,3 @@ def test_revoke_cli_404_on_unknown_id():
 
     resp = client.post("/api/secrets/cli/does-not-exist/revoke")
     assert resp.status_code == 404
-
-
-def test_revoke_cli_envelope_conformance():
-    """revoke response has {data, meta} envelope shape."""
-    cli_row = _make_cli_row(key="cli-token-abc123")
-    mock_db = _make_db(cli_row=cli_row)
-    client = _build_app(mock_db)
-
-    resp = client.post("/api/secrets/cli/cli-token-abc123/revoke")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body, "Expected 'data' key in response envelope"
-    assert "meta" in body, "Expected 'meta' key in response envelope"

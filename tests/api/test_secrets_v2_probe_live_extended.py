@@ -229,7 +229,8 @@ class TestHomeAssistantProbe:
         )
 
     def test_ha_probe_200_returns_live_ok(self, monkeypatch):
-        """HA probe with GET /api/ returning 200 → probe_ok=True."""
+        """HA probe GET /api/ 200 → probe_ok=True; calls /api/ with 'Bearer <token>'
+        header and writes audit note probe_status=live_ok."""
         mock_db = self._make_ha_db()
 
         calls: list[dict] = []
@@ -252,55 +253,34 @@ class TestHomeAssistantProbe:
         monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
         monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+        audit_calls: list[dict] = []
+
+        async def _fake_append(pool, actor, action, **kwargs):
+            audit_calls.append({"actor": actor, "action": action, **kwargs})
+            return 1
+
+        import butlers.api.routers.audit as _audit_mod
+
+        monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
         client = _build_app(mock_db)
         resp = client.post("/api/secrets/user/home_assistant/probe")
 
         assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["ok"] is True
+        assert resp.json()["data"]["ok"] is True
 
-        # Must have called GET /api/
+        # Must have called GET /api/ with the stored token as a Bearer header.
         get_calls = [c for c in calls if c["method"] == "GET"]
         assert any(f"{_HA_URL}/api/" in c["url"] for c in get_calls), (
             f"Expected GET {_HA_URL}/api/ in calls; got {calls}"
         )
-
-    def test_ha_probe_calls_api_with_bearer_token(self, monkeypatch):
-        """HA probe passes the stored token as 'Bearer <token>' header."""
-        mock_db = self._make_ha_db()
-
-        calls: list[dict] = []
-
-        async def _fake_get(url, **kwargs):
-            calls.append({"method": "GET", "url": str(url), **kwargs})
-            fake_resp = MagicMock(spec=httpx.Response)
-            fake_resp.status_code = 200
-            return fake_resp
-
-        fake_client = AsyncMock()
-        fake_client.get = AsyncMock(side_effect=_fake_get)
-
-        async def _fake_aenter(self):
-            return fake_client
-
-        async def _fake_aexit(self, *args):
-            pass
-
-        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-        client = _build_app(mock_db)
-        resp = client.post("/api/secrets/user/home_assistant/probe")
-
-        assert resp.status_code == 200
-        assert calls, "Expected at least one GET call"
-        headers = calls[0].get("headers", {})
-        assert headers.get("Authorization") == f"Bearer {_HA_TOKEN}", (
-            f"Expected 'Bearer {_HA_TOKEN}'; got {headers.get('Authorization')!r}"
-        )
+        assert calls[0].get("headers", {}).get("Authorization") == f"Bearer {_HA_TOKEN}"
+        # Audit note records the live_ok probe status.
+        assert audit_calls, "Expected at least one audit call"
+        assert "probe_status=live_ok" in audit_calls[0].get("note", "")
 
     def test_ha_probe_401_returns_live_failed(self, monkeypatch):
-        """HA probe with GET /api/ returning 401 → probe_ok=False, code=401."""
+        """HA probe GET /api/ 401 → probe_ok=False, code=401; note probe_status=live_failed."""
         mock_db = self._make_ha_db()
 
         async def _fake_get(url, **kwargs):
@@ -320,6 +300,16 @@ class TestHomeAssistantProbe:
         monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
         monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+        audit_calls: list[dict] = []
+
+        async def _fake_append(pool, actor, action, **kwargs):
+            audit_calls.append({"actor": actor, "action": action, **kwargs})
+            return 1
+
+        import butlers.api.routers.audit as _audit_mod
+
+        monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
         client = _build_app(mock_db)
         resp = client.post("/api/secrets/user/home_assistant/probe")
 
@@ -327,6 +317,8 @@ class TestHomeAssistantProbe:
         data = resp.json()["data"]
         assert data["ok"] is False
         assert data["code"] == 401
+        assert audit_calls, "Expected at least one audit call"
+        assert "probe_status=live_failed" in audit_calls[0].get("note", "")
 
     def test_ha_probe_network_error_falls_back_to_local(self, monkeypatch):
         """Network error during GET /api/ → fallback to local state (NOT probe_ok=False)."""
@@ -388,86 +380,6 @@ class TestHomeAssistantProbe:
         assert data["ok"] is True
         assert not http_calls, f"No HTTP calls expected; got: {http_calls}"
 
-    def test_ha_probe_audit_note_includes_probe_status_live_ok(self, monkeypatch):
-        """Audit note includes probe_status=live_ok when HA returns 200."""
-        mock_db = self._make_ha_db()
-
-        async def _fake_get(url, **kwargs):
-            fake_resp = MagicMock(spec=httpx.Response)
-            fake_resp.status_code = 200
-            return fake_resp
-
-        fake_client = AsyncMock()
-        fake_client.get = AsyncMock(side_effect=_fake_get)
-
-        async def _fake_aenter(self):
-            return fake_client
-
-        async def _fake_aexit(self, *args):
-            pass
-
-        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-        audit_calls: list[dict] = []
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            audit_calls.append({"actor": actor, "action": action, **kwargs})
-            return 1
-
-        import butlers.api.routers.audit as _audit_mod
-
-        monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-        client = _build_app(mock_db)
-        client.post("/api/secrets/user/home_assistant/probe")
-
-        assert audit_calls, "Expected at least one audit call"
-        note = audit_calls[0].get("note", "")
-        assert "probe_status=live_ok" in note, (
-            f"Expected 'probe_status=live_ok' in audit note; got: {note!r}"
-        )
-
-    def test_ha_probe_audit_note_includes_probe_status_live_failed(self, monkeypatch):
-        """Audit note includes probe_status=live_failed when HA returns 403."""
-        mock_db = self._make_ha_db()
-
-        async def _fake_get(url, **kwargs):
-            fake_resp = MagicMock(spec=httpx.Response)
-            fake_resp.status_code = 403
-            return fake_resp
-
-        fake_client = AsyncMock()
-        fake_client.get = AsyncMock(side_effect=_fake_get)
-
-        async def _fake_aenter(self):
-            return fake_client
-
-        async def _fake_aexit(self, *args):
-            pass
-
-        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-        audit_calls: list[dict] = []
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            audit_calls.append({"actor": actor, "action": action, **kwargs})
-            return 1
-
-        import butlers.api.routers.audit as _audit_mod
-
-        monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-        client = _build_app(mock_db)
-        client.post("/api/secrets/user/home_assistant/probe")
-
-        assert audit_calls, "Expected at least one audit call"
-        note = audit_calls[0].get("note", "")
-        assert "probe_status=live_failed" in note, (
-            f"Expected 'probe_status=live_failed' in audit note; got: {note!r}"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Steam probe tests
@@ -508,7 +420,8 @@ class TestSteamProbe:
         return fake_resp
 
     def test_steam_probe_200_with_players_returns_live_ok(self, monkeypatch):
-        """Steam probe with GetPlayerSummaries 200 + non-empty players → probe_ok=True."""
+        """Steam probe GetPlayerSummaries 200 + non-empty players → probe_ok=True;
+        calls GetPlayerSummaries and writes audit note probe_status=live_ok."""
         mock_db = self._make_steam_db()
 
         calls: list[dict] = []
@@ -529,17 +442,28 @@ class TestSteamProbe:
         monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
         monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
+        audit_calls: list[dict] = []
+
+        async def _fake_append(pool, actor, action, **kwargs):
+            audit_calls.append({"actor": actor, "action": action, **kwargs})
+            return 1
+
+        import butlers.api.routers.audit as _audit_mod
+
+        monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
         client = _build_app(mock_db)
         resp = client.post("/api/secrets/user/steam/probe")
 
         assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["ok"] is True
+        assert resp.json()["data"]["ok"] is True
 
         # Must have called GetPlayerSummaries
         assert any("ISteamUser/GetPlayerSummaries" in c["url"] for c in calls), (
             f"Expected GetPlayerSummaries call; got: {calls}"
         )
+        assert audit_calls, "Expected at least one audit call"
+        assert "probe_status=live_ok" in audit_calls[0].get("note", "")
 
     def test_steam_probe_passes_key_and_steamid_as_params(self, monkeypatch):
         """Steam probe passes api_key and steamid as query params (never in headers)."""
@@ -684,44 +608,6 @@ class TestSteamProbe:
         assert data["ok"] is True
         assert not http_calls, f"No HTTP calls expected; got: {http_calls}"
 
-    def test_steam_probe_audit_note_includes_probe_status(self, monkeypatch):
-        """Audit note includes probe_status=live_ok when Steam API returns 200."""
-        mock_db = self._make_steam_db()
-
-        async def _fake_get(url, **kwargs):
-            return self._fake_steam_response(status=200)
-
-        fake_client = AsyncMock()
-        fake_client.get = AsyncMock(side_effect=_fake_get)
-
-        async def _fake_aenter(self):
-            return fake_client
-
-        async def _fake_aexit(self, *args):
-            pass
-
-        monkeypatch.setattr(httpx.AsyncClient, "__aenter__", _fake_aenter)
-        monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
-
-        audit_calls: list[dict] = []
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            audit_calls.append({"actor": actor, "action": action, **kwargs})
-            return 1
-
-        import butlers.api.routers.audit as _audit_mod
-
-        monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-        client = _build_app(mock_db)
-        client.post("/api/secrets/user/steam/probe")
-
-        assert audit_calls, "Expected at least one audit call"
-        note = audit_calls[0].get("note", "")
-        assert "probe_status=live_ok" in note, (
-            f"Expected 'probe_status=live_ok' in audit note; got: {note!r}"
-        )
-
 
 # ---------------------------------------------------------------------------
 # OwnTracks system probe tests
@@ -801,8 +687,8 @@ class TestOwnTracksSystemProbe:
 
         return mock_db, butler_pool
 
-    def test_owntracks_valid_token_returns_live_ok(self):
-        """Valid 64-char hex OwnTracks token → probe_ok=True."""
+    def test_owntracks_valid_token_returns_live_ok(self, monkeypatch):
+        """Valid 64-char hex OwnTracks token → probe_ok=True; note probe_status=live_ok."""
         mock_db, _ = self._make_system_db(token_value=_OWNTRACKS_TOKEN_VALID)
         client = _build_app(mock_db)
         # Reset rate limit state
@@ -810,11 +696,22 @@ class TestOwnTracksSystemProbe:
 
         secrets_v2._system_probe_timestamps.clear()
 
+        audit_calls: list[dict] = []
+
+        async def _fake_append(pool, actor, action, **kwargs):
+            audit_calls.append({"actor": actor, "action": action, **kwargs})
+            return 1
+
+        import butlers.api.routers.audit as _audit_mod
+
+        monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
         resp = client.post("/api/secrets/system/owntracks_webhook_token/probe")
 
         assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["ok"] is True
+        assert resp.json()["data"]["ok"] is True
+        assert audit_calls, "Expected at least one audit call"
+        assert "probe_status=live_ok" in audit_calls[0].get("note", "")
 
     def test_owntracks_wrong_length_token_returns_live_failed(self):
         """Token with wrong length → probe_ok=False."""
@@ -845,33 +742,6 @@ class TestOwnTracksSystemProbe:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["ok"] is False
-
-    def test_owntracks_probe_audit_note_includes_probe_status(self, monkeypatch):
-        """Audit note includes probe_status=live_ok when token is valid."""
-        mock_db, _ = self._make_system_db(token_value=_OWNTRACKS_TOKEN_VALID)
-        client = _build_app(mock_db)
-
-        from butlers.api.routers import secrets_v2
-
-        secrets_v2._system_probe_timestamps.clear()
-
-        audit_calls: list[dict] = []
-
-        async def _fake_append(pool, actor, action, **kwargs):
-            audit_calls.append({"actor": actor, "action": action, **kwargs})
-            return 1
-
-        import butlers.api.routers.audit as _audit_mod
-
-        monkeypatch.setattr(_audit_mod, "append", _fake_append)
-
-        client.post("/api/secrets/system/owntracks_webhook_token/probe")
-
-        assert audit_calls, "Expected at least one audit call"
-        note = audit_calls[0].get("note", "")
-        assert "probe_status=live_ok" in note, (
-            f"Expected 'probe_status=live_ok' in audit note; got: {note!r}"
-        )
 
     def test_owntracks_probe_no_http_calls_made(self, monkeypatch):
         """OwnTracks probe must never make any external HTTP calls."""

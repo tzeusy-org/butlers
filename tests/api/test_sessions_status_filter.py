@@ -119,22 +119,17 @@ def _make_butler_app_filtering_on_success(rows: list[dict]) -> object:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_status_success() -> None:
+def test_resolve_status_maps_and_falls_through_to_legacy_bool() -> None:
+    # status=success|failed maps to the boolean; all/None falls through to legacy success bool
     assert _resolve_success_filter("success", None) is True
-
-
-def test_resolve_status_failed() -> None:
     assert _resolve_success_filter("failed", None) is False
-
-
-def test_resolve_status_all_falls_through_to_success_bool() -> None:
     assert _resolve_success_filter("all", None) is None
     assert _resolve_success_filter("all", True) is True
     assert _resolve_success_filter(None, False) is False
 
 
 def test_resolve_status_takes_precedence_over_success_bool() -> None:
-    # status=failed wins even if a conflicting success=true is passed
+    # status wins even if a conflicting legacy success bool is passed
     assert _resolve_success_filter("failed", True) is False
     assert _resolve_success_filter("success", False) is True
 
@@ -151,48 +146,28 @@ _MIXED_ROWS = [
 ]
 
 
-async def test_sessions_status_failed_returns_only_failed_rows() -> None:
+@pytest.mark.parametrize(
+    ("query", "expected_len", "expected_success"),
+    [
+        ("?status=failed", 1, False),
+        ("?status=success", 2, True),
+        ("?status=all", 3, None),
+        ("", 3, None),
+    ],
+)
+async def test_sessions_status_filter(
+    query: str, expected_len: int, expected_success: bool | None
+) -> None:
     app = _make_app_filtering_on_success(_MIXED_ROWS)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/sessions?status=failed")
+        resp = await client.get(f"/api/sessions{query}")
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert len(data) == 1
-    assert all(item["success"] is False for item in data)
-
-
-async def test_sessions_status_success_returns_only_success_rows() -> None:
-    app = _make_app_filtering_on_success(_MIXED_ROWS)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/sessions?status=success")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert len(data) == 2
-    assert all(item["success"] is True for item in data)
-
-
-async def test_sessions_status_all_returns_everything() -> None:
-    app = _make_app_filtering_on_success(_MIXED_ROWS)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/sessions?status=all")
-    assert resp.status_code == 200
-    assert len(resp.json()["data"]) == 3
-
-
-async def test_sessions_no_status_returns_everything() -> None:
-    app = _make_app_filtering_on_success(_MIXED_ROWS)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/sessions")
-    assert resp.status_code == 200
-    assert len(resp.json()["data"]) == 3
+    assert len(data) == expected_len
+    if expected_success is not None:
+        assert all(item["success"] is expected_success for item in data)
 
 
 async def test_sessions_legacy_success_bool_still_filters() -> None:
@@ -221,25 +196,19 @@ async def test_sessions_rejects_invalid_status() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_butler_sessions_status_failed_returns_only_failed_rows() -> None:
+@pytest.mark.parametrize(
+    ("status", "expected_len", "expected_success"),
+    [("failed", 1, False), ("success", 2, True)],
+)
+async def test_butler_sessions_status_filter(
+    status: str, expected_len: int, expected_success: bool
+) -> None:
     app = _make_butler_app_filtering_on_success(_MIXED_ROWS)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/butlers/atlas/sessions?status=failed")
+        resp = await client.get(f"/api/butlers/atlas/sessions?status={status}")
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert len(data) == 1
-    assert all(item["success"] is False for item in data)
-
-
-async def test_butler_sessions_status_success_returns_only_success_rows() -> None:
-    app = _make_butler_app_filtering_on_success(_MIXED_ROWS)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/butlers/atlas/sessions?status=success")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert len(data) == 2
-    assert all(item["success"] is True for item in data)
+    assert len(data) == expected_len
+    assert all(item["success"] is expected_success for item in data)

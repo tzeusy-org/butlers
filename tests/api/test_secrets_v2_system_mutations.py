@@ -200,10 +200,11 @@ def _build_app(mock_db: MagicMock) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_set_new_returns_200_with_system_secret_detail():
-    """POST /api/secrets/system/<key> returns 200 with ApiResponse<SystemSecretDetail>."""
+def test_set_new_returns_200_and_writes_set_audit_canonical(monkeypatch):
+    """POST /api/secrets/system/<key> for a new key returns 200 with
+    ApiResponse<SystemSecretDetail> and appends a 'set' audit row targeting 's:<key>'."""
     # No existing row → INSERT path
-    new_row = _make_butler_secrets_row(secret_key="MY_API_KEY", last_test_ok=True)
+    new_row = _make_butler_secrets_row(secret_key="MY_KEY", last_test_ok=True)
     mock_db = _make_db(switchboard_row=None)
     # After INSERT we need the re-fetch to return the new row.
     switchboard_pool = mock_db.pool("switchboard")
@@ -214,20 +215,30 @@ def test_set_new_returns_200_with_system_secret_detail():
         if "secret_probe_log" in sql:
             return None
         call_count[0] += 1
-        # First call (existence check) → None (not found)
-        # Second call (re-fetch after write) → new_row
-        if call_count[0] == 1:
-            return None
-        return new_row
+        # First call (existence check) → None; re-fetch after write → new_row.
+        return None if call_count[0] == 1 else new_row
 
     switchboard_pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
 
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"actor": actor, "action": action, **kwargs})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+
     client = _build_app(mock_db)
-    resp = client.post("/api/secrets/system/MY_API_KEY", json={"value": "s3cr3t"})
+    resp = client.post("/api/secrets/system/MY_KEY", json={"value": "s3cr3t"})
     assert resp.status_code == 200
     body = resp.json()
-    assert "data" in body
     assert "meta" in body
+
+    set_rows = [c for c in audit_calls if c["action"] == "set"]
+    assert set_rows, f"Expected 'set' audit action; got: {audit_calls}"
+    assert set_rows[0].get("target") == "s:MY_KEY"
 
 
 def test_set_new_persists_category_on_insert():
@@ -303,91 +314,14 @@ def test_set_new_category_defaults_to_general():
     assert "general" in args
 
 
-def test_set_new_writes_set_audit_action(monkeypatch):
-    """POST creates a new key → audit action is 'set'."""
-    new_row = _make_butler_secrets_row(secret_key="MY_KEY", last_test_ok=True)
-    mock_db = _make_db(switchboard_row=None)
-    switchboard_pool = mock_db.pool("switchboard")
-
-    call_count = [0]
-
-    async def _fetchrow_se(sql, *args):
-        if "secret_probe_log" in sql:
-            return None
-        call_count[0] += 1
-        return None if call_count[0] == 1 else new_row
-
-    switchboard_pool.fetchrow = AsyncMock(side_effect=_fetchrow_se)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    resp = client.post("/api/secrets/system/MY_KEY", json={"value": "new-val"})
-    assert resp.status_code == 200
-    assert any(c["action"] == "set" for c in audit_calls), (
-        f"Expected 'set' audit action; got: {audit_calls}"
-    )
-
-
-def test_set_new_audit_target_is_canonical_key(monkeypatch):
-    """POST new key → audit row target is 's:MY_KEY'."""
-    new_row = _make_butler_secrets_row(secret_key="MY_KEY")
-    mock_db = _make_db(switchboard_row=None)
-    switchboard_pool = mock_db.pool("switchboard")
-
-    call_count = [0]
-
-    async def _fetchrow_se(sql, *args):
-        if "secret_probe_log" in sql:
-            return None
-        call_count[0] += 1
-        return None if call_count[0] == 1 else new_row
-
-    switchboard_pool.fetchrow = AsyncMock(side_effect=_fetchrow_se)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    client.post("/api/secrets/system/MY_KEY", json={"value": "val"})
-
-    set_rows = [c for c in audit_calls if c["action"] == "set"]
-    assert set_rows, "No 'set' audit row"
-    assert set_rows[0].get("target") == "s:MY_KEY"
-
-
 # ---------------------------------------------------------------------------
 # Tests: POST /api/secrets/system/<key>  — rotate existing
 # ---------------------------------------------------------------------------
 
 
-def test_rotate_existing_returns_200():
-    """POST on existing key returns 200 (update/rotate path)."""
-    existing_row = _make_butler_secrets_row(secret_key="EXISTING_KEY", last_test_ok=True)
-    mock_db = _make_db(switchboard_row=existing_row)
-    client = _build_app(mock_db)
-    resp = client.post("/api/secrets/system/EXISTING_KEY", json={"value": "new-val"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert "meta" in body
-
-
-def test_rotate_existing_writes_rotated_audit(monkeypatch):
-    """POST on existing key → audit action is 'rotated'."""
+def test_rotate_existing_returns_200_and_writes_rotated_audit_canonical(monkeypatch):
+    """POST on an existing key returns 200 and appends a 'rotated' audit row
+    targeting the canonical key 's:<key>'."""
     existing_row = _make_butler_secrets_row(secret_key="EXISTING_KEY", last_test_ok=True)
     mock_db = _make_db(switchboard_row=existing_row)
 
@@ -403,30 +337,10 @@ def test_rotate_existing_writes_rotated_audit(monkeypatch):
     client = _build_app(mock_db)
     resp = client.post("/api/secrets/system/EXISTING_KEY", json={"value": "new-val"})
     assert resp.status_code == 200
-    assert any(c["action"] == "rotated" for c in audit_calls), (
-        f"Expected 'rotated' audit action; got: {audit_calls}"
-    )
-
-
-def test_rotate_existing_audit_target_is_canonical_key(monkeypatch):
-    """POST rotate → audit target is 's:EXISTING_KEY'."""
-    existing_row = _make_butler_secrets_row(secret_key="EXISTING_KEY")
-    mock_db = _make_db(switchboard_row=existing_row)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    client.post("/api/secrets/system/EXISTING_KEY", json={"value": "rotated"})
+    assert "meta" in resp.json()
 
     rotated = [c for c in audit_calls if c["action"] == "rotated"]
-    assert rotated, "No 'rotated' audit row"
+    assert rotated, f"Expected 'rotated' audit action; got: {audit_calls}"
     assert rotated[0].get("target") == "s:EXISTING_KEY"
 
 
@@ -435,22 +349,9 @@ def test_rotate_existing_audit_target_is_canonical_key(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_override_add_returns_200():
-    """POST with target=<butler> creates override row, returns 200."""
-    butler_row = _make_butler_secrets_row(secret_key="MY_KEY", last_test_ok=True)
-    mock_db = _make_db(butler_row=butler_row, butler_names=["health"])
-    client = _build_app(mock_db)
-    resp = client.post(
-        "/api/secrets/system/MY_KEY", json={"value": "override-val", "target": "health"}
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert "meta" in body
-
-
-def test_override_add_writes_overrode_audit(monkeypatch):
-    """POST with target=<butler> → audit action is 'overrode'."""
+def test_override_add_returns_200_and_writes_overrode_audit(monkeypatch):
+    """POST with target=<butler> creates an override row, returns 200, and writes an
+    'overrode' audit action."""
     butler_row = _make_butler_secrets_row(secret_key="MY_KEY", last_test_ok=True)
     mock_db = _make_db(butler_row=butler_row, butler_names=["health"])
 
@@ -468,6 +369,7 @@ def test_override_add_writes_overrode_audit(monkeypatch):
         "/api/secrets/system/MY_KEY", json={"value": "override-val", "target": "health"}
     )
     assert resp.status_code == 200
+    assert "meta" in resp.json()
     assert any(c["action"] == "overrode" for c in audit_calls), (
         f"Expected 'overrode' audit action; got: {audit_calls}"
     )
@@ -488,20 +390,9 @@ def test_override_add_404_on_unknown_butler():
 # ---------------------------------------------------------------------------
 
 
-def test_delete_shared_returns_200_with_disconnected():
-    """DELETE ?target=shared returns 200 with {status: 'disconnected'}."""
-    existing_row = _make_butler_secrets_row(secret_key="DEL_KEY")
-    mock_db = _make_db(switchboard_row=existing_row)
-    client = _build_app(mock_db)
-    resp = client.delete("/api/secrets/system/DEL_KEY?target=shared")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert body["data"]["status"] == "disconnected"
-
-
-def test_delete_shared_writes_disconnected_audit(monkeypatch):
-    """DELETE ?target=shared → audit action is 'disconnected'."""
+def test_delete_shared_returns_200_disconnected_and_writes_audit(monkeypatch):
+    """DELETE ?target=shared returns 200 with {status: 'disconnected'} and writes a
+    'disconnected' audit action."""
     existing_row = _make_butler_secrets_row(secret_key="DEL_KEY")
     mock_db = _make_db(switchboard_row=existing_row)
 
@@ -517,6 +408,7 @@ def test_delete_shared_writes_disconnected_audit(monkeypatch):
     client = _build_app(mock_db)
     resp = client.delete("/api/secrets/system/DEL_KEY?target=shared")
     assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "disconnected"
     assert any(c["action"] == "disconnected" for c in audit_calls), (
         f"Expected 'disconnected' audit action; got: {audit_calls}"
     )
@@ -535,19 +427,9 @@ def test_delete_shared_404_on_unknown_key():
 # ---------------------------------------------------------------------------
 
 
-def test_delete_override_returns_200_with_revoked():
-    """DELETE ?target=<butler> returns 200 with {status: 'revoked'}."""
-    butler_row = _make_butler_secrets_row(secret_key="OVR_KEY")
-    mock_db = _make_db(butler_row=butler_row, butler_names=["health"])
-    client = _build_app(mock_db)
-    resp = client.delete("/api/secrets/system/OVR_KEY?target=health")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["data"]["status"] == "revoked"
-
-
-def test_delete_override_writes_revoked_audit(monkeypatch):
-    """DELETE ?target=<butler> → audit action is 'revoked'."""
+def test_delete_override_returns_200_revoked_and_writes_revoked_audit(monkeypatch):
+    """DELETE ?target=<butler> returns 200 with {status: 'revoked'} and writes a
+    'revoked' audit action."""
     butler_row = _make_butler_secrets_row(secret_key="OVR_KEY")
     mock_db = _make_db(butler_row=butler_row, butler_names=["health"])
 
@@ -563,6 +445,7 @@ def test_delete_override_writes_revoked_audit(monkeypatch):
     client = _build_app(mock_db)
     resp = client.delete("/api/secrets/system/OVR_KEY?target=health")
     assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "revoked"
     assert any(c["action"] == "revoked" for c in audit_calls), (
         f"Expected 'revoked' audit action; got: {audit_calls}"
     )
@@ -590,8 +473,11 @@ def test_delete_override_404_on_unknown_key():
 
 
 def test_probe_returns_200_with_test_result():
-    """Probe returns 200 with ApiResponse<TestResult> envelope."""
-    existing_row = _make_butler_secrets_row(secret_key="PROBE_KEY", last_test_ok=True)
+    """Probe returns 200 with ApiResponse<TestResult> envelope; ok=True when the
+    credential's last_test_ok=True."""
+    existing_row = _make_butler_secrets_row(
+        secret_key="PROBE_KEY", last_test_ok=True, secret_value="val"
+    )
     mock_db = _make_db(switchboard_row=existing_row)
     # Clear rate-limit state before test.
     _system_probe_timestamps.pop("PROBE_KEY", None)
@@ -599,23 +485,9 @@ def test_probe_returns_200_with_test_result():
     resp = client.post("/api/secrets/system/PROBE_KEY/probe")
     assert resp.status_code == 200
     body = resp.json()
-    assert "data" in body
     assert "meta" in body
-    assert "ok" in body["data"]
     assert "at" in body["data"]
-
-
-def test_probe_ok_credential_returns_true():
-    """Probe returns ok=True when credential last_test_ok=True."""
-    existing_row = _make_butler_secrets_row(
-        secret_key="OK_KEY", last_test_ok=True, secret_value="val"
-    )
-    mock_db = _make_db(switchboard_row=existing_row)
-    _system_probe_timestamps.pop("OK_KEY", None)
-    client = _build_app(mock_db)
-    resp = client.post("/api/secrets/system/OK_KEY/probe")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["ok"] is True
+    assert body["data"]["ok"] is True
 
 
 def test_probe_fail_credential_returns_false():
@@ -632,31 +504,6 @@ def test_probe_fail_credential_returns_false():
     resp = client.post("/api/secrets/system/FAIL_KEY/probe")
     assert resp.status_code == 200
     assert resp.json()["data"]["ok"] is False
-
-
-def test_probe_writes_audit_row(monkeypatch):
-    """Probe appends a 'verified' or 'failed' audit row."""
-    existing_row = _make_butler_secrets_row(
-        secret_key="AUDIT_KEY", last_test_ok=True, secret_value="val"
-    )
-    mock_db = _make_db(switchboard_row=existing_row)
-    _system_probe_timestamps.pop("AUDIT_KEY", None)
-
-    audit_calls: list[dict] = []
-
-    async def _fake_append(pool, actor, action, **kwargs):
-        audit_calls.append({"actor": actor, "action": action, **kwargs})
-        return 1
-
-    import butlers.api.routers.audit as _audit_mod
-
-    monkeypatch.setattr(_audit_mod, "append", _fake_append)
-    client = _build_app(mock_db)
-    resp = client.post("/api/secrets/system/AUDIT_KEY/probe")
-    assert resp.status_code == 200
-    assert any(c["action"] in {"verified", "failed"} for c in audit_calls), (
-        f"Expected 'verified' or 'failed' audit action; got: {audit_calls}"
-    )
 
 
 def test_probe_verified_action_when_ok(monkeypatch):
@@ -831,36 +678,10 @@ def _make_db_with_shared_public(
 # ---------------------------------------------------------------------------
 
 
-def test_set_shared_public_new_returns_200():
-    """POST target=shared-public (no existing row) → 200 with SystemSecretDetail."""
-    new_row = _make_butler_secrets_row(secret_key="PUB_KEY", last_test_ok=True)
-    mock_db = _make_db_with_shared_public(public_row=None)
-    public_pool = mock_db.credential_shared_pool()
-
-    call_count = [0]
-
-    async def _fetchrow_se(sql, *args):
-        if "secret_probe_log" in sql:
-            return None
-        call_count[0] += 1
-        return None if call_count[0] == 1 else new_row
-
-    public_pool.fetchrow = AsyncMock(side_effect=_fetchrow_se)
-
-    client = _build_app(mock_db)
-    resp = client.post(
-        "/api/secrets/system/PUB_KEY",
-        json={"value": "pub-secret", "target": "shared-public"},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "data" in body
-    assert "meta" in body
-
-
 def test_set_shared_public_insert_goes_to_public_pool_not_switchboard():
-    """POST target=shared-public → INSERT executed on the public pool, switchboard untouched."""
-    new_row = _make_butler_secrets_row(secret_key="PUB_KEY")
+    """POST target=shared-public → 200 with SystemSecretDetail envelope; INSERT executed
+    on the public pool, switchboard untouched."""
+    new_row = _make_butler_secrets_row(secret_key="PUB_KEY", last_test_ok=True)
     mock_db = _make_db_with_shared_public(public_row=None)
     public_pool = mock_db.credential_shared_pool()
 
@@ -880,6 +701,7 @@ def test_set_shared_public_insert_goes_to_public_pool_not_switchboard():
         json={"value": "pub-val", "target": "shared-public"},
     )
     assert resp.status_code == 200
+    assert "meta" in resp.json()
 
     # The public pool must have had execute() called (INSERT or UPDATE).
     assert public_pool.execute.called, "Expected execute() on the public pool"
@@ -991,18 +813,9 @@ def test_set_shared_target_still_uses_switchboard():
 # ---------------------------------------------------------------------------
 
 
-def test_delete_shared_public_returns_200_disconnected():
-    """DELETE ?target=shared-public → 200 with {status: 'disconnected'}."""
-    existing_row = _make_butler_secrets_row(secret_key="PUB_DEL")
-    mock_db = _make_db_with_shared_public(public_row=existing_row)
-    client = _build_app(mock_db)
-    resp = client.delete("/api/secrets/system/PUB_DEL?target=shared-public")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["status"] == "disconnected"
-
-
 def test_delete_shared_public_goes_to_public_pool_not_switchboard():
-    """DELETE ?target=shared-public → DELETE executed on the public pool, switchboard untouched."""
+    """DELETE ?target=shared-public → 200 with {status: 'disconnected'}; DELETE executed
+    on the public pool, switchboard untouched."""
     existing_row = _make_butler_secrets_row(secret_key="PUB_DEL2")
     mock_db = _make_db_with_shared_public(public_row=existing_row)
     public_pool = mock_db.credential_shared_pool()
@@ -1010,6 +823,7 @@ def test_delete_shared_public_goes_to_public_pool_not_switchboard():
     client = _build_app(mock_db)
     resp = client.delete("/api/secrets/system/PUB_DEL2?target=shared-public")
     assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "disconnected"
 
     # Public pool execute() must have been called (DELETE).
     assert public_pool.execute.called, "Expected execute() on the public pool"

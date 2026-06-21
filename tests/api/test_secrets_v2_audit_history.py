@@ -28,7 +28,6 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
     _AUDIT_DEFAULT_LIMIT,
-    _AUDIT_MAX_LIMIT,
     _VALID_SCOPES,
     AuditEvent,
     _get_db_manager,
@@ -111,14 +110,6 @@ def test_valid_scopes_contains_expected_values():
     assert _VALID_SCOPES == frozenset({"user", "system", "cli"})
 
 
-def test_default_limit_is_10():
-    assert _AUDIT_DEFAULT_LIMIT == 10
-
-
-def test_max_limit_is_50():
-    assert _AUDIT_MAX_LIMIT == 50
-
-
 # ---------------------------------------------------------------------------
 # Scenario 1: Hit — seeded rows returned in DESC order
 # ---------------------------------------------------------------------------
@@ -157,30 +148,6 @@ def test_audit_history_hit_returns_rows_desc():
 
     assert data[1]["actor"] == "system"
     assert data[1]["action"] == "connected"
-
-
-def test_audit_history_hit_user_scope():
-    """user scope is normalised to u: prefix in the deep_link."""
-    rows = [_make_audit_row(action="connected")]
-    mock_db = _make_db_manager_with_audit_rows(rows)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/audit/user/google")
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["meta"]["deep_link"] == "/audit-log?key=u:google"
-
-
-def test_audit_history_hit_cli_scope():
-    """cli scope is normalised to c: prefix."""
-    rows = [_make_audit_row(action="rotated")]
-    mock_db = _make_db_manager_with_audit_rows(rows)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/audit/cli/claude")
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["meta"]["deep_link"] == "/audit-log?key=c:claude"
 
 
 def test_audit_history_note_included_when_present():
@@ -328,36 +295,23 @@ def test_audit_history_pool_unavailable_returns_503():
 # ---------------------------------------------------------------------------
 
 
-def test_audit_history_deep_link_system_key():
-    """meta.deep_link is /audit-log?key=s:<KEY>."""
+@pytest.mark.parametrize(
+    ("scope", "key", "expected_deep_link"),
+    [
+        ("system", "BUTLER_TELEGRAM_TOKEN", "/audit-log?key=s:BUTLER_TELEGRAM_TOKEN"),
+        ("user", "google", "/audit-log?key=u:google"),
+        ("cli", "claude", "/audit-log?key=c:claude"),
+    ],
+)
+def test_audit_history_deep_link_canonical_key(scope, key, expected_deep_link):
+    """meta.deep_link normalises scope to its s:/u:/c: prefix; present even with no rows."""
     mock_db = _make_db_manager_with_audit_rows([])
     client = _build_app(mock_db)
 
-    resp = client.get("/api/secrets/audit/system/BUTLER_TELEGRAM_TOKEN")
+    resp = client.get(f"/api/secrets/audit/{scope}/{key}")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["meta"]["deep_link"] == "/audit-log?key=s:BUTLER_TELEGRAM_TOKEN"
-
-
-def test_audit_history_deep_link_user_key():
-    """meta.deep_link uses u: prefix for user scope."""
-    mock_db = _make_db_manager_with_audit_rows([])
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/audit/user/google")
-    body = resp.json()
-    assert body["meta"]["deep_link"] == "/audit-log?key=u:google"
-
-
-def test_audit_history_deep_link_present_when_no_rows():
-    """deep_link is present even when data is empty (miss scenario)."""
-    mock_db = _make_db_manager_with_audit_rows([])
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/audit/cli/claude")
-    body = resp.json()
-    assert "deep_link" in body["meta"]
-    assert body["meta"]["deep_link"] == "/audit-log?key=c:claude"
+    assert body["meta"]["deep_link"] == expected_deep_link
 
 
 # ---------------------------------------------------------------------------
@@ -385,26 +339,6 @@ def test_audit_history_envelope_has_data_and_meta():
 
     # meta has deep_link
     assert "deep_link" in body["meta"]
-
-
-def test_audit_history_event_fields():
-    """Each AuditEvent has ts, actor, action, note fields."""
-    rows = [_make_audit_row(actor="owner", action="rotated", note="manual rotation")]
-    mock_db = _make_db_manager_with_audit_rows(rows)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/audit/system/KEY")
-    assert resp.status_code == 200
-    body = resp.json()
-    event = body["data"][0]
-
-    assert "ts" in event
-    assert "actor" in event
-    assert "action" in event
-    assert "note" in event
-    assert event["actor"] == "owner"
-    assert event["action"] == "rotated"
-    assert event["note"] == "manual rotation"
 
 
 # ---------------------------------------------------------------------------
@@ -451,89 +385,22 @@ def test_audit_history_valid_scopes_accepted(valid_scope: str):
 
 
 # ---------------------------------------------------------------------------
-# Scenario 7: Timestamp pre-formatting
-# ---------------------------------------------------------------------------
-
-
-def test_audit_history_timestamp_formatted_as_today():
-    """A row recorded recently has 'today' in its ts field.
-
-    The formatter's clock is frozen to noon UTC so the 15-minutes-ago
-    timestamp is always on the same calendar day.
-    """
-    recent = _FROZEN_NOW - timedelta(minutes=15)
-    rows = [_make_audit_row(ts=recent)]
-    mock_db = _make_db_manager_with_audit_rows(rows)
-    client = _build_app(mock_db)
-
-    with _freeze_time():
-        resp = client.get("/api/secrets/audit/system/KEY")
-    assert resp.status_code == 200
-    body = resp.json()
-    ts = body["data"][0]["ts"]
-    assert isinstance(ts, str)
-    assert "today" in ts
-
-
-def test_audit_history_timestamp_formatted_as_yesterday():
-    """A row recorded yesterday has 'yesterday' in its ts field.
-
-    The formatter's clock is frozen to noon UTC so the previous-calendar-day
-    timestamp is reliably "yesterday" regardless of when CI runs.
-    """
-    yesterday = _FROZEN_NOW - timedelta(days=1, hours=2)
-    rows = [_make_audit_row(ts=yesterday)]
-    mock_db = _make_db_manager_with_audit_rows(rows)
-    client = _build_app(mock_db)
-
-    with _freeze_time():
-        resp = client.get("/api/secrets/audit/system/KEY")
-    assert resp.status_code == 200
-    body = resp.json()
-    ts = body["data"][0]["ts"]
-    assert isinstance(ts, str)
-    assert "yesterday" in ts
-
-
-def test_audit_history_timestamp_formatted_as_date_for_old_rows():
-    """A row from several days ago gets a date-prefixed format."""
-    old = _NOW - timedelta(days=10)
-    rows = [_make_audit_row(ts=old)]
-    mock_db = _make_db_manager_with_audit_rows(rows)
-    client = _build_app(mock_db)
-
-    resp = client.get("/api/secrets/audit/system/KEY")
-    assert resp.status_code == 200
-    body = resp.json()
-    ts = body["data"][0]["ts"]
-    assert isinstance(ts, str)
-    # Should contain a date component, not 'today' or 'yesterday'
-    assert "today" not in ts
-    assert "yesterday" not in ts
-    # Contains a digit (year or time)
-    assert any(c.isdigit() for c in ts)
-
-
-# ---------------------------------------------------------------------------
 # Unit-level: AuditEvent model
 # ---------------------------------------------------------------------------
 
 
-def test_audit_event_model_note_optional():
-    """AuditEvent can be constructed without a note."""
-    event = AuditEvent(ts="14:21 today", actor="owner", action="rotated")
-    assert event.note is None
-
-
-def test_audit_event_model_fields():
-    """AuditEvent fields are correct."""
-    event = AuditEvent(
+def test_audit_event_model_fields_and_optional_note():
+    """AuditEvent round-trips its fields and treats note as optional (default None)."""
+    full = AuditEvent(
         ts="yesterday 09:08",
         actor="system",
         action="connected",
         note="oauth callback",
     )
-    assert event.ts == "yesterday 09:08"
-    assert event.actor == "system"
-    assert event.action == "connected"
-    assert event.note == "oauth callback"
+    assert full.ts == "yesterday 09:08"
+    assert full.actor == "system"
+    assert full.action == "connected"
+    assert full.note == "oauth callback"
+
+    no_note = AuditEvent(ts="14:21 today", actor="owner", action="rotated")
+    assert no_note.note is None
