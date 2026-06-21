@@ -532,20 +532,27 @@ function isoAtMinute(day: Date, minutes: number): string {
   return d.toISOString();
 }
 
-/** A recurring instance whose single-occurrence edit is deferred to bu-9ez7bn. */
+/** Whether an entry carries an RRULE (i.e. is a recurring occurrence). */
 function isRecurringInstance(entry: UnifiedCalendarEntry): boolean {
   return typeof entry.rrule === "string" && entry.rrule.trim().length > 0;
 }
 
 /** Whether a grid entry can be dragged to move/resize via existing update endpoints. */
 function isGridDraggable(entry: UnifiedCalendarEntry): boolean {
-  if (entry.all_day || isRecurringInstance(entry)) {
+  if (entry.all_day) {
     return false;
   }
   if (entry.source_type === "provider_event") {
+    // Recurring provider occurrences are draggable; the drop is routed through the
+    // recurrence scope sheet (this / following / series) instead of committing directly.
     return !!entry.provider_event_id && entry.editable;
   }
-  // Butler-lane events (scheduled tasks / reminders) update via calendar_update_butler_event.
+  // Butler-lane events (scheduled tasks / reminders) update via
+  // calendar_update_butler_event, which has no scope-aware path yet, so keep
+  // recurring butler instances non-draggable.
+  if (isRecurringInstance(entry)) {
+    return false;
+  }
   return resolveButlerEventTarget(entry) !== null && !!entry.butler_name;
 }
 
@@ -619,6 +626,84 @@ type RecurrenceScope = "this" | "following" | "series";
  */
 function isRecurringUserEntry(entry: UnifiedCalendarEntry): boolean {
   return Boolean(entry.rrule) && Boolean(entry.provider_event_id);
+}
+
+/** Human-readable label for each recurrence scope option. */
+const RECURRENCE_SCOPE_LABELS: Record<RecurrenceScope, string> = {
+  this: "This occurrence",
+  following: "This and following",
+  series: "All events",
+};
+
+/**
+ * Impact line for the "This occurrence" option, estimated from the number of
+ * loaded occurrences sharing the same base provider event.
+ */
+function occurrenceImpactText(
+  entries: UnifiedCalendarEntry[],
+  providerEventId: string | null | undefined,
+): string {
+  // Without a base provider event id we cannot count siblings; matching on a
+  // falsy id would wrongly bucket every non-provider entry together.
+  if (!providerEventId) {
+    return "Changes only this occurrence.";
+  }
+  const loaded = entries.filter((e) => e.provider_event_id === providerEventId).length;
+  return loaded > 1
+    ? `Changes 1 of ~${loaded} loaded occurrences.`
+    : "Changes only this occurrence.";
+}
+
+/**
+ * Three-option recurrence scope chooser (this / following / series) shared by the
+ * delete and edit confirmation sheets. The caller supplies the per-option impact
+ * copy so the same control can describe a deletion or an edit.
+ */
+function RecurrenceScopeFieldset({
+  fieldsetTestId,
+  optionPrefix,
+  name,
+  scope,
+  onChange,
+  impacts,
+}: {
+  fieldsetTestId: string;
+  optionPrefix: string;
+  name: string;
+  scope: RecurrenceScope;
+  onChange: (scope: RecurrenceScope) => void;
+  impacts: Record<RecurrenceScope, string>;
+}) {
+  return (
+    <fieldset
+      data-testid={fieldsetTestId}
+      className="flex flex-col gap-2 border-t border-[var(--border)] pt-3"
+    >
+      <legend className="sr-only">Recurrence scope</legend>
+      {(["this", "following", "series"] as const).map((value) => (
+        <label
+          key={value}
+          data-testid={`${optionPrefix}-${value}`}
+          className="flex cursor-pointer items-start gap-2 text-sm"
+        >
+          <input
+            type="radio"
+            name={name}
+            value={value}
+            checked={scope === value}
+            onChange={() => onChange(value)}
+            className="mt-1"
+          />
+          <span className="flex flex-col">
+            <span className="font-medium">{RECURRENCE_SCOPE_LABELS[value]}</span>
+            <Mono muted className="text-xs">
+              {impacts[value]}
+            </Mono>
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  );
 }
 
 interface RecurringOverflowSentinel {
@@ -1184,6 +1269,16 @@ interface CalendarEntryDetailPanelProps {
   onDelete?: (entry: UnifiedCalendarEntry) => void;
   onUserEdit?: (entry: UnifiedCalendarEntry) => void;
   onButlerEdit?: (entry: UnifiedCalendarEntry) => void;
+  /**
+   * Defers an inline edit of a recurring provider occurrence to the parent so it
+   * can open the recurrence scope sheet (this / following / series) before
+   * committing the patch. When omitted, recurring edits commit directly.
+   */
+  onRecurringEdit?: (
+    entry: UnifiedCalendarEntry,
+    patch: Record<string, unknown>,
+    label: string,
+  ) => void;
   userMutation: ReturnType<typeof useMutateCalendarWorkspaceUserEvent>;
   butlerMutation: ReturnType<typeof useMutateCalendarWorkspaceButlerEvent>;
 }
@@ -1192,6 +1287,7 @@ function CalendarEntryDetailPanel({
   entry,
   onClose,
   onDelete,
+  onRecurringEdit,
   userMutation,
   butlerMutation,
 }: CalendarEntryDetailPanelProps) {
@@ -1216,6 +1312,12 @@ function CalendarEntryDetailPanel({
   function fireUserUpdate(patch: Record<string, unknown>, label: string) {
     const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
     if (!butlerName || !entry.provider_event_id) return;
+    // A recurring occurrence must first ask the user which occurrences the edit
+    // applies to (this / following / series); defer to the parent scope sheet.
+    if (isRecurringUserEntry(entry) && onRecurringEdit) {
+      onRecurringEdit(entry, patch, label);
+      return;
+    }
     setSaveStatus("idle");
     userMutation.mutate(
       {
@@ -1883,6 +1985,15 @@ export default function CalendarWorkspacePage() {
   // occurrence, EXDATE), 'following' (this + later, UNTIL split), or 'series'
   // (the whole recurring event). Reset to 'this' whenever a new candidate opens.
   const [deleteScope, setDeleteScope] = useState<RecurrenceScope>("this");
+  // Pending edit of a recurring provider occurrence (detail-panel field edit or a
+  // drag/resize). Holding the patch here lets the scope sheet pick this/following/
+  // series before the update fires. `editScope` resets to 'this' on each open.
+  const [recurringEdit, setRecurringEdit] = useState<{
+    entry: UnifiedCalendarEntry;
+    patch: Record<string, unknown>;
+    label: string;
+  } | null>(null);
+  const [editScope, setEditScope] = useState<RecurrenceScope>("this");
   const [userEventForm, setUserEventForm] = useState<UserEventFormState | null>(null);
   // Conflict state: set when the server returns status='conflict' for a user-event mutation.
   // Holds the detected conflicts, suggested slots, and the pending mutation args so re-submission
@@ -2559,16 +2670,42 @@ export default function CalendarWorkspacePage() {
       const day = weekDays[dayIndex] ?? weekDays[0];
       const deltaMin = pointerMin - origin.grabOffsetMin - origin.originStartMin;
       const { startMin, endMin } = shiftWindow(origin.originStartMin, origin.durationMin, deltaMin);
-      void commitTimeChange(origin.entry, isoAtMinute(day, startMin), isoAtMinute(day, endMin));
+      commitDragTimeChange(origin.entry, isoAtMinute(day, startMin), isoAtMinute(day, endMin));
     } else {
       const day = weekDays[origin.dayIndex] ?? weekDays[0];
       const endMin = resizeWindowEnd(origin.startMin, pointerMin);
-      void commitTimeChange(
+      commitDragTimeChange(
         origin.entry,
         isoAtMinute(day, origin.startMin),
         isoAtMinute(day, endMin),
       );
     }
+  }
+
+  /**
+   * Persist a drag/resize. A recurring occurrence routes through the scope sheet
+   * (this / following / series) so the user picks which occurrences shift; a
+   * one-off event commits directly with optimistic UI + snap-back.
+   */
+  function commitDragTimeChange(
+    entry: UnifiedCalendarEntry,
+    nextStartIso: string,
+    nextEndIso: string,
+  ) {
+    if (isRecurringUserEntry(entry)) {
+      if (nextStartIso === entry.start_at && nextEndIso === entry.end_at) return;
+      openRecurringEdit(
+        entry,
+        {
+          start_at: nextStartIso,
+          end_at: nextEndIso,
+          timezone: entry.timezone || defaultTimezone,
+        },
+        "time",
+      );
+      return;
+    }
+    void commitTimeChange(entry, nextStartIso, nextEndIso);
   }
 
   function handleGridPointerCancel(event: React.PointerEvent) {
@@ -2976,6 +3113,70 @@ export default function CalendarWorkspacePage() {
       setDeleteCandidate(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete calendar event.");
+    }
+  }
+
+  /** Stage a recurring-occurrence edit and open the scope sheet (defaults to 'this'). */
+  function openRecurringEdit(
+    entry: UnifiedCalendarEntry,
+    patch: Record<string, unknown>,
+    label: string,
+  ) {
+    setEditScope("this");
+    setRecurringEdit({ entry, patch, label });
+  }
+
+  /**
+   * Apply the staged recurring edit with the chosen scope. For 'this'/'following'
+   * the occurrence anchor (instance_start_at) and recurrence_scope ride along so
+   * the backend EXDATE/UNTIL-splits; 'series' edits the whole recurring event.
+   */
+  async function confirmRecurringEdit() {
+    if (!recurringEdit) return;
+    const { entry, patch, label } = recurringEdit;
+    const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
+    if (!butlerName || !entry.provider_event_id) {
+      toast.error("Could not resolve calendar owner for this event.");
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      event_id: entry.provider_event_id,
+      calendar_id: calendarId ?? undefined,
+      ...patch,
+    };
+    if (editScope !== "series") {
+      payload.recurrence_scope = editScope;
+      payload.instance_start_at = entry.start_at;
+    }
+
+    try {
+      const response = await userEventMutation.mutateAsync({
+        butler_name: butlerName,
+        action: "update",
+        request_id: buildRequestId("update"),
+        payload,
+      });
+      const result = response.data.result;
+      // `isCalendarMutationOk` intentionally treats 'conflict' as non-terminal
+      // (handled interactively elsewhere), so check it explicitly here — this
+      // sheet has no conflict-resolution path, and silently reporting success
+      // would close the dialog without the edit ever landing.
+      const status = maybeText(result?.status);
+      if (status === "conflict") {
+        toast.error(`Could not update ${label}: the new time conflicts with another event.`);
+        return;
+      }
+      if (!isCalendarMutationOk(result)) {
+        toast.error(
+          `Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`,
+        );
+        return;
+      }
+      toast.success(`Event ${label} updated.`);
+      setRecurringEdit(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : `Failed to update ${label}.`);
     }
   }
 
@@ -4110,6 +4311,7 @@ export default function CalendarWorkspacePage() {
               setDeleteCandidate(entry);
               closeDetailPanel();
             }}
+            onRecurringEdit={openRecurringEdit}
             userMutation={userEventMutation}
             butlerMutation={butlerMutation}
           />
@@ -4914,59 +5116,18 @@ export default function CalendarWorkspacePage() {
             </DialogDescription>
           </DialogHeader>
           {deleteCandidate && isRecurringUserEntry(deleteCandidate) ? (
-            <fieldset
-              data-testid="delete-recurrence-scope"
-              className="flex flex-col gap-2 border-t border-[var(--border)] pt-3"
-            >
-              <legend className="sr-only">Recurrence scope</legend>
-              {(
-                [
-                  {
-                    value: "this" as const,
-                    label: "This occurrence",
-                    impact: (() => {
-                      const loaded = entries.filter(
-                        (e) => e.provider_event_id === deleteCandidate.provider_event_id,
-                      ).length;
-                      return loaded > 1
-                        ? `Changes 1 of ~${loaded} loaded occurrences.`
-                        : "Changes only this occurrence.";
-                    })(),
-                  },
-                  {
-                    value: "following" as const,
-                    label: "This and following",
-                    impact: "Removes this occurrence and every later one.",
-                  },
-                  {
-                    value: "series" as const,
-                    label: "All events",
-                    impact: "Deletes the entire recurring series.",
-                  },
-                ] satisfies Array<{ value: RecurrenceScope; label: string; impact: string }>
-              ).map((option) => (
-                <label
-                  key={option.value}
-                  data-testid={`delete-scope-${option.value}`}
-                  className="flex cursor-pointer items-start gap-2 text-sm"
-                >
-                  <input
-                    type="radio"
-                    name="delete-recurrence-scope"
-                    value={option.value}
-                    checked={deleteScope === option.value}
-                    onChange={() => setDeleteScope(option.value)}
-                    className="mt-1"
-                  />
-                  <span className="flex flex-col">
-                    <span className="font-medium">{option.label}</span>
-                    <Mono muted className="text-xs">
-                      {option.impact}
-                    </Mono>
-                  </span>
-                </label>
-              ))}
-            </fieldset>
+            <RecurrenceScopeFieldset
+              fieldsetTestId="delete-recurrence-scope"
+              optionPrefix="delete-scope"
+              name="delete-recurrence-scope"
+              scope={deleteScope}
+              onChange={setDeleteScope}
+              impacts={{
+                this: occurrenceImpactText(entries, deleteCandidate.provider_event_id),
+                following: "Removes this occurrence and every later one.",
+                series: "Deletes the entire recurring series.",
+              }}
+            />
           ) : null}
           <DialogFooter>
             <PillButton onClick={() => setDeleteCandidate(null)} disabled={userEventMutation.isPending}>
@@ -4979,6 +5140,47 @@ export default function CalendarWorkspacePage() {
             >
               {userEventMutation.isPending ? "Deleting..." : "Delete"}
             </PillButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!recurringEdit}
+        onOpenChange={(open) => (!open ? setRecurringEdit(null) : null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit recurring event</DialogTitle>
+            <DialogDescription>
+              {recurringEdit
+                ? `Apply your change to "${recurringEdit.entry.title}".`
+                : "Apply your change to this recurring event."}
+            </DialogDescription>
+          </DialogHeader>
+          {recurringEdit ? (
+            <RecurrenceScopeFieldset
+              fieldsetTestId="edit-recurrence-scope"
+              optionPrefix="edit-scope"
+              name="edit-recurrence-scope"
+              scope={editScope}
+              onChange={setEditScope}
+              impacts={{
+                this: occurrenceImpactText(entries, recurringEdit.entry.provider_event_id),
+                following: "Updates this occurrence and every later one.",
+                series: "Updates the entire recurring series.",
+              }}
+            />
+          ) : null}
+          <DialogFooter>
+            <PillButton
+              onClick={() => setRecurringEdit(null)}
+              disabled={userEventMutation.isPending}
+            >
+              Cancel
+            </PillButton>
+            <CommitButton onClick={confirmRecurringEdit} disabled={userEventMutation.isPending}>
+              {userEventMutation.isPending ? "Saving..." : "Save changes"}
+            </CommitButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

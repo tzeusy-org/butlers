@@ -1661,8 +1661,11 @@ describe("CalendarWorkspacePage", () => {
     expect(document.querySelector('[data-testid="calendar-move-ghost"]')).toBeNull();
   });
 
-  it("does not start a drag on a recurring instance (defers to scope sheet)", async () => {
-    const userMutateAsync = vi.fn();
+  it("drag-moving a recurring occurrence opens the scope sheet and applies the chosen scope", async () => {
+    const userMutateAsync = vi.fn().mockResolvedValue({
+      data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+      meta: {},
+    });
     setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
     setWorkspaceState({
       data: {
@@ -1704,8 +1707,8 @@ describe("CalendarWorkspacePage", () => {
 
     const eventButton = findGridEvent("Standup");
     expect(eventButton).toBeDefined();
-    // Recurring instances are not draggable, so there is no resize handle either.
-    expect(eventButton?.querySelector('[data-testid="calendar-resize-handle"]')).toBeNull();
+    // Recurring occurrences are now draggable/resizable; the drop routes through the scope sheet.
+    expect(eventButton?.querySelector('[data-testid="calendar-resize-handle"]')).not.toBeNull();
 
     await act(async () => {
       firePointer(eventButton!, "pointerdown", 600);
@@ -1714,7 +1717,110 @@ describe("CalendarWorkspacePage", () => {
       await flush();
     });
 
+    // The drag does not commit directly — it opens the recurrence scope sheet.
     expect(userMutateAsync).not.toHaveBeenCalled();
+    const scopeSheet = document.querySelector('[data-testid="edit-recurrence-scope"]');
+    expect(scopeSheet).not.toBeNull();
+
+    const followingRadio = document.querySelector(
+      '[data-testid="edit-scope-following"] input',
+    ) as HTMLInputElement;
+    await act(async () => {
+      followingRadio.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const editDialog = findDialogByTitle("Edit recurring event");
+    const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Save changes",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(userMutateAsync).toHaveBeenCalledTimes(1);
+    expect(userMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        payload: expect.objectContaining({
+          event_id: "evt-rec",
+          recurrence_scope: "following",
+          instance_start_at: "2026-03-01T09:00:00Z",
+          start_at: expect.any(String),
+          end_at: expect.any(String),
+        }),
+      }),
+    );
+  });
+
+  it("reports an error (not success) when a recurring edit returns status=conflict", async () => {
+    const userMutateAsync = vi.fn().mockResolvedValue({
+      data: { result: { status: "conflict" }, conflicts: [], suggested_slots: [] },
+      meta: {},
+    });
+    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    setWorkspaceState({
+      data: {
+        data: {
+          entries: [
+            {
+              entry_id: "rec-1",
+              view: "user",
+              source_type: "provider_event",
+              source_key: "google:primary",
+              title: "Standup",
+              start_at: "2026-03-01T09:00:00Z",
+              end_at: "2026-03-01T09:30:00Z",
+              timezone: "UTC",
+              all_day: false,
+              calendar_id: "primary",
+              provider_event_id: "evt-rec",
+              butler_name: "general",
+              schedule_id: null,
+              reminder_id: null,
+              rrule: "RRULE:FREQ=DAILY",
+              cron: null,
+              until_at: null,
+              status: "active",
+              sync_state: "fresh",
+              editable: true,
+              metadata: {},
+            },
+          ],
+          source_freshness: [],
+          lanes: [],
+          next_cursor: null,
+          has_more: false,
+        },
+        meta: {},
+      },
+    } as Partial<UseWorkspaceResult>);
+    renderPage("/calendar?view=user&range=day&anchor=2026-03-01");
+
+    const eventButton = findGridEvent("Standup");
+    await act(async () => {
+      firePointer(eventButton!, "pointerdown", 600);
+      firePointer(eventButton!, "pointermove", 660);
+      firePointer(eventButton!, "pointerup", 660);
+      await flush();
+    });
+
+    const editDialog = findDialogByTitle("Edit recurring event");
+    const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Save changes",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    // A conflict is NOT a success: surface an error and keep the scope sheet open
+    // (the edit never landed) instead of falsely reporting the change applied.
+    expect(userMutateAsync).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("conflicts"));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="edit-recurrence-scope"]')).not.toBeNull();
   });
 
   it("shows an error toast (not success) when a butler delete soft-fails", async () => {
@@ -2007,6 +2113,135 @@ describe("CalendarWorkspacePage", () => {
       });
 
       expect(container.querySelector('[data-testid="entry-detail-panel"]')).toBeNull();
+    });
+
+    function setRecurringUserEntry(mutateAsync: ReturnType<typeof vi.fn>) {
+      setUserMutationState({ mutateAsync } as Partial<UseUserMutationResult>);
+      setWorkspaceState({
+        data: {
+          data: {
+            entries: [
+              {
+                entry_id: "rec-detail-1",
+                view: "user",
+                source_type: "provider_event",
+                source_key: "google:primary",
+                title: "Weekly sync",
+                start_at: "2026-03-03T09:00:00Z",
+                end_at: "2026-03-03T09:30:00Z",
+                timezone: "UTC",
+                all_day: false,
+                calendar_id: "primary",
+                provider_event_id: "rec-evt",
+                butler_name: "general",
+                schedule_id: null,
+                reminder_id: null,
+                rrule: "RRULE:FREQ=WEEKLY;BYDAY=TU",
+                cron: null,
+                until_at: null,
+                status: "active",
+                sync_state: "fresh",
+                editable: true,
+                metadata: {},
+              },
+            ],
+            source_freshness: [],
+            lanes: [],
+            next_cursor: null,
+            has_more: false,
+          },
+          meta: {},
+        },
+      } as Partial<UseWorkspaceResult>);
+    }
+
+    async function openRecurringDetailEdit() {
+      renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+      const detailButton = findButton("Detail");
+      await act(async () => {
+        detailButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+      const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+      const titleInput = panel?.querySelector(
+        '[data-testid="detail-title-input"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        setInputValue(titleInput, "Weekly sync (renamed)");
+        await flush();
+      });
+      await act(async () => {
+        titleInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        await flush();
+      });
+    }
+
+    it("editing a recurring event from the detail panel opens the scope sheet (this scope)", async () => {
+      const mutateAsync = vi.fn().mockResolvedValue({
+        data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+        meta: {},
+      });
+      setRecurringUserEntry(mutateAsync);
+      await openRecurringDetailEdit();
+
+      // The blur defers to the scope sheet instead of committing immediately.
+      expect(mutateAsync).not.toHaveBeenCalled();
+      const scopeSheet = document.querySelector('[data-testid="edit-recurrence-scope"]');
+      expect(scopeSheet).not.toBeNull();
+
+      // Default scope is "this"; confirm passes recurrence_scope + instance_start_at.
+      const editDialog = findDialogByTitle("Edit recurring event");
+      const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+        (button) => button.textContent?.trim() === "Save changes",
+      ) as HTMLButtonElement;
+      await act(async () => {
+        saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      expect(mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "update",
+          payload: expect.objectContaining({
+            event_id: "rec-evt",
+            title: "Weekly sync (renamed)",
+            recurrence_scope: "this",
+            instance_start_at: "2026-03-03T09:00:00Z",
+          }),
+        }),
+      );
+    });
+
+    it("editing a recurring event with the series scope omits recurrence_scope", async () => {
+      const mutateAsync = vi.fn().mockResolvedValue({
+        data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+        meta: {},
+      });
+      setRecurringUserEntry(mutateAsync);
+      await openRecurringDetailEdit();
+
+      const seriesRadio = document.querySelector(
+        '[data-testid="edit-scope-series"] input',
+      ) as HTMLInputElement;
+      await act(async () => {
+        seriesRadio.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      const editDialog = findDialogByTitle("Edit recurring event");
+      const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+        (button) => button.textContent?.trim() === "Save changes",
+      ) as HTMLButtonElement;
+      await act(async () => {
+        saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      expect(mutateAsync).toHaveBeenCalledTimes(1);
+      const payload = mutateAsync.mock.calls[0][0].payload;
+      expect(payload).toMatchObject({ event_id: "rec-evt", title: "Weekly sync (renamed)" });
+      expect(payload).not.toHaveProperty("recurrence_scope");
+      expect(payload).not.toHaveProperty("instance_start_at");
     });
   });
 
