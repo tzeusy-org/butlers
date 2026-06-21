@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { toast } from "sonner";
 
@@ -495,21 +496,26 @@ describe("CalendarWorkspacePage", () => {
   });
 
   function renderPage(initialEntry: string) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
     act(() => {
       root.render(
-        <MemoryRouter initialEntries={[initialEntry]}>
-          <Routes>
-            <Route
-              path="/calendar"
-              element={(
-                <>
-                  <CalendarWorkspacePage />
-                  <SearchEcho />
-                </>
-              )}
-            />
-          </Routes>
-        </MemoryRouter>,
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[initialEntry]}>
+            <Routes>
+              <Route
+                path="/calendar"
+                element={(
+                  <>
+                    <CalendarWorkspacePage />
+                    <SearchEcho />
+                  </>
+                )}
+              />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
       );
     });
   }
@@ -1320,6 +1326,152 @@ describe("CalendarWorkspacePage", () => {
         }),
       }),
     );
+  });
+
+  function firePointer(el: Element, type: string, clientY: number, clientX = 20) {
+    el.dispatchEvent(
+      new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, button: 0, clientX, clientY }),
+    );
+  }
+
+  function findGridEvent(label: string): HTMLButtonElement | undefined {
+    // Grid event blocks are absolutely positioned via an inline `top` offset.
+    return Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes(label) && button.style.top !== "",
+    );
+  }
+
+  it("drag on the empty time grid opens the create dialog with a prefilled window", async () => {
+    renderPage("/calendar?view=user&range=day&anchor=2026-03-01");
+
+    const surface = document.querySelector(
+      'button[aria-label^="Create event on"]',
+    ) as HTMLButtonElement;
+    expect(surface).toBeTruthy();
+
+    await act(async () => {
+      firePointer(surface, "pointerdown", 540); // 09:00
+      firePointer(surface, "pointermove", 600); // drag to 10:00
+      firePointer(surface, "pointerup", 600);
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create user event");
+    expect(dialog).toBeDefined();
+    const startInput = dialog?.querySelector("#event-start") as HTMLInputElement;
+    const endInput = dialog?.querySelector("#event-end") as HTMLInputElement;
+    expect(startInput.value).toBe("2026-03-01T09:00");
+    expect(endInput.value).toBe("2026-03-01T10:00");
+  });
+
+  it("drag-moving a user event dispatches an update with new start/end", async () => {
+    const userMutateAsync = vi.fn().mockResolvedValue({
+      data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+      meta: {},
+    });
+    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    renderPage("/calendar?view=user&range=day&anchor=2026-03-01");
+
+    const eventButton = findGridEvent("Morning planning");
+    expect(eventButton).toBeDefined();
+
+    await act(async () => {
+      firePointer(eventButton!, "pointerdown", 600);
+      firePointer(eventButton!, "pointermove", 660); // +60px => +60min
+      firePointer(eventButton!, "pointerup", 660);
+      await flush();
+    });
+
+    expect(userMutateAsync).toHaveBeenCalledTimes(1);
+    const payload = userMutateAsync.mock.calls[0][0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        action: "update",
+        payload: expect.objectContaining({
+          event_id: "evt-1",
+          start_at: expect.any(String),
+          end_at: expect.any(String),
+        }),
+      }),
+    );
+  });
+
+  it("snaps a moved user event back when the update soft-fails", async () => {
+    const userMutateAsync = vi.fn().mockResolvedValue({
+      data: { result: { status: "failed", error: "calendar rejected" }, conflicts: [], suggested_slots: [] },
+      meta: {},
+    });
+    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    renderPage("/calendar?view=user&range=day&anchor=2026-03-01");
+
+    const eventButton = findGridEvent("Morning planning");
+    expect(eventButton).toBeDefined();
+
+    await act(async () => {
+      firePointer(eventButton!, "pointerdown", 600);
+      firePointer(eventButton!, "pointermove", 660);
+      firePointer(eventButton!, "pointerup", 660);
+      await flush();
+    });
+
+    expect(userMutateAsync).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalled();
+    // No undo ghost is left behind on a failed move.
+    expect(document.querySelector('[data-testid="calendar-move-ghost"]')).toBeNull();
+  });
+
+  it("does not start a drag on a recurring instance (defers to scope sheet)", async () => {
+    const userMutateAsync = vi.fn();
+    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    setWorkspaceState({
+      data: {
+        data: {
+          entries: [
+            {
+              entry_id: "rec-1",
+              view: "user",
+              source_type: "provider_event",
+              source_key: "google:primary",
+              title: "Standup",
+              start_at: "2026-03-01T09:00:00Z",
+              end_at: "2026-03-01T09:30:00Z",
+              timezone: "UTC",
+              all_day: false,
+              calendar_id: "primary",
+              provider_event_id: "evt-rec",
+              butler_name: "general",
+              schedule_id: null,
+              reminder_id: null,
+              rrule: "RRULE:FREQ=DAILY",
+              cron: null,
+              until_at: null,
+              status: "active",
+              sync_state: "fresh",
+              editable: true,
+              metadata: {},
+            },
+          ],
+          source_freshness: [],
+          lanes: [],
+        },
+        meta: {},
+      },
+    } as Partial<UseWorkspaceResult>);
+    renderPage("/calendar?view=user&range=day&anchor=2026-03-01");
+
+    const eventButton = findGridEvent("Standup");
+    expect(eventButton).toBeDefined();
+    // Recurring instances are not draggable, so there is no resize handle either.
+    expect(eventButton?.querySelector('[data-testid="calendar-resize-handle"]')).toBeNull();
+
+    await act(async () => {
+      firePointer(eventButton!, "pointerdown", 600);
+      firePointer(eventButton!, "pointermove", 660);
+      firePointer(eventButton!, "pointerup", 660);
+      await flush();
+    });
+
+    expect(userMutateAsync).not.toHaveBeenCalled();
   });
 
   it("shows an error toast (not success) when a butler delete soft-fails", async () => {

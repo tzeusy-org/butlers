@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   addDays,
   addMonths,
@@ -7,6 +8,7 @@ import {
   format,
   getHours,
   getMinutes,
+  isSameDay,
   isSameMonth,
   isToday,
   isValid,
@@ -19,10 +21,12 @@ import { toast } from "sonner";
 import { Link, useSearchParams } from "react-router";
 
 import type {
+  ApiResponse,
   CalendarAuditEntry,
   CalendarConflictEntry,
   CalendarSuggestedSlot,
   CalendarWorkspaceMutationResponse,
+  CalendarWorkspaceReadResponse,
   CalendarWorkspaceSourceFreshness,
   CalendarWorkspaceUserMutationAction,
   CalendarWorkspaceView,
@@ -57,6 +61,16 @@ import { Row } from "@/components/ui/Row";
 import { StateDot } from "@/components/ui/StateDot";
 import { Voice } from "@/components/ui/Voice";
 import { cn } from "@/lib/utils";
+import {
+  HOUR_HEIGHT_PX,
+  MINUTES_PER_DAY,
+  normalizeDragWindow,
+  offsetToMinutes,
+  resizeWindowEnd,
+  shiftWindow,
+  SNAP_MINUTES,
+  snapMinutes,
+} from "@/lib/calendar-grid";
 
 type CalendarRange = "month" | "week" | "day" | "list";
 
@@ -458,12 +472,97 @@ function newButlerRequestId(prefix: string): string {
   return `calendar-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Height of each hour row in the time-axis grid (px). */
-const HOUR_HEIGHT_PX = 60;
 /** Hour labels 0–23 for the y-axis. */
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 /** Default scroll-to position (in hours) when the time grid first mounts. */
 const DEFAULT_SCROLL_HOUR = 7.5;
+/** Pixel movement past which a pointer gesture counts as a drag (not a click). */
+const DRAG_THRESHOLD_PX = 4;
+
+/** Minute-of-day for a Date (local time). */
+function minuteOfDay(date: Date): number {
+  return getHours(date) * 60 + getMinutes(date);
+}
+
+/** Format a minute-of-day value as an `HH:mm` label. */
+function formatMinuteLabel(minutes: number): string {
+  const clamped = Math.min(MINUTES_PER_DAY, Math.max(0, minutes));
+  if (clamped === MINUTES_PER_DAY) return "24:00";
+  return format(new Date(2000, 0, 1, Math.floor(clamped / 60), clamped % 60), "HH:mm");
+}
+
+/** Build a UTC ISO string for a given calendar day at `minutes` past local midnight. */
+function isoAtMinute(day: Date, minutes: number): string {
+  const d = new Date(day);
+  d.setHours(0, 0, 0, 0);
+  d.setMinutes(minutes);
+  return d.toISOString();
+}
+
+/** A recurring instance whose single-occurrence edit is deferred to bu-9ez7bn. */
+function isRecurringInstance(entry: UnifiedCalendarEntry): boolean {
+  return typeof entry.rrule === "string" && entry.rrule.trim().length > 0;
+}
+
+/** Whether a grid entry can be dragged to move/resize via existing update endpoints. */
+function isGridDraggable(entry: UnifiedCalendarEntry): boolean {
+  if (entry.all_day || isRecurringInstance(entry)) {
+    return false;
+  }
+  if (entry.source_type === "provider_event") {
+    return !!entry.provider_event_id && entry.editable;
+  }
+  // Butler-lane events (scheduled tasks / reminders) update via calendar_update_butler_event.
+  return resolveButlerEventTarget(entry) !== null && !!entry.butler_name;
+}
+
+/** Immutable origin of an in-flight grid drag gesture. */
+type DragOrigin =
+  | {
+      mode: "create";
+      pointerId: number;
+      downX: number;
+      downY: number;
+      dayIndex: number;
+      anchorMin: number;
+      moved: boolean;
+    }
+  | {
+      mode: "move";
+      pointerId: number;
+      downX: number;
+      downY: number;
+      entry: UnifiedCalendarEntry;
+      originStartMin: number;
+      durationMin: number;
+      grabOffsetMin: number;
+      moved: boolean;
+    }
+  | {
+      mode: "resize";
+      pointerId: number;
+      downX: number;
+      downY: number;
+      entry: UnifiedCalendarEntry;
+      dayIndex: number;
+      startMin: number;
+      moved: boolean;
+    };
+
+/** Live preview of the current drag, rendered as a translucent block. */
+type GridDragPreview =
+  | { mode: "create"; dayIndex: number; startMin: number; endMin: number }
+  | { mode: "move"; dayIndex: number; startMin: number; endMin: number; entryId: string }
+  | { mode: "resize"; dayIndex: number; startMin: number; endMin: number; entryId: string };
+
+/** Ghost left at an event's prior slot after a successful move, enabling one-click undo. */
+interface MovedGhost {
+  entry: UnifiedCalendarEntry;
+  prevStartIso: string;
+  prevEndIso: string;
+  nextStartIso: string;
+  nextEndIso: string;
+}
 
 /** Maximum recurring instances of the same parent event to show per day per lane or grid cell. */
 const RECURRING_INSTANCE_CAP = 10;
@@ -1235,6 +1334,7 @@ export default function CalendarWorkspacePage() {
   const butlerMutation = useMutateCalendarWorkspaceButlerEvent();
   const userEventMutation = useMutateCalendarWorkspaceUserEvent();
   const primaryMutation = useSetPrimaryCalendar();
+  const queryClient = useQueryClient();
 
   // Activity panel state
   const [activityPanelOpen, setActivityPanelOpen] = useState(false);
@@ -1540,7 +1640,7 @@ export default function CalendarWorkspacePage() {
     return { butlerName, calendarId };
   }
 
-  function openUserCreateDialog(forDate?: Date) {
+  function openUserCreateDialog(forDate?: Date, endDate?: Date) {
     if (submittableCalendars.length === 0) {
       toast.error("No writable calendar sources are available for user events.");
       return;
@@ -1552,6 +1652,8 @@ export default function CalendarWorkspacePage() {
         ? selectedSourceKey
         : submittableCalendars[0].source_key;
     const { startAtLocal, endAtLocal } = defaultFormWindow(forDate ?? anchor);
+    // A drag gesture supplies an explicit end; prefer it over the default window.
+    const resolvedEndLocal = endDate ? format(endDate, "yyyy-MM-dd'T'HH:mm") : endAtLocal;
 
     setUserEventDialogMode("create");
     setActiveUserEntry(null);
@@ -1559,12 +1661,331 @@ export default function CalendarWorkspacePage() {
       sourceKey: preferredSource,
       title: "",
       startAtLocal,
-      endAtLocal,
+      endAtLocal: resolvedEndLocal,
       timezone: defaultTimezone,
       description: "",
       location: "",
     });
     setUserEventDialogOpen(true);
+  }
+
+  // -------------------------------------------------------------------------
+  // Time-grid drag interactions: create / move / resize (week + day views)
+  // -------------------------------------------------------------------------
+  // Geometry is measured live from the grid body so cross-day moves and snapping
+  // stay correct regardless of column count, gutter width, or scroll position.
+  const gridBodyRef = useRef<HTMLDivElement>(null);
+  const gutterRef = useRef<HTMLDivElement>(null);
+  // Immutable origin of the in-flight gesture (read inside pointer handlers).
+  const dragOriginRef = useRef<DragOrigin | null>(null);
+  // Set when a gesture exceeded the drag threshold so the trailing click is ignored.
+  const suppressClickRef = useRef(false);
+  // Live preview rendered while dragging.
+  const [gridDrag, setGridDrag] = useState<GridDragPreview | null>(null);
+  // "Moved" ghost left at the previous slot after a successful move/resize, for one-click undo.
+  const [movedGhost, setMovedGhost] = useState<MovedGhost | null>(null);
+
+  const pointerToMinutes = useCallback((clientY: number) => {
+    const el = gridBodyRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    return offsetToMinutes(clientY - rect.top);
+  }, []);
+
+  const pointerToDayIndex = useCallback(
+    (clientX: number) => {
+      const el = gridBodyRef.current;
+      if (!el || weekDays.length === 0) return 0;
+      const rect = el.getBoundingClientRect();
+      const gutter = gutterRef.current?.getBoundingClientRect().width ?? 0;
+      const usable = rect.width - gutter;
+      if (usable <= 0) return 0;
+      const idx = Math.floor((clientX - rect.left - gutter) / (usable / weekDays.length));
+      return Math.min(weekDays.length - 1, Math.max(0, idx));
+    },
+    [weekDays.length],
+  );
+
+  /** Optimistically rewrite a cached entry's start/end across all workspace queries. */
+  const patchEntryTimeInCache = useCallback(
+    (entryId: string, startIso: string, endIso: string) => {
+      queryClient.setQueriesData<ApiResponse<CalendarWorkspaceReadResponse>>(
+        { queryKey: ["calendar-workspace"] },
+        (old) => {
+          if (!old?.data?.entries) return old;
+          return {
+            ...old,
+            data: {
+              ...old.data,
+              entries: old.data.entries.map((item) =>
+                item.entry_id === entryId
+                  ? { ...item, start_at: startIso, end_at: endIso }
+                  : item,
+              ),
+            },
+          };
+        },
+      );
+    },
+    [queryClient],
+  );
+
+  /**
+   * Persist a new time window for an event through the existing update endpoints,
+   * with optimistic UI and snap-back on soft-failure (`persisted=false`) or error.
+   */
+  const commitTimeChange = useCallback(
+    async (
+      entry: UnifiedCalendarEntry,
+      nextStartIso: string,
+      nextEndIso: string,
+      options?: { isUndo?: boolean },
+    ) => {
+      const prevStartIso = entry.start_at;
+      const prevEndIso = entry.end_at;
+      if (nextStartIso === prevStartIso && nextEndIso === prevEndIso) {
+        return;
+      }
+
+      patchEntryTimeInCache(entry.entry_id, nextStartIso, nextEndIso);
+      const rollback = () => patchEntryTimeInCache(entry.entry_id, prevStartIso, prevEndIso);
+
+      try {
+        let result: unknown;
+        if (entry.source_type === "provider_event") {
+          const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
+          if (!butlerName || !entry.provider_event_id) {
+            rollback();
+            toast.error("Could not resolve calendar owner for this event.");
+            return;
+          }
+          const response = await userEventMutation.mutateAsync({
+            butler_name: butlerName,
+            action: "update",
+            request_id: buildRequestId("update"),
+            payload: {
+              event_id: entry.provider_event_id,
+              calendar_id: calendarId ?? undefined,
+              start_at: nextStartIso,
+              end_at: nextEndIso,
+              timezone: entry.timezone || defaultTimezone,
+            },
+          });
+          result = response.data.result;
+        } else {
+          const target = resolveButlerEventTarget(entry);
+          if (!target || !entry.butler_name) {
+            rollback();
+            toast.error("Could not resolve butler event for this drag.");
+            return;
+          }
+          const response = await butlerMutation.mutateAsync({
+            butler_name: entry.butler_name,
+            action: "update",
+            request_id: buildRequestId("update"),
+            payload: {
+              event_id: target.eventId,
+              source_hint: target.sourceHint,
+              start_at: nextStartIso,
+              end_at: nextEndIso,
+            },
+          });
+          result = response.data.result;
+        }
+
+        if (!isCalendarMutationOk(result)) {
+          rollback();
+          setMovedGhost(null);
+          toast.error(
+            `Change not saved: ${calendarMutationErrorMessage(result, "no change was persisted")}`,
+          );
+          return;
+        }
+
+        if (options?.isUndo) {
+          setMovedGhost(null);
+          toast.success("Reverted.");
+        } else {
+          // Leave a ghost at the old window so the move can be undone in one click.
+          setMovedGhost({ entry, prevStartIso, prevEndIso, nextStartIso, nextEndIso });
+          toast.success("Event moved.");
+        }
+      } catch (error) {
+        rollback();
+        setMovedGhost(null);
+        toast.error(error instanceof Error ? error.message : "Failed to save calendar change.");
+      }
+    },
+    [butlerMutation, defaultTimezone, patchEntryTimeInCache, userEventMutation],
+  );
+
+  const undoMove = useCallback(() => {
+    setMovedGhost((ghost) => {
+      if (ghost) {
+        const moved: UnifiedCalendarEntry = {
+          ...ghost.entry,
+          start_at: ghost.nextStartIso,
+          end_at: ghost.nextEndIso,
+        };
+        void commitTimeChange(moved, ghost.prevStartIso, ghost.prevEndIso, { isUndo: true });
+      }
+      return null;
+    });
+  }, [commitTimeChange]);
+
+  // Auto-dismiss the undo ghost after a short window.
+  useEffect(() => {
+    if (!movedGhost) return;
+    const timer = setTimeout(() => setMovedGhost(null), 6_000);
+    return () => clearTimeout(timer);
+  }, [movedGhost]);
+
+  function handleGridPointerMove(event: React.PointerEvent) {
+    const origin = dragOriginRef.current;
+    if (!origin || event.pointerId !== origin.pointerId) return;
+
+    if (
+      !origin.moved &&
+      Math.abs(event.clientX - origin.downX) + Math.abs(event.clientY - origin.downY) >
+        DRAG_THRESHOLD_PX
+    ) {
+      origin.moved = true;
+    }
+    if (!origin.moved) return;
+
+    const pointerMin = pointerToMinutes(event.clientY);
+    if (origin.mode === "create") {
+      const { startMin, endMin } = normalizeDragWindow(origin.anchorMin, pointerMin);
+      setGridDrag({ mode: "create", dayIndex: origin.dayIndex, startMin, endMin });
+    } else if (origin.mode === "move") {
+      const dayIndex = pointerToDayIndex(event.clientX);
+      const deltaMin = pointerMin - origin.grabOffsetMin - origin.originStartMin;
+      const { startMin, endMin } = shiftWindow(origin.originStartMin, origin.durationMin, deltaMin);
+      setGridDrag({ mode: "move", dayIndex, startMin, endMin, entryId: origin.entry.entry_id });
+    } else {
+      const endMin = resizeWindowEnd(origin.startMin, pointerMin);
+      setGridDrag({
+        mode: "resize",
+        dayIndex: origin.dayIndex,
+        startMin: origin.startMin,
+        endMin,
+        entryId: origin.entry.entry_id,
+      });
+    }
+  }
+
+  function handleGridPointerUp(event: React.PointerEvent) {
+    const origin = dragOriginRef.current;
+    dragOriginRef.current = null;
+    setGridDrag(null);
+    if (!origin || event.pointerId !== origin.pointerId) return;
+    try {
+      event.currentTarget.releasePointerCapture?.(origin.pointerId);
+    } catch {
+      /* capture may already be released */
+    }
+
+    if (!origin.moved) {
+      // No drag — let the element's onClick handle it (create dialog / detail panel).
+      return;
+    }
+    suppressClickRef.current = true;
+
+    const pointerMin = pointerToMinutes(event.clientY);
+    if (origin.mode === "create") {
+      const { startMin, endMin } = normalizeDragWindow(origin.anchorMin, pointerMin);
+      const day = weekDays[origin.dayIndex] ?? weekDays[0];
+      const startDate = new Date(day);
+      startDate.setHours(0, 0, 0, 0);
+      startDate.setMinutes(startMin);
+      const endDate = new Date(day);
+      endDate.setHours(0, 0, 0, 0);
+      endDate.setMinutes(endMin);
+      openUserCreateDialog(startDate, endDate);
+    } else if (origin.mode === "move") {
+      const dayIndex = pointerToDayIndex(event.clientX);
+      const day = weekDays[dayIndex] ?? weekDays[0];
+      const deltaMin = pointerMin - origin.grabOffsetMin - origin.originStartMin;
+      const { startMin, endMin } = shiftWindow(origin.originStartMin, origin.durationMin, deltaMin);
+      void commitTimeChange(origin.entry, isoAtMinute(day, startMin), isoAtMinute(day, endMin));
+    } else {
+      const day = weekDays[origin.dayIndex] ?? weekDays[0];
+      const endMin = resizeWindowEnd(origin.startMin, pointerMin);
+      void commitTimeChange(
+        origin.entry,
+        isoAtMinute(day, origin.startMin),
+        isoAtMinute(day, endMin),
+      );
+    }
+  }
+
+  function handleGridPointerCancel(event: React.PointerEvent) {
+    const origin = dragOriginRef.current;
+    dragOriginRef.current = null;
+    setGridDrag(null);
+    if (origin) {
+      try {
+        event.currentTarget.releasePointerCapture?.(origin.pointerId);
+      } catch {
+        /* capture may already be released */
+      }
+    }
+  }
+
+  function beginCreateDrag(event: React.PointerEvent, dayIndex: number) {
+    if (event.button !== 0 || view !== "user") return;
+    dragOriginRef.current = {
+      mode: "create",
+      pointerId: event.pointerId,
+      downX: event.clientX,
+      downY: event.clientY,
+      dayIndex,
+      anchorMin: snapMinutes(pointerToMinutes(event.clientY)),
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function beginMoveDrag(event: React.PointerEvent, entry: UnifiedCalendarEntry) {
+    if (event.button !== 0 || !isGridDraggable(entry)) return;
+    const originStartMin = minuteOfDay(new Date(entry.start_at));
+    const durationMin = Math.max(
+      differenceInMinutes(new Date(entry.end_at), new Date(entry.start_at)),
+      SNAP_MINUTES,
+    );
+    dragOriginRef.current = {
+      mode: "move",
+      pointerId: event.pointerId,
+      downX: event.clientX,
+      downY: event.clientY,
+      entry,
+      originStartMin,
+      durationMin,
+      // Offset from the event's top to where the pointer grabbed it (keeps the grab point under the cursor).
+      grabOffsetMin: pointerToMinutes(event.clientY) - originStartMin,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function beginResizeDrag(
+    event: React.PointerEvent,
+    entry: UnifiedCalendarEntry,
+    dayIndex: number,
+  ) {
+    if (event.button !== 0 || !isGridDraggable(entry)) return;
+    event.stopPropagation();
+    dragOriginRef.current = {
+      mode: "resize",
+      pointerId: event.pointerId,
+      downX: event.clientX,
+      downY: event.clientY,
+      entry,
+      dayIndex,
+      startMin: minuteOfDay(new Date(entry.start_at)),
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
   async function handleSyncAll() {
@@ -2479,6 +2900,7 @@ export default function CalendarWorkspacePage() {
             {/* Scrollable time grid */}
             <div ref={timeGridRef} className="min-h-0 flex-1 overflow-y-auto">
               <div
+                ref={gridBodyRef}
                 className="grid h-[var(--calendar-grid-height)]"
                 style={{
                   gridTemplateColumns:
@@ -2488,7 +2910,7 @@ export default function CalendarWorkspacePage() {
                 }}
               >
                 {/* Hour gutter */}
-                <div className="relative">
+                <div ref={gutterRef} className="relative">
                   {HOURS.map((h) => (
                     <div
                       key={h}
@@ -2501,17 +2923,30 @@ export default function CalendarWorkspacePage() {
                 </div>
 
                 {/* Day columns */}
-                {weekDays.map((day) => {
+                {weekDays.map((day, dayIndex) => {
                   const key = format(day, "yyyy-MM-dd");
                   const dayEntries = (entriesByDay.get(key) ?? []).filter((e) => !e.all_day);
+                  const ghost =
+                    movedGhost && isSameDay(new Date(movedGhost.prevStartIso), day)
+                      ? movedGhost
+                      : null;
                   return (
                     <div key={key} className="relative border-l border-[var(--border)]">
                       {view === "user" ? (
                         <button
                           type="button"
                           aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                          className="absolute inset-0 z-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
+                          className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
+                          onPointerDown={(evt) => beginCreateDrag(evt, dayIndex)}
+                          onPointerMove={handleGridPointerMove}
+                          onPointerUp={handleGridPointerUp}
+                          onPointerCancel={handleGridPointerCancel}
                           onClick={(evt) => {
+                            // Swallow the click that trails a completed drag-create.
+                            if (suppressClickRef.current) {
+                              suppressClickRef.current = false;
+                              return;
+                            }
                             const rect = evt.currentTarget.getBoundingClientRect();
                             // Keyboard activation (detail === 0) carries no pointer Y — default to the day.
                             if (evt.detail === 0) {
@@ -2529,6 +2964,51 @@ export default function CalendarWorkspacePage() {
                           }}
                         />
                       ) : null}
+                      {/* Drag preview (create / move / resize landing in this column). */}
+                      {gridDrag && gridDrag.dayIndex === dayIndex ? (
+                        <div
+                          aria-hidden
+                          data-testid="calendar-drag-preview"
+                          className="pointer-events-none absolute inset-x-0.5 z-20 rounded-[3px] border border-dashed border-[var(--fg)]/60 bg-[var(--fg)]/10"
+                          style={{
+                            top: (gridDrag.startMin / 60) * HOUR_HEIGHT_PX,
+                            height: ((gridDrag.endMin - gridDrag.startMin) / 60) * HOUR_HEIGHT_PX,
+                            minHeight: 16,
+                          }}
+                        >
+                          <span className="block px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-[var(--fg)]">
+                            {formatMinuteLabel(gridDrag.startMin)}–{formatMinuteLabel(gridDrag.endMin)}
+                          </span>
+                        </div>
+                      ) : null}
+                      {/* "Moved" ghost — one-click undo of the last move/resize. */}
+                      {ghost ? (
+                        <button
+                          type="button"
+                          data-testid="calendar-move-ghost"
+                          title="Undo move"
+                          onClick={(evt) => {
+                            evt.stopPropagation();
+                            undoMove();
+                          }}
+                          className="absolute inset-x-0.5 z-20 flex items-center justify-center rounded-[3px] border border-dashed border-[var(--fg)]/40 bg-[var(--bg)]/70 text-[10px] font-medium text-[var(--mfg)] transition-colors hover:text-[var(--fg)]"
+                          style={{
+                            top:
+                              (minuteOfDay(new Date(ghost.prevStartIso)) / 60) * HOUR_HEIGHT_PX,
+                            height: Math.max(
+                              (differenceInMinutes(
+                                new Date(ghost.prevEndIso),
+                                new Date(ghost.prevStartIso),
+                              ) /
+                                60) *
+                                HOUR_HEIGHT_PX,
+                              16,
+                            ),
+                          }}
+                        >
+                          Undo
+                        </button>
+                      ) : null}
                       {dayEntries.map((entry) => {
                         const s = new Date(entry.start_at);
                         const e = new Date(entry.end_at);
@@ -2537,6 +3017,11 @@ export default function CalendarWorkspacePage() {
                         const topPx = (topMin / 60) * HOUR_HEIGHT_PX;
                         const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
                         const paused = isPausedEntry(entry);
+                        const draggable = isGridDraggable(entry);
+                        const isDragSource =
+                          gridDrag &&
+                          gridDrag.mode !== "create" &&
+                          gridDrag.entryId === entry.entry_id;
                         return (
                           <button
                             key={entry.entry_id}
@@ -2544,10 +3029,25 @@ export default function CalendarWorkspacePage() {
                             className={cn(
                               "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
                               paused && "opacity-50",
+                              draggable && "cursor-grab touch-none active:cursor-grabbing",
+                              isDragSource && "opacity-40",
                             )}
                             style={{ top: topPx, height: heightPx, minHeight: 16 }}
                             title={`${format(s, "HH:mm")}–${format(e, "HH:mm")} · ${entry.title}`}
-                            onClick={() => openDetailPanel(entry)}
+                            onPointerDown={
+                              draggable ? (evt) => beginMoveDrag(evt, entry) : undefined
+                            }
+                            onPointerMove={draggable ? handleGridPointerMove : undefined}
+                            onPointerUp={draggable ? handleGridPointerUp : undefined}
+                            onPointerCancel={draggable ? handleGridPointerCancel : undefined}
+                            onClick={() => {
+                              // Swallow the click that trails a completed move/resize drag.
+                              if (suppressClickRef.current) {
+                                suppressClickRef.current = false;
+                                return;
+                              }
+                              openDetailPanel(entry);
+                            }}
                           >
                             <span className="block truncate text-[11px] font-medium leading-tight text-[var(--fg)]">
                               {entry.title}
@@ -2556,6 +3056,17 @@ export default function CalendarWorkspacePage() {
                               <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">
                                 {format(s, "HH:mm")}–{format(e, "HH:mm")}
                               </span>
+                            ) : null}
+                            {draggable ? (
+                              <span
+                                aria-hidden
+                                data-testid="calendar-resize-handle"
+                                className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize touch-none"
+                                onPointerDown={(evt) => beginResizeDrag(evt, entry, dayIndex)}
+                                onPointerMove={handleGridPointerMove}
+                                onPointerUp={handleGridPointerUp}
+                                onPointerCancel={handleGridPointerCancel}
+                              />
                             ) : null}
                           </button>
                         );
