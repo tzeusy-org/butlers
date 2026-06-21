@@ -15,7 +15,7 @@
 
 ## 3. Per-butler contribution jobs (split units: job-finance / job-travel / job-relationship / job-health)
 
-- [ ] 3.1 Implement `calendar_overlay_contribution` deterministic job for **finance**: query bills (due in `[today, today+lookahead]`) and subscription renewals; write `bill_due` / `subscription_renewal` entries under `calendar/overlay/<date>`; prune entries older than the retention window.
+- [x] 3.1 Implement `calendar_overlay_contribution` deterministic job for **finance**: query bills (due in `[today, today+lookahead]`) and subscription renewals; write `bill_due` / `subscription_renewal` entries under `calendar/overlay/<date>`; prune entries older than the retention window.
 - [ ] 3.2 Implement `calendar_overlay_contribution` for **travel**: query trips/flights for `departure` / `arrival` / `check_in` / `check_out` in the window; write per-date envelopes; prune.
 - [ ] 3.3 Implement `calendar_overlay_contribution` for **relationship**: query `birthday` / `important_date` / `follow_up` in the window; write per-date envelopes; prune.
 - [ ] 3.4 Implement `calendar_overlay_contribution` for **health**: query `appointment` / `medication_reminder` in the window; write per-date envelopes; prune.
