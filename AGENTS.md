@@ -238,6 +238,9 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 ### QA recursion provenance drift
 - The intended QA self-recursion barrier depends on `qa_findings.source_session_trigger_source`, but current ingress/discovery paths do not populate it end-to-end: `modules/qa.report_finding` omits `trigger_source`, `core/qa/sources/butler_reports.py` does not store it, and `core/qa/sources/session_records.py`/`log_scanner.py` do not extract it, even though `core/qa/dispatch.py` and `/api/qa/meta-review` already rely on it.
 
+### QA source-type schema contract
+- Adding a QA discovery source is a persisted vocabulary change: keep `QaConfig.enabled_sources`, `_KNOWN_SOURCES`, source-emitted `QaFinding.source_type`, and `public.qa_findings.ck_qa_findings_source_type` aligned in the same change, with a migrated-DB regression test that inserts the new `source_type`.
+
 ### QA doctrine doc drift
 - `about/heart-and-soul/architecture.md` still describes QA as a future staffer, while `about/README.md`, `roster/qa/`, and the live daemon topology treat QA as a current third staffer; when reconciling doctrine, prefer roster + spec state over that stale paragraph until the pillar doc is corrected.
 
