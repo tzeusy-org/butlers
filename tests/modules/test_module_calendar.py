@@ -1306,6 +1306,333 @@ class TestCalendarIdRoleSeparation:
 
 
 # ---------------------------------------------------------------------------
+# Home-calendar resolution for update/delete by event id
+# ---------------------------------------------------------------------------
+
+
+class _ScopedProviderDouble(_ProviderDouble):
+    """Provider double whose ``get_event`` only finds the event on one calendar.
+
+    Used to exercise the home-calendar bounded search: the event exists on
+    ``home_calendar_id`` and 404s (returns ``None``) on every other calendar.
+    """
+
+    def __init__(self, *, home_calendar_id: str, event: CalendarEvent, **kwargs) -> None:
+        super().__init__(event=event, **kwargs)
+        self._home_calendar_id = home_calendar_id
+
+    async def get_event(self, *, calendar_id, event_id):
+        self.get_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+        return self._event if calendar_id == self._home_calendar_id else None
+
+
+def _make_home_resolver_pool(*, projected_calendar_id: str | None) -> MagicMock:
+    """asyncpg pool mock for the home-calendar projection lookup.
+
+    ``fetchrow`` answers the projection-availability probe (all tables present)
+    and the ``calendar_events`` -> ``calendar_sources`` join used by
+    ``_lookup_home_calendar_from_projection``. When ``projected_calendar_id`` is
+    None the join returns no row, simulating a projection miss.
+    """
+    pool = MagicMock()
+    availability = _FakeRecord(
+        {
+            "has_sources": True,
+            "has_events": True,
+            "has_instances": True,
+            "has_cursors": True,
+            "has_action_log": True,
+            "has_events_body": True,
+            "has_events_source_butler": True,
+            "has_events_source_session_id": True,
+        }
+    )
+    lookup_calls: list[tuple] = []
+
+    async def fetchrow_side_effect(query, *args):
+        if "to_regclass" in query:
+            return availability
+        if "ce.origin_ref" in query:
+            lookup_calls.append(args)
+            if projected_calendar_id is None:
+                return None
+            return _FakeRecord({"calendar_id": projected_calendar_id})
+        return None
+
+    pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+    pool.lookup_calls = lookup_calls
+    return pool
+
+
+class TestHomeCalendarResolution:
+    """``_resolve_home_calendar_id`` — resolve an event's actual home calendar.
+
+    Once butler-authored events default to the dedicated Butlers calendar while
+    the user's own events live on primary, update/delete must target the
+    calendar the event lives on (override -> projection -> bounded search ->
+    primary fail-open) instead of one blind default.
+    """
+
+    BUTLERS = "butlers@group.calendar.google.com"
+    PRIMARY = "owner@example.com"
+
+    def _make_module(self, *, provider, pool=None) -> CalendarModule:
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = self.BUTLERS
+        mod._primary_calendar_id = self.PRIMARY
+        mod._all_provider_calendar_ids = [self.PRIMARY, self.BUTLERS]
+        mod._provider_calendar_discovery_completed = True
+        if pool is not None:
+            db = MagicMock()
+            db.pool = pool
+            mod._db = db
+            mod._projection_tables_available_cache = None
+        else:
+            mod._db = None
+        return mod
+
+    async def test_explicit_override_wins(self):
+        """An explicit calendar_id bypasses the resolver (validated, then used)."""
+        provider = _ProviderDouble(event=_make_event())
+        pool = _make_home_resolver_pool(projected_calendar_id=self.BUTLERS)
+        mod = self._make_module(provider=provider, pool=pool)
+
+        resolved = await mod._resolve_home_calendar_id(
+            event_id="evt-1", override_calendar_id=self.PRIMARY
+        )
+
+        assert resolved == self.PRIMARY
+        # Override short-circuits: neither projection nor provider is consulted.
+        assert pool.lookup_calls == []
+        assert provider.get_calls == []
+
+    async def test_invalid_override_raises(self):
+        """An override that is not a discovered calendar is rejected."""
+        provider = _ProviderDouble(event=_make_event())
+        mod = self._make_module(provider=provider)
+
+        with pytest.raises(ValueError, match="discovered provider calendars"):
+            await mod._resolve_home_calendar_id(event_id="evt-1", override_calendar_id="__nope__")
+
+    async def test_projection_hit_targets_home_calendar(self):
+        """The projection join resolves the event's home calendar without a search."""
+        provider = _ProviderDouble(event=_make_event())
+        pool = _make_home_resolver_pool(projected_calendar_id=self.BUTLERS)
+        mod = self._make_module(provider=provider, pool=pool)
+
+        resolved = await mod._resolve_home_calendar_id(event_id="evt-1", override_calendar_id=None)
+
+        assert resolved == self.BUTLERS
+        assert pool.lookup_calls and pool.lookup_calls[0][0] == "evt-1"
+        # Projection hit is the fast path: no provider round-trip.
+        assert provider.get_calls == []
+
+    async def test_bounded_search_locates_butler_event(self):
+        """Projection miss -> bounded search finds a butler event on the Butlers calendar."""
+        event = _make_event(butler_generated=True, butler_name="general")
+        provider = _ScopedProviderDouble(home_calendar_id=self.BUTLERS, event=event)
+        pool = _make_home_resolver_pool(projected_calendar_id=None)
+        mod = self._make_module(provider=provider, pool=pool)
+
+        resolved = await mod._resolve_home_calendar_id(event_id="evt-1", override_calendar_id=None)
+
+        assert resolved == self.BUTLERS
+        # Searched calendars are probed; the Butlers calendar was located.
+        assert any(call["calendar_id"] == self.BUTLERS for call in provider.get_calls)
+
+    async def test_primary_event_resolves_via_fail_open_fallback(self):
+        """A user event living on primary resolves to primary even when unsynced.
+
+        The fallback (primary) is skipped by the bounded search because the
+        update/delete flow probes it anyway, so the resolver returns primary
+        without locating it during search.
+        """
+        event = _make_event()
+        provider = _ScopedProviderDouble(home_calendar_id=self.PRIMARY, event=event)
+        pool = _make_home_resolver_pool(projected_calendar_id=None)
+        mod = self._make_module(provider=provider, pool=pool)
+
+        resolved = await mod._resolve_home_calendar_id(event_id="evt-1", override_calendar_id=None)
+
+        assert resolved == self.PRIMARY
+        # The fallback calendar (primary) is never probed by the search itself.
+        assert all(call["calendar_id"] != self.PRIMARY for call in provider.get_calls)
+
+    async def test_not_found_falls_back_to_primary_without_raising(self):
+        """When the event is nowhere, the resolver fails open to the primary calendar."""
+        provider = _ScopedProviderDouble(home_calendar_id="__elsewhere__", event=_make_event())
+        pool = _make_home_resolver_pool(projected_calendar_id=None)
+        mod = self._make_module(provider=provider, pool=pool)
+
+        resolved = await mod._resolve_home_calendar_id(
+            event_id="missing", override_calendar_id=None
+        )
+
+        # Fail-open: no raise, defaults to the user's default-target/primary.
+        assert resolved == self.PRIMARY
+
+    async def test_projection_lookup_error_falls_through_to_search(self):
+        """A projection query error degrades to the bounded search (no raise)."""
+        event = _make_event(butler_generated=True, butler_name="general")
+        provider = _ScopedProviderDouble(home_calendar_id=self.BUTLERS, event=event)
+        pool = MagicMock()
+
+        async def fetchrow_side_effect(query, *args):
+            if "to_regclass" in query:
+                return _FakeRecord(
+                    {
+                        "has_sources": True,
+                        "has_events": True,
+                        "has_instances": True,
+                        "has_cursors": True,
+                        "has_action_log": True,
+                        "has_events_body": True,
+                        "has_events_source_butler": True,
+                        "has_events_source_session_id": True,
+                    }
+                )
+            if "ce.origin_ref" in query:
+                raise RuntimeError("projection boom")
+            return None
+
+        pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+        mod = self._make_module(provider=provider, pool=pool)
+
+        resolved = await mod._resolve_home_calendar_id(event_id="evt-1", override_calendar_id=None)
+
+        assert resolved == self.BUTLERS
+
+    async def _register_tool_module(self, provider) -> tuple[CalendarModule, _StubMCP]:
+        """Build a registered module on the no-pool path (projection unavailable).
+
+        With no DB pool the resolver exercises the bounded-search + fail-open
+        fallback branches, mirroring the existing pre-state tool tests.
+        """
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = self.BUTLERS
+        mod._primary_calendar_id = self.PRIMARY
+        mod._all_provider_calendar_ids = [self.PRIMARY, self.BUTLERS]
+        mod._provider_calendar_discovery_completed = True
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": self.BUTLERS},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        return mod, mcp
+
+    async def test_update_tool_patches_butler_event_on_butlers_calendar(self):
+        """End-to-end: calendar_update_event patches a butler event on the Butlers calendar.
+
+        The event lives on the Butlers calendar; the bounded search locates it
+        there and the PATCH targets the Butlers calendar, not the default.
+        """
+        existing = _make_event(
+            event_id="evt-1", title="BUTLER: Standup", butler_generated=True, butler_name="general"
+        )
+        provider = _ScopedProviderDouble(home_calendar_id=self.BUTLERS, event=existing)
+        mod, mcp = await self._register_tool_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+        ):
+            await mcp.tools["calendar_update_event"](event_id="evt-1", title="Standup v2")
+
+        assert provider.update_calls
+        assert provider.update_calls[0]["calendar_id"] == self.BUTLERS
+
+    async def test_delete_tool_targets_primary_for_user_event(self):
+        """End-to-end: calendar_delete_event deletes a user event on the primary calendar.
+
+        The event lives on primary (the fail-open fallback); the resolver does
+        not locate it on the Butlers calendar during search, falls back to
+        primary, and the delete is issued against primary in place.
+        """
+        existing = _make_event(event_id="evt-9", title="Dentist")
+
+        class _DeleteScopedDouble(_ScopedProviderDouble):
+            async def delete_event(self, *, calendar_id, event_id, send_updates=None):
+                self.delete_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+
+        provider = _DeleteScopedDouble(home_calendar_id=self.PRIMARY, event=existing)
+        mod, mcp = await self._register_tool_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+        ):
+            result = await mcp.tools["calendar_delete_event"](event_id="evt-9")
+
+        assert result["status"] == "deleted"
+        assert provider.delete_calls
+        assert provider.delete_calls[0]["calendar_id"] == self.PRIMARY
+
+    async def test_add_attendees_targets_butler_event_home_calendar(self):
+        """End-to-end: calendar_add_attendees resolves the event's home calendar.
+
+        Attendee mutation operates on an existing event by id, so it must use
+        the home-calendar resolver too: a butler event living on the Butlers
+        calendar is patched there, not on the default-target/primary.
+        """
+        existing = _make_event(
+            event_id="evt-1", title="BUTLER: Standup", butler_generated=True, butler_name="general"
+        )
+
+        class _AddScopedDouble(_ScopedProviderDouble):
+            async def add_attendees(
+                self, *, calendar_id, event_id, attendees, optional=False, send_updates="none"
+            ):
+                self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+                return self._event
+
+        provider = _AddScopedDouble(home_calendar_id=self.BUTLERS, event=existing)
+        mod, mcp = await self._register_tool_module(provider)
+        result = await mcp.tools["calendar_add_attendees"](
+            event_id="evt-1", attendees=["guest@example.com"]
+        )
+
+        assert result["status"] == "updated"
+        assert provider.update_calls
+        assert provider.update_calls[0]["calendar_id"] == self.BUTLERS
+
+    async def test_remove_attendees_targets_primary_for_user_event(self):
+        """End-to-end: calendar_remove_attendees falls back to primary for a user event.
+
+        The user event lives on primary (the fail-open fallback); the resolver
+        does not locate it on the Butlers calendar during search and the
+        attendee removal is issued against primary in place.
+        """
+        existing = _make_event(event_id="evt-9", title="Dentist")
+
+        class _RemoveScopedDouble(_ScopedProviderDouble):
+            async def remove_attendees(
+                self, *, calendar_id, event_id, attendees, send_updates="none"
+            ):
+                self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+                return self._event
+
+        provider = _RemoveScopedDouble(home_calendar_id=self.PRIMARY, event=existing)
+        mod, mcp = await self._register_tool_module(provider)
+        result = await mcp.tools["calendar_remove_attendees"](
+            event_id="evt-9", attendees=["guest@example.com"]
+        )
+
+        assert result["status"] == "updated"
+        assert provider.update_calls
+        assert provider.update_calls[0]["calendar_id"] == self.PRIMARY
+
+
+# ---------------------------------------------------------------------------
 # Error hierarchy
 # ---------------------------------------------------------------------------
 

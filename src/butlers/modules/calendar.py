@@ -3568,7 +3568,9 @@ class CalendarModule(Module):
                 raise ValueError("event_id must be a non-empty string")
 
             provider = module._require_provider()
-            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            resolved_calendar_id = await module._resolve_home_calendar_id(
+                event_id=normalized_event_id, override_calendar_id=calendar_id
+            )
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
@@ -3933,7 +3935,9 @@ class CalendarModule(Module):
                 raise ValueError("event_id must be a non-empty string")
 
             provider = module._require_provider()
-            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            resolved_calendar_id = await module._resolve_home_calendar_id(
+                event_id=normalized_event_id, override_calendar_id=calendar_id
+            )
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
                 "event_id": normalized_event_id,
@@ -4817,7 +4821,9 @@ class CalendarModule(Module):
                 raise ValueError("attendees must contain at least one non-empty email address")
 
             provider = module._require_provider()
-            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            resolved_calendar_id = await module._resolve_home_calendar_id(
+                event_id=normalized_event_id, override_calendar_id=calendar_id
+            )
             try:
                 event = await provider.add_attendees(
                     calendar_id=resolved_calendar_id,
@@ -4870,7 +4876,9 @@ class CalendarModule(Module):
                 raise ValueError("attendees must contain at least one non-empty email address")
 
             provider = module._require_provider()
-            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            resolved_calendar_id = await module._resolve_home_calendar_id(
+                event_id=normalized_event_id, override_calendar_id=calendar_id
+            )
             try:
                 event = await provider.remove_attendees(
                     calendar_id=resolved_calendar_id,
@@ -8070,6 +8078,147 @@ class CalendarModule(Module):
                 raise ValueError("calendar_id is not one of the discovered provider calendars")
         return normalized
 
+    async def _resolve_home_calendar_id(
+        self, *, event_id: str, override_calendar_id: str | None
+    ) -> str:
+        """Resolve the calendar an EXISTING event lives on, for update/delete by id.
+
+        Unlike :meth:`_resolve_calendar_id` (which picks a single default *write
+        target*), this finds the calendar the event referenced by ``event_id``
+        actually lives on.  This matters now that butler-authored events default
+        to the dedicated "Butlers" calendar while the user's own events live on
+        their primary (or other discovered) calendars: a blind
+        ``_resolve_calendar_id(None)`` would target one calendar and silently
+        miss (404) events living on the other.
+
+        Resolution order:
+
+        1. **Explicit override** → validated against discovered calendars and
+           used directly (the resolver is bypassed).
+        2. **Projection lookup** → join ``calendar_events.origin_ref`` (the
+           provider event id) to its ``calendar_sources.calendar_id``.
+        3. **Bounded search** → probe ``provider.get_event`` across the
+           discovered calendars (Butlers calendar and the user's primary at
+           minimum), excluding the fallback calendar the caller already probes.
+        4. **Fallback** → the user's default-target/primary calendar.  This is
+           fail-open: the caller's own ``get_event`` then surfaces ``not_found``
+           rather than this resolver raising.
+        """
+        # 1. Explicit override wins (validated against discovered calendars).
+        if override_calendar_id is not None:
+            return self._resolve_calendar_id(override_calendar_id)
+
+        normalized_event_id = event_id.strip()
+        fallback_calendar_id = self._resolve_calendar_id(None)
+        if not normalized_event_id:
+            return fallback_calendar_id
+
+        # 2. Projection lookup: the event's home calendar, if it has been synced.
+        projected = await self._lookup_home_calendar_from_projection(normalized_event_id)
+        if projected is not None:
+            return projected
+
+        # 3. Bounded search across discovered calendars.  The fallback calendar
+        #    is skipped because the update/delete flow probes it anyway when this
+        #    resolver returns the fallback, so searching it here would just
+        #    double the provider round-trip.
+        located = await self._search_home_calendar(
+            normalized_event_id, skip_calendar_id=fallback_calendar_id
+        )
+        if located is not None:
+            return located
+
+        # 4. Fail-open fallback to the default-target/primary calendar.
+        return fallback_calendar_id
+
+    async def _lookup_home_calendar_from_projection(self, origin_ref: str) -> str | None:
+        """Return the provider calendar id an event lives on, from the projection.
+
+        Joins ``calendar_events.origin_ref`` (the provider event id) to its
+        ``calendar_sources.calendar_id``, restricted to provider-lane sources
+        that carry a concrete calendar id.  Returns ``None`` when the projection
+        has no record (or is unavailable), so the caller falls through to a
+        bounded search.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return None
+        if not await self._projection_tables_available():
+            return None
+        try:
+            row = await pool.fetchrow(
+                """
+                SELECT cs.calendar_id AS calendar_id
+                FROM calendar_events ce
+                JOIN calendar_sources cs ON cs.id = ce.source_id
+                WHERE ce.origin_ref = $1
+                  AND cs.source_kind = $2
+                  AND cs.calendar_id IS NOT NULL
+                ORDER BY ce.updated_at DESC
+                LIMIT 1
+                """,
+                origin_ref,
+                SOURCE_KIND_PROVIDER,
+            )
+        except Exception as exc:
+            logger.debug(
+                "home-calendar projection lookup failed for origin_ref=%s: %s",
+                origin_ref,
+                exc,
+                exc_info=True,
+            )
+            return None
+        if row is None:
+            return None
+        calendar_id = row["calendar_id"]
+        if isinstance(calendar_id, str) and calendar_id.strip():
+            return calendar_id
+        return None
+
+    async def _search_home_calendar(
+        self, event_id: str, *, skip_calendar_id: str | None = None
+    ) -> str | None:
+        """Bounded search for an event's home calendar across discovered calendars.
+
+        Probes ``provider.get_event`` on each discovered calendar (the Butlers
+        calendar and the user's primary/default-target first), returning the
+        first calendar the event is found on.  ``skip_calendar_id`` is excluded
+        because the caller already probes it on fallback, so searching it here
+        would double the provider round-trip.  Returns ``None`` when the event
+        is not located on any discovered calendar.
+        """
+        provider = self._provider
+        if provider is None:
+            return None
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for candidate in (
+            self._resolved_calendar_id,
+            self._resolve_role_calendar_id(CALENDAR_ROLE_DEFAULT_TARGET),
+            self._primary_calendar_id,
+            *self._all_provider_calendar_ids,
+        ):
+            if not candidate or candidate == skip_calendar_id or candidate in seen:
+                continue
+            seen.add(candidate)
+            ordered.append(candidate)
+
+        for calendar_id in ordered:
+            try:
+                event = await provider.get_event(calendar_id=calendar_id, event_id=event_id)
+            except Exception as exc:
+                logger.debug(
+                    "home-calendar search get_event failed (calendar_id=%s, event_id=%s): %s",
+                    calendar_id,
+                    event_id,
+                    exc,
+                )
+                continue
+            if event is not None:
+                return calendar_id
+        return None
+
     async def create_user_event(
         self,
         *,
@@ -8454,7 +8603,9 @@ class CalendarModule(Module):
             raise ValueError("instance_start_at must be timezone-aware")
 
         provider = self._require_provider()
-        resolved_calendar_id = self._resolve_calendar_id(calendar_id)
+        resolved_calendar_id = await self._resolve_home_calendar_id(
+            event_id=normalized_event_id, override_calendar_id=calendar_id
+        )
         normalized_request_id = self._normalize_request_id(request_id)
         occurrence_start = instance_start_at.astimezone(UTC)
         action_payload = {
@@ -8653,7 +8804,9 @@ class CalendarModule(Module):
             raise ValueError("instance_start_at must be timezone-aware")
 
         provider = self._require_provider()
-        resolved_calendar_id = self._resolve_calendar_id(calendar_id)
+        resolved_calendar_id = await self._resolve_home_calendar_id(
+            event_id=normalized_event_id, override_calendar_id=calendar_id
+        )
         normalized_request_id = self._normalize_request_id(request_id)
         occurrence_start = instance_start_at.astimezone(UTC)
         action_payload = {

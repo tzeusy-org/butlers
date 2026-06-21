@@ -12,11 +12,11 @@
 
 ## 3. Home-calendar resolver for update/delete
 
-- [ ] 3.1 Implement a resolver keyed by provider event id: explicit override → projection lookup (`calendar_events.origin_ref` JOIN `calendar_sources.calendar_id`) → bounded search across Butlers+primary (+ other discovered) → primary fallback (fail-open not-found)
-- [ ] 3.2 Wire `calendar_update_event` to use the resolver instead of `_resolve_calendar_id(None)`
-- [ ] 3.3 Wire `calendar_delete_event` to use the resolver instead of `_resolve_calendar_id(None)`
-- [ ] 3.4 Unit tests: projection hit targets home calendar; explicit override wins; search fallback locates event; not-found surfaces fail-open (no raise)
-- [ ] 3.5 Integration test: butler event on Butlers calendar is updated/deleted on the Butlers calendar; a user-lane event on primary is patched/deleted in place on primary
+- [x] 3.1 Implement a resolver keyed by provider event id: explicit override → projection lookup (`calendar_events.origin_ref` JOIN `calendar_sources.calendar_id`) → bounded search across Butlers+primary (+ other discovered) → primary fallback (fail-open not-found)
+- [x] 3.2 Wire `calendar_update_event` to use the resolver instead of `_resolve_calendar_id(None)`
+- [x] 3.3 Wire `calendar_delete_event` to use the resolver instead of `_resolve_calendar_id(None)`
+- [x] 3.4 Unit tests: projection hit targets home calendar; explicit override wins; search fallback locates event; not-found surfaces fail-open (no raise)
+- [x] 3.5 Integration test: butler event on Butlers calendar is updated/deleted on the Butlers calendar; a user-lane event on primary is patched/deleted in place on primary
 
 ## 4. Promote `create_user_event` to a branded butler-authored write
 
