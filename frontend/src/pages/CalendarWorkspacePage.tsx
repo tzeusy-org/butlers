@@ -1140,6 +1140,12 @@ interface CalendarActivityPanelProps {
 interface CalendarFindTimePanelProps {
   butlerName: string | null;
   onSelectSlot: (slot: CalendarSuggestedSlot) => void;
+  /**
+   * Publishes the ranked slots of the latest search to the page so it can draw
+   * them as ghost overlays on the grid. Called with `[]` when a search yields no
+   * usable slots (empty result or degraded free/busy).
+   */
+  onSlotsChange: (slots: CalendarSuggestedSlot[]) => void;
 }
 
 const FIND_TIME_HORIZON_OPTIONS: ReadonlyArray<{
@@ -1180,6 +1186,7 @@ const FIND_TIME_PART_OF_DAY_OPTIONS: ReadonlyArray<{
 function CalendarFindTimePanel({
   butlerName,
   onSelectSlot,
+  onSlotsChange,
 }: CalendarFindTimePanelProps) {
   const [durationMinutes, setDurationMinutes] = useState(30);
   const [partOfDay, setPartOfDay] = useState<"any" | CalendarFindTimePartOfDay>(
@@ -1217,7 +1224,11 @@ function CalendarFindTimePanel({
         limit: 12,
       });
       setResult(response.data);
+      onSlotsChange(
+        response.data.available === false ? [] : response.data.slots,
+      );
     } catch (error) {
+      onSlotsChange([]);
       toast.error(
         error instanceof Error
           ? error.message
@@ -1340,7 +1351,10 @@ function CalendarFindTimePanel({
           No open slots match those constraints in the selected window.
         </Voice>
       ) : (
-        <ul className="flex flex-col gap-1.5" data-testid="find-time-slots">
+        <ul
+          className="flex max-h-48 flex-col gap-1.5 overflow-y-auto"
+          data-testid="find-time-slots"
+        >
           {result.slots.map((slot) => {
             const start = parseISO(slot.start_at);
             const end = parseISO(slot.end_at);
@@ -2335,6 +2349,12 @@ export default function CalendarWorkspacePage() {
   const [activityPanelOpen, setActivityPanelOpen] = useState(false);
   // Find-time panel state (mutually exclusive with the activity panel).
   const [findTimePanelOpen, setFindTimePanelOpen] = useState(false);
+  // Ranked free slots from the latest "Find time" search, lifted to page scope
+  // so they can be drawn as ghost overlays on the week/day grid (synced with the
+  // panel's list). Cleared whenever the find-time panel closes.
+  const [findTimeSlots, setFindTimeSlots] = useState<CalendarSuggestedSlot[]>(
+    [],
+  );
   const [proposalsPanelOpen, setProposalsPanelOpen] = useState(false);
 
   // Proposals lane: butler-extracted candidate events awaiting accept/dismiss.
@@ -2350,6 +2370,12 @@ export default function CalendarWorkspacePage() {
   );
   const acceptProposalMutation = useAcceptCalendarProposal();
   const dismissProposalMutation = useDismissCalendarProposal();
+
+  // Closing the find-time panel must drop its grid overlays, so they never
+  // linger over the calendar after the search UI is dismissed.
+  useEffect(() => {
+    if (!findTimePanelOpen) setFindTimeSlots([]);
+  }, [findTimePanelOpen]);
 
   const [auditOffset, setAuditOffset] = useState(0);
   const AUDIT_PAGE_SIZE = 50;
@@ -2846,6 +2872,13 @@ export default function CalendarWorkspacePage() {
       location: "",
     });
     setUserEventDialogOpen(true);
+  }
+
+  // Selecting a found free slot — from the panel list or a grid ghost overlay —
+  // prefills the create dialog with that window and dismisses the find-time UI.
+  function selectFindTimeSlot(slot: CalendarSuggestedSlot) {
+    openUserCreateDialog(parseISO(slot.start_at), parseISO(slot.end_at));
+    setFindTimePanelOpen(false);
   }
 
   // -------------------------------------------------------------------------
@@ -4345,18 +4378,14 @@ export default function CalendarWorkspacePage() {
         </div>
       ) : null}
 
-      {/* Find-time panel — overlays the canvas when open */}
+      {/* Find-time controls + ranked list — a compact strip above the canvas so
+          the same slots can be drawn as ghost overlays on the grid below. */}
       {findTimePanelOpen ? (
-        <div className="flex min-h-0 flex-1 flex-col pt-5">
+        <div className="flex shrink-0 flex-col pt-5">
           <CalendarFindTimePanel
             butlerName={findTimeButlerName}
-            onSelectSlot={(slot) => {
-              openUserCreateDialog(
-                parseISO(slot.start_at),
-                parseISO(slot.end_at),
-              );
-              setFindTimePanelOpen(false);
-            }}
+            onSelectSlot={selectFindTimeSlot}
+            onSlotsChange={setFindTimeSlots}
           />
         </div>
       ) : null}
@@ -4379,10 +4408,12 @@ export default function CalendarWorkspacePage() {
         </div>
       ) : null}
 
-      {/* Canvas + detail panel */}
+      {/* Canvas + detail panel. The find-time panel does NOT hide the canvas —
+          it stays visible so found slots can be drawn as ghost overlays on the
+          week/day grid below the controls strip. */}
       <div
         className={
-          activityPanelOpen || findTimePanelOpen || proposalsPanelOpen
+          activityPanelOpen || proposalsPanelOpen
             ? "hidden"
             : "flex min-h-0 flex-1"
         }
@@ -4848,6 +4879,48 @@ export default function CalendarWorkspacePage() {
                             </span>
                           </div>
                         ) : null}
+                        {/* Find-time ghost overlays — ranked free slots from the
+                            panel's latest search, drawn in place via the grid
+                            geometry and synced with the list. Selecting one does
+                            the same prefilled-create as the list. */}
+                        {findTimeSlots.map((slot, slotIndex) => {
+                          const slotStart = parseISO(slot.start_at);
+                          if (!isSameDay(slotStart, day)) return null;
+                          const slotEnd = parseISO(slot.end_at);
+                          const topMin = minuteOfDay(slotStart);
+                          const durationMin = Math.max(
+                            differenceInMinutes(slotEnd, slotStart),
+                            15,
+                          );
+                          return (
+                            <button
+                              key={`find-time-${slot.start_at}-${slot.end_at}`}
+                              type="button"
+                              data-testid="find-time-overlay"
+                              title={`Open slot ${slotIndex + 1}: ${format(slotStart, "HH:mm")}–${format(slotEnd, "HH:mm")}`}
+                              onClick={(evt) => {
+                                evt.stopPropagation();
+                                selectFindTimeSlot(slot);
+                              }}
+                              className={cn(
+                                "absolute inset-x-0.5 z-20 flex flex-col overflow-hidden rounded-[3px]",
+                                "border border-dashed border-[var(--fg)]/50 bg-[var(--fg)]/[0.08]",
+                                "px-1.5 py-0.5 text-left transition-colors hover:bg-[var(--fg)]/[0.16]",
+                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                              )}
+                              style={{
+                                top: (topMin / 60) * HOUR_HEIGHT_PX,
+                                height: (durationMin / 60) * HOUR_HEIGHT_PX,
+                                minHeight: 16,
+                              }}
+                            >
+                              <span className="font-mono text-[10px] leading-none tabular-nums text-[var(--fg)]">
+                                #{slotIndex + 1} · {format(slotStart, "HH:mm")}–
+                                {format(slotEnd, "HH:mm")}
+                              </span>
+                            </button>
+                          );
+                        })}
                         {/* "Moved" ghost — one-click undo of the last move/resize. */}
                         {ghost ? (
                           <button

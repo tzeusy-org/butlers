@@ -3194,4 +3194,130 @@ describe("CalendarWorkspacePage", () => {
       ).toBeNull();
     });
   });
+
+  describe("find-time grid overlays", () => {
+    const slotResult = {
+      data: {
+        slots: [
+          {
+            start_at: "2026-03-02T09:00:00Z",
+            end_at: "2026-03-02T09:30:00Z",
+            timezone: "UTC",
+          },
+          {
+            start_at: "2026-03-02T14:00:00Z",
+            end_at: "2026-03-02T15:00:00Z",
+            timezone: "UTC",
+          },
+        ],
+        duration_minutes: 30,
+        calendar_ids: ["primary"],
+        available: true,
+        reason: null,
+      },
+    };
+
+    async function openAndSearch() {
+      await act(async () => {
+        findButton("Find time")?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+        await flush();
+      });
+      const form = container
+        .querySelector("#find-time-duration")
+        ?.closest("form");
+      await act(async () => {
+        form?.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+        await flush();
+      });
+    }
+
+    it("draws ranked slots as positioned ghost overlays and prefills create on select", async () => {
+      vi.mocked(useFindCalendarWorkspaceTime).mockReturnValue({
+        mutateAsync: vi.fn().mockResolvedValue(slotResult),
+        isPending: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useFindCalendarWorkspaceTime>);
+
+      renderPage("/calendar?view=user&range=day&anchor=2026-03-02");
+      await openAndSearch();
+
+      const overlays = Array.from(
+        document.querySelectorAll('[data-testid="find-time-overlay"]'),
+      ) as HTMLElement[];
+      expect(overlays).toHaveLength(2);
+      // Positioned via the grid geometry (HOUR_HEIGHT_PX = 60). The slot start is
+      // rendered in local time, so derive the expected offset the same way the
+      // component does — keeping the assertion timezone-independent.
+      const HOUR_HEIGHT_PX = 60;
+      const minutesIntoDay = (iso: string) => {
+        const d = new Date(iso);
+        return d.getHours() * 60 + d.getMinutes();
+      };
+      expect(overlays[0].style.top).toBe(
+        `${(minutesIntoDay("2026-03-02T09:00:00Z") / 60) * HOUR_HEIGHT_PX}px`,
+      );
+      // 30-minute slot → 30px tall (duration is timezone-independent).
+      expect(overlays[0].style.height).toBe("30px");
+      expect(overlays[1].style.top).toBe(
+        `${(minutesIntoDay("2026-03-02T14:00:00Z") / 60) * HOUR_HEIGHT_PX}px`,
+      );
+      // 60-minute slot → 60px tall.
+      expect(overlays[1].style.height).toBe("60px");
+
+      // Selecting an overlay prefills the create dialog with that exact window.
+      await act(async () => {
+        overlays[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+      const dialog = findDialogByTitle("Create user event");
+      expect(dialog).toBeDefined();
+      const toLocalInput = (iso: string) => {
+        const d = new Date(iso);
+        const pad = (n: number) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      };
+      expect(
+        (dialog?.querySelector("#event-start") as HTMLInputElement).value,
+      ).toBe(toLocalInput("2026-03-02T09:00:00Z"));
+      expect(
+        (dialog?.querySelector("#event-end") as HTMLInputElement).value,
+      ).toBe(toLocalInput("2026-03-02T09:30:00Z"));
+      // Selecting closes the panel, which clears the overlays.
+      expect(
+        document.querySelector('[data-testid="find-time-overlay"]'),
+      ).toBeNull();
+    });
+
+    it("clears the grid overlays when the find-time panel is closed", async () => {
+      vi.mocked(useFindCalendarWorkspaceTime).mockReturnValue({
+        mutateAsync: vi.fn().mockResolvedValue(slotResult),
+        isPending: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useFindCalendarWorkspaceTime>);
+
+      renderPage("/calendar?view=user&range=day&anchor=2026-03-02");
+      await openAndSearch();
+      expect(
+        document.querySelector('[data-testid="find-time-overlay"]'),
+      ).toBeTruthy();
+
+      // Toggle the toolbar "Find time" button off → overlays clear.
+      await act(async () => {
+        findButton("Find time")?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+        await flush();
+      });
+      expect(
+        document.querySelector('[data-testid="find-time-overlay"]'),
+      ).toBeNull();
+      expect(
+        document.querySelector('[data-testid="find-time-slots"]'),
+      ).toBeNull();
+    });
+  });
 });
