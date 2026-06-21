@@ -2,7 +2,7 @@
 
 ### Requirement: Calendar Event CRUD Tools
 
-The module registers 18 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, and the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`. `calendar_update_event` and `calendar_delete_event` SHALL accept a `recurrence_scope` of `this`, `following`, or `series` (default `series`); `this` and `following` operate on a single occurrence or an occurrence-and-onward split of a recurring event rather than the whole series.
+The module registers 20 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, and the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`. The full count additionally includes the Butler Event Management (4), Attendee Management (2), Reminder (3), and Calendar Sync (3) tools plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). `calendar_update_event` and `calendar_delete_event` SHALL accept a `recurrence_scope` of `this`, `following`, or `series` (default `series`); `this` and `following` operate on a single occurrence or an occurrence-and-onward split of a recurring event rather than the whole series.
 
 #### Scenario: List events with time window
 
