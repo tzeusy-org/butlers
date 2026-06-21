@@ -2163,7 +2163,10 @@ async def inspect_memory(
 @router.get("/reembed/pending", response_model=ApiResponse[ReembedPendingCounts])
 async def get_reembed_pending(
     butler: str | None = Query(
-        None, description="Butler schema to probe.  Defaults to first available."
+        None,
+        description=(
+            "Butler schema to probe. Defaults to all memory-capable schemas when omitted."
+        ),
     ),
     current_model: str = Query(
         _DEFAULT_EMBEDDING_MODEL,
@@ -2190,13 +2193,20 @@ async def get_reembed_pending(
             pool = db.pool(butler)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"No pool available for butler '{butler}'")
+        try:
+            counts = await _reembedding.count_pending(pool, current_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:
-        pool = _any_pool(db)
-
-    try:
-        counts = await _reembedding.count_pending(pool, current_model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        results = await _fan_out_memory_queries(
+            db,
+            query_name="reembed_pending",
+            query_fn=lambda _name, pool: _reembedding.count_pending(pool, current_model),
+        )
+        counts = dict.fromkeys(_reembedding.ALL_TIERS, 0)
+        for result in results:
+            for tier, count in result.items():
+                counts[tier] = counts.get(tier, 0) + count
 
     return ApiResponse[ReembedPendingCounts](
         data=ReembedPendingCounts(

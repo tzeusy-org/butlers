@@ -392,6 +392,7 @@ Memory is a **common module** (`[modules.memory]`) enabled per butler, not a ded
 ### Memory API fanout contract
 - `src/butlers/api/routers/memory.py` must not require `db.pool("memory")`; `/api/memory/*` reads fan out across available butler DB pools and aggregate results.
 - Pools without memory tables should be skipped gracefully so no-dedicated-memory deployments return zero/empty payloads (or 404 for ID lookups) instead of 503.
+- Unscoped `/api/memory/reembed/pending` must aggregate over memory-capable schemas and skip non-memory schemas such as `chronicler`; `chronicler.episodes` is not a memory table and has no `embedding` column.
 
 ### General timezone settings contract
 - Shared dashboard-level defaults live in `public.state` under key `settings.general`; `/api/settings/general` is the owner-facing surface, and `Spawner` injects the resulting general-settings block into every butler system prompt via the shared credential pool when available (falling back to local pool only when shared access is absent).

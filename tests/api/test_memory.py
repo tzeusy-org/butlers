@@ -747,6 +747,45 @@ async def test_reembed_pending_uses_default_model_when_omitted(app, monkeypatch)
     assert captured == ["all-MiniLM-L6-v2"]
 
 
+async def test_reembed_pending_without_butler_skips_non_memory_pools(app, monkeypatch):
+    """Omitting ?butler aggregates memory-capable pools and skips other schemas."""
+    from butlers.modules.memory import reembedding as _reembedding
+
+    chronicler_pool = AsyncMock()
+    general_pool = AsyncMock()
+    health_pool = AsyncMock()
+    pools = {
+        "chronicler": chronicler_pool,
+        "general": general_pool,
+        "health": health_pool,
+    }
+    db_mock = MagicMock()
+    db_mock.butler_names = list(pools)
+    db_mock.pool = MagicMock(side_effect=lambda name: pools[name])
+    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+
+    async def _fake_count_pending(pool, current_model, tier=None):
+        if pool is chronicler_pool:
+            raise RuntimeError('column "embedding" does not exist')
+        if pool is general_pool:
+            return {"episodes": 1, "facts": 2, "rules": 3}
+        return {"episodes": 4, "facts": 5, "rules": 6}
+
+    monkeypatch.setattr(_reembedding, "count_pending", _fake_count_pending)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/reembed/pending")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["counts"] == {"episodes": 5, "facts": 7, "rules": 9}
+    assert data["total"] == 21
+    queried_names = {call.args[0] for call in db_mock.pool.call_args_list}
+    assert queried_names == {"chronicler", "general", "health"}
+
+
 async def test_reembed_pending_404_for_unknown_butler(app):
     """GET returns 404 when the requested butler pool is not registered."""
     _make_reembed_db(app, known_butlers=["memory"])
