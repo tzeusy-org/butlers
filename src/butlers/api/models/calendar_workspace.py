@@ -87,11 +87,20 @@ class CalendarWorkspaceLaneDefinition(BaseModel):
 
 
 class CalendarWorkspaceReadResponse(BaseModel):
-    """Read payload for GET /api/calendar/workspace."""
+    """Read payload for GET /api/calendar/workspace.
+
+    ``next_cursor`` / ``has_more`` implement keyset (cursor) pagination over the
+    workspace ordering ``(starts_at, id)``: ``next_cursor`` is an opaque token
+    encoding the last ``(starts_at, id)`` returned and is ``None`` on the final
+    page; ``has_more`` is ``True`` while further pages remain. No ``total`` is
+    computed, per the repo's keyset pagination convention.
+    """
 
     entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
     source_freshness: list[CalendarWorkspaceSourceFreshness] = Field(default_factory=list)
     lanes: list[CalendarWorkspaceLaneDefinition] = Field(default_factory=list)
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class CalendarWorkspaceSearchResponse(BaseModel):

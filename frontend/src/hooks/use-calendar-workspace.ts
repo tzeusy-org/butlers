@@ -16,9 +16,11 @@ import {
   syncCalendarWorkspace,
 } from "@/api/index.ts";
 import type {
+  ApiResponse,
   CalendarAuditParams,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceParams,
+  CalendarWorkspaceReadResponse,
   CalendarWorkspaceSearchParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
@@ -30,6 +32,48 @@ interface CalendarWorkspaceQueryOptions {
   enabled?: boolean;
 }
 
+/** Per-page size when walking the keyset cursor; bounded by the API (<=1000). */
+const WORKSPACE_PAGE_SIZE = 500;
+/** Safety cap on cursor follows so a runaway window can't loop forever. */
+const WORKSPACE_MAX_PAGES = 20;
+
+/**
+ * Fetch the full workspace window by following the keyset `next_cursor` until
+ * `has_more` is false, concatenating entries. The calendar grid renders a
+ * bounded time window, so this keeps the view complete while consuming the
+ * server's cursor-paginated contract.
+ */
+async function fetchAllWorkspacePages(
+  params: CalendarWorkspaceParams,
+): Promise<ApiResponse<CalendarWorkspaceReadResponse>> {
+  const entries: CalendarWorkspaceReadResponse["entries"] = [];
+  let cursor: string | undefined = params.cursor;
+  let last: ApiResponse<CalendarWorkspaceReadResponse> | null = null;
+
+  for (let page = 0; page < WORKSPACE_MAX_PAGES; page += 1) {
+    const resp = await getCalendarWorkspace({
+      ...params,
+      limit: params.limit ?? WORKSPACE_PAGE_SIZE,
+      cursor,
+    });
+    last = resp;
+    entries.push(...resp.data.entries);
+    if (!resp.data.has_more || !resp.data.next_cursor) break;
+    cursor = resp.data.next_cursor;
+  }
+
+  const base = last as ApiResponse<CalendarWorkspaceReadResponse>;
+  return {
+    ...base,
+    data: {
+      ...base.data,
+      entries,
+      next_cursor: null,
+      has_more: false,
+    },
+  };
+}
+
 /** Fetch normalized calendar workspace entries for the requested view/time range. */
 export function useCalendarWorkspace(
   params: CalendarWorkspaceParams,
@@ -37,7 +81,7 @@ export function useCalendarWorkspace(
 ) {
   return useQuery({
     queryKey: ["calendar-workspace", params],
-    queryFn: () => getCalendarWorkspace(params),
+    queryFn: () => fetchAllWorkspacePages(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 30_000,
   });

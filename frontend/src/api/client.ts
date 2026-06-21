@@ -1081,6 +1081,11 @@ function calendarWorkspaceSearchParams(params: CalendarWorkspaceParams): URLSear
   params.sources?.forEach((source) => {
     if (source) sp.append("sources", source);
   });
+  if (params.status != null) sp.set("status", params.status);
+  if (params.source_type != null) sp.set("source_type", params.source_type);
+  if (params.editable != null) sp.set("editable", String(params.editable));
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  if (params.cursor != null && params.cursor !== "") sp.set("cursor", params.cursor);
   return sp;
 }
 

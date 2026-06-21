@@ -516,6 +516,119 @@ async def test_query_calendar_workspace_sql_has_lateral_join():
 
 
 # ---------------------------------------------------------------------------
+# query_calendar_workspace — server-side facets + keyset pagination (bu-xr1i95)
+# ---------------------------------------------------------------------------
+
+
+async def test_query_calendar_workspace_status_facet_adds_predicate():
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    await query_calendar_workspace(db, view="user", start=start, end=end, status="paused")
+
+    sql = db.fan_out.call_args[0][0]
+    args = db.fan_out.call_args[0][1]
+    # Status is computed over the instance/event status (server-side CASE expr).
+    assert "i.status" in sql
+    assert "paused" in args
+
+
+async def test_query_calendar_workspace_source_type_facet_adds_predicate():
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    await query_calendar_workspace(
+        db, view="user", start=start, end=end, source_type="provider_event"
+    )
+
+    sql = db.fan_out.call_args[0][0]
+    args = db.fan_out.call_args[0][1]
+    # source_type is computed over the source_kind / event metadata.
+    assert "s.source_kind" in sql
+    assert "provider_event" in args
+
+
+async def test_query_calendar_workspace_editable_facet_adds_writable_predicate():
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    await query_calendar_workspace(db, view="user", start=start, end=end, editable=True)
+
+    sql = db.fan_out.call_args[0][0]
+    args = db.fan_out.call_args[0][1]
+    assert "COALESCE(s.writable, false) =" in sql
+    assert True in args
+
+
+async def test_query_calendar_workspace_facets_and_together():
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    await query_calendar_workspace(
+        db,
+        view="user",
+        start=start,
+        end=end,
+        status="active",
+        source_type="provider_event",
+        editable=False,
+    )
+
+    args = db.fan_out.call_args[0][1]
+    # All three facet values bind as positional params (combined with AND).
+    assert "active" in args
+    assert "provider_event" in args
+    assert False in args
+
+
+async def test_query_calendar_workspace_cursor_adds_keyset_predicate():
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+    cursor_id = UUID("50000000-0000-0000-0000-000000000005")
+
+    await query_calendar_workspace(db, view="user", start=start, end=end, cursor=(_NOW, cursor_id))
+
+    sql = db.fan_out.call_args[0][0]
+    args = db.fan_out.call_args[0][1]
+    assert "(i.starts_at, i.id) >" in sql
+    assert _NOW in args
+    assert cursor_id in args
+
+
+async def test_query_calendar_workspace_limit_adds_limit_clause():
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    await query_calendar_workspace(db, view="user", start=start, end=end, limit=5)
+
+    sql = db.fan_out.call_args[0][0]
+    args = db.fan_out.call_args[0][1]
+    assert "LIMIT $" in sql
+    assert 5 in args
+
+
+async def test_query_calendar_workspace_no_facets_preserves_base_query():
+    """Omitting all facets/cursor/limit leaves the prior behavior unchanged."""
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    await query_calendar_workspace(db, view="user", start=start, end=end)
+
+    sql = db.fan_out.call_args[0][0]
+    assert "(i.starts_at, i.id) >" not in sql
+    assert "LIMIT $" not in sql  # the LATERAL subquery uses a literal LIMIT 1
+    # ``s.writable`` appears in the SELECT projection, but no editable predicate.
+    assert "COALESCE(s.writable, false) =" not in sql
+
+
+# ---------------------------------------------------------------------------
 # query_calendar_proposals — proposals lane projection (bu-dn65mb)
 # ---------------------------------------------------------------------------
 

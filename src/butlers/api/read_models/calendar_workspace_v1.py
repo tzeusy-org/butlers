@@ -143,6 +143,45 @@ WORKSPACE_COLUMNS: str = (
 )
 
 # ---------------------------------------------------------------------------
+# Server-side facet expressions (v1)
+# ---------------------------------------------------------------------------
+#
+# These SQL ``CASE`` expressions mirror the Python ``_source_type`` and
+# ``_entry_status`` helpers in ``routers/calendar_workspace.py`` so the workspace
+# read can filter on the *computed* entry kind and status **server-side** in the
+# fan-out query (before ``LIMIT``), keeping keyset pagination correct.  They MUST
+# stay in lock-step with those helpers; the router unit tests assert the same
+# enums on both sides.
+
+#: Computed entry source-type, mirroring ``_source_type``.  ``e.metadata`` /
+#: ``s.source_kind`` map to one of the four real workspace source types.
+SOURCE_TYPE_SQL: str = (
+    "CASE"
+    " WHEN lower(e.metadata->>'source_type') IN"
+    " ('provider_event','scheduled_task','butler_reminder','manual_butler_event')"
+    " THEN lower(e.metadata->>'source_type')"
+    " WHEN lower(s.source_kind) = 'provider_event' THEN 'provider_event'"
+    " WHEN lower(s.source_kind) = 'internal_scheduler' THEN 'scheduled_task'"
+    " WHEN lower(s.source_kind) = 'internal_reminders' THEN 'butler_reminder'"
+    " ELSE 'manual_butler_event'"
+    " END"
+)
+
+#: Computed entry status, mirroring ``_entry_status``.  A disabled scheduled task
+#: is ``paused``; otherwise the raw instance/event status maps to the workspace
+#: status vocabulary (``cancelled``/``error``/``completed``/``active``).
+STATUS_SQL: str = (
+    "CASE"
+    f" WHEN ({SOURCE_TYPE_SQL}) = 'scheduled_task'"
+    " AND e.metadata->>'enabled' = 'false' THEN 'paused'"
+    " WHEN lower(COALESCE(i.status, e.status)) IN ('cancelled','canceled') THEN 'cancelled'"
+    " WHEN lower(COALESCE(i.status, e.status)) IN ('error','failed') THEN 'error'"
+    " WHEN lower(COALESCE(i.status, e.status)) IN ('completed','done') THEN 'completed'"
+    " ELSE 'active'"
+    " END"
+)
+
+# ---------------------------------------------------------------------------
 # Typed row DTOs
 # ---------------------------------------------------------------------------
 
@@ -501,6 +540,11 @@ async def query_calendar_workspace(
     end: datetime,
     butlers: list[str] | None = None,
     sources: list[str] | None = None,
+    status: str | None = None,
+    source_type: str | None = None,
+    editable: bool | None = None,
+    cursor: tuple[datetime, UUID] | None = None,
+    limit: int | None = None,
 ) -> list[CalendarWorkspaceRow]:
     """Fan-out query for calendar event instances in a time range.
 
@@ -523,6 +567,20 @@ async def query_calendar_workspace(
         If provided, restrict to these butler schemas.
     sources:
         If provided, restrict to sources with these ``source_key`` values.
+    status:
+        If provided, restrict to entries whose *computed* status (see
+        :data:`STATUS_SQL`) equals this value, applied server-side.
+    source_type:
+        If provided, restrict to entries whose *computed* source type (see
+        :data:`SOURCE_TYPE_SQL`) equals this value, applied server-side.
+    editable:
+        If provided, restrict to sources whose ``writable`` flag matches.
+    cursor:
+        Keyset position ``(starts_at, id)`` — only rows strictly after it (in
+        ``(starts_at, id)`` order) are returned. Powers cursor pagination.
+    limit:
+        If provided, cap the number of rows returned per butler schema (the
+        caller typically passes ``page_size + 1`` to detect ``has_more``).
 
     Returns
     -------
@@ -549,8 +607,30 @@ async def query_calendar_workspace(
         conditions.append(f"s.source_key = ANY(${idx}::text[])")
         args.append(sources)
         idx += 1
+    if status is not None:
+        conditions.append(f"({STATUS_SQL}) = ${idx}")
+        args.append(status)
+        idx += 1
+    if source_type is not None:
+        conditions.append(f"({SOURCE_TYPE_SQL}) = ${idx}")
+        args.append(source_type)
+        idx += 1
+    if editable is not None:
+        conditions.append(f"COALESCE(s.writable, false) = ${idx}")
+        args.append(editable)
+        idx += 1
+    if cursor is not None:
+        conditions.append(f"(i.starts_at, i.id) > (${idx}, ${idx + 1})")
+        args.append(cursor[0])
+        args.append(cursor[1])
+        idx += 2
 
     where = " AND ".join(conditions)
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = f"\n        LIMIT ${idx}"
+        args.append(limit)
+        idx += 1
     sql = f"""
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
@@ -565,7 +645,7 @@ async def query_calendar_workspace(
             LIMIT 1
         ) AS c ON TRUE
         WHERE {where}
-        ORDER BY i.starts_at ASC, i.id ASC
+        ORDER BY i.starts_at ASC, i.id ASC{limit_clause}
     """
 
     query_targets: list[str] | None

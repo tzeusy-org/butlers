@@ -28,10 +28,12 @@ import type {
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSourceFreshness,
+  CalendarWorkspaceStatusFacet,
   CalendarWorkspaceUserMutationAction,
   CalendarWorkspaceView,
   CalendarWorkspaceWritableCalendar,
   UnifiedCalendarEntry,
+  UnifiedCalendarSourceType,
 } from "@/api/types.ts";
 import {
   useCalendarWorkspace,
@@ -719,6 +721,23 @@ function KindTag({ children, className }: { children: React.ReactNode; className
   );
 }
 
+/** Server-side status facet options for GET /api/calendar/workspace. */
+const STATUS_FACET_OPTIONS: Array<{ value: CalendarWorkspaceStatusFacet; label: string }> = [
+  { value: "active", label: "Active" },
+  { value: "paused", label: "Paused" },
+  { value: "error", label: "Error" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+/** Server-side source-type facet options for GET /api/calendar/workspace. */
+const SOURCE_TYPE_FACET_OPTIONS: Array<{ value: UnifiedCalendarSourceType; label: string }> = [
+  { value: "provider_event", label: "Provider event" },
+  { value: "scheduled_task", label: "Schedule" },
+  { value: "butler_reminder", label: "Reminder" },
+  { value: "manual_butler_event", label: "Butler event" },
+];
+
 /** Native <select> in the toolbar's hairline-pill register. */
 const SELECT_CLASS =
   "h-7 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2 " +
@@ -1395,6 +1414,8 @@ export default function CalendarWorkspacePage() {
   const anchorParam = serializeAnchor(anchor);
   const selectedSourceKey = searchParams.get("source") ?? "all";
   const selectedCalendarId = searchParams.get("calendar") ?? "all";
+  const selectedStatus = searchParams.get("status") ?? "all";
+  const selectedSourceType = searchParams.get("kind") ?? "all";
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const { start, end } = useMemo(() => computeWindow(range, anchor), [range, anchor]);
@@ -1476,6 +1497,14 @@ export default function CalendarWorkspacePage() {
     end: end.toISOString(),
     timezone,
     sources: sourcesForQuery,
+    status:
+      selectedStatus === "all"
+        ? undefined
+        : (selectedStatus as CalendarWorkspaceStatusFacet),
+    source_type:
+      selectedSourceType === "all"
+        ? undefined
+        : (selectedSourceType as UnifiedCalendarSourceType),
   });
 
   const syncMutation = useSyncCalendarWorkspace();
@@ -1577,6 +1606,8 @@ export default function CalendarWorkspacePage() {
       anchor?: Date;
       source?: string;
       calendar?: string;
+      status?: string;
+      kind?: string;
     }) => {
       const next = new URLSearchParams(searchParams);
 
@@ -1597,6 +1628,22 @@ export default function CalendarWorkspacePage() {
           next.delete("calendar");
         } else {
           next.set("calendar", nextValues.calendar);
+        }
+      }
+
+      if (nextValues.status !== undefined) {
+        if (!nextValues.status || nextValues.status === "all") {
+          next.delete("status");
+        } else {
+          next.set("status", nextValues.status);
+        }
+      }
+
+      if (nextValues.kind !== undefined) {
+        if (!nextValues.kind || nextValues.kind === "all") {
+          next.delete("kind");
+        } else {
+          next.set("kind", nextValues.kind);
         }
       }
 
@@ -2765,57 +2812,107 @@ export default function CalendarWorkspacePage() {
           Activity
         </PillButton>
 
-        {view === "user" ? (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:ml-auto">
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="calendar-filter"
-                className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
-              >
-                Calendar
-              </label>
-              <select
-                id="calendar-filter"
-                className={SELECT_CLASS}
-                value={selectedCalendarId}
-                onChange={(event) => updateQuery({ calendar: event.target.value, source: "all" })}
-              >
-                <option value="all">All calendars</option>
-                {calendarFilterOptions.map((option) => (
-                  <option key={option.calendarId} value={option.calendarId}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:ml-auto">
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="status-filter"
+              className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+            >
+              Status
+            </label>
+            <select
+              id="status-filter"
+              className={SELECT_CLASS}
+              value={selectedStatus}
+              onChange={(event) => updateQuery({ status: event.target.value })}
+            >
+              <option value="all">All statuses</option>
+              {STATUS_FACET_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="source-filter"
-                className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
-              >
-                Source
-              </label>
-              <select
-                id="source-filter"
-                className={SELECT_CLASS}
-                value={selectedSourceKey}
-                onChange={(event) => updateQuery({ source: event.target.value })}
-              >
-                <option value="all">All sources</option>
-                {userSources
-                  .filter((source) =>
-                    selectedCalendarId === "all" ? true : source.calendar_id === selectedCalendarId,
-                  )
-                  .map((source) => (
-                    <option key={source.source_key} value={source.source_key}>
-                      {sourceName(source)}
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="type-filter"
+              className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+            >
+              Type
+            </label>
+            <select
+              id="type-filter"
+              className={SELECT_CLASS}
+              value={selectedSourceType}
+              onChange={(event) => updateQuery({ kind: event.target.value })}
+            >
+              <option value="all">All types</option>
+              {SOURCE_TYPE_FACET_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {view === "user" ? (
+            <>
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="calendar-filter"
+                  className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+                >
+                  Calendar
+                </label>
+                <select
+                  id="calendar-filter"
+                  className={SELECT_CLASS}
+                  value={selectedCalendarId}
+                  onChange={(event) =>
+                    updateQuery({ calendar: event.target.value, source: "all" })
+                  }
+                >
+                  <option value="all">All calendars</option>
+                  {calendarFilterOptions.map((option) => (
+                    <option key={option.calendarId} value={option.calendarId}>
+                      {option.label}
                     </option>
                   ))}
-              </select>
-            </div>
-          </div>
-        ) : null}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="source-filter"
+                  className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+                >
+                  Source
+                </label>
+                <select
+                  id="source-filter"
+                  className={SELECT_CLASS}
+                  value={selectedSourceKey}
+                  onChange={(event) => updateQuery({ source: event.target.value })}
+                >
+                  <option value="all">All sources</option>
+                  {userSources
+                    .filter((source) =>
+                      selectedCalendarId === "all"
+                        ? true
+                        : source.calendar_id === selectedCalendarId,
+                    )
+                    .map((source) => (
+                      <option key={source.source_key} value={source.source_key}>
+                        {sourceName(source)}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </>
+          ) : null}
+        </div>
       </div>
 
       {/* Activity panel — overlays the canvas when open */}

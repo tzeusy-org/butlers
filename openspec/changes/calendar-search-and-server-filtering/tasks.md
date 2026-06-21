@@ -14,16 +14,16 @@
 
 ## 3. Server-side facets on the workspace read (bu-xr1i95)
 
-- [ ] 3.1 Add optional `status`, `source_type`, and `editable` query params to `GET /api/calendar/workspace`; validate `status`/`source_type` against the known enums
-- [ ] 3.2 Apply the facets server-side in the fan-out query (`status` over instance/event status, `source_type` over the computed entry kind, `editable` over `s.writable`) instead of returning everything and filtering client-side
-- [ ] 3.3 Unit tests: each facet narrows the result set; omitted facets preserve current behavior; combined facets AND together
+- [x] 3.1 Add optional `status`, `source_type`, and `editable` query params to `GET /api/calendar/workspace`; validate `status`/`source_type` against the known enums
+- [x] 3.2 Apply the facets server-side in the fan-out query (`status` over instance/event status, `source_type` over the computed entry kind, `editable` over `s.writable`) instead of returning everything and filtering client-side
+- [x] 3.3 Unit tests: each facet narrows the result set; omitted facets preserve current behavior; combined facets AND together
 
 ## 4. Keyset (cursor) pagination on the workspace read (bu-xr1i95)
 
-- [ ] 4.1 Add `limit` (bounded, with a default) and `cursor` params; encode the cursor as the opaque last-seen `(starts_at, id)` keyset position consistent with the existing `ORDER BY i.starts_at, i.id`
-- [ ] 4.2 Query `LIMIT limit + 1`, derive `has_more`, and emit `next_cursor` (opaque) when more rows remain; do NOT compute or return a `total`
-- [ ] 4.3 Extend `CalendarWorkspaceReadResponse` with `next_cursor: str | null` and `has_more: bool`; keep `entries`/`source_freshness`/`lanes` unchanged
-- [ ] 4.4 Unit tests: first page returns `next_cursor` + `has_more=true`; passing `cursor` returns the next page with no overlap; last page returns `has_more=false`; malformed cursor → 400
+- [x] 4.1 Add `limit` (bounded, with a default) and `cursor` params; encode the cursor as the opaque last-seen `(starts_at, id)` keyset position consistent with the existing `ORDER BY i.starts_at, i.id`
+- [x] 4.2 Query `LIMIT limit + 1`, derive `has_more`, and emit `next_cursor` (opaque) when more rows remain; do NOT compute or return a `total`
+- [x] 4.3 Extend `CalendarWorkspaceReadResponse` with `next_cursor: str | null` and `has_more: bool`; keep `entries`/`source_freshness`/`lanes` unchanged
+- [x] 4.4 Unit tests: first page returns `next_cursor` + `has_more=true`; passing `cursor` returns the next page with no overlap; last page returns `has_more=false`; malformed cursor → 400
 
 ## 5. Spec + quality gate
 

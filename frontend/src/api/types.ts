@@ -606,6 +606,13 @@ export interface CalendarWorkspaceReadResponse {
   entries: UnifiedCalendarEntry[];
   source_freshness: CalendarWorkspaceSourceFreshness[];
   lanes: CalendarWorkspaceLaneDefinition[];
+  /**
+   * Opaque keyset cursor encoding the last `(starts_at, id)` returned. Pass it
+   * back as `cursor` to fetch the next page; `null` on the final page.
+   */
+  next_cursor: string | null;
+  /** `true` while more pages remain for the requested window. */
+  has_more: boolean;
 }
 
 /** Sync capability flags in workspace metadata. */
@@ -653,6 +660,14 @@ export interface SetPrimaryCalendarResponse {
   persisted: boolean;
 }
 
+/** Computed-status facet values accepted by GET /api/calendar/workspace. */
+export type CalendarWorkspaceStatusFacet =
+  | "active"
+  | "paused"
+  | "cancelled"
+  | "error"
+  | "completed";
+
 /** Query parameters for GET /api/calendar/workspace. */
 export interface CalendarWorkspaceParams {
   view: CalendarWorkspaceView;
@@ -661,6 +676,16 @@ export interface CalendarWorkspaceParams {
   timezone?: string;
   butlers?: string[];
   sources?: string[];
+  /** Server-side computed-status facet. */
+  status?: CalendarWorkspaceStatusFacet;
+  /** Server-side computed source-type facet. */
+  source_type?: UnifiedCalendarSourceType;
+  /** Server-side editable (writable-source) facet. */
+  editable?: boolean;
+  /** Max entries per page (keyset pagination). */
+  limit?: number;
+  /** Opaque keyset cursor from a prior page's `next_cursor`. */
+  cursor?: string;
 }
 
 /** Query parameters for GET /api/calendar/workspace/search. */

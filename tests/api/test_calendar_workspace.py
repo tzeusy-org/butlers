@@ -8,7 +8,7 @@ Keeps: required-params validation (422), workspace read structure, sync trigger 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -284,6 +284,204 @@ async def test_workspace_returns_entries_and_source_freshness(app):
     # into the entry metadata rather than raising KeyError -> HTTP 500.
     assert entry["metadata"]["origin_instance_ref"] == user_row["origin_instance_ref"]
     assert len(body["source_freshness"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Server-side facets + keyset pagination (bu-xr1i95)
+# ---------------------------------------------------------------------------
+
+
+def _paged_event_row(*, idx: int, writable: bool = True) -> dict:
+    """A workspace event row at a distinct, strictly-increasing start time."""
+    row = _workspace_event_row(
+        lane="user",
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event"},
+    )
+    base = datetime(2026, 2, 22, 9, 0, tzinfo=UTC)
+    row["instance_starts_at"] = base + timedelta(hours=idx)
+    row["instance_ends_at"] = base + timedelta(hours=idx, minutes=30)
+    row["title"] = f"Event {idx}"
+    row["writable"] = writable
+    return row
+
+
+def _build_paginating_app(app, *, rows: list[dict]):
+    """Build an app whose fan_out mock faithfully simulates keyset pagination.
+
+    The workspace branch sorts rows by ``(starts_at, id)``, applies the keyset
+    ``> cursor`` predicate when present, and honors the SQL ``LIMIT`` (always the
+    last positional arg) — mirroring what Postgres would do, so the router's
+    page slicing / has_more / next_cursor logic is exercised end-to-end.
+    """
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.butlers_with_module = MagicMock(return_value=["general"])
+
+    async def _fan_out(query: str, args=(), butler_names=None):
+        if "FROM calendar_event_instances AS i" in query:
+            data = sorted(rows, key=lambda r: (r["instance_starts_at"], r["instance_id"]))
+            if "(i.starts_at, i.id) >" in query:
+                cursor_starts, cursor_id = args[-3], args[-2]
+                data = [
+                    r
+                    for r in data
+                    if (r["instance_starts_at"], r["instance_id"]) > (cursor_starts, cursor_id)
+                ]
+            limit = args[-1]
+            return {"general": data[:limit]}
+        return {}
+
+    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    mock_mgr = AsyncMock(spec=MCPClientManager)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
+    return app, mock_db
+
+
+_PAGE_PARAMS = {
+    "view": "user",
+    "start": "2026-02-22T00:00:00Z",
+    "end": "2026-02-23T00:00:00Z",
+}
+
+
+async def test_workspace_unknown_status_facet_returns_400(app):
+    app, _, _ = _build_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace", params={**_PAGE_PARAMS, "status": "bogus"}
+        )
+    assert resp.status_code == 400
+
+
+async def test_workspace_unknown_source_type_facet_returns_400(app):
+    app, _, _ = _build_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace", params={**_PAGE_PARAMS, "source_type": "bogus"}
+        )
+    assert resp.status_code == 400
+
+
+async def test_workspace_valid_facets_pass_through(app):
+    """Valid facet params are accepted (server-side wiring); 200, not 400."""
+    row = _paged_event_row(idx=0)
+    app, _ = _build_paginating_app(app, rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                **_PAGE_PARAMS,
+                "status": "active",
+                "source_type": "provider_event",
+                "editable": "true",
+            },
+        )
+    assert resp.status_code == 200
+
+
+async def test_workspace_malformed_cursor_returns_400(app):
+    app, _ = _build_paginating_app(app, rows=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace", params={**_PAGE_PARAMS, "cursor": "!!not-base64!!"}
+        )
+    assert resp.status_code == 400
+
+
+async def test_workspace_keyset_pagination_walks_all_pages_without_overlap(app):
+    rows = [_paged_event_row(idx=i) for i in range(5)]
+    app, _ = _build_paginating_app(app, rows=rows)
+
+    seen_ids: list[str] = []
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Page 1
+        resp = await client.get("/api/calendar/workspace", params={**_PAGE_PARAMS, "limit": 2})
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert "total" not in body  # keyset convention: no total
+        assert len(body["entries"]) == 2
+        assert body["has_more"] is True
+        assert isinstance(body["next_cursor"], str) and body["next_cursor"]
+        seen_ids += [e["entry_id"] for e in body["entries"]]
+
+        # Page 2 — follows the cursor, strictly-next, no overlap
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={**_PAGE_PARAMS, "limit": 2, "cursor": body["next_cursor"]},
+        )
+        body = resp.json()["data"]
+        assert len(body["entries"]) == 2
+        assert body["has_more"] is True
+        page2_ids = [e["entry_id"] for e in body["entries"]]
+        assert not (set(page2_ids) & set(seen_ids))  # no overlap
+        seen_ids += page2_ids
+
+        # Page 3 — last page
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={**_PAGE_PARAMS, "limit": 2, "cursor": body["next_cursor"]},
+        )
+        body = resp.json()["data"]
+        assert len(body["entries"]) == 1
+        assert body["has_more"] is False
+        assert body["next_cursor"] is None
+        seen_ids += [e["entry_id"] for e in body["entries"]]
+
+    # Every event surfaced exactly once across the three pages.
+    assert len(seen_ids) == 5
+    assert len(set(seen_ids)) == 5
+
+
+async def test_workspace_editable_facet_filters_server_side(app):
+    """The editable facet narrows to writable sources (simulated server-side)."""
+    writable = _paged_event_row(idx=0, writable=True)
+    read_only = _paged_event_row(idx=1, writable=False)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.butlers_with_module = MagicMock(return_value=["general"])
+
+    async def _fan_out(query: str, args=(), butler_names=None):
+        if "FROM calendar_event_instances AS i" in query:
+            data = [writable, read_only]
+            # The endpoint passes editable as a bound param; simulate the
+            # server-side ``s.writable = $n`` predicate over the projection.
+            if "s.writable" in query:
+                want = args[-2]  # editable value precedes the trailing LIMIT
+                data = [r for r in data if bool(r["writable"]) is bool(want)]
+            return {"general": data[: args[-1]]}
+        return {}
+
+    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    mock_mgr = AsyncMock(spec=MCPClientManager)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace", params={**_PAGE_PARAMS, "editable": "true"}
+        )
+    assert resp.status_code == 200
+    entries = resp.json()["data"]["entries"]
+    assert len(entries) == 1
+    assert entries[0]["editable"] is True
 
 
 # ---------------------------------------------------------------------------

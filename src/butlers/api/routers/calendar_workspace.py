@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import re
@@ -58,6 +60,50 @@ logger = logging.getLogger(__name__)
 
 _WORKSPACE_STALE_THRESHOLD = timedelta(minutes=10)
 _WORKSPACE_MAX_RANGE = timedelta(days=90)
+
+# Keyset pagination bounds for the workspace read.
+_WORKSPACE_DEFAULT_LIMIT = 200
+_WORKSPACE_MAX_LIMIT = 1000
+
+# Allowed values for the server-side facets. ``status`` mirrors the computed
+# values produced by ``_entry_status`` / ``STATUS_SQL``; ``source_type`` mirrors
+# ``_source_type`` / ``SOURCE_TYPE_SQL``. Unknown values yield a 400.
+_WORKSPACE_STATUS_FACETS = frozenset({"active", "paused", "cancelled", "error", "completed"})
+_WORKSPACE_SOURCE_TYPE_FACETS = frozenset(
+    {"provider_event", "scheduled_task", "butler_reminder", "manual_butler_event"}
+)
+
+
+def _encode_workspace_cursor(starts_at: datetime, entry_id: UUID) -> str:
+    """Encode a ``(starts_at, id)`` keyset position into an opaque cursor token."""
+    payload = json.dumps({"s": starts_at.isoformat(), "i": str(entry_id)})
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_workspace_cursor(raw: str) -> tuple[datetime, UUID]:
+    """Decode an opaque workspace cursor into ``(starts_at, id)``.
+
+    Raises :class:`ValueError` on any malformed/unparseable token so the caller
+    can surface a 400.
+    """
+    try:
+        decoded = base64.urlsafe_b64decode(raw.encode("ascii"))
+        payload = json.loads(decoded)
+        starts_at = _coerce_datetime(payload["s"])
+        entry_id = UUID(str(payload["i"]))
+    except (
+        KeyError,
+        ValueError,
+        TypeError,
+        binascii.Error,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as exc:
+        raise ValueError(f"Malformed cursor: {raw!r}") from exc
+    if starts_at is None:
+        raise ValueError(f"Malformed cursor: {raw!r}")
+    return starts_at, entry_id
+
 
 # Regex for hashed Google Calendar IDs like "ae06dba...@group.calendar.google.com"
 _GOOGLE_GROUP_CALENDAR_RE = re.compile(r"^[a-f0-9]{20,}@group\.calendar\.google\.com$", re.I)
@@ -365,6 +411,11 @@ async def _fetch_workspace_rows(
     end: datetime,
     butlers: list[str] | None = None,
     sources: list[str] | None = None,
+    status: str | None = None,
+    source_type: str | None = None,
+    editable: bool | None = None,
+    cursor: tuple[datetime, UUID] | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch calendar event-instance rows via the versioned read-model boundary.
 
@@ -375,13 +426,33 @@ async def _fetch_workspace_rows(
     DTOs back to plain dicts for the existing downstream helpers
     (``_normalize_entry``, deduplication logic, etc.) that expect
     ``Mapping[str, Any]`` inputs.
+
+    The ``status`` / ``source_type`` / ``editable`` facets, the keyset
+    ``cursor``, and ``limit`` are applied **server-side** in the fan-out query.
+    Rows from every butler schema are merged and re-sorted by the global keyset
+    order ``(starts_at, id)`` so dedup and cursor pagination are deterministic
+    across schemas.
     """
     import dataclasses
 
     workspace_dtos = await query_calendar_workspace(
-        db, view=view, start=start, end=end, butlers=butlers, sources=sources
+        db,
+        view=view,
+        start=start,
+        end=end,
+        butlers=butlers,
+        sources=sources,
+        status=status,
+        source_type=source_type,
+        editable=editable,
+        cursor=cursor,
+        limit=limit,
     )
     flattened: list[dict[str, Any]] = [dataclasses.asdict(dto) for dto in workspace_dtos]
+
+    # Re-sort across schemas by the global keyset order so dedup keeps the
+    # lowest-id copy deterministically and cursor pagination is stable.
+    flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
 
     # Deduplicate across butler databases: the same Google Calendar event
     # is synced into every butler's projection tables.  Keep only one
@@ -607,13 +678,40 @@ async def get_workspace(
     timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
     butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
     sources: list[str] | None = Query(None, description="Optional source_key filters"),
+    status: str | None = Query(None, description="Optional computed-status facet"),
+    source_type: str | None = Query(None, description="Optional computed source_type facet"),
+    editable: bool | None = Query(None, description="Optional writable-source facet"),
+    limit: int = Query(
+        _WORKSPACE_DEFAULT_LIMIT,
+        ge=1,
+        le=_WORKSPACE_MAX_LIMIT,
+        description="Max entries per page (keyset pagination)",
+    ),
+    cursor: str | None = Query(None, description="Opaque keyset cursor from a prior page"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[CalendarWorkspaceReadResponse]:
-    """Return normalized workspace entries for the requested time range."""
+    """Return normalized workspace entries for the requested time range.
+
+    Supports optional server-side ``status`` / ``source_type`` / ``editable``
+    facets (combined with AND; omitting one leaves that dimension unfiltered)
+    and keyset (cursor) pagination over the ``(starts_at, id)`` order.
+    """
     if end <= start:
         raise HTTPException(status_code=400, detail="end must be after start")
     if end - start > _WORKSPACE_MAX_RANGE:
         raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+
+    if status is not None and status not in _WORKSPACE_STATUS_FACETS:
+        raise HTTPException(status_code=400, detail=f"Unknown status facet: {status}")
+    if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
+        raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
+
+    cursor_pos: tuple[datetime, UUID] | None = None
+    if cursor is not None:
+        try:
+            cursor_pos = _decode_workspace_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Malformed cursor") from exc
 
     display_tz: ZoneInfo | None = None
     if timezone is not None:
@@ -634,9 +732,13 @@ async def get_workspace(
             entries=proposal_entries,
             source_freshness=[],
             lanes=[],
+            next_cursor=None,
+            has_more=False,
         )
         return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
+    # Fetch one extra row beyond the page so we can derive ``has_more`` without
+    # a separate count query (keyset pagination, no ``total``).
     workspace_rows = await _fetch_workspace_rows(
         db,
         view=view,
@@ -644,6 +746,11 @@ async def get_workspace(
         end=end,
         butlers=butlers,
         sources=sources,
+        status=status,
+        source_type=source_type,
+        editable=editable,
+        cursor=cursor_pos,
+        limit=limit + 1,
     )
     source_rows = await _fetch_sources(
         db,
@@ -688,28 +795,45 @@ async def get_workspace(
         seen_source_keys.add(sk)
         deduped_source_rows.append(row)
     source_freshness = [_to_source_freshness(row) for row in deduped_source_rows]
-    entries: list[UnifiedCalendarEntry] = []
+    # Keep each entry paired with its source row so the keyset cursor can be
+    # derived from the raw (un-tz-converted) ``instance_starts_at`` + id.
+    pairs: list[tuple[dict[str, Any], UnifiedCalendarEntry]] = []
     for row in workspace_rows:
         try:
-            entries.append(_normalize_entry(row, view=view, display_tz=display_tz))
+            pairs.append((row, _normalize_entry(row, view=view, display_tz=display_tz)))
         except ValueError:
             continue
 
     # Hide noisy events: if the same title appears >20 times on a single
     # day, suppress all instances of that title for that day.
     day_title_counts: Counter[tuple[str, str]] = Counter()
-    for entry in entries:
+    for _row, entry in pairs:
         day_key = entry.start_at.date().isoformat()
         day_title_counts[(day_key, entry.title)] += 1
 
     noisy: set[tuple[str, str]] = {k for k, v in day_title_counts.items() if v > 20}
     if noisy:
-        entries = [e for e in entries if (e.start_at.date().isoformat(), e.title) not in noisy]
+        pairs = [(r, e) for r, e in pairs if (e.start_at.date().isoformat(), e.title) not in noisy]
+
+    # Keyset pagination: we fetched ``limit + 1`` rows, so anything beyond the
+    # page means more rows remain. The cursor encodes the last returned row's
+    # raw ``(instance_starts_at, instance_id)`` keyset position.
+    has_more = len(pairs) > limit
+    page = pairs[:limit]
+    next_cursor: str | None = None
+    if has_more and page:
+        last_row, _last_entry = page[-1]
+        last_starts_at = _coerce_datetime(last_row.get("instance_starts_at"))
+        last_instance_id = last_row.get("instance_id")
+        if last_starts_at is not None and isinstance(last_instance_id, UUID):
+            next_cursor = _encode_workspace_cursor(last_starts_at, last_instance_id)
 
     data = CalendarWorkspaceReadResponse(
-        entries=entries,
+        entries=[entry for _row, entry in page],
         source_freshness=source_freshness,
         lanes=_build_lane_definitions(source_freshness),
+        next_cursor=next_cursor,
+        has_more=has_more,
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
