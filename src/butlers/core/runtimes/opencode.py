@@ -89,11 +89,31 @@ def _stringify_error_payload(payload: Any) -> str | None:
         stripped = str(payload).strip()
         return stripped or None
     if isinstance(payload, dict):
-        for key in ("message", "detail", "details", "stderr", "error", "code"):
+        name = payload.get("name")
+        error_name = name.strip() if isinstance(name, str) and name.strip() else None
+        for key in (
+            "message",
+            "detail",
+            "details",
+            "stderr",
+            "error",
+            "data",
+            "code",
+            "status",
+            "statusCode",
+        ):
             value = payload.get(key)
             detail = _stringify_error_payload(value)
             if detail:
+                if (
+                    error_name
+                    and detail.lower() != error_name.lower()
+                    and not detail.lower().startswith(error_name.lower())
+                ):
+                    return f"{error_name}: {detail}"
                 return detail
+        if error_name:
+            return error_name
     if isinstance(payload, list):
         parts = [
             detail for item in payload if (detail := _stringify_error_payload(item)) is not None

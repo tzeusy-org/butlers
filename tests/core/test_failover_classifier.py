@@ -290,6 +290,7 @@ class TestProviderAuthErrorsEligible:
             "backend unavailable",
             "model not found in catalog",
             "no such model: claude-opus-99",
+            "OpenCode CLI exited with code 1: APIError: provider rejected the request",
         ],
     )
     def test_provider_auth_message_is_eligible(self, msg: str) -> None:
