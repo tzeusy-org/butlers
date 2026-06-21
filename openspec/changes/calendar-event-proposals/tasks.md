@@ -34,9 +34,9 @@
 
 ## 6. Ingestion producer wiring
 
-- [ ] 6.1 Emit `calendar_propose_event` from the email/telegram/finance ingestion sessions when a calendar-relevant signal is extracted, passing `source_event_id` (the `public.ingestion_events.id`), `source_snippet`, `confidence`, and resolved `entity_ids`
-- [ ] 6.2 Apply a confidence floor before proposing to limit lane noise
-- [ ] 6.3 Integration test: an ingested signal that contains an event produces exactly one pending proposal linked to its ingestion event
+- [x] 6.1 Emit `calendar_propose_event` from the email/telegram/finance ingestion sessions when a calendar-relevant signal is extracted, passing `source_event_id` (the `public.ingestion_events.id`), `source_snippet`, `confidence`, and resolved `entity_ids`
+- [x] 6.2 Apply a confidence floor before proposing to limit lane noise
+- [x] 6.3 Integration test: an ingested signal that contains an event produces exactly one pending proposal linked to its ingestion event
 
 ## 7. Spec + validation
 

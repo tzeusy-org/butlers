@@ -52,6 +52,33 @@ def _confidence_at_or_above(
     return _CONFIDENCE_ORDER.index(confidence.value) <= _CONFIDENCE_ORDER.index(threshold.value)
 
 
+# Float scores recorded on calendar proposals for each categorical confidence
+# level. The proposals store keeps a 0.0-1.0 ``confidence``; extraction only
+# yields categorical levels, so we map them onto representative scores.
+_CONFIDENCE_SCORE: dict[Confidence, float] = {
+    Confidence.HIGH: 0.9,
+    Confidence.MEDIUM: 0.5,
+    Confidence.LOW: 0.2,
+}
+
+# Tool the calendar-owning butler exposes to stage an inferred event for review.
+CALENDAR_PROPOSE_TOOL = "calendar_propose_event"
+
+# Calendar is a module enabled on several butlers, not a standalone butler.
+# Inferred-event proposals from ingestion are routed to the general-purpose
+# butler, which owns the user-facing shared calendar.
+CALENDAR_PROPOSAL_BUTLER = "general"
+
+# Inferred calendar events route to a human-review lane (the proposals lane).
+# Apply a floor so only sufficiently confident signals become proposals, which
+# keeps the lane low-noise. With the score map above only HIGH-confidence
+# calendar signals clear this floor by default.
+CALENDAR_PROPOSAL_CONFIDENCE_FLOOR = 0.7
+
+# Max characters of the originating message retained as proposal provenance.
+_SOURCE_SNIPPET_MAX_CHARS = 500
+
+
 @dataclass(frozen=True)
 class ExtractorSchema:
     """Defines what signals a butler cares about.
@@ -136,6 +163,12 @@ HEALTH_SCHEMA = ExtractorSchema(
         "medications": "medication_add",
         "measurements": "measurement_log",
     },
+)
+
+CALENDAR_SCHEMA = ExtractorSchema(
+    butler_name=CALENDAR_PROPOSAL_BUTLER,
+    signal_types=["events"],
+    tool_mappings={"events": CALENDAR_PROPOSE_TOOL},
 )
 
 
@@ -277,20 +310,72 @@ def parse_extractions(
 # ------------------------------------------------------------------
 
 
+def _is_calendar_proposal(ext: Extraction) -> bool:
+    """True if this extraction stages a calendar event proposal."""
+    return (
+        ext.target_butler == CALENDAR_SCHEMA.butler_name and ext.tool_name == CALENDAR_PROPOSE_TOOL
+    )
+
+
+def _build_calendar_proposal_args(
+    tool_args: dict[str, Any],
+    *,
+    confidence: float,
+    source_event_id: str | None,
+    source_snippet: str | None,
+    entity_ids: list[str] | None,
+) -> dict[str, Any]:
+    """Enrich an LLM-extracted calendar proposal with code-authoritative provenance.
+
+    The LLM proposes the event shape (title/start/end). The originating
+    ingestion-event id, snippet, confidence score, and resolved entity ids come
+    from the ingestion context — never the model — so they are injected here.
+    """
+    args = dict(tool_args)
+    args["confidence"] = confidence
+    if source_event_id is not None:
+        args["source_event_id"] = source_event_id
+    resolved_snippet = source_snippet if source_snippet is not None else args.get("source_snippet")
+    if isinstance(resolved_snippet, str):
+        args["source_snippet"] = resolved_snippet[:_SOURCE_SNIPPET_MAX_CHARS]
+    if entity_ids:
+        args["entity_ids"] = list(entity_ids)
+    return args
+
+
 async def _dispatch_extractions(
     pool: asyncpg.Pool,
     extractions: list[Extraction],
     threshold: Confidence,
     *,
     call_fn: Any | None = None,
+    source_event_id: str | None = None,
+    source_snippet: str | None = None,
+    entity_ids: list[str] | None = None,
+    calendar_confidence_floor: float = CALENDAR_PROPOSAL_CONFIDENCE_FLOOR,
 ) -> list[Extraction]:
-    """Dispatch extractions at or above threshold to target butlers.
+    """Dispatch eligible extractions to target butlers.
 
-    Calls route() for each eligible extraction. Returns all extractions
-    with ``dispatched`` updated.
+    Non-calendar signals dispatch when at or above ``threshold``. Calendar
+    proposals are gated by the dedicated float ``calendar_confidence_floor``
+    (to keep the proposals lane low-noise) and are enriched with ingestion
+    provenance before routing. Returns all extractions with ``dispatched``
+    updated.
     """
     for ext in extractions:
-        if not _confidence_at_or_above(ext.confidence, threshold):
+        if _is_calendar_proposal(ext):
+            score = _CONFIDENCE_SCORE.get(ext.confidence, 0.0)
+            if score < calendar_confidence_floor:
+                # Below the proposals-lane floor — leave undispatched.
+                continue
+            ext.tool_args = _build_calendar_proposal_args(
+                ext.tool_args,
+                confidence=score,
+                source_event_id=source_event_id,
+                source_snippet=source_snippet,
+                entity_ids=entity_ids,
+            )
+        elif not _confidence_at_or_above(ext.confidence, threshold):
             continue
 
         try:
@@ -350,6 +435,10 @@ async def extract_signals(
     *,
     confidence_threshold: Confidence = Confidence.HIGH,
     call_fn: Any | None = None,
+    source_event_id: str | None = None,
+    source_snippet: str | None = None,
+    entity_ids: list[str] | None = None,
+    calendar_confidence_floor: float = CALENDAR_PROPOSAL_CONFIDENCE_FLOOR,
 ) -> list[Extraction]:
     """Extract multi-butler signals from a message in a single CC pass.
 
@@ -366,12 +455,26 @@ async def extract_signals(
         ``async (prompt: str, trigger_source: str) -> SpawnerResult``.
     extractor_schemas:
         List of ExtractorSchemas defining what signals each butler
-        handles. Defaults to [RELATIONSHIP_SCHEMA, HEALTH_SCHEMA].
+        handles. Defaults to
+        [RELATIONSHIP_SCHEMA, HEALTH_SCHEMA, CALENDAR_SCHEMA].
     confidence_threshold:
-        Minimum confidence for auto-dispatch. Defaults to HIGH.
+        Minimum confidence for auto-dispatch of non-calendar signals.
+        Defaults to HIGH.
     call_fn:
         Optional callable for testing route dispatch.
         Passed through to route().
+    source_event_id:
+        ``public.ingestion_events.id`` of the originating signal. Injected
+        into calendar proposals as the idempotency key / provenance link so
+        re-ingesting the same signal does not create a duplicate proposal.
+    source_snippet:
+        Human-readable excerpt that triggered the inference (provenance).
+        Defaults to the incoming ``message`` when not supplied.
+    entity_ids:
+        Resolved participant entity ids, injected into calendar proposals.
+    calendar_confidence_floor:
+        Minimum (float) confidence for a calendar signal to become a
+        proposal. Limits proposals-lane noise.
 
     Returns
     -------
@@ -380,7 +483,7 @@ async def extract_signals(
         were auto-dispatched to their target butler.
     """
     if extractor_schemas is None:
-        extractor_schemas = [RELATIONSHIP_SCHEMA, HEALTH_SCHEMA]
+        extractor_schemas = [RELATIONSHIP_SCHEMA, HEALTH_SCHEMA, CALENDAR_SCHEMA]
 
     if not extractor_schemas:
         return []
@@ -408,8 +511,20 @@ async def extract_signals(
     if not extractions:
         return []
 
-    # Dispatch extractions at or above confidence threshold
-    await _dispatch_extractions(pool, extractions, confidence_threshold, call_fn=call_fn)
+    # Provenance excerpt for calendar proposals defaults to the message itself.
+    effective_snippet = source_snippet if source_snippet is not None else message
+
+    # Dispatch eligible extractions (calendar proposals gated by their floor).
+    await _dispatch_extractions(
+        pool,
+        extractions,
+        confidence_threshold,
+        call_fn=call_fn,
+        source_event_id=source_event_id,
+        source_snippet=effective_snippet,
+        entity_ids=entity_ids,
+        calendar_confidence_floor=calendar_confidence_floor,
+    )
 
     # Log all extractions for audit
     await _log_extractions(pool, extractions)
