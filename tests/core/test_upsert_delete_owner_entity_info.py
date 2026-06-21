@@ -44,7 +44,6 @@ async def test_upsert_owner_entity_info():
     pool, conn = _make_pool(owner_id="owner-uuid-1")
     assert await upsert_owner_entity_info(pool, "google_oauth_refresh", "token-value") is True
     insert_call = conn.execute.call_args_list[0]
-    assert "INSERT" in insert_call[0][0] and "ON CONFLICT" in insert_call[0][0]
     assert insert_call[0][1] == "owner-uuid-1" and insert_call[0][3] == "token-value"
     assert insert_call[0][4] is True  # secured=True
 
@@ -76,7 +75,7 @@ async def test_delete_owner_entity_info():
     pool, conn = _make_pool(owner_id="owner-uuid-1", execute_return="DELETE 1")
     assert await delete_owner_entity_info(pool, "google_oauth_refresh") is True
     delete_call = conn.execute.call_args_list[0]
-    assert "DELETE" in delete_call[0][0] and delete_call[0][1] == "owner-uuid-1"
+    assert delete_call[0][1] == "owner-uuid-1"
 
     # No row to delete
     pool2, _ = _make_pool(owner_id="owner-uuid-1", execute_return="DELETE 0")

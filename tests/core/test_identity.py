@@ -113,53 +113,32 @@ async def test_resolve_contact_by_channel():
     assert r5 is not None and isinstance(r5.entity_id, uuid.UUID) and r5.entity_id == _ENTITY_ID
 
 
-async def test_resolve_telegram_via_has_handle_triple():
-    """Bead 7 (bu-akads): telegram channel resolves via has-handle predicate in entity_facts.
+@pytest.mark.parametrize(
+    ("channel", "value", "predicate", "roles"),
+    [
+        ("telegram", "86807245", "has-handle", []),
+        ("email", "owner@example.com", "has-email", ["owner"]),
+        ("phone", "+15555551234", "has-phone", []),
+    ],
+)
+async def test_resolve_via_entity_facts_triple(channel, value, predicate, roles):
+    """Bead 7 (bu-akads): each channel resolves through relationship.entity_facts using
+    its channel-specific predicate, returning the authoritative entity_id.
 
-    Verifies that resolve_contact_by_channel queries relationship.entity_facts with
-    predicate='has-handle' for telegram channel types, returning entity_id.
+    The channel->predicate mapping (telegram=has-handle, email=has-email,
+    phone=has-phone) is the store-split resolution contract.
     """
-    pool = _make_pool_with_row({"entity_id": _ENTITY_ID, "name": "Chloe Wong", "roles": []})
-    result = await resolve_contact_by_channel(pool, "telegram", "86807245")
+    pool = _make_pool_with_row({"entity_id": _ENTITY_ID, "name": "Person", "roles": roles})
+    result = await resolve_contact_by_channel(pool, channel, value)
 
     assert result is not None
     assert result.contact_id is None  # entity_id is authoritative post bead 7
     assert result.entity_id == _ENTITY_ID
 
-    # Verify the query uses entity_facts and has-handle predicate
+    # The resolution queries entity_facts with the channel-specific predicate + value.
     query_call = pool.fetchrow.call_args
-    query = query_call.args[0]
-    assert "entity_facts" in query
-    assert query_call.args[1] == "has-handle"  # telegram → has-handle
-    assert query_call.args[2] == "86807245"
-
-
-async def test_resolve_email_via_has_email_triple():
-    """Bead 7 (bu-akads): email channel resolves via has-email predicate in entity_facts."""
-    pool = _make_pool_with_row({"entity_id": _ENTITY_ID, "name": "Owner", "roles": ["owner"]})
-    result = await resolve_contact_by_channel(pool, "email", "owner@example.com")
-
-    assert result is not None
-    assert result.entity_id == _ENTITY_ID
-
-    query_call = pool.fetchrow.call_args
-    assert "entity_facts" in query_call.args[0]
-    assert query_call.args[1] == "has-email"
-    assert query_call.args[2] == "owner@example.com"
-
-
-async def test_resolve_phone_via_has_phone_triple():
-    """Bead 7 (bu-akads): phone channel resolves via has-phone predicate in entity_facts."""
-    pool = _make_pool_with_row({"entity_id": _ENTITY_ID, "name": "Alice", "roles": []})
-    result = await resolve_contact_by_channel(pool, "phone", "+15555551234")
-
-    assert result is not None
-    assert result.entity_id == _ENTITY_ID
-
-    query_call = pool.fetchrow.call_args
-    assert "entity_facts" in query_call.args[0]
-    assert query_call.args[1] == "has-phone"
-    assert query_call.args[2] == "+15555551234"
+    assert query_call.args[1] == predicate
+    assert query_call.args[2] == value
 
 
 async def test_resolve_contact_by_channel_maps_telegram_user_client_id():
@@ -589,6 +568,8 @@ class TestAssertSenderChannelFactPrefixesTelegram:
         with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
             await assert_sender_channel_fact(pool, entity_id, channel_type, raw_value)
 
+        # Exactly-once fact-write contract: a duplicate write would slip past the
+        # await_args unpacking below (which only inspects the LAST call).
         mock_assert.assert_awaited_once()
         # Central writer signature: (pool, subject, predicate, object, ...)
         _pool, subject, predicate, obj = mock_assert.await_args.args
@@ -609,6 +590,8 @@ class TestAssertSenderChannelFactPrefixesTelegram:
         with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
             await assert_sender_channel_fact(pool, entity_id, "email", "a@b.com")
 
+        # Exactly-once fact-write contract (a duplicate write would be masked by
+        # the await_args unpacking, which only sees the LAST call).
         mock_assert.assert_awaited_once()
         _pool, _subject, predicate, obj = mock_assert.await_args.args
         assert predicate == "has-email"

@@ -20,8 +20,6 @@ import asyncpg
 import pytest
 
 from butlers.core.model_routing import (
-    _NEXT_SAME_TIER_SQL,
-    _RESOLVE_SQL,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     _check_deprecated_tier,
@@ -100,40 +98,17 @@ def test_deprecated_tier_shim_remaps_and_warns(caplog: pytest.LogCaptureFixture)
     assert len(caplog.records) == 0
 
 
-@pytest.mark.unit
-def test_resolver_sql_excludes_failed_verification_rows() -> None:
-    """The resolver must not dispatch models whose latest verification failed."""
-    assert "mc.last_verified_ok IS DISTINCT FROM false" in _RESOLVE_SQL
-
-
-@pytest.mark.unit
-def test_next_same_tier_sql_excludes_failed_verification_rows() -> None:
-    """The failover resolver SQL must also exclude failed-verification entries."""
-    assert "mc.last_verified_ok IS DISTINCT FROM false" in _NEXT_SAME_TIER_SQL
-
-
-@pytest.mark.unit
-def test_next_same_tier_sql_applies_coalesce_overrides() -> None:
-    """The failover resolver SQL must apply COALESCE for enabled, priority, and tier."""
-    assert "COALESCE(bmo.enabled, mc.enabled)" in _NEXT_SAME_TIER_SQL
-    assert "COALESCE(bmo.priority, mc.priority)" in _NEXT_SAME_TIER_SQL
-    assert "COALESCE(bmo.complexity_tier, mc.complexity_tier)" in _NEXT_SAME_TIER_SQL
-
-
-@pytest.mark.unit
-def test_next_same_tier_sql_uses_deterministic_order() -> None:
-    """Failover ordering must be deterministic (priority DESC, created_at ASC, id ASC)."""
-    assert "ORDER BY effective_priority DESC, created_at ASC, id ASC" in _NEXT_SAME_TIER_SQL
-
-
-@pytest.mark.unit
-def test_next_same_tier_sql_excludes_attempted_ids() -> None:
-    """Failover SQL must exclude the attempted catalog entry IDs."""
-    assert "mc.id != ALL($3::uuid[])" in _NEXT_SAME_TIER_SQL
-
-
 # ---------------------------------------------------------------------------
 # Integration helpers
+#
+# NOTE: the resolver/failover SQL invariants (excludes failed-verification rows,
+# excludes attempted ids, COALESCE override application, deterministic tiebreak
+# ordering) are covered behaviorally below by the pool-backed tests
+# test_resolve_excludes_failed_verification_rows,
+# test_next_same_tier_excludes_attempted_id,
+# test_next_same_tier_excludes_failed_verification,
+# test_next_same_tier_applies_override_disable / _priority, and
+# test_next_same_tier_deterministic_tiebreak_ordering.
 # ---------------------------------------------------------------------------
 
 

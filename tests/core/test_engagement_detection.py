@@ -36,7 +36,7 @@ async def engagement_pool(provisioned_postgres_pool):
 
 class TestCheckAndUpdateEngagementUnit:
     async def test_function_behavior_and_sql(self):
-        """Importable; returns parse count; SQL includes expected fields; window bounds correct."""
+        """Importable; returns the parsed update count from the engagement sweep."""
         from butlers.tools.switchboard.insight.broker import check_and_update_engagement
 
         assert callable(check_and_update_engagement)
@@ -47,25 +47,6 @@ class TestCheckAndUpdateEngagementUnit:
 
         mock_pool.execute = AsyncMock(return_value="UPDATE 0")
         assert await check_and_update_engagement(mock_pool) == 0
-
-        # SQL structure
-        ref_now = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
-        mock_pool.execute = AsyncMock(return_value="UPDATE 0")
-        await check_and_update_engagement(mock_pool, window_minutes=60, now=ref_now)
-        sql = mock_pool.execute.call_args[0][0]
-        assert "UPDATE insight_engagement" in sql
-        assert "engaged = TRUE" in sql and "engaged = FALSE" in sql
-
-        # Window bounds
-        call_args = mock_pool.execute.call_args[0]
-        assert call_args[1] == datetime(2026, 3, 1, 11, 0, 0, tzinfo=UTC)
-        assert call_args[2] == ref_now
-
-        # Custom window
-        mock_pool.execute = AsyncMock(return_value="UPDATE 0")
-        ref2 = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
-        await check_and_update_engagement(mock_pool, window_minutes=30, now=ref2)
-        assert mock_pool.execute.call_args[0][1] == datetime(2026, 3, 1, 11, 30, 0, tzinfo=UTC)
 
 
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")

@@ -14,101 +14,58 @@ pytestmark = pytest.mark.unit
 
 
 class TestAssertEntityInfoSecured:
-    """Unit tests for assert_entity_info_secured()."""
+    """Unit tests for assert_entity_info_secured().
 
-    # -----------------------------------------------------------------------
-    # Allowed: secured=True (any type)
-    # -----------------------------------------------------------------------
+    The seam law (RFC 0004 Amendment 3): entity_info is a credentials-only
+    store. Any type passes when secured=True; with secured=False, only the
+    whitelisted technical identifiers pass — every other handle/identifier
+    type is rejected so it routes to relationship.entity_facts instead.
+    """
 
-    def test_secured_google_oauth_allowed(self) -> None:
-        """Standard secured credential — must pass silently."""
-        assert_entity_info_secured("google_oauth_refresh", secured=True)
+    # Allowed: secured=True must pass for ANY type (no whitelist restriction).
+    @pytest.mark.parametrize(
+        "info_type",
+        [
+            "google_oauth_refresh",
+            "telegram_api_hash",
+            "steam_api_key",
+            "some_future_secret_type",
+            "telegram_api_id",
+            "home_assistant_url",
+        ],
+    )
+    def test_secured_true_always_allowed(self, info_type: str) -> None:
+        assert_entity_info_secured(info_type, secured=True)
 
-    def test_secured_telegram_api_hash_allowed(self) -> None:
-        assert_entity_info_secured("telegram_api_hash", secured=True)
+    # Allowed: whitelisted non-secret technical identifiers with secured=False.
+    @pytest.mark.parametrize("info_type", ["telegram_api_id", "home_assistant_url"])
+    def test_whitelisted_not_secured_allowed(self, info_type: str) -> None:
+        assert_entity_info_secured(info_type, secured=False)
 
-    def test_secured_steam_api_key_allowed(self) -> None:
-        assert_entity_info_secured("steam_api_key", secured=True)
-
-    def test_secured_arbitrary_type_allowed(self) -> None:
-        """Any type with secured=True must be allowed — no whitelist restriction."""
-        assert_entity_info_secured("some_future_secret_type", secured=True)
-
-    # -----------------------------------------------------------------------
-    # Allowed: whitelisted non-secret technical identifiers
-    # -----------------------------------------------------------------------
-
-    def test_telegram_api_id_not_secured_allowed(self) -> None:
-        """telegram_api_id is a technical credential component; allowed with secured=False."""
-        assert_entity_info_secured("telegram_api_id", secured=False)
-
-    def test_telegram_api_id_secured_also_allowed(self) -> None:
-        """telegram_api_id with secured=True is also fine (stricter, always passes)."""
-        assert_entity_info_secured("telegram_api_id", secured=True)
-
-    def test_home_assistant_url_not_secured_allowed(self) -> None:
-        """home_assistant_url is a service URL config entry; no predicate home in entity_facts."""
-        assert_entity_info_secured("home_assistant_url", secured=False)
-
-    def test_home_assistant_url_secured_also_allowed(self) -> None:
-        """home_assistant_url with secured=True is also fine (stricter, always passes)."""
-        assert_entity_info_secured("home_assistant_url", secured=True)
-
-    # -----------------------------------------------------------------------
-    # Rejected: non-secret types that belong in entity_facts
-    # -----------------------------------------------------------------------
-
-    def test_telegram_chat_id_not_secured_rejected(self) -> None:
-        """telegram_chat_id is a routing handle; it must go to entity_facts (has-handle)."""
+    # Rejected: non-secret handle/identifier types with secured=False must be
+    # rejected — they belong in entity_facts. Enumerates every reject branch.
+    @pytest.mark.parametrize(
+        "info_type",
+        [
+            "telegram_chat_id",
+            "telegram",
+            "email",
+            "phone",
+            "linkedin",
+            "twitter",
+            "whatsapp_jid",
+            "some_new_handle_type",  # unknown/unwhitelisted type
+        ],
+    )
+    def test_not_secured_rejected(self, info_type: str) -> None:
         with pytest.raises(ValueError, match="entity_info write rejected"):
+            assert_entity_info_secured(info_type, secured=False)
+
+    def test_rejection_message_is_contextual(self) -> None:
+        """Rejection error guides to entity_facts, cites the RFC, and names the type."""
+        with pytest.raises(ValueError) as exc_info:
             assert_entity_info_secured("telegram_chat_id", secured=False)
-
-    def test_telegram_not_secured_rejected(self) -> None:
-        """Plain 'telegram' handle type must be rejected."""
-        with pytest.raises(ValueError, match="entity_info write rejected"):
-            assert_entity_info_secured("telegram", secured=False)
-
-    def test_email_not_secured_rejected(self) -> None:
-        """Email addresses are entity_facts (has-email) — not credentials."""
-        with pytest.raises(ValueError, match="entity_info write rejected"):
-            assert_entity_info_secured("email", secured=False)
-
-    def test_phone_not_secured_rejected(self) -> None:
-        with pytest.raises(ValueError, match="entity_info write rejected"):
-            assert_entity_info_secured("phone", secured=False)
-
-    def test_linkedin_not_secured_rejected(self) -> None:
-        with pytest.raises(ValueError, match="entity_info write rejected"):
-            assert_entity_info_secured("linkedin", secured=False)
-
-    def test_twitter_not_secured_rejected(self) -> None:
-        with pytest.raises(ValueError, match="entity_info write rejected"):
-            assert_entity_info_secured("twitter", secured=False)
-
-    def test_whatsapp_jid_not_secured_rejected(self) -> None:
-        with pytest.raises(ValueError, match="entity_info write rejected"):
-            assert_entity_info_secured("whatsapp_jid", secured=False)
-
-    def test_unknown_type_not_secured_rejected(self) -> None:
-        """Any unknown/unwhitelisted type with secured=False must be rejected."""
-        with pytest.raises(ValueError, match="entity_info write rejected"):
-            assert_entity_info_secured("some_new_handle_type", secured=False)
-
-    # -----------------------------------------------------------------------
-    # Error message content checks
-    # -----------------------------------------------------------------------
-
-    def test_error_message_mentions_entity_facts(self) -> None:
-        """Error must guide the caller to entity_facts (has-handle predicate)."""
-        with pytest.raises(ValueError, match="entity_facts"):
-            assert_entity_info_secured("telegram_chat_id", secured=False)
-
-    def test_error_message_mentions_rfc(self) -> None:
-        """Error must cite RFC 0004 Amendment 3 for traceability."""
-        with pytest.raises(ValueError, match="RFC 0004 Amendment 3"):
-            assert_entity_info_secured("telegram_chat_id", secured=False)
-
-    def test_error_message_includes_type_name(self) -> None:
-        """Error message must include the rejected type for diagnosability."""
-        with pytest.raises(ValueError, match="telegram_chat_id"):
-            assert_entity_info_secured("telegram_chat_id", secured=False)
+        message = str(exc_info.value)
+        assert "entity_facts" in message
+        assert "RFC 0004 Amendment 3" in message
+        assert "telegram_chat_id" in message

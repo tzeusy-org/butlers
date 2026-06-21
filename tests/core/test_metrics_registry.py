@@ -20,34 +20,24 @@ from butlers.metrics_registry import (
 )
 
 
-def test_counter_second_definition_returns_same_collector() -> None:
-    name = "test_metrics_registry_counter_total"
-    first = get_or_create_counter(name, "doc", labelnames=["k"])
-    second = get_or_create_counter(name, "doc", labelnames=["k"])
+@pytest.mark.parametrize(
+    ("factory", "name", "labelnames"),
+    [
+        (get_or_create_counter, "test_metrics_registry_counter_total", ["k"]),
+        (get_or_create_gauge, "test_metrics_registry_gauge", None),
+        (get_or_create_histogram, "test_metrics_registry_histogram", None),
+        (get_or_create_summary, "test_metrics_registry_summary", None),
+    ],
+)
+def test_second_definition_returns_same_collector(factory, name, labelnames) -> None:
+    """get_or_create_* is idempotent: a second definition returns the same collector."""
+    kwargs = {"labelnames": labelnames} if labelnames is not None else {}
+    first = factory(name, "doc", **kwargs)
+    second = factory(name, "doc", **kwargs)
     assert first is second
-    # And it actually works.
-    first.labels(k="v").inc()
-
-
-def test_gauge_second_definition_returns_same_collector() -> None:
-    name = "test_metrics_registry_gauge"
-    first = get_or_create_gauge(name, "doc")
-    second = get_or_create_gauge(name, "doc")
-    assert first is second
-
-
-def test_histogram_second_definition_returns_same_collector() -> None:
-    name = "test_metrics_registry_histogram"
-    first = get_or_create_histogram(name, "doc")
-    second = get_or_create_histogram(name, "doc")
-    assert first is second
-
-
-def test_summary_second_definition_returns_same_collector() -> None:
-    name = "test_metrics_registry_summary"
-    first = get_or_create_summary(name, "doc")
-    second = get_or_create_summary(name, "doc")
-    assert first is second
+    # And the collector actually works.
+    if labelnames is not None:
+        first.labels(k="v").inc()
 
 
 def test_type_mismatch_still_raises() -> None:

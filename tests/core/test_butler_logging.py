@@ -57,11 +57,8 @@ class _async_ctx:
 # ---------------------------------------------------------------------------
 
 
-def test_level_rank_ordering():
+def test_level_rank_ordering_and_unknown():
     assert _level_rank("DEBUG") < _level_rank("INFO") < _level_rank("WARN") < _level_rank("ERROR")
-
-
-def test_level_rank_unknown():
     assert _level_rank("TRACE") == -1
 
 
@@ -70,19 +67,13 @@ def test_level_rank_unknown():
 # ---------------------------------------------------------------------------
 
 
-def test_invalid_min_level_raises() -> None:
-    """Passing an invalid min_level to ButlerLogger raises ValueError."""
-    pool, _ = _make_pool()
-    with pytest.raises(ValueError, match="Invalid min_level"):
-        ButlerLogger(pool=pool, schema="general", min_level="TRACE")
-
-
-def test_valid_min_levels_accepted() -> None:
-    """All four documented levels are accepted as min_level."""
+def test_min_level_validation() -> None:
+    """All four documented levels accepted; an invalid min_level raises ValueError."""
     pool, _ = _make_pool()
     for level in ("DEBUG", "INFO", "WARN", "ERROR"):
-        bl = ButlerLogger(pool=pool, schema="general", min_level=level)
-        assert bl is not None
+        assert ButlerLogger(pool=pool, schema="general", min_level=level) is not None
+    with pytest.raises(ValueError, match="Invalid min_level"):
+        ButlerLogger(pool=pool, schema="general", min_level="TRACE")
 
 
 # ---------------------------------------------------------------------------
@@ -90,70 +81,50 @@ def test_valid_min_levels_accepted() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_log_info_writes_to_pool() -> None:
-    """INFO message is inserted via the pool."""
+async def test_log_info_writes_and_uppercases_level() -> None:
+    """INFO message is inserted via the pool; lowercase level is uppercased on write."""
     pool, conn = _make_pool()
     bl = ButlerLogger(pool=pool, schema="general", min_level="INFO")
-    await bl.log("INFO", "hello world", source="spawner")
+    await bl.log("info", "hello world", source="spawner")
     conn.execute.assert_called_once()
-    sql, *args = conn.execute.call_args.args
-    assert "INSERT INTO butler_logs" in sql
-    assert "INFO" in args
+    _, *args = conn.execute.call_args.args
+    assert "INFO" in args  # level normalised to uppercase
     assert "hello world" in args
 
 
-async def test_log_debug_dropped_at_info_min_level() -> None:
-    """DEBUG line is silently dropped when min_level=INFO."""
+@pytest.mark.parametrize(
+    ("min_level", "level", "expect_write"),
+    [
+        ("INFO", "DEBUG", False),  # below min_level → dropped
+        ("DEBUG", "DEBUG", True),  # at min_level → written
+        ("DEBUG", "TRACE", False),  # unknown level → silently dropped
+    ],
+)
+async def test_log_level_gating(min_level: str, level: str, expect_write: bool) -> None:
+    """min_level gating: below-min and unknown levels are dropped; at/above is written."""
     pool, conn = _make_pool()
-    bl = ButlerLogger(pool=pool, schema="general", min_level="INFO")
-    await bl.log("DEBUG", "noisy debug line")
-    conn.execute.assert_not_called()
+    bl = ButlerLogger(pool=pool, schema="general", min_level=min_level)
+    await bl.log(level, "a line")
+    if expect_write:
+        conn.execute.assert_called_once()
+    else:
+        conn.execute.assert_not_called()
 
 
-async def test_log_debug_passes_when_min_level_debug() -> None:
-    """DEBUG line is written when min_level=DEBUG."""
-    pool, conn = _make_pool()
-    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
-    await bl.log("DEBUG", "verbose line")
-    conn.execute.assert_called_once()
-
-
-async def test_log_unknown_level_drops_silently() -> None:
-    """Lines with unknown level (e.g., TRACE) are discarded without error."""
-    pool, conn = _make_pool()
-    bl = ButlerLogger(pool=pool, schema="general")
-    await bl.log("TRACE", "some trace line")
-    conn.execute.assert_not_called()
-
-
-async def test_log_normalises_level_to_uppercase() -> None:
-    """Level is uppercased before being written."""
-    pool, conn = _make_pool()
-    bl = ButlerLogger(pool=pool, schema="general", min_level="INFO")
-    await bl.log("info", "lower-case level input")
-    sql, *args = conn.execute.call_args.args
-    assert "INFO" in args
-
-
-async def test_log_with_request_id_and_metadata() -> None:
-    """request_id and metadata are passed through to the INSERT."""
+async def test_log_forwards_request_id_metadata_and_timestamp() -> None:
+    """request_id (stringified), metadata (JSON), and explicit ts pass through to the INSERT."""
     from uuid import uuid4
 
     req_id = uuid4()
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     pool, conn = _make_pool()
     bl = ButlerLogger(pool=pool, schema="general")
-    await bl.log(
-        "WARN",
-        "something odd",
-        request_id=req_id,
-        metadata={"key": "value"},
-    )
+    await bl.log("WARN", "something odd", request_id=req_id, metadata={"key": "value"}, ts=ts)
     conn.execute.assert_called_once()
     _, *args = conn.execute.call_args.args
-    # request_id is stringified
     assert str(req_id) in args
-    # metadata is serialised to JSON string
     assert '{"key": "value"}' in args
+    assert ts in args
 
 
 async def test_log_db_error_does_not_propagate() -> None:
@@ -162,16 +133,6 @@ async def test_log_db_error_does_not_propagate() -> None:
     bl = ButlerLogger(pool=pool, schema="general")
     # Should not raise:
     await bl.log("ERROR", "error message")
-
-
-async def test_log_with_explicit_timestamp() -> None:
-    """When ts= is provided, it is forwarded as the first bind parameter."""
-    pool, conn = _make_pool()
-    bl = ButlerLogger(pool=pool, schema="general")
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    await bl.log("INFO", "timestamped", ts=ts)
-    sql, *args = conn.execute.call_args.args
-    assert ts in args
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +166,7 @@ async def test_metadata_serialisation_failure_drops_field() -> None:
     # Should not raise
     await bl.log("INFO", "msg with bad metadata", metadata={"bad": _Unserializable()})
     conn.execute.assert_called_once()
-    sql, *args = conn.execute.call_args.args
+    _, *args = conn.execute.call_args.args
     # metadata_json is passed as None when serialisation fails
     assert None in args
 
@@ -249,46 +210,27 @@ async def test_db_handler_writes_when_context_matches() -> None:
     await asyncio.sleep(0)
 
     conn.execute.assert_called_once()
-    sql, *args = conn.execute.call_args.args
-    assert "INSERT INTO butler_logs" in sql
+    _, *args = conn.execute.call_args.args
     assert "hello db" in args
     assert "INFO" in args
 
 
-async def test_db_handler_drops_when_context_mismatch() -> None:
-    """A record emitted under a different butler's context is dropped."""
+@pytest.mark.parametrize(
+    ("butler_ctx", "record_name", "reason"),
+    [
+        ("lifestyle", "test", "context mismatch (different butler)"),
+        (None, "test", "no butler context (e.g. parent CLI logs)"),
+        ("general", "butlers.core.butler_logging", "record from own module (loop guard)"),
+    ],
+)
+async def test_db_handler_drops_record(butler_ctx, record_name, reason) -> None:
+    """The DB handler drops records that must not be persisted, for each drop reason."""
     pool, conn = _make_pool()
     bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
     handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
 
-    set_butler_context("lifestyle")
-    handler.emit(_make_record(msg="should not see"))
-    await asyncio.sleep(0)
-
-    conn.execute.assert_not_called()
-
-
-async def test_db_handler_drops_when_no_butler_context() -> None:
-    """A record with no butler context is dropped (e.g. parent CLI logs)."""
-    pool, conn = _make_pool()
-    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
-    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
-
-    set_butler_context(None)  # type: ignore[arg-type]
-    handler.emit(_make_record(msg="orphan"))
-    await asyncio.sleep(0)
-
-    conn.execute.assert_not_called()
-
-
-async def test_db_handler_drops_records_from_own_module() -> None:
-    """Records from ``butler_logging`` itself are dropped to avoid loops."""
-    pool, conn = _make_pool()
-    bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
-    handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
-
-    set_butler_context("general")
-    handler.emit(_make_record(name="butlers.core.butler_logging", msg="feedback"))
+    set_butler_context(butler_ctx)  # type: ignore[arg-type]
+    handler.emit(_make_record(name=record_name, msg="dropped"))
     await asyncio.sleep(0)
 
     conn.execute.assert_not_called()

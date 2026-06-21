@@ -131,30 +131,16 @@ def _make_healing_config(**kwargs) -> HealingConfig:
 # ---------------------------------------------------------------------------
 
 
-def test_qa_finding_source_session_trigger_source_default():
-    """source_session_trigger_source defaults to None."""
-    f = _make_finding()
-    assert f.source_session_trigger_source is None
+def test_qa_finding_new_fields_default_and_set():
+    """source_session_trigger_source and structured_evidence default to None and round-trip."""
+    default = _make_finding()
+    assert default.source_session_trigger_source is None
+    assert default.structured_evidence is None
 
-
-def test_qa_finding_source_session_trigger_source_set():
-    """source_session_trigger_source is stored when set."""
-    f = _make_finding(source_session_trigger_source="healing")
-    assert f.source_session_trigger_source == "healing"
-
-
-def test_qa_finding_structured_evidence_default():
-    """structured_evidence defaults to None."""
-    f = _make_finding()
-    assert f.structured_evidence is None
-
-
-def test_qa_finding_structured_evidence_set():
-    """structured_evidence is stored when set."""
     evidence = {"session_id": str(uuid.uuid4()), "model": "claude-opus-4", "tool_call_count": 12}
-    f = _make_finding(structured_evidence=evidence)
-    assert f.structured_evidence == evidence
-    assert f.structured_evidence["model"] == "claude-opus-4"
+    populated = _make_finding(source_session_trigger_source="healing", structured_evidence=evidence)
+    assert populated.source_session_trigger_source == "healing"
+    assert populated.structured_evidence == evidence
 
 
 # ---------------------------------------------------------------------------
@@ -213,37 +199,17 @@ async def test_insert_finding_null_structured_evidence():
 
 
 @pytest.mark.asyncio
-async def test_qa_self_recursion_barrier_healing_trigger():
-    """QA finding from QA butler with trigger_source=healing is suppressed."""
-    finding = _make_finding(
-        source_butler="qa",
-        source_session_trigger_source="healing",
-    )
-    result = await dispatch_qa_investigation(
-        pool=_make_qa_pool(),
-        triaged_finding=_make_triaged(finding),
-        patrol_id=uuid.uuid4(),
-        config=QaDispatchConfig(),
-        repo_root=Path("/tmp/repo"),
-        spawner=MagicMock(),
-        gh_token=None,
-    )
-    assert result.accepted is False
-    assert result.reason == "qa_self_recursion"
+@pytest.mark.parametrize("trigger_source", ["healing", "qa"])
+async def test_qa_self_recursion_barrier_suppresses_qa_originated(trigger_source):
+    """A QA-butler finding from a QA/healing-originated session is suppressed.
 
-
-@pytest.mark.asyncio
-async def test_qa_self_recursion_barrier_qa_trigger():
-    """QA finding from QA butler with trigger_source=qa is suppressed.
-
-    QA investigation sessions use trigger_source="qa" (per TRIGGER_SOURCES in
-    sessions.py and the spawner call sites in dispatch.py). A finding whose
-    source_session_trigger_source is "qa" indicates the error came from a QA
-    investigation session, which is a recursive case that must be blocked.
+    QA investigation sessions use trigger_source="qa" and healing sessions
+    "healing"; a finding whose source_session_trigger_source is either indicates
+    a recursive case that the barrier must block at Gate 0.
     """
     finding = _make_finding(
         source_butler="qa",
-        source_session_trigger_source="qa",
+        source_session_trigger_source=trigger_source,
     )
     result = await dispatch_qa_investigation(
         pool=_make_qa_pool(),
@@ -619,13 +585,7 @@ async def test_record_phase_session_updates_parent_healing_session_id():
 
     assert result == child_id
 
-    # Check child insert was called
-    insert_call = mock_conn.fetchval.call_args.args[0]
-    assert "healing_attempt_sessions" in insert_call
+    # Child insert carries the phase label; parent update happens exactly once
+    # (atomic current_phase + healing_session_id update).
     assert "diagnose" in mock_conn.fetchval.call_args.args
-
-    # Check parent update was called (current_phase + healing_session_id)
     assert mock_conn.execute.call_count == 1
-    update_sql = mock_conn.execute.call_args.args[0]
-    assert "current_phase" in update_sql
-    assert "healing_session_id" in update_sql

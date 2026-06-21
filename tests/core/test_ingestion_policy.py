@@ -454,8 +454,7 @@ async def test_evaluator_db_loading_ttl_and_invalidation() -> None:
     await ev.ensure_loaded()
     await ev.ensure_loaded()
     assert mock_pool.fetch.call_count == 1
-    call_args = mock_pool.fetch.call_args
-    assert "scope = $1" in call_args[0][0] and call_args[0][1] == "global"
+    assert mock_pool.fetch.call_args[0][1] == "global"
 
     # No pool: loaded with empty rules
     ev2 = IngestionPolicyEvaluator(scope="global", db_pool=None)

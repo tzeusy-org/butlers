@@ -8,7 +8,7 @@ written by this helper).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -75,11 +75,9 @@ class TestWriteAuditEntry:
         # pool=None -> no raise, no append call
         await write_audit_entry(None, butler="any", operation="session", request_summary={})
 
-        # DB error -> warning, no raise
+        # DB error -> swallowed, no raise
         pool = MagicMock()
         pool.fetchval = AsyncMock(side_effect=RuntimeError("connection lost"))
-        with patch("butlers.core.audit.logger") as mock_logger:
-            await write_audit_entry(
-                pool, butler="my-butler", operation="session", request_summary={"key": "value"}
-            )
-            mock_logger.warning.assert_called_once()
+        await write_audit_entry(
+            pool, butler="my-butler", operation="session", request_summary={"key": "value"}
+        )

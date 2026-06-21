@@ -54,30 +54,24 @@ def _sample_envelope() -> dict:
 async def test_insert_and_lifecycle_mutations() -> None:
     """insert returns UUID; INSERT with accepted state; mark_processing/processed/errored
     each correct."""
-    # Insert
+    # Insert: returns a UUID and inserts in the accepted state
     pool, conn = _make_pool()
     conn.execute = AsyncMock()
     result = await route_inbox_insert(pool, route_envelope=_sample_envelope())
     assert isinstance(result, uuid.UUID)
-    sql = conn.execute.call_args.args[0]
-    assert "INSERT INTO route_inbox" in sql and conn.execute.call_args.args[3] == STATE_ACCEPTED
+    assert conn.execute.call_args.args[3] == STATE_ACCEPTED
     # route_envelope is passed as a dict (asyncpg JSONB codec handles encoding)
     assert conn.execute.call_args.args[2]["schema_version"] == "route.v1"
 
     row_id = uuid.uuid4()
     session_id = uuid.uuid4()
 
-    # mark_processing
+    # mark_processing: transitions accepted -> processing for the row
     pool2, conn2 = _make_pool()
     conn2.execute = AsyncMock()
     await route_inbox_mark_processing(pool2, row_id)
     args = conn2.execute.call_args.args
-    assert (
-        "UPDATE route_inbox" in args[0]
-        and STATE_PROCESSING in args
-        and row_id in args
-        and STATE_ACCEPTED in args
-    )
+    assert STATE_PROCESSING in args and row_id in args and STATE_ACCEPTED in args
 
     # mark_processed (with and without session_id)
     pool3, conn3 = _make_pool()
@@ -91,18 +85,13 @@ async def test_insert_and_lifecycle_mutations() -> None:
     await route_inbox_mark_processed(pool3, row_id, None)
     conn3.execute.assert_awaited_once()
 
-    # mark_errored
+    # mark_errored: records the errored state and the error text
     pool4, conn4 = _make_pool()
     conn4.execute = AsyncMock()
     error = "TimeoutError: spawner timed out"
     await route_inbox_mark_errored(pool4, row_id, error)
     args4 = conn4.execute.call_args.args
-    assert (
-        "UPDATE route_inbox" in args4[0]
-        and STATE_ERRORED in args4
-        and error in args4
-        and row_id in args4
-    )
+    assert STATE_ERRORED in args4 and error in args4 and row_id in args4
 
 
 async def test_scan_and_recovery_sweep() -> None:

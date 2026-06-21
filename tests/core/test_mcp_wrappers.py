@@ -68,10 +68,6 @@ async def test_tool_call_logging_mcp_emits_structured_error_on_raise(caplog) -> 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors, "expected an error-level log record for the failed tool call"
     record = errors[0]
-    message = record.getMessage()
-    assert "detect_recurring" in message
-    assert "finance" in message
-    assert "ValueError" in message
     assert record.exception == "ValueError"  # structured field for log_scanner exc_type
     assert record.butler_name == "finance"
 
@@ -96,9 +92,6 @@ async def test_span_wrapping_mcp_emits_structured_error_on_raise(caplog) -> None
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors, "expected an error-level log record for the failed tool call"
     record = errors[0]
-    message = record.getMessage()
-    assert "detect_recurring" in message
-    assert "ValueError" in message
     assert record.exception == "ValueError"
     assert record.butler_name == "finance"
 

@@ -2455,17 +2455,28 @@ class TestIngestionEventIdPropagation:
     conversation degrades to the catch-all unknown-channel title.
     """
 
-    async def test_route_trigger_forwards_ingestion_event_id_to_session_create(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("trigger_source", "ingestion_event_id", "expected"),
+        [
+            # route handler forwards the ingestion_event_id verbatim
+            (
+                "route",
+                "019deb89-f3da-7a63-be86-794aa2b1de76",
+                "019deb89-f3da-7a63-be86-794aa2b1de76",
+            ),
+            # tick / schedule callers leave it unset → session row stores NULL
+            ("tick", None, None),
+        ],
+    )
+    async def test_trigger_ingestion_event_id_forwarding(
+        self, tmp_path: Path, trigger_source, ingestion_event_id, expected
     ):
-        """When the route handler passes ingestion_event_id, it lands in
-        session_create as a kwarg verbatim."""
+        """ingestion_event_id is forwarded to session_create for route triggers and
+        omitted (NULL) for internal triggers, never invented."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
-
-        ingestion_uuid = "019deb89-f3da-7a63-be86-794aa2b1de76"
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
@@ -2477,55 +2488,22 @@ class TestIngestionEventIdPropagation:
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            trigger_kwargs: dict[str, Any] = {}
+            if ingestion_event_id is not None:
+                trigger_kwargs["request_id"] = ingestion_event_id
+                trigger_kwargs["ingestion_event_id"] = ingestion_event_id
             await Spawner(
                 config=config,
                 config_dir=config_dir,
                 pool=mock_pool,
                 runtime=MockAdapter(result_text="ok"),
-            ).trigger(
-                "hello",
-                "route",
-                request_id=ingestion_uuid,
-                ingestion_event_id=ingestion_uuid,
-            )
+            ).trigger("hello", trigger_source, **trigger_kwargs)
 
         mock_create.assert_called_once()
         kwargs = mock_create.call_args.kwargs
-        assert kwargs.get("ingestion_event_id") == ingestion_uuid, (
-            "session_create must receive the ingestion_event_id forwarded by trigger()"
-        )
-        assert kwargs.get("request_id") == ingestion_uuid
-
-    async def test_internal_trigger_omits_ingestion_event_id(self, tmp_path: Path):
-        """Tick / schedule callers leave ingestion_event_id unset → session
-        row stores NULL and chronicler skips contact resolution for it."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-        mock_pool = AsyncMock()
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch(
-                "butlers.core.spawner.resolve_model_with_effective_tier",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000002")
-            await Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=MockAdapter(result_text="ok"),
-            ).trigger("tick prompt", "tick")
-
-        mock_create.assert_called_once()
-        kwargs = mock_create.call_args.kwargs
-        assert kwargs.get("ingestion_event_id") is None, (
-            "Internal triggers must not invent an ingestion_event_id"
-        )
+        assert kwargs.get("ingestion_event_id") == expected
+        if expected is not None:
+            assert kwargs.get("request_id") == expected
 
 
 # ---------------------------------------------------------------------------

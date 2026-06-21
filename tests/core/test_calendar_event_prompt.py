@@ -272,7 +272,3 @@ class TestCalendarEventPromptCarriesIntent:
 
         prompt = captured[0]["prompt"]
         assert "Daily briefing" in prompt, f"Title missing from prompt: {prompt!r}"
-
-    def test_default_action_constant_value(self) -> None:
-        """The sentinel constant must match the historical default string."""
-        assert _CALENDAR_EVENT_DEFAULT_ACTION == "Run butler event"

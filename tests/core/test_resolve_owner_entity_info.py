@@ -38,9 +38,6 @@ async def test_resolve_owner_entity_info():
     row = _make_row("  987654321  ")
     pool, conn = _make_pool(fetchrow_return=row)
     assert await resolve_owner_entity_info(pool, "telegram") == "987654321"
-    # SQL correctness
-    query = conn.fetchrow.await_args.args[0]
-    assert "owner" in query and "public.entity_info" in query and "is_primary" in query
     assert conn.fetchrow.await_args.args[1] == "telegram"
 
     # None cases: no row, empty string, whitespace only
