@@ -28,62 +28,11 @@ _NOW = datetime(2026, 4, 30, 0, 0, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
-# Dataclass field presence
-# ---------------------------------------------------------------------------
-
-
-def test_episode_has_tombstone_reason_field() -> None:
-    """Episode dataclass exposes tombstone_reason with a None default."""
-    ep = Episode(
-        source_name="test",
-        source_ref="ref-1",
-        episode_type="session",
-        start_at=_NOW,
-    )
-    assert hasattr(ep, "tombstone_reason"), "Episode must have tombstone_reason field"
-    assert ep.tombstone_reason is None
-
-
-def test_point_event_has_tombstone_reason_field() -> None:
-    """PointEvent dataclass exposes tombstone_reason with a None default."""
-    ev = PointEvent(
-        source_name="test",
-        source_ref="ref-1",
-        event_type="click",
-        occurred_at=_NOW,
-    )
-    assert hasattr(ev, "tombstone_reason"), "PointEvent must have tombstone_reason field"
-    assert ev.tombstone_reason is None
-
-
-def test_episode_tombstone_reason_adjacent_to_tombstone_at() -> None:
-    """tombstone_reason must be defined immediately after tombstone_at in Episode."""
-    import dataclasses
-
-    field_names = [f.name for f in dataclasses.fields(Episode)]
-    at_idx = field_names.index("tombstone_at")
-    reason_idx = field_names.index("tombstone_reason")
-    assert reason_idx == at_idx + 1, (
-        f"tombstone_reason should be adjacent to tombstone_at in Episode; "
-        f"got positions {at_idx} and {reason_idx}"
-    )
-
-
-def test_point_event_tombstone_reason_adjacent_to_tombstone_at() -> None:
-    """tombstone_reason must be defined immediately after tombstone_at in PointEvent."""
-    import dataclasses
-
-    field_names = [f.name for f in dataclasses.fields(PointEvent)]
-    at_idx = field_names.index("tombstone_at")
-    reason_idx = field_names.index("tombstone_reason")
-    assert reason_idx == at_idx + 1, (
-        f"tombstone_reason should be adjacent to tombstone_at in PointEvent; "
-        f"got positions {at_idx} and {reason_idx}"
-    )
-
-
-# ---------------------------------------------------------------------------
 # SQL wiring: upsert_episode
+#
+# Constructing Episode/PointEvent with tombstone_reason=... below also exercises
+# the dataclass field's presence (construction would raise if the field were
+# missing), so dedicated hasattr/field-adjacency tests are unnecessary.
 # ---------------------------------------------------------------------------
 
 

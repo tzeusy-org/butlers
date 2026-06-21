@@ -8,12 +8,13 @@ Covers:
 - Restricted episode: 403 with code=episode_explain_excluded.
 - Episode not found: 404.
 - No dispatch wired: 503.
-- Guardrail: router.py does not import LLM packages.
+
+(The no-LLM-import guardrail for router.py is authoritative in
+tests/contracts/test_chronicler_no_llm.py.)
 """
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import sys
 from datetime import UTC, datetime, timedelta
@@ -426,41 +427,6 @@ class TestEpisodeExplainNoDispatch:
         assert body["error"]["code"] == "dispatch_unavailable"
 
 
-# ---------------------------------------------------------------------------
-# Guardrail: router.py must not import LLM packages
-# ---------------------------------------------------------------------------
-
-_FORBIDDEN_LLM_IMPORTS = frozenset({"anthropic", "openai", "claude_agent_sdk"})
-
-
-def test_explain_handler_no_new_llm_imports():
-    """router.py must not import LLM packages.
-
-    Acceptance criterion 7 (no-LLM guardrail check).
-    The new explain endpoint reuses the existing dispatch callable protocol;
-    it does not introduce any new direct LLM imports.
-    """
-    source = _ROUTER_PATH.read_text()
-    tree = ast.parse(source)
-    violations: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                root = alias.name.split(".")[0]
-                if root in _FORBIDDEN_LLM_IMPORTS:
-                    violations.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                root = node.module.split(".")[0]
-                if root in _FORBIDDEN_LLM_IMPORTS:
-                    violations.append(node.module)
-    assert not violations, f"router.py must not import LLM packages; found: {violations}"
-
-
-def test_explain_handler_endpoint_exists():
-    """router.py defines a route for POST /episodes/{episode_id}/explain."""
-    source = _ROUTER_PATH.read_text()
-    # Check that the endpoint path string appears in the source.
-    assert "/episodes/{episode_id}/explain" in source, (
-        "Expected POST /episodes/{episode_id}/explain route in router.py"
-    )
+# The no-LLM-import guardrail for router.py is authoritative in
+# tests/contracts/test_chronicler_no_llm.py. The /episodes/{episode_id}/explain
+# route is exercised behaviorally by the 200/403/404/422/503 tests above.

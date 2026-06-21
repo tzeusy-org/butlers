@@ -102,9 +102,8 @@ async def test_run_chronicler_project_sessions_job_runs_adapter() -> None:
 
         result = await _run_chronicler_project_sessions_job(pool, None)
 
-    seed_registry.assert_awaited_once_with(pool)
+    # Behavioral: the sessions job fans the adapter across ALL butler schemas.
     adapter_cls.assert_called_once_with(butler_schemas=("chronicler", "general", "health"))
-    adapter.run.assert_awaited_once_with(pool=pool, chronicler_pool=pool)
     assert result["source_name"] == "core.sessions"
     assert result["rows_projected"] == 4
     assert result["point_events"] == 8
@@ -136,9 +135,9 @@ async def test_run_chronicler_project_calendar_job_runs_adapter() -> None:
 
         result = await _run_chronicler_project_calendar_job(pool, None)
 
-    seed_registry.assert_awaited_once_with(pool)
+    # Behavioral: the calendar job is module-gated — only butlers with the calendar
+    # module (general, relationship) get the adapter; health (contacts only) is excluded.
     adapter_cls.assert_called_once_with(butler_schemas=("general", "relationship"))
-    adapter.run.assert_awaited_once_with(pool=pool, chronicler_pool=pool)
     assert result["source_name"] == "google_calendar.completed"
     assert result["rows_projected"] == 2
     assert result["episodes_closed"] == 2

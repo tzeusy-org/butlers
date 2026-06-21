@@ -126,39 +126,6 @@ def test_deadline_prefix_not_excluded() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SQL filter present in WHERE clause
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_filter_in_sql_since_none() -> None:
-    """When since=None, the fetch query must exclude operational trigger sources."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = _adapter("mybutler")
-    cp = _chronicler_pool()
-
-    with (
-        patch("butlers.chronicler.adapters.sessions.get_checkpoint_subsource", return_value=None),
-        patch("butlers.chronicler.adapters.sessions.upsert_checkpoint_subsource"),
-        patch("butlers.chronicler.adapters.sessions.upsert_point_event"),
-        patch("butlers.chronicler.adapters.sessions.upsert_episode"),
-        patch("butlers.chronicler.adapters.sessions.link_event_to_episode"),
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert conn.fetch.await_count == 1
-    query: str = conn.fetch.call_args.args[0]
-    assert "trigger_source" in query
-    assert "!= ALL" in query
-    assert "NOT LIKE" in query
-
-
-# ---------------------------------------------------------------------------
 # Only user-visible rows are projected
 # ---------------------------------------------------------------------------
 

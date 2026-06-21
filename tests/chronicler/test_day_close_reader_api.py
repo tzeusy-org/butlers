@@ -15,13 +15,14 @@ Covers:
 - target_kind filtering: episode branch does not catch point_event overrides and vice versa.
 - Stale tie-break: last_invalidating_event_at is the MAX of all signals.
 - Staleness query passes cache_key as 4th parameter.
-- Guardrail: router.py imports no LLM packages.
-- Guardrail: SQL in router.py only references chronicler.* relations.
+
+(The no-LLM-import and cross-schema-relation guardrails for router.py are
+authoritative in tests/contracts/test_chronicler_no_llm.py and
+tests/contracts/test_chronicler_no_cross_schema.py.)
 """
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import json
 import sys
@@ -286,28 +287,12 @@ class TestDayCloseReaderStaleness:
         assert "prose" not in body
         return body
 
-    async def test_stale_due_to_episode_tombstone(self):
-        """episodes.tombstone_at > cache_built_at triggers stale response."""
-        body = await self._assert_stale(_T_AFTER)
-        assert body["last_invalidating_event_at"] is not None
-
-    async def test_stale_due_to_episode_updated_at(self):
-        """episodes.updated_at > cache_built_at triggers stale response."""
-        body = await self._assert_stale(_T_AFTER)
-        assert body["last_invalidating_event_at"] is not None
-
-    async def test_stale_due_to_point_event_tombstone(self):
-        """point_events.tombstone_at > cache_built_at triggers stale response."""
-        body = await self._assert_stale(_T_AFTER)
-        assert body["last_invalidating_event_at"] is not None
-
-    async def test_stale_due_to_point_event_updated_at(self):
-        """point_events.updated_at > cache_built_at triggers stale response."""
-        body = await self._assert_stale(_T_AFTER)
-        assert body["last_invalidating_event_at"] is not None
-
-    async def test_stale_due_to_override_created_at(self):
-        """overrides.created_at > cache_built_at triggers stale response."""
+    async def test_stale_due_to_invalidating_signal(self):
+        """Any invalidator with ts > cache_built_at (episode/point tombstone or
+        updated_at, override created_at) surfaces as a single MAX signal that
+        flips the response to stale. The reader does not branch per signal —
+        it consumes the staleness query's MAX(ts), so one behavioral guard
+        covers signals 1-5 identically."""
         body = await self._assert_stale(_T_AFTER)
         assert body["last_invalidating_event_at"] is not None
 
@@ -490,19 +475,34 @@ class TestDayCloseCorrectedStartAtStaleness:
         assert "stale" not in body
         assert body["prose"] == "Yesterday was a productive day."
 
-    async def test_corrected_start_at_branch_sql_present_in_router(self):
-        """The corrected_start_at staleness branch is present in the router SQL.
 
-        Verifies that the query contains the corrected_start_at window check
-        so structural SQL refactors cannot silently drop signal 8.
-        """
+class TestDayCloseStalenessQueryShape:
+    """Source-shape guard for the staleness CTE in get_day_close_cache.
+
+    The staleness query is a UNION of nine sub-SELECTs feeding MAX(ts). The
+    behavioral tests above mock the staleness fetchrow's MAX result, so they
+    cannot catch a refactor that silently drops one of the nine signal
+    branches (the mock would still return a non-null MAX from whatever branch
+    remains). This single source-text guard re-pins the CTE window shape so a
+    refactor that drops the corrected_start_at branches or collapses the
+    episode/point_event target_kind split fails here rather than silently in
+    production.
+    """
+
+    def test_staleness_query_contains_signal_branch_markers(self):
         source = _ROUTER_PATH.read_text()
-        assert "corrected_start_at >= $1" in source, (
-            "Signal 8 SQL branch missing: expected 'corrected_start_at >= $1' in staleness query"
-        )
-        assert "corrected_start_at < $2" in source, (
-            "Signal 8 SQL branch missing: expected 'corrected_start_at < $2' in staleness query"
-        )
+        # corrected_start_at signals (8 + 9) move an episode/point_event INTO
+        # the window via an override; without this column the override-window
+        # signals collapse back to the start_at/occurred_at scoped branches.
+        assert "corrected_start_at" in source
+        # episode-scoped override branch must filter on target_kind = 'episode'
+        # so episode overrides do not catch point_event targets and vice versa.
+        assert "o.target_kind = 'episode'" in source
+        # signal-9 marker: the point_event corrected_start_at branch is the only
+        # place the `point_events pe` join alias appears. Its absence means the
+        # point_event corrected_start_at signal was dropped.
+        assert "JOIN point_events pe ON pe.id = o.target_id" in source
+        assert "o.target_kind = 'point_event'" in source
 
 
 class TestDayCloseCorrectedStartAtPointEventStaleness:
@@ -559,134 +559,3 @@ class TestDayCloseCorrectedStartAtPointEventStaleness:
         body = resp.json()
         assert "stale" not in body
         assert body["prose"] == "Yesterday was a productive day."
-
-    async def test_point_event_corrected_start_at_branch_sql_present_in_router(self):
-        """The point_event corrected_start_at staleness branch (signal 9) is present in the SQL.
-
-        Verifies the router SQL joins overrides to point_events for target_kind='point_event'
-        with corrected_start_at window check, so refactors cannot silently drop signal 9.
-        """
-        source = _ROUTER_PATH.read_text()
-        # The point_event branch must join point_events (not just episodes)
-        assert (
-            "JOIN point_events pe ON pe.id = o.target_id AND o.target_kind = 'point_event'"
-            in source
-        ), "Signal 9 SQL branch missing: expected point_events JOIN with target_kind='point_event'"
-
-    async def test_episode_signal_does_not_catch_point_event_overrides(self):
-        """Episode branch (signal 8) filters target_kind='episode' — does not catch point_event overrides.
-
-        Verifies the episode corrected_start_at branch explicitly filters by
-        target_kind='episode' so the two branches are independent.
-        """
-        source = _ROUTER_PATH.read_text()
-        assert "JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'" in source, (
-            "Signal 8 SQL branch missing target_kind='episode' filter"
-        )
-
-    async def test_point_event_signal_does_not_catch_episode_overrides(self):
-        """Point_event branch (signal 9) filters target_kind='point_event' — does not catch episode overrides.
-
-        Verifies the point_event corrected_start_at branch explicitly filters by
-        target_kind='point_event' so the two branches remain independent.
-        """
-        source = _ROUTER_PATH.read_text()
-        assert "o.target_kind = 'point_event'" in source, (
-            "Signal 9 SQL branch missing target_kind='point_event' filter"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Guardrail: no LLM imports in router.py
-# ---------------------------------------------------------------------------
-
-_FORBIDDEN_IMPORTS = frozenset({"anthropic", "openai", "claude_agent_sdk"})
-
-
-def test_router_no_llm_imports():
-    """router.py must not import any LLM provider package."""
-    source = _ROUTER_PATH.read_text()
-    tree = ast.parse(source)
-    violations: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                root = alias.name.split(".")[0]
-                if root in _FORBIDDEN_IMPORTS:
-                    violations.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                root = node.module.split(".")[0]
-                if root in _FORBIDDEN_IMPORTS:
-                    violations.append(node.module)
-    assert not violations, f"router.py must not import LLM packages; found: {violations}"
-
-
-# ---------------------------------------------------------------------------
-# Guardrail: SQL in router.py only uses chronicler.* relations
-# ---------------------------------------------------------------------------
-
-_KNOWN_CHRONICLER_RELATIONS = frozenset(
-    {
-        "source_adapter_state",
-        "projection_checkpoints",
-        "point_events",
-        "episodes",
-        "episode_event_links",
-        "overrides",
-        "idempotency_keys",
-        "v_episodes_corrected",
-        "v_point_events_corrected",
-        "v_latest_overrides",
-        "tier2_cache",
-        # Core butler tables present in every butler schema:
-        "scheduled_tasks",
-        # Per-butler table accessed via fan_out (ops escape hatch, not chronicler pool):
-        "sessions",
-    }
-)
-
-
-def _extract_sql_strings(source: str) -> list[str]:
-    import re
-
-    _SQL_START = re.compile(
-        r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\b",
-        re.IGNORECASE,
-    )
-    tree = ast.parse(source)
-    sql_fragments: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if _SQL_START.match(node.value):
-                sql_fragments.append(node.value)
-    return sql_fragments
-
-
-_SQL_KEYWORDS = frozenset({"lateral", "only", "unnest", "lateral"})
-
-
-def _extract_relation_names(sql: str) -> list[str]:
-    import re
-
-    tokens = re.findall(r"(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_.]*)", sql, re.IGNORECASE)
-    relations = []
-    for tok in tokens:
-        bare = tok.split(".")[-1].lower().strip()
-        if bare not in _SQL_KEYWORDS:
-            relations.append(bare)
-    return relations
-
-
-def test_day_close_sql_only_uses_chronicler_relations():
-    """All SQL in router.py must reference only known chronicler relations."""
-    source = _ROUTER_PATH.read_text()
-    sql_strings = _extract_sql_strings(source)
-    violations: list[str] = []
-    for sql in sql_strings:
-        for rel in _extract_relation_names(sql):
-            if rel and rel not in _KNOWN_CHRONICLER_RELATIONS:
-                violations.append(f"Unknown relation '{rel}' in SQL: {sql[:80]!r}")
-    assert not violations, (
-        "router.py references relations outside the chronicler schema:\n" + "\n".join(violations)
-    )

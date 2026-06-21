@@ -82,8 +82,11 @@ _adapter = CoreSessionsAdapter(butler_schemas=("test",))
 # ---------------------------------------------------------------------------
 
 
-async def test_resolve_contacts_sql_uses_entity_facts() -> None:
-    """SQL must reference relationship.entity_facts, not public.contact_info."""
+async def test_resolve_contacts_reads_entity_facts_not_contact_info() -> None:
+    """Architectural invariant (bu-hjo3i): identity resolution reads
+    relationship.entity_facts and NEVER public.contact_info. The query maps the
+    source channel to a has-* predicate via a CASE expression (has-email/has-handle)
+    and includes the telegram_user_client 'telegram:' prefix fallback branch."""
     event_id = uuid4()
     rows = [_make_row(**_session_row(ingestion_event_id=event_id))]
 
@@ -95,22 +98,12 @@ async def test_resolve_contacts_sql_uses_entity_facts() -> None:
     sql: str = conn.fetch.call_args[0][0]
     assert "relationship.entity_facts" in sql
     assert "contact_info" not in sql
-
-
-async def test_resolve_contacts_sql_has_case_predicate_mapping() -> None:
-    """SQL must contain a CASE expression that maps source_channel to has-* predicates."""
-    event_id = uuid4()
-    rows = [_make_row(**_session_row(ingestion_event_id=event_id))]
-
-    conn = _make_conn(contact_rows=[])
-    pool = _make_pool(conn)
-
-    await _adapter._resolve_contacts(pool, rows)
-
-    sql: str = conn.fetch.call_args[0][0]
     assert "CASE" in sql
     assert "has-email" in sql
     assert "has-handle" in sql
+    assert "telegram_user_client" in sql
+    assert "telegram:" in sql
+    assert "NOT LIKE" in sql
 
 
 async def test_resolve_contacts_returns_display_name_from_entity() -> None:
@@ -150,29 +143,16 @@ async def test_resolve_contacts_unknown_sender_returns_none_display_name() -> No
     assert result[session_id] == (None, "telegram")
 
 
-async def test_resolve_contacts_non_route_sessions_skipped() -> None:
-    """Only trigger_source='route' rows trigger a DB lookup."""
+async def test_resolve_contacts_skips_non_route_and_missing_event_id() -> None:
+    """No DB lookup happens for non-route sessions (trigger/tick/None) NOR for route
+    sessions missing an ingestion_event_id — both skip branches return {} with no fetch."""
     rows = [
         _make_row(
             **_session_row(session_id=1, trigger_source="trigger", ingestion_event_id=uuid4())
         ),
         _make_row(**_session_row(session_id=2, trigger_source="tick", ingestion_event_id=uuid4())),
         _make_row(**_session_row(session_id=3, trigger_source=None, ingestion_event_id=uuid4())),
-    ]
-
-    conn = _make_conn(contact_rows=[])
-    pool = _make_pool(conn)
-
-    result = await _adapter._resolve_contacts(pool, rows)
-
-    assert result == {}
-    conn.fetch.assert_not_called()
-
-
-async def test_resolve_contacts_no_ingestion_event_id_skipped() -> None:
-    """Route sessions without ingestion_event_id are skipped."""
-    rows = [
-        _make_row(**_session_row(session_id=1, trigger_source="route", ingestion_event_id=None))
+        _make_row(**_session_row(session_id=4, trigger_source="route", ingestion_event_id=None)),
     ]
 
     conn = _make_conn(contact_rows=[])
@@ -213,19 +193,3 @@ async def test_resolve_contacts_uuid_coercion() -> None:
     result = await _adapter._resolve_contacts(pool, rows)
     assert session_id in result
     assert result[session_id] == ("Bob", "email")
-
-
-async def test_resolve_contacts_sql_has_telegram_prefix_fallback() -> None:
-    """SQL must include OR branch for telegram_user_client 'telegram:' prefix."""
-    event_id = uuid4()
-    rows = [_make_row(**_session_row(ingestion_event_id=event_id))]
-
-    conn = _make_conn(contact_rows=[])
-    pool = _make_pool(conn)
-
-    await _adapter._resolve_contacts(pool, rows)
-
-    sql: str = conn.fetch.call_args[0][0]
-    assert "telegram_user_client" in sql
-    assert "telegram:" in sql
-    assert "NOT LIKE" in sql

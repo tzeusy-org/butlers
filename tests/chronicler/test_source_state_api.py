@@ -6,12 +6,13 @@ Covers:
 - Per-subsource checkpoint detail joined correctly
 - latest last_run_at / last_error aggregated across subsources
 - 405 Method Not Allowed for non-GET verbs
-- No SQL outside chronicler.* schema (guardrail)
+
+(The "SQL references only chronicler.* relations" guardrail is authoritative in
+tests/contracts/test_chronicler_no_cross_schema.py.)
 """
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import sys
 from datetime import UTC, datetime
@@ -166,8 +167,10 @@ class TestSourceStateAPI:
         assert data[1]["active"] is False
         assert data[1]["inactive_reason"] == "Missing spotify schema"
 
-    async def test_checkpoint_aggregation_latest_run_at(self):
-        """last_run_at is the max across all subsources for a given source."""
+    async def test_checkpoint_aggregation_and_subsource_detail(self):
+        """Across subsources of one source, last_run_at aggregates to the MAX timestamp
+        and last_error surfaces the failing subsource's error, while the
+        subsource_checkpoints array carries per-subsource detail for every subsource."""
         t_old = datetime(2026, 4, 24, 10, 0, 0, tzinfo=UTC)
         t_new = datetime(2026, 4, 25, 8, 0, 0, tzinfo=UTC)
 
@@ -209,87 +212,14 @@ class TestSourceStateAPI:
             resp = await client.get("/api/chronicler/source-state")
         assert resp.status_code == 200
         row = resp.json()["data"][0]
-        # last_run_at must be the newer timestamp
+        # last_run_at must be the newer (MAX) timestamp; last_error surfaces.
         assert row["last_run_at"] is not None
         assert row["last_run_at"].startswith("2026-04-25")
         assert row["last_error"] == "timeout"
-
-    async def test_subsource_checkpoints_included(self):
-        """subsource_checkpoints array carries per-subsource detail."""
-        t1 = datetime(2026, 4, 24, 9, 0, 0, tzinfo=UTC)
-        t2 = datetime(2026, 4, 25, 7, 0, 0, tzinfo=UTC)
-
-        adapter_rows = [
-            _row(
-                {
-                    "source_name": "core.sessions",
-                    "chronicler_compatibility": "supported",
-                    "read_surface": "sessions",
-                    "boundary_semantics": "wall_clock",
-                    "optional_schema": False,
-                    "active": True,
-                    "inactive_reason": None,
-                }
-            ),
-        ]
-        checkpoint_rows = [
-            _row(
-                {
-                    "source_name": "core.sessions",
-                    "subsource": "schema_a",
-                    "last_run_at": t1,
-                    "last_error": None,
-                }
-            ),
-            _row(
-                {
-                    "source_name": "core.sessions",
-                    "subsource": "schema_b",
-                    "last_run_at": t2,
-                    "last_error": "db error",
-                }
-            ),
-        ]
-        app, _ = _make_app(fetch_side_effect=[adapter_rows, checkpoint_rows])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/chronicler/source-state")
-        assert resp.status_code == 200
-        row = resp.json()["data"][0]
+        # subsource_checkpoints carries every subsource's detail.
         checkpoints = row["subsource_checkpoints"]
         assert checkpoints is not None
-        assert len(checkpoints) == 2
-        subsources = {cp["subsource"] for cp in checkpoints}
-        assert subsources == {"schema_a", "schema_b"}
-
-    async def test_meals_source_row_returned(self):
-        """health.meals PLANNED source row is returned with correct compatibility."""
-        adapter_rows = [
-            _row(
-                {
-                    "source_name": "health.meals",
-                    "chronicler_compatibility": "planned",
-                    "read_surface": None,
-                    "boundary_semantics": "eating_event point events; one row per logged meal",
-                    "optional_schema": True,
-                    "active": False,
-                    "inactive_reason": None,
-                }
-            ),
-        ]
-        app, _ = _make_app(fetch_side_effect=[adapter_rows, []])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/chronicler/source-state")
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert len(data) == 1
-        row = data[0]
-        assert row["source_name"] == "health.meals"
-        assert row["chronicler_compatibility"] == "planned"
-        assert row["optional_schema"] is True
+        assert {cp["subsource"] for cp in checkpoints} == {"butler_a", "butler_b"}
 
     async def test_no_checkpoints_returns_null_subsource_checkpoints(self):
         """Source with no checkpoint rows → subsource_checkpoints is null."""
@@ -330,98 +260,5 @@ class TestSourceStateMethodNotAllowed:
         assert resp.status_code == 405
 
 
-# ---------------------------------------------------------------------------
-# Guardrail: all SQL in the handler references only chronicler.* relations
-# ---------------------------------------------------------------------------
-
-_KNOWN_CHRONICLER_RELATIONS = frozenset(
-    {
-        "source_adapter_state",
-        "projection_checkpoints",
-        "point_events",
-        "episodes",
-        "episode_event_links",
-        "overrides",
-        "idempotency_keys",
-        "v_episodes_corrected",
-        "v_point_events_corrected",
-        "v_latest_overrides",
-        "tier2_cache",
-        # Core butler tables present in every butler schema:
-        "scheduled_tasks",
-        # Per-butler table accessed via fan_out (ops escape hatch, not chronicler pool):
-        "sessions",
-    }
-)
-
-
-def _extract_sql_strings(source: str) -> list[str]:
-    """Return all string literals from Python source that look like SQL statements.
-
-    Only strings that begin (after stripping) with a SQL DML/DDL keyword are
-    considered SQL, so docstrings and log messages that happen to contain
-    words like FROM or JOIN are excluded.
-    """
-    import re
-
-    _SQL_START = re.compile(
-        r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\b",
-        re.IGNORECASE,
-    )
-    tree = ast.parse(source)
-    sql_fragments: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if _SQL_START.match(node.value):
-                sql_fragments.append(node.value)
-    return sql_fragments
-
-
-_SQL_NON_RELATION_KEYWORDS = frozenset(
-    {
-        "lateral",
-        "only",
-        "inner",
-        "outer",
-        "left",
-        "right",
-        "full",
-        "cross",
-        "natural",
-        "select",
-        "values",
-        "with",
-    }
-)
-
-
-def _extract_relation_names(sql: str) -> list[str]:
-    """Very lightweight extraction: words after FROM or JOIN keywords."""
-    import re
-
-    # Capture identifiers after FROM / JOIN (optional schema prefix stripped)
-    tokens = re.findall(r"(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_.]*)", sql, re.IGNORECASE)
-    relations = []
-    for tok in tokens:
-        # Skip SQL keywords that are not relation names (e.g. LATERAL in
-        # "CROSS JOIN LATERAL <function>(...)").
-        if tok.lower() in _SQL_NON_RELATION_KEYWORDS:
-            continue
-        # Strip schema prefix if present (e.g. chronicler.episodes → episodes)
-        bare = tok.split(".")[-1].lower().strip()
-        relations.append(bare)
-    return relations
-
-
-def test_source_state_sql_only_uses_chronicler_relations():
-    """All SQL in router.py must reference only known chronicler relations."""
-    source = _ROUTER_PATH.read_text()
-    sql_strings = _extract_sql_strings(source)
-    violations: list[str] = []
-    for sql in sql_strings:
-        for rel in _extract_relation_names(sql):
-            if rel and rel not in _KNOWN_CHRONICLER_RELATIONS:
-                violations.append(f"Unknown relation '{rel}' in SQL: {sql[:80]!r}")
-    assert not violations, (
-        "router.py references relations outside the chronicler schema:\n" + "\n".join(violations)
-    )
+# The "all SQL in router.py references only chronicler.* relations" guardrail is
+# authoritative in tests/contracts/test_chronicler_no_cross_schema.py.

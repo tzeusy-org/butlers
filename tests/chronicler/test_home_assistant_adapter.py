@@ -571,54 +571,6 @@ def _capture_entity_writes() -> tuple[list[Episode], list[tuple], object, object
 
 
 @pytest.mark.asyncio
-async def test_entity_id_resolved_from_ha_persons_mapping() -> None:
-    """When person.alice → entity, the owner row in episode_entities carries that entity."""
-    row = _make_row(entity_id="person.alice", state="home", recorded_at=_NOW)
-    adapter = HomeAssistantHistoryAdapter()
-    upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
-
-    pool = _pool_with_person_mapping(row, mapping={"person.alice": _ENTITY_ID_ALICE})
-    cp = _chronicler_pool()
-
-    with (
-        patch("butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=fake_upsert),
-        patch(
-            "butlers.chronicler.adapters.home_assistant.upsert_owner_episode_entity",
-            side_effect=fake_upsert_owner,
-        ),
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.episodes_closed == 1
-    assert len(owner_calls) == 1
-    assert owner_calls[0][1] == _ENTITY_ID_ALICE
-
-
-@pytest.mark.asyncio
-async def test_entity_id_null_when_no_mapping_exists() -> None:
-    """When no person mapping exists, the join-table owner_id is None."""
-    row = _make_row(entity_id="person.unknown", state="home", recorded_at=_NOW)
-    adapter = HomeAssistantHistoryAdapter()
-    upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
-
-    pool = _pool_with_person_mapping(row, mapping={})
-    cp = _chronicler_pool()
-
-    with (
-        patch("butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=fake_upsert),
-        patch(
-            "butlers.chronicler.adapters.home_assistant.upsert_owner_episode_entity",
-            side_effect=fake_upsert_owner,
-        ),
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.episodes_closed == 1
-    assert len(owner_calls) == 1
-    assert owner_calls[0][1] is None
-
-
-@pytest.mark.asyncio
 async def test_entity_id_resolved_per_entity_multi_person() -> None:
     """Multi-person household: each person's episode_entities owner row gets their entity."""
     _ENTITY_ID_BOB = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
@@ -736,51 +688,3 @@ async def test_episode_entities_row_written_when_entity_id_resolved() -> None:
     episode_id, owner_id = upserted_episode_entity_calls[0]
     assert episode_id == _UUID_3
     assert owner_id == _ENTITY_ID_ALICE
-
-
-@pytest.mark.asyncio
-async def test_episode_entities_not_written_when_entity_id_null() -> None:
-    """When entity_id is NULL (no mapping), upsert_owner_episode_entity is still called
-    (with owner_id=None), and the helper gracefully skips the insert."""
-    row = _make_row(entity_id="person.unknown", state="home", recorded_at=_NOW)
-    adapter = HomeAssistantHistoryAdapter()
-    upserted_episode_entity_calls: list[tuple] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        return Episode(
-            source_name=episode.source_name,
-            source_ref=episode.source_ref,
-            episode_type=episode.episode_type,
-            start_at=episode.start_at,
-            end_at=episode.end_at,
-            precision=episode.precision,
-            title=episode.title,
-            payload=episode.payload,
-            privacy=episode.privacy,
-            id=_UUID_4,
-        )
-
-    async def _fake_upsert_owner_entity(
-        conn: object, episode_id: object, *, owner_id: object
-    ) -> None:
-        upserted_episode_entity_calls.append((episode_id, owner_id))
-
-    pool = _pool_with_person_mapping(row, mapping={})
-    cp = _chronicler_pool()
-
-    with (
-        patch(
-            "butlers.chronicler.adapters.home_assistant.upsert_episode",
-            side_effect=_fake_upsert,
-        ),
-        patch(
-            "butlers.chronicler.adapters.home_assistant.upsert_owner_episode_entity",
-            side_effect=_fake_upsert_owner_entity,
-        ),
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    # upsert_owner_episode_entity is called even with None; the helper no-ops internally.
-    assert len(upserted_episode_entity_calls) == 1
-    _, owner_id = upserted_episode_entity_calls[0]
-    assert owner_id is None

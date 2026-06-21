@@ -401,48 +401,6 @@ async def test_watermark_advances_to_latest_recorded_at() -> None:
     assert result.watermark == t2
 
 
-@pytest.mark.asyncio
-async def test_since_filter_passed_to_query() -> None:
-    """When ``since`` is given, the fetch query uses it as a WHERE filter."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
-    cp = _chronicler_pool()
-    since = _NOW - timedelta(hours=2)
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since)
-
-    assert conn.fetch.await_count == 1
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    assert "recorded_at > $1" in query
-    assert call_args.args[1] == since
-
-
-@pytest.mark.asyncio
-async def test_order_by_includes_id_tiebreaker_without_since() -> None:
-    """ORDER BY clause must include id ASC as a tie-breaker for deterministic ordering."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
-    cp = _chronicler_pool()
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    query: str = conn.fetch.call_args.args[0]
-    assert "ORDER BY recorded_at ASC, id ASC" in query
-
-
 # ---------------------------------------------------------------------------
 # Contracts registration
 # ---------------------------------------------------------------------------

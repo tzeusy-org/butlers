@@ -164,10 +164,20 @@ class TestOpsSessionsEndpoint:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_tick_sessions_visible_in_ops_endpoint(self):
-        """tick sessions appear in /api/chronicler/ops/sessions."""
-        tick_row = _session_row(trigger_source="tick")
-        app, _ = _make_app(fan_out_results={"switchboard": [tick_row]})
+    @pytest.mark.parametrize(
+        ("butler", "trigger_source"),
+        [
+            ("switchboard", "tick"),
+            ("chronicler", "qa"),
+            ("atlas", "healing"),
+            ("chronicler", "schedule:chronicler_day_close"),
+        ],
+    )
+    async def test_operational_sessions_visible_in_ops_endpoint(self, butler, trigger_source):
+        """Each operational trigger_source (tick/qa/healing/schedule:*) is surfaced via
+        /api/chronicler/ops/sessions, tagged with the originating butler schema."""
+        row = _session_row(trigger_source=trigger_source)
+        app, _ = _make_app(fan_out_results={butler: [row]})
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -175,47 +185,8 @@ class TestOpsSessionsEndpoint:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert len(data) == 1
-        assert data[0]["trigger_source"] == "tick"
-        assert data[0]["butler"] == "switchboard"
-
-    async def test_qa_sessions_visible_in_ops_endpoint(self):
-        """qa sessions appear in /api/chronicler/ops/sessions."""
-        qa_row = _session_row(trigger_source="qa")
-        app, _ = _make_app(fan_out_results={"chronicler": [qa_row]})
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/chronicler/ops/sessions")
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert len(data) == 1
-        assert data[0]["trigger_source"] == "qa"
-
-    async def test_healing_sessions_visible_in_ops_endpoint(self):
-        """healing sessions appear in /api/chronicler/ops/sessions."""
-        healing_row = _session_row(trigger_source="healing")
-        app, _ = _make_app(fan_out_results={"atlas": [healing_row]})
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/chronicler/ops/sessions")
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert len(data) == 1
-        assert data[0]["trigger_source"] == "healing"
-
-    async def test_schedule_prefix_sessions_visible_in_ops_endpoint(self):
-        """schedule:* sessions appear in /api/chronicler/ops/sessions."""
-        schedule_row = _session_row(trigger_source="schedule:chronicler_day_close")
-        app, _ = _make_app(fan_out_results={"chronicler": [schedule_row]})
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/chronicler/ops/sessions")
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert len(data) == 1
-        assert data[0]["trigger_source"] == "schedule:chronicler_day_close"
+        assert data[0]["trigger_source"] == trigger_source
+        assert data[0]["butler"] == butler
 
     async def test_cross_butler_results_merged_and_sorted_by_started_at_desc(self):
         """Results from multiple butlers are merged and sorted newest-first."""

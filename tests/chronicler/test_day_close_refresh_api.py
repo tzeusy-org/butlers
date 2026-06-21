@@ -7,12 +7,13 @@ Covers:
 - 404-equivalent: no cached row does NOT trigger rate-limit (falls through to dispatch).
 - 503 when no dispatch callable is wired.
 - 400 on invalid timezone.
-- Guardrail: NO LLM module imported by the handler beyond the existing Tier-2 entry point.
+
+(The no-LLM-import guardrail for router.py is authoritative in
+tests/contracts/test_chronicler_no_llm.py.)
 """
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import sys
 from datetime import UTC, datetime, timedelta
@@ -363,46 +364,5 @@ class TestDayCloseRefreshValidation:
         assert resp.status_code == 503
 
 
-# ---------------------------------------------------------------------------
-# Guardrail: no LLM imports in router.py beyond the Tier-2 entry point
-# ---------------------------------------------------------------------------
-
-_FORBIDDEN_LLM_IMPORTS = frozenset({"anthropic", "openai", "claude_agent_sdk"})
-
-
-def test_refresh_handler_no_new_llm_imports():
-    """router.py must not import LLM packages beyond the existing Tier-2 entry point.
-
-    Acceptance criteria: NO LLM module imported by the handler beyond the existing
-    Tier-2 entry point function reference (write_day_close_cache from day_close_writer).
-    """
-    source = _ROUTER_PATH.read_text()
-    tree = ast.parse(source)
-    violations: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                root = alias.name.split(".")[0]
-                if root in _FORBIDDEN_LLM_IMPORTS:
-                    violations.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                root = node.module.split(".")[0]
-                if root in _FORBIDDEN_LLM_IMPORTS:
-                    violations.append(node.module)
-    assert not violations, f"router.py must not import LLM packages; found: {violations}"
-
-
-def test_refresh_handler_imports_day_close_writer_entry_point():
-    """router.py imports write_day_close_cache (the Tier-2 entry point)."""
-    source = _ROUTER_PATH.read_text()
-    tree = ast.parse(source)
-    found = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            if "day_close_writer" in node.module:
-                names = [alias.name for alias in node.names]
-                if "write_day_close_cache" in names:
-                    found = True
-                    break
-    assert found, "router.py should import write_day_close_cache from day_close_writer"
+# The no-LLM-import guardrail for router.py is authoritative in
+# tests/contracts/test_chronicler_no_llm.py.

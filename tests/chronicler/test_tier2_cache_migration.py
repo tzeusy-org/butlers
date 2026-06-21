@@ -36,35 +36,14 @@ def _load_migration():
     return module
 
 
-def test_migration_file_exists() -> None:
-    """004_tier2_cache.py must exist in the chronicler migrations directory."""
-    assert (_MIGRATIONS_DIR / _MIGRATION_FILE).exists()
-
-
-def test_revision_id() -> None:
+def test_revision_chain_links_onto_003() -> None:
+    """chronicler_004 chains directly onto chronicler_003 (revision-chain integrity),
+    declares no new branch_labels, and exposes callable upgrade()/downgrade()."""
     m = _load_migration()
     assert m.revision == _EXPECTED_REVISION
-
-
-def test_down_revision_points_to_003() -> None:
-    """Migration must chain directly onto chronicler_003."""
-    m = _load_migration()
     assert m.down_revision == _EXPECTED_DOWN_REVISION
-
-
-def test_branch_labels_none() -> None:
-    """Non-root migrations must not declare new branch_labels."""
-    m = _load_migration()
     assert m.branch_labels is None
-
-
-def test_upgrade_callable() -> None:
-    m = _load_migration()
     assert callable(m.upgrade)
-
-
-def test_downgrade_callable() -> None:
-    m = _load_migration()
     assert callable(m.downgrade)
 
 

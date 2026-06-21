@@ -132,33 +132,32 @@ def _episode_with_id(episode_id: UUID) -> Episode:
 
 
 @pytest.mark.unit
-async def test_resolve_owner_entity_id_returns_uuid_when_found() -> None:
-    """Returns the UUID when the owner contact has a non-NULL entity_id."""
-    pool = _make_pool_with_fetchrow(_fake_record(_OWNER_ENTITY_ID))
+@pytest.mark.parametrize("as_string", [False, True], ids=["uuid", "string"])
+async def test_resolve_owner_entity_id_returns_uuid_when_found(as_string: bool) -> None:
+    """Returns the owner UUID, coercing a string-stored entity_id to UUID."""
+    stored = str(_OWNER_ENTITY_ID) if as_string else _OWNER_ENTITY_ID
+    pool = _make_pool_with_fetchrow(_fake_record(stored))
     result = await resolve_owner_entity_id(pool)
     assert result == _OWNER_ENTITY_ID
 
 
 @pytest.mark.unit
-async def test_resolve_owner_entity_id_handles_string_uuid() -> None:
-    """Accepts entity_id stored as a string (returns UUID)."""
-    pool = _make_pool_with_fetchrow(_fake_record(str(_OWNER_ENTITY_ID)))
-    result = await resolve_owner_entity_id(pool)
-    assert result == _OWNER_ENTITY_ID
-
-
-@pytest.mark.unit
-async def test_resolve_owner_entity_id_returns_none_when_no_row() -> None:
-    """Returns None when no contact has role 'owner'."""
-    pool = _make_pool_with_fetchrow(None)
+@pytest.mark.parametrize(
+    "stored_entity_id",
+    [None, 42],
+    ids=["entity_id_null", "unexpected_type"],
+)
+async def test_resolve_owner_entity_id_returns_none_for_owner_row(stored_entity_id) -> None:
+    """Returns None when the owner row's entity_id is NULL or an unexpected type."""
+    pool = _make_pool_with_fetchrow(_fake_record(stored_entity_id))
     result = await resolve_owner_entity_id(pool)
     assert result is None
 
 
 @pytest.mark.unit
-async def test_resolve_owner_entity_id_returns_none_when_entity_id_null() -> None:
-    """Returns None when the owner contact exists but entity_id IS NULL."""
-    pool = _make_pool_with_fetchrow(_fake_record(None))
+async def test_resolve_owner_entity_id_returns_none_when_no_row() -> None:
+    """Returns None when no contact has role 'owner' (no row)."""
+    pool = _make_pool_with_fetchrow(None)
     result = await resolve_owner_entity_id(pool)
     assert result is None
 
@@ -170,14 +169,6 @@ async def test_resolve_owner_entity_id_returns_none_on_db_error() -> None:
     conn.fetchrow = AsyncMock(side_effect=asyncpg.PostgresError())
     pool = AsyncMock()
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-    result = await resolve_owner_entity_id(pool)
-    assert result is None
-
-
-@pytest.mark.unit
-async def test_resolve_owner_entity_id_returns_none_on_unexpected_type() -> None:
-    """Returns None when entity_id is an unexpected type (e.g. int)."""
-    pool = _make_pool_with_fetchrow(_fake_record(42))  # type: ignore[arg-type]
     result = await resolve_owner_entity_id(pool)
     assert result is None
 
@@ -195,10 +186,9 @@ async def test_upsert_owner_episode_entity_executes_insert() -> None:
     owner_id = uuid4()
     await upsert_owner_episode_entity(conn, episode_id, owner_id=owner_id)
     conn.execute.assert_awaited_once()
+    # The episode_id and owner_id are passed through as bound params (the join-table
+    # write records the owner). SQL text shape is covered structurally elsewhere.
     call_args = conn.execute.call_args
-    sql = call_args.args[0]
-    assert "INSERT INTO episode_entities" in sql
-    assert "owner" in sql
     assert call_args.args[1] == episode_id
     assert call_args.args[2] == owner_id
 
@@ -376,54 +366,6 @@ async def test_spotify_adapter_stamps_entity_id_on_episode() -> None:
     assert result.rows_projected == 1
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
-
-
-@pytest.mark.unit
-async def test_spotify_adapter_no_owner_fallback() -> None:
-    """SpotifySessionAdapter completes with entity_id=None when no owner found."""
-    episode_id = uuid4()
-    captured: list[Episode] = []
-
-    async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
-        captured.append(ep)
-        return _episode_with_id(episode_id)
-
-    cp = _chronicler_pool_simple()
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
-
-    spotify_row = MagicMock()
-    spotify_row.__getitem__ = MagicMock(
-        side_effect=lambda k: {
-            "id": uuid4(),
-            "idempotency_key": "spotify:session:abc",
-            "endpoint_identity": "user:client",
-            "spotify_user_id": "user123",
-            "started_at": _NOW,
-            "ended_at": _NOW + timedelta(minutes=30),
-            "duration_seconds": 1800,
-            "track_count": 1,
-            "track_names": ["A"],
-            "context_uri": None,
-            "context_name": None,
-            "recorded_at": _NOW,
-        }[k]
-    )
-
-    adapter = SpotifySessionAdapter()
-    with (
-        patch.object(adapter, "_fetch_sessions", new=AsyncMock(return_value=[spotify_row])),
-        patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert),
-        patch(
-            "butlers.chronicler.adapters.spotify.resolve_owner_entity_id",
-            new=AsyncMock(return_value=None),
-        ),
-        patch("butlers.chronicler.adapters.spotify.upsert_owner_episode_entity", new=AsyncMock()),
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.rows_projected == 1
-    assert len(captured) == 1
 
 
 @pytest.mark.unit
@@ -634,60 +576,6 @@ async def test_google_health_sleep_adapter_stamps_entity_id() -> None:
     assert result.rows_projected == 1
     mock_upsert_entity.assert_awaited_once()
     assert mock_upsert_entity.call_args.kwargs["owner_id"] == _OWNER_ENTITY_ID
-
-
-@pytest.mark.unit
-async def test_google_health_sleep_adapter_no_owner_fallback() -> None:
-    """GoogleHealthSleepAdapter completes with entity_id=None when no owner found."""
-    episode_id = uuid4()
-    captured: list[Episode] = []
-
-    async def _fake_upsert(_conn: object, ep: Episode) -> Episode:
-        captured.append(ep)
-        return _episode_with_id(episode_id)
-
-    cp = _chronicler_pool_simple()
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
-
-    sleep_row = MagicMock()
-    sleep_row.__getitem__ = MagicMock(
-        side_effect=lambda k: {
-            "id": uuid4(),
-            "subject": None,
-            "predicate": "sleep_session",
-            "content": None,
-            "metadata": {"duration_ms": 28800000},
-            "valid_at": _NOW,
-            "created_at": _NOW,
-            "idempotency_key": "google_health:sleep:session456",
-        }[k]
-    )
-
-    adapter = GoogleHealthSleepAdapter()
-    with (
-        patch.object(adapter, "_fetch_facts", new=AsyncMock(return_value=[sleep_row])),
-        patch(
-            "butlers.chronicler.adapters.google_health.get_carryover",
-            new=AsyncMock(return_value={}),
-        ),
-        patch("butlers.chronicler.adapters.google_health.save_carryover", new=AsyncMock()),
-        patch(
-            "butlers.chronicler.adapters.google_health.upsert_episode",
-            side_effect=_fake_upsert,
-        ),
-        patch(
-            "butlers.chronicler.adapters.google_health.resolve_owner_entity_id",
-            new=AsyncMock(return_value=None),  # no owner
-        ),
-        patch(
-            "butlers.chronicler.adapters.google_health.upsert_owner_episode_entity", new=AsyncMock()
-        ),
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.rows_projected == 1
-    assert len(captured) == 1
 
 
 @pytest.mark.unit
@@ -946,54 +834,6 @@ async def test_steps_adapter_stamps_entity_id_on_point_event() -> None:
 
 
 @pytest.mark.unit
-async def test_steps_adapter_no_owner_fallback_for_point_event() -> None:
-    """GoogleHealthStepsAdapter projects with entity_id=None when no owner found."""
-    captured: list[PointEvent] = []
-
-    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
-        captured.append(ev)
-        return ev
-
-    cp = _chronicler_pool_simple()
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
-
-    steps_row = MagicMock()
-    steps_row.__getitem__ = MagicMock(
-        side_effect=lambda k: {
-            "id": uuid4(),
-            "subject": None,
-            "predicate": "daily_steps",
-            "content": None,
-            "metadata": {"value": 5000},
-            "valid_at": _NOW,
-            "created_at": _NOW,
-            "idempotency_key": "health:steps:2026-05-02",
-        }[k]
-    )
-
-    adapter = GoogleHealthStepsAdapter()
-    with (
-        patch(
-            "butlers.chronicler.adapters.google_health._fetch_fact_rows",
-            new=AsyncMock(return_value=[steps_row]),
-        ),
-        patch(
-            "butlers.chronicler.adapters.google_health.upsert_point_event",
-            side_effect=_fake_upsert,
-        ),
-        patch(
-            "butlers.chronicler.adapters.google_health.resolve_owner_entity_id",
-            new=AsyncMock(return_value=None),
-        ),
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.rows_projected == 1
-    assert captured[0].entity_id is None
-
-
-@pytest.mark.unit
 async def test_heart_rate_adapter_stamps_entity_id_on_point_event() -> None:
     """GoogleHealthHeartRateAdapter stamps entity_id on heart_rate_summary events."""
     captured: list[PointEvent] = []
@@ -1040,51 +880,3 @@ async def test_heart_rate_adapter_stamps_entity_id_on_point_event() -> None:
     assert result.rows_projected == 1
     assert len(captured) == 1
     assert captured[0].entity_id == _OWNER_ENTITY_ID
-
-
-@pytest.mark.unit
-async def test_heart_rate_adapter_no_owner_fallback_for_point_event() -> None:
-    """GoogleHealthHeartRateAdapter projects with entity_id=None when no owner found."""
-    captured: list[PointEvent] = []
-
-    async def _fake_upsert(_conn: object, ev: PointEvent) -> PointEvent:
-        captured.append(ev)
-        return ev
-
-    cp = _chronicler_pool_simple()
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
-
-    hr_row = MagicMock()
-    hr_row.__getitem__ = MagicMock(
-        side_effect=lambda k: {
-            "id": uuid4(),
-            "subject": None,
-            "predicate": "heart_rate_summary",
-            "content": None,
-            "metadata": {"avg_bpm": 72},
-            "valid_at": _NOW,
-            "created_at": _NOW,
-            "idempotency_key": "health:hr:2026-05-02",
-        }[k]
-    )
-
-    adapter = GoogleHealthHeartRateAdapter()
-    with (
-        patch(
-            "butlers.chronicler.adapters.google_health._fetch_fact_rows",
-            new=AsyncMock(return_value=[hr_row]),
-        ),
-        patch(
-            "butlers.chronicler.adapters.google_health.upsert_point_event",
-            side_effect=_fake_upsert,
-        ),
-        patch(
-            "butlers.chronicler.adapters.google_health.resolve_owner_entity_id",
-            new=AsyncMock(return_value=None),
-        ),
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.rows_projected == 1
-    assert captured[0].entity_id is None

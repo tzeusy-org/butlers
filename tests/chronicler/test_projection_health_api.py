@@ -173,56 +173,10 @@ class TestProjectionHealthAPI:
         assert row["last_error"] == "Connection timeout after 30s"
         assert row["source_name"] == "spotify.session_summary"
 
-    async def test_sort_order_source_name_then_subsource(self):
-        """Rows are sorted by source_name ASC, subsource ASC."""
-        rows = [
-            _row(
-                {
-                    "source_name": "spotify.session_summary",
-                    "subsource": "",
-                    "last_error": None,
-                    "last_run_at": None,
-                    "rows_projected": 0,
-                    "watermark": None,
-                }
-            ),
-            _row(
-                {
-                    "source_name": "core.sessions",
-                    "subsource": "butler_b",
-                    "last_error": None,
-                    "last_run_at": None,
-                    "rows_projected": 0,
-                    "watermark": None,
-                }
-            ),
-            _row(
-                {
-                    "source_name": "core.sessions",
-                    "subsource": "butler_a",
-                    "last_error": None,
-                    "last_run_at": None,
-                    "rows_projected": 0,
-                    "watermark": None,
-                }
-            ),
-        ]
-        app, _ = _make_app(checkpoint_rows=rows)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/chronicler/projection-health")
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        # The mock returns whatever order we provide; actual DB ordering is
-        # tested at the SQL contract level. Verify the field mapping is correct.
-        assert len(data) == 3
-        source_names = [r["source_name"] for r in data]
-        assert "core.sessions" in source_names
-        assert "spotify.session_summary" in source_names
-
-    async def test_watermark_null_when_not_set(self):
-        """watermark is null when no checkpoint has run yet."""
+    async def test_null_watermark_and_zero_rows_projected_edge(self):
+        """A never-run checkpoint surfaces watermark=null and last_run_at=null, while
+        rows_projected=0 is returned as 0 (not null) — the zero-vs-null distinction
+        is the contract."""
         rows = [
             _row(
                 {
@@ -244,28 +198,7 @@ class TestProjectionHealthAPI:
         row = resp.json()["data"][0]
         assert row["watermark"] is None
         assert row["last_run_at"] is None
-
-    async def test_rows_projected_zero_is_returned(self):
-        """rows_projected=0 is a valid value and is returned as 0, not null."""
-        rows = [
-            _row(
-                {
-                    "source_name": "owntracks.points",
-                    "subsource": "",
-                    "last_error": None,
-                    "last_run_at": _NOW,
-                    "rows_projected": 0,
-                    "watermark": _NOW,
-                }
-            ),
-        ]
-        app, _ = _make_app(checkpoint_rows=rows)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/chronicler/projection-health")
-        assert resp.status_code == 200
-        assert resp.json()["data"][0]["rows_projected"] == 0
+        assert row["rows_projected"] == 0
 
 
 class TestProjectionHealthMethodNotAllowed:

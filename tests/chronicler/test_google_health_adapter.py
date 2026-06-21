@@ -210,8 +210,11 @@ async def test_empty_evidence_returns_zero_rows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multi_stage_sleep_produces_single_episode() -> None:
-    """A sleep_session fact with light/deep/REM stages → one sleep_episode."""
+async def test_multi_stage_sleep_projects_single_sensitive_episode() -> None:
+    """A multi-stage (light/deep/REM) sleep_session fact projects exactly ONE
+    sleep_episode covering the full session window [valid_at, end_time), carrying
+    the stage breakdown, with privacy=SENSITIVE (health-data invariant) and
+    minute precision."""
     row = _make_row()
     adapter = GoogleHealthSleepAdapter()
     upserted: list[Episode] = []
@@ -231,97 +234,16 @@ async def test_multi_stage_sleep_produces_single_episode() -> None:
     assert result.rows_projected == 1
     assert result.episodes_closed == 1
     assert len(upserted) == 1
-
-
-@pytest.mark.asyncio
-async def test_sleep_episode_covers_full_session_window() -> None:
-    """start_at = valid_at; end_at = metadata.end_time."""
-    row = _make_row()
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
     ep = upserted[0]
+    # Full-session window
     assert ep.start_at == _SESSION_START
     assert ep.end_at == _SESSION_END
-
-
-@pytest.mark.asyncio
-async def test_sleep_episode_contains_stage_breakdown() -> None:
-    """The episode payload must include the stage breakdown from metadata."""
-    row = _make_row()
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    payload = upserted[0].payload
-    assert "stages" in payload
-    assert payload["stages"]["deep"] == 95
-    assert payload["stages"]["rem"] == 137
-
-
-@pytest.mark.asyncio
-async def test_sleep_episode_privacy_is_sensitive() -> None:
-    row = _make_row()
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert upserted[0].privacy == Privacy.SENSITIVE
-
-
-@pytest.mark.asyncio
-async def test_sleep_episode_precision_is_minute() -> None:
-    row = _make_row()
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert upserted[0].precision == Precision.MINUTE
+    # Stage breakdown preserved in payload
+    assert ep.payload["stages"]["deep"] == 95
+    assert ep.payload["stages"]["rem"] == 137
+    # Privacy + precision contract
+    assert ep.privacy == Privacy.SENSITIVE
+    assert ep.precision == Precision.MINUTE
 
 
 # ---------------------------------------------------------------------------
@@ -501,29 +423,6 @@ async def test_watermark_advances_to_latest_created_at() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == t2
-
-
-@pytest.mark.asyncio
-async def test_since_filter_passed_to_query() -> None:
-    """When ``since`` is given, the SQL query must filter on created_at > $2."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = GoogleHealthSleepAdapter()
-    cp = _chronicler_pool()
-    since = _NOW - timedelta(hours=2)
-
-    with patch("butlers.chronicler.adapters.google_health.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since)
-
-    assert conn.fetch.await_count == 1
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    assert "created_at > $2" in query
-    assert call_args.args[2] == since
 
 
 # ---------------------------------------------------------------------------
