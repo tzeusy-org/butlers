@@ -292,6 +292,34 @@ _MIGRATION_NOISE = (
             "APIError: provider rejected the request",
             id="nested-apierror-data-message-with-prefix",
         ),
+        pytest.param(
+            "",
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "name": "APIError",
+                        "message": "APIError",
+                        "data": {"message": "provider request failed upstream"},
+                    },
+                }
+            ),
+            1,
+            "APIError: provider request failed upstream",
+            id="nested-apierror-skips-generic-message",
+        ),
+        pytest.param(
+            "plain stderr fallback",
+            json.dumps(
+                {
+                    "type": "result",
+                    "data": {"message": "provider request failed upstream"},
+                }
+            ),
+            1,
+            "provider request failed upstream",
+            id="data-only-stdout-error",
+        ),
         # Scalar diagnostics under structured payloads are preserved.
         pytest.param(
             "",

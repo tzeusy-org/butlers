@@ -73,7 +73,8 @@ def _extract_stdout_error_detail(stdout: str) -> str | None:
 
         obj_type = str(obj.get("type", "")).lower()
         if "error" not in obj_type and not any(
-            key in obj for key in ("error", "message", "detail", "details", "stderr", "code")
+            key in obj
+            for key in ("error", "message", "detail", "details", "stderr", "data", "code")
         ):
             continue
 
@@ -105,11 +106,9 @@ def _stringify_error_payload(payload: Any) -> str | None:
             value = payload.get(key)
             detail = _stringify_error_payload(value)
             if detail:
-                if (
-                    error_name
-                    and detail.lower() != error_name.lower()
-                    and not detail.lower().startswith(error_name.lower())
-                ):
+                if error_name and detail.lower() == error_name.lower():
+                    continue
+                if error_name and not detail.lower().startswith(error_name.lower()):
                     return f"{error_name}: {detail}"
                 return detail
         if error_name:

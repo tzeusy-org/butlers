@@ -84,6 +84,7 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "model is unavailable",
     "provider unavailable",
     "provider error",
+    "provider request failed",
     "service unavailable",
     "backend unavailable",
     "no such model",

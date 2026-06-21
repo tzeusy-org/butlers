@@ -291,6 +291,7 @@ class TestProviderAuthErrorsEligible:
             "model not found in catalog",
             "no such model: claude-opus-99",
             "OpenCode CLI exited with code 1: APIError: provider rejected the request",
+            "OpenCode CLI exited with code 1: provider request failed upstream",
         ],
     )
     def test_provider_auth_message_is_eligible(self, msg: str) -> None:
