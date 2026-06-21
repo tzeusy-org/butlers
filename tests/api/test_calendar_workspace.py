@@ -7,6 +7,7 @@ Keeps: required-params validation (422), workspace read structure, sync trigger 
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -1382,6 +1383,15 @@ def _build_undo_app(
     mock_db.fan_out = AsyncMock(side_effect=_fan_out)
     _pool = MagicMock()
     _pool.execute = AsyncMock()
+
+    async def _fetchval(query, *args):
+        # Models the atomic undo-claim guarded UPDATE ... RETURNING id: by
+        # default the claim succeeds (returns the action_id from $1).
+        if "calendar_action_log" in query and args:
+            return args[0]
+        return None
+
+    _pool.fetchval = AsyncMock(side_effect=_fetchval)
     mock_db.pool = MagicMock(return_value=_pool)
 
     mock_client = AsyncMock()
@@ -1558,6 +1568,59 @@ async def test_undo_already_undone_returns_409(app):
     assert resp.status_code == 409
     assert "already undone" in resp.json()["detail"]
     mock_client.call_tool.assert_not_awaited()
+
+
+async def test_undo_concurrent_dispatches_inverse_exactly_once(app):
+    """Two concurrent undos of the same action dispatch the inverse exactly once.
+
+    Regression for the TOCTOU race (bu-iphtg): the already-undone read-guard and
+    the marker write were non-transactional, so two concurrent undos could each
+    pass the guard and recreate/restore the event twice. The atomic claim
+    (guarded conditional UPDATE) must let exactly one caller win and dispatch;
+    the loser returns 409 with NO second inverse dispatch.
+    """
+    row = _undo_action_row(
+        action_type="workspace_user_delete",
+        action_result={"status": "deleted", "pre_state": _UNDO_PRE_STATE},
+    )
+    app, mock_db, mock_client = _build_undo_app(
+        app, action_rows={"general": [row]}, mcp_status="created"
+    )
+
+    # The guarded UPDATE ... RETURNING id only matches the row while no 'undo'
+    # marker exists: the first claim wins (returns the id), every later claim
+    # matches zero rows (returns None). Model that with a one-shot counter so
+    # the outcome is deterministic regardless of coroutine interleaving.
+    claim_calls = {"n": 0}
+
+    async def _claim_once(query, *args):
+        if "calendar_action_log" in query and "RETURNING id" in query:
+            claim_calls["n"] += 1
+            return args[0] if claim_calls["n"] == 1 else None
+        return None
+
+    mock_db.pool.return_value.fetchval = AsyncMock(side_effect=_claim_once)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp_a, resp_b = await asyncio.gather(
+            client.post(f"/api/calendar/workspace/undo/{row['id']}"),
+            client.post(f"/api/calendar/workspace/undo/{row['id']}"),
+        )
+
+    statuses = sorted([resp_a.status_code, resp_b.status_code])
+    assert statuses == [200, 409], statuses
+
+    winner = resp_a if resp_a.status_code == 200 else resp_b
+    loser = resp_b if resp_a.status_code == 200 else resp_a
+    assert winner.json()["data"]["undone"] is True
+    assert "already undone" in loser.json()["detail"]
+
+    # Exactly ONE inverse dispatch — the whole point of the atomic claim.
+    assert mock_client.call_tool.await_count == 1
+    tool_name, _ = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_create_event"
 
 
 # ---------------------------------------------------------------------------

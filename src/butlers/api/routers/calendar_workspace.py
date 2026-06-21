@@ -2594,9 +2594,70 @@ async def undo_calendar_mutation(
         "inverse_tool": inverse_tool,
         "request_id": request_id,
     }
+
+    # Atomically claim the undo BEFORE dispatching the inverse mutation. The
+    # earlier ``action_result.undo`` read (line ~2524) is only a fast-path
+    # check — it is racy because the read and the marker write are not a single
+    # operation, so two concurrent undos of the same action could both pass it
+    # and dispatch the inverse twice (e.g. recreate a deleted event twice).
+    #
+    # This guarded conditional UPDATE sets a provisional marker *only when no
+    # ``undo`` marker exists yet*. Under concurrent undo exactly one caller's
+    # UPDATE matches a row (``RETURNING id`` is non-null) and wins the claim;
+    # every other caller matches zero rows and falls through to the idempotent
+    # already-undone 409 WITHOUT a second dispatch.
+    provisional_marker = json.dumps(
+        {
+            "undo": {
+                "status": "pending",
+                "request_id": request_id,
+                "inverse_tool": inverse_tool,
+            }
+        }
+    )
+    claimed = await db.pool(butler_name).fetchval(
+        """
+        UPDATE calendar_action_log
+        SET action_result = COALESCE(action_result, '{}'::jsonb) || $2::jsonb,
+            updated_at = now()
+        WHERE id = $1
+          AND NOT (COALESCE(action_result, '{}'::jsonb) ? 'undo')
+        RETURNING id
+        """,
+        action_id,
+        provisional_marker,
+    )
+    if claimed is None:
+        # Lost the race (or already undone between the fast-path read and here):
+        # return the idempotent already-undone response, never a second inverse.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Action {action_id} was already undone.",
+        )
+
+    async def _release_claim() -> None:
+        """Drop the provisional marker so the action stays undoable after a
+        failed or no-op inverse dispatch (preserves the original contract that
+        an unreversed action remains undoable)."""
+        try:
+            await db.pool(butler_name).execute(
+                """
+                UPDATE calendar_action_log
+                SET action_result = action_result - 'undo',
+                    updated_at = now()
+                WHERE id = $1
+                """,
+                action_id,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("Failed to release undo claim for action %s", action_id, exc_info=True)
+
     try:
         mutation_result = await _call_mcp_tool(mgr, butler_name, inverse_tool, arguments)
     except HTTPException:
+        # The inverse never dispatched successfully — release the claim so the
+        # action can be retried, mirroring the pre-claim "stays undoable" path.
+        await _release_claim()
         await log_audit_entry(
             db,
             butler_name,
@@ -2609,8 +2670,8 @@ async def undo_calendar_mutation(
 
     undone = str(mutation_result.get("status")) in _UNDO_SUCCESS_STATUSES[inverse_tool]
     if undone:
-        # Mark the original row so a repeated undo fails fast (409) rather than
-        # dispatching a second inverse. jsonb concat merges the marker in place.
+        # Finalize the provisional marker with the dispatch outcome so a repeated
+        # undo fails fast (409). jsonb concat replaces the top-level marker.
         marker = json.dumps(
             {
                 "undo": {
@@ -2635,6 +2696,10 @@ async def undo_calendar_mutation(
             logger.warning(
                 "Undo dispatched for action %s but marker write failed", action_id, exc_info=True
             )
+    else:
+        # The inverse did not take effect (e.g. update-restore returned
+        # not_found): release the claim so the action stays undoable.
+        await _release_claim()
 
     await log_audit_entry(db, butler_name, "calendar.workspace.undo", summary)
 
