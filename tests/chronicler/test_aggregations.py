@@ -11,11 +11,17 @@ Covers:
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from butlers.chronicler.aggregations import CATEGORIES, category_for
+from butlers.chronicler.aggregations import (
+    CATEGORIES,
+    category_for,
+    is_excluded_all_day,
+    union_seconds,
+)
 from butlers.chronicler.contracts import INITIAL_SOURCES
 from butlers.chronicler.models import Compatibility
 
@@ -107,6 +113,72 @@ def test_all_supported_sources_have_non_other_category() -> None:
 
 
 # ── Guardrail: no LLM imports ──────────────────────────────────────────────
+
+# ── union_seconds ───────────────────────────────────────────────────────────
+
+
+def _dt(hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 6, 19, hour, minute, tzinfo=UTC)
+
+
+def test_union_seconds_empty_is_zero() -> None:
+    assert union_seconds([]) == 0.0
+
+
+def test_union_seconds_disjoint_sums() -> None:
+    intervals = [(_dt(9), _dt(10)), (_dt(11), _dt(12, 30))]
+    assert union_seconds(intervals) == (1 + 1.5) * 3600
+
+
+def test_union_seconds_merges_overlap() -> None:
+    # Two overlapping hours [9,11) and [10,12) → union is [9,12) = 3h, not 4h.
+    intervals = [(_dt(9), _dt(11)), (_dt(10), _dt(12))]
+    assert union_seconds(intervals) == 3 * 3600
+
+
+def test_union_seconds_nested_and_unsorted() -> None:
+    # A long span fully containing a short one, supplied out of order.
+    intervals = [(_dt(10), _dt(10, 30)), (_dt(9), _dt(13))]
+    assert union_seconds(intervals) == 4 * 3600
+
+
+def test_union_seconds_caps_overlapping_at_window() -> None:
+    # Regression for "Calendar 26h of a 24h day": a 24h span plus an overlapping
+    # 2h timed event unions to 24h, never 26h.
+    day_start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    day_end = day_start + timedelta(hours=24)
+    timed = (day_start + timedelta(hours=13), day_start + timedelta(hours=15))
+    assert union_seconds([(day_start, day_end), timed]) == 24 * 3600
+
+
+# ── is_excluded_all_day ──────────────────────────────────────────────────────
+
+
+def test_all_day_calendar_event_is_excluded() -> None:
+    start = datetime(2026, 6, 8, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 6, 20, 0, 0, tzinfo=UTC)  # 12-day "Reservist" span
+    assert is_excluded_all_day("calendar", start, end) is True
+
+
+def test_exactly_24h_calendar_event_is_excluded() -> None:
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(hours=24)
+    assert is_excluded_all_day("calendar", start, end) is True
+
+
+def test_timed_calendar_event_is_not_excluded() -> None:
+    start = datetime(2026, 6, 19, 13, 0, tzinfo=UTC)
+    end = datetime(2026, 6, 19, 15, 0, tzinfo=UTC)
+    assert is_excluded_all_day("calendar", start, end) is False
+
+
+def test_all_day_exclusion_is_scoped_to_calendar() -> None:
+    # A full-day presence/home episode is real time spent — never excluded.
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(hours=24)
+    assert is_excluded_all_day("home", start, end) is False
+    assert is_excluded_all_day("travel", start, end) is False
+
 
 _AGGREGATIONS_MODULE = (
     Path(__file__).parent.parent.parent / "src" / "butlers" / "chronicler" / "aggregations.py"

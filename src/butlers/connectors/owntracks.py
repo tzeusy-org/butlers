@@ -77,7 +77,12 @@ from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
-from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
+from butlers.db import (
+    db_params_from_env,
+    register_jsonb_codec,
+    schema_search_path,
+    should_retry_with_ssl_disable,
+)
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 if TYPE_CHECKING:
@@ -1884,6 +1889,11 @@ async def run_owntracks_connector() -> None:
             except ValueError:
                 pass
         pool_kwargs["setup"] = connector_setup_role
+        # Register the JSONB codec so dict payloads encode for jsonb columns
+        # (e.g. owntracks_points.raw_payload). Without this, every evidence
+        # INSERT raises a DataError that persist_location_point swallows,
+        # silently dropping all location points. Mirrors steam/home_assistant.
+        pool_kwargs["init"] = register_jsonb_codec
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)
         except Exception as exc:

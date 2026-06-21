@@ -17,6 +17,7 @@ Voice rules (per ``about/heart-and-soul/design-language.md``):
 
 from __future__ import annotations
 
+import asyncio
 import zoneinfo
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -377,20 +378,20 @@ async def _fetch_health_episode_day_seconds(
     return seconds_by_day
 
 
-async def _compute_streaks(pool: asyncpg.Pool, end_utc: datetime, tz_name: str) -> Streaks:
-    """Compute consecutive-day streaks for sleep and workout episodes."""
+def _streaks_from_day_seconds(
+    seconds_by_day: dict[tuple[date, str], float], end_utc: datetime, tz_name: str
+) -> Streaks:
+    """Derive sleep/workout streaks from a precomputed per-day seconds map.
+
+    Pure: no I/O. The map must cover at least ``STREAK_LOOKBACK_DAYS`` days
+    of ``sleep_episode`` and ``workout_episode`` totals (see
+    ``_fetch_health_episode_day_seconds``).
+    """
     try:
         tz = zoneinfo.ZoneInfo(tz_name)
     except Exception:
         tz = UTC
     today_local_date = end_utc.astimezone(tz).date()
-    seconds_by_day = await _fetch_health_episode_day_seconds(
-        pool,
-        end_utc,
-        STREAK_LOOKBACK_DAYS,
-        tz_name,
-        ("sleep_episode", "workout_episode"),
-    )
     sleep_streak = 0
     workout_streak = 0
     sleep_broken = False
@@ -410,6 +411,18 @@ async def _compute_streaks(pool: asyncpg.Pool, end_utc: datetime, tz_name: str) 
         if sleep_broken and workout_broken:
             break
     return Streaks(sleep=sleep_streak, exercise=workout_streak)
+
+
+async def _compute_streaks(pool: asyncpg.Pool, end_utc: datetime, tz_name: str) -> Streaks:
+    """Compute consecutive-day streaks for sleep and workout episodes."""
+    seconds_by_day = await _fetch_health_episode_day_seconds(
+        pool,
+        end_utc,
+        STREAK_LOOKBACK_DAYS,
+        tz_name,
+        ("sleep_episode", "workout_episode"),
+    )
+    return _streaks_from_day_seconds(seconds_by_day, end_utc, tz_name)
 
 
 async def _fetch_source_health_items(
@@ -517,15 +530,31 @@ async def _fetch_earliest_episode_date(pool: asyncpg.Pool, tz_name: str) -> str 
 # ── Anomaly detection helpers ──────────────────────────────────────────────
 
 
-async def _fetch_sleep_median_prior_week(
-    pool: asyncpg.Pool, end_utc: datetime, tz_name: str
+def _sleep_median_from_day_seconds(
+    seconds_by_day: dict[tuple[date, str], float], end_utc: datetime, tz_name: str
 ) -> int:
-    """Return median sleep_minutes across the seven calendar days preceding."""
+    """Median sleep_minutes across the seven preceding days, from a seconds map.
+
+    Pure: no I/O. The map must cover ``sleep_episode`` totals for the prior
+    seven days (a 30-day streak fetch is a superset).
+    """
     try:
         tz = zoneinfo.ZoneInfo(tz_name)
     except Exception:
         tz = UTC
     today_local = end_utc.astimezone(tz).date()
+    minutes = [
+        int(seconds_by_day.get((today_local - timedelta(days=offset), "sleep_episode"), 0) // 60)
+        for offset in range(1, 8)
+    ]
+    s = sorted(minutes)
+    return s[len(s) // 2]
+
+
+async def _fetch_sleep_median_prior_week(
+    pool: asyncpg.Pool, end_utc: datetime, tz_name: str
+) -> int:
+    """Return median sleep_minutes across the seven calendar days preceding."""
     seconds_by_day = await _fetch_health_episode_day_seconds(
         pool,
         end_utc,
@@ -533,12 +562,7 @@ async def _fetch_sleep_median_prior_week(
         tz_name,
         ("sleep_episode",),
     )
-    minutes = [
-        int(seconds_by_day.get((today_local - timedelta(days=offset), "sleep_episode"), 0) // 60)
-        for offset in range(1, 8)
-    ]
-    s = sorted(minutes)
-    return s[len(s) // 2]
+    return _sleep_median_from_day_seconds(seconds_by_day, end_utc, tz_name)
 
 
 def _waking_overlap_minutes(gap_start_utc: datetime, gap_end_utc: datetime, tz: tzinfo) -> int:
@@ -646,6 +670,11 @@ def _compute_kpi(
 # ── Top-level orchestrator ────────────────────────────────────────────────
 
 
+async def _no_attention_items() -> list[AttentionItem]:
+    """Awaitable yielding no attention items (for conditional gather slots)."""
+    return []
+
+
 async def compose_briefing_payload(
     pool: asyncpg.Pool,
     target: date,
@@ -662,13 +691,41 @@ async def compose_briefing_payload(
     now = now or datetime.now(UTC)
     start_utc, end_utc = day_window_utc(target, tz_name)
 
-    episodes = await _fetch_window_episodes(pool, start_utc, end_utc)
-    sleep_minutes = await _fetch_sleep_minutes_for_day(pool, start_utc, end_utc)
-    streaks = await _compute_streaks(pool, end_utc, tz_name)
+    # All briefing reads are independent (they share only the window/tz inputs),
+    # so fan them out concurrently instead of awaiting serially. The 30-day
+    # health seconds map is fetched once and feeds both streaks and the sleep
+    # median (previously two separate 30-day / 7-day queries). Source health is
+    # a live-now connector signal: only meaningful for the most recent settled
+    # day, so skip the query entirely on older archive dates.
+    target_is_recent = _target_is_recent(target, tz_name, now)
+    source_health_coro = (
+        _fetch_source_health_items(pool, now=now) if target_is_recent else _no_attention_items()
+    )
+    (
+        episodes,
+        sleep_minutes,
+        health_seconds_by_day,
+        open_corrections,
+        recent_days,
+        earliest_date,
+        source_health_items,
+    ) = await asyncio.gather(
+        _fetch_window_episodes(pool, start_utc, end_utc),
+        _fetch_sleep_minutes_for_day(pool, start_utc, end_utc),
+        _fetch_health_episode_day_seconds(
+            pool, end_utc, STREAK_LOOKBACK_DAYS, tz_name, ("sleep_episode", "workout_episode")
+        ),
+        _fetch_open_corrections(pool, start_utc, end_utc),
+        _fetch_recent_days(pool, end_utc, days=7, tz_name=tz_name),
+        _fetch_earliest_episode_date(pool, tz_name),
+        source_health_coro,
+    )
+
+    streaks = _streaks_from_day_seconds(health_seconds_by_day, end_utc, tz_name)
+    sleep_median = _sleep_median_from_day_seconds(health_seconds_by_day, end_utc, tz_name)
     waking_gaps = _detect_waking_gaps(episodes, start_utc, end_utc, tz_name)
 
     attention_items: list[AttentionItem] = []
-    sleep_median = await _fetch_sleep_median_prior_week(pool, end_utc, tz_name)
     if (
         sleep_median > 0
         and sleep_minutes > 0
@@ -695,13 +752,9 @@ async def compose_briefing_payload(
                 detail=f"{gap_h} hours without a recorded episode",
             )
         )
-    # Source health is a live-now signal about connectors. It is only
-    # meaningful for the most recent settled day (or today); on older archive
-    # dates it would surface present connector state as that day's, so exclude
-    # it (and never let it drive an old day to ``urgent``).
-    if _target_is_recent(target, tz_name, now):
-        attention_items.extend(await _fetch_source_health_items(pool, now=now))
-    open_corrections = await _fetch_open_corrections(pool, start_utc, end_utc)
+    # Source health (live-now connector signal, recent days only) was fetched
+    # concurrently above; on older archive dates the coroutine returns [].
+    attention_items.extend(source_health_items)
     if open_corrections > 0:
         attention_items.append(
             AttentionItem(
@@ -718,8 +771,6 @@ async def compose_briefing_payload(
     kpi = _compute_kpi(episodes, start_utc, end_utc, sleep_minutes, streaks, waking_gaps)
     state_class = classify_state(attention_items)
     headline = headline_for(state_class, len(attention_items))
-    recent_days = await _fetch_recent_days(pool, end_utc, days=7, tz_name=tz_name)
-    earliest_date = await _fetch_earliest_episode_date(pool, tz_name)
 
     return BriefingPayload(
         state_class=state_class,

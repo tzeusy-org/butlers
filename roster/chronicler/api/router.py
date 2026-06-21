@@ -37,7 +37,11 @@ from butlers.chronicler.adapters.sessions import (
     EXCLUDED_TRIGGER_SOURCE_PREFIX,
     EXCLUDED_TRIGGER_SOURCES,
 )
-from butlers.chronicler.aggregations import category_for
+from butlers.chronicler.aggregations import (
+    category_for,
+    is_excluded_all_day,
+    union_seconds,
+)
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.storage import upsert_tier2_cache
 
@@ -1219,9 +1223,15 @@ async def aggregate_by_category(
         # ── Aggregate in Python ────────────────────────────────────────────
         # group by (category, source_name) to build per-source breakdowns,
         # then roll up to per-category buckets.
+        #
+        # Durations are collected as half-open [overlap_start, overlap_end)
+        # intervals and unioned (not summed) at rollup, so two concurrent
+        # episodes in the same bucket count once and a category total can never
+        # exceed the window length. All-day / multi-day calendar events are
+        # dropped (they are not active "time spent" and would saturate the day).
         cat_src: dict[tuple[str, str], dict[str, Any]] = defaultdict(
             lambda: {
-                "total_seconds": 0.0,
+                "intervals": [],
                 "episode_count": 0,
                 "tombstoned": False,
                 "precision_values": [],
@@ -1252,25 +1262,30 @@ async def aggregate_by_category(
             # Clip open episodes to query_end.
             ep_end_resolved = ep_end if ep_end is not None else end_at
 
+            # Drop all-day / multi-day calendar events from time-spent totals.
+            if is_excluded_all_day(ep_category, ep_start, ep_end_resolved):
+                continue
+
             # Duration = LEAST(end_at, query_end) - GREATEST(start_at, query_start), clamped at 0.
             overlap_start = max(ep_start, start_at)
             overlap_end = min(ep_end_resolved, end_at)
             if overlap_end <= overlap_start:
                 continue
-            overlap_seconds = (overlap_end - overlap_start).total_seconds()
 
             bucket_key = (ep_category, source_name)
             bucket = cat_src[bucket_key]
-            bucket["total_seconds"] += overlap_seconds
+            bucket["intervals"].append((overlap_start, overlap_end))
             bucket["episode_count"] += 1
             bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
             bucket["precision_values"].append(precision)
             bucket["retention_days_values"].append(retention_days)
 
-        # Roll up per-(category, source) to per-category buckets.
+        # Roll up per-(category, source) to per-category buckets. Intervals are
+        # unioned at both levels: per-source for the breakdown, and across all
+        # sources for the category total.
         cat_buckets: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
-                "total_seconds": 0.0,
+                "intervals": [],
                 "episode_count": 0,
                 "source_breakdown": [],
                 "precision_values": [],
@@ -1280,14 +1295,14 @@ async def aggregate_by_category(
 
         for (ep_category, source_name), src_data in cat_src.items():
             bucket = cat_buckets[ep_category]
-            bucket["total_seconds"] += src_data["total_seconds"]
+            bucket["intervals"].extend(src_data["intervals"])
             bucket["episode_count"] += src_data["episode_count"]
             bucket["precision_values"].extend(src_data["precision_values"])
             bucket["retention_days_values"].extend(src_data["retention_days_values"])
             bucket["source_breakdown"].append(
                 SourceBreakdownEntry(
                     source_name=source_name,
-                    total_seconds=src_data["total_seconds"],
+                    total_seconds=union_seconds(src_data["intervals"]),
                     episode_count=src_data["episode_count"],
                     tombstoned=src_data["tombstoned"],
                 )
@@ -1300,7 +1315,7 @@ async def aggregate_by_category(
             result_buckets.append(
                 CategoryBucket(
                     category=ep_category,
-                    total_seconds=data["total_seconds"],
+                    total_seconds=union_seconds(data["intervals"]),
                     episode_count=data["episode_count"],
                     source_breakdown=data["source_breakdown"],
                     precision=_least_precise(data["precision_values"]),
@@ -1479,15 +1494,17 @@ async def aggregate_by_day(
         # iterate only those days — avoiding the naive O(N×D) scan over all buckets.
 
         # day_cat_src[(day, category, source_name)] = {
-        #   "total_seconds": float,
+        #   "intervals": list[tuple[datetime, datetime]],
         #   "episode_count": int,
         #   "tombstoned": bool,
         #   "precision_values": list[str],
         #   "retention_days_values": list[int | None],
         # }
+        # Intervals are unioned (not summed) at rollup so concurrent episodes in
+        # a bucket count once and a category total cannot exceed the day length.
         day_cat_src: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
             lambda: {
-                "total_seconds": 0.0,
+                "intervals": [],
                 "episode_count": 0,
                 "tombstoned": False,
                 "precision_values": [],
@@ -1528,6 +1545,10 @@ async def aggregate_by_day(
             # that falls within each day window.
             ep_end_resolved = ep_end if ep_end is not None else end_at
 
+            # Drop all-day / multi-day calendar events from time-spent totals.
+            if is_excluded_all_day(ep_category, ep_start, ep_end_resolved):
+                continue
+
             # Compute the local-date range this episode overlaps, clipped to the
             # query window.  ep_end_resolved is exclusive (like day_end), so we
             # subtract 1 µs before converting to a local date to avoid counting a
@@ -1556,11 +1577,9 @@ async def aggregate_by_day(
                 overlap_start = max(ep_start, ds)
                 overlap_end = min(ep_end_resolved, de)
                 if overlap_end > overlap_start:
-                    overlap_seconds = (overlap_end - overlap_start).total_seconds()
-
                     bucket_key = (day_str, ep_category, source_name)
                     bucket = day_cat_src[bucket_key]
-                    bucket["total_seconds"] += overlap_seconds
+                    bucket["intervals"].append((overlap_start, overlap_end))
                     bucket["episode_count"] += 1
                     bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
                     bucket["precision_values"].append(precision)
@@ -1572,7 +1591,7 @@ async def aggregate_by_day(
         # First group day_cat_src by (day, category) to produce per-bucket source breakdowns.
         day_cat: dict[tuple[str, str], dict[str, Any]] = defaultdict(
             lambda: {
-                "total_seconds": 0.0,
+                "intervals": [],
                 "episode_count": 0,
                 "source_breakdown": [],
                 "precision_values": [],
@@ -1582,14 +1601,14 @@ async def aggregate_by_day(
 
         for (day_str, ep_category, source_name), src_data in day_cat_src.items():
             bucket = day_cat[(day_str, ep_category)]
-            bucket["total_seconds"] += src_data["total_seconds"]
+            bucket["intervals"].extend(src_data["intervals"])
             bucket["episode_count"] += src_data["episode_count"]
             bucket["precision_values"].extend(src_data["precision_values"])
             bucket["retention_days_values"].extend(src_data["retention_days_values"])
             bucket["source_breakdown"].append(
                 SourceBreakdownEntry(
                     source_name=source_name,
-                    total_seconds=src_data["total_seconds"],
+                    total_seconds=union_seconds(src_data["intervals"]),
                     episode_count=src_data["episode_count"],
                     tombstoned=src_data["tombstoned"],
                 )
@@ -1603,7 +1622,7 @@ async def aggregate_by_day(
                 AggregateByDayRow(
                     day=day_str,
                     category=ep_category,
-                    total_seconds=data["total_seconds"],
+                    total_seconds=union_seconds(data["intervals"]),
                     episode_count=data["episode_count"],
                     day_start=ds,
                     day_end=de,

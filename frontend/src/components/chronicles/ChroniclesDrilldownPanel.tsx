@@ -4,16 +4,15 @@
 // The editorial /chronicles landing keeps the page quiet: Voice briefing, KPI
 // strip, attention list, recent-days index. The Gantt timeline, Map, Scrubber,
 // breakdown charts, source-state strip, streak callouts, and EpisodeDrawer live
-// here, below the editorial fold, disclosed on demand.
+// here, below the editorial fold.
 //
 // The panel is driven by the page's selected day (a settled past day), so it is
-// static: no time-window picker, no auto-refresh. It mounts only when the owner
-// opens it (lazy-loaded on first interaction); its heavy widgets (Gantt and
-// Map) remain self-lazy via React.lazy / dynamic import.
+// static: no time-window picker, no auto-refresh. The detail body is always
+// shown; its heavy widgets (Gantt and Map) remain self-lazy via React.lazy /
+// dynamic import so they stream in without blocking the briefing above.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useMemo, useState } from "react";
-import { ChevronRight } from "lucide-react";
 
 import { useChroniclesAggregates, useChroniclesPointEvents } from "@/hooks/use-chronicles";
 import { dayWindowInTz } from "@/components/chronicles/tz-format";
@@ -43,39 +42,15 @@ interface ChroniclesDrilldownPanelProps {
 }
 
 export function ChroniclesDrilldownPanel({ date, tz }: ChroniclesDrilldownPanelProps) {
-  const [open, setOpen] = useState(false);
   return (
     <section
       aria-label="Day detail"
       className="space-y-6 border-t pt-8"
       style={{ borderColor: "var(--border)" }}
     >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-controls="chronicles-day-detail"
-        className="inline-flex cursor-pointer items-center gap-2 tnum uppercase"
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: "10px",
-          letterSpacing: "0.14em",
-          color: "var(--muted-foreground)",
-          background: "transparent",
-          border: 0,
-          padding: 0,
-        }}
-      >
-        <ChevronRight
-          aria-hidden
-          className="transition-transform duration-base ease-out-quart"
-          style={{ width: 12, height: 12, transform: open ? "rotate(90deg)" : "none" }}
-        />
-        {open ? "Hide the day in detail" : "Open the day in detail"}
-      </button>
-      {/* Wrapper always present so aria-controls resolves even when collapsed;
-          the heavy body mounts only on expand (lazy-loaded on first interaction). */}
-      <div id="chronicles-day-detail">{open ? <DrilldownBody date={date} tz={tz} /> : null}</div>
+      <div id="chronicles-day-detail">
+        <DrilldownBody date={date} tz={tz} />
+      </div>
     </section>
   );
 }

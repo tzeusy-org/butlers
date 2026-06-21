@@ -495,8 +495,40 @@ body {
   * {
     @apply border-border outline-ring/50;
   }
+  /* Tell the browser which palette to render native UI (scrollbars, form
+     controls) in, so the default white scrollbar follows the theme. */
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* Themed scrollbars. Firefox uses the two-value `scrollbar-*` shorthands;
+     WebKit/Blink uses the pseudo-elements below. Components that opt out
+     (e.g. the sidebar) override these with higher specificity. */
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--border-strong);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
   }
 }
 
