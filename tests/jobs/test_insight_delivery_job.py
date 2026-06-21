@@ -93,32 +93,6 @@ class TestBuildSwitchboardInsightNotifyFn:
         assert call_kwargs.kwargs["source_butler"] == "switchboard"
 
     @pytest.mark.asyncio
-    async def test_null_channel_defaults_to_telegram(self):
-        """When metadata has no channel (None), notify_fn defaults to telegram."""
-        from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
-
-        pool = _make_mock_pool()
-        notify_fn = _build_switchboard_insight_notify_fn(pool)
-
-        with (
-            patch(
-                "butlers.credential_store.resolve_owner_entity_info",
-                new=AsyncMock(return_value="99887766"),
-            ) as mock_resolve,
-            patch(
-                "butlers.tools.switchboard.notification.deliver.deliver",
-                new=AsyncMock(return_value={"status": "sent"}),
-            ) as mock_deliver,
-        ):
-            # No "channel" key in metadata → should default to telegram
-            await notify_fn("Insight without channel", {"intent": "insight"})
-
-        mock_resolve.assert_awaited_once_with(pool, "telegram_chat_id")
-        call_kwargs = mock_deliver.call_args
-        assert call_kwargs.kwargs["channel"] == "telegram"
-        assert call_kwargs.kwargs["recipient"] == "99887766"
-
-    @pytest.mark.asyncio
     async def test_failed_status_translated_to_error(self):
         """deliver() returning status='failed' is translated to status='error' for the broker."""
         from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
@@ -375,120 +349,23 @@ class TestSwitchboardInsightDeliveryJobWiring:
 class TestBrokerChannelSelectionInNotifyMetadata:
     """Verify the broker computes the majority delivery channel and includes it in metadata."""
 
+    @pytest.mark.parametrize(
+        ("channels", "expected_channel"),
+        [
+            # 2 telegram, 1 email → majority is telegram
+            (["telegram", "telegram", "email"], "telegram"),
+            # all-None candidate set → no candidate specifies a channel, so the
+            # broker must yield channel=None (notify_fn resolves the owner's
+            # primary channel). Guards against a crash on empty Counter input or
+            # emitting a non-None channel for an all-None set.
+            ([None, None, None], None),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_null_channel_candidates_yield_none_in_metadata(self):
-        """When all candidates have channel=None, notify_metadata['channel'] is None.
-
-        Patches the broker's internal step helpers to isolate just the
-        channel-selection and metadata-building path.
+    async def test_majority_channel_for_digest(self, channels, expected_channel):
+        """The broker computes meta['channel'] from candidate channels:
+        majority vote when present, None when no candidate specifies one.
         """
-        from butlers.tools.switchboard.insight.broker import delivery_cycle  # noqa: PLC0415
-
-        captured_metadata: list[dict] = []
-
-        async def _capture_notify(message: str, metadata: dict) -> dict:
-            captured_metadata.append(dict(metadata))
-            return {"status": "sent"}
-
-        import asyncpg  # noqa: PLC0415
-
-        mock_pool = AsyncMock(spec=asyncpg.Pool)
-
-        # Candidate with channel=None
-        cid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        candidate: dict[str, Any] = {
-            "id": cid,
-            "origin_butler": "health",
-            "priority": 80,
-            "category": "test",
-            "dedup_key": "health:test:entity:2026",
-            "cooldown_days": None,
-            "message": "Test insight",
-            "channel": None,
-            "metadata": None,
-        }
-
-        # Patch all the step-level helpers in the broker so we exercise only the
-        # channel-selection + metadata path without needing a real DB.
-        with (
-            patch(
-                "butlers.tools.switchboard.insight.broker.get_insight_settings",
-                new=AsyncMock(
-                    return_value={
-                        "verbosity": "minimal",
-                        "custom_budget": None,
-                        "quiet_start": None,
-                        "quiet_end": None,
-                        "quiet_timezone": None,
-                    }
-                ),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker._is_quiet_hours",
-                return_value=False,
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.expire_candidates",
-                new=AsyncMock(return_value=0),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.filter_by_cooldown",
-                new=AsyncMock(return_value=[cid]),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.deduplicate_candidates",
-                new=AsyncMock(return_value=[cid]),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.compute_effective_budget",
-                new=AsyncMock(return_value=1),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.record_cooldowns",
-                new=AsyncMock(),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.record_engagement_rows",
-                new=AsyncMock(),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.cleanup_old_rows",
-                new=AsyncMock(),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.check_total_disengagement_auto_off",
-                new=AsyncMock(return_value=False),
-            ),
-        ):
-            # Stub pool.fetch to return pending candidate IDs + the full candidate.
-            # Use _FakeRecord so dict(row) works (broker does [dict(row) for row in rows]).
-            async def mock_fetch(query: str, *args: Any) -> list:
-                if "insight_candidates" in query and "LIMIT" not in query:
-                    # pending IDs query
-                    return [_FakeRecord({"id": cid})]
-                if "insight_candidates" in query and "LIMIT" in query:
-                    # top-B select: return the full candidate
-                    return [_FakeRecord(candidate)]
-                return []
-
-            mock_pool.fetch = mock_fetch
-            mock_pool.execute = AsyncMock(return_value="UPDATE 1")
-            mock_pool.executemany = AsyncMock()
-
-            await delivery_cycle(mock_pool, notify_fn=_capture_notify)
-
-        assert len(captured_metadata) >= 1, "notify_fn should have been called"
-        meta = captured_metadata[0]
-        assert "channel" in meta, (
-            "notify_metadata must include 'channel' key (spec: channel selection)"
-        )
-        # All candidates have channel=None → majority channel is None
-        assert meta["channel"] is None
-        assert meta["intent"] == "insight"
-
-    @pytest.mark.asyncio
-    async def test_majority_channel_wins_for_digest(self):
-        """When candidates have mixed channels, the majority channel is used."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle  # noqa: PLC0415
 
         captured_metadata: list[dict] = []
@@ -505,7 +382,6 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         cid2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
         cid3 = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
-        # 2 telegram, 1 email → majority is telegram
         candidates = [
             {
                 "id": cid1,
@@ -515,7 +391,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "dedup_key": "health:test:a:2026",
                 "cooldown_days": None,
                 "message": "Insight 1",
-                "channel": "telegram",
+                "channel": channels[0],
                 "metadata": None,
             },
             {
@@ -526,7 +402,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "dedup_key": "finance:test:b:2026",
                 "cooldown_days": None,
                 "message": "Insight 2",
-                "channel": "telegram",
+                "channel": channels[1],
                 "metadata": None,
             },
             {
@@ -537,7 +413,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "dedup_key": "relationship:test:c:2026",
                 "cooldown_days": None,
                 "message": "Insight 3",
-                "channel": "email",
+                "channel": channels[2],
                 "metadata": None,
             },
         ]
@@ -599,6 +475,6 @@ class TestBrokerChannelSelectionInNotifyMetadata:
 
         assert len(captured_metadata) >= 1, "notify_fn should have been called"
         meta = captured_metadata[0]
-        assert meta.get("channel") == "telegram", (
-            f"Expected majority channel 'telegram' (2 vs 1), got {meta.get('channel')!r}"
+        assert meta.get("channel") == expected_channel, (
+            f"Expected channel {expected_channel!r}, got {meta.get('channel')!r}"
         )

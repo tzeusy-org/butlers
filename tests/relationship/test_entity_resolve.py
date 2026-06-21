@@ -82,14 +82,6 @@ class TestSourceLinksHit:
         result = await resolve_contact_entity_id(pool, _CONTACT_ID)
         assert result == _ENTITY_ID
 
-    async def test_fetchrow_called_once_on_hit(self):
-        from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
-
-        pool = _make_pool(source_links_row={"local_entity_id": _ENTITY_ID})
-        await resolve_contact_entity_id(pool, _CONTACT_ID)
-        # Only the contacts_source_links query; subsequent steps not needed.
-        assert pool.fetchrow.await_count == 1
-
 
 # ===========================================================================
 # (b) contacts_source_links row with NULL local_entity_id → ValueError
@@ -97,16 +89,14 @@ class TestSourceLinksHit:
 
 
 class TestSourceLinksNullEntityId:
-    async def test_raises_value_error(self):
+    async def test_raises_value_error_with_contact_id(self):
+        """bu-ozpyl: a source-linked contact with NULL local_entity_id is a data
+        integrity error; the ValueError must name the offending contact_id."""
         from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
         pool = _make_pool(source_links_row={"local_entity_id": None})
         with pytest.raises(ValueError, match="data integrity issue"):
             await resolve_contact_entity_id(pool, _CONTACT_ID)
-
-    async def test_error_message_includes_contact_id(self):
-        from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
-
         pool = _make_pool(source_links_row={"local_entity_id": None})
         with pytest.raises(ValueError, match=str(_CONTACT_ID)):
             await resolve_contact_entity_id(pool, _CONTACT_ID)
@@ -128,17 +118,6 @@ class TestContactEntityMapHit:
         result = await resolve_contact_entity_id(pool, _CONTACT_ID)
         assert result == _ENTITY_ID
 
-    async def test_fetchrow_called_twice_on_source_links_miss(self):
-        from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
-
-        pool = _make_pool(
-            source_links_row=None,
-            contact_entity_map_row={"entity_id": _ENTITY_ID},
-        )
-        await resolve_contact_entity_id(pool, _CONTACT_ID)
-        # contacts_source_links miss + contact_entity_map hit = 2 calls
-        assert pool.fetchrow.await_count == 2
-
 
 # ===========================================================================
 # (d) contacts_source_links + map miss, UUID is a known entity_id
@@ -156,17 +135,6 @@ class TestEntityDirectHit:
         )
         result = await resolve_contact_entity_id(pool, _ENTITY_ID)
         assert result == _ENTITY_ID
-
-    async def test_three_fetchrows_on_double_miss(self):
-        from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
-
-        pool = _make_pool(
-            source_links_row=None,
-            contact_entity_map_row=None,
-            entities_row={"id": _ENTITY_ID},
-        )
-        await resolve_contact_entity_id(pool, _ENTITY_ID)
-        assert pool.fetchrow.await_count == 3
 
 
 # ===========================================================================

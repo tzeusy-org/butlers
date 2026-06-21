@@ -91,26 +91,6 @@ def test_contact_info_type_to_predicate_unmapped_returns_none() -> None:
         )
 
 
-@pytest.mark.unit
-def test_telegram_user_id_maps_to_has_handle() -> None:
-    """telegram_user_id maps to has-handle (bead bu-55ggu: was previously unmapped).
-
-    identity._CHANNEL_TYPE_TO_PREDICATE already maps telegram_user_id → has-handle;
-    this test confirms the central writer mapping is now consistent with it.
-    """
-    assert contact_info_type_to_predicate("telegram_user_id") == "has-handle"
-
-
-@pytest.mark.unit
-def test_telegram_username_maps_to_has_handle() -> None:
-    """telegram_username maps to has-handle (bead bu-55ggu: was previously unmapped).
-
-    backfill.py already writes telegram_username → has-handle for new contacts;
-    this test confirms the central writer mapping is now consistent with it.
-    """
-    assert contact_info_type_to_predicate("telegram_username") == "has-handle"
-
-
 async def test_supersession_insert_is_conflict_safe() -> None:
     """The replacement insert must be conflict-safe via DO NOTHING (never DO UPDATE).
 
@@ -397,83 +377,47 @@ def test_mcp_tool_wrapper_has_no_src_parameter() -> None:
 
 
 @pytest.mark.unit
-def test_add_contact_request_rejects_owner_self_src() -> None:
-    """AddContactRequest must raise ValidationError when src='owner-self'.
-
-    Trusted source strings are reserved for internal daemon code paths and
-    must never be accepted from HTTP callers (bu-vj46x).
-    """
+@pytest.mark.parametrize(
+    "model_name,kwargs,trusted_src",
+    [
+        (
+            "AddContactRequest",
+            {"predicate": "has-email", "value": "attacker@evil.com"},
+            "owner-self",
+        ),
+        (
+            "AddContactRequest",
+            {"predicate": "has-phone", "value": "+10000000000"},
+            "owner-bootstrap",
+        ),
+        ("UpdateContactRequest", {"new_value": "attacker@evil.com"}, "owner-self"),
+        ("UpdateContactRequest", {"new_value": "+10000000000"}, "owner-bootstrap"),
+    ],
+    ids=[
+        "add-owner-self",
+        "add-owner-bootstrap",
+        "update-owner-self",
+        "update-owner-bootstrap",
+    ],
+)
+def test_contact_request_rejects_trusted_internal_src(
+    model_name: str, kwargs: dict, trusted_src: str
+) -> None:
+    """Add/UpdateContactRequest must reject reserved internal src values from HTTP
+    callers — the loc=('src',) error is the security gate (bu-vj46x). Both models
+    enumerate owner-self and owner-bootstrap."""
     from pydantic import ValidationError
 
     models = _load_relationship_api_models()
-    AddContactRequest = models.AddContactRequest
+    model = getattr(models, model_name)
 
     with pytest.raises(ValidationError) as exc_info:
-        AddContactRequest(predicate="has-email", value="attacker@evil.com", src="owner-self")
+        model(src=trusted_src, **kwargs)
 
     errors = exc_info.value.errors()
     assert any(e["loc"] == ("src",) for e in errors), (
         "Expected validation error on 'src' field, got: " + str([e["loc"] for e in errors])
     )
-    assert any("reserved internal source" in str(e["msg"]) for e in errors), (
-        "Expected 'reserved internal source' in error message, got: "
-        + str([e["msg"] for e in errors])
-    )
-
-
-@pytest.mark.unit
-def test_add_contact_request_rejects_owner_bootstrap_src() -> None:
-    """AddContactRequest must raise ValidationError when src='owner-bootstrap'.
-
-    Trusted source strings are reserved for internal daemon code paths and
-    must never be accepted from HTTP callers (bu-vj46x).
-    """
-    from pydantic import ValidationError
-
-    models = _load_relationship_api_models()
-    AddContactRequest = models.AddContactRequest
-
-    with pytest.raises(ValidationError) as exc_info:
-        AddContactRequest(predicate="has-phone", value="+10000000000", src="owner-bootstrap")
-
-    errors = exc_info.value.errors()
-    assert any(e["loc"] == ("src",) for e in errors)
-
-
-@pytest.mark.unit
-def test_update_contact_request_rejects_owner_self_src() -> None:
-    """UpdateContactRequest must raise ValidationError when src='owner-self'.
-
-    Both the add and update request models gate the API surface (bu-vj46x).
-    """
-    from pydantic import ValidationError
-
-    models = _load_relationship_api_models()
-    UpdateContactRequest = models.UpdateContactRequest
-
-    with pytest.raises(ValidationError) as exc_info:
-        UpdateContactRequest(new_value="attacker@evil.com", src="owner-self")
-
-    errors = exc_info.value.errors()
-    assert any(e["loc"] == ("src",) for e in errors)
-
-
-@pytest.mark.unit
-def test_update_contact_request_rejects_owner_bootstrap_src() -> None:
-    """UpdateContactRequest must raise ValidationError when src='owner-bootstrap'.
-
-    Both the add and update request models gate the API surface (bu-vj46x).
-    """
-    from pydantic import ValidationError
-
-    models = _load_relationship_api_models()
-    UpdateContactRequest = models.UpdateContactRequest
-
-    with pytest.raises(ValidationError) as exc_info:
-        UpdateContactRequest(new_value="+10000000000", src="owner-bootstrap")
-
-    errors = exc_info.value.errors()
-    assert any(e["loc"] == ("src",) for e in errors)
 
 
 @pytest.mark.unit

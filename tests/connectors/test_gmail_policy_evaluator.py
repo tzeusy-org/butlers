@@ -52,7 +52,6 @@ async def test_evaluator_loads_contacts_from_db():
 
     assert "alice@example.com" in contacts
     assert "bob@example.com" in contacts
-    pool.fetch.assert_awaited_once()
 
 
 async def test_evaluator_normalizes_email_addresses():

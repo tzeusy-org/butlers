@@ -335,35 +335,21 @@ def test_is_adverse(metric: str, state: str, expect_adverse: bool):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_ha_datetime_iso_string():
-    """Parses ISO 8601 strings with Z suffix to UTC-aware datetimes."""
+def test_parse_ha_datetime_branches():
+    """_parse_ha_datetime: ISO-Z → UTC-aware datetime; None/invalid → None;
+    existing datetime passes through unchanged."""
     from butlers.jobs.health_ha_reader import _parse_ha_datetime
 
-    result = _parse_ha_datetime("2024-01-15T10:30:00Z")
-    assert result is not None
-    assert result.tzinfo is not None
-    assert result.year == 2024
-    assert result.month == 1
-
-
-def test_parse_ha_datetime_none_returns_none():
-    from butlers.jobs.health_ha_reader import _parse_ha_datetime
+    iso = _parse_ha_datetime("2024-01-15T10:30:00Z")
+    assert iso is not None
+    assert iso.tzinfo is not None
+    assert iso.year == 2024 and iso.month == 1
 
     assert _parse_ha_datetime(None) is None
-
-
-def test_parse_ha_datetime_invalid_returns_none():
-    from butlers.jobs.health_ha_reader import _parse_ha_datetime
-
     assert _parse_ha_datetime("not-a-date") is None
 
-
-def test_parse_ha_datetime_existing_datetime_passthrough():
-    from butlers.jobs.health_ha_reader import _parse_ha_datetime
-
     dt = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
-    result = _parse_ha_datetime(dt)
-    assert result == dt
+    assert _parse_ha_datetime(dt) == dt
 
 
 # ---------------------------------------------------------------------------
@@ -435,68 +421,7 @@ async def test_dispatch_passes_none_reader_when_ha_absent():
     assert call_kwargs.kwargs.get("ha_environment_reader") is None
 
 
-async def test_dispatch_correlation_path_executes_with_reader():
-    """End-to-end dispatch test: reader present → environment-correlation fires.
-
-    Proves requirement (b): environment-correlation scan path executes when a
-    reader is present.  Uses real health_jobs.run_insight_scan with a mocked
-    pool and reader.
-    """
-    from butlers.jobs._roster_loader import load_roster_jobs
-    from butlers.scheduled_jobs import _run_health_insight_scan_job
-
-    now = datetime.now(UTC)
-    day1 = now - timedelta(days=2)
-    day2 = now - timedelta(days=3)
-
-    # Pool routes: sleep sessions for the env-correlation query, empty for others.
-    def fetch_router(sql: str, *args: Any) -> list[Any]:
-        if "'sleep_session'" in sql:
-            return [
-                {"valid_at": day1, "duration_ms": "18000000"},  # 5h — short
-                {"valid_at": day2, "duration_ms": "18000000"},
-            ]
-        return []
-
-    pool = MagicMock()
-    pool.fetch = AsyncMock(side_effect=fetch_router)
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=0)
-    pool.execute = AsyncMock()
-
-    # Reader returns adverse readings co-incident with the short-sleep days.
-    async def adverse_reader():
-        return [
-            {"captured_at": day1, "metric": "temperature", "adverse": True},
-            {"captured_at": day2, "metric": "temperature", "adverse": True},
-        ]
-
-    captured_proposals: list[dict] = []
-
-    async def fake_propose(_pool: Any, **kwargs: Any) -> dict:
-        captured_proposals.append(kwargs)
-        return {"status": "accepted"}
-
-    with (
-        patch(
-            "butlers.jobs.health_ha_reader.build_ha_environment_reader",
-            new=AsyncMock(return_value=adverse_reader),
-        ),
-        patch(
-            "butlers.jobs._roster_loader.load_roster_jobs",
-            return_value=load_roster_jobs("health"),
-        ),
-        patch(
-            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
-            side_effect=fake_propose,
-        ),
-    ):
-        await _run_health_insight_scan_job(pool, None)
-
-    env = [c for c in captured_proposals if c.get("category") == "correlation-environment"]
-    assert len(env) == 1, (
-        "Expected exactly one correlation-environment candidate when reader is present; "
-        f"got {len(env)}.  All proposals: {captured_proposals}"
-    )
-    assert env[0]["priority"] == 50
-    assert "temperature" in env[0]["dedup_key"]
+# The end-to-end environment-correlation scan path (reader present → candidate
+# fires) is covered by test_environment_correlation_submits_via_mcp_tool in
+# test_health_jobs.py; the dispatch wiring above only needs to prove the reader
+# is constructed/injected (and skipped when HA is absent).

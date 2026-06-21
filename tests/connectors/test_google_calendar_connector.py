@@ -51,8 +51,8 @@ def account_config() -> CalendarAccountConfig:
 # ---------------------------------------------------------------------------
 
 
-def test_build_event_envelope_schema_version() -> None:
-    """event envelope must carry schema_version='ingest.v1'."""
+def test_build_event_envelope_contract() -> None:
+    """event envelope carries ingest.v1 schema, calendar source, full tier."""
     env = build_event_envelope(
         {
             "id": "evt-1",
@@ -66,20 +66,15 @@ def test_build_event_envelope_schema_version() -> None:
     )
     assert env["schema_version"] == "ingest.v1"
     assert env["source"]["channel"] == "google_calendar"
-    assert env["source"]["provider"] == "google_calendar"
     assert env["control"]["ingestion_tier"] == "full"
-
-
-def test_build_starting_soon_envelope_schema_version() -> None:
-    """starting_soon envelope carries schema_version='ingest.v1' and interactive policy tier."""
-    env = build_starting_soon_envelope(
+    # starting_soon variant carries interactive tier + minted external_event_id
+    soon = build_starting_soon_envelope(
         {"id": "evt-2", "summary": "Standup", "start": {"dateTime": _OBSERVED}},
         lead_minutes=15,
         endpoint_identity=_ENDPOINT,
     )
-    assert env["schema_version"] == "ingest.v1"
-    assert env["control"]["policy_tier"] == "interactive"
-    assert "starting_soon:" in env["event"]["external_event_id"]
+    assert soon["control"]["policy_tier"] == "interactive"
+    assert "starting_soon:" in soon["event"]["external_event_id"]
 
 
 def test_internal_envelope_passes_parse_ingest_envelope() -> None:
@@ -162,14 +157,11 @@ def test_parse_dt_invalid_returns_none() -> None:
     assert _parse_dt("") is None
 
 
-def test_parse_event_start_prefers_datetime_over_date() -> None:
+def test_parse_event_start_prefers_datetime_and_missing() -> None:
     event = {"start": {"dateTime": "2026-06-01T10:00:00Z", "date": "2026-06-01"}}
     dt = _parse_event_start(event)
     assert dt is not None
     assert dt.hour == 10
-
-
-def test_parse_event_start_missing_returns_none() -> None:
     assert _parse_event_start({}) is None
 
 

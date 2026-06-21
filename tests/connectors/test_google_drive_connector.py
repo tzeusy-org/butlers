@@ -66,41 +66,21 @@ def base_envelope() -> dict[str, Any]:
     )
 
 
-def test_envelope_schema_version(base_envelope: dict[str, Any]) -> None:
-    """Envelope must carry schema_version='ingest.v1'."""
+def test_envelope_contract_fields(base_envelope: dict[str, Any]) -> None:
+    """Envelope carries ingest.v1 schema, drive source, metadata tier, null raw, no extras."""
     assert base_envelope["schema_version"] == "ingest.v1"
-
-
-def test_envelope_source_fields(base_envelope: dict[str, Any]) -> None:
-    """source.channel, .provider, .endpoint_identity match Drive connector."""
     assert base_envelope["source"]["channel"] == "google_drive"
     assert base_envelope["source"]["provider"] == "google_drive"
     assert base_envelope["source"]["endpoint_identity"] == _ENDPOINT
-
-
-def test_envelope_event_id_format(base_envelope: dict[str, Any]) -> None:
-    """event.external_event_id follows 'gdrive:<file_id>:<seq>' format."""
-    assert base_envelope["event"]["external_event_id"] == f"gdrive:{_FAKE_FILE_ID}:1"
-
-
-def test_envelope_thread_id_is_file_id(base_envelope: dict[str, Any]) -> None:
-    """event.external_thread_id groups changes to the same file by file_id."""
-    assert base_envelope["event"]["external_thread_id"] == _FAKE_FILE_ID
-
-
-def test_envelope_payload_raw_is_null(base_envelope: dict[str, Any]) -> None:
-    """payload.raw must be None — metadata-tier only per spec."""
-    assert base_envelope["payload"]["raw"] is None
-
-
-def test_envelope_ingestion_tier_is_metadata(base_envelope: dict[str, Any]) -> None:
-    """control.ingestion_tier must be 'metadata' for Drive connector."""
+    assert base_envelope["payload"]["raw"] is None  # metadata-tier only
     assert base_envelope["control"]["ingestion_tier"] == "metadata"
+    assert "event_type" not in base_envelope["event"]  # IngestEventV1 extra=forbid
 
 
-def test_envelope_no_extra_event_fields(base_envelope: dict[str, Any]) -> None:
-    """event dict must not contain extra fields (IngestEventV1 has extra=forbid)."""
-    assert "event_type" not in base_envelope["event"]
+def test_envelope_event_id_and_thread_id(base_envelope: dict[str, Any]) -> None:
+    """event_id is 'gdrive:<file_id>:<seq>'; thread_id=file_id groups same-file changes."""
+    assert base_envelope["event"]["external_event_id"] == f"gdrive:{_FAKE_FILE_ID}:1"
+    assert base_envelope["event"]["external_thread_id"] == _FAKE_FILE_ID
 
 
 def test_envelope_validates_against_parse_ingest_envelope(base_envelope: dict[str, Any]) -> None:

@@ -83,27 +83,29 @@ def test_location_idempotency_key_deterministic() -> None:
     assert e1["control"]["idempotency_key"] == e2["control"]["idempotency_key"]
 
 
-def test_transition_envelope_schema_version() -> None:
-    env = build_transition_envelope(_TRANSITION_PAYLOAD, _ENDPOINT, _OBSERVED, "metadata")
-    assert env["schema_version"] == "ingest.v1"
-
-
 def test_transition_envelope_event_id_includes_event_type() -> None:
     env = build_transition_envelope(_TRANSITION_PAYLOAD, _ENDPOINT, _OBSERVED, "metadata")
+    assert env["schema_version"] == "ingest.v1"
     assert "enter" in env["event"]["external_event_id"]
 
 
-def test_location_envelope_passes_parse_ingest_envelope() -> None:
-    """OwnTracks location envelope must validate against parse_ingest_envelope."""
+def test_envelopes_pass_parse_ingest_envelope() -> None:
+    """OwnTracks location and waypoints envelopes validate against parse_ingest_envelope."""
     from pydantic import ValidationError
 
     from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
-    env = build_location_envelope(_LOCATION_PAYLOAD, _ENDPOINT, _OBSERVED, "metadata")
-    try:
-        parse_ingest_envelope(env)
-    except ValidationError as exc:
-        pytest.fail(f"parse_ingest_envelope raised ValidationError: {exc}")
+    waypoints = {"_type": "waypoints", "tst": 1711447400, "tid": "ph", "waypoints": []}
+    envelopes = [
+        build_location_envelope(_LOCATION_PAYLOAD, _ENDPOINT, _OBSERVED, "metadata"),
+        build_waypoints_envelope(waypoints, _ENDPOINT, _OBSERVED, "metadata"),
+    ]
+    for env in envelopes:
+        assert env["schema_version"] == "ingest.v1"
+        try:
+            parse_ingest_envelope(env)
+        except ValidationError as exc:
+            pytest.fail(f"parse_ingest_envelope raised ValidationError: {exc}")
 
 
 def test_location_normalized_text_includes_coordinates() -> None:
@@ -118,12 +120,6 @@ def test_location_normalized_text_excludes_ssid() -> None:
     payload_with_ssid = {**_LOCATION_PAYLOAD, "SSID": "HomeNetwork"}
     text = build_location_normalized_text(payload_with_ssid, "metadata")
     assert "HomeNetwork" not in text
-
-
-def test_waypoints_envelope_schema_version() -> None:
-    payload = {"_type": "waypoints", "tst": 1711447400, "tid": "ph", "waypoints": []}
-    env = build_waypoints_envelope(payload, _ENDPOINT, _OBSERVED, "metadata")
-    assert env["schema_version"] == "ingest.v1"
 
 
 _TOKEN = "s3cret-token"

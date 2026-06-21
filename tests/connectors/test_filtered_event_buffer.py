@@ -123,19 +123,15 @@ async def test_flush_db_error_is_non_fatal() -> None:
     # (rows_to_flush was copied before the error; original self._rows may or may not be cleared)
 
 
-def test_reason_label_exclude_non_empty() -> None:
-    label = FilteredEventBuffer.reason_label_exclude("CATEGORY_PROMOTIONS")
-    assert label
-    assert isinstance(label, str)
-
-
-def test_reason_validation_error_non_empty() -> None:
-    label = FilteredEventBuffer.reason_validation_error()
-    assert label
-    assert isinstance(label, str)
-
-
-def test_reason_policy_rule_non_empty() -> None:
-    label = FilteredEventBuffer.reason_policy_rule("scope", "block", "sender_domain")
+@pytest.mark.parametrize(
+    "make_label",
+    [
+        lambda: FilteredEventBuffer.reason_label_exclude("CATEGORY_PROMOTIONS"),
+        lambda: FilteredEventBuffer.reason_validation_error(),
+        lambda: FilteredEventBuffer.reason_policy_rule("scope", "block", "sender_domain"),
+    ],
+)
+def test_reason_label_helpers_return_non_empty_str(make_label) -> None:
+    label = make_label()
     assert label
     assert isinstance(label, str)

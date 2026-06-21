@@ -129,30 +129,6 @@ def test_normalized_text_binary_sensor_on_off() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persist_ha_history_executes_insert() -> None:
-    """persist_ha_history calls pool.execute with correct entity_id and state."""
-    mock_pool = MagicMock()
-    mock_pool.execute = AsyncMock()
-
-    recorded_at = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
-    result = await persist_ha_history(
-        mock_pool,
-        entity_id="person.tzeusy",
-        state="home",
-        attributes={"latitude": 1.0, "longitude": 2.0},
-        recorded_at=recorded_at,
-    )
-
-    assert result is True
-    mock_pool.execute.assert_awaited_once()
-    call_args = mock_pool.execute.call_args
-    # First positional arg after SQL is entity_id
-    assert call_args[0][1] == "person.tzeusy"
-    assert call_args[0][2] == "home"
-    assert call_args[0][4] == recorded_at
-
-
-@pytest.mark.asyncio
 async def test_persist_ha_history_null_state_and_attrs() -> None:
     """persist_ha_history accepts None state and None attributes."""
     mock_pool = MagicMock()

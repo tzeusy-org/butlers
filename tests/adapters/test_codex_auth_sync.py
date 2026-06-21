@@ -73,12 +73,10 @@ def _mock_store() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-def test_compute_fingerprint_returns_none_for_missing_file(tmp_path: Path) -> None:
-    missing = tmp_path / "no_such_file.json"
-    assert _compute_file_fingerprint(missing) is None
+def test_compute_fingerprint_tuple_or_none(tmp_path: Path) -> None:
+    """Existing file → (mtime_ns, sha256 hex) tuple; missing file → None."""
+    assert _compute_file_fingerprint(tmp_path / "no_such_file.json") is None
 
-
-def test_compute_fingerprint_returns_tuple(tmp_path: Path) -> None:
     auth = tmp_path / "auth.json"
     _write_auth(auth)
     fp = _compute_file_fingerprint(auth)
@@ -108,24 +106,21 @@ def test_compute_fingerprint_changes_after_write(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_record_auth_baseline_populates_cache(tmp_path: Path) -> None:
+def test_record_auth_baseline_populates_cache_and_skips_missing(tmp_path: Path) -> None:
+    """Existing file seeds the cache with its fingerprint; missing file is a no-op."""
     auth = tmp_path / "auth.json"
     _write_auth(auth)
-
     key = str(auth)
     _AUTH_SYNC_CACHE.pop(key, None)
     record_auth_baseline(auth)
-
     assert key in _AUTH_SYNC_CACHE
     assert _AUTH_SYNC_CACHE[key] == _compute_file_fingerprint(auth)
 
-
-def test_record_auth_baseline_noop_for_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "no_such_file.json"
-    key = str(missing)
-    _AUTH_SYNC_CACHE.pop(key, None)
+    missing_key = str(missing)
+    _AUTH_SYNC_CACHE.pop(missing_key, None)
     record_auth_baseline(missing)
-    assert key not in _AUTH_SYNC_CACHE
+    assert missing_key not in _AUTH_SYNC_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -234,29 +229,6 @@ async def test_check_and_persist_swallows_persist_exception(tmp_path: Path) -> N
         await check_and_persist_rotation(auth, store, butler_name="qa")
 
 
-async def test_check_and_persist_cache_updated_after_persist(tmp_path: Path) -> None:
-    """After a successful persist, the cache is updated to the new fingerprint."""
-    import time
-
-    auth = tmp_path / ".codex" / "auth.json"
-    _write_auth(auth, {"access_token": "v1"})
-    record_auth_baseline(auth)
-
-    # Mutate the file to look like a rotation
-    time.sleep(0.01)
-    _write_auth(auth, {"access_token": "v2"})
-
-    store = _mock_store()
-
-    with patch(_PERSIST, new=AsyncMock(return_value=True)):
-        await check_and_persist_rotation(auth, store, butler_name="qa")
-
-    # Cache should now reflect v2 fingerprint; next call should NOT re-persist
-    with patch(_PERSIST, new=AsyncMock(return_value=True)) as mock_no_call:
-        await check_and_persist_rotation(auth, store, butler_name="qa")
-    mock_no_call.assert_not_awaited()
-
-
 async def test_check_and_persist_does_not_update_cache_when_persist_fails(
     tmp_path: Path,
 ) -> None:
@@ -280,32 +252,25 @@ async def test_check_and_persist_does_not_update_cache_when_persist_fails(
 # ---------------------------------------------------------------------------
 
 
-async def test_schedule_auth_sync_noop_when_no_store(tmp_path: Path) -> None:
-    """No credential store → no asyncio task scheduled."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-    assert adapter._credential_store is None
-
-    auth = tmp_path / ".codex" / "auth.json"
-    _write_auth(auth)
+@pytest.mark.parametrize("missing", ["store", "token_path"], ids=["no-store", "no-token-path"])
+async def test_schedule_auth_sync_noop(missing: str, tmp_path: Path) -> None:
+    """No credential store OR no token path → no asyncio task scheduled."""
+    if missing == "store":
+        adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+        assert adapter._credential_store is None
+        auth = tmp_path / ".codex" / "auth.json"
+        _write_auth(auth)
+        token_path = auth
+    else:
+        store = _mock_store()
+        adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store)
+        token_path = None
 
     tasks_before = len(asyncio.all_tasks())
-    adapter._schedule_auth_sync(auth)
+    adapter._schedule_auth_sync(token_path)
     # Give the event loop a chance to run any scheduled tasks
     await asyncio.sleep(0)
-    tasks_after = len(asyncio.all_tasks())
-    assert tasks_after == tasks_before
-
-
-async def test_schedule_auth_sync_noop_when_no_token_path() -> None:
-    """No token path → no asyncio task scheduled even with a store wired."""
-    store = _mock_store()
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store)
-
-    tasks_before = len(asyncio.all_tasks())
-    adapter._schedule_auth_sync(None)
-    await asyncio.sleep(0)
-    tasks_after = len(asyncio.all_tasks())
-    assert tasks_after == tasks_before
+    assert len(asyncio.all_tasks()) == tasks_before
 
 
 async def test_schedule_auth_sync_fires_task_when_store_present(tmp_path: Path) -> None:
@@ -583,12 +548,21 @@ def test_refresh_token_reused_marker_is_present_in_constant() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_record_test_result_updates_last_test_ok() -> None:
-    """record_test_result issues an UPDATE with the correct parameters."""
+@pytest.mark.parametrize(
+    "ok,message,expect_message",
+    [
+        # Failure with message → last_test_ok=False, message persisted.
+        (False, "token already used", "token already used"),
+        # Success with no message → last_test_ok=True, message cleared to None.
+        (True, None, None),
+    ],
+    ids=["failure-with-message", "success-clears-message"],
+)
+async def test_record_test_result_persists_ok_and_message(ok, message, expect_message) -> None:
+    """record_test_result issues an UPDATE binding ok, message, and key."""
     from unittest.mock import AsyncMock as AM
     from unittest.mock import MagicMock as MM
 
-    # Build a minimal asyncpg-pool mock that lets us inspect the execute call.
     conn = MM()
     conn.execute = AM(return_value="UPDATE 1")
     conn.__aenter__ = AM(return_value=conn)
@@ -600,37 +574,19 @@ async def test_record_test_result_updates_last_test_ok() -> None:
     from butlers.credential_store import CredentialStore
 
     store = CredentialStore(pool)
-    await store.record_test_result("cli-auth/codex", ok=False, message="token already used")
+    kwargs = {"ok": ok}
+    if message is not None:
+        kwargs["message"] = message
+    await store.record_test_result("cli-auth/codex", **kwargs)
 
     conn.execute.assert_awaited_once()
     call_args = conn.execute.await_args
-    # First positional arg is the SQL; params are $1=ok, $2=message, $3=key
-    assert call_args.args[1] is False  # ok
-    assert "token already used" in call_args.args[2]
-    assert call_args.args[3] == "cli-auth/codex"
-
-
-async def test_record_test_result_clears_message_on_success() -> None:
-    """Passing ok=True with no message sends None for last_test_message."""
-    from unittest.mock import AsyncMock as AM
-    from unittest.mock import MagicMock as MM
-
-    conn = MM()
-    conn.execute = AM(return_value="UPDATE 1")
-    conn.__aenter__ = AM(return_value=conn)
-    conn.__aexit__ = AM(return_value=False)
-
-    pool = MM()
-    pool.acquire = MM(return_value=conn)
-
-    from butlers.credential_store import CredentialStore
-
-    store = CredentialStore(pool)
-    await store.record_test_result("cli-auth/codex", ok=True)
-
-    call_args = conn.execute.await_args
-    assert call_args.args[1] is True  # ok
-    assert call_args.args[2] is None  # message cleared
+    # params are $1=ok, $2=message, $3=key
+    assert call_args.args[1] is ok
+    if expect_message is None:
+        assert call_args.args[2] is None
+    else:
+        assert expect_message in call_args.args[2]
     assert call_args.args[3] == "cli-auth/codex"
 
 

@@ -128,28 +128,26 @@ def _make_health_pool(*, state_value=None, entity_rows=None) -> MagicMock:
         (-8, SEVERITY_OVERDUE),  # boundary: 8 days = OVERDUE
         (-31, SEVERITY_CRITICAL),  # boundary: 31 days = CRITICAL
         (7, SEVERITY_UPCOMING),  # boundary: 7 days = UPCOMING
+        (8, None),  # >7 days out → not surfaced
     ],
 )
 def test_classify_item_severity_branches(days_offset, expected_severity):
-    """classify_item returns correct severity at key boundary conditions."""
+    """classify_item returns correct severity at key boundary conditions; items due
+    >7 days out (and completed items with no next_due_at) return None."""
     if days_offset is None:
         item = _make_item(next_due_at=None)
     else:
         item = _make_item(next_due_at=_NOW + timedelta(days=days_offset))
     result = classify_item(item, now=_NOW)
-    assert result is not None
-    assert result["severity"] == expected_severity
-
-
-def test_classify_item_returns_none_for_far_future_and_completed():
-    """Items due >7 days out and completed items with no next_due_at return None."""
-    assert classify_item(_make_item(next_due_at=_NOW + timedelta(days=8)), now=_NOW) is None
-    assert (
-        classify_item(
-            _make_item(last_completed_at=_NOW - timedelta(days=10), next_due_at=None), now=_NOW
-        )
-        is None
-    )
+    if expected_severity is None:
+        assert result is None
+    else:
+        assert result is not None
+        assert result["severity"] == expected_severity
+    # Completed item with no next_due_at also returns None.
+    if days_offset == 8:
+        completed = _make_item(last_completed_at=_NOW - timedelta(days=10), next_due_at=None)
+        assert classify_item(completed, now=_NOW) is None
 
 
 def test_classify_item_preserves_metadata():
@@ -428,10 +426,5 @@ async def test_store_device_fact_sets_home_source_butler():
 # ---------------------------------------------------------------------------
 
 
-def test_device_health_check_registered():
-    """device_health_check is registered in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY for home."""
-    from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
-
-    home_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("home", {})
-    assert "device_health_check" in home_jobs
-    assert callable(home_jobs["device_health_check"])
+# device_health_check registration is asserted by the canonical
+# test_all_home_deterministic_jobs_registered in test_home_energy_digest.py.

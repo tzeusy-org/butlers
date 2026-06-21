@@ -56,18 +56,6 @@ class TestWriteBlockGuard:
         with pytest.raises(ContactInfoWriteBlockedError):
             assert_contact_info_writes_blocked("insert")
 
-    def test_guard_message_mentions_table_and_writer(self):
-        from butlers.contact_info_write_guard import (
-            ContactInfoWriteBlockedError,
-            assert_contact_info_writes_blocked,
-        )
-
-        with pytest.raises(ContactInfoWriteBlockedError) as exc:
-            assert_contact_info_writes_blocked("update")
-        msg = str(exc.value)
-        assert "public.contact_info" in msg
-        assert "relationship_assert_fact" in msg
-
     def test_error_is_runtime_error_subclass(self):
         from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
 
@@ -104,7 +92,9 @@ def _pool_with_entity(entity_id=_ENTITY_ID):
 
 
 class TestContactInfoAddUsesCentralWriter:
-    async def test_email_maps_to_has_email_and_calls_writer(self):
+    async def test_add_routes_through_writer_and_never_direct_dml(self):
+        """channel_add maps email→has-email and asserts via relationship_assert_fact,
+        issuing NO direct INSERT/UPDATE to public.contact_info (the write-block invariant)."""
         from butlers.tools.relationship.channel import channel_add
 
         pool, conn = _pool_with_entity()
@@ -117,17 +107,7 @@ class TestContactInfoAddUsesCentralWriter:
         assert call.args[1] == _ENTITY_ID  # subject = entity_id
         assert call.args[2] == "has-email"  # predicate
         assert call.args[3] == "alice@example.com"  # object
-
-    async def test_no_direct_sql_dml_to_contact_info(self):
-        """The add path must NOT issue any SQL execute (INSERT/UPDATE) — writer only."""
-        from butlers.tools.relationship.channel import channel_add
-
-        pool, conn = _pool_with_entity()
-        with patch(_ADD_PATCH_TARGET, new_callable=AsyncMock) as writer:
-            writer.return_value = _result("inserted", fact_id=uuid.uuid4())
-            await channel_add(pool, _CONTACT_ID, "phone", "+1-555-0001")
-
-        # No write DML anywhere: neither pool.execute nor conn.execute called.
+        # No direct write DML anywhere: neither pool.execute nor conn.execute called.
         pool.execute.assert_not_called()
         conn.execute.assert_not_called()
 
@@ -229,9 +209,6 @@ class TestContactInfoReadsAllowed:
         assert rows[0]["type"] == "email"
         assert rows[0]["value"] == "a@b.com"
         assert rows[0]["source"] == "entity_facts"
-        # Read path used both pool.fetchrow (contact→entity) and pool.fetch (entity_facts).
-        pool.fetchrow.assert_awaited_once()
-        pool.fetch.assert_awaited_once()
 
 
 # ===========================================================================

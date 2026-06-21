@@ -135,21 +135,14 @@ class TestEntityAnchoredRows:
     """
 
     async def test_entity_anchored_row_appears_in_results(self):
-        pool = _make_pool(entity_rows=[_entity_row()])
+        """bu-h5yw0: an entity-anchored row surfaces with id=NULL (no contact) and
+        its entity_id preserved."""
+        pool = _make_pool(entity_rows=[_entity_row(entity_id=_EID2)])
         results = await contact_search_by_label(pool, _LBL)
         assert len(results) == 1
         assert results[0]["name"] == "Bob Entity"
-
-    async def test_entity_anchored_entity_id_is_preserved(self):
-        pool = _make_pool(entity_rows=[_entity_row(entity_id=_EID2)])
-        results = await contact_search_by_label(pool, _LBL)
-        assert results[0]["entity_id"] == _EID2
-
-    async def test_entity_anchored_id_is_none(self):
-        """Entity-anchored rows have no contact, so id is NULL."""
-        pool = _make_pool(entity_rows=[_entity_row()])
-        results = await contact_search_by_label(pool, _LBL)
         assert results[0]["id"] is None
+        assert results[0]["entity_id"] == _EID2
 
     async def test_entity_canonical_name_used_as_display_name(self):
         pool = _make_pool(entity_rows=[_entity_row(name="Charlie Canonical")])
@@ -178,34 +171,19 @@ class TestMutualExclusion:
         assert "Alice Smith" in names
         assert "Bob Entity" in names
 
-    async def test_fetch_called_twice(self):
-        """The function must issue exactly two pool.fetch() calls (one per branch)."""
-        pool = _make_pool(contact_rows=[_contact_row()], entity_rows=[_entity_row()])
-        await contact_search_by_label(pool, _LBL)
-        assert pool.fetch.call_count == 2
-
-    async def test_label_name_passed_to_both_branches(self):
-        """Both fetch() calls receive the label_name argument."""
-        pool = _make_pool()
-        await contact_search_by_label(pool, "family")
-        for call in pool.fetch.call_args_list:
-            positional_args = call[0]
-            # args: (query, label_name)
-            assert positional_args[1] == "family", (
-                f"Expected label_name='family' in fetch call args, got: {positional_args}"
-            )
-
 
 class TestEntityAnchoredListedGuard:
-    """e.listed = true guard is expressed in the entity-anchored SQL branch.
+    """The entity-anchored SQL branch encodes the bu-h5yw0 query-shape guards.
 
-    We verify the query text (SQL-inspection test) rather than relying on the mock
-    pool to enforce it — the mock always returns what we give it, so the guard is
-    only meaningful via the actual SQL sent to the DB.
+    We verify the query text (SQL-inspection) rather than relying on the mock pool,
+    which always returns what we give it — the guards are only meaningful via the
+    actual SQL sent to the DB.
     """
 
-    async def test_entity_branch_sql_contains_listed_guard(self):
-        """The second fetch() call SQL must include e.listed = true."""
+    async def test_entity_branch_sql_query_shape(self):
+        """The second (entity-anchored) fetch() SQL must enforce, in one place:
+        the listed guard, contact_id-IS-NULL mutual exclusion, and
+        local_entity_id-IS-NOT-NULL anchoring."""
         sqls: list[str] = []
 
         async def _capture_fetch(query: str, *args: Any) -> list:
@@ -219,42 +197,9 @@ class TestEntityAnchoredListedGuard:
 
         assert len(sqls) == 2, f"Expected 2 fetch calls, got {len(sqls)}"
         entity_sql = sqls[1]
-        assert "e.listed = true" in entity_sql, (
-            "Entity-anchored branch must guard on e.listed = true to exclude archived entities"
-        )
-
-    async def test_entity_branch_sql_excludes_contact_anchored_rows(self):
-        """The entity-anchored SQL must require contact_id IS NULL."""
-        sqls: list[str] = []
-
-        async def _capture_fetch(query: str, *args: Any) -> list:
-            sqls.append(query)
-            return []
-
-        pool = AsyncMock()
-        pool.fetch = AsyncMock(side_effect=_capture_fetch)
-
-        await contact_search_by_label(pool, _LBL)
-
-        entity_sql = sqls[1]
-        assert "cl.contact_id IS NULL" in entity_sql, (
-            "Entity-anchored branch must guard contact_id IS NULL to ensure mutual exclusion"
-        )
-
-    async def test_entity_branch_sql_requires_local_entity_id_not_null(self):
-        """The entity-anchored SQL must require local_entity_id IS NOT NULL."""
-        sqls: list[str] = []
-
-        async def _capture_fetch(query: str, *args: Any) -> list:
-            sqls.append(query)
-            return []
-
-        pool = AsyncMock()
-        pool.fetch = AsyncMock(side_effect=_capture_fetch)
-
-        await contact_search_by_label(pool, _LBL)
-
-        entity_sql = sqls[1]
-        assert "cl.local_entity_id IS NOT NULL" in entity_sql, (
-            "Entity-anchored branch must require local_entity_id IS NOT NULL"
-        )
+        # listed guard excludes archived entities
+        assert "e.listed = true" in entity_sql
+        # contact_id IS NULL ensures mutual exclusion with the contact-anchored branch
+        assert "cl.contact_id IS NULL" in entity_sql
+        # local_entity_id IS NOT NULL anchors the entity-only rows
+        assert "cl.local_entity_id IS NOT NULL" in entity_sql

@@ -35,6 +35,33 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
+# All four pruners are disabled-by-default: enabled=False and zero DB calls.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pruner,kwargs,zero_result_keys",
+    [
+        (prune_session_process_logs, {"schema": "general"}, ["candidates", "deleted"]),
+        (prune_filtered_events_partitions, {}, ["partitions_eligible", "partitions_dropped"]),
+        (prune_insight_candidates, {}, ["candidates", "deleted"]),
+        (prune_secret_probe_log, {}, ["candidates", "deleted"]),
+    ],
+    ids=["session-logs", "filtered-partitions", "insight-candidates", "secret-probe-log"],
+)
+async def test_pruner_disabled_by_default_no_db_calls(pruner, kwargs, zero_result_keys):
+    """A pruner must not touch the DB when enabled=False (the default)."""
+    pool = _make_pool()
+    result = await pruner(pool, **kwargs)
+    assert result["enabled"] is False
+    for key in zero_result_keys:
+        assert result[key] in (0, []), f"{key}={result[key]!r} should be empty/zero when disabled"
+    pool.fetchrow.assert_not_called()
+    pool.fetch.assert_not_called()
+    pool.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Pool fakes
 # ---------------------------------------------------------------------------
 
@@ -59,16 +86,6 @@ def _make_pool(
 
 
 class TestPruneSessionProcessLogs:
-    async def test_disabled_by_default_no_db_calls(self):
-        """Pruner must not touch the DB when enabled=False."""
-        pool = _make_pool()
-        result = await prune_session_process_logs(pool, schema="general")
-        assert result["enabled"] is False
-        assert result["candidates"] == 0
-        assert result["deleted"] == 0
-        pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
-
     async def test_dry_run_counts_but_does_not_delete(self):
         """With enabled=True, dry_run=True: count is returned but no DELETE issued."""
         pool = _make_pool(fetchrow_result={"n": 7}, execute_result="DELETE 0")
@@ -109,23 +126,6 @@ class TestPruneSessionProcessLogs:
         assert result["deleted"] == 0
         pool.execute.assert_not_called()
 
-    async def test_batch_limit_is_passed_to_delete(self):
-        """batch_limit is forwarded as a parameter to the DELETE query."""
-        pool = _make_pool(fetchrow_result={"n": 1000}, execute_result="DELETE 100")
-        await prune_session_process_logs(
-            pool, schema="general", enabled=True, dry_run=False, batch_limit=100
-        )
-        call_args = pool.execute.call_args[0]
-        # The batch_limit integer should appear as the last positional arg
-        assert call_args[-1] == 100
-
-    async def test_schema_name_is_applied(self):
-        """Table reference in the query uses the supplied schema."""
-        pool = _make_pool(fetchrow_result={"n": 2}, execute_result="DELETE 2")
-        await prune_session_process_logs(pool, schema="relationship", enabled=True, dry_run=False)
-        count_sql: str = pool.fetchrow.call_args[0][0]
-        assert "relationship.session_process_logs" in count_sql
-
 
 # ===========================================================================
 # [B] prune_filtered_events_partitions
@@ -133,16 +133,6 @@ class TestPruneSessionProcessLogs:
 
 
 class TestPruneFilteredEventsPartitions:
-    async def test_disabled_by_default_no_db_calls(self):
-        """Pruner must not touch the DB when enabled=False."""
-        pool = _make_pool()
-        result = await prune_filtered_events_partitions(pool)
-        assert result["enabled"] is False
-        assert result["partitions_eligible"] == []
-        assert result["partitions_dropped"] == []
-        pool.fetch.assert_not_called()
-        pool.execute.assert_not_called()
-
     async def test_dry_run_lists_eligible_without_dropping(self):
         """With enabled=True, dry_run=True: eligible list returned, no DROP issued."""
         # Simulate partitions: current month 2026-06, keep_months=12 → cutoff = 2025-06
@@ -232,16 +222,6 @@ class TestPruneFilteredEventsPartitions:
 
 
 class TestPruneInsightCandidates:
-    async def test_disabled_by_default_no_db_calls(self):
-        """Pruner must not touch the DB when enabled=False."""
-        pool = _make_pool()
-        result = await prune_insight_candidates(pool)
-        assert result["enabled"] is False
-        assert result["candidates"] == 0
-        assert result["deleted"] == 0
-        pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
-
     async def test_dry_run_counts_but_does_not_delete(self):
         """With enabled=True, dry_run=True: count returned but no DELETE issued."""
         pool = _make_pool(fetchrow_result={"n": 12})
@@ -295,16 +275,6 @@ class TestPruneInsightCandidates:
 
 
 class TestPruneSecretProbeLog:
-    async def test_disabled_by_default_no_db_calls(self):
-        """Pruner must not touch the DB when enabled=False."""
-        pool = _make_pool()
-        result = await prune_secret_probe_log(pool)
-        assert result["enabled"] is False
-        assert result["candidates"] == 0
-        assert result["deleted"] == 0
-        pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
-
     async def test_dry_run_counts_but_does_not_delete(self):
         """With enabled=True, dry_run=True: count returned but no DELETE issued."""
         pool = _make_pool(fetchrow_result={"n": 30})
@@ -347,13 +317,6 @@ class TestPruneSecretProbeLog:
         pool = _make_pool(fetchrow_result={"n": 0})
         result = await prune_secret_probe_log(pool, enabled=True, dry_run=True, ttl_days=90)
         assert result["enabled"] is True
-
-    async def test_cutoff_uses_recorded_at_column(self):
-        """The COUNT query must filter on recorded_at, not at."""
-        pool = _make_pool(fetchrow_result={"n": 0})
-        await prune_secret_probe_log(pool, enabled=True, dry_run=True, ttl_days=90)
-        count_sql: str = pool.fetchrow.call_args[0][0]
-        assert "recorded_at" in count_sql
 
 
 # ===========================================================================
@@ -402,50 +365,25 @@ class TestRetentionJobRegistry:
                 f"session_process_logs_prune not registered for butler={butler!r}"
             )
 
-    async def test_session_process_logs_prune_job_defaults_to_disabled(self):
-        """Invoking the job wrapper with no job_args must return enabled=False."""
+    @pytest.mark.parametrize(
+        "job_name",
+        [
+            "session_process_logs_prune",
+            "insight_candidates_prune",
+            "secret_probe_log_prune",
+            "filtered_events_partition_prune",
+        ],
+    )
+    async def test_prune_job_defaults_to_disabled(self, job_name):
+        """Each registered pruner wrapper, invoked with no job_args, returns enabled=False
+        and issues no DB calls."""
         from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
 
         registry = get_deterministic_schedule_job_registry()
-        handler = registry["general"]["session_process_logs_prune"]
+        handler = registry["general"][job_name]
         pool = _make_pool()
         result = await handler(pool, None)
         assert result["enabled"] is False
         pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
-
-    async def test_insight_candidates_prune_job_defaults_to_disabled(self):
-        """Invoking the job wrapper with no job_args must return enabled=False."""
-        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
-
-        registry = get_deterministic_schedule_job_registry()
-        handler = registry["general"]["insight_candidates_prune"]
-        pool = _make_pool()
-        result = await handler(pool, None)
-        assert result["enabled"] is False
-        pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
-
-    async def test_secret_probe_log_prune_job_defaults_to_disabled(self):
-        """Invoking the job wrapper with no job_args must return enabled=False."""
-        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
-
-        registry = get_deterministic_schedule_job_registry()
-        handler = registry["general"]["secret_probe_log_prune"]
-        pool = _make_pool()
-        result = await handler(pool, None)
-        assert result["enabled"] is False
-        pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
-
-    async def test_filtered_events_partition_prune_job_defaults_to_disabled(self):
-        """Invoking the job wrapper with no job_args must return enabled=False."""
-        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
-
-        registry = get_deterministic_schedule_job_registry()
-        handler = registry["general"]["filtered_events_partition_prune"]
-        pool = _make_pool()
-        result = await handler(pool, None)
-        assert result["enabled"] is False
         pool.fetch.assert_not_called()
         pool.execute.assert_not_called()

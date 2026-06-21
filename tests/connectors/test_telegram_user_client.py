@@ -50,34 +50,23 @@ def _make_message(
     return msg
 
 
-async def test_text_message_schema_version(connector: TelegramUserClientConnector) -> None:
-    """Text message envelope must carry schema_version='ingest.v1'."""
-    msg = _make_message()
+async def test_text_message_envelope_contract(connector: TelegramUserClientConnector) -> None:
+    """Text envelope carries ingest.v1 schema, telegram source, mapped event/sender fields,
+    and the canonical 'tg:<chat_id>:<message_id>' idempotency key."""
+    msg = _make_message(msg_id=42, chat_id=200, sender_id=777, text="Event test")
     env = await connector._normalize_to_ingest_v1(msg)
     assert env["schema_version"] == "ingest.v1"
     assert env["source"]["channel"] == "telegram_user_client"
     assert env["source"]["provider"] == "telegram"
     assert env["source"]["endpoint_identity"] == _ENDPOINT
-
-
-async def test_text_message_event_fields(connector: TelegramUserClientConnector) -> None:
-    """Event fields map correctly from message."""
-    msg = _make_message(msg_id=42, chat_id=200, sender_id=777, text="Event test")
-    env = await connector._normalize_to_ingest_v1(msg)
     assert env["event"]["external_event_id"] == "42"
     assert env["event"]["external_thread_id"] == "200"
     assert env["sender"]["identity"] == "777"
     assert "Event test" in env["payload"]["normalized_text"]
-
-
-async def test_idempotency_key_canonical_format(connector: TelegramUserClientConnector) -> None:
-    """Idempotency key must follow 'tg:<chat_id>:<message_id>' canonical format."""
-    msg = _make_message(msg_id=55, chat_id=300)
-    env = await connector._normalize_to_ingest_v1(msg)
     key = env["control"]["idempotency_key"]
     assert key.startswith("tg:")
-    assert "300" in key
-    assert "55" in key
+    assert "200" in key
+    assert "42" in key
 
 
 async def test_media_message_normalized_text(connector: TelegramUserClientConnector) -> None:

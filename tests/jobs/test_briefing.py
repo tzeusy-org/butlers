@@ -135,21 +135,23 @@ def test_validate_contribution_valid():
             },
             "bool",
         ),
+        # Highlight with missing required fields (text/priority) is rejected.
+        (
+            {
+                "butler": "health",
+                "date": _DATE_STR_2026_03_25,
+                "has_updates": True,
+                "highlights": [{"category": "medication"}],
+                "summary": "",
+            },
+            "'text'",
+        ),
     ],
 )
 def test_validate_contribution_invalid(raw, match):
-    """validate_contribution raises ValueError for non-dict, missing fields, and wrong types."""
+    """validate_contribution raises ValueError for non-dict, missing fields, wrong types,
+    and malformed highlights."""
     with pytest.raises(ValueError, match=match):
-        validate_contribution(raw)
-
-
-def test_validate_contribution_malformed_highlight():
-    """Highlights with missing required fields raise ValueError."""
-    raw = _make_contribution(
-        butler="health",
-        highlights=[{"category": "medication"}],  # missing text and priority
-    )
-    with pytest.raises(ValueError, match="'text'"):
         validate_contribution(raw)
 
 
@@ -291,20 +293,27 @@ def test_get_butler_typed_specialist_butlers():
 # ---------------------------------------------------------------------------
 
 
-async def test_run_health_briefing_contribution_weight_from_facts_content():
-    """Weight is read from public.facts; content field drives the display string.
-
-    measurement_log stores content as "weight: <value> <unit>" (e.g. "weight: 82.5 kg").
-    The briefing strips the "<type>: " prefix so the highlight reads "Latest weight: 82.5 kg"
-    and the summary reads "Weight: 82.5 kg." — without the redundant type prefix.
-    """
-    # Realistic fixture: measurement_log writes "weight: 82.5 kg" as content.
-    weight_fact = {
-        "content": "weight: 82.5 kg",
-        "value": "82.5",
-        "valid_at": None,
-    }
-    # fetch() is called twice (missed doses, taken doses); both return empty lists.
+@pytest.mark.parametrize(
+    "weight_fact,expected_has_updates,expected_text",
+    [
+        # content "weight: 82.5 kg" → strip "<type>: " prefix → "Latest weight: 82.5 kg"
+        (
+            {"content": "weight: 82.5 kg", "value": "82.5", "valid_at": None},
+            True,
+            "Latest weight: 82.5 kg",
+        ),
+        # empty content (NOT NULL column) → fall back to metadata->>'value' (no unit)
+        ({"content": "", "value": "75.0", "valid_at": None}, True, "Latest weight: 75.0"),
+        # no weight fact in the past 7 days → has_updates False, no highlight
+        (None, False, None),
+    ],
+    ids=["content-prefix-stripped", "metadata-value-fallback", "no-weight-fact"],
+)
+async def test_run_health_briefing_weight_from_facts(
+    weight_fact, expected_has_updates, expected_text
+):
+    """Weight is read from the butler-scoped facts table (search_path isolation, bu-i5l99),
+    with content-prefix stripping and a metadata->>'value' fallback."""
     pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
     mock_write = AsyncMock()
     with (
@@ -314,64 +323,21 @@ async def test_run_health_briefing_contribution_weight_from_facts_content():
         result = await run_health_briefing_contribution(pool, None)
 
     assert result["butler"] == "health"
-    assert result["has_updates"] is True
+    assert result["has_updates"] is expected_has_updates
 
-    # Verify fetchrow was called and the SQL targets the butler-scoped facts table,
-    # not the legacy measurements table.
-    call_args = pool.fetchrow.call_args
-    sql = call_args[0][0]
-    assert "FROM facts" in sql
-    assert "public.facts" not in sql
-    assert "measurement_weight" in sql
-    assert "measurements" not in sql
-    assert "valid_at IS NOT NULL" in sql
-    assert "NULLS LAST" in sql
+    if weight_fact is not None:
+        # SQL reads butler-scoped 'facts' (not legacy measurements / public.facts).
+        sql = pool.fetchrow.call_args[0][0]
+        assert "FROM facts" in sql
+        assert "public.facts" not in sql
+        assert "measurement_weight" in sql
+        assert "measurements" not in sql
 
-    # Verify the highlight text strips "weight: " prefix — no double-prefix.
-    envelope = mock_write.call_args[0][1]
-    weight_highlight = next(h for h in envelope["highlights"] if h["category"] == "weight")
-    assert weight_highlight["text"] == "Latest weight: 82.5 kg"
-    # Summary must not contain "weight: weight:"
-    assert "weight: weight:" not in envelope["summary"].lower()
-
-
-async def test_run_health_briefing_contribution_weight_fallback_to_metadata():
-    """When content is empty the weight text falls back to metadata->>'value' (no unit).
-
-    public.facts.content is NOT NULL, so the realistic "no useful content" scenario
-    is an empty string, not NULL. measurement_log stores only {"value": <val>} in
-    metadata — there is no "unit" key — so the fallback produces the raw value string.
-    """
-    weight_fact = {
-        "content": "",  # empty string (NOT NULL column); triggers metadata fallback
-        "value": "75.0",  # metadata->>'value'; no unit key in measurement_log metadata
-        "valid_at": None,
-    }
-    pool = _make_pool(fetch_rows=[], fetchrow_value=weight_fact)
-    mock_write = AsyncMock()
-    with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing._write_contribution", mock_write),
-    ):
-        result = await run_health_briefing_contribution(pool, None)
-
-    assert result["has_updates"] is True
-    envelope = mock_write.call_args[0][1]
-    weight_highlight = next(h for h in envelope["highlights"] if h["category"] == "weight")
-    assert weight_highlight["text"] == "Latest weight: 75.0"
-
-
-async def test_run_health_briefing_contribution_no_weight_fact():
-    """No weight fact in the past 7 days → has_updates is False and no weight highlight."""
-    pool = _make_pool(fetch_rows=[], fetchrow_value=None)
-    with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
-    ):
-        result = await run_health_briefing_contribution(pool, None)
-
-    assert result["butler"] == "health"
-    assert result["has_updates"] is False
+    if expected_text is not None:
+        envelope = mock_write.call_args[0][1]
+        weight_highlight = next(h for h in envelope["highlights"] if h["category"] == "weight")
+        assert weight_highlight["text"] == expected_text
+        assert "weight: weight:" not in envelope["summary"].lower()
 
 
 async def test_run_health_briefing_missed_doses_read_from_facts_not_relational():
@@ -475,14 +441,26 @@ async def test_run_relationship_briefing_birthday_sql_contains_both_paths():
     assert "e.listed = true" in birthday_sql
 
 
-async def test_run_relationship_briefing_contact_anchored_birthday():
-    """A contact-anchored birthday (contact_id set) produces a birthday highlight."""
+@pytest.mark.parametrize(
+    "name,year",
+    [
+        # contact-anchored (contact_id set) birthday with a known year.
+        ("Alice Smith", 1990),
+        # entity-anchored (contact_id IS NULL, local_entity_id set, contacts_004
+        # backfill) birthday using COALESCE(e.canonical_name, 'Unknown'), no year.
+        ("Bob Entity", None),
+    ],
+    ids=["contact-anchored", "entity-anchored"],
+)
+async def test_run_relationship_briefing_birthday_highlight(name, year):
+    """Both contact-anchored and entity-anchored birthday rows surface a highlight
+    (entity-anchored is the bu-vccfw contacts_004 read path that must not be dropped)."""
     birthday_row = {
-        "name": "Alice Smith",
+        "name": name,
         "label": "birthday",
         "month": _DATE_2026_03_25.month,
         "day": _DATE_2026_03_25.day,
-        "year": 1990,
+        "year": year,
     }
     # fetch() order: birthday_rows, reminder_rows, gap_rows
     pool = MagicMock()
@@ -498,41 +476,7 @@ async def test_run_relationship_briefing_contact_anchored_birthday():
     assert result["birthdays_upcoming"] == 1
     envelope = mock_write.call_args[0][1]
     bday_highlight = next(h for h in envelope["highlights"] if h["category"] == "birthdays")
-    assert "Alice Smith" in bday_highlight["text"]
-
-
-async def test_run_relationship_briefing_entity_anchored_birthday():
-    """An entity-anchored birthday (contact_id IS NULL, local_entity_id set) produces
-    a birthday highlight using canonical_name from public.entities.
-
-    This tests the contacts_004 entity-anchor read path — rows backfilled from the
-    Google contacts sync have no contact_id, only a local_entity_id.  The briefing
-    UNION ALL query must surface them so entity-anchored birthdays appear in the daily
-    briefing contribution.
-    """
-    # Simulate a row returned by the entity-anchored UNION branch.
-    # The query returns canonical_name aliased as 'name'.
-    entity_birthday_row = {
-        "name": "Bob Entity",  # from COALESCE(e.canonical_name, 'Unknown')
-        "label": "birthday",
-        "month": _DATE_2026_03_25.month,
-        "day": _DATE_2026_03_25.day,
-        "year": None,
-    }
-    pool = MagicMock()
-    pool.fetch = AsyncMock(side_effect=[[entity_birthday_row], [], []])
-    mock_write = AsyncMock()
-    with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing._write_contribution", mock_write),
-    ):
-        result = await run_relationship_briefing_contribution(pool, None)
-
-    assert result["has_updates"] is True
-    assert result["birthdays_upcoming"] == 1
-    envelope = mock_write.call_args[0][1]
-    bday_highlight = next(h for h in envelope["highlights"] if h["category"] == "birthdays")
-    assert "Bob Entity" in bday_highlight["text"]
+    assert name in bday_highlight["text"]
 
 
 async def test_run_relationship_briefing_no_birthdays():

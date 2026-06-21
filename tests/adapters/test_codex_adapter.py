@@ -437,74 +437,117 @@ def test_has_mcp_tool_calls():
     assert _has_mcp_tool_calls([{"name": "command_execution"}, {"name": "route_to_butler"}])
 
 
-def test_select_error_detail_filters_benign_stdin_notice():
-    """Benign stdin notices should not become the reported failure headline."""
-    detail = _select_error_detail(
-        "Reading additional input from stdin...\nError: rate limit",
-        "",
-        1,
-    )
-    assert detail == "Error: rate limit"
-
-
-def test_select_error_detail_prefers_stdout_json_error_payload():
-    """Structured stdout errors should surface their message instead of JSON lines."""
-    detail = _select_error_detail(
-        "",
-        "\n".join(
-            [
-                json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
-                json.dumps(
-                    {
-                        "type": "error",
-                        "error": {"message": "transport connection failed"},
-                    }
-                ),
-            ]
+@pytest.mark.parametrize(
+    "stderr,stdout,exit_code,expected",
+    [
+        # Benign stdin notice is filtered; the real stderr error wins the headline.
+        pytest.param(
+            "Reading additional input from stdin...\nError: rate limit",
+            "",
+            1,
+            "Error: rate limit",
+            id="filters-benign-stdin",
         ),
-        7,
-    )
-    assert detail == "transport connection failed"
-
-
-def test_select_error_detail_uses_stdout_agent_message_fallback():
-    """When stdout has only progress events plus an assistant message, use the text."""
-    detail = _select_error_detail(
-        "",
-        "\n".join(
-            [
-                json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
-                json.dumps({"type": "turn.started"}),
-                json.dumps(
-                    {
-                        "type": "item.completed",
-                        "item": {
-                            "id": "msg_1",
-                            "type": "agent_message",
-                            "text": "Authentication failed.",
-                        },
-                    }
-                ),
-            ]
+        # Structured stdout error message surfaces instead of raw JSON lines.
+        pytest.param(
+            "",
+            "\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+                    json.dumps(
+                        {"type": "error", "error": {"message": "transport connection failed"}}
+                    ),
+                ]
+            ),
+            7,
+            "transport connection failed",
+            id="prefers-stdout-json-error",
         ),
-        7,
-    )
-    assert detail == "Authentication failed."
-
-
-def test_select_error_detail_does_not_dump_json_progress_without_text():
-    """JSON progress-only stdout should collapse to the exit code."""
-    detail = _select_error_detail(
-        "",
-        "\n".join(
-            [
-                json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
-                json.dumps({"type": "turn.started"}),
-            ]
+        # Progress events + assistant message → use the agent_message text.
+        pytest.param(
+            "",
+            "\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+                    json.dumps({"type": "turn.started"}),
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "id": "msg_1",
+                                "type": "agent_message",
+                                "text": "Authentication failed.",
+                            },
+                        }
+                    ),
+                ]
+            ),
+            7,
+            "Authentication failed.",
+            id="stdout-agent-message-fallback",
         ),
-        7,
-    )
-    assert detail == "exit code 7"
+        # Progress-only JSON (no text) collapses to the exit code.
+        pytest.param(
+            "",
+            "\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+                    json.dumps({"type": "turn.started"}),
+                ]
+            ),
+            7,
+            "exit code 7",
+            id="no-json-dump-without-text",
+        ),
+        # Structured failure message + code surfaces.
+        pytest.param(
+            "",
+            json.dumps(
+                {
+                    "type": "turn.failed",
+                    "error": {"message": "Session aborted", "code": "session_aborted"},
+                }
+            ),
+            1,
+            "Session aborted | session_aborted",
+            id="structured-stdout-failure-detail",
+        ),
+        # Structured failure beats unrelated plain stdout banner.
+        pytest.param(
+            "",
+            "\n".join(
+                [
+                    "Some routine plain banner line",
+                    json.dumps(
+                        {
+                            "type": "turn.failed",
+                            "error": {"message": "Quota exhausted", "code": "quota_exhausted"},
+                        }
+                    ),
+                ]
+            ),
+            1,
+            "Quota exhausted | quota_exhausted",
+            id="structured-over-plain-stdout",
+        ),
+        # Plain stdout still wins when no structured failure event is present.
+        pytest.param(
+            "",
+            "\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "thr_1"}),
+                    "Boom: something bad happened",
+                ]
+            ),
+            1,
+            "Boom: something bad happened",
+            id="falls-back-to-plain",
+        ),
+    ],
+)
+def test_select_error_detail_branches(stderr, stdout, exit_code, expected):
+    """_select_error_detail picks the most actionable headline across the input shapes."""
+    assert _select_error_detail(stderr, stdout, exit_code) == expected
 
 
 def test_select_error_detail_dedupes_repeated_error_and_turn_failed_messages():
@@ -610,56 +653,6 @@ def test_extract_structured_stdout_error_prefers_terminal_failure_message():
         _select_error_detail("", stdout, 1)
         == "unexpected status 401 Unauthorized: Missing bearer auth"
     )
-
-
-def test_select_error_detail_extracts_structured_stdout_failure_detail():
-    """Structured failure events on stdout should surface their message + code."""
-    stdout = json.dumps(
-        {
-            "type": "turn.failed",
-            "error": {"message": "Session aborted", "code": "session_aborted"},
-        }
-    )
-
-    detail = _select_error_detail("", stdout, 1)
-
-    assert detail == "Session aborted | session_aborted"
-
-
-def test_select_error_detail_prefers_structured_failure_over_plain_stdout():
-    """A structured failure event must beat unrelated plain text on stdout."""
-    stdout = "\n".join(
-        [
-            "Some routine plain banner line",
-            json.dumps(
-                {
-                    "type": "turn.failed",
-                    "error": {
-                        "message": "Quota exhausted",
-                        "code": "quota_exhausted",
-                    },
-                }
-            ),
-        ]
-    )
-
-    detail = _select_error_detail("", stdout, 1)
-
-    assert detail == "Quota exhausted | quota_exhausted"
-
-
-def test_select_error_detail_falls_back_to_plain_when_no_structured_failure():
-    """Plain stdout still wins when no structured failure event is present."""
-    stdout = "\n".join(
-        [
-            json.dumps({"type": "thread.started", "thread_id": "thr_1"}),
-            "Boom: something bad happened",
-        ]
-    )
-
-    detail = _select_error_detail("", stdout, 1)
-
-    assert detail == "Boom: something bad happened"
 
 
 def test_select_error_detail_returns_categorical_placeholder_for_unrecognized_dict():
@@ -827,6 +820,9 @@ async def test_retry_on_mcp_connection_failure():
     assert info["mcp_connection_failed"] is False
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is True
+    # Provenance: a successful retry is sourced from the retry attempt.
+    assert info["result_source"] == "retry"
+    assert info["attempt_count"] == 2
 
 
 async def test_retry_stops_when_later_attempt_is_plain_text():
@@ -905,6 +901,8 @@ async def test_retry_all_fail_raises_runtime_error():
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is False
     assert info["attempt_count"] == 3
+    # Provenance: all attempts failed → sourced from the first attempt.
+    assert info["result_source"] == "first"
 
 
 async def test_no_retry_when_mcp_servers_present_but_response_is_bash_only():
@@ -1198,8 +1196,16 @@ async def test_retry_on_transient_remote_compaction_failure_exhausted(caplog):
     assert info["retry_succeeded"] is False
 
 
-async def test_retry_on_transient_remote_compaction_failure_from_stdout():
-    """Stdout-only terminal compaction failures should use the transient retry path."""
+@pytest.mark.parametrize(
+    "transient_marker",
+    [
+        "codex_core::compact_remote: remote compaction failed turn_id=abc",
+        "Selected model is at capacity. Please try a different model.",
+    ],
+    ids=["remote-compaction", "model-capacity"],
+)
+async def test_retry_on_transient_failure_from_stdout(transient_marker):
+    """Stdout-only terminal transient failures (compaction/capacity) use the retry path."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
     call_count = 0
@@ -1212,59 +1218,7 @@ async def test_retry_on_transient_remote_compaction_failure_from_stdout():
         proc.pid = 100 + call_count
         proc.communicate = AsyncMock(
             return_value=(
-                (
-                    _make_failed_stdout_error(
-                        "codex_core::compact_remote: remote compaction failed turn_id=abc"
-                    )
-                    if call_count == 1
-                    else b"ok"
-                ),
-                b"",
-            )
-        )
-        return proc
-
-    with (
-        patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0,)),
-    ):
-        result_text, _, _ = await adapter.invoke(
-            prompt="test",
-            system_prompt="",
-            mcp_servers=_MCP_SERVERS,
-            env={},
-        )
-
-    assert call_count == 2
-    assert result_text == "ok"
-    info = adapter.last_process_info
-    assert info["result_source"] == "retry"
-    assert info["attempt_count"] == 2
-    assert info["retry_attempted"] is True
-    assert info["retry_succeeded"] is True
-
-
-async def test_retry_on_transient_model_capacity_failure_from_stdout():
-    """Stdout-only model-capacity failures should use the transient retry path."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    call_count = 0
-
-    async def _mock_exec(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        proc = AsyncMock()
-        proc.returncode = 1 if call_count == 1 else 0
-        proc.pid = 100 + call_count
-        proc.communicate = AsyncMock(
-            return_value=(
-                (
-                    _make_failed_stdout_error(
-                        "Selected model is at capacity. Please try a different model."
-                    )
-                    if call_count == 1
-                    else b"ok"
-                ),
+                (_make_failed_stdout_error(transient_marker) if call_count == 1 else b"ok"),
                 b"",
             )
         )
@@ -1481,74 +1435,6 @@ async def test_nonzero_exit_uses_structured_stdout_failure_message():
                 mcp_servers=_MCP_SERVERS,
                 env={},
             )
-
-
-async def test_retry_provenance_result_source_retry():
-    """retry succeeded: result_source='retry', attempt_count=2."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    call_count = 0
-
-    async def _mock_exec(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        proc = AsyncMock()
-        proc.returncode = 0
-        proc.pid = 100 + call_count
-        proc.communicate = AsyncMock(
-            return_value=(
-                _make_bash_only_stdout() if call_count == 1 else _make_mcp_stdout(),
-                _MCP_DISCOVERY_STDERR if call_count == 1 else b"",
-            )
-        )
-        return proc
-
-    with (
-        patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0,)),
-    ):
-        await adapter.invoke(
-            prompt="route this",
-            system_prompt="",
-            mcp_servers=_MCP_SERVERS,
-            env={},
-        )
-
-    info = adapter.last_process_info
-    assert info["result_source"] == "retry"
-    assert info["attempt_count"] == 2
-    assert info["retry_attempted"] is True
-    assert info["retry_succeeded"] is True
-
-
-async def test_retry_provenance_result_source_first():
-    """All attempts fail MCP discovery: result_source='first', attempt_count=3."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    async def _mock_exec(*args, **kwargs):
-        proc = AsyncMock()
-        proc.returncode = 0
-        proc.pid = 42
-        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR))
-        return proc
-
-    with (
-        patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
-    ):
-        with pytest.raises(RuntimeError, match=r"MCP tool discovery failed after 3 attempts"):
-            await adapter.invoke(
-                prompt="route this",
-                system_prompt="",
-                mcp_servers=_MCP_SERVERS,
-                env={},
-            )
-
-    info = adapter.last_process_info
-    assert info["result_source"] == "first"
-    assert info["attempt_count"] == 3
-    assert info["retry_attempted"] is True
-    assert info["retry_succeeded"] is False
 
 
 async def test_no_retry_sets_attempt_count_one():

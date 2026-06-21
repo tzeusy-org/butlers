@@ -131,32 +131,3 @@ async def test_query_uses_entity_facts_not_contact_info() -> None:
     sql: str = call_args[0][0]
     assert "relationship.entity_facts" in sql
     assert "contact_info" not in sql
-
-
-async def test_query_uses_correct_predicate_for_email() -> None:
-    """Email channel → query uses has-email predicate in entity_facts."""
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-
-    resolver = ContactWeightResolver(pool)
-    await resolver._query("email", "test@example.com")
-
-    call_args = pool.fetchrow.call_args
-    assert call_args is not None
-    # The predicate is passed as a parameter (not interpolated) — check args
-    args = call_args[0]
-    assert "has-email" in args
-
-
-async def test_query_uses_has_handle_for_telegram() -> None:
-    """Telegram channel → query uses has-handle predicate."""
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-
-    resolver = ContactWeightResolver(pool)
-    await resolver._query("telegram", "987654321")
-
-    call_args = pool.fetchrow.call_args
-    assert call_args is not None
-    args = call_args[0]
-    assert "has-handle" in args

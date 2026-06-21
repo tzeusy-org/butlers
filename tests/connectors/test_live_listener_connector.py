@@ -50,10 +50,13 @@ def voice_envelope() -> dict[str, Any]:
     )
 
 
-def test_voice_envelope_schema_version(voice_envelope: dict[str, Any]) -> None:
+def test_voice_envelope_field_contract(voice_envelope: dict[str, Any]) -> None:
+    """Voice envelope carries ingest.v1 schema, voice source, session thread, transcript."""
     assert voice_envelope["schema_version"] == "ingest.v1"
     assert voice_envelope["source"]["channel"] == "voice"
     assert voice_envelope["source"]["provider"] == "live-listener"
+    assert voice_envelope["event"]["external_thread_id"] == "session-abc"
+    assert "Please order milk" in voice_envelope["payload"]["normalized_text"]
 
 
 def test_voice_envelope_endpoint_identity_format(voice_envelope: dict[str, Any]) -> None:
@@ -64,14 +67,6 @@ def test_voice_envelope_endpoint_identity_format(voice_envelope: dict[str, Any])
 
 def test_voice_envelope_event_id_includes_device(voice_envelope: dict[str, Any]) -> None:
     assert _DEVICE in voice_envelope["event"]["external_event_id"]
-
-
-def test_voice_envelope_thread_id_is_session(voice_envelope: dict[str, Any]) -> None:
-    assert voice_envelope["event"]["external_thread_id"] == "session-abc"
-
-
-def test_voice_envelope_transcript_in_normalized_text(voice_envelope: dict[str, Any]) -> None:
-    assert "Please order milk" in voice_envelope["payload"]["normalized_text"]
 
 
 def test_voice_envelope_passes_parse_ingest_envelope(voice_envelope: dict[str, Any]) -> None:

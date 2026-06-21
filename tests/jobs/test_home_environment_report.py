@@ -234,9 +234,5 @@ def test_null_embedding_engine():
     assert not inspect.iscoroutinefunction(eng.embed)
 
 
-def test_environment_report_registered():
-    """environment_report is registered in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY for home."""
-    from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
-
-    home_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("home", {})
-    assert "environment_report" in home_jobs and callable(home_jobs["environment_report"])
+# environment_report registration is asserted by the canonical
+# test_all_home_deterministic_jobs_registered in test_home_energy_digest.py.

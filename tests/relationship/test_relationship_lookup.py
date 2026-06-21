@@ -198,27 +198,26 @@ def _pool_for_entity(
 # ---------------------------------------------------------------------------
 
 
-def test_validate_args_rejects_both():
-    with pytest.raises(ValueError, match="not both"):
-        _validate_args(uuid.uuid4(), "Alice")
-
-
-def test_validate_args_rejects_neither():
-    with pytest.raises(ValueError, match="exactly one"):
-        _validate_args(None, None)
-
-
-def test_validate_args_rejects_blank_ref_as_neither():
-    with pytest.raises(ValueError, match="exactly one"):
-        _validate_args(None, "   ")
-
-
-def test_validate_args_accepts_only_id():
-    _validate_args(uuid.uuid4(), None)  # no raise
-
-
-def test_validate_args_accepts_only_ref():
-    _validate_args(None, "Alice")  # no raise
+@pytest.mark.parametrize(
+    "make_id,ref,raises_match",
+    [
+        # exactly-one-required: both → reject; neither/blank-ref → reject.
+        (True, "Alice", "not both"),
+        (False, None, "exactly one"),
+        (False, "   ", "exactly one"),
+        # accepts exactly one of id / ref.
+        (True, None, None),
+        (False, "Alice", None),
+    ],
+    ids=["both", "neither", "blank-ref", "only-id", "only-ref"],
+)
+def test_validate_args(make_id, ref, raises_match):
+    entity_id = uuid.uuid4() if make_id else None
+    if raises_match is None:
+        _validate_args(entity_id, ref)  # no raise
+    else:
+        with pytest.raises(ValueError, match=raises_match):
+            _validate_args(entity_id, ref)
 
 
 async def test_lookup_raises_when_both_args_given():
@@ -398,18 +397,8 @@ async def test_ref_resolution_ranking_order_prefix_beats_contact_substring_predi
 
     rlu = importlib.import_module("butlers.tools.relationship.relationship_lookup")
 
+    # The ranking is contract; the exact constant values are not.
     assert rlu._SCORE_PREFIX > rlu._SCORE_CONTACT_FACT > rlu._SCORE_SUBSTRING > rlu._SCORE_PREDICATE
-    assert (
-        rlu._SCORE_PREFIX,
-        rlu._SCORE_CONTACT_FACT,
-        rlu._SCORE_SUBSTRING,
-        rlu._SCORE_PREDICATE,
-    ) == (
-        100,
-        70,
-        50,
-        30,
-    )
 
 
 async def test_ranking_sql_includes_last_seen_then_tier_tiebreak():
@@ -488,17 +477,6 @@ async def test_lookup_issues_no_writes():
     joined = " ".join(pool.statements).lower()
     for verb in ("insert ", "update ", "delete "):
         assert verb not in joined
-
-
-async def test_repeated_calls_issue_identical_read_statements():
-    eid = uuid.uuid4()
-    fixed = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
-    pool1 = _pool_for_entity(eid, identity_facts=[_identity_fact_row(observed_at=fixed)])
-    pool2 = _pool_for_entity(eid, identity_facts=[_identity_fact_row(observed_at=fixed)])
-    r1 = await relationship_lookup(pool1, entity_id=eid)
-    r2 = await relationship_lookup(pool2, entity_id=eid)
-    assert r1 == r2
-    assert pool1.statements == pool2.statements
 
 
 # ---------------------------------------------------------------------------

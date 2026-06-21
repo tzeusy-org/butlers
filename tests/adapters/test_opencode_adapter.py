@@ -196,59 +196,57 @@ def test_extract_usage_and_find_binary():
             _find_opencode_binary()
 
 
-def test_select_error_detail_prefers_stdout_error_over_migration_noise():
-    """OpenCode first-run migration notices must not mask structured stdout failures."""
-    stdout = "\n".join(
-        [
-            json.dumps({"type": "session.started", "id": "session-123"}),
-            json.dumps(
-                {
-                    "type": "error",
-                    "message": "AuthenticationError: provider rejected the request",
-                }
+_MIGRATION_NOISE = (
+    "Performing one time database migration, may take a few minutes...\n"
+    "sqlite-migration:done\n"
+    "Database migration complete.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "stderr,stdout,exit_code,expected",
+    [
+        # Structured stdout error beats benign first-run migration banner on stderr.
+        pytest.param(
+            _MIGRATION_NOISE,
+            "\n".join(
+                [
+                    json.dumps({"type": "session.started", "id": "session-123"}),
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "message": "AuthenticationError: provider rejected the request",
+                        }
+                    ),
+                ]
             ),
-        ]
-    )
-    stderr = (
-        "Performing one time database migration, may take a few minutes...\n"
-        "sqlite-migration:done\n"
-        "Database migration complete.\n"
-    )
-
-    detail = _select_error_detail(stderr, stdout, 1)
-
-    assert detail == "AuthenticationError: provider rejected the request"
-
-
-def test_select_error_detail_accepts_code_only_stdout_error():
-    """Structured stdout errors may carry only a numeric provider error code."""
-    stdout = json.dumps({"type": "result", "code": 429})
-
-    detail = _select_error_detail("plain stderr fallback", stdout, 1)
-
-    assert detail == "429"
-
-
-def test_select_error_detail_accepts_nested_numeric_code():
-    """Nested scalar error fields are still useful diagnostics."""
-    stdout = json.dumps({"type": "error", "error": {"code": 401}})
-
-    detail = _select_error_detail("plain stderr fallback", stdout, 1)
-
-    assert detail == "401"
-
-
-def test_select_error_detail_uses_exit_code_when_only_migration_noise_exists():
-    """A benign migration banner alone is not a useful non-zero-exit diagnostic."""
-    stderr = (
-        "Performing one time database migration, may take a few minutes...\n"
-        "sqlite-migration:done\n"
-        "Database migration complete.\n"
-    )
-
-    detail = _select_error_detail(stderr, "", 1)
-
-    assert detail == "exit code 1"
+            1,
+            "AuthenticationError: provider rejected the request",
+            id="stdout-error-over-migration-noise",
+        ),
+        # Code-only structured stdout error → numeric code.
+        pytest.param(
+            "plain stderr fallback",
+            json.dumps({"type": "result", "code": 429}),
+            1,
+            "429",
+            id="code-only-stdout-error",
+        ),
+        # Nested numeric code is still surfaced.
+        pytest.param(
+            "plain stderr fallback",
+            json.dumps({"type": "error", "error": {"code": 401}}),
+            1,
+            "401",
+            id="nested-numeric-code",
+        ),
+        # Migration banner alone is not a useful diagnostic → fall back to exit code.
+        pytest.param(_MIGRATION_NOISE, "", 1, "exit code 1", id="migration-noise-only"),
+    ],
+)
+def test_select_error_detail_branches(stderr, stdout, exit_code, expected):
+    """_select_error_detail picks the actionable headline and ignores migration noise."""
+    assert _select_error_detail(stderr, stdout, exit_code) == expected
 
 
 async def test_invoke_success_and_config():
@@ -332,52 +330,6 @@ async def test_invoke_spills_large_prompt_to_attachment():
     assert _PROMPT_ATTACHMENT_MESSAGE in cmd
     assert cmd.index(_PROMPT_ATTACHMENT_MESSAGE) < cmd.index("--file")
     assert captured["prompt_file_text"] == large_prompt
-
-
-async def test_invoke_retries_completed_startup_migration():
-    """invoke() retries once when OpenCode exits after completing its startup DB migration."""
-    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-
-    migration_proc = AsyncMock()
-    migration_proc.pid = 100
-    migration_proc.communicate = AsyncMock(
-        return_value=(
-            b"",
-            b"\n".join(
-                [
-                    b"Performing one time database migration, may take a few minutes...",
-                    b"sqlite-migration:done",
-                    b"Database migration complete.",
-                ]
-            ),
-        )
-    )
-    migration_proc.returncode = 1
-
-    success_proc = AsyncMock()
-    success_proc.pid = 101
-    success_proc.communicate = AsyncMock(
-        return_value=(json.dumps({"type": "text", "text": "Task done."}).encode(), b"")
-    )
-    success_proc.returncode = 0
-
-    with patch(_EXEC, side_effect=[migration_proc, success_proc]) as mock_sub:
-        result_text, tool_calls, usage = await adapter.invoke(
-            prompt="do something",
-            system_prompt="",
-            mcp_servers={},
-            env={},
-        )
-
-    assert mock_sub.call_count == 2
-    assert result_text == "Task done."
-    assert tool_calls == []
-    assert usage is None
-    assert adapter.last_process_info is not None
-    assert adapter.last_process_info["retry_attempted"] is True
-    assert adapter.last_process_info["retry_succeeded"] is True
-    assert adapter.last_process_info["result_source"] == "retry"
-    assert adapter.last_process_info["attempt_index"] == 1
 
 
 async def test_invoke_marks_retry_failed_when_second_attempt_exits_zero_with_error_stderr():

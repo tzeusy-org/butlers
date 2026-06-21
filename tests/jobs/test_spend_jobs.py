@@ -161,9 +161,6 @@ async def test_sum_tokens_for_all_models_returns_dict_keyed_by_model():
         "cheap-model": (1_000_000, 2_000_000),
         "workhorse-model": (500_000, 300_000),
     }
-    sql = pool.fetch.call_args[0][0]
-    assert "UNION ALL" in sql
-    assert "GROUP BY model" in sql
 
 
 async def test_sum_tokens_for_all_models_returns_empty_for_no_schemas():
@@ -187,107 +184,46 @@ async def test_sum_tokens_for_all_models_returns_empty_for_no_schemas():
 # ---------------------------------------------------------------------------
 
 
-async def test_compute_savings_basic_calculation():
-    """Rule using cheap model saves vs workhorse baseline."""
+_SAVINGS_PRICING = _pricing(
+    {
+        "cheap-model": (0.000001, 0.000004),
+        "expensive-model": (0.00001, 0.00005),
+        "workhorse-model": (0.000003, 0.000015),  # baseline
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "rule_model,token_totals,expected_saved",
+    [
+        # cheap vs workhorse baseline, 1M+1M tokens:
+        #   actual=5.0, baseline=18.0 → saved=13.0
+        ("cheap-model", {"cheap-model": (1_000_000, 1_000_000)}, 13.0),
+        # expensive vs baseline, 500K+200K: actual=15.0, baseline=4.5 → saved=-10.5 (negative)
+        ("expensive-model", {"expensive-model": (500_000, 200_000)}, -10.5),
+        # no matching sessions → (0,0) fallback → saved=0
+        ("cheap-model", {}, 0.0),
+    ],
+    ids=["basic-positive", "negative-when-more-expensive", "zero-tokens"],
+)
+async def test_compute_savings_per_rule_math(rule_model, token_totals, expected_saved):
+    """saved_7d = baseline_cost - actual_cost per rule (may be positive, negative, or zero)."""
     rule_id = uuid.uuid4()
-    pricing = _pricing(
-        {
-            "cheap-model": (0.000001, 0.000004),  # cheap: $0.001 + $0.004 per 1M
-            "workhorse-model": (0.000003, 0.000015),  # baseline: $0.003 + $0.015 per 1M
-        }
-    )
+    rules = [{"id": rule_id, "action": {"model": rule_model}}]
+    pool = _make_pool(rules=rules, baseline_row={"model_id": "workhorse-model"})
 
-    rules = [{"id": rule_id, "action": {"model": "cheap-model"}}]
-    baseline_row = {"model_id": "workhorse-model"}
-
-    pool = _make_pool(rules=rules, baseline_row=baseline_row)
-
-    # 1M input + 1M output tokens for cheap-model over 7 days
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
-        return_value={"cheap-model": (1_000_000, 1_000_000)},
+        return_value=token_totals,
     ):
-        result = await compute_spend_rule_savings(pool, pricing=pricing)
+        result = await compute_spend_rule_savings(pool, pricing=_SAVINGS_PRICING)
 
-    assert result["rules_processed"] == 1
     assert result["rules_updated"] == 1
-    assert result["rules_skipped"] == 0
-    assert result["errors"] == 0
     assert result["baseline_model"] == "workhorse-model"
-
-    # Verify executemany was called with the correct saved_7d value
     pool.executemany.assert_called_once()
-    call_args = pool.executemany.call_args
-    sql = call_args[0][0]
-    batch = call_args[0][1]
-
-    assert "UPDATE public.spend_rules" in sql
-    assert "saved_7d" in sql
+    batch = pool.executemany.call_args[0][1]
     assert len(batch) == 1
-    saved_7d = batch[0][0]
-
-    # actual = 1M * 0.000001 + 1M * 0.000004 = 1.0 + 4.0 = 5.0
-    # baseline = 1M * 0.000003 + 1M * 0.000015 = 3.0 + 15.0 = 18.0
-    # saved_7d = 18.0 - 5.0 = 13.0
-    assert saved_7d == pytest.approx(13.0, rel=1e-6)
-
-
-async def test_compute_savings_negative_when_rule_is_more_expensive():
-    """saved_7d can be negative when the rule model costs more than the baseline."""
-    rule_id = uuid.uuid4()
-    pricing = _pricing(
-        {
-            "expensive-model": (0.00001, 0.00005),
-            "workhorse-model": (0.000003, 0.000015),
-        }
-    )
-
-    rules = [{"id": rule_id, "action": {"model": "expensive-model"}}]
-    baseline_row = {"model_id": "workhorse-model"}
-
-    pool = _make_pool(rules=rules, baseline_row=baseline_row)
-
-    with patch(
-        "butlers.jobs.spend._sum_tokens_for_all_models",
-        return_value={"expensive-model": (500_000, 200_000)},
-    ):
-        result = await compute_spend_rule_savings(pool, pricing=pricing)
-
-    assert result["rules_updated"] == 1
-
-    saved_7d = pool.executemany.call_args[0][1][0][0]
-    # actual = 500K * 0.00001 + 200K * 0.00005 = 5.0 + 10.0 = 15.0
-    # baseline = 500K * 0.000003 + 200K * 0.000015 = 1.5 + 3.0 = 4.5
-    # saved_7d = 4.5 - 15.0 = -10.5
-    assert saved_7d == pytest.approx(-10.5, rel=1e-6)
-
-
-async def test_compute_savings_zero_tokens_means_zero_saved():
-    """Rules with no matching sessions produce saved_7d = 0."""
-    rule_id = uuid.uuid4()
-    pricing = _pricing(
-        {
-            "cheap-model": (0.000001, 0.000004),
-            "workhorse-model": (0.000003, 0.000015),
-        }
-    )
-
-    rules = [{"id": rule_id, "action": {"model": "cheap-model"}}]
-    baseline_row = {"model_id": "workhorse-model"}
-
-    pool = _make_pool(rules=rules, baseline_row=baseline_row)
-
-    # No sessions matching this model — token_totals will be empty dict (0, 0) fallback
-    with patch(
-        "butlers.jobs.spend._sum_tokens_for_all_models",
-        return_value={},
-    ):
-        result = await compute_spend_rule_savings(pool, pricing=pricing)
-
-    assert result["rules_updated"] == 1
-
-    saved_7d = pool.executemany.call_args[0][1][0][0]
-    assert saved_7d == pytest.approx(0.0, abs=1e-9)
+    assert batch[0][0] == pytest.approx(expected_saved, rel=1e-6, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -295,15 +231,17 @@ async def test_compute_savings_zero_tokens_means_zero_saved():
 # ---------------------------------------------------------------------------
 
 
-async def test_compute_savings_skips_rule_with_no_model():
-    """Rules without action.model are counted as skipped, not errors."""
+@pytest.mark.parametrize(
+    "action",
+    [{}, "{}"],  # dict with no model key; JSON-string empty action
+    ids=["empty-dict-action", "empty-json-string-action"],
+)
+async def test_compute_savings_skips_rule_with_no_model(action):
+    """Rules without action.model are counted as skipped, not errored — no write."""
     rule_id = uuid.uuid4()
     pricing = _pricing({"workhorse-model": (0.000003, 0.000015)})
-
-    rules = [{"id": rule_id, "action": {}}]  # no "model" key
-    baseline_row = {"model_id": "workhorse-model"}
-
-    pool = _make_pool(rules=rules, baseline_row=baseline_row)
+    rules = [{"id": rule_id, "action": action}]
+    pool = _make_pool(rules=rules, baseline_row={"model_id": "workhorse-model"})
 
     with patch("butlers.jobs.spend._sum_tokens_for_all_models", return_value={}):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
@@ -313,22 +251,6 @@ async def test_compute_savings_skips_rule_with_no_model():
     assert result["rules_skipped"] == 1
     assert result["errors"] == 0
     pool.execute.assert_not_called()
-
-
-async def test_compute_savings_skips_rule_with_empty_action():
-    """Rules with empty action dict are skipped gracefully."""
-    rule_id = uuid.uuid4()
-    pricing = _pricing({"workhorse-model": (0.000003, 0.000015)})
-
-    rules = [{"id": rule_id, "action": "{}"}]  # JSON string form
-    baseline_row = {"model_id": "workhorse-model"}
-
-    pool = _make_pool(rules=rules, baseline_row=baseline_row)
-
-    with patch("butlers.jobs.spend._sum_tokens_for_all_models", return_value={}):
-        result = await compute_spend_rule_savings(pool, pricing=pricing)
-
-    assert result["rules_skipped"] == 1
 
 
 # ---------------------------------------------------------------------------

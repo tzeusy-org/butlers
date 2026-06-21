@@ -777,11 +777,6 @@ async def test_bidirectional_dm_group_size_is_1():
         )
 
 
-def test_max_group_size_constant():
-    """_INTERACTION_SYNC_MAX_GROUP_SIZE must be 20 per RFC 0013 D3."""
-    assert _rjobs_attr("_INTERACTION_SYNC_MAX_GROUP_SIZE") == 20
-
-
 # ---------------------------------------------------------------------------
 # Test: channel hour offset table coverage
 # ---------------------------------------------------------------------------

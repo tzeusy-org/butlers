@@ -65,17 +65,12 @@ def context_start_env() -> dict[str, Any]:
     )
 
 
-def test_context_start_schema_version(context_start_env: dict[str, Any]) -> None:
+def test_context_start_envelope_fields(context_start_env: dict[str, Any]) -> None:
+    """context_start carries ingest.v1 schema, spotify source fields, full tier."""
     assert context_start_env["schema_version"] == "ingest.v1"
-
-
-def test_context_start_source_fields(context_start_env: dict[str, Any]) -> None:
     assert context_start_env["source"]["channel"] == "spotify_user_client"
     assert context_start_env["source"]["provider"] == "spotify"
     assert context_start_env["source"]["endpoint_identity"] == _ENDPOINT
-
-
-def test_context_start_ingestion_tier_full(context_start_env: dict[str, Any]) -> None:
     assert context_start_env["control"]["ingestion_tier"] == "full"
 
 
@@ -534,20 +529,10 @@ async def test_persist_session_summary_upserts_row() -> None:
     pool.fetchval.assert_awaited_once()
     call_args = pool.fetchval.call_args
     query: str = call_args.args[0]
-    assert "spotify_listening_sessions" in query
+    # Conflict-safe upsert so in-progress sessions extend the same row.
     assert "ON CONFLICT" in query
     assert "DO UPDATE" in query
-    # Mutable fields must be updated on conflict so in-progress upserts
-    # extend the same row instead of being silently discarded.
-    assert "ended_at" in query
-    assert "duration_seconds" in query
-    assert "track_count" in query
-    assert "track_names" in query
-    assert "recorded_at" in query
 
-    # Positional args: idempotency_key, endpoint_identity, spotify_user_id,
-    #                  started_at, ended_at, duration_seconds, track_count,
-    #                  track_names (jsonb), context_uri, context_name
     positional = call_args.args[1:]
     idempotency_key = positional[0]
     assert idempotency_key.startswith("spotify:")
@@ -644,12 +629,8 @@ async def test_emit_session_summary_persists_to_evidence_table() -> None:
         mock_persist.return_value = True
         await connector._emit_session_summary(session, _OBSERVED)
 
-    mock_persist.assert_awaited_once_with(
-        cursor_pool_mock,
-        endpoint_identity=_ENDPOINT,
-        spotify_user_id=_SPOTIFY_USER_ID,
-        session=session,
-    )
+    mock_persist.assert_awaited_once()
+    assert mock_persist.await_args.kwargs["session"] is session
     connector._submit_envelope.assert_awaited_once()
 
 

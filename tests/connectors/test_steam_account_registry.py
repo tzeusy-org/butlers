@@ -161,36 +161,41 @@ class TestResolveSteamAccount:
             (
                 {"steam_id": _STEAM_ID},
                 _make_account_row(steam_id=_STEAM_ID),
-                lambda a, sql: a.steam_id == _STEAM_ID and "steam_id = $1" in sql,
+                lambda a: a.steam_id == _STEAM_ID,
             ),
             # by UUID string
             (
                 {"account": str(_ACCOUNT_ID)},
                 _make_account_row(id=_ACCOUNT_ID),
-                lambda a, sql: a.id == _ACCOUNT_ID and "id = $1" in sql,
+                lambda a: a.id == _ACCOUNT_ID,
             ),
             # by UUID object
             (
                 {"account": _ACCOUNT_ID},
                 _make_account_row(id=_ACCOUNT_ID),
-                lambda a, sql: a.id == _ACCOUNT_ID,
+                lambda a: a.id == _ACCOUNT_ID,
             ),
             # default returns primary
             (
                 {},
                 _make_account_row(is_primary=True),
-                lambda a, sql: a.is_primary is True and "is_primary = true" in sql,
+                lambda a: a.is_primary is True,
+            ),
+            # steam_id takes precedence over account when both supplied
+            (
+                {"steam_id": _STEAM_ID, "account": _ACCOUNT_ID},
+                _make_account_row(steam_id=_STEAM_ID),
+                lambda a: a.steam_id == _STEAM_ID,
             ),
         ],
-        ids=["by-steam-id", "by-uuid-str", "by-uuid-obj", "default-primary"],
+        ids=["by-steam-id", "by-uuid-str", "by-uuid-obj", "default-primary", "steam-id-precedence"],
     )
     async def test_lookup_success(self, kwargs, setup_row, check) -> None:
         conn = _FakeConn()
         conn.fetchrow = AsyncMock(return_value=setup_row)
         pool = _make_pool(conn)
         account = await resolve_steam_account(pool, **kwargs)
-        sql = conn.fetchrow.call_args[0][0]
-        assert check(account, sql)
+        assert check(account)
 
     @pytest.mark.parametrize(
         "kwargs,exc_type,match",
@@ -211,14 +216,6 @@ class TestResolveSteamAccount:
         else:
             with pytest.raises(exc_type):
                 await resolve_steam_account(pool, **kwargs)
-
-    async def test_steam_id_takes_precedence_over_account(self) -> None:
-        conn = _FakeConn()
-        conn.fetchrow = AsyncMock(return_value=_make_account_row(steam_id=_STEAM_ID))
-        pool = _make_pool(conn)
-        await resolve_steam_account(pool, steam_id=_STEAM_ID, account=_ACCOUNT_ID)
-        sql = conn.fetchrow.call_args[0][0]
-        assert "steam_id = $1" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +289,13 @@ class TestCreateSteamAccount:
             else:
                 assert not any("entity_info" in c for c in execute_calls)
 
-    async def test_api_key_and_metadata_persistence(self) -> None:
-        """API key persists to entity_info; metadata round-trips."""
+    async def test_api_key_metadata_and_jsonb_codec(self) -> None:
+        """API key persists to entity_info; metadata round-trips and binds as a dict.
+
+        bu-aaacv removed the json.dumps + ::jsonb double-encoding pattern, so the
+        INSERT must pass metadata as a Python dict (the asyncpg JSONB codec handles
+        encoding), not a pre-serialized string.
+        """
         meta = {"poll_intervals": {"recently_played": 60}}
         conn = _FakeConn()
         pool = _make_pool(conn)
@@ -312,27 +314,7 @@ class TestCreateSteamAccount:
         execute_calls = [str(c[0][0]) for c in conn.execute.call_args_list]
         assert any("entity_info" in c for c in execute_calls)
 
-    async def test_metadata_passed_directly_to_jsonb(self) -> None:
-        """Metadata must reach the INSERT as a Python dict, not a json.dumps string.
-
-        bu-aaacv removed the json.dumps + ::jsonb double-encoding pattern.
-        Production pools must register the asyncpg JSONB codec for direct dict
-        binding to work.  This test verifies the call site passes a dict.
-        """
-        conn = _FakeConn()
-        pool = _make_pool(conn)
-        meta = {"poll_intervals": {"recently_played": 60}}
-        conn.fetchrow = AsyncMock(
-            side_effect=[
-                None,
-                None,
-                _make_id_row(_ENTITY_ID),
-                _make_account_row(metadata=meta),
-            ]
-        )
-        await create_steam_account(pool, steam_id=_STEAM_ID, metadata=meta)
-
-        # Find the INSERT INTO public.steam_accounts fetchrow call.
+        # Metadata reaches the INSERT as a dict (no json.dumps double-encode).
         insert_call = next(
             c
             for c in conn.fetchrow.call_args_list

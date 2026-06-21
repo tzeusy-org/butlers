@@ -44,17 +44,12 @@ def play_session_envelope() -> dict[str, Any]:
     )
 
 
-def test_play_session_schema_version(play_session_envelope: dict[str, Any]) -> None:
+def test_play_session_envelope_contract(play_session_envelope: dict[str, Any]) -> None:
+    """play_session carries ingest.v1 schema, gaming/steam source, and steam:play event id."""
     assert play_session_envelope["schema_version"] == "ingest.v1"
-
-
-def test_play_session_source_fields(play_session_envelope: dict[str, Any]) -> None:
     assert play_session_envelope["source"]["channel"] == "gaming"
     assert play_session_envelope["source"]["provider"] == "steam"
     assert play_session_envelope["source"]["endpoint_identity"] == _ENDPOINT
-
-
-def test_play_session_external_event_id_format(play_session_envelope: dict[str, Any]) -> None:
     eid = play_session_envelope["event"]["external_event_id"]
     assert eid.startswith("steam:play:")
     assert str(_STEAM_ID) in eid

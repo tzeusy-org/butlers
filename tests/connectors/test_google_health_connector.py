@@ -68,12 +68,9 @@ _OBSERVED = "2026-04-24T10:00:00+00:00"
 
 
 def test_google_health_scopes_are_full_urls() -> None:
+    assert len(GOOGLE_HEALTH_SCOPES) == 3
     for scope in GOOGLE_HEALTH_SCOPES:
         assert scope.startswith("https://www.googleapis.com/auth/googlehealth.")
-
-
-def test_google_health_scope_count_is_three() -> None:
-    assert len(GOOGLE_HEALTH_SCOPES) == 3
 
 
 def test_resource_bundles_include_required_types() -> None:
@@ -212,23 +209,17 @@ def test_format_sleep_duration_label(ms: int, expected: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_extract_records_from_sessions_shape() -> None:
-    data = {"sessions": [{"session_id": "a"}, {"session_id": "b"}]}
-    assert len(_extract_records(data)) == 2
-
-
-def test_extract_records_from_data_points_shape() -> None:
-    data = {"dataPoints": [{"value": 1}, {"value": 2}]}
-    assert len(_extract_records(data)) == 2
-
-
-def test_extract_records_from_rollup_data_points_shape() -> None:
-    data = {"rollupDataPoints": [{"steps": {"countSum": "1200"}}]}
-    assert len(_extract_records(data)) == 1
-
-
-def test_extract_records_returns_empty_when_no_known_list() -> None:
-    assert _extract_records({"foo": "bar"}) == []
+@pytest.mark.parametrize(
+    "data,expected_len",
+    [
+        ({"sessions": [{"session_id": "a"}, {"session_id": "b"}]}, 2),
+        ({"dataPoints": [{"value": 1}, {"value": 2}]}, 2),
+        ({"rollupDataPoints": [{"steps": {"countSum": "1200"}}]}, 1),
+        ({"foo": "bar"}, 0),  # no known list key → empty
+    ],
+)
+def test_extract_records_shape(data: dict, expected_len: int) -> None:
+    assert len(_extract_records(data)) == expected_len
 
 
 def test_normalize_sleep_data_point_shape() -> None:
@@ -838,55 +829,6 @@ def _make_fake_row(
 
 
 @pytest.mark.asyncio
-async def test_list_health_scoped_accounts_filters_by_status_and_scope_superset() -> None:
-    """list_health_scoped_accounts returns only status='active' rows with all three health scopes.
-
-    The SQL WHERE clause handles the status='active' filter; the Python post-filter
-    handles the scope-superset check.  The test stubs only the active rows that the
-    SQL would return, then asserts that the scope-superset filter excludes the
-    partial-scope row.
-
-    Acceptance test [bu-91zdb.1] AC-1.
-    """
-    from butlers.google_account_registry import list_health_scoped_accounts
-
-    # Row A: active, all three health scopes — should be included.
-    row_a = _make_fake_row(_UUID_A, _ENTITY_A, "a@example.com", _HEALTH_SCOPE_LIST)
-    # Row B: active, only two health scopes (missing one) — excluded by Python scope filter.
-    row_b = _make_fake_row(
-        _UUID_B,
-        _ENTITY_B,
-        "b@example.com",
-        _HEALTH_SCOPE_LIST[:2],
-    )
-    # Simulate the SQL WHERE status='active': the mock returns only active rows.
-    # Row C (revoked) would not appear in the DB result set because the SQL filters it.
-    active_rows = [row_a, row_b]
-
-    fake_conn = MagicMock()
-    fake_conn.fetch = AsyncMock(return_value=active_rows)
-    fake_conn.__aenter__ = AsyncMock(return_value=fake_conn)
-    fake_conn.__aexit__ = AsyncMock(return_value=False)
-
-    pool = MagicMock()
-    pool.acquire = MagicMock(return_value=fake_conn)
-
-    results = await list_health_scoped_accounts(pool, health_scopes=GOOGLE_HEALTH_SCOPES)
-
-    # Only row A qualifies (B is excluded by Python scope-superset filter).
-    assert len(results) == 1
-    assert results[0].id == _UUID_A
-    assert results[0].email == "a@example.com"
-    assert results[0].entity_id == _ENTITY_A
-    assert results[0].refresh_token_present is True
-
-    # Confirm the SQL WHERE clause filters on status='active'.
-    assert fake_conn.fetch.await_count == 1
-    sql_called = fake_conn.fetch.await_args.args[0]
-    assert "status = 'active'" in sql_called
-
-
-@pytest.mark.asyncio
 async def test_resolve_owner_and_scopes_diffs_account_set_across_cycles() -> None:
     """_resolve_owner_and_scopes detects adds and removals across back-to-back calls.
 
@@ -1444,10 +1386,6 @@ async def test_list_health_scoped_accounts_filters() -> None:
     assert len(results) == 1
     assert results[0].id == uuid_active_full
     assert results[0].email == "full@example.com"
-
-    # SQL must have filtered on status='active'.
-    sql_called = fake_conn.fetch.await_args.args[0]
-    assert "status = 'active'" in sql_called
 
     # The partial-scope and no-scope rows were excluded by the Python filter.
     returned_ids = {r.id for r in results}

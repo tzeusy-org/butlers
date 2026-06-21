@@ -252,59 +252,63 @@ class TestMCPDiscoveryFailureClassifiable:
 # ---------------------------------------------------------------------------
 
 
+_ADAPTER_FACTORY = {
+    "claude": (_CLAUDE_EXEC, lambda: ClaudeCodeAdapter(claude_binary="/usr/bin/claude")),
+    "gemini": (_GEMINI_EXEC, lambda: GeminiAdapter(gemini_binary="/usr/bin/gemini")),
+    "opencode": (_OPENCODE_EXEC, lambda: OpenCodeAdapter(opencode_binary="/usr/bin/opencode")),
+}
+
+
 class TestRateLimitAuthModelUnavailableTimeoutMapping:
-    """AC-3: Rate-limit / auth / model-unavailable / timeout signals map cleanly."""
+    """AC-3: Rate-limit / auth / model-unavailable / timeout signals map cleanly.
 
-    # -- ClaudeCode adapter --
+    Parametrized across the ClaudeCode/Gemini/OpenCode adapters: each adapter must
+    raise a classifier-eligible RuntimeError on auth / rate-limit / model-unavailable
+    stderr, recording error_detail and is_pre_tool_call=True in last_process_info.
+    """
 
-    async def test_claude_code_nonzero_exit_error_detail_set(self) -> None:
-        """ClaudeCodeAdapter sets error_detail on non-zero exit."""
-        proc = _make_proc(1, stderr=b"unauthorized: invalid API key")
-        with patch(_CLAUDE_EXEC, return_value=proc):
-            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
-            with pytest.raises(RuntimeError):
+    @pytest.mark.parametrize(
+        "adapter_key,returncode,stderr,detail_substr",
+        [
+            # ClaudeCode
+            ("claude", 1, b"unauthorized: invalid API key", "api key"),
+            ("claude", 429, b"rate limit exceeded", "rate limit"),
+            ("claude", 1, b"model is unavailable: claude-opus-4", "model is unavailable"),
+            # Gemini
+            ("gemini", 1, b"quota exceeded for project", "quota"),
+            ("gemini", 1, b"authentication failed: google auth error", "auth"),
+            ("gemini", 429, b"rate limit exceeded: too many requests", "rate limit"),
+            ("gemini", 1, b"model not found: gemini-ultra-999", "model not found"),
+            # OpenCode (non-zero exit)
+            ("opencode", 1, b"provider unavailable: openai returned 503", "provider unavailable"),
+            ("opencode", 1, b"authentication failed: invalid credential", "auth"),
+            ("opencode", 429, b"rate limit exceeded", "rate limit"),
+        ],
+    )
+    async def test_adapter_failure_classifiable_and_records_detail(
+        self, adapter_key: str, returncode: int, stderr: bytes, detail_substr: str
+    ) -> None:
+        exec_const, make_adapter = _ADAPTER_FACTORY[adapter_key]
+        proc = _make_proc(returncode, stderr=stderr)
+        with patch(exec_const, return_value=proc):
+            adapter = make_adapter()
+            with pytest.raises(RuntimeError) as exc_info:
                 await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        assert _classify(exc_info.value)
         info = adapter.last_process_info
         assert info is not None
+        assert info.get("is_pre_tool_call") is True
         assert "error_detail" in info
-        assert (
-            "unauthorized" in info["error_detail"].lower()
-            or "api key" in info["error_detail"].lower()
-        )
+        assert detail_substr in info["error_detail"].lower()
 
-    async def test_claude_code_auth_error_classifiable(self) -> None:
-        """ClaudeCodeAdapter auth error produces a classifier-eligible RuntimeError."""
-        proc = _make_proc(1, stderr=b"authentication failed: invalid api key")
-        with patch(_CLAUDE_EXEC, return_value=proc):
-            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_claude_code_rate_limit_classifiable(self) -> None:
-        """ClaudeCodeAdapter rate-limit error produces a classifier-eligible RuntimeError."""
-        proc = _make_proc(429, stderr=b"rate limit exceeded")
-        with patch(_CLAUDE_EXEC, return_value=proc):
-            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_claude_code_model_unavailable_classifiable(self) -> None:
-        """ClaudeCodeAdapter model-unavailable error is classifier-eligible."""
-        proc = _make_proc(1, stderr=b"model is unavailable: claude-opus-4")
-        with patch(_CLAUDE_EXEC, return_value=proc):
-            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_claude_code_timeout_sets_is_pre_tool_call(self) -> None:
-        """ClaudeCodeAdapter timeout sets is_pre_tool_call=True."""
+    @pytest.mark.parametrize("adapter_key", ["claude", "gemini", "opencode"])
+    async def test_adapter_timeout_sets_is_pre_tool_call(self, adapter_key: str) -> None:
+        """Each adapter's timeout path sets is_pre_tool_call=True."""
+        exec_const, make_adapter = _ADAPTER_FACTORY[adapter_key]
         proc = _make_proc(0)
         proc.communicate = AsyncMock(side_effect=TimeoutError())
-        with patch(_CLAUDE_EXEC, return_value=proc):
-            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+        with patch(exec_const, return_value=proc):
+            adapter = make_adapter()
             with pytest.raises(TimeoutError):
                 await adapter.invoke(
                     prompt="slow", system_prompt="", mcp_servers={}, env={}, timeout=1
@@ -313,140 +317,30 @@ class TestRateLimitAuthModelUnavailableTimeoutMapping:
         assert info is not None
         assert info.get("is_pre_tool_call") is True
 
-    async def test_claude_code_is_pre_tool_call_on_auth_failure(self) -> None:
-        """ClaudeCodeAdapter sets is_pre_tool_call=True on auth failure."""
-        proc = _make_proc(1, stderr=b"authentication failed")
-        with patch(_CLAUDE_EXEC, return_value=proc):
-            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
-            with pytest.raises(RuntimeError):
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            b"ProviderModelNotFoundError: gpt-9 not found",
+            b"AuthenticationError: invalid API key",
+        ],
+    )
+    async def test_opencode_exit0_stderr_error_is_classifiable(self, stderr: bytes) -> None:
+        """OpenCode exits 0 on model-not-found/auth errors but writes structured stderr;
+        the adapter detects it, raises a classifier-eligible RuntimeError, and flags
+        is_pre_tool_call."""
+        proc = _make_proc(0, stdout=b"", stderr=stderr)
+        with patch(_OPENCODE_EXEC, return_value=proc):
+            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+            with pytest.raises(RuntimeError) as exc_info:
                 await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        assert _classify(exc_info.value)
         info = adapter.last_process_info
         assert info is not None
         assert info.get("is_pre_tool_call") is True
 
-    # -- Gemini adapter --
-
-    async def test_gemini_nonzero_exit_error_detail_set(self) -> None:
-        """GeminiAdapter sets error_detail on non-zero exit."""
-        proc = _make_proc(1, stderr=b"quota exceeded for project")
-        with patch(_GEMINI_EXEC, return_value=proc):
-            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
-            with pytest.raises(RuntimeError):
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        info = adapter.last_process_info
-        assert info is not None
-        assert "error_detail" in info
-        assert "quota" in info["error_detail"].lower()
-
-    async def test_gemini_auth_error_classifiable(self) -> None:
-        """GeminiAdapter auth error produces a classifier-eligible RuntimeError."""
-        proc = _make_proc(1, stderr=b"authentication failed: google auth error")
-        with patch(_GEMINI_EXEC, return_value=proc):
-            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_gemini_rate_limit_classifiable(self) -> None:
-        """GeminiAdapter rate-limit error is classifier-eligible."""
-        proc = _make_proc(429, stderr=b"rate limit exceeded: too many requests")
-        with patch(_GEMINI_EXEC, return_value=proc):
-            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_gemini_model_unavailable_classifiable(self) -> None:
-        """GeminiAdapter model-unavailable error is classifier-eligible."""
-        proc = _make_proc(1, stderr=b"model not found: gemini-ultra-999")
-        with patch(_GEMINI_EXEC, return_value=proc):
-            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_gemini_timeout_sets_is_pre_tool_call(self) -> None:
-        """GeminiAdapter timeout sets is_pre_tool_call=True."""
-        proc = _make_proc(0)
-        proc.communicate = AsyncMock(side_effect=TimeoutError())
-        with patch(_GEMINI_EXEC, return_value=proc):
-            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
-            with pytest.raises(TimeoutError):
-                await adapter.invoke(
-                    prompt="slow", system_prompt="", mcp_servers={}, env={}, timeout=1
-                )
-        info = adapter.last_process_info
-        assert info is not None
-        assert info.get("is_pre_tool_call") is True
-
-    async def test_gemini_is_pre_tool_call_on_failure(self) -> None:
-        """GeminiAdapter sets is_pre_tool_call=True on non-zero exit."""
-        proc = _make_proc(1, stderr=b"authentication failed")
-        with patch(_GEMINI_EXEC, return_value=proc):
-            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
-            with pytest.raises(RuntimeError):
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        info = adapter.last_process_info
-        assert info is not None
-        assert info.get("is_pre_tool_call") is True
-
-    # -- OpenCode adapter --
-
-    async def test_opencode_nonzero_exit_error_detail_set(self) -> None:
-        """OpenCodeAdapter sets error_detail on non-zero exit."""
-        proc = _make_proc(1, stderr=b"provider unavailable: openai returned 503")
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(RuntimeError):
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        info = adapter.last_process_info
-        assert info is not None
-        assert "error_detail" in info
-        assert "provider unavailable" in info["error_detail"].lower()
-
-    async def test_opencode_auth_error_classifiable(self) -> None:
-        """OpenCodeAdapter auth error produces a classifier-eligible RuntimeError."""
-        proc = _make_proc(1, stderr=b"authentication failed: invalid credential")
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_opencode_rate_limit_classifiable(self) -> None:
-        """OpenCodeAdapter rate-limit error is classifier-eligible."""
-        proc = _make_proc(429, stderr=b"rate limit exceeded")
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_opencode_model_not_found_via_stderr_classifiable(self) -> None:
-        """OpenCodeAdapter ProviderModelNotFoundError in stderr is classifier-eligible.
-
-        OpenCode CLI exits 0 on model-not-found errors but writes a structured
-        error to stderr. The adapter detects this and raises RuntimeError,
-        which must be classifier-eligible.
-        """
-        proc = _make_proc(0, stdout=b"", stderr=b"ProviderModelNotFoundError: gpt-9 not found")
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_opencode_auth_error_via_stderr_classifiable(self) -> None:
-        """OpenCodeAdapter AuthenticationError in stderr (exit 0) is classifier-eligible."""
-        proc = _make_proc(0, stdout=b"", stderr=b"AuthenticationError: invalid API key")
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        assert _classify(exc_info.value)
-
-    async def test_opencode_empty_success_is_classifiable(self) -> None:
-        """OpenCodeAdapter treats empty exit-0 output as a failover-eligible runtime error."""
+    async def test_opencode_empty_exit_zero_is_empty_runtime_response(self) -> None:
+        """OpenCode empty exit-0 output is a pre-tool-call failover signal classified
+        as empty_runtime_response."""
         proc = _make_proc(0, stdout=b"", stderr=b"")
         with patch(_OPENCODE_EXEC, return_value=proc):
             adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
@@ -454,48 +348,10 @@ class TestRateLimitAuthModelUnavailableTimeoutMapping:
                 await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
 
         assert "no response" in str(exc_info.value).lower()
-        assert _classify(exc_info.value)
         info = adapter.last_process_info
         assert info is not None
         assert info.get("is_pre_tool_call") is True
         assert "error_detail" in info
-
-    async def test_opencode_model_not_found_sets_is_pre_tool_call(self) -> None:
-        """OpenCodeAdapter model-not-found (exit 0) sets is_pre_tool_call=True."""
-        proc = _make_proc(0, stdout=b"", stderr=b"ProviderModelNotFoundError: bad-model")
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(RuntimeError):
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-        info = adapter.last_process_info
-        assert info is not None
-        assert info.get("is_pre_tool_call") is True
-
-    async def test_opencode_timeout_sets_is_pre_tool_call(self) -> None:
-        """OpenCodeAdapter timeout sets is_pre_tool_call=True."""
-        proc = _make_proc(0)
-        proc.communicate = AsyncMock(side_effect=TimeoutError())
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(TimeoutError):
-                await adapter.invoke(
-                    prompt="slow", system_prompt="", mcp_servers={}, env={}, timeout=1
-                )
-        info = adapter.last_process_info
-        assert info is not None
-        assert info.get("is_pre_tool_call") is True
-
-    async def test_opencode_empty_exit_zero_classifiable(self) -> None:
-        """OpenCodeAdapter empty exit-0 output is a pre-tool-call failover signal."""
-        proc = _make_proc(0, stdout=b"", stderr=b"")
-        with patch(_OPENCODE_EXEC, return_value=proc):
-            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-            with pytest.raises(RuntimeError) as exc_info:
-                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
-
-        info = adapter.last_process_info
-        assert info is not None
-        assert info.get("is_pre_tool_call") is True
         decision = classify_failover_eligibility(
             FailoverContext(exception=exc_info.value, tool_calls=[], process_info=info)
         )
