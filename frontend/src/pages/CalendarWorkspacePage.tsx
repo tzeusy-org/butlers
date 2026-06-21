@@ -7,8 +7,6 @@ import {
   addWeeks,
   differenceInMinutes,
   format,
-  getHours,
-  getMinutes,
   isSameDay,
   isSameMonth,
   isToday,
@@ -86,14 +84,18 @@ import { StateDot } from "@/components/ui/StateDot";
 import { Voice } from "@/components/ui/Voice";
 import { cn } from "@/lib/utils";
 import {
+  formatEventTime,
   HOUR_HEIGHT_PX,
+  isoAtMinuteInTz,
   MINUTES_PER_DAY,
+  minuteOfDayInTz,
   normalizeDragWindow,
   offsetToMinutes,
   resizeWindowEnd,
   shiftWindow,
   SNAP_MINUTES,
   snapMinutes,
+  tzDayKey,
 } from "@/lib/calendar-grid";
 import {
   overlayAmountBadge,
@@ -548,11 +550,6 @@ const DEFAULT_SCROLL_HOUR = 7.5;
 /** Pixel movement past which a pointer gesture counts as a drag (not a click). */
 const DRAG_THRESHOLD_PX = 4;
 
-/** Minute-of-day for a Date (local time). */
-function minuteOfDay(date: Date): number {
-  return getHours(date) * 60 + getMinutes(date);
-}
-
 /** Format a minute-of-day value as an `HH:mm` label. */
 function formatMinuteLabel(minutes: number): string {
   const clamped = Math.min(MINUTES_PER_DAY, Math.max(0, minutes));
@@ -561,14 +558,6 @@ function formatMinuteLabel(minutes: number): string {
     new Date(2000, 0, 1, Math.floor(clamped / 60), clamped % 60),
     "HH:mm",
   );
-}
-
-/** Build a UTC ISO string for a given calendar day at `minutes` past local midnight. */
-function isoAtMinute(day: Date, minutes: number): string {
-  const d = new Date(day);
-  d.setHours(0, 0, 0, 0);
-  d.setMinutes(minutes);
-  return d.toISOString();
 }
 
 /** Whether an entry carries an RRULE (i.e. is a recurring occurrence). */
@@ -784,6 +773,7 @@ function isOverflowSentinel(
 function capLaneEntriesByDay(
   entries: UnifiedCalendarEntry[],
   cap: number,
+  tz: string,
 ): LaneRowItem[] {
   // Build ordered list of (dayKey, groupKey) pairs while preserving insertion order
   const order: Array<[string, string]> = [];
@@ -791,7 +781,7 @@ function capLaneEntriesByDay(
   const buckets = new Map<string, UnifiedCalendarEntry[]>();
 
   for (const entry of entries) {
-    const dayKey = format(new Date(entry.start_at), "yyyy-MM-dd");
+    const dayKey = tzDayKey(entry.start_at, tz);
     const groupKey = recurringGroupKey(entry);
     const bucketKey = `${dayKey}::${groupKey}`;
 
@@ -1146,6 +1136,8 @@ interface CalendarFindTimePanelProps {
    * usable slots (empty result or degraded free/busy).
    */
   onSlotsChange: (slots: CalendarSuggestedSlot[]) => void;
+  /** Workspace timezone used to render slot times (not the browser's zone). */
+  timezone: string;
 }
 
 const FIND_TIME_HORIZON_OPTIONS: ReadonlyArray<{
@@ -1187,6 +1179,7 @@ function CalendarFindTimePanel({
   butlerName,
   onSelectSlot,
   onSlotsChange,
+  timezone,
 }: CalendarFindTimePanelProps) {
   const [durationMinutes, setDurationMinutes] = useState(30);
   const [partOfDay, setPartOfDay] = useState<"any" | CalendarFindTimePartOfDay>(
@@ -1356,8 +1349,6 @@ function CalendarFindTimePanel({
           data-testid="find-time-slots"
         >
           {result.slots.map((slot) => {
-            const start = parseISO(slot.start_at);
-            const end = parseISO(slot.end_at);
             return (
               <li key={`${slot.start_at}-${slot.end_at}`}>
                 <button
@@ -1371,10 +1362,11 @@ function CalendarFindTimePanel({
                   onClick={() => onSelectSlot(slot)}
                 >
                   <span className="text-sm text-[var(--fg)]">
-                    {format(start, "EEE, MMM d")}
+                    {formatEventTime(slot.start_at, timezone, "EEE, MMM d")}
                   </span>
                   <Mono muted className="tabular-nums">
-                    {format(start, "HH:mm")}–{format(end, "HH:mm")}
+                    {formatEventTime(slot.start_at, timezone, "HH:mm")}–
+                    {formatEventTime(slot.end_at, timezone, "HH:mm")}
                   </Mono>
                 </button>
               </li>
@@ -1541,6 +1533,8 @@ interface CalendarEntryDetailPanelProps {
   ) => void;
   userMutation: ReturnType<typeof useMutateCalendarWorkspaceUserEvent>;
   butlerMutation: ReturnType<typeof useMutateCalendarWorkspaceButlerEvent>;
+  /** Workspace timezone used to render the event's start/end (not browser-local). */
+  timezone: string;
 }
 
 function CalendarEntryDetailPanel({
@@ -1550,6 +1544,7 @@ function CalendarEntryDetailPanel({
   onRecurringEdit,
   userMutation,
   butlerMutation,
+  timezone,
 }: CalendarEntryDetailPanelProps) {
   const isUserEvent = entry.source_type === "provider_event";
   const isButlerEvent =
@@ -1687,14 +1682,12 @@ function CalendarEntryDetailPanel({
     if (isUserEvent) fireUserUpdate({ location: trimmed }, "location");
   }
 
-  const startDate = new Date(entry.start_at);
-  const endDate = new Date(entry.end_at);
   const startFmt = entry.all_day
-    ? format(startDate, "EEE, MMM d")
-    : format(startDate, "EEE, MMM d · HH:mm");
+    ? formatEventTime(entry.start_at, timezone, "EEE, MMM d")
+    : formatEventTime(entry.start_at, timezone, "EEE, MMM d · HH:mm");
   const endFmt = entry.all_day
-    ? format(endDate, "EEE, MMM d")
-    : format(endDate, "HH:mm");
+    ? formatEventTime(entry.end_at, timezone, "EEE, MMM d")
+    : formatEventTime(entry.end_at, timezone, "HH:mm");
 
   // Attendees from Google Calendar event metadata
   const attendees = useMemo(() => {
@@ -1969,12 +1962,16 @@ function CalendarSearchPalette({
   onOpenChange,
   view,
   timezone,
+  displayTimezone,
   onJump,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   view: CalendarWorkspaceView;
+  /** Timezone sent to the search endpoint (relative-phrase parsing). */
   timezone: string;
+  /** Workspace timezone used to render result times (not browser-local). */
+  displayTimezone: string;
   onJump: (entry: UnifiedCalendarEntry) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -2008,17 +2005,17 @@ function CalendarSearchPalette({
     const idx = new Map<string, number>();
     for (const entry of entriesData ?? []) {
       const d = new Date(entry.start_at);
-      const key = format(d, "yyyy-MM-dd");
+      const key = tzDayKey(d, displayTimezone);
       let gi = idx.get(key);
       if (gi === undefined) {
         gi = byDay.length;
         idx.set(key, gi);
-        byDay.push({ day: key, date: startOfDay(d), items: [] });
+        byDay.push({ day: key, date: d, items: [] });
       }
       byDay[gi].items.push(entry);
     }
     return byDay;
-  }, [entriesData]);
+  }, [entriesData, displayTimezone]);
 
   const trimmed = debounced.trim();
 
@@ -2077,7 +2074,13 @@ function CalendarSearchPalette({
             groups.map((group) => (
               <section key={group.day} className="mb-4">
                 <div className="mb-1 border-b border-[var(--border)] pb-1">
-                  <Eyebrow>{format(group.date, "EEE · MMM d, yyyy")}</Eyebrow>
+                  <Eyebrow>
+                    {formatEventTime(
+                      group.date,
+                      displayTimezone,
+                      "EEE · MMM d, yyyy",
+                    )}
+                  </Eyebrow>
                 </div>
                 <div role="list">
                   {group.items.map((entry) => (
@@ -2090,7 +2093,11 @@ function CalendarSearchPalette({
                       <Mono muted className="w-14 shrink-0 tabular-nums">
                         {entry.all_day
                           ? "all day"
-                          : format(new Date(entry.start_at), "HH:mm")}
+                          : formatEventTime(
+                              entry.start_at,
+                              displayTimezone,
+                              "HH:mm",
+                            )}
                       </Mono>
                       <span className="truncate text-sm text-[var(--fg)]">
                         {entry.title}
@@ -2701,13 +2708,13 @@ export default function CalendarWorkspacePage() {
   const entriesByDay = useMemo(() => {
     const buckets = new Map<string, UnifiedCalendarEntry[]>();
     entries.forEach((entry) => {
-      const key = format(new Date(entry.start_at), "yyyy-MM-dd");
+      const key = tzDayKey(entry.start_at, defaultTimezone);
       const bucket = buckets.get(key) ?? [];
       bucket.push(entry);
       buckets.set(key, bucket);
     });
     return buckets;
-  }, [entries]);
+  }, [entries, defaultTimezone]);
 
   const monthDays = useMemo(() => {
     if (range !== "month") return [] as Date[];
@@ -3164,16 +3171,16 @@ export default function CalendarWorkspacePage() {
       );
       commitDragTimeChange(
         origin.entry,
-        isoAtMinute(day, startMin),
-        isoAtMinute(day, endMin),
+        isoAtMinuteInTz(day, startMin, defaultTimezone),
+        isoAtMinuteInTz(day, endMin, defaultTimezone),
       );
     } else {
       const day = weekDays[origin.dayIndex] ?? weekDays[0];
       const endMin = resizeWindowEnd(origin.startMin, pointerMin);
       commitDragTimeChange(
         origin.entry,
-        isoAtMinute(day, origin.startMin),
-        isoAtMinute(day, endMin),
+        isoAtMinuteInTz(day, origin.startMin, defaultTimezone),
+        isoAtMinuteInTz(day, endMin, defaultTimezone),
       );
     }
   }
@@ -3237,7 +3244,7 @@ export default function CalendarWorkspacePage() {
     entry: UnifiedCalendarEntry,
   ) {
     if (event.button !== 0 || !isGridDraggable(entry)) return;
-    const originStartMin = minuteOfDay(new Date(entry.start_at));
+    const originStartMin = minuteOfDayInTz(entry.start_at, defaultTimezone);
     const durationMin = Math.max(
       differenceInMinutes(new Date(entry.end_at), new Date(entry.start_at)),
       SNAP_MINUTES,
@@ -3271,7 +3278,7 @@ export default function CalendarWorkspacePage() {
       downY: event.clientY,
       entry,
       dayIndex,
-      startMin: minuteOfDay(new Date(entry.start_at)),
+      startMin: minuteOfDayInTz(entry.start_at, defaultTimezone),
       moved: false,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -3877,7 +3884,9 @@ export default function CalendarWorkspacePage() {
             toast.error(`Snooze failed: ${detail}`);
             return;
           }
-          toast.success(`Snoozed to ${format(new Date(iso), "MMM d, HH:mm")}`);
+          toast.success(
+            `Snoozed to ${formatEventTime(iso, defaultTimezone, "MMM d, HH:mm")}`,
+          );
         },
         onError: (error) => {
           toast.error(error instanceof Error ? error.message : "Snooze failed");
@@ -4384,6 +4393,7 @@ export default function CalendarWorkspacePage() {
         <div className="flex shrink-0 flex-col pt-5">
           <CalendarFindTimePanel
             butlerName={findTimeButlerName}
+            timezone={defaultTimezone}
             onSelectSlot={selectFindTimeSlot}
             onSlotsChange={setFindTimeSlots}
           />
@@ -4404,6 +4414,7 @@ export default function CalendarWorkspacePage() {
             }
             acceptMutation={acceptProposalMutation}
             dismissMutation={dismissProposalMutation}
+            timezone={defaultTimezone}
           />
         </div>
       ) : null}
@@ -4476,6 +4487,7 @@ export default function CalendarWorkspacePage() {
                         {capLaneEntriesByDay(
                           lane.entries,
                           RECURRING_INSTANCE_CAP,
+                          defaultTimezone,
                         ).map((item) =>
                           isOverflowSentinel(item) ? (
                             <div
@@ -4500,7 +4512,11 @@ export default function CalendarWorkspacePage() {
                                 >
                                   {item.all_day
                                     ? "all day"
-                                    : format(new Date(item.start_at), "HH:mm")}
+                                    : formatEventTime(
+                                        item.start_at,
+                                        defaultTimezone,
+                                        "HH:mm",
+                                      )}
                                 </Mono>
                               }
                               meta={
@@ -4635,7 +4651,11 @@ export default function CalendarWorkspacePage() {
                             >
                               {!entry.all_day ? (
                                 <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                  {format(new Date(entry.start_at), "HH:mm")}
+                                  {formatEventTime(
+                                    entry.start_at,
+                                    defaultTimezone,
+                                    "HH:mm",
+                                  )}
                                 </span>
                               ) : null}
                               <span className="truncate">{entry.title}</span>
@@ -4885,19 +4905,29 @@ export default function CalendarWorkspacePage() {
                             the same prefilled-create as the list. */}
                         {findTimeSlots.map((slot, slotIndex) => {
                           const slotStart = parseISO(slot.start_at);
-                          if (!isSameDay(slotStart, day)) return null;
                           const slotEnd = parseISO(slot.end_at);
-                          const topMin = minuteOfDay(slotStart);
+                          // Bucket + place the slot in the workspace timezone so
+                          // it lines up with the grid's events under that zone.
+                          if (
+                            tzDayKey(slot.start_at, defaultTimezone) !==
+                            format(day, "yyyy-MM-dd")
+                          )
+                            return null;
+                          const topMin = minuteOfDayInTz(
+                            slot.start_at,
+                            defaultTimezone,
+                          );
                           const durationMin = Math.max(
                             differenceInMinutes(slotEnd, slotStart),
                             15,
                           );
+                          const slotLabel = `${formatEventTime(slot.start_at, defaultTimezone, "HH:mm")}–${formatEventTime(slot.end_at, defaultTimezone, "HH:mm")}`;
                           return (
                             <button
                               key={`find-time-${slot.start_at}-${slot.end_at}`}
                               type="button"
                               data-testid="find-time-overlay"
-                              title={`Open slot ${slotIndex + 1}: ${format(slotStart, "HH:mm")}–${format(slotEnd, "HH:mm")}`}
+                              title={`Open slot ${slotIndex + 1}: ${slotLabel}`}
                               onClick={(evt) => {
                                 evt.stopPropagation();
                                 selectFindTimeSlot(slot);
@@ -4915,8 +4945,7 @@ export default function CalendarWorkspacePage() {
                               }}
                             >
                               <span className="font-mono text-[10px] leading-none tabular-nums text-[var(--fg)]">
-                                #{slotIndex + 1} · {format(slotStart, "HH:mm")}–
-                                {format(slotEnd, "HH:mm")}
+                                #{slotIndex + 1} · {slotLabel}
                               </span>
                             </button>
                           );
@@ -4934,7 +4963,10 @@ export default function CalendarWorkspacePage() {
                             className="absolute inset-x-0.5 z-20 flex items-center justify-center rounded-[3px] border border-dashed border-[var(--fg)]/40 bg-[var(--bg)]/70 text-[10px] font-medium text-[var(--mfg)] transition-colors hover:text-[var(--fg)]"
                             style={{
                               top:
-                                (minuteOfDay(new Date(ghost.prevStartIso)) /
+                                (minuteOfDayInTz(
+                                  ghost.prevStartIso,
+                                  defaultTimezone,
+                                ) /
                                   60) *
                                 HOUR_HEIGHT_PX,
                               height: Math.max(
@@ -4954,7 +4986,7 @@ export default function CalendarWorkspacePage() {
                         {dayEntries.map((entry) => {
                           const s = new Date(entry.start_at);
                           const e = new Date(entry.end_at);
-                          const topMin = getHours(s) * 60 + getMinutes(s);
+                          const topMin = minuteOfDayInTz(s, defaultTimezone);
                           const durationMin = Math.max(
                             differenceInMinutes(e, s),
                             15,
@@ -4984,7 +5016,7 @@ export default function CalendarWorkspacePage() {
                                 height: heightPx,
                                 minHeight: 16,
                               }}
-                              title={`${format(s, "HH:mm")}–${format(e, "HH:mm")} · ${entry.title}`}
+                              title={`${formatEventTime(s, defaultTimezone, "HH:mm")}–${formatEventTime(e, defaultTimezone, "HH:mm")} · ${entry.title}`}
                               onPointerDown={
                                 draggable
                                   ? (evt) => beginMoveDrag(evt, entry)
@@ -5013,7 +5045,8 @@ export default function CalendarWorkspacePage() {
                               </span>
                               {heightPx >= 32 ? (
                                 <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                  {format(s, "HH:mm")}–{format(e, "HH:mm")}
+                                  {formatEventTime(s, defaultTimezone, "HH:mm")}–
+                                  {formatEventTime(e, defaultTimezone, "HH:mm")}
                                 </span>
                               ) : null}
                               {draggable ? (
@@ -5052,16 +5085,23 @@ export default function CalendarWorkspacePage() {
                   items: UnifiedCalendarEntry[];
                 }> = [];
                 const groupIndex = new Map<string, number>();
+                // Group by the event's calendar day in the workspace timezone so
+                // sections match the times rendered in each row.
+                const todayKey = formatEventTime(
+                  new Date(),
+                  defaultTimezone,
+                  "yyyy-MM-dd",
+                );
                 for (const entry of entries) {
                   const d = new Date(entry.start_at);
-                  const dayKey = format(d, "yyyy-MM-dd");
+                  const dayKey = tzDayKey(d, defaultTimezone);
                   let gi = groupIndex.get(dayKey);
                   if (gi === undefined) {
                     gi = groups.length;
                     groupIndex.set(dayKey, gi);
                     groups.push({
                       day: dayKey,
-                      date: startOfDay(d),
+                      date: d,
                       items: [],
                     });
                   }
@@ -5072,12 +5112,16 @@ export default function CalendarWorkspacePage() {
                     <div className="mb-1 flex items-baseline gap-2 border-b border-[var(--border)] pb-1.5">
                       <Eyebrow
                         className={cn(
-                          isToday(group.date) && "text-[var(--fg)]",
+                          group.day === todayKey && "text-[var(--fg)]",
                         )}
                       >
-                        {format(group.date, "EEE · MMM d")}
+                        {formatEventTime(
+                          group.date,
+                          defaultTimezone,
+                          "EEE · MMM d",
+                        )}
                       </Eyebrow>
-                      {isToday(group.date) ? (
+                      {group.day === todayKey ? (
                         <KindTag className="text-[var(--mfg)]">today</KindTag>
                       ) : null}
                     </div>
@@ -5098,7 +5142,11 @@ export default function CalendarWorkspacePage() {
                               >
                                 {entry.all_day
                                   ? "all day"
-                                  : format(new Date(entry.start_at), "HH:mm")}
+                                  : formatEventTime(
+                                      entry.start_at,
+                                      defaultTimezone,
+                                      "HH:mm",
+                                    )}
                               </Mono>
                             }
                             meta={
@@ -5182,6 +5230,7 @@ export default function CalendarWorkspacePage() {
               onRecurringEdit={openRecurringEdit}
               userMutation={userEventMutation}
               butlerMutation={butlerMutation}
+              timezone={defaultTimezone}
             />
           </aside>
         ) : null}
@@ -5193,6 +5242,7 @@ export default function CalendarWorkspacePage() {
           onOpenChange={setSearchPaletteOpen}
           view={view}
           timezone={timezone}
+          displayTimezone={defaultTimezone}
           onJump={handleSearchJump}
         />
       ) : null}
@@ -5696,8 +5746,8 @@ export default function CalendarWorkspacePage() {
                             {c.title}
                           </span>
                           <span className="shrink-0 tabular-nums text-xs">
-                            {format(parseISO(c.start_at), "h:mm a")}–
-                            {format(parseISO(c.end_at), "h:mm a")}
+                            {formatEventTime(c.start_at, defaultTimezone, "h:mm a")}–
+                            {formatEventTime(c.end_at, defaultTimezone, "h:mm a")}
                           </span>
                         </li>
                       ))}
@@ -5714,6 +5764,14 @@ export default function CalendarWorkspacePage() {
                         {userEventConflict.suggested_slots
                           .slice(0, 3)
                           .map((slot, idx) => {
+                            // "Different day than requested" is judged against
+                            // the day the user entered in the create form, which
+                            // is captured in browser-local wall clock (the create
+                            // form is not yet tz-aware). Comparing both in the
+                            // same browser-local frame keeps this prefix decision
+                            // stable; the slot label itself still renders in the
+                            // workspace timezone below. (Follow-up: make the
+                            // create form workspace-tz aware.)
                             const originalDay = format(
                               parseISO(
                                 userEventConflict.pendingMutation.payload
@@ -5736,8 +5794,8 @@ export default function CalendarWorkspacePage() {
                                 className="rounded-full border border-[var(--amber,#f59e0b)] px-3 py-1 text-xs font-medium hover:bg-[color-mix(in_srgb,var(--amber,#f59e0b)_15%,transparent)] transition-colors disabled:opacity-40"
                               >
                                 {isDifferentDay
-                                  ? `${format(parseISO(slot.start_at), "MMM d, h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`
-                                  : `${format(parseISO(slot.start_at), "h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`}
+                                  ? `${formatEventTime(slot.start_at, defaultTimezone, "MMM d, h:mm a")} – ${formatEventTime(slot.end_at, defaultTimezone, "h:mm a")}`
+                                  : `${formatEventTime(slot.start_at, defaultTimezone, "h:mm a")} – ${formatEventTime(slot.end_at, defaultTimezone, "h:mm a")}`}
                               </button>
                             );
                           })}
@@ -6099,7 +6157,11 @@ export default function CalendarWorkspacePage() {
                         <ul className="space-y-0.5 text-sm tabular-nums text-[var(--fg)]">
                           {recurrencePreviewData.occurrences.map((iso) => (
                             <li key={iso}>
-                              {format(parseISO(iso), "EEE, MMM d · h:mm a")}
+                              {formatEventTime(
+                                iso,
+                                defaultTimezone,
+                                "EEE, MMM d · h:mm a",
+                              )}
                             </li>
                           ))}
                         </ul>

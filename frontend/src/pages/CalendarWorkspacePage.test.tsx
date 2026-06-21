@@ -222,7 +222,10 @@ function setWorkspaceState(state?: Partial<UseWorkspaceResult>) {
   } as UseWorkspaceResult);
 }
 
-function setWorkspaceMetaState(state?: Partial<UseWorkspaceMetaResult>) {
+function setWorkspaceMetaState(
+  state?: Partial<UseWorkspaceMetaResult>,
+  opts?: { defaultTimezone?: string },
+) {
   vi.mocked(useCalendarWorkspaceMeta).mockReturnValue({
     data: {
       data: {
@@ -294,7 +297,7 @@ function setWorkspaceMetaState(state?: Partial<UseWorkspaceMetaResult>) {
           },
         ],
         lane_definitions: [],
-        default_timezone: "UTC",
+        default_timezone: opts?.defaultTimezone ?? "UTC",
         primary_calendar_id: null,
       },
       meta: {},
@@ -691,6 +694,84 @@ describe("CalendarWorkspacePage", () => {
     expect(latestWorkspaceParams()?.view).toBe("butler");
     expect(getSearchText()).toContain("view=butler");
     expect(getSearchText()).toContain("range=list");
+  });
+
+  it("renders event times in the configured workspace timezone, not browser-local", async () => {
+    // The sole entry is at 09:00Z; in Asia/Singapore (UTC+8) that is 17:00.
+    // Asserting 17:00 (and the absence of the raw 09:00) proves the workspace
+    // timezone drives formatting regardless of the machine running the test.
+    setWorkspaceMetaState(undefined, { defaultTimezone: "Asia/Singapore" });
+
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+    await act(async () => {
+      await flush();
+    });
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("17:00");
+    expect(text).not.toContain("09:00");
+  });
+
+  it("places + labels grid events using the workspace timezone", async () => {
+    // 09:00Z → 17:00 SGT. In week view the 09:00→11:00Z event must sit at the
+    // 17:00 row (top offset = 17h) and carry a 17:00 label, proving placement
+    // and display both follow the workspace zone, not the browser's.
+    setWorkspaceState({
+      data: {
+        data: {
+          entries: [
+            {
+              entry_id: "entry-grid",
+              event_id: "evt-grid",
+              view: "user",
+              source_type: "provider_event",
+              source_key: "google:primary",
+              title: "Long meeting",
+              start_at: "2026-03-01T09:00:00Z",
+              end_at: "2026-03-01T11:00:00Z",
+              timezone: "UTC",
+              all_day: false,
+              calendar_id: "primary",
+              provider_event_id: "evt-grid-1",
+              butler_name: "general",
+              schedule_id: null,
+              reminder_id: null,
+              rrule: null,
+              cron: null,
+              until_at: null,
+              status: "active",
+              sync_state: "fresh",
+              editable: true,
+              metadata: {},
+            },
+          ],
+          source_freshness: [],
+          lanes: [],
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      },
+    } as unknown as Parameters<typeof setWorkspaceState>[0]);
+    setWorkspaceMetaState(undefined, { defaultTimezone: "Asia/Singapore" });
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+    await act(async () => {
+      await flush();
+    });
+
+    const eventButton = document.querySelector(
+      '[data-calendar-entry-id="entry-grid"]',
+    ) as HTMLButtonElement;
+    expect(eventButton).toBeTruthy();
+    // Vertical placement: 17:00 → top = 17 * HOUR_HEIGHT_PX (60px).
+    expect(eventButton.style.top).toBe(`${17 * 60}px`);
+    // Label / title rendered in SGT (17:00–19:00), never browser-local 09:00.
+    expect(eventButton.getAttribute("title")).toContain("17:00");
+    expect(eventButton.getAttribute("title")).toContain("19:00");
+    expect(eventButton.getAttribute("title")).not.toContain("09:00");
   });
 
   it("updates query state when toggling to butler view", async () => {
@@ -3249,13 +3330,14 @@ describe("CalendarWorkspacePage", () => {
         document.querySelectorAll('[data-testid="find-time-overlay"]'),
       ) as HTMLElement[];
       expect(overlays).toHaveLength(2);
-      // Positioned via the grid geometry (HOUR_HEIGHT_PX = 60). The slot start is
-      // rendered in local time, so derive the expected offset the same way the
-      // component does — keeping the assertion timezone-independent.
+      // Positioned via the grid geometry (HOUR_HEIGHT_PX = 60). Slots are placed
+      // in the workspace timezone (meta default_timezone = "UTC" here), so derive
+      // the expected offset in UTC to match the component regardless of the
+      // machine's local zone.
       const HOUR_HEIGHT_PX = 60;
       const minutesIntoDay = (iso: string) => {
         const d = new Date(iso);
-        return d.getHours() * 60 + d.getMinutes();
+        return d.getUTCHours() * 60 + d.getUTCMinutes();
       };
       expect(overlays[0].style.top).toBe(
         `${(minutesIntoDay("2026-03-02T09:00:00Z") / 60) * HOUR_HEIGHT_PX}px`,

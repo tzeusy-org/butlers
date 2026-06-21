@@ -2,7 +2,16 @@
  * Pure geometry helpers for the calendar time-grid drag interactions
  * (create / move / resize). Kept separate from the page component so they can be
  * unit-tested and so the page file only exports its component (react-refresh).
+ *
+ * Also home to the timezone-aware time helpers (bu-jtyzs): the calendar
+ * workspace renders every event time in the configured *workspace* timezone
+ * (`default_timezone` from meta), not the browser's local zone. These helpers
+ * lean on `date-fns-tz` so day-bucketing, vertical placement, and the time
+ * labels all agree on a single zone.
  */
+
+import { addDays, format as formatLocal } from "date-fns";
+import { formatInTimeZone, fromZonedTime, toZonedTime } from "date-fns-tz";
 
 /** Height of each hour row in the time-axis grid (px). */
 export const HOUR_HEIGHT_PX = 60;
@@ -10,6 +19,68 @@ export const HOUR_HEIGHT_PX = 60;
 export const SNAP_MINUTES = 30;
 /** Minutes in a full day, used to clamp grid drag math. */
 export const MINUTES_PER_DAY = 24 * 60;
+
+/** Coerce an ISO string / epoch ms / Date into a Date (may be Invalid Date). */
+function toDate(value: string | number | Date): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+/**
+ * Format an event instant in the given IANA timezone. Returns `fallback` when
+ * the value is missing or unparseable so callers never render "Invalid Date".
+ */
+export function formatEventTime(
+  value: string | number | Date | null | undefined,
+  tz: string,
+  fmt: string,
+  fallback = "",
+): string {
+  if (value === null || value === undefined || value === "") return fallback;
+  const date = toDate(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  try {
+    return formatInTimeZone(date, tz, fmt);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Calendar-day key (`yyyy-MM-dd`) for an instant, evaluated in `tz`. Used to
+ * bucket events into the correct day column/section under the workspace zone.
+ */
+export function tzDayKey(value: string | number | Date, tz: string): string {
+  const date = toDate(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return formatInTimeZone(date, tz, "yyyy-MM-dd");
+}
+
+/**
+ * Minute-of-day (0..1439) of an instant, evaluated in `tz`. Drives the vertical
+ * placement of events on the time grid so an event at 09:00 workspace-local sits
+ * at the 09:00 row regardless of the browser's zone.
+ */
+export function minuteOfDayInTz(value: string | number | Date, tz: string): number {
+  const zoned = toZonedTime(toDate(value), tz);
+  return zoned.getHours() * 60 + zoned.getMinutes();
+}
+
+/**
+ * Build a UTC ISO string for `minutes` past midnight on `day`'s calendar date,
+ * interpreting that wall-clock time in `tz`. Inverse of {@link minuteOfDayInTz};
+ * keeps grid drag (move/resize) commits consistent with placement.
+ *
+ * `minutes` may exceed a day (e.g. an end at 24:00); the overflow rolls the
+ * date forward so the resulting instant is still correct in `tz`.
+ */
+export function isoAtMinuteInTz(day: Date, minutes: number, tz: string): string {
+  const dayCarry = Math.floor(minutes / MINUTES_PER_DAY);
+  const within = minutes - dayCarry * MINUTES_PER_DAY;
+  const dateStr = formatLocal(addDays(day, dayCarry), "yyyy-MM-dd");
+  const hh = String(Math.floor(within / 60)).padStart(2, "0");
+  const mm = String(within % 60).padStart(2, "0");
+  return fromZonedTime(`${dateStr}T${hh}:${mm}:00`, tz).toISOString();
+}
 
 /** Snap a minute-of-day value to the nearest `step` boundary, clamped to [0, 1440]. */
 export function snapMinutes(minutes: number, step: number = SNAP_MINUTES): number {

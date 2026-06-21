@@ -93,6 +93,7 @@ function renderPanel(
       error={props.error}
       acceptMutation={acceptMutation}
       dismissMutation={dismissMutation}
+      timezone={props.timezone ?? "UTC"}
     />,
   );
   return { acceptMutation, dismissMutation };
