@@ -25,12 +25,12 @@
 
 ## 5. Accept / dismiss endpoints
 
-- [ ] 5.1 Implement `POST /api/calendar/workspace/proposals/{id}/accept`: read the stored payload (with optional inline overrides), call `calendar_create_butler_event` (routes to the Butlers subcalendar), set `status='accepted'` + `accepted_event_id`
-- [ ] 5.2 Implement `POST /api/calendar/workspace/proposals/{id}/dismiss`: set `status='dismissed'` with no provider write
-- [ ] 5.3 Idempotency: accepting an already-accepted proposal returns the existing `accepted_event_id` with no second provider write; dismissing an already-dismissed proposal is a no-op
-- [ ] 5.4 Fail-closed accept: if `calendar_create_butler_event` fails, surface a structured error and leave the row `pending` (no partial `accepted` row without an `accepted_event_id`)
-- [ ] 5.5 Audit-log both actions via `log_audit_entry`
-- [ ] 5.6 Tests: accept creates an event on the Butlers subcalendar and flips status; dismiss flips status with no provider call; accept retry after a provider failure succeeds from `pending`
+- [x] 5.1 Implement `POST /api/calendar/workspace/proposals/{id}/accept`: read the stored payload (with optional inline overrides), call `calendar_create_butler_event` (routes to the Butlers subcalendar), set `status='accepted'` + `accepted_event_id`
+- [x] 5.2 Implement `POST /api/calendar/workspace/proposals/{id}/dismiss`: set `status='dismissed'` with no provider write
+- [x] 5.3 Idempotency: accepting an already-accepted proposal returns the existing `accepted_event_id` with no second provider write; dismissing an already-dismissed proposal is a no-op
+- [x] 5.4 Fail-closed accept: if `calendar_create_butler_event` fails, surface a structured error and leave the row `pending` (no partial `accepted` row without an `accepted_event_id`)
+- [x] 5.5 Audit-log both actions via `log_audit_entry`
+- [x] 5.6 Tests: accept creates an event on the Butlers subcalendar and flips status; dismiss flips status with no provider call; accept retry after a provider failure succeeds from `pending`
 
 ## 6. Ingestion producer wiring
 

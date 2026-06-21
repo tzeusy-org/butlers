@@ -51,6 +51,34 @@ class UnifiedCalendarEntry(BaseModel):
     source_session_id: str | None = None
 
 
+class CalendarProposalAcceptRequest(BaseModel):
+    """Optional inline overrides applied when accepting a proposal.
+
+    The accept endpoint reads the stored proposal payload; any field set here
+    overrides the corresponding stored value before the event is created on the
+    Butlers subcalendar.  An empty body (or omitted body) accepts the proposal
+    exactly as stored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    timezone: str | None = None
+    description: str | None = None
+    location: str | None = None
+
+
+class CalendarProposalActionResponse(BaseModel):
+    """Result of an accept/dismiss action on a calendar proposal."""
+
+    proposal_id: UUID
+    status: str
+    accepted_event_id: UUID | None = None
+    butler_name: str | None = None
+
+
 class CalendarWorkspaceSourceFreshness(BaseModel):
     """Per-source freshness metadata for workspace rendering."""
 

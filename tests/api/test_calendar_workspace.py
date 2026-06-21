@@ -1835,3 +1835,323 @@ async def test_butler_event_preview_requires_exactly_one_recurrence(app):
         )
     assert both.status_code == 422
     assert neither.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Proposals accept / dismiss (bu-88exay)
+#
+# These patch the read-model accessors at the router boundary so the endpoint
+# logic (idempotency, fail-closed accept, transition guards, audit) is exercised
+# in isolation from SQL. The MCP create is driven through the real
+# ``_call_mcp_tool`` path via the mocked manager.
+# ---------------------------------------------------------------------------
+
+import butlers.api.routers.calendar_workspace as _cw  # noqa: E402
+from butlers.api.read_models.calendar_workspace_v1 import (  # noqa: E402
+    CalendarProposalRow,
+)
+
+
+def _proposal_dto(
+    *,
+    status: str = "pending",
+    accepted_event_id=None,
+    butler_name: str = "general",
+    proposal_id=None,
+) -> CalendarProposalRow:
+    start = datetime(2026, 2, 22, 14, 0, tzinfo=UTC)
+    end = datetime(2026, 2, 22, 15, 0, tzinfo=UTC)
+    now = datetime.now(tz=UTC)
+    return CalendarProposalRow(
+        proposal_id=proposal_id or uuid4(),
+        butler_name=butler_name,
+        title="Dentist appointment",
+        start_at=start,
+        end_at=end,
+        description="From your inbox",
+        location="123 Main St",
+        timezone="UTC",
+        source_event_id="ingest-evt-1",
+        source_snippet="Your appointment is confirmed",
+        confidence=0.82,
+        entity_ids=[],
+        status=status,
+        accepted_event_id=accepted_event_id,
+        created_at=now,
+        updated_at=now,
+        db_butler=butler_name,
+    )
+
+
+def _patch_proposal_reads(monkeypatch, *, fetch, update=None):
+    monkeypatch.setattr(_cw, "query_calendar_proposal_by_id", fetch)
+    if update is not None:
+        monkeypatch.setattr(_cw, "update_calendar_proposal_status", update)
+
+
+async def test_accept_proposal_creates_event_and_flips_status(app, monkeypatch):
+    """Accept routes the stored payload through calendar_create_butler_event and
+    marks the proposal accepted with the created event id."""
+    proposal_id = uuid4()
+    event_id = uuid4()
+    pending = _proposal_dto(status="pending", proposal_id=proposal_id)
+    accepted = _proposal_dto(status="accepted", accepted_event_id=event_id, proposal_id=proposal_id)
+
+    fetch = AsyncMock(return_value=pending)
+    update = AsyncMock(return_value=accepted)
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+
+    create_client = AsyncMock()
+    create_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "created", "event_id": str(event_id)})
+    )
+    app, _, mock_mgr = _build_app(app, mcp_clients={"general": create_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/accept")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["status"] == "accepted"
+    assert data["accepted_event_id"] == str(event_id)
+
+    # Routed through the butler-event create tool (Butlers subcalendar default).
+    create_client.call_tool.assert_awaited_once()
+    tool_name, args = create_client.call_tool.await_args.args
+    assert tool_name == "calendar_create_butler_event"
+    assert args["butler_name"] == "general"
+    assert "calendar_id" not in args  # never targets the user's primary
+
+    update.assert_awaited_once()
+    assert update.await_args.kwargs["status"] == "accepted"
+    assert update.await_args.kwargs["accepted_event_id"] == event_id
+
+
+async def test_accept_proposal_idempotent_no_second_write(app, monkeypatch):
+    """Accepting an already-accepted proposal returns the existing event id with
+    no second provider write."""
+    proposal_id = uuid4()
+    event_id = uuid4()
+    accepted = _proposal_dto(status="accepted", accepted_event_id=event_id, proposal_id=proposal_id)
+
+    fetch = AsyncMock(return_value=accepted)
+    update = AsyncMock()
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+
+    create_client = AsyncMock()
+    create_client.call_tool = AsyncMock()
+    app, _, _ = _build_app(app, mcp_clients={"general": create_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/accept")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["status"] == "accepted"
+    assert data["accepted_event_id"] == str(event_id)
+    create_client.call_tool.assert_not_awaited()  # no second provider write
+    update.assert_not_awaited()
+
+
+async def test_accept_proposal_fail_closed_on_provider_error(app, monkeypatch):
+    """If the provider create fails, the row is NOT marked accepted (stays
+    pending) so the user can retry."""
+    proposal_id = uuid4()
+    pending = _proposal_dto(status="pending", proposal_id=proposal_id)
+
+    fetch = AsyncMock(return_value=pending)
+    update = AsyncMock()
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+
+    create_client = AsyncMock()
+    create_client.call_tool = AsyncMock(side_effect=RuntimeError("provider boom"))
+    app, _, _ = _build_app(app, mcp_clients={"general": create_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/accept")
+
+    assert resp.status_code == 503  # provider unreachable / MCP failure
+    update.assert_not_awaited()  # row left pending — retry remains possible
+
+
+async def test_accept_proposal_unknown_id_returns_404(app, monkeypatch):
+    fetch = AsyncMock(return_value=None)
+    _patch_proposal_reads(monkeypatch, fetch=fetch)
+    app, _, _ = _build_app(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{uuid4()}/accept")
+    assert resp.status_code == 404
+
+
+async def test_accept_dismissed_proposal_is_conflict(app, monkeypatch):
+    proposal_id = uuid4()
+    dismissed = _proposal_dto(status="dismissed", proposal_id=proposal_id)
+    fetch = AsyncMock(return_value=dismissed)
+    update = AsyncMock()
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+    create_client = AsyncMock()
+    create_client.call_tool = AsyncMock()
+    app, _, _ = _build_app(app, mcp_clients={"general": create_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/accept")
+    assert resp.status_code == 409
+    create_client.call_tool.assert_not_awaited()
+    update.assert_not_awaited()
+
+
+async def test_dismiss_proposal_flips_status_no_provider_write(app, monkeypatch):
+    proposal_id = uuid4()
+    pending = _proposal_dto(status="pending", proposal_id=proposal_id)
+    dismissed = _proposal_dto(status="dismissed", proposal_id=proposal_id)
+
+    fetch = AsyncMock(return_value=pending)
+    update = AsyncMock(return_value=dismissed)
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+    app, _, mock_mgr = _build_app(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/dismiss")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["status"] == "dismissed"
+    assert data["accepted_event_id"] is None
+    update.assert_awaited_once()
+    assert update.await_args.kwargs["status"] == "dismissed"
+    # No provider write — the MCP manager is never asked for a client.
+    mock_mgr.get_client.assert_not_awaited()
+
+
+async def test_dismiss_proposal_idempotent_already_dismissed(app, monkeypatch):
+    proposal_id = uuid4()
+    dismissed = _proposal_dto(status="dismissed", proposal_id=proposal_id)
+    fetch = AsyncMock(return_value=dismissed)
+    update = AsyncMock()
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+    app, _, _ = _build_app(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/dismiss")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "dismissed"
+    update.assert_not_awaited()
+
+
+async def test_dismiss_accepted_proposal_is_conflict(app, monkeypatch):
+    proposal_id = uuid4()
+    accepted = _proposal_dto(status="accepted", accepted_event_id=uuid4(), proposal_id=proposal_id)
+    fetch = AsyncMock(return_value=accepted)
+    update = AsyncMock()
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+    app, _, _ = _build_app(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/dismiss")
+    assert resp.status_code == 409
+    update.assert_not_awaited()
+
+
+async def test_dismiss_proposal_unknown_id_returns_404(app, monkeypatch):
+    fetch = AsyncMock(return_value=None)
+    _patch_proposal_reads(monkeypatch, fetch=fetch)
+    app, _, _ = _build_app(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{uuid4()}/dismiss")
+    assert resp.status_code == 404
+
+
+async def test_accept_proposal_lost_race_to_dismiss_is_conflict(app, monkeypatch):
+    """If a proposal is concurrently dismissed after the guard read, the guarded
+    update no-ops (returns None) and the refreshed row is dismissed → 409, not 500."""
+    proposal_id = uuid4()
+    event_id = uuid4()
+    pending = _proposal_dto(status="pending", proposal_id=proposal_id)
+    dismissed = _proposal_dto(status="dismissed", proposal_id=proposal_id)
+
+    # First read sees pending (passes the guard); refresh after the lost-race
+    # update sees the concurrently-dismissed row.
+    fetch = AsyncMock(side_effect=[pending, dismissed])
+    update = AsyncMock(return_value=None)  # guarded update matched no pending row
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+
+    create_client = AsyncMock()
+    create_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "created", "event_id": str(event_id)})
+    )
+    app, _, _ = _build_app(app, mcp_clients={"general": create_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/accept")
+    assert resp.status_code == 409
+
+
+async def test_dismiss_proposal_lost_race_to_accept_is_conflict(app, monkeypatch):
+    """If a proposal is concurrently accepted after the guard read, the guarded
+    update no-ops (returns None) and the refreshed row is accepted → 409, not 500."""
+    proposal_id = uuid4()
+    pending = _proposal_dto(status="pending", proposal_id=proposal_id)
+    accepted = _proposal_dto(status="accepted", accepted_event_id=uuid4(), proposal_id=proposal_id)
+
+    fetch = AsyncMock(side_effect=[pending, accepted])
+    update = AsyncMock(return_value=None)
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+    app, _, _ = _build_app(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/proposals/{proposal_id}/dismiss")
+    assert resp.status_code == 409
+
+
+async def test_accept_proposal_applies_inline_overrides(app, monkeypatch):
+    """Inline overrides in the request body take precedence over stored values."""
+    proposal_id = uuid4()
+    event_id = uuid4()
+    pending = _proposal_dto(status="pending", proposal_id=proposal_id)
+    accepted = _proposal_dto(status="accepted", accepted_event_id=event_id, proposal_id=proposal_id)
+
+    fetch = AsyncMock(return_value=pending)
+    update = AsyncMock(return_value=accepted)
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+
+    create_client = AsyncMock()
+    create_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "created", "event_id": str(event_id)})
+    )
+    app, _, _ = _build_app(app, mcp_clients={"general": create_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            f"/api/calendar/workspace/proposals/{proposal_id}/accept",
+            json={"title": "Overridden title"},
+        )
+
+    assert resp.status_code == 200
+    _tool, args = create_client.call_tool.await_args.args
+    assert args["title"] == "Overridden title"

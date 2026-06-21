@@ -15,7 +15,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
@@ -34,6 +34,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarButlerEventPreviewRequest,
     CalendarButlerEventPreviewResponse,
     CalendarConflictEntry,
+    CalendarProposalAcceptRequest,
+    CalendarProposalActionResponse,
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
@@ -62,10 +64,12 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     CalendarProposalRow,
     query_calendar_event_search,
     query_calendar_overlays,
+    query_calendar_proposal_by_id,
     query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
+    update_calendar_proposal_status,
 )
 from butlers.api.routers.audit import log_audit_entry
 from butlers.google_account_registry import list_google_accounts
@@ -1838,6 +1842,257 @@ async def mutate_butler_event(
             error="MCP call failed",
         )
         raise
+
+
+# ---------------------------------------------------------------------------
+# Proposals — accept / dismiss
+#   POST /api/calendar/workspace/proposals/{proposal_id}/accept
+#   POST /api/calendar/workspace/proposals/{proposal_id}/dismiss
+# ---------------------------------------------------------------------------
+
+
+def _proposal_response(row: CalendarProposalRow) -> CalendarProposalActionResponse:
+    return CalendarProposalActionResponse(
+        proposal_id=row.proposal_id,
+        status=row.status,
+        accepted_event_id=row.accepted_event_id,
+        butler_name=row.butler_name,
+    )
+
+
+def _butler_event_create_args(
+    row: CalendarProposalRow,
+    overrides: CalendarProposalAcceptRequest | None,
+    *,
+    request_id: str,
+) -> dict[str, Any]:
+    """Build ``calendar_create_butler_event`` arguments from a stored proposal.
+
+    Inline ``overrides`` (when present) take precedence over the stored payload.
+    Datetimes are serialized to ISO-8601 strings for the MCP transport. The
+    butler-event tool routes the create to the Butlers subcalendar by default
+    (``_resolve_calendar_id(None)``), so no ``calendar_id`` is passed.
+    """
+    schema = row.db_butler or row.butler_name or ""
+    title = (overrides.title if overrides and overrides.title else None) or row.title
+    start_at = (overrides.start_at if overrides and overrides.start_at else None) or row.start_at
+    end_at = (overrides.end_at if overrides and overrides.end_at else None) or row.end_at
+    timezone = (
+        (overrides.timezone if overrides and overrides.timezone else None) or row.timezone or "UTC"
+    )
+
+    start_iso = start_at.isoformat() if isinstance(start_at, datetime) else start_at
+    end_iso = end_at.isoformat() if isinstance(end_at, datetime) else end_at
+
+    return {
+        "butler_name": schema,
+        "title": str(title or "Untitled"),
+        "start_at": start_iso,
+        "end_at": end_iso,
+        "timezone": timezone,
+        "request_id": request_id,
+    }
+
+
+@router.post(
+    "/proposals/{proposal_id}/accept",
+    response_model=ApiResponse[CalendarProposalActionResponse],
+)
+async def accept_proposal(
+    proposal_id: UUID,
+    body: CalendarProposalAcceptRequest | None = Body(default=None),
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarProposalActionResponse]:
+    """Accept a calendar proposal — create the event on the Butlers subcalendar.
+
+    Reads the stored proposal payload (with optional inline overrides), routes it
+    through ``calendar_create_butler_event`` (which defaults butler-authored
+    creates to the dedicated Butlers subcalendar, never the user's primary), and
+    flips the proposal to ``status='accepted'`` with the created
+    ``accepted_event_id``.
+
+    Idempotent: accepting an already-accepted proposal returns the existing
+    ``accepted_event_id`` with **no** second provider write.
+
+    Fail-closed: if the provider create fails, the proposal stays ``pending``
+    (never a partial ``accepted`` row without an ``accepted_event_id``) so the
+    user can retry. Unknown id → 404; accepting a dismissed proposal → 409.
+    """
+    row = await query_calendar_proposal_by_id(db, proposal_id=proposal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Proposal '{proposal_id}' not found")
+
+    schema = row.db_butler or row.butler_name or ""
+    summary = {"proposal_id": str(proposal_id), "action": "accept"}
+
+    # Idempotent re-accept: already accepted → return existing id, no 2nd write.
+    if row.status == "accepted":
+        return ApiResponse[CalendarProposalActionResponse](data=_proposal_response(row))
+    if row.status == "dismissed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal '{proposal_id}' is dismissed and cannot be accepted",
+        )
+    if row.status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal '{proposal_id}' has unexpected status '{row.status}'",
+        )
+
+    # Fail-closed: create on the provider FIRST. Only mark accepted once the
+    # event exists, so a provider failure leaves the row pending for retry.
+    create_args = _butler_event_create_args(row, body, request_id=f"proposal-accept-{proposal_id}")
+    try:
+        create_result = await _call_mcp_tool(
+            mgr, schema, "calendar_create_butler_event", create_args
+        )
+    except HTTPException:
+        await log_audit_entry(
+            db,
+            schema,
+            "calendar.workspace.proposals.accept",
+            summary,
+            result="error",
+            error="calendar_create_butler_event failed",
+        )
+        raise
+
+    created_event_id = create_result.get("event_id")
+    if not isinstance(created_event_id, str) or not created_event_id.strip():
+        await log_audit_entry(
+            db,
+            schema,
+            "calendar.workspace.proposals.accept",
+            summary,
+            result="error",
+            error="provider create returned no event_id",
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="calendar_create_butler_event did not return an event id",
+        )
+    try:
+        accepted_event_id = UUID(created_event_id.strip())
+    except ValueError as exc:
+        await log_audit_entry(
+            db,
+            schema,
+            "calendar.workspace.proposals.accept",
+            summary,
+            result="error",
+            error="provider returned a non-UUID event id",
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"calendar_create_butler_event returned a non-UUID event id: {created_event_id}",
+        ) from exc
+
+    updated = await update_calendar_proposal_status(
+        db,
+        schema=schema,
+        proposal_id=proposal_id,
+        status="accepted",
+        accepted_event_id=accepted_event_id,
+        only_if_status="pending",
+    )
+    if updated is None:
+        # Lost a race (concurrently accepted or dismissed) — reconcile with the
+        # persisted state instead of returning a misleading 500.
+        refreshed = await query_calendar_proposal_by_id(db, proposal_id=proposal_id)
+        if refreshed is not None:
+            if refreshed.status == "accepted":
+                return ApiResponse[CalendarProposalActionResponse](
+                    data=_proposal_response(refreshed)
+                )
+            if refreshed.status == "dismissed":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Proposal '{proposal_id}' is dismissed and cannot be accepted",
+                )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to mark proposal '{proposal_id}' accepted after provider create",
+        )
+
+    await log_audit_entry(
+        db,
+        schema,
+        "calendar.workspace.proposals.accept",
+        {**summary, "accepted_event_id": str(accepted_event_id)},
+    )
+    return ApiResponse[CalendarProposalActionResponse](data=_proposal_response(updated))
+
+
+@router.post(
+    "/proposals/{proposal_id}/dismiss",
+    response_model=ApiResponse[CalendarProposalActionResponse],
+)
+async def dismiss_proposal(
+    proposal_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarProposalActionResponse]:
+    """Dismiss a calendar proposal — discard it with no provider write.
+
+    Flips the proposal to ``status='dismissed'``. Idempotent: dismissing an
+    already-dismissed proposal is a no-op returning its state. Unknown id → 404;
+    dismissing an already-accepted proposal → 409.
+    """
+    row = await query_calendar_proposal_by_id(db, proposal_id=proposal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Proposal '{proposal_id}' not found")
+
+    schema = row.db_butler or row.butler_name or ""
+    summary = {"proposal_id": str(proposal_id), "action": "dismiss"}
+
+    # Idempotent re-dismiss.
+    if row.status == "dismissed":
+        return ApiResponse[CalendarProposalActionResponse](data=_proposal_response(row))
+    if row.status == "accepted":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal '{proposal_id}' is accepted and cannot be dismissed",
+        )
+    if row.status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposal '{proposal_id}' has unexpected status '{row.status}'",
+        )
+
+    updated = await update_calendar_proposal_status(
+        db,
+        schema=schema,
+        proposal_id=proposal_id,
+        status="dismissed",
+        accepted_event_id=None,
+        only_if_status="pending",
+    )
+    if updated is None:
+        # Lost a race (concurrently dismissed or accepted) — reconcile with the
+        # persisted state instead of returning a misleading 500.
+        refreshed = await query_calendar_proposal_by_id(db, proposal_id=proposal_id)
+        if refreshed is not None:
+            if refreshed.status == "dismissed":
+                return ApiResponse[CalendarProposalActionResponse](
+                    data=_proposal_response(refreshed)
+                )
+            if refreshed.status == "accepted":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Proposal '{proposal_id}' is accepted and cannot be dismissed",
+                )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to mark proposal '{proposal_id}' dismissed",
+        )
+
+    await log_audit_entry(
+        db,
+        schema,
+        "calendar.workspace.proposals.dismiss",
+        summary,
+    )
+    return ApiResponse[CalendarProposalActionResponse](data=_proposal_response(updated))
 
 
 # ---------------------------------------------------------------------------

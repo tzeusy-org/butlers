@@ -98,6 +98,12 @@ PROPOSAL_COLUMNS: str = (
     " p.updated_at"
 )
 
+#: ``RETURNING`` projection for ``calendar_event_proposals`` writes — the same
+#: columns as :data:`PROPOSAL_COLUMNS` but without the ``p.`` table alias (an
+#: UPDATE/INSERT ``RETURNING`` clause has no alias).  Kept derived so the read
+#: and write projections can never drift.
+PROPOSAL_RETURNING_COLUMNS: str = PROPOSAL_COLUMNS.replace("p.", "")
+
 #: Columns projected for the workspace event-instance view: instances joined
 #: to events, sources, and the latest sync cursor per source.
 #: Changing this list is a breaking change — create ``calendar_workspace_v2``
@@ -756,6 +762,102 @@ async def query_calendar_proposals(
         for row in raw_rows:
             rows.append(row_to_proposal(row, db_butler=butler_name))
     return rows
+
+
+async def query_calendar_proposal_by_id(
+    db: DatabaseManager,
+    *,
+    proposal_id: UUID,
+) -> CalendarProposalRow | None:
+    """Fetch a single ``calendar_event_proposals`` row by id, any status.
+
+    Backs the accept/dismiss endpoints, which need the proposal regardless of
+    its lifecycle status (``pending``/``accepted``/``dismissed``) so they can
+    apply idempotency and transition rules.  Fans out across all
+    calendar-enabled butler schemas and returns the first matching row (proposal
+    ids are UUIDs, so at most one exists).  Returns ``None`` when no row matches
+    or on any query failure (fail-open: an absent table must not raise).
+    """
+    sql = f"""
+        SELECT {PROPOSAL_COLUMNS}
+        FROM calendar_event_proposals AS p
+        WHERE p.id = $1
+        LIMIT 1
+    """
+    query_targets = db.butlers_with_module("calendar")
+    try:
+        results = await db.fan_out(sql, (proposal_id,), butler_names=query_targets)
+    except Exception:
+        logger.warning(
+            "query_calendar_proposal_by_id fan-out failed; returning None", exc_info=True
+        )
+        return None
+
+    for butler_name, raw_rows in results.items():
+        for row in raw_rows:
+            return row_to_proposal(row, db_butler=butler_name)
+    return None
+
+
+async def update_calendar_proposal_status(
+    db: DatabaseManager,
+    *,
+    schema: str,
+    proposal_id: UUID,
+    status: str,
+    accepted_event_id: UUID | None = None,
+    only_if_status: str | None = None,
+) -> CalendarProposalRow | None:
+    """Transition a proposal's lifecycle status, returning the updated row.
+
+    Runs an ``UPDATE ... RETURNING`` on the single ``schema`` pool (proposals
+    are per-butler-schema).  When ``only_if_status`` is supplied the update is
+    guarded (``AND status = ...``) so a concurrent transition cannot be
+    clobbered — the call returns ``None`` (no row updated) in that race.
+
+    Parameters
+    ----------
+    schema:
+        The butler schema holding the proposal (its ``db_butler``).
+    proposal_id:
+        The proposal's UUID.
+    status:
+        The target status (``'accepted'`` or ``'dismissed'``).
+    accepted_event_id:
+        The created butler-event id to record (accept only); ``None`` for
+        dismiss.
+    only_if_status:
+        When set, the update only applies if the row is currently in this
+        status (optimistic guard against concurrent transitions).
+
+    Returns
+    -------
+    CalendarProposalRow | None
+        The updated row, or ``None`` when no row matched the (guarded) filter.
+    """
+    conditions = ["id = $1"]
+    args: list[Any] = [proposal_id, status, accepted_event_id]
+    idx = 4
+    if only_if_status is not None:
+        conditions.append(f"status = ${idx}")
+        args.append(only_if_status)
+        idx += 1
+
+    where = " AND ".join(conditions)
+    sql = f"""
+        UPDATE calendar_event_proposals
+        SET status = $2,
+            accepted_event_id = $3,
+            updated_at = now()
+        WHERE {where}
+        RETURNING {PROPOSAL_RETURNING_COLUMNS}
+    """
+
+    results = await db.fan_out(sql, tuple(args), butler_names=[schema])
+    for _butler_name, raw_rows in results.items():
+        for row in raw_rows:
+            return row_to_proposal(row, db_butler=schema)
+    return None
 
 
 async def query_calendar_overlays(
