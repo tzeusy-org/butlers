@@ -337,7 +337,7 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
             logger.debug("Failover eligible: RuntimeError — rate-limit before work")
             return FailoverDecision(
                 eligible=True,
-                reason="rate_limit_before_work: provider rate-limit rejection "
+                reason="rate_limit_before_work: provider rate-limit, quota, or billing rejection "
                 "before any tool call was executed",
             )
 

@@ -258,6 +258,24 @@ _MIGRATION_NOISE = (
             "APIError: provider overloaded, retry after 30s",
             id="nested-apierror-data-message",
         ),
+        # Balance errors use the same nested provider shape and retain the provider name.
+        pytest.param(
+            "",
+            json.dumps(
+                {
+                    "type": "error",
+                    "timestamp": "2026-06-21T00:00:00Z",
+                    "sessionID": "session-123",
+                    "error": {
+                        "name": "APIError",
+                        "data": {"message": "Insufficient balance"},
+                    },
+                }
+            ),
+            1,
+            "APIError: Insufficient balance",
+            id="nested-apierror-balance-message",
+        ),
         # Avoid duplicate prefixes when the nested payload is already named.
         pytest.param(
             "",
@@ -502,6 +520,28 @@ async def test_invoke_error_paths(caplog):
             await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
     assert "AuthenticationError: login required" in str(exc_info.value)
     assert "sqlite-migration:done" not in str(exc_info.value)
+
+    mock_proc.communicate = AsyncMock(
+        return_value=(
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "name": "APIError",
+                        "data": {"message": "Insufficient balance"},
+                    },
+                }
+            ).encode(),
+            b"",
+        )
+    )
+    mock_proc.returncode = 1
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError, match="Insufficient balance"):
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+    assert adapter.last_process_info is not None
+    assert adapter.last_process_info["error_detail"] == "APIError: Insufficient balance"
+    assert adapter.last_process_info["is_pre_tool_call"] is True
 
     mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
     mock_proc.kill = AsyncMock()
