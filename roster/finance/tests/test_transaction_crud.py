@@ -807,6 +807,50 @@ class TestRecordTransactionEnhanced:
         )
         assert txn1["id"] == txn2["id"]
 
+    async def test_composite_unique_violation_returns_existing_transaction(self, pool_v2):
+        """Composite DB races return the existing row instead of leaking UniqueViolationError."""
+        from unittest.mock import patch
+
+        from butlers.tools.finance import transactions
+
+        await pool_v2.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_txn_composite_dedupe
+                ON transactions (account_id, posted_at, amount, merchant)
+                WHERE external_id IS NULL AND source_message_id IS NULL
+        """)
+        acct_row = await pool_v2.fetchrow(
+            """
+            INSERT INTO accounts (institution, type, currency)
+            VALUES ('RaceBank', 'checking', 'USD')
+            RETURNING id
+            """
+        )
+        acct_id = str(acct_row["id"])
+        posted = _utcnow()
+
+        txn1 = await transactions.record_transaction(
+            pool=pool_v2,
+            posted_at=posted,
+            merchant="RaceBank",
+            amount=-88.00,
+            currency="USD",
+            category="groceries",
+            account_id=acct_id,
+        )
+
+        with patch.object(transactions, "_deduplicate", return_value=None):
+            txn2 = await transactions.record_transaction(
+                pool=pool_v2,
+                posted_at=posted,
+                merchant="RaceBank",
+                amount=-88.00,
+                currency="USD",
+                category="groceries",
+                account_id=acct_id,
+            )
+
+        assert txn1["id"] == txn2["id"]
+
     async def test_auto_categorization_via_merchant_mapping(self, pool_v2):
         """record_transaction auto-assigns category from merchant_mappings."""
         from butlers.tools.finance.transactions import record_transaction

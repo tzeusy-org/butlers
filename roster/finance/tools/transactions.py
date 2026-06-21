@@ -633,6 +633,24 @@ async def record_transaction(
                 account_id,
                 external_id,
             )
+        if row is None and account_id is not None and source_message_id is None:
+            source_filter = "AND source_message_id IS NULL"
+            if has_external_id:
+                source_filter += " AND external_id IS NULL"
+            row = await pool.fetchrow(
+                f"""
+                SELECT * FROM transactions
+                WHERE account_id = $1::uuid
+                  AND posted_at = $2
+                  AND amount = $3
+                  AND merchant = $4
+                  {source_filter}
+                """,
+                account_id,
+                posted_at,
+                stored_amount,
+                merchant,
+            )
         if row is None:
             raise
 

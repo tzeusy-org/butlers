@@ -312,6 +312,7 @@ class TestCSVDedupIndexIntegration:
 # ---------------------------------------------------------------------------
 
 _MIGRATION_009 = _FINANCE_MIGRATIONS / "009_bills_reconciled_transaction_id.py"
+_MIGRATION_011 = _FINANCE_MIGRATIONS / "011_drop_superseded_transaction_dedup_indexes.py"
 
 
 @pytest.fixture
@@ -439,3 +440,47 @@ class TestBillsReconciledTransactionIdMigration:
         assert len(indexes) == 0, (
             "Partial index on reconciled_transaction_id must be absent after downgrade"
         )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestTransactionDedupIndexCleanupMigration:
+    """Integration tests for finance_011: superseded transaction dedup index cleanup."""
+
+    @pytest.mark.integration
+    async def test_upgrade_drops_legacy_dedup_indexes(self, finance_pool: asyncpg.Pool) -> None:
+        """After upgrade only the current tiered dedup indexes should remain authoritative."""
+        pool = finance_pool
+        await pool.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_composite_dedup
+                ON transactions (account_id, posted_at, amount, merchant)
+                NULLS NOT DISTINCT
+        """)
+        assert await pool.fetchval("SELECT to_regclass('uq_transactions_composite_dedup')")
+        assert await pool.fetchval("SELECT to_regclass('uq_transactions_csv_dedup')")
+
+        mod = _load_migration("finance_011", _MIGRATION_011)
+        await _apply(pool, mod, "upgrade")
+
+        assert await pool.fetchval("SELECT to_regclass('uq_transactions_composite_dedup')") is None
+        assert await pool.fetchval("SELECT to_regclass('uq_transactions_csv_dedup')") is None
+
+        posted_at = datetime(2026, 6, 21, 8, 0, tzinfo=UTC)
+        for _ in range(2):
+            await pool.execute(
+                """
+                INSERT INTO transactions (
+                    posted_at, merchant, amount, currency, direction, category
+                ) VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                posted_at,
+                "Manual Merchant",
+                10.00,
+                "USD",
+                "debit",
+                "shopping",
+            )
+
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM transactions WHERE merchant = 'Manual Merchant'"
+        )
+        assert count == 2
