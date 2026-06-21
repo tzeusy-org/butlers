@@ -44,20 +44,10 @@ def _load_migration():
     return mod
 
 
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
 def test_migration_revision_chain():
     mod = _load_migration()
     assert mod.revision == "core_117"
     assert mod.down_revision == "core_116"
-
-
-def test_all_four_test_state_columns_present():
-    source = _MIGRATION_PATH.read_text()
-    for col in _TEST_STATE_COLUMNS:
-        assert col in source, f"Column '{col}' missing from migration source"
 
 
 def test_migration_targets_public_butler_secrets():

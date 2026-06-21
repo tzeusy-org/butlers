@@ -51,41 +51,15 @@ def _load_migration():
 
 
 class TestMigrationFileAndChain:
-    """File-level and revision-chain contract tests."""
+    """Revision-chain + predicate-name/collision contract tests."""
 
-    def test_migration_file_exists(self) -> None:
-        """003_wellness_predicates.py exists at expected path."""
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
-        """Revision is mem_003."""
+    def test_revision_chain(self) -> None:
+        """mem_003 -> mem_002, no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "mem_003"
-
-    def test_down_revision(self) -> None:
-        """down_revision points to mem_002 (the collapsed seed migration)."""
-        mod = _load_migration()
         assert mod.down_revision == "mem_002"
-
-    def test_branch_labels_none(self) -> None:
-        """Non-root migrations must not declare branch_labels."""
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        """No cross-chain dependency declared."""
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        """upgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        """downgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
 
     def test_nine_predicate_names_defined(self) -> None:
         """WELLNESS_PREDICATE_NAMES exports exactly nine names."""
@@ -115,107 +89,13 @@ class TestMigrationFileAndChain:
         assert "measurement_resting_hr" in mod.WELLNESS_PREDICATE_NAMES
 
 
-class TestMigrationSQLShape:
-    """Verify the SQL emitted by upgrade/downgrade matches the spec."""
-
-    def _collect_execute_calls(self, fn_name: str) -> list[str]:
-        """Run upgrade() or downgrade() with op.execute mocked; return SQL strings."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-
-        with patch.object(mod, "op", mock_op):
-            getattr(mod, fn_name)()
-
-        return calls_collected
-
-    def test_upgrade_emits_nine_inserts(self) -> None:
-        """upgrade() emits exactly 9 INSERT statements."""
-        sqls = self._collect_execute_calls("upgrade")
-        inserts = [s for s in sqls if s.strip().upper().startswith("INSERT")]
-        assert len(inserts) == 9, f"Expected 9 INSERTs, got {len(inserts)}"
-
-    def test_upgrade_uses_on_conflict_do_nothing(self) -> None:
-        """All INSERT statements use ON CONFLICT (name) DO NOTHING for idempotency."""
-        sqls = self._collect_execute_calls("upgrade")
-        for sql in sqls:
-            upper = sql.upper()
-            assert "ON CONFLICT" in upper and "DO NOTHING" in upper, (
-                f"INSERT missing ON CONFLICT DO NOTHING:\n{sql}"
-            )
-
-    def test_upgrade_all_predicates_scope_health(self) -> None:
-        """Every INSERT sets scope = 'health'."""
-        sqls = self._collect_execute_calls("upgrade")
-        for sql in sqls:
-            assert "'health'" in sql, f"Missing scope=health in:\n{sql}"
-
-    def test_upgrade_all_predicates_status_active(self) -> None:
-        """Every INSERT sets status = 'active'."""
-        sqls = self._collect_execute_calls("upgrade")
-        for sql in sqls:
-            assert "'active'" in sql, f"Missing status=active in:\n{sql}"
-
-    def test_upgrade_all_predicates_is_edge_false(self) -> None:
-        """Every INSERT has is_edge = false."""
-        sqls = self._collect_execute_calls("upgrade")
-        for sql in sqls:
-            assert "false" in sql.lower(), f"Missing is_edge=false in:\n{sql}"
-
-    def test_upgrade_sleep_predicates_is_temporal_true(self) -> None:
-        """sleep_session and sleep_stage_summary are inserted with is_temporal=True."""
-        sqls = self._collect_execute_calls("upgrade")
-        sleep_sqls = [s for s in sqls if "sleep_session" in s or "sleep_stage_summary" in s]
-        assert len(sleep_sqls) == 2
-        for sql in sleep_sqls:
-            # is_temporal is the 5th value in the VALUES clause — check 'true' appears
-            assert "true" in sql.lower(), f"sleep predicate missing is_temporal=true:\n{sql}"
-
-    def test_upgrade_measurement_predicates_is_temporal_true(self) -> None:
-        """All seven measurement_ predicates are inserted with is_temporal=True."""
-        mod = _load_migration()
-        measurement_names = [
-            n for n in mod.WELLNESS_PREDICATE_NAMES if n.startswith("measurement_")
-        ]
-        sqls = self._collect_execute_calls("upgrade")
-        for name in measurement_names:
-            matching = [s for s in sqls if f"'{name}'" in s]
-            assert len(matching) == 1, f"Expected 1 INSERT for {name}, got {len(matching)}"
-            assert "true" in matching[0].lower(), (
-                f"{name} missing is_temporal=true in:\n{matching[0]}"
-            )
-
-    def test_upgrade_expected_subject_type_person(self) -> None:
-        """All nine predicates have expected_subject_type='person'."""
-        sqls = self._collect_execute_calls("upgrade")
-        for sql in sqls:
-            assert "'person'" in sql, f"Missing expected_subject_type=person in:\n{sql}"
-
-    def test_downgrade_emits_one_delete(self) -> None:
-        """downgrade() emits exactly one DELETE statement."""
-        sqls = self._collect_execute_calls("downgrade")
-        deletes = [s for s in sqls if s.strip().upper().startswith("DELETE")]
-        assert len(deletes) == 1
-
-    def test_downgrade_targets_all_nine_names(self) -> None:
-        """The DELETE statement includes all nine predicate names."""
-        mod = _load_migration()
-        sqls = self._collect_execute_calls("downgrade")
-        delete_sql = sqls[0]
-        for name in mod.WELLNESS_PREDICATE_NAMES:
-            assert name in delete_sql, f"Predicate name {name!r} missing from downgrade DELETE"
-
-    def test_downgrade_uses_where_in_clause(self) -> None:
-        """The DELETE is scoped to a WHERE name IN (...) clause."""
-        sqls = self._collect_execute_calls("downgrade")
-        upper = sqls[0].upper()
-        assert "WHERE" in upper and "NAME" in upper and "IN" in upper
-
-
 # ---------------------------------------------------------------------------
 # Integration tests — require Docker + Postgres
+#
+# The upgrade/downgrade SQL shape (9 idempotent INSERTs with
+# scope=health/status=active/is_temporal=true/subject=person/is_edge=false, and
+# the WHERE name IN (...) DELETE) is exercised end-to-end by
+# test_predicate_metadata_matches_spec + test_downgrade_removes_exactly_nine.
 # ---------------------------------------------------------------------------
 
 

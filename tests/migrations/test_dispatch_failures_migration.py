@@ -26,40 +26,30 @@ def _load_migration():
     return mod
 
 
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
 def test_migration_revision_chain():
     mod = _load_migration()
     assert mod.revision == "core_099"
     assert mod.down_revision == "core_098"
 
 
-def test_upgrade_creates_dispatch_failures_table():
+def test_upgrade_creates_dispatch_failures_schema():
+    """Table columns, FK to model_catalog (CASCADE), and lookup index are all present."""
     source = _MIGRATION_PATH.read_text()
-    assert "public.dispatch_failures" in source
-    assert "BIGSERIAL" in source
-    assert "catalog_entry_id" in source
-    assert "UUID" in source
-    assert "NOT NULL" in source
-    assert "ts" in source
-    assert "TIMESTAMPTZ" in source
-    assert "error_code" in source
-    assert "error_message" in source
-    assert "butler" in source
-    assert "session_id" in source
-
-
-def test_upgrade_creates_index():
-    source = _MIGRATION_PATH.read_text()
-    assert "idx_dispatch_failures_catalog_entry_ts" in source
-
-
-def test_upgrade_has_fk_to_model_catalog():
-    source = _MIGRATION_PATH.read_text()
-    assert "public.model_catalog" in source
-    assert "ON DELETE CASCADE" in source
+    for needle in (
+        "public.dispatch_failures",
+        "catalog_entry_id",
+        "ts",
+        "error_code",
+        "error_message",
+        "butler",
+        "session_id",
+        # FK to model_catalog with cascade
+        "public.model_catalog",
+        "ON DELETE CASCADE",
+        # lookup index
+        "idx_dispatch_failures_catalog_entry_ts",
+    ):
+        assert needle in source, f"Missing schema object: {needle}"
 
 
 def test_downgrade_drops_table_and_index():

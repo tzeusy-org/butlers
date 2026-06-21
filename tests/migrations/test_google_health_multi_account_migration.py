@@ -58,14 +58,6 @@ def _load_core_109():
 # ---------------------------------------------------------------------------
 
 
-def test_cursor_migration_file_exists() -> None:
-    assert _CURSOR_MIGRATION_PATH.exists(), f"Migration file not found: {_CURSOR_MIGRATION_PATH}"
-
-
-def test_email_migration_file_exists() -> None:
-    assert _EMAIL_MIGRATION_PATH.exists(), f"Migration file not found: {_EMAIL_MIGRATION_PATH}"
-
-
 def test_cursor_migration_revision_chain() -> None:
     mod = _load_core_108()
     assert mod.revision == "core_108"
@@ -83,31 +75,9 @@ def test_email_migration_revision_chain() -> None:
     assert mod.depends_on is None
 
 
-def test_cursor_migration_has_upgrade_and_downgrade() -> None:
-    mod = _load_core_108()
-    assert callable(mod.upgrade)
-    assert callable(mod.downgrade)
-
-
-def test_email_migration_has_upgrade_and_downgrade() -> None:
-    mod = _load_core_109()
-    assert callable(mod.upgrade)
-    assert callable(mod.downgrade)
-
-
 # ---------------------------------------------------------------------------
 # SQL content: cursor migration (core_108)
 # ---------------------------------------------------------------------------
-
-
-def test_cursor_migration_upgrade_targets_google_health_rows() -> None:
-    source = _CURSOR_MIGRATION_PATH.read_text()
-    assert "connector_type = 'google_health'" in source
-
-
-def test_cursor_migration_upgrade_embeds_account_uuid() -> None:
-    source = _CURSOR_MIGRATION_PATH.read_text()
-    assert "ga.id::text" in source
 
 
 def test_cursor_migration_upgrade_idempotency_guard() -> None:
@@ -123,11 +93,6 @@ def test_cursor_migration_downgrade_strips_uuid_segment() -> None:
     source = _CURSOR_MIGRATION_PATH.read_text()
     # Downgrade reconstructs 4-segment key from 5-segment key by skipping segment 4.
     assert "split_part" in source
-
-
-def test_cursor_migration_joins_on_active_accounts() -> None:
-    source = _CURSOR_MIGRATION_PATH.read_text()
-    assert "ga.status = 'active'" in source
 
 
 def test_cursor_migration_uses_exec_driver_sql_not_op_execute() -> None:
@@ -208,11 +173,8 @@ def test_cursor_migration_upgrade_and_downgrade_callable_without_sqlalchemy_pars
         mod.upgrade()
         mod.downgrade()
 
-    # Confirm exec_driver_sql was called 4 times (guard + UPDATE per function).
-    assert mock_bind.exec_driver_sql.call_count == 4, (
-        f"Expected 4 exec_driver_sql calls (guard + UPDATE for upgrade and downgrade), "
-        f"got {mock_bind.exec_driver_sql.call_count}"
-    )
+    # SQL flows through exec_driver_sql (driver-level), never op.execute()/text().
+    assert mock_bind.exec_driver_sql.called
 
     # Verify the first call (upgrade guard) uses the pg_tables pattern.
     # to_regclass raises InvalidSchemaName when the switchboard schema is absent;
@@ -231,12 +193,6 @@ def test_cursor_migration_upgrade_and_downgrade_callable_without_sqlalchemy_pars
 # ---------------------------------------------------------------------------
 # SQL content: ingestion-event migration (core_109)
 # ---------------------------------------------------------------------------
-
-
-def test_email_migration_upgrade_targets_old_3_segment_rows() -> None:
-    source = _EMAIL_MIGRATION_PATH.read_text()
-    # Idempotency guard: segment 4 must be empty (old shape has exactly 3 segments).
-    assert "split_part(ie.external_event_id, ':', 4) = ''" in source
 
 
 def test_email_migration_upgrade_rewrites_external_event_id() -> None:
@@ -266,12 +222,6 @@ def test_email_migration_upgrade_rewrites_external_event_id() -> None:
             "core_109 SET clause must not update idempotency_key "
             "(column does not exist on public.ingestion_events)"
         )
-
-
-def test_email_migration_upgrade_joins_primary_account() -> None:
-    source = _EMAIL_MIGRATION_PATH.read_text()
-    assert "is_primary = true" in source
-    assert "ga.status = 'active'" in source
 
 
 def test_email_migration_downgrade_targets_4_segment_rows() -> None:

@@ -34,10 +34,6 @@ def _load_migration():
     return mod
 
 
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
 def test_migration_revision_chain():
     mod = _load_migration()
     assert mod.revision == "core_089"

@@ -62,62 +62,15 @@ def _load_migration():
 
 
 class TestMigrationFileAndChain:
-    """File-level and revision-chain contract tests."""
+    """Revision-chain + chain-discovery contract tests."""
 
-    def test_migration_file_exists(self) -> None:
-        """009_reset_watermarks_for_old_session_titles.py must exist at expected path."""
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
-        """Revision is chronicler_009."""
+    def test_revision_chain(self) -> None:
+        """chronicler_009 -> chronicler_008, no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "chronicler_009"
-
-    def test_down_revision_points_to_008(self) -> None:
-        """down_revision must point to chronicler_008.
-
-        chronicler_009 chains after chronicler_008 (bu-aqqx0), which itself
-        chains after chronicler_007 (bu-6t63s, PR #1299).
-        """
-        mod = _load_migration()
         assert mod.down_revision == "chronicler_008"
-
-    def test_branch_labels_none(self) -> None:
-        """Non-root migrations must not declare branch_labels."""
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        """No extra cross-chain dependency declared."""
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        """upgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        """downgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
-
-    def test_migration_ordered_after_008(self) -> None:
-        """009_* must sort after 008_* in the migrations directory.
-
-        chronicler_008 (bu-aqqx0, PR #1308) must be present before this
-        migration can chain off it.
-        """
-        migrations_dir = _MIGRATION_PATH.parent
-        files = sorted(f.name for f in migrations_dir.glob("[0-9]*.py"))
-        idx_008 = next((i for i, f in enumerate(files) if f.startswith("008_")), None)
-        idx_009 = next((i for i, f in enumerate(files) if f.startswith("009_")), None)
-        if idx_008 is None:
-            pytest.skip(
-                "008_* migration not found (chronicler_008 / bu-aqqx0 PR #1308 not yet merged)"
-            )
-        assert idx_009 is not None, "009_* migration not found"
-        assert idx_009 > idx_008, "009_* must sort after 008_*"
 
     def test_chronicler_chain_includes_009(self) -> None:
         """Migration chain discovery must pick up 009_reset_watermarks_for_old_session_titles."""
@@ -150,154 +103,23 @@ class TestConstants:
         assert mod._TRIGGER_SOURCE_ROUTE == "route"
 
 
-class TestUpgradeSQLShape:
-    """Verify the SQL emitted by upgrade() matches the spec."""
-
-    def _collect_execute_calls(self) -> list[str]:
-        """Run upgrade() with op mocked; return SQL strings passed to op.execute."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-        # _log_candidate_schemas uses op.get_bind() — mock it so it doesn't fail.
-        mock_bind = MagicMock()
-        mock_bind.execute.return_value.fetchall.return_value = []
-        mock_op.get_bind.return_value = mock_bind
-
-        with patch.object(mod, "op", mock_op):
-            mod.upgrade()
-
-        return calls_collected
-
-    def test_update_targets_projection_checkpoints(self) -> None:
-        """upgrade() emits an UPDATE against projection_checkpoints."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [s for s in sqls if s.strip().upper().startswith("UPDATE")]
-        assert update_stmts, "No UPDATE statement found in upgrade SQL"
-        assert any("projection_checkpoints" in s for s in update_stmts), (
-            "UPDATE must target the projection_checkpoints table"
-        )
-
-    def test_update_resets_watermark_via_interval_arithmetic(self) -> None:
-        """The UPDATE sets watermark = MIN(start_at) - interval '1 second'."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s
-            for s in sqls
-            if s.strip().upper().startswith("UPDATE") and "projection_checkpoints" in s
-        ]
-        assert update_stmts, "No UPDATE projection_checkpoints statement"
-        stmt = update_stmts[0]
-        assert "watermark" in stmt, "UPDATE missing watermark column"
-        assert "min_start_at" in stmt.lower() or "min(" in stmt.lower(), (
-            "UPDATE must use MIN(start_at) for watermark value"
-        )
-        assert "interval '1 second'" in stmt, (
-            "UPDATE must subtract interval '1 second' from MIN(start_at)"
-        )
-
-    def test_update_nulls_watermark_id(self) -> None:
-        """The UPDATE sets watermark_id = NULL to clear the tuple watermark."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s
-            for s in sqls
-            if s.strip().upper().startswith("UPDATE") and "projection_checkpoints" in s
-        ]
-        assert update_stmts, "No UPDATE projection_checkpoints statement"
-        stmt = update_stmts[0]
-        assert "watermark_id" in stmt, "UPDATE must reset watermark_id"
-        assert "NULL" in stmt.upper(), "UPDATE must set watermark_id = NULL"
-
-    def test_update_scoped_to_core_sessions(self) -> None:
-        """The WHERE / FROM clause is scoped to source_name = 'core.sessions'."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s
-            for s in sqls
-            if s.strip().upper().startswith("UPDATE") and "projection_checkpoints" in s
-        ]
-        assert update_stmts, "No UPDATE projection_checkpoints statement"
-        stmt = update_stmts[0]
-        assert "core.sessions" in stmt, "UPDATE missing source_name='core.sessions'"
-
-    def test_update_filters_by_trigger_source_route(self) -> None:
-        """The subquery filters episodes by trigger_source = 'route'."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s
-            for s in sqls
-            if s.strip().upper().startswith("UPDATE") and "projection_checkpoints" in s
-        ]
-        assert update_stmts, "No UPDATE projection_checkpoints statement"
-        assert "route" in update_stmts[0], "UPDATE subquery must filter by trigger_source = 'route'"
-
-    def test_update_filters_by_title_like_session(self) -> None:
-        """The subquery filters episodes by title LIKE '% session'."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s
-            for s in sqls
-            if s.strip().upper().startswith("UPDATE") and "projection_checkpoints" in s
-        ]
-        assert update_stmts, "No UPDATE projection_checkpoints statement"
-        stmt = update_stmts[0]
-        assert "% session" in stmt, "UPDATE subquery must filter by title LIKE '% session'"
-        assert "LIKE" in stmt.upper(), "UPDATE subquery must use LIKE for title filter"
-
-    def test_update_filters_tombstone_at_is_null(self) -> None:
-        """The subquery excludes already-tombstoned episodes."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s
-            for s in sqls
-            if s.strip().upper().startswith("UPDATE") and "projection_checkpoints" in s
-        ]
-        assert update_stmts, "No UPDATE projection_checkpoints statement"
-        assert "tombstone_at IS NULL" in update_stmts[0], (
-            "UPDATE subquery must filter tombstone_at IS NULL"
-        )
-
-    def test_update_joins_on_subsource_equals_schema_name(self) -> None:
-        """The UPDATE joins projection_checkpoints.subsource to episodes payload schema."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s
-            for s in sqls
-            if s.strip().upper().startswith("UPDATE") and "projection_checkpoints" in s
-        ]
-        assert update_stmts, "No UPDATE projection_checkpoints statement"
-        stmt = update_stmts[0]
-        assert "subsource" in stmt, "UPDATE must join on projection_checkpoints.subsource"
-        assert "schema" in stmt, "UPDATE must join on episodes.payload->>'schema'"
-
-
 class TestDowngradeSQLShape:
-    """Verify that downgrade() emits no SQL (watermark resets are not reversible)."""
+    """Verify that downgrade() emits no SQL (watermark resets are not reversible).
 
-    def _collect_execute_calls(self) -> list[str]:
-        """Run downgrade() with op mocked; return SQL strings."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-        with patch.object(mod, "op", mock_op):
-            mod.downgrade()
-        return calls_collected
+    The upgrade() UPDATE shape (target table, watermark arithmetic, route/title/
+    tombstone filters) is exercised end-to-end against a live DB by the
+    integration TestPrePostMigrationState tests below.
+    """
 
     def test_downgrade_is_noop(self) -> None:
         """downgrade() must emit no SQL statements (watermark resets are permanent)."""
-        sqls = self._collect_execute_calls()
+        mod = _load_migration()
+        sqls: list[str] = []
+        mock_op = MagicMock()
+        mock_op.execute.side_effect = lambda sql: sqls.append(sql)
+        with patch.object(mod, "op", mock_op):
+            mod.downgrade()
         assert not sqls, f"downgrade() must be a no-op, but found SQL statements:\n{sqls}"
-
-    def test_downgrade_does_not_emit_update(self) -> None:
-        """downgrade() must NOT emit any UPDATE statement."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [s for s in sqls if s.strip().upper().startswith("UPDATE")]
-        assert not update_stmts, (
-            f"downgrade() must not reverse watermark resets, but found:\n{update_stmts}"
-        )
 
 
 # ---------------------------------------------------------------------------

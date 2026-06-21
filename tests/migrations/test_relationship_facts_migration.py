@@ -68,209 +68,27 @@ def _collect_downgrade_sqls() -> list[str]:
 
 
 class TestMigrationFileAndChain:
-    """File-level and revision-chain contract tests."""
+    """Revision-chain contract test."""
 
-    def test_migration_file_exists(self) -> None:
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
+    def test_revision_chain(self) -> None:
+        """rel_013 -> rel_012, no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "rel_013"
-
-    def test_down_revision(self) -> None:
-        """Must chain from rel_012 (backfill_interaction_predicates)."""
-        mod = _load_migration()
         assert mod.down_revision == "rel_012"
-
-    def test_branch_labels_none(self) -> None:
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
-
-    def test_migration_ordered_after_012(self) -> None:
-        """013_* must sort after 012_* in the migrations directory."""
-        migrations_dir = _MIGRATION_PATH.parent
-        files = sorted(f.name for f in migrations_dir.glob("[0-9]*.py"))
-        idx_012 = next((i for i, f in enumerate(files) if f.startswith("012_")), None)
-        idx_013 = next((i for i, f in enumerate(files) if f.startswith("013_")), None)
-        assert idx_012 is not None, "012_* migration not found"
-        assert idx_013 is not None, "013_* migration not found"
-        assert idx_013 > idx_012, "013_* must sort after 012_*"
 
 
 class TestUpgradeSQLShape:
-    """Verify upgrade() emits the expected SQL."""
+    """Architectural-invariant guards on the CREATE TABLE / index DDL.
 
-    def test_creates_relationship_schema(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        schema_stmts = [s for s in sqls if "CREATE SCHEMA" in s.upper()]
-        assert schema_stmts, "upgrade() must emit CREATE SCHEMA IF NOT EXISTS relationship"
-        assert any("relationship" in s for s in schema_stmts)
-
-    def test_creates_facts_table(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmts = [s for s in sqls if "CREATE TABLE" in s.upper() and "facts" in s.lower()]
-        assert table_stmts, "upgrade() must emit CREATE TABLE … facts"
-        stmt = table_stmts[0]
-        assert "relationship.entity_facts" in stmt, (
-            "Table must be schema-qualified as relationship.entity_facts"
-        )
-
-    def test_table_has_id_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "id" in table_stmt.lower()
-        assert "uuid" in table_stmt.lower()
-        assert "primary key" in table_stmt.lower()
-
-    def test_table_has_subject_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "subject" in table_stmt.lower()
-        assert "uuid" in table_stmt.lower()
-        assert "not null" in table_stmt.lower()
-
-    def test_table_has_predicate_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "predicate" in table_stmt.lower()
-
-    def test_table_has_object_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "object" in table_stmt.lower()
-
-    def test_table_has_object_kind_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "object_kind" in table_stmt.lower()
-        assert "literal" in table_stmt.lower()
-        assert "entity" in table_stmt.lower()
-
-    def test_table_has_src_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "src" in table_stmt.lower()
-
-    def test_table_has_conf_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "conf" in table_stmt.lower()
-        assert "1.0" in table_stmt  # default
-
-    def test_table_has_validity_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "validity" in table_stmt.lower()
-        assert "active" in table_stmt
-        assert "retracted" in table_stmt
-        assert "superseded" in table_stmt
-
-    def test_table_has_verified_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "verified" in table_stmt.lower()
-
-    def test_table_has_created_at_and_updated_at(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "created_at" in table_stmt.lower()
-        assert "updated_at" in table_stmt.lower()
-
-    def test_table_has_last_seen_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "last_seen" in table_stmt.lower()
-
-    def test_table_has_weight_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "weight" in table_stmt.lower()
-
-    def test_table_has_primary_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "primary" in table_stmt.lower()
-
-    def test_subject_references_public_entities(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s for s in sqls if "CREATE TABLE" in s.upper() and "relationship.entity_facts" in s
-        )
-        assert "public.entities" in table_stmt
-
-    def test_index_subject_predicate(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        idx_stmts = [s for s in sqls if "CREATE INDEX" in s.upper()]
-        assert any("subject" in s.lower() and "predicate" in s.lower() for s in idx_stmts), (
-            "Missing (subject, predicate) index"
-        )
-
-    def test_index_predicate_object_literal_partial(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        idx_stmts = [s for s in sqls if "CREATE INDEX" in s.upper()]
-        assert any(
-            "predicate" in s.lower() and "object" in s.lower() and "literal" in s.lower()
-            for s in idx_stmts
-        ), "Missing (predicate, object) WHERE object_kind='literal' partial index"
-
-    def test_index_predicate_active_partial(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        idx_stmts = [s for s in sqls if "CREATE INDEX" in s.upper()]
-        assert any(
-            "predicate" in s.lower() and "validity" in s.lower() and "active" in s.lower()
-            for s in idx_stmts
-        ), "Missing (predicate) WHERE validity='active' partial index"
-
-    def test_index_last_seen(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        idx_stmts = [s for s in sqls if "CREATE INDEX" in s.upper()]
-        assert any("last_seen" in s.lower() for s in idx_stmts), "Missing last_seen index"
-
-    def test_index_subject_has_active_partial(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        idx_stmts = [s for s in sqls if "CREATE INDEX" in s.upper()]
-        assert any(
-            "subject" in s.lower() and "has-" in s.lower() and "active" in s.lower()
-            for s in idx_stmts
-        ), "Missing (subject) WHERE validity='active' AND predicate LIKE 'has-%' partial index"
+    Per-column presence, the five standard indexes, and the FK to
+    public.entities are exercised against a live DB by the integration
+    column-set + index-exists tests. The three SQL-text guards retained here are
+    the SOLE proof of architectural invariants (no live-DB test triggers them):
+    no scope column (RFC 0006 isolation), 'subject' (not 'entity_id') FK column,
+    and the UNIQUE partial index for Amendment 14 idempotency.
+    """
 
     def test_unique_partial_index_spo_active(self) -> None:
         """The uniqueness partial index supports Amendment 14 idempotency.
@@ -346,13 +164,7 @@ class TestUpgradeSQLShape:
 
 
 class TestDowngradeSQLShape:
-    """Verify downgrade() emits correct DROP statements."""
-
-    def test_downgrade_drops_facts_table(self) -> None:
-        sqls = _collect_downgrade_sqls()
-        drop_stmts = [s for s in sqls if "DROP TABLE" in s.upper()]
-        assert drop_stmts, "downgrade() must emit DROP TABLE for relationship.entity_facts"
-        assert any("facts" in s.lower() for s in drop_stmts)
+    """Verify downgrade() does not drop the shared relationship schema."""
 
     def test_downgrade_does_not_drop_schema(self) -> None:
         """Downgrade must NOT drop the relationship schema.
@@ -365,11 +177,6 @@ class TestDowngradeSQLShape:
         assert not schema_drop_stmts, (
             f"downgrade() must NOT drop the relationship schema; found: {schema_drop_stmts}"
         )
-
-    def test_downgrade_drops_indexes(self) -> None:
-        sqls = _collect_downgrade_sqls()
-        idx_drop_stmts = [s for s in sqls if "DROP INDEX" in s.upper()]
-        assert idx_drop_stmts, "downgrade() must emit DROP INDEX statements"
 
 
 # ---------------------------------------------------------------------------

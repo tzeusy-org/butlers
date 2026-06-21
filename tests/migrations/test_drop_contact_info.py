@@ -44,16 +44,10 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision(self):
-        assert _load_migration().revision == "core_115"
-
-    def test_down_revision(self):
-        assert _load_migration().down_revision == "core_114"
-
-    def test_upgrade_downgrade_callable(self):
+    def test_revision_chain(self):
         mod = _load_migration()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
+        assert mod.revision == "core_115"
+        assert mod.down_revision == "core_114"
 
     def test_accepted_unmapped_default_includes_google_health(self, monkeypatch):
         monkeypatch.delenv("CONTACT_INFO_DROP_ACCEPTED_UNMAPPED_TYPES", raising=False)

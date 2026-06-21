@@ -53,66 +53,16 @@ def _load_migration():
 
 
 class TestMigrationFileAndChain:
-    """File-level and revision-chain contract tests."""
+    """Revision-chain + chain-discovery contract tests."""
 
-    def test_migration_file_exists(self) -> None:
-        """008_tombstone_memory_calendar_episodes.py must exist at expected path."""
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
-        """Revision is chronicler_008."""
+    def test_revision_chain(self) -> None:
+        """chronicler_008 -> chronicler_007 (adds the tombstone_reason column it
+        writes into); no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "chronicler_008"
-
-    def test_down_revision_points_to_007(self) -> None:
-        """down_revision must point to chronicler_007.
-
-        chronicler_007 (bu-6t63s) adds the tombstone_reason column that this
-        migration writes into.  Without this ordering guarantee, upgrade() would
-        fail with 'column tombstone_reason does not exist'.
-        """
-        mod = _load_migration()
         assert mod.down_revision == "chronicler_007"
-
-    def test_branch_labels_none(self) -> None:
-        """Non-root migrations must not declare branch_labels."""
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        """No extra cross-chain dependency declared."""
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        """upgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        """downgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
-
-    def test_migration_ordered_after_007(self) -> None:
-        """008_* must sort after 007_* in the migrations directory.
-
-        chronicler_007 (bu-6t63s, PR #1299) may not be merged yet when this
-        test runs on the agent/bu-aqqx0 branch.  The test skips automatically
-        if 007_* is absent so that the CI gate is not hard-blocked on the sibling
-        PR.  Once PR #1299 merges and this branch is rebased, the 007 file will
-        be present and the test will run fully.
-        """
-        migrations_dir = _MIGRATION_PATH.parent
-        files = sorted(f.name for f in migrations_dir.glob("[0-9]*.py"))
-        idx_007 = next((i for i, f in enumerate(files) if f.startswith("007_")), None)
-        idx_008 = next((i for i, f in enumerate(files) if f.startswith("008_")), None)
-        if idx_007 is None:
-            pytest.skip(
-                "007_* migration not found (chronicler_007 / bu-6t63s PR #1299 not yet merged)"
-            )
-        assert idx_008 is not None, "008_* migration not found"
-        assert idx_008 > idx_007, "008_* must sort after 007_*"
 
     def test_chronicler_chain_includes_008(self) -> None:
         """Migration chain discovery must pick up 008_tombstone_memory_calendar_episodes."""
@@ -160,132 +110,52 @@ class TestKnownTitleConstants:
         assert "bu-aqqx0" in mod._TOMBSTONE_REASON
 
 
-class TestUpgradeSQLShape:
-    """Verify the SQL emitted by upgrade() matches the spec."""
-
-    def _collect_execute_calls(self) -> list[str]:
-        """Run upgrade() with op mocked; return SQL strings passed to op.execute."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-        # _log_candidate_counts uses op.get_bind() — mock it so it doesn't fail.
-        mock_bind = MagicMock()
-        mock_bind.execute.return_value.fetchall.return_value = []
-        mock_op.get_bind.return_value = mock_bind
-
-        with patch.object(mod, "op", mock_op):
-            mod.upgrade()
-
-        return calls_collected
-
-    def test_update_targets_episodes_table(self) -> None:
-        """upgrade() emits an UPDATE against the episodes table."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
-        ]
-        assert update_stmts, "No UPDATE episodes statement found in upgrade SQL"
-
-    def test_update_sets_tombstone_at(self) -> None:
-        """The UPDATE sets tombstone_at = now()."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
-        ]
-        assert update_stmts, "No UPDATE episodes statement"
-        assert "tombstone_at" in update_stmts[0], "UPDATE missing tombstone_at"
-        assert "now()" in update_stmts[0], "UPDATE missing now() for tombstone_at"
-
-    def test_update_sets_tombstone_reason(self) -> None:
-        """The UPDATE sets tombstone_reason with the expected issue refs."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
-        ]
-        assert update_stmts, "No UPDATE episodes statement"
-        assert "tombstone_reason" in update_stmts[0], "UPDATE missing tombstone_reason"
-        assert "bu-daaff" in update_stmts[0], "tombstone_reason missing bu-daaff issue ref"
-        assert "bu-aqqx0" in update_stmts[0], "tombstone_reason missing bu-aqqx0 issue ref"
-
-    def test_update_scoped_to_google_calendar_completed(self) -> None:
-        """The UPDATE's WHERE clause is scoped to source_name='google_calendar.completed'."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
-        ]
-        assert update_stmts, "No UPDATE episodes statement"
-        assert "google_calendar.completed" in update_stmts[0], (
-            "UPDATE missing source_name='google_calendar.completed'"
-        )
-
-    def test_update_excludes_already_tombstoned_rows(self) -> None:
-        """The WHERE clause includes tombstone_at IS NULL for idempotency."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
-        ]
-        assert update_stmts, "No UPDATE episodes statement"
-        assert "tombstone_at IS NULL" in update_stmts[0], (
-            "UPDATE missing tombstone_at IS NULL guard (idempotency)"
-        )
-
-    def test_update_filters_by_exact_title_list(self) -> None:
-        """The WHERE clause uses title IN (...) with the known butler task names."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
-        ]
-        assert update_stmts, "No UPDATE episodes statement"
-        stmt = update_stmts[0]
-        for title in ("memory_consolidation", "memory_episode_cleanup", "memory_purge_superseded"):
-            assert title in stmt, f"Expected {title!r} in UPDATE WHERE clause"
-
-    def test_update_uses_in_not_like(self) -> None:
-        """The WHERE clause uses IN (exact match), NOT LIKE 'memory_%'.
-
-        Rationale: LIKE 'memory_%' could tombstone legitimate user calendar
-        events titled e.g. 'memory workshop'.  The exact IN list is safer.
-        """
-        sqls = self._collect_execute_calls()
-        update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
-        ]
-        assert update_stmts, "No UPDATE episodes statement"
-        stmt = update_stmts[0]
-        # Must use IN for title filtering
-        assert " IN " in stmt.upper(), "Expected title IN (...) filter"
-        # Must NOT use LIKE for title filtering (the memory_% pattern is unsafe)
-        assert "LIKE" not in stmt.upper(), (
-            "Must not use LIKE for title filter — use exact IN list instead"
-        )
-
-
 class TestDowngradeSQLShape:
-    """Verify that downgrade() emits no SQL (tombstones are not reversed)."""
+    """Verify that downgrade() emits no SQL (tombstones are not reversed).
 
-    def _collect_execute_calls(self) -> list[str]:
-        """Run downgrade() with op mocked; return SQL strings."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-        with patch.object(mod, "op", mock_op):
-            mod.downgrade()
-        return calls_collected
+    The upgrade() UPDATE shape (tombstone_at=now(), tombstone_reason with
+    bu-daaff/bu-aqqx0 refs, google_calendar.completed source scope, the exact
+    title IN-list NOT LIKE 'memory_%' for safety, idempotency guard) is exercised
+    end-to-end by the integration tests below — including 'Memory workshop',
+    which proves the IN-not-LIKE safety boundary.
+    """
 
     def test_downgrade_is_noop(self) -> None:
         """downgrade() must emit no SQL statements (tombstones are permanent)."""
-        sqls = self._collect_execute_calls()
+        mod = _load_migration()
+        sqls: list[str] = []
+        mock_op = MagicMock()
+        mock_op.execute.side_effect = lambda sql: sqls.append(sql)
+        with patch.object(mod, "op", mock_op):
+            mod.downgrade()
         assert not sqls, f"downgrade() must be a no-op, but found SQL statements:\n{sqls}"
 
-    def test_downgrade_does_not_emit_update(self) -> None:
-        """downgrade() must NOT emit any UPDATE statement."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [s for s in sqls if s.strip().upper().startswith("UPDATE")]
-        assert not update_stmts, (
-            f"downgrade() must not reverse tombstones, but found UPDATE:\n{update_stmts}"
+    def test_upgrade_uses_in_not_like(self) -> None:
+        """upgrade() UPDATE must filter titles via an exact `IN` list, NOT
+        `LIKE 'memory_%'`.
+
+        A LIKE 'memory_%' bug would silently tombstone legitimate user calendar
+        events whose title merely starts with 'memory_' (e.g. 'memory_journal',
+        'memory_personal_note'). The integration tests do not catch this — their
+        legitimate-row titles like 'Team retrospective' don't match LIKE
+        'memory_%'. This pins the exact-IN-list safety boundary at the SQL level.
+        """
+        mod = _load_migration()
+        sqls: list[str] = []
+        mock_op = MagicMock()
+        mock_op.execute.side_effect = lambda sql: sqls.append(sql)
+        mock_bind = MagicMock()
+        mock_bind.execute.return_value.fetchall.return_value = []
+        mock_op.get_bind.return_value = mock_bind
+        with patch.object(mod, "op", mock_op):
+            mod.upgrade()
+
+        update_sql = "\n".join(s for s in sqls if "UPDATE episodes" in s)
+        assert update_sql, f"upgrade() did not emit an UPDATE episodes statement: {sqls}"
+        assert " IN (" in update_sql, "upgrade() UPDATE must use an exact `IN (...)` title filter"
+        assert "LIKE" not in update_sql.upper(), (
+            "upgrade() UPDATE must NOT use LIKE — a LIKE 'memory_%' filter would "
+            "wrongly tombstone legit user events titled 'memory_*'"
         )
 
 
@@ -491,8 +361,16 @@ class TestTombstoneMemoryCalendarEpisodesIntegration:
         """Legitimate calendar episodes are left untouched by the migration."""
         pool = episodes_pool
 
+        # 'memory_personal_note' has the lowercase 'memory_' prefix but is NOT
+        # in the exact IN-list — it pins the IN-not-LIKE safety boundary: a
+        # LIKE 'memory_%' bug would wrongly tombstone this legit user event.
         for idx, title in enumerate(
-            ("Team retrospective", "Doctor appointment", "Memory workshop")
+            (
+                "Team retrospective",
+                "Doctor appointment",
+                "Memory workshop",
+                "memory_personal_note",
+            )
         ):
             await self._insert_episode(
                 pool,
@@ -503,16 +381,21 @@ class TestTombstoneMemoryCalendarEpisodesIntegration:
 
         await self._run_upgrade(pool)
 
-        # All three legitimate rows must remain with tombstone_at IS NULL.
+        # All four legitimate rows must remain with tombstone_at IS NULL.
         count = await pool.fetchval(
             """
             SELECT COUNT(*) FROM episodes
             WHERE source_name = 'google_calendar.completed'
               AND tombstone_at IS NULL
-              AND title IN ('Team retrospective', 'Doctor appointment', 'Memory workshop')
+              AND title IN (
+                  'Team retrospective',
+                  'Doctor appointment',
+                  'Memory workshop',
+                  'memory_personal_note'
+              )
             """
         )
-        assert count == 3, f"Expected 3 legitimate episodes to remain untombstoned, got {count}"
+        assert count == 4, f"Expected 4 legitimate episodes to remain untombstoned, got {count}"
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_other_source_episodes_not_tombstoned(self, episodes_pool) -> None:

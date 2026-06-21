@@ -41,65 +41,37 @@ def _load_migration():
     return mod
 
 
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
 def test_migration_revision_chain():
     mod = _load_migration()
     assert mod.revision == "core_106"
     assert mod.down_revision == "core_105"
 
 
-def test_all_four_test_state_columns_present():
-    """All four spec-mandated column names appear in the migration source."""
+def test_four_writable_nullable_columns_with_types():
+    """All four test-state columns are present with their spec types, nullable
+    (NULL = never probed) and not GENERATED/COMPUTED (writable)."""
     source = _MIGRATION_PATH.read_text()
     for col in _TEST_STATE_COLUMNS:
         assert col in source, f"Column '{col}' missing from migration source"
-
-
-def test_column_types_match_spec():
-    """Column SQL types match the spec exactly."""
-    source = _MIGRATION_PATH.read_text()
-    assert "TIMESTAMPTZ" in source  # last_verified
-    assert "BOOLEAN" in source  # last_test_ok
-    assert "INTEGER" in source  # last_test_code  (spec: INTEGER, not TEXT)
-    assert "TEXT" in source  # last_test_message
-
-
-def test_columns_are_nullable():
-    """Columns must be nullable (no NOT NULL constraint) — NULL = never probed."""
-    source = _MIGRATION_PATH.read_text()
-    # None of the four test-state column declarations should carry NOT NULL.
-    # We verify by asserting the column additions only use ADD COLUMN IF NOT EXISTS
-    # without appending NOT NULL.
-    for col in _TEST_STATE_COLUMNS:
-        # Find lines containing each column name and assert NOT NULL is absent.
         for line in source.splitlines():
             if col in line and "ADD COLUMN" in line:
-                assert "NOT NULL" not in line, (
-                    f"Column '{col}' must be nullable but line has NOT NULL: {line!r}"
-                )
-
-
-def test_columns_are_not_generated():
-    """Columns must be ordinary writable columns, not GENERATED/COMPUTED."""
-    source = _MIGRATION_PATH.read_text()
+                assert "NOT NULL" not in line, f"Column '{col}' must be nullable: {line!r}"
+    # spec types: last_verified TIMESTAMPTZ, last_test_ok BOOLEAN,
+    # last_test_code INTEGER, last_test_message TEXT
+    assert "TIMESTAMPTZ" in source
+    assert "BOOLEAN" in source
+    assert "INTEGER" in source
+    assert "TEXT" in source
     assert "GENERATED" not in source
     assert "COMPUTED" not in source
 
 
-def test_upgrade_covers_butler_secrets():
-    """upgrade() applies column additions to per-butler butler_secrets tables."""
+def test_upgrade_covers_both_tables():
+    """upgrade() adds columns to per-butler butler_secrets and public.entity_info."""
     source = _MIGRATION_PATH.read_text()
     assert "butler_secrets" in source
-    assert "ADD COLUMN IF NOT EXISTS" in source
-
-
-def test_upgrade_covers_public_entity_info():
-    """upgrade() applies column additions to public.entity_info."""
-    source = _MIGRATION_PATH.read_text()
     assert "public.entity_info" in source
+    assert "ADD COLUMN IF NOT EXISTS" in source
 
 
 def test_upgrade_uses_dynamic_schema_discovery():
@@ -112,19 +84,11 @@ def test_upgrade_uses_dynamic_schema_discovery():
     assert "information_schema" in source
 
 
-def test_downgrade_drops_columns_from_butler_secrets():
-    """downgrade() drops all four test-state columns from butler_secrets."""
+def test_downgrade_drops_columns_from_both_tables():
+    """downgrade() drops the test-state columns from butler_secrets and entity_info."""
     source = _MIGRATION_PATH.read_text()
     assert "DROP COLUMN IF EXISTS" in source
-    for col in _TEST_STATE_COLUMNS:
-        assert col in source  # already covered by test_all_four_test_state_columns_present
-
-
-def test_downgrade_drops_columns_from_entity_info():
-    """downgrade() drops columns from public.entity_info."""
-    source = _MIGRATION_PATH.read_text()
     assert "public.entity_info" in source
-    assert "DROP COLUMN IF EXISTS" in source
 
 
 def test_no_backfill_in_upgrade():

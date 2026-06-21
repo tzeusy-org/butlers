@@ -147,10 +147,6 @@ async def migration_pool(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-def test_migration_file_exists() -> None:
-    assert _MIGRATION_PATH.exists(), f"Migration not found: {_MIGRATION_PATH}"
-
-
 def test_migration_revision_chain() -> None:
     mod = _load_migration()
     assert mod.revision == "core_093"

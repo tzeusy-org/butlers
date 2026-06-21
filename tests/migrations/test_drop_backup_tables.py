@@ -64,19 +64,10 @@ def _load_rel():
 
 @pytest.mark.unit
 class TestCore118Structure:
-    def test_file_exists(self):
-        assert _CORE_MIGRATION_PATH.exists(), f"Migration file not found: {_CORE_MIGRATION_PATH}"
-
-    def test_revision(self):
-        assert _load_core().revision == "core_118"
-
-    def test_down_revision(self):
-        assert _load_core().down_revision == "core_117"
-
-    def test_upgrade_downgrade_callable(self):
+    def test_revision_chain(self):
         mod = _load_core()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
+        assert mod.revision == "core_118"
+        assert mod.down_revision == "core_117"
 
     def test_drops_both_tables_with_if_exists(self):
         src = _CORE_MIGRATION_PATH.read_text()
@@ -97,19 +88,10 @@ class TestCore118Structure:
 
 @pytest.mark.unit
 class TestRel020Structure:
-    def test_file_exists(self):
-        assert _REL_MIGRATION_PATH.exists(), f"Migration file not found: {_REL_MIGRATION_PATH}"
-
-    def test_revision(self):
-        assert _load_rel().revision == "rel_020"
-
-    def test_down_revision(self):
-        assert _load_rel().down_revision == "rel_019"
-
-    def test_upgrade_downgrade_callable(self):
+    def test_revision_chain(self):
         mod = _load_rel()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
+        assert mod.revision == "rel_020"
+        assert mod.down_revision == "rel_019"
 
     def test_drops_table_with_if_exists(self):
         src = _REL_MIGRATION_PATH.read_text()

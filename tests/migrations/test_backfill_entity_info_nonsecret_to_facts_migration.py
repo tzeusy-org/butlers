@@ -55,11 +55,6 @@ class TestMigrationStructure:
         assert mod.branch_labels is None
         assert mod.depends_on is None
 
-    def test_upgrade_downgrade_callable(self):
-        mod = _load_migration()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
-
     def test_file_ordered_after_026(self):
         files = sorted(f.name for f in _MIGRATION_PATH.parent.glob("[0-9]*.py"))
         idx_026 = next((i for i, f in enumerate(files) if f.startswith("026_")), None)

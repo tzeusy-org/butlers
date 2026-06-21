@@ -51,41 +51,15 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision(self):
-        assert _load_migration().revision == "rel_031"
+    """Chain + the parity-RAISE invariant (no integration test triggers a
+    parity mismatch, so this source guard is the only proof of the abort)."""
 
-    def test_down_revision_chains_from_030(self):
-        assert _load_migration().down_revision == "rel_030"
-
-    def test_branch_labels_none(self):
-        assert _load_migration().branch_labels is None
-
-    def test_depends_on_none(self):
-        assert _load_migration().depends_on is None
-
-    def test_upgrade_callable(self):
-        assert callable(_load_migration().upgrade)
-
-    def test_downgrade_callable(self):
-        assert callable(_load_migration().downgrade)
-
-    def test_idempotent_ddl(self):
-        sql = _load_migration()._ADD_COLUMN_SQL
-        assert "ADD COLUMN IF NOT EXISTS" in sql
-        assert "stay_in_touch_days" in sql
-
-    def test_to_regclass_guard_present(self):
-        # Forward-compat guard: migration no-ops when public.contacts is gone.
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
-        assert "to_regclass('public.contacts')" in sql
-
-    def test_snapshot_table_name_in_backfill(self):
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
-        assert "entities_contact_profile_bak_rel_031" in sql
-
-    def test_snapshot_table_name_in_downgrade(self):
-        sql = _load_migration()._DOWNGRADE_SQL
-        assert "entities_contact_profile_bak_rel_031" in sql
+    def test_revision_chain(self):
+        mod = _load_migration()
+        assert mod.revision == "rel_031"
+        assert mod.down_revision == "rel_030"
+        assert mod.branch_labels is None
+        assert mod.depends_on is None
 
     def test_parity_raise_exceptions_present(self):
         sql = _load_migration()._BACKFILL_AND_PARITY_SQL
@@ -94,48 +68,13 @@ class TestMigrationStructure:
         assert "parity failure (stay_in_touch_days)" in sql
         assert "parity failure (avatar_url)" in sql
 
-    def test_additive_stay_in_touch_days(self):
-        # Backfill must be additive: only fill where entity column is NULL.
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
-        assert "stay_in_touch_days IS NULL" in sql
-
-    def test_jsonb_strip_nulls_prevents_null_values(self):
-        # We must not write {"first_name": null} into metadata.
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
-        assert "jsonb_strip_nulls" in sql
-
-    def test_existing_profile_wins_merge_strategy(self):
-        # Merge strategy: contacts_profile || existing_profile
-        # The right-hand side (existing_profile) wins on key collision.
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
-        assert "metadata -> 'profile'" in sql
-
-    def test_all_profile_fields_present(self):
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
-        for field in (
-            "first_name",
-            "last_name",
-            "company",
-            "job_title",
-            "gender",
-            "pronouns",
-            "avatar_url",
-        ):
-            assert f"'{field}'" in sql or field in sql, f"missing profile field: {field}"
-
-    def test_snapshot_guard_on_first_run_only(self):
-        # Snapshot must be created only once (to_regclass guard).
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
-        assert "to_regclass('public.entities_contact_profile_bak_rel_031') IS NULL" in sql
-
-    def test_downgrade_removes_column(self):
-        # Downgrade SQL in downgrade() drops the column (not exported as constant
-        # but inspectable via source).
-        src = _MIGRATION_PATH.read_text()
-        assert "DROP COLUMN IF EXISTS stay_in_touch_days" in src
-
-    def test_snapshot_table_constant_exported(self):
-        assert _load_migration()._SNAPSHOT_TABLE == "public.entities_contact_profile_bak_rel_031"
+    def test_to_regclass_guard_and_snapshot_constant(self):
+        """Forward-compat to_regclass guard + the snapshot table name the
+        downgrade restores from."""
+        mod = _load_migration()
+        assert "to_regclass('public.contacts')" in mod._BACKFILL_AND_PARITY_SQL
+        assert mod._SNAPSHOT_TABLE == "public.entities_contact_profile_bak_rel_031"
+        assert "entities_contact_profile_bak_rel_031" in mod._DOWNGRADE_SQL
 
 
 # ---------------------------------------------------------------------------

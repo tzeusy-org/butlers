@@ -34,10 +34,6 @@ def _load_migration():
     return mod
 
 
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
 def test_migration_revision_chain():
     mod = _load_migration()
     assert mod.revision == "core_105"
@@ -89,12 +85,8 @@ def test_audit_credential_actions_documented():
         assert action in source, f"Action '{action}' missing from migration source"
 
 
-def test_downgrade_drops_secret_probe_log():
+def test_downgrade_drops_table_and_both_indexes():
     source = _MIGRATION_PATH.read_text()
     assert "DROP TABLE IF EXISTS public.secret_probe_log" in source
     assert "DROP INDEX IF EXISTS public.ix_secret_probe_log_lookup" in source
-
-
-def test_downgrade_drops_audit_log_index():
-    source = _MIGRATION_PATH.read_text()
     assert "DROP INDEX IF EXISTS public.ix_audit_log_target_ts" in source

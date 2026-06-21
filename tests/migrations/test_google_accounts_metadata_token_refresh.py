@@ -39,10 +39,6 @@ def _load_core_migration():
 # ---------------------------------------------------------------------------
 
 
-def test_core_migration_file_exists():
-    assert _CORE_MIGRATION_PATH.exists(), f"Migration file not found: {_CORE_MIGRATION_PATH}"
-
-
 def test_core_migration_revision_chain():
     mod = _load_core_migration()
     assert mod.revision == "core_078"
@@ -51,39 +47,20 @@ def test_core_migration_revision_chain():
     assert mod.depends_on is None
 
 
-def test_core_migration_has_upgrade_and_downgrade():
-    mod = _load_core_migration()
-    assert callable(mod.upgrade)
-    assert callable(mod.downgrade)
-
-
-# ---------------------------------------------------------------------------
-# SQL content
-# ---------------------------------------------------------------------------
-
-
-def test_upgrade_adds_metadata_column_idempotently():
-    """metadata JSONB column is added with IF NOT EXISTS (idempotent)."""
+def test_upgrade_adds_columns_idempotently():
+    """Both new columns are added IF NOT EXISTS on public.google_accounts;
+    metadata is backfilled then SET NOT NULL."""
     source = _CORE_MIGRATION_PATH.read_text()
+    assert "public.google_accounts" in source
+    # metadata JSONB column
     assert "metadata JSONB" in source
     assert "ADD COLUMN IF NOT EXISTS metadata" in source
     assert "'{}'::jsonb" in source
-
-
-def test_upgrade_adds_last_token_refresh_at_column_idempotently():
-    """last_token_refresh_at TIMESTAMPTZ column is added with IF NOT EXISTS."""
-    source = _CORE_MIGRATION_PATH.read_text()
+    assert "ALTER COLUMN metadata SET NOT NULL" in source
+    assert "WHERE metadata IS NULL" in source
+    # last_token_refresh_at column
     assert "last_token_refresh_at TIMESTAMPTZ" in source
     assert "ADD COLUMN IF NOT EXISTS last_token_refresh_at" in source
-
-
-def test_upgrade_enforces_metadata_not_null():
-    """metadata column is enforced NOT NULL after backfilling legacy NULL rows."""
-    source = _CORE_MIGRATION_PATH.read_text()
-    # The spec calls for NOT NULL DEFAULT '{}'::jsonb semantics.
-    assert "ALTER COLUMN metadata SET NOT NULL" in source
-    # Backfill NULL rows first so the NOT NULL constraint never fails.
-    assert "WHERE metadata IS NULL" in source
 
 
 def test_upgrade_is_guarded_on_table_existence():
@@ -97,12 +74,6 @@ def test_downgrade_drops_both_columns_idempotently():
     source = _CORE_MIGRATION_PATH.read_text()
     assert "DROP COLUMN IF EXISTS last_token_refresh_at" in source
     assert "DROP COLUMN IF EXISTS metadata" in source
-
-
-def test_migration_targets_public_schema():
-    """Columns are added to public.google_accounts, not a butler schema."""
-    source = _CORE_MIGRATION_PATH.read_text()
-    assert "public.google_accounts" in source
 
 
 def test_migration_does_not_drop_or_rename_existing_columns():

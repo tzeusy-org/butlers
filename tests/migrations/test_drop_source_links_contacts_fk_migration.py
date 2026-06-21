@@ -40,21 +40,13 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision(self):
-        assert _load_migration().revision == "contacts_005"
-
-    def test_down_revision_chains_from_004(self):
-        assert _load_migration().down_revision == "contacts_004"
-
-    def test_branch_labels_and_depends_on_none(self):
+    def test_revision_chain(self):
+        """contacts_005 -> contacts_004, no branch/depends."""
         mod = _load_migration()
+        assert mod.revision == "contacts_005"
+        assert mod.down_revision == "contacts_004"
         assert mod.branch_labels is None
         assert mod.depends_on is None
-
-    def test_upgrade_downgrade_callable(self):
-        mod = _load_migration()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
 
     def test_drops_fk_idempotently(self):
         sql = _load_migration()._DROP_FK_SQL

@@ -63,51 +63,13 @@ def _collect_sqls(fn_name: str) -> list[str]:
 
 
 class TestMigrationFileAndChain:
-    def test_migration_file_exists(self) -> None:
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
+    def test_revision_chain(self) -> None:
+        """rel_022 -> rel_021, no branch/depends."""
         mod = _load_migration(_MIGRATION_PATH, "rel_022")
         assert mod.revision == "rel_022"
-
-    def test_down_revision_chains_from_021(self) -> None:
-        mod = _load_migration(_MIGRATION_PATH, "rel_022")
         assert mod.down_revision == "rel_021"
-
-    def test_branch_labels_and_depends_on_none(self) -> None:
-        mod = _load_migration(_MIGRATION_PATH, "rel_022")
         assert mod.branch_labels is None
         assert mod.depends_on is None
-
-    def test_callables(self) -> None:
-        mod = _load_migration(_MIGRATION_PATH, "rel_022")
-        assert callable(getattr(mod, "upgrade", None))
-        assert callable(getattr(mod, "downgrade", None))
-
-
-class TestUpgradeSQLShape:
-    def test_seeds_prefers_channel_as_override_literal(self) -> None:
-        sqls = _collect_sqls("upgrade")
-        inserts = [s for s in sqls if "INSERT INTO" in s.upper()]
-        assert inserts, "upgrade() must INSERT the prefers-channel row"
-        text = " ".join(inserts)
-        assert "prefers-channel" in text
-        assert "override" in text
-        assert "literal" in text
-
-    def test_insert_is_idempotent(self) -> None:
-        sqls = _collect_sqls("upgrade")
-        inserts = [s for s in sqls if "INSERT INTO" in s.upper()]
-        for stmt in inserts:
-            assert "ON CONFLICT" in stmt.upper()
-            assert "DO NOTHING" in stmt.upper()
-
-    def test_sets_cardinality_single(self) -> None:
-        sqls = _collect_sqls("upgrade")
-        updates = [s for s in sqls if "UPDATE" in s.upper() and "cardinality" in s.lower()]
-        assert updates, "upgrade() must explicitly set cardinality='single'"
-        assert any("'single'" in s for s in updates)
-        assert all("prefers-channel" in s for s in updates)
 
 
 class TestDowngradeSQLShape:

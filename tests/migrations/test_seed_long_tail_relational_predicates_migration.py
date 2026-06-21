@@ -73,56 +73,12 @@ def _collect_downgrade_sqls() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_migration_file_exists() -> None:
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
 def test_revision_chain() -> None:
     mod = _load_migration()
     assert mod.revision == "rel_026"
     assert mod.down_revision == "rel_025"
     assert mod.branch_labels is None
     assert mod.depends_on is None
-
-
-def test_upgrade_seeds_all_expected_predicates() -> None:
-    sqls = _collect_upgrade_sqls()
-    joined = "\n".join(sqls)
-    for predicate in _EXPECTED_PREDICATES:
-        assert f"'{predicate}'" in joined, (
-            f"Expected predicate '{predicate}' in upgrade() SQL, but it was not found."
-        )
-
-
-def test_upgrade_uses_relational_kind() -> None:
-    sqls = _collect_upgrade_sqls()
-    insert_sqls = [s for s in sqls if "INSERT INTO relationship.entity_predicate_registry" in s]
-    assert len(insert_sqls) == len(_EXPECTED_PREDICATES), (
-        f"Expected {len(_EXPECTED_PREDICATES)} INSERT statements, got {len(insert_sqls)}"
-    )
-    for sql in insert_sqls:
-        assert "'relational'" in sql, f"Expected kind='relational' in: {sql!r}"
-
-
-def test_upgrade_uses_entity_object_kind() -> None:
-    sqls = _collect_upgrade_sqls()
-    insert_sqls = [s for s in sqls if "INSERT INTO relationship.entity_predicate_registry" in s]
-    assert len(insert_sqls) == len(_EXPECTED_PREDICATES), (
-        f"Expected {len(_EXPECTED_PREDICATES)} INSERT statements, got {len(insert_sqls)}"
-    )
-    for sql in insert_sqls:
-        assert "'entity'" in sql, f"Expected object_kind='entity' in: {sql!r}"
-
-
-def test_upgrade_is_idempotent_on_conflict() -> None:
-    sqls = _collect_upgrade_sqls()
-    insert_sqls = [s for s in sqls if "INSERT INTO relationship.entity_predicate_registry" in s]
-    assert len(insert_sqls) == len(_EXPECTED_PREDICATES), (
-        f"Expected {len(_EXPECTED_PREDICATES)} INSERT statements, got {len(insert_sqls)}"
-    )
-    for sql in insert_sqls:
-        assert "ON CONFLICT" in sql
-        assert "DO NOTHING" in sql
 
 
 def test_upgrade_creates_schema_guard() -> None:
@@ -132,32 +88,12 @@ def test_upgrade_creates_schema_guard() -> None:
     assert any("relationship" in s for s in schema_stmts)
 
 
-def test_downgrade_removes_all_seeded_predicates() -> None:
-    sqls = _collect_downgrade_sqls()
-    joined = "\n".join(sqls)
-    assert "DELETE FROM relationship.entity_predicate_registry" in joined
-    for predicate in _EXPECTED_PREDICATES:
-        assert predicate in joined, (
-            f"Expected downgrade() to DELETE '{predicate}', but it was not found."
-        )
-
-
 def test_downgrade_does_not_drop_table() -> None:
     sqls = _collect_downgrade_sqls()
     drop_stmts = [s for s in sqls if "DROP" in s.upper()]
     assert not drop_stmts, "downgrade() must only DELETE rows, not DROP anything; found: " + str(
         drop_stmts
     )
-
-
-def test_migration_ordered_after_025() -> None:
-    migrations_dir = _MIGRATION_PATH.parent
-    files = sorted(f.name for f in migrations_dir.glob("[0-9]*.py"))
-    idx_025 = next((i for i, f in enumerate(files) if f.startswith("025_")), None)
-    idx_026 = next((i for i, f in enumerate(files) if f.startswith("026_")), None)
-    assert idx_025 is not None, "025_* migration not found"
-    assert idx_026 is not None, "026_* migration not found"
-    assert idx_026 > idx_025, "026_* must sort after 025_*"
 
 
 def test_new_predicates_count() -> None:

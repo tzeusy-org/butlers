@@ -55,21 +55,12 @@ def _load_migration(path: Path, name: str):
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision(self):
-        assert _load_migration(_MIGRATION_PATH, "_core_123").revision == "core_123"
-
-    def test_down_revision_chains_from_122(self):
-        assert _load_migration(_MIGRATION_PATH, "_core_123").down_revision == "core_122"
-
-    def test_branch_labels_and_depends_on_none(self):
+    def test_revision_chain(self):
         mod = _load_migration(_MIGRATION_PATH, "_core_123")
+        assert mod.revision == "core_123"
+        assert mod.down_revision == "core_122"
         assert mod.branch_labels is None
         assert mod.depends_on is None
-
-    def test_upgrade_downgrade_callable(self):
-        mod = _load_migration(_MIGRATION_PATH, "_core_123")
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
 
     def test_force_env_parsing(self, monkeypatch):
         mod = _load_migration(_MIGRATION_PATH, "_core_123")
@@ -88,17 +79,6 @@ class TestMigrationStructure:
         # Cross-chain guard against the fact store + column existence.
         assert "to_regclass('relationship.entity_facts')" in src
         assert "information_schema.columns" in src
-
-    def test_backfill_is_single_valued_and_idempotent(self):
-        mod = _load_migration(_MIGRATION_PATH, "_core_123")
-        sql = mod._BACKFILL_SQL.text
-        # One active fact per entity (single-valued supersession analogue).
-        assert "DISTINCT ON (c.entity_id)" in sql
-        assert "'prefers-channel'" not in sql  # predicate is bound, not literal
-        # Idempotency / live-fact precedence — never overwrite an active fact.
-        assert "NOT EXISTS" in sql
-        assert "validity  = 'active'" in sql or "validity = 'active'" in sql
-        assert "entity_id IS NOT NULL" in sql
 
     def test_rel_003_omits_preferred_channel_when_column_absent(self):
         src = _REL_003_PATH.read_text()

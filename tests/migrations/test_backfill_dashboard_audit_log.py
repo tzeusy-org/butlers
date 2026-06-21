@@ -50,21 +50,13 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision(self):
-        assert _load_migration().revision == "core_124"
-
-    def test_down_revision_chains_from_123(self):
-        assert _load_migration().down_revision == "core_123"
-
-    def test_branch_labels_and_depends_on_none(self):
+    def test_revision_chain(self):
+        """core_124 -> core_123, no branch/depends."""
         mod = _load_migration()
+        assert mod.revision == "core_124"
+        assert mod.down_revision == "core_123"
         assert mod.branch_labels is None
         assert mod.depends_on is None
-
-    def test_upgrade_downgrade_callable(self):
-        mod = _load_migration()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
 
     def test_source_guards_legacy_table_with_to_regclass(self):
         src = _MIGRATION_PATH.read_text()

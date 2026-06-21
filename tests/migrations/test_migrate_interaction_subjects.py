@@ -46,41 +46,15 @@ def _load_migration():
 
 
 class TestMigrationChain:
-    """Revision chain and module-level contract tests."""
+    """Revision chain contract test."""
 
-    def test_migration_file_exists(self) -> None:
-        """018_migrate_interaction_subjects.py exists at the expected path."""
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
-        """revision is rel_018."""
+    def test_revision_chain(self) -> None:
+        """rel_018 -> rel_017, no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "rel_018"
-
-    def test_down_revision(self) -> None:
-        """down_revision points to rel_017."""
-        mod = _load_migration()
         assert mod.down_revision == "rel_017"
-
-    def test_branch_labels_none(self) -> None:
-        """Non-root migrations must not declare branch_labels."""
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        """No cross-chain dependency declared."""
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        """upgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        """downgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
 
 
 # ---------------------------------------------------------------------------
@@ -167,47 +141,19 @@ class TestUpgradeSQLShape:
         # Skip first call (to_regclass guard).
         return sqls[1:]
 
-    def test_upgrade_emits_count_then_update_then_skipped_count(self) -> None:
-        """upgrade() emits a COUNT query, one UPDATE, then a follow-up COUNT."""
+    def test_upgrade_rewrites_contact_to_entity_via_contacts_join(self) -> None:
+        """upgrade() COUNTs contact:%% interaction subjects then UPDATEs subject to
+        'entity:' || entity_id via a public.contacts join, skipping NULL entity_id."""
         sqls = self._collect_upgrade_sqls()
-        assert len(sqls) == 3, f"Expected 3 statements after guard, got {len(sqls)}: {sqls}"
-
-    def test_upgrade_count_query_uses_contact_prefix(self) -> None:
-        """First SQL checks for interaction facts with contact: subjects."""
-        sqls = self._collect_upgrade_sqls()
-        count_sql = sqls[0]
+        assert len(sqls) == 3, f"Expected COUNT, UPDATE, COUNT after guard, got {len(sqls)}"
+        count_sql, update_sql, skip_sql = sqls
         assert "contact:%" in count_sql
         assert "interaction_%" in count_sql
-
-    def test_upgrade_update_rewrites_subject_to_entity_prefix(self) -> None:
-        """UPDATE sets subject to 'entity:' || entity_id."""
-        sqls = self._collect_upgrade_sqls()
-        update_sql = sqls[1]
         assert "entity:" in update_sql
         assert "entity_id" in update_sql
-
-    def test_upgrade_update_reads_from_contacts_table(self) -> None:
-        """UPDATE joins public.contacts to map contact_id → entity_id."""
-        sqls = self._collect_upgrade_sqls()
-        update_sql = sqls[1]
         assert "contacts" in update_sql.lower()
-
-    def test_upgrade_update_filters_null_entity_id(self) -> None:
-        """UPDATE WHERE clause requires c.entity_id IS NOT NULL (skip orphans)."""
-        sqls = self._collect_upgrade_sqls()
-        update_sql = sqls[1]
-        assert "IS NOT NULL" in update_sql.upper()
-
-    def test_upgrade_update_scoped_to_relationship(self) -> None:
-        """UPDATE is scoped to scope = 'relationship'."""
-        sqls = self._collect_upgrade_sqls()
-        update_sql = sqls[1]
+        assert "IS NOT NULL" in update_sql.upper()  # NULL entity_id orphans skipped
         assert "relationship" in update_sql
-
-    def test_upgrade_skip_count_still_uses_contact_prefix(self) -> None:
-        """Final COUNT verifies any remaining unmigrated rows use contact: prefix."""
-        sqls = self._collect_upgrade_sqls()
-        skip_sql = sqls[2]
         assert "contact:%" in skip_sql
 
     def test_upgrade_no_op_when_zero_contact_subjects(self) -> None:
@@ -279,33 +225,15 @@ class TestDowngradeSQLShape:
 
         return sqls[1:]
 
-    def test_downgrade_emits_count_then_update_then_remaining_count(self) -> None:
-        """downgrade() emits a COUNT, one UPDATE, then a final COUNT."""
+    def test_downgrade_rewrites_entity_to_contact_via_facts_entity_id(self) -> None:
+        """downgrade() COUNTs entity:%% interaction subjects then UPDATEs subject to
+        'contact:' || contact_id via facts.entity_id (no subject parsing), scoped."""
         sqls = self._collect_downgrade_sqls()
-        assert len(sqls) == 3, f"Expected 3 statements, got {len(sqls)}: {sqls}"
-
-    def test_downgrade_count_query_uses_entity_prefix(self) -> None:
-        """First SQL checks for interaction facts with entity: subjects."""
-        sqls = self._collect_downgrade_sqls()
-        count_sql = sqls[0]
+        assert len(sqls) == 3, f"Expected COUNT, UPDATE, COUNT, got {len(sqls)}"
+        count_sql, update_sql, _ = sqls
         assert "entity:%" in count_sql
         assert "interaction_%" in count_sql
-
-    def test_downgrade_update_rewrites_subject_to_contact_prefix(self) -> None:
-        """Downgrade UPDATE sets subject to 'contact:' || contact_id."""
-        sqls = self._collect_downgrade_sqls()
-        update_sql = sqls[1]
         assert "contact:" in update_sql
-
-    def test_downgrade_update_uses_facts_entity_id_column(self) -> None:
-        """Downgrade UPDATE joins contacts via facts.entity_id — no subject parsing."""
-        sqls = self._collect_downgrade_sqls()
-        update_sql = sqls[1]
         assert "entity_id" in update_sql
         assert "contacts" in update_sql.lower()
-
-    def test_downgrade_update_scoped_to_relationship(self) -> None:
-        """Downgrade UPDATE is scoped to scope = 'relationship'."""
-        sqls = self._collect_downgrade_sqls()
-        update_sql = sqls[1]
         assert "relationship" in update_sql

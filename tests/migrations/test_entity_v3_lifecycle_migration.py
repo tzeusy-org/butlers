@@ -71,35 +71,15 @@ def _collect_downgrade_sqls() -> list[str]:
 class TestMigrationFileAndChain:
     """File-level and revision-chain contract tests."""
 
-    def test_migration_file_exists(self) -> None:
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
+    def test_revision_chain(self) -> None:
+        """rel_021 -> rel_020 (chain head at authoring); no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "rel_021"
-
-    def test_down_revision_is_current_chain_head(self) -> None:
-        """Must chain from rel_020 — the relationship-chain head at authoring."""
-        mod = _load_migration()
         assert mod.down_revision == "rel_020", (
             "rel_021 must chain from the current head (rel_020); do NOT fork the chain"
         )
-
-    def test_branch_labels_none(self) -> None:
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
 
     def test_migration_ordered_after_020(self) -> None:
         """021_* must sort after 020_* in the migrations directory."""

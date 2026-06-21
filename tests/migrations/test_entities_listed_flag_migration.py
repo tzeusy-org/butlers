@@ -66,39 +66,13 @@ def _collect_downgrade_sqls() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
-def test_revision_id():
+def test_revision_chain():
+    """core_103 -> core_102 (channel_defaults), no branch/depends."""
     mod = _load_migration()
     assert mod.revision == "core_103"
-
-
-def test_down_revision():
-    """Must chain from core_102 (channel_defaults)."""
-    mod = _load_migration()
     assert mod.down_revision == "core_102"
-
-
-def test_branch_labels_none():
-    mod = _load_migration()
     assert mod.branch_labels is None
-
-
-def test_depends_on_none():
-    mod = _load_migration()
     assert mod.depends_on is None
-
-
-def test_upgrade_callable():
-    mod = _load_migration()
-    assert callable(getattr(mod, "upgrade", None))
-
-
-def test_downgrade_callable():
-    mod = _load_migration()
-    assert callable(getattr(mod, "downgrade", None))
 
 
 class TestUpgradeSQLShape:

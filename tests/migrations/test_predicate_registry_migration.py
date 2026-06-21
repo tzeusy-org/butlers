@@ -69,135 +69,24 @@ def _collect_downgrade_sqls() -> list[str]:
 
 
 class TestMigrationFileAndChain:
-    """File-level and revision-chain contract tests."""
+    """Revision-chain contract test."""
 
-    def test_migration_file_exists(self) -> None:
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
+    def test_revision_chain(self) -> None:
+        """rel_014 -> rel_013 (entity_facts), no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "rel_014"
-
-    def test_down_revision(self) -> None:
-        """Must chain from rel_013 (entity_facts)."""
-        mod = _load_migration()
         assert mod.down_revision == "rel_013"
-
-    def test_branch_labels_none(self) -> None:
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
-
-    def test_migration_ordered_after_013(self) -> None:
-        """014_* must sort after 013_* in the migrations directory."""
-        migrations_dir = _MIGRATION_PATH.parent
-        files = sorted(f.name for f in migrations_dir.glob("[0-9]*.py"))
-        idx_013 = next((i for i, f in enumerate(files) if f.startswith("013_")), None)
-        idx_014 = next((i for i, f in enumerate(files) if f.startswith("014_")), None)
-        assert idx_013 is not None, "013_* migration not found"
-        assert idx_014 is not None, "014_* migration not found"
-        assert idx_014 > idx_013, "014_* must sort after 013_*"
 
 
 class TestUpgradeSQLShape:
-    """Verify upgrade() emits the expected SQL."""
+    """Verify upgrade() seeds the documented predicate content.
 
-    def test_creates_relationship_schema(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        schema_stmts = [s for s in sqls if "CREATE SCHEMA" in s.upper()]
-        assert schema_stmts, "upgrade() must emit CREATE SCHEMA IF NOT EXISTS relationship"
-        assert any("relationship" in s for s in schema_stmts)
-
-    def test_creates_predicate_registry_table(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmts = [
-            s for s in sqls if "CREATE TABLE" in s.upper() and "predicate_registry" in s.lower()
-        ]
-        assert table_stmts, "upgrade() must emit CREATE TABLE … predicate_registry"
-        stmt = table_stmts[0]
-        assert "relationship.entity_predicate_registry" in stmt, (
-            "Table must be schema-qualified as relationship.entity_predicate_registry"
-        )
-
-    def test_table_has_predicate_pk(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s
-            for s in sqls
-            if "CREATE TABLE" in s.upper() and "relationship.entity_predicate_registry" in s
-        )
-        assert "predicate" in table_stmt.lower()
-        assert "primary key" in table_stmt.lower()
-
-    def test_table_has_kind_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s
-            for s in sqls
-            if "CREATE TABLE" in s.upper() and "relationship.entity_predicate_registry" in s
-        )
-        assert "kind" in table_stmt.lower()
-        assert "contact" in table_stmt
-        assert "relational" in table_stmt
-        assert "override" in table_stmt
-
-    def test_table_has_object_kind_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s
-            for s in sqls
-            if "CREATE TABLE" in s.upper() and "relationship.entity_predicate_registry" in s
-        )
-        assert "object_kind" in table_stmt.lower()
-        assert "literal" in table_stmt
-        assert "entity" in table_stmt
-
-    def test_table_has_description_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s
-            for s in sqls
-            if "CREATE TABLE" in s.upper() and "relationship.entity_predicate_registry" in s
-        )
-        assert "description" in table_stmt.lower()
-
-    def test_table_has_created_at_column(self) -> None:
-        sqls = _collect_upgrade_sqls()
-        table_stmt = next(
-            s
-            for s in sqls
-            if "CREATE TABLE" in s.upper() and "relationship.entity_predicate_registry" in s
-        )
-        assert "created_at" in table_stmt.lower()
-
-    def test_seed_inserts_present(self) -> None:
-        """upgrade() must emit INSERT statements for seed predicates."""
-        sqls = _collect_upgrade_sqls()
-        insert_stmts = [s for s in sqls if "INSERT INTO" in s.upper() and "predicate_registry" in s]
-        assert insert_stmts, "upgrade() must emit INSERT statements for seed predicates"
-
-    def test_seed_uses_on_conflict_do_nothing(self) -> None:
-        """All seed INSERT statements must be idempotent via ON CONFLICT DO NOTHING."""
-        sqls = _collect_upgrade_sqls()
-        insert_stmts = [s for s in sqls if "INSERT INTO" in s.upper() and "predicate_registry" in s]
-        for stmt in insert_stmts:
-            assert "ON CONFLICT" in stmt.upper(), (
-                f"Seed INSERT must include ON CONFLICT DO NOTHING for idempotency:\n{stmt}"
-            )
-            assert "DO NOTHING" in stmt.upper(), (
-                f"Seed INSERT ON CONFLICT clause must use DO NOTHING:\n{stmt}"
-            )
+    Table/column shape and ON CONFLICT idempotency are exercised against a live
+    DB by the integration column-set + idempotency tests; here we pin the
+    seed-content spec (which predicates, by kind).
+    """
 
     def test_contact_predicates_seeded(self) -> None:
         """All six contact predicates must be present in seed INSERTs."""

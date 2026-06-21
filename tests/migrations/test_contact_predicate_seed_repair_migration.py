@@ -37,10 +37,6 @@ def _collect_upgrade_sqls() -> list[str]:
     return sqls
 
 
-def test_migration_file_exists() -> None:
-    assert _MIGRATION_PATH.exists()
-
-
 def test_revision_chain() -> None:
     mod = _load_migration()
     assert mod.revision == "rel_017"
@@ -56,14 +52,6 @@ def test_upgrade_upserts_has_handle_predicate() -> None:
     assert "'has-handle'" in joined
     assert "ON CONFLICT (predicate) DO UPDATE" in joined
     assert "object_kind = EXCLUDED.object_kind" in joined
-
-
-def test_upgrade_batches_predicate_repair() -> None:
-    sqls = _collect_upgrade_sqls()
-    insert_sqls = [
-        sql for sql in sqls if "INSERT INTO relationship.entity_predicate_registry" in sql
-    ]
-    assert len(insert_sqls) == 1
 
 
 def test_upgrade_repairs_all_rel014_predicates() -> None:

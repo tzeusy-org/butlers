@@ -46,47 +46,20 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestRel025Structure:
-    def test_file_exists(self):
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision(self):
-        assert _load_migration().revision == "rel_025"
-
-    def test_down_revision(self):
-        assert _load_migration().down_revision == "rel_024"
-
-    def test_branch_labels_none(self):
-        assert _load_migration().branch_labels is None
-
-    def test_upgrade_downgrade_callable(self):
+    def test_revision_chain(self):
         mod = _load_migration()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
+        assert mod.revision == "rel_025"
+        assert mod.down_revision == "rel_024"
+        assert mod.branch_labels is None
 
-    def test_uses_to_regclass_guard(self):
+    def test_named_invariant_guards(self):
+        """Self-guarding DROP: to_regclass guard, row-count RuntimeError gate,
+        guarded DROP, and downgrade recreate (behaviour exercised by integration)."""
         src = _MIGRATION_PATH.read_text()
         assert "to_regclass" in src
-
-    def test_row_count_gate_raises_runtime_error(self):
-        src = _MIGRATION_PATH.read_text()
         assert "RuntimeError" in src
-        assert "row" in src.lower()
-
-    def test_drops_table_with_if_exists(self):
-        src = _MIGRATION_PATH.read_text()
         assert "DROP TABLE IF EXISTS quick_facts" in src
-
-    def test_downgrade_recreates_table(self):
-        src = _MIGRATION_PATH.read_text()
         assert "CREATE TABLE IF NOT EXISTS quick_facts" in src
-
-    def test_downgrade_recreates_original_columns(self):
-        src = _MIGRATION_PATH.read_text()
-        assert "contact_id" in src
-        assert "key" in src
-        assert "value" in src
-        assert "created_at" in src
-        assert "updated_at" in src
 
 
 # ---------------------------------------------------------------------------

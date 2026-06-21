@@ -49,48 +49,26 @@ def _load_migration():
 
 
 class TestMigrationFileAndChain:
-    """File-level and revision-chain contract tests."""
+    """Revision-chain contract test."""
 
-    def test_migration_file_exists(self) -> None:
-        """core_009_memory_catalog.py exists at expected path."""
-        assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-    def test_revision_id(self) -> None:
-        """Revision is core_009."""
+    def test_revision_chain(self) -> None:
+        """core_009 -> core_008, no branch/depends."""
         mod = _load_migration()
         assert mod.revision == "core_009"
-
-    def test_down_revision(self) -> None:
-        """down_revision points to core_008."""
-        mod = _load_migration()
         assert mod.down_revision == "core_008"
-
-    def test_branch_labels_none(self) -> None:
-        """Non-root migrations must not declare branch_labels."""
-        mod = _load_migration()
         assert mod.branch_labels is None
-
-    def test_depends_on_none(self) -> None:
-        """No cross-chain dependency declared."""
-        mod = _load_migration()
         assert mod.depends_on is None
-
-    def test_upgrade_callable(self) -> None:
-        """upgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
-
-    def test_downgrade_callable(self) -> None:
-        """downgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
 
 
 class TestUpgradeSQLShape:
-    """Verify the SQL emitted by upgrade() matches the intended schema."""
+    """Verify the SQL emitted by upgrade() declares the table + indexes.
+
+    Column-presence and the UNIQUE provenance constraint are exercised against a
+    live DB by the integration insert/select/upsert tests; here we pin the table
+    creation and the three indexes (which the integration path does not assert).
+    """
 
     def _collect_execute_calls(self) -> list[str]:
-        """Run upgrade() with op.execute mocked; return SQL strings."""
         mod = _load_migration()
         calls_collected: list[str] = []
         mock_op = MagicMock()
@@ -99,114 +77,20 @@ class TestUpgradeSQLShape:
             mod.upgrade()
         return calls_collected
 
-    def test_create_table_present(self) -> None:
-        """upgrade() emits a CREATE TABLE for public.memory_catalog."""
-        sqls = self._collect_execute_calls()
-        create_stmts = [s for s in sqls if "public.memory_catalog" in s and "CREATE" in s.upper()]
-        assert create_stmts, "No CREATE TABLE public.memory_catalog found in upgrade SQL"
-
-    def test_provenance_columns_present(self) -> None:
-        """The CREATE TABLE includes source_schema, source_table, source_id."""
+    def test_create_table_with_unique_provenance(self) -> None:
+        """upgrade() creates public.memory_catalog with a UNIQUE provenance constraint."""
         sqls = self._collect_execute_calls()
         create_sql = next(s for s in sqls if "public.memory_catalog" in s and "CREATE" in s.upper())
-        for col in ("source_schema", "source_table", "source_id"):
-            assert col in create_sql, f"Column {col!r} missing from memory_catalog DDL"
-
-    def test_required_columns_present(self) -> None:
-        """The CREATE TABLE includes all required columns."""
-        sqls = self._collect_execute_calls()
-        create_sql = next(s for s in sqls if "public.memory_catalog" in s and "CREATE" in s.upper())
-        required = [
-            "id",
-            "source_butler",
-            "tenant_id",
-            "entity_id",
-            "summary",
-            "embedding",
-            "search_vector",
-            "memory_type",
-            "created_at",
-            "updated_at",
-        ]
-        for col in required:
-            assert col in create_sql, f"Column {col!r} missing from memory_catalog DDL"
-
-    def test_spec_enrichment_columns_present(self) -> None:
-        """Spec-required enrichment columns from core_024 are present."""
-        sqls = self._collect_execute_calls()
-        create_sql = next(s for s in sqls if "public.memory_catalog" in s and "CREATE" in s.upper())
-        enrichment_cols = [
-            "title",
-            "predicate",
-            "scope",
-            "valid_at",
-            "invalid_at",
-            "confidence",
-            "importance",
-            "retention_class",
-            "sensitivity",
-            "object_entity_id",
-        ]
-        for col in enrichment_cols:
-            assert col in create_sql, f"Enrichment column {col!r} missing from memory_catalog DDL"
-
-    def test_unique_constraint_on_source_provenance(self) -> None:
-        """CREATE TABLE declares UNIQUE on (source_schema, source_table, source_id)."""
-        sqls = self._collect_execute_calls()
-        create_sql = next(s for s in sqls if "public.memory_catalog" in s and "CREATE" in s.upper())
-        assert "UNIQUE" in create_sql.upper(), "No UNIQUE constraint in memory_catalog DDL"
+        assert "UNIQUE" in create_sql.upper()
         assert "source_schema" in create_sql and "source_table" in create_sql
 
-    def test_embedding_ivfflat_index_present(self) -> None:
-        """upgrade() creates an IVFFlat index on the embedding column."""
+    def test_indexes_present(self) -> None:
+        """upgrade() creates the IVFFlat, GIN search_vector, and tenant+schema indexes."""
         sqls = self._collect_execute_calls()
-        ivfflat_sqls = [s for s in sqls if "ivfflat" in s.lower() or "IVFFLAT" in s]
-        assert ivfflat_sqls, "No IVFFlat index creation found in upgrade SQL"
-
-    def test_gin_search_vector_index_present(self) -> None:
-        """upgrade() creates a GIN index on search_vector."""
-        sqls = self._collect_execute_calls()
-        gin_sqls = [s for s in sqls if "idx_memory_catalog_search_vector" in s]
-        assert gin_sqls, "No GIN search_vector index found in upgrade SQL"
-
-    def test_tenant_schema_index_present(self) -> None:
-        """upgrade() creates a B-tree index on (tenant_id, source_schema)."""
-        sqls = self._collect_execute_calls()
-        idx_sqls = [s for s in sqls if "idx_memory_catalog_tenant_schema" in s]
-        assert idx_sqls, "No tenant+schema composite index found in upgrade SQL"
-
-
-class TestDowngradeSQLShape:
-    """Verify the SQL emitted by downgrade() correctly reverses the upgrade."""
-
-    def _collect_execute_calls(self) -> list[str]:
-        """Run downgrade() with op.execute mocked; return SQL strings."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-        with patch.object(mod, "op", mock_op):
-            mod.downgrade()
-        return calls_collected
-
-    def test_drop_table_present(self) -> None:
-        """downgrade() emits a DROP TABLE for public.memory_catalog."""
-        sqls = self._collect_execute_calls()
-        drop_stmts = [s for s in sqls if "memory_catalog" in s and "DROP TABLE" in s.upper()]
-        assert drop_stmts, "No DROP TABLE memory_catalog found in downgrade SQL"
-
-    def test_drop_indexes_before_table(self) -> None:
-        """downgrade() drops indexes before dropping the table."""
-        sqls = self._collect_execute_calls()
-        index_drops = [s for s in sqls if "DROP INDEX" in s.upper()]
-        table_drops = [s for s in sqls if "DROP TABLE" in s.upper()]
-        assert index_drops, "No DROP INDEX statements found in downgrade SQL"
-        # Index drops should appear before the table drop in the list.
-        last_index_drop_pos = max(sqls.index(s) for s in index_drops)
-        first_table_drop_pos = min(sqls.index(s) for s in table_drops)
-        assert last_index_drop_pos < first_table_drop_pos, (
-            "Index drops must appear before DROP TABLE in downgrade()"
-        )
+        joined = "\n".join(sqls)
+        assert "ivfflat" in joined.lower()
+        assert "idx_memory_catalog_search_vector" in joined
+        assert "idx_memory_catalog_tenant_schema" in joined
 
 
 # ---------------------------------------------------------------------------

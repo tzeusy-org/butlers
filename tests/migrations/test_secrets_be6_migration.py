@@ -46,39 +46,27 @@ def _load_migration():
     return mod
 
 
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
 def test_migration_revision_chain():
     mod = _load_migration()
     assert mod.revision == "core_107"
     assert mod.down_revision == "core_106"
 
 
-def test_upgrade_creates_provider_feature_catalogue_table():
+def test_table_structure():
+    """provider_feature_catalogue has the documented columns/types (required_scopes JSONB)."""
     source = _MIGRATION_PATH.read_text()
     assert "public.provider_feature_catalogue" in source
     assert "BIGSERIAL" in source
     assert "PRIMARY KEY" in source
-
-
-def test_table_has_required_columns():
-    """All spec-mandated column names appear in the migration source."""
-    source = _MIGRATION_PATH.read_text()
     for col in ("provider", "butler", "feature", "severity", "required_scopes", "updated_at"):
         assert col in source, f"Column '{col}' missing from migration source"
-
-
-def test_table_has_required_column_types():
-    source = _MIGRATION_PATH.read_text()
-    assert "TEXT" in source  # provider, butler, feature, severity
     assert "JSONB" in source  # required_scopes
     assert "TIMESTAMPTZ" in source  # updated_at
+    assert "::jsonb" in source  # required_scopes seed values cast to JSONB
 
 
 def test_severity_check_constraint():
-    """severity must be constrained to 'high', 'medium', 'low'."""
+    """severity must be constrained to 'high', 'medium', 'low' (covers all seed severities)."""
     source = _MIGRATION_PATH.read_text()
     assert "CHECK" in source
     assert "'high'" in source
@@ -114,38 +102,10 @@ def test_seed_uses_on_conflict_do_nothing():
     assert "DO NOTHING" in source
 
 
-def test_required_scopes_uses_jsonb_cast():
-    """required_scopes values use JSONB cast for type safety."""
-    source = _MIGRATION_PATH.read_text()
-    assert "::jsonb" in source
-
-
-def test_downgrade_drops_table():
+def test_downgrade_drops_table_and_index():
     source = _MIGRATION_PATH.read_text()
     assert "DROP TABLE IF EXISTS public.provider_feature_catalogue" in source
-
-
-def test_downgrade_drops_index():
-    source = _MIGRATION_PATH.read_text()
     assert "DROP INDEX IF EXISTS public.ix_provider_feature_catalogue_provider_butler" in source
-
-
-def test_seed_has_high_severity_rows():
-    """At least some rows must be 'high' severity (spec: major features)."""
-    source = _MIGRATION_PATH.read_text()
-    assert "'high'" in source
-
-
-def test_seed_has_medium_severity_rows():
-    """At least some rows must be 'medium' severity."""
-    source = _MIGRATION_PATH.read_text()
-    assert "'medium'" in source
-
-
-def test_seed_has_low_severity_rows():
-    """At least some rows must be 'low' severity."""
-    source = _MIGRATION_PATH.read_text()
-    assert "'low'" in source
 
 
 def test_table_grants_cover_all_runtime_roles():
