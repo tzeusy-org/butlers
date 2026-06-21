@@ -26,9 +26,15 @@ import SettingsPermissionsPage from "@/pages/SettingsPermissionsPage";
 // Mocks
 // ---------------------------------------------------------------------------
 
-// Mock useAuditLog so the audit reel renders without a real fetch
+// Mock useAuditLog so the audit reel renders without a real fetch. Use a
+// recording spy (not an arg-ignoring factory) so tests can assert the reel
+// requests the FILTERED endpoint (kind=privileged), per dashboard-permissions
+// spec "Audit reel filters operational noise".
+const useAuditLogMock = vi.hoisted(() =>
+  vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
+);
 vi.mock("@/hooks/use-audit-log", () => ({
-  useAuditLog: () => ({ data: { data: [] }, isLoading: false, error: null }),
+  useAuditLog: useAuditLogMock,
 }));
 
 // Mock sonner to prevent DOM errors in jsdom
@@ -271,5 +277,56 @@ describe("SettingsPermissionsPage — inherited cell semantics [bu-9q1dx.3]", ()
 
     const spawnCell = await screen.findByTestId("perm-cell-chronicler-spawn");
     expect(spawnCell.getAttribute("aria-label")).not.toContain("(inherited)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Audit reel consumes the FILTERED endpoint [bu-9q1dx.5 / reconcile bu-9q1dx.11]
+// ---------------------------------------------------------------------------
+// Spec dashboard-permissions "Audit reel filters operational noise": the reel
+// MUST request a privileged-action-only view so heartbeat / routine-GET noise
+// is excluded. This guards against a regression to an unfiltered request.
+describe("SettingsPermissionsPage — audit reel filters operational noise [bu-9q1dx.5]", () => {
+  beforeEach(() => {
+    // mockReset() (not mockClear()) so a prior test's mockReturnValue cannot
+    // leak across cases; re-apply the default privileged-empty implementation.
+    useAuditLogMock.mockReset();
+    useAuditLogMock.mockImplementation(() => ({
+      data: { data: [] },
+      isLoading: false,
+      error: null,
+    }));
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => defaultFetch(url));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("requests the privileged-only, last-15 audit view (not an unfiltered endpoint)", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    expect(useAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 15, kind: "privileged" }),
+    );
+  });
+
+  it("shows an empty state rather than padding when no privileged rows exist", async () => {
+    useAuditLogMock.mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      error: null,
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+
+    expect(screen.getByText("No recent audit entries.")).toBeTruthy();
   });
 });
