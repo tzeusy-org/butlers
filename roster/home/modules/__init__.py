@@ -1351,6 +1351,10 @@ class HomeAssistantModule(Module):
             logger.debug(
                 "HomeAssistantModule: fetched %d areas from registry.", len(self._area_cache)
             )
+        except TimeoutError:
+            logger.info(
+                "HomeAssistantModule: area registry fetch timed out; keeping existing cache."
+            )
         except Exception as exc:
             logger.warning("HomeAssistantModule: failed to fetch area registry: %r", exc)
 
@@ -1391,6 +1395,10 @@ class HomeAssistantModule(Module):
                 "HomeAssistantModule: entity registry loaded; %d entries, %d area-mapped.",
                 len(self._entity_registry),
                 len(self._entity_area_map),
+            )
+        except TimeoutError:
+            logger.info(
+                "HomeAssistantModule: entity registry fetch timed out; keeping existing cache."
             )
         except Exception as exc:
             logger.warning("HomeAssistantModule: failed to fetch entity registry: %r", exc)
