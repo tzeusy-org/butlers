@@ -25,6 +25,8 @@ import type {
   CalendarAccountEntry,
   CalendarAuditEntry,
   CalendarConflictEntry,
+  CalendarFindTimeConstraints,
+  CalendarFindTimePartOfDay,
   CalendarSuggestedSlot,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceReadResponse,
@@ -43,6 +45,7 @@ import {
   useCalendarWorkspaceAudit,
   useCalendarWorkspaceMeta,
   useCalendarWorkspaceSearch,
+  useFindCalendarWorkspaceTime,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
   useSetPrimaryCalendar,
@@ -851,6 +854,205 @@ interface CalendarActivityPanelProps {
   onPageChange: (offset: number) => void;
 }
 
+interface CalendarFindTimePanelProps {
+  butlerName: string | null;
+  onSelectSlot: (slot: CalendarSuggestedSlot) => void;
+}
+
+const FIND_TIME_HORIZON_OPTIONS: ReadonlyArray<{ label: string; days: number }> = [
+  { label: "Next 7 days", days: 7 },
+  { label: "Next 14 days", days: 14 },
+  { label: "Next 30 days", days: 30 },
+];
+
+const FIND_TIME_DURATION_OPTIONS: ReadonlyArray<{ label: string; minutes: number }> = [
+  { label: "30 minutes", minutes: 30 },
+  { label: "45 minutes", minutes: 45 },
+  { label: "1 hour", minutes: 60 },
+  { label: "90 minutes", minutes: 90 },
+  { label: "2 hours", minutes: 120 },
+];
+
+const FIND_TIME_PART_OF_DAY_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
+  { label: "Any time of day", value: "any" },
+  { label: "Mornings", value: "morning" },
+  { label: "Afternoons", value: "afternoon" },
+  { label: "Evenings", value: "evening" },
+];
+
+/**
+ * "Find time" panel: pick a duration + soft constraints, fetch ranked open
+ * slots, and select one to prefill the create-event form. Read-only — selecting
+ * a slot drives a separate create call; this panel never mutates an event.
+ */
+function CalendarFindTimePanel({ butlerName, onSelectSlot }: CalendarFindTimePanelProps) {
+  const [durationMinutes, setDurationMinutes] = useState(30);
+  const [partOfDay, setPartOfDay] = useState<"any" | CalendarFindTimePartOfDay>("any");
+  const [avoidWeekends, setAvoidWeekends] = useState(false);
+  const [horizonDays, setHorizonDays] = useState(14);
+  const [slots, setSlots] = useState<CalendarSuggestedSlot[] | null>(null);
+
+  const findMutation = useFindCalendarWorkspaceTime();
+
+  async function runSearch(event: React.FormEvent) {
+    event.preventDefault();
+    if (!butlerName) {
+      toast.error("No writable calendar is available to search for free time.");
+      return;
+    }
+    const now = new Date();
+    const constraints: CalendarFindTimeConstraints = {};
+    if (partOfDay !== "any") {
+      constraints.part_of_day = partOfDay;
+    }
+    if (avoidWeekends) {
+      constraints.avoid_weekdays = ["SA", "SU"];
+    }
+    try {
+      const response = await findMutation.mutateAsync({
+        butler_name: butlerName,
+        duration_minutes: durationMinutes,
+        search_start: now.toISOString(),
+        search_end: addDays(now, horizonDays).toISOString(),
+        constraints: Object.keys(constraints).length > 0 ? constraints : undefined,
+        limit: 12,
+      });
+      setSlots(response.data.slots);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to find open time slots.",
+      );
+    }
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <form className="flex flex-wrap items-end gap-3" onSubmit={runSearch}>
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor="find-time-duration"
+            className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+          >
+            Duration
+          </label>
+          <select
+            id="find-time-duration"
+            className={SELECT_CLASS}
+            value={durationMinutes}
+            onChange={(e) => setDurationMinutes(Number(e.target.value))}
+          >
+            {FIND_TIME_DURATION_OPTIONS.map((option) => (
+              <option key={option.minutes} value={option.minutes}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor="find-time-part-of-day"
+            className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+          >
+            When
+          </label>
+          <select
+            id="find-time-part-of-day"
+            className={SELECT_CLASS}
+            value={partOfDay}
+            onChange={(e) =>
+              setPartOfDay(e.target.value as "any" | CalendarFindTimePartOfDay)
+            }
+          >
+            {FIND_TIME_PART_OF_DAY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor="find-time-horizon"
+            className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--mfg)]"
+          >
+            Window
+          </label>
+          <select
+            id="find-time-horizon"
+            className={SELECT_CLASS}
+            value={horizonDays}
+            onChange={(e) => setHorizonDays(Number(e.target.value))}
+          >
+            {FIND_TIME_HORIZON_OPTIONS.map((option) => (
+              <option key={option.days} value={option.days}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <label className="flex items-center gap-2 text-[11px] text-[var(--mfg)]">
+          <input
+            type="checkbox"
+            checked={avoidWeekends}
+            onChange={(e) => setAvoidWeekends(e.target.checked)}
+          />
+          Avoid weekends
+        </label>
+
+        <PillButton type="submit" active disabled={findMutation.isPending}>
+          {findMutation.isPending ? "Searching…" : "Find time"}
+        </PillButton>
+      </form>
+
+      {findMutation.isError ? (
+        <div role="alert" className="flex items-start gap-2">
+          <StateDot state="error" className="mt-[7px]" />
+          <p className="text-sm text-[var(--fg)]">Failed to find open time slots.</p>
+        </div>
+      ) : slots === null ? (
+        <Voice variant="italic" className="text-[var(--mfg)]">
+          Choose a duration and search for open time.
+        </Voice>
+      ) : slots.length === 0 ? (
+        <Voice variant="italic" className="text-[var(--mfg)]">
+          No open slots match those constraints in the selected window.
+        </Voice>
+      ) : (
+        <ul className="flex flex-col gap-1.5" data-testid="find-time-slots">
+          {slots.map((slot) => {
+            const start = parseISO(slot.start_at);
+            const end = parseISO(slot.end_at);
+            return (
+              <li key={`${slot.start_at}-${slot.end_at}`}>
+                <button
+                  type="button"
+                  data-testid="find-time-slot"
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-[3px] border border-[var(--border-strong)]",
+                    "px-3 py-2 text-left transition-colors hover:bg-foreground/[0.06]",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                  )}
+                  onClick={() => onSelectSlot(slot)}
+                >
+                  <span className="text-sm text-[var(--fg)]">
+                    {format(start, "EEE, MMM d")}
+                  </span>
+                  <Mono muted className="tabular-nums">
+                    {format(start, "HH:mm")}–{format(end, "HH:mm")}
+                  </Mono>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function CalendarActivityPanel({ auditQuery, offset, limit, onPageChange }: CalendarActivityPanelProps) {
   const entries = auditQuery.data?.data?.entries ?? [];
   const total = auditQuery.data?.data?.total ?? 0;
@@ -1501,6 +1703,16 @@ export default function CalendarWorkspacePage() {
   const defaultTimezone = metaQuery.data?.data.default_timezone || timezone;
   const primaryCalendarId = metaQuery.data?.data.primary_calendar_id ?? null;
 
+  // The butler the "Find time" panel queries: the selected writable source's
+  // owner if one is chosen, otherwise the first writable calendar's owner.
+  const findTimeButlerName = useMemo(() => {
+    const selected =
+      selectedSourceKey !== "all"
+        ? submittableCalendars.find((c) => c.source_key === selectedSourceKey)
+        : undefined;
+    return selected?.butler_name || submittableCalendars[0]?.butler_name || null;
+  }, [submittableCalendars, selectedSourceKey]);
+
   const userSources = useMemo(
     () => connectedSources.filter((source) => source.lane === "user"),
     [connectedSources],
@@ -1614,6 +1826,8 @@ export default function CalendarWorkspacePage() {
 
   // Activity panel state
   const [activityPanelOpen, setActivityPanelOpen] = useState(false);
+  // Find-time panel state (mutually exclusive with the activity panel).
+  const [findTimePanelOpen, setFindTimePanelOpen] = useState(false);
   const [auditOffset, setAuditOffset] = useState(0);
   const AUDIT_PAGE_SIZE = 50;
   const auditQuery = useCalendarWorkspaceAudit(
@@ -2914,10 +3128,22 @@ export default function CalendarWorkspacePage() {
           aria-pressed={activityPanelOpen}
           onClick={() => {
             setActivityPanelOpen((prev) => !prev);
+            setFindTimePanelOpen(false);
             setAuditOffset(0);
           }}
         >
           Activity
+        </PillButton>
+
+        <PillButton
+          active={findTimePanelOpen}
+          aria-pressed={findTimePanelOpen}
+          onClick={() => {
+            setFindTimePanelOpen((prev) => !prev);
+            setActivityPanelOpen(false);
+          }}
+        >
+          Find time
         </PillButton>
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:ml-auto">
@@ -3056,8 +3282,21 @@ export default function CalendarWorkspacePage() {
         </div>
       ) : null}
 
+      {/* Find-time panel — overlays the canvas when open */}
+      {findTimePanelOpen ? (
+        <div className="flex min-h-0 flex-1 flex-col pt-5">
+          <CalendarFindTimePanel
+            butlerName={findTimeButlerName}
+            onSelectSlot={(slot) => {
+              openUserCreateDialog(parseISO(slot.start_at), parseISO(slot.end_at));
+              setFindTimePanelOpen(false);
+            }}
+          />
+        </div>
+      ) : null}
+
       {/* Canvas + detail panel */}
-      <div className={activityPanelOpen ? "hidden" : "flex min-h-0 flex-1"}>
+      <div className={activityPanelOpen || findTimePanelOpen ? "hidden" : "flex min-h-0 flex-1"}>
       <div className="flex min-h-0 flex-1 flex-col pt-5">
         {workspaceQuery.isLoading ? (
           <Voice variant="italic" className="text-[var(--mfg)]">

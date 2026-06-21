@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  findCalendarWorkspaceTime,
   getCalendarAccounts,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
@@ -22,6 +23,7 @@ import type {
   CalendarAuditParams,
   CalendarSourceToggleRequest,
   CalendarWorkspaceButlerMutationRequest,
+  CalendarWorkspaceFindTimeRequest,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSearchParams,
@@ -150,6 +152,13 @@ export function useSyncCalendarWorkspace() {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
+  });
+}
+
+/** Find ranked open time slots (read-only; does not mutate workspace caches). */
+export function useFindCalendarWorkspaceTime() {
+  return useMutation({
+    mutationFn: (body: CalendarWorkspaceFindTimeRequest) => findCalendarWorkspaceTime(body),
   });
 }
 

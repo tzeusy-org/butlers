@@ -1575,3 +1575,99 @@ async def test_meta_carries_per_source_error_kind(app):
     # Raw last_error is still available alongside the derived classification.
     assert by_key["provider:google:primary"]["last_error"] == "sync token expired (410 Gone)"
     assert by_key["provider:google:work"]["error_kind"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Find time — POST /api/calendar/workspace/find-time (bu-140q93)
+# ---------------------------------------------------------------------------
+
+
+async def test_find_time_returns_ranked_slots(app):
+    slots_payload = [
+        {
+            "start_at": "2026-06-22T09:00:00+00:00",
+            "end_at": "2026-06-22T10:00:00+00:00",
+            "timezone": "UTC",
+        },
+        {
+            "start_at": "2026-06-22T11:00:00+00:00",
+            "end_at": "2026-06-22T12:00:00+00:00",
+            "timezone": "UTC",
+        },
+    ]
+    mcp_result = {
+        "slots": slots_payload,
+        "duration_minutes": 60,
+        "calendar_ids": ["primary"],
+    }
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
+
+    async def _get_client(name: str):
+        return mock_client
+
+    app, _, mock_mgr = _build_app(app)
+    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/find-time",
+            json={
+                "butler_name": "general",
+                "duration_minutes": 60,
+                "search_start": "2026-06-22T08:00:00Z",
+                "search_end": "2026-06-22T18:00:00Z",
+                "constraints": {"part_of_day": "morning", "avoid_weekdays": ["FR"]},
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["duration_minutes"] == 60
+    assert data["calendar_ids"] == ["primary"]
+    assert [s["start_at"] for s in data["slots"]] == [
+        "2026-06-22T09:00:00Z",
+        "2026-06-22T11:00:00Z",
+    ]
+
+    # The MCP tool was dispatched with the structured arguments.
+    tool_name, arguments = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_find_free_slots"
+    assert arguments["duration_minutes"] == 60
+    assert arguments["constraints"] == {"part_of_day": "morning", "avoid_weekdays": ["FR"]}
+
+
+async def test_find_time_rejects_bad_duration(app):
+    app, _, _ = _build_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/find-time",
+            json={
+                "butler_name": "general",
+                "duration_minutes": 0,
+                "search_start": "2026-06-22T08:00:00Z",
+                "search_end": "2026-06-22T18:00:00Z",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_find_time_rejects_inverted_window(app):
+    app, _, _ = _build_app(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/find-time",
+            json={
+                "butler_name": "general",
+                "duration_minutes": 60,
+                "search_start": "2026-06-22T18:00:00Z",
+                "search_end": "2026-06-22T08:00:00Z",
+            },
+        )
+    assert resp.status_code == 422

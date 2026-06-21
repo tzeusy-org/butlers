@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,6 +37,7 @@ import httpx
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from butlers.core.temporal.scheduling import SchedulingPreferences
 from butlers.modules.base import Module
 from butlers.modules.calendar import (
     _CREDENTIAL_KEY_CALENDAR_ID,
@@ -47,6 +48,7 @@ from butlers.modules.calendar import (
     CALENDAR_ROLE_DEFAULT_TARGET,
     DEFAULT_BUTLER_NAME,
     AttendeeInfo,
+    BusyWindow,
     CalendarAuthError,
     CalendarConfig,
     CalendarCredentialError,
@@ -60,6 +62,7 @@ from butlers.modules.calendar import (
     CalendarSyncTokenExpiredError,
     CalendarTokenRefreshError,
     _coerce_expires_in_seconds,
+    _compute_free_slots,
     _extract_google_credential_value,
     _extract_google_private_metadata,
     _format_ical_utc,
@@ -69,10 +72,13 @@ from butlers.modules.calendar import (
     _GoogleOAuthClient,
     _GoogleOAuthCredentials,
     _GoogleProvider,
+    _merge_busy_windows,
     _parse_google_datetime,
+    _parse_slot_constraints,
     _recurrence_lines_append_exdate,
     _recurrence_lines_bound_until,
     _safe_google_error_message,
+    _subtract_busy,
     classify_sync_error_kind,
 )
 
@@ -107,10 +113,13 @@ class _ProviderDouble(CalendarProvider):
         events: list[CalendarEvent] | None = None,
         event: CalendarEvent | None = None,
         conflicts: list[CalendarEvent] | None = None,
+        busy: list[BusyWindow] | None = None,
     ) -> None:
         self._events = events or []
         self._event = event
         self._conflicts = conflicts or []
+        self._busy = busy
+        self.free_busy_calls: list[dict] = []
         self.list_calls: list[dict] = []
         self.get_calls: list[dict] = []
         self.create_calls: list[dict] = []
@@ -153,6 +162,19 @@ class _ProviderDouble(CalendarProvider):
 
     async def remove_attendees(self, *, calendar_id, event_id, attendees, send_updates="none"):
         raise NotImplementedError
+
+    async def get_free_busy(self, *, calendar_ids, start_at, end_at, timezone=None):
+        self.free_busy_calls.append(
+            {
+                "calendar_ids": list(calendar_ids),
+                "start_at": start_at,
+                "end_at": end_at,
+                "timezone": timezone,
+            }
+        )
+        if self._busy is not None:
+            return list(self._busy)
+        return [BusyWindow(start_at=c.start_at, end_at=c.end_at) for c in self._conflicts]
 
     async def find_conflicts(self, *, calendar_id, candidate):
         return list(self._conflicts)
@@ -209,6 +231,7 @@ class TestModuleABCCompliance:
             "create_event",
             "update_event",
             "delete_event",
+            "get_free_busy",
             "find_conflicts",
             "sync_incremental",
             "shutdown",
@@ -1501,6 +1524,305 @@ class TestGoogleHelpers:
         assert len(revoked_calls) == 1
         assert "WHERE email = $1" in " ".join(revoked_calls[0].args[0].split())
         assert revoked_calls[0].args[1] == "account@example.test"
+
+
+# ---------------------------------------------------------------------------
+# Free/busy generalization + free-slot finder (bu-140q93)
+# ---------------------------------------------------------------------------
+
+
+def _dt(hour: int, minute: int = 0, *, day: int = 2) -> datetime:
+    # 2026-03-02 is a Monday; 2026-03-01 is a Sunday.
+    return datetime(2026, 3, day, hour, minute, tzinfo=UTC)
+
+
+def _google_provider() -> _GoogleProvider:
+    return _GoogleProvider(
+        CalendarConfig(provider="google", timezone="UTC"),
+        _GoogleOAuthCredentials(
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="refresh-token",
+        ),
+    )
+
+
+class TestGetFreeBusy:
+    async def test_merges_busy_across_calendars(self):
+        provider = _google_provider()
+        provider._request_google_json = AsyncMock(
+            return_value={
+                "calendars": {
+                    "cal-a": {
+                        "busy": [{"start": "2026-03-02T09:00:00Z", "end": "2026-03-02T10:00:00Z"}]
+                    },
+                    "cal-b": {
+                        "busy": [{"start": "2026-03-02T09:30:00Z", "end": "2026-03-02T11:00:00Z"}]
+                    },
+                }
+            }
+        )
+        try:
+            windows = await provider.get_free_busy(
+                calendar_ids=["cal-a", "cal-b"],
+                start_at=_dt(8),
+                end_at=_dt(18),
+            )
+        finally:
+            await provider.shutdown()
+
+        # Overlapping windows from the two calendars merge into one.
+        assert windows == [BusyWindow(start_at=_dt(9), end_at=_dt(11))]
+        body = provider._request_google_json.await_args.kwargs["json_body"]
+        assert body["items"] == [{"id": "cal-a"}, {"id": "cal-b"}]
+
+    async def test_empty_when_no_busy(self):
+        provider = _google_provider()
+        provider._request_google_json = AsyncMock(
+            return_value={"calendars": {"cal-a": {"busy": []}}}
+        )
+        try:
+            windows = await provider.get_free_busy(
+                calendar_ids=["cal-a"], start_at=_dt(8), end_at=_dt(18)
+            )
+        finally:
+            await provider.shutdown()
+        assert windows == []
+
+    async def test_rejects_inverted_window(self):
+        provider = _google_provider()
+        try:
+            with pytest.raises(ValueError, match="after"):
+                await provider.get_free_busy(
+                    calendar_ids=["cal-a"], start_at=_dt(18), end_at=_dt(8)
+                )
+        finally:
+            await provider.shutdown()
+
+
+class TestFindConflictsDelegation:
+    async def test_find_conflicts_delegates_and_preserves_shape(self):
+        provider = _google_provider()
+        provider._request_google_json = AsyncMock(
+            return_value={
+                "calendars": {
+                    "primary": {
+                        "busy": [
+                            {"start": "2026-03-02T14:00:00Z", "end": "2026-03-02T15:00:00Z"},
+                            {"start": "2026-03-02T16:00:00Z", "end": "2026-03-02T17:00:00Z"},
+                        ]
+                    }
+                }
+            }
+        )
+        candidate = CalendarEventCreate(
+            title="Sync",
+            start_at=_dt(13),
+            end_at=_dt(18),
+            timezone="UTC",
+        )
+        try:
+            conflicts = await provider.find_conflicts(calendar_id="primary", candidate=candidate)
+        finally:
+            await provider.shutdown()
+
+        # Golden regression: same synthetic (busy) shape as before the refactor.
+        assert [c.event_id for c in conflicts] == ["busy-1", "busy-2"]
+        assert all(c.title == "(busy)" for c in conflicts)
+        assert all(c.timezone == "UTC" for c in conflicts)
+        assert conflicts[0].start_at == _dt(14)
+        assert conflicts[0].end_at == _dt(15)
+        assert conflicts[1].start_at == _dt(16)
+        assert conflicts[1].end_at == _dt(17)
+        # Delegated through /freeBusy for the single candidate calendar.
+        body = provider._request_google_json.await_args.kwargs["json_body"]
+        assert body["items"] == [{"id": "primary"}]
+
+
+class TestMergeAndSubtractHelpers:
+    def test_merge_unions_touching_windows(self):
+        merged = _merge_busy_windows([(_dt(10), _dt(11)), (_dt(9), _dt(10)), (_dt(13), _dt(14))])
+        assert merged == [
+            BusyWindow(start_at=_dt(9), end_at=_dt(11)),
+            BusyWindow(start_at=_dt(13), end_at=_dt(14)),
+        ]
+
+    def test_subtract_clips_to_window(self):
+        gaps = _subtract_busy(
+            _dt(9),
+            _dt(12),
+            [BusyWindow(start_at=_dt(10), end_at=_dt(11))],
+        )
+        assert gaps == [(_dt(9), _dt(10)), (_dt(11), _dt(12))]
+
+    def test_subtract_ignores_busy_starting_after_window(self):
+        # A busy window opening after end_at must not inflate the trailing gap
+        # past end_at (regression: gap was returned as (start, busy.start)).
+        gaps = _subtract_busy(
+            _dt(10),
+            _dt(12),
+            [BusyWindow(start_at=_dt(13), end_at=_dt(14))],
+        )
+        assert gaps == [(_dt(10), _dt(12))]
+
+
+class TestComputeFreeSlots:
+    def test_subtracts_busy_and_respects_duration(self):
+        slots = _compute_free_slots(
+            search_start=_dt(9),
+            search_end=_dt(12),
+            busy=[BusyWindow(start_at=_dt(10), end_at=_dt(11))],
+            duration=timedelta(hours=1),
+        )
+        assert [s["start_at"] for s in slots] == [_dt(9).isoformat(), _dt(11).isoformat()]
+
+    def test_empty_when_fully_busy(self):
+        slots = _compute_free_slots(
+            search_start=_dt(9),
+            search_end=_dt(12),
+            busy=[BusyWindow(start_at=_dt(8), end_at=_dt(13))],
+            duration=timedelta(hours=1),
+        )
+        assert slots == []
+
+    def test_limit_honored(self):
+        slots = _compute_free_slots(
+            search_start=_dt(9),
+            search_end=_dt(18),
+            busy=[],
+            duration=timedelta(hours=1),
+            limit=2,
+        )
+        assert len(slots) == 2
+
+    def test_respects_owner_prefs_no_early_no_lunch(self):
+        prefs = SchedulingPreferences.from_row(
+            {
+                "timezone": "UTC",
+                "earliest_meeting_time": "09:00",
+                "latest_meeting_time": "17:00",
+                "meeting_days": ["MO", "TU", "WE", "TH", "FR"],
+                "no_meeting_blocks": [{"start": "12:00", "end": "13:00"}],
+            }
+        )
+        slots = _compute_free_slots(
+            search_start=_dt(6),  # Monday 06:00
+            search_end=_dt(20),
+            busy=[],
+            duration=timedelta(hours=1),
+            scheduling_preferences=prefs,
+            limit=50,
+        )
+        start_hours = [datetime.fromisoformat(s["start_at"]).hour for s in slots]
+        assert start_hours == [9, 10, 11, 13, 14, 15, 16]  # no 6am, no 12:00 lunch, ends by 17
+
+    def test_respects_owner_prefs_disallowed_weekday(self):
+        prefs = SchedulingPreferences.from_row(
+            {"timezone": "UTC", "meeting_days": ["MO", "TU", "WE", "TH", "FR"]}
+        )
+        slots = _compute_free_slots(
+            search_start=_dt(9, day=1),  # Sunday
+            search_end=_dt(17, day=1),
+            busy=[],
+            duration=timedelta(hours=1),
+            scheduling_preferences=prefs,
+        )
+        assert slots == []
+
+    def test_constraint_match_ranked_first(self):
+        # Afternoon constraint should pull afternoon slots ahead of earlier ones.
+        slots = _compute_free_slots(
+            search_start=_dt(9),
+            search_end=_dt(18),
+            busy=[],
+            duration=timedelta(hours=1),
+            part_of_day="afternoon",
+            limit=50,
+        )
+        first = datetime.fromisoformat(slots[0]["start_at"])
+        assert 12 <= first.hour < 17  # an afternoon slot ranks first despite being later
+
+
+class TestParseSlotConstraints:
+    def test_parses_valid(self):
+        part, avoid = _parse_slot_constraints(
+            {"part_of_day": "Morning", "avoid_weekdays": ["fr", "sa"]}
+        )
+        assert part == "morning"
+        assert avoid == frozenset({"FR", "SA"})
+
+    def test_none_constraints(self):
+        assert _parse_slot_constraints(None) == (None, frozenset())
+
+    def test_rejects_bad_part_of_day(self):
+        with pytest.raises(ValueError, match="part_of_day"):
+            _parse_slot_constraints({"part_of_day": "lunchtime"})
+
+    def test_rejects_bad_weekday(self):
+        with pytest.raises(ValueError, match="weekday"):
+            _parse_slot_constraints({"avoid_weekdays": ["FUNDAY"]})
+
+
+class TestFindFreeSlotsTool:
+    async def _module(self, provider: _ProviderDouble) -> tuple[CalendarModule, _StubMCP]:
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        mod._all_provider_calendar_ids = ["primary"]
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+            butler_name="test-butler",
+        )
+        return mod, mcp
+
+    async def test_tool_returns_ranked_slots(self):
+        provider = _ProviderDouble(busy=[BusyWindow(start_at=_dt(10), end_at=_dt(11))])
+        _, mcp = await self._module(provider)
+        result = await mcp.tools["calendar_find_free_slots"](
+            duration_minutes=60,
+            search_start=_dt(9),
+            search_end=_dt(12),
+        )
+        assert provider.free_busy_calls[0]["calendar_ids"] == ["primary"]
+        assert [s["start_at"] for s in result["slots"]] == [
+            _dt(9).isoformat(),
+            _dt(11).isoformat(),
+        ]
+        assert result["duration_minutes"] == 60
+        assert result["calendar_ids"] == ["primary"]
+
+    async def test_tool_empty_on_fully_busy(self):
+        provider = _ProviderDouble(busy=[BusyWindow(start_at=_dt(8), end_at=_dt(18))])
+        _, mcp = await self._module(provider)
+        result = await mcp.tools["calendar_find_free_slots"](
+            duration_minutes=60,
+            search_start=_dt(9),
+            search_end=_dt(17),
+        )
+        assert result["slots"] == []
+
+    async def test_tool_rejects_bad_duration(self):
+        provider = _ProviderDouble(busy=[])
+        _, mcp = await self._module(provider)
+        with pytest.raises(ValueError, match="duration_minutes"):
+            await mcp.tools["calendar_find_free_slots"](
+                duration_minutes=0,
+                search_start=_dt(9),
+                search_end=_dt(12),
+            )
+
+    async def test_tool_rejects_inverted_window(self):
+        provider = _ProviderDouble(busy=[])
+        _, mcp = await self._module(provider)
+        with pytest.raises(ValueError, match="search_end"):
+            await mcp.tools["calendar_find_free_slots"](
+                duration_minutes=60,
+                search_start=_dt(12),
+                search_end=_dt(9),
+            )
 
 
 # ---------------------------------------------------------------------------

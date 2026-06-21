@@ -35,6 +35,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
     CalendarUndoResponse,
+    CalendarWorkspaceFindTimeRequest,
+    CalendarWorkspaceFindTimeResponse,
     CalendarWorkspaceLaneDefinition,
     CalendarWorkspaceMetaResponse,
     CalendarWorkspaceMutationResponse,
@@ -1580,6 +1582,75 @@ async def mutate_butler_event(
             db,
             body.butler_name,
             "calendar.workspace.butler_events.mutate",
+            summary,
+            result="error",
+            error="MCP call failed",
+        )
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Find time — POST /api/calendar/workspace/find-time
+# ---------------------------------------------------------------------------
+
+
+@router.post("/find-time", response_model=ApiResponse[CalendarWorkspaceFindTimeResponse])
+async def find_time(
+    body: CalendarWorkspaceFindTimeRequest,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarWorkspaceFindTimeResponse]:
+    """Return ranked open time slots for the workspace "Find time" panel.
+
+    Read-only: dispatches the ``calendar_find_free_slots`` MCP tool, which queries
+    free/busy and ranks open slots honoring the owner's scheduling preferences. No
+    event is created here — selecting a slot drives a separate create call.
+    """
+    arguments: dict[str, Any] = {
+        "duration_minutes": body.duration_minutes,
+        "search_start": body.search_start.isoformat(),
+        "search_end": body.search_end.isoformat(),
+        "limit": body.limit,
+    }
+    if body.calendar_ids:
+        arguments["calendar_ids"] = body.calendar_ids
+    if body.constraints is not None:
+        arguments["constraints"] = body.constraints.model_dump(exclude_none=True)
+
+    summary = {"duration_minutes": body.duration_minutes, "limit": body.limit}
+    try:
+        result = await _call_mcp_tool(mgr, body.butler_name, "calendar_find_free_slots", arguments)
+
+        slots: list[CalendarSuggestedSlot] = []
+        raw_slots = result.get("slots")
+        if isinstance(raw_slots, list):
+            for slot in raw_slots:
+                if not isinstance(slot, dict):
+                    continue
+                try:
+                    slots.append(CalendarSuggestedSlot.model_validate(slot))
+                except Exception:
+                    logger.debug("Skipping malformed slot: %r", slot)
+
+        raw_ids = result.get("calendar_ids")
+        calendar_ids = (
+            [str(c) for c in raw_ids]
+            if isinstance(raw_ids, list)
+            else list(body.calendar_ids or [])
+        )
+
+        response_payload = CalendarWorkspaceFindTimeResponse(
+            slots=slots,
+            duration_minutes=body.duration_minutes,
+            calendar_ids=calendar_ids,
+        )
+        await log_audit_entry(db, body.butler_name, "calendar.workspace.find_time", summary)
+        return ApiResponse[CalendarWorkspaceFindTimeResponse](data=response_payload)
+    except HTTPException:
+        await log_audit_entry(
+            db,
+            body.butler_name,
+            "calendar.workspace.find_time",
             summary,
             result="error",
             error="MCP call failed",

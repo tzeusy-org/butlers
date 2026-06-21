@@ -842,6 +842,35 @@ export interface CalendarSuggestedSlot {
   timezone: string;
 }
 
+/** Part-of-day bucket for the free-slot finder's soft ranking constraints. */
+export type CalendarFindTimePartOfDay = "morning" | "afternoon" | "evening";
+
+/** Structured (pre-parsed) constraints for POST /api/calendar/workspace/find-time. */
+export interface CalendarFindTimeConstraints {
+  part_of_day?: CalendarFindTimePartOfDay | null;
+  /** iCal weekday codes (MO…SU) to rank lower. */
+  avoid_weekdays?: string[];
+}
+
+/** Request payload for POST /api/calendar/workspace/find-time. */
+export interface CalendarWorkspaceFindTimeRequest {
+  butler_name: string;
+  duration_minutes: number;
+  search_start: string; // ISO 8601
+  search_end: string; // ISO 8601
+  calendar_ids?: string[] | null;
+  constraints?: CalendarFindTimeConstraints | null;
+  limit?: number;
+}
+
+/** Response payload for POST /api/calendar/workspace/find-time. */
+export interface CalendarWorkspaceFindTimeResponse {
+  /** Ranked open slots, earliest-first with constraint matches preferred. */
+  slots: CalendarSuggestedSlot[];
+  duration_minutes: number;
+  calendar_ids: string[];
+}
+
 /** Response payload for calendar workspace mutation endpoints. */
 export interface CalendarWorkspaceMutationResponse {
   action: CalendarWorkspaceUserMutationAction | CalendarWorkspaceButlerMutationAction;

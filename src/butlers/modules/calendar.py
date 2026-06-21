@@ -15,6 +15,7 @@ import logging
 import re
 import uuid
 from collections.abc import Callable, Coroutine, Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from enum import StrEnum
 from typing import Any, Literal
@@ -1738,6 +1739,181 @@ class CalendarEventUpdate(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class BusyWindow:
+    """A single merged busy interval returned by ``get_free_busy``.
+
+    Bounds are timezone-aware datetimes. Windows returned together are sorted by
+    ``start_at`` and non-overlapping (overlapping/touching inputs are merged).
+    """
+
+    start_at: datetime
+    end_at: datetime
+
+
+# iCal-style weekday codes indexed by Python's ``datetime.weekday()`` (Mon=0).
+_SLOT_WEEKDAY_CODES: tuple[str, ...] = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+# Structured part-of-day buckets for free-slot constraint ranking. Bounds are
+# local-hour half-open intervals ``[start_hour, end_hour)``.
+_PART_OF_DAY_BOUNDS: dict[str, tuple[int, int]] = {
+    "morning": (0, 12),
+    "afternoon": (12, 17),
+    "evening": (17, 24),
+}
+
+
+def _parse_slot_constraints(
+    constraints: dict[str, Any] | None,
+) -> tuple[str | None, frozenset[str]]:
+    """Validate the structured (pre-parsed) finder constraints.
+
+    Returns ``(part_of_day, avoid_weekdays)``. Raises ``ValueError`` on an
+    unrecognised part-of-day bucket or weekday code so a bad caller argument
+    surfaces as a validation error rather than silently ranking nothing.
+    """
+    if not constraints:
+        return None, frozenset()
+    part_of_day = constraints.get("part_of_day")
+    if part_of_day is not None:
+        part_of_day = str(part_of_day).strip().lower()
+        if part_of_day not in _PART_OF_DAY_BOUNDS:
+            raise ValueError(
+                f"Invalid part_of_day {part_of_day!r}; "
+                f"expected one of {sorted(_PART_OF_DAY_BOUNDS)}"
+            )
+    avoid: set[str] = set()
+    for raw in constraints.get("avoid_weekdays") or []:
+        code = str(raw).strip().upper()
+        if code not in _SLOT_WEEKDAY_CODES:
+            raise ValueError(
+                f"Invalid weekday {raw!r}; expected one of {list(_SLOT_WEEKDAY_CODES)}"
+            )
+        avoid.add(code)
+    return part_of_day, frozenset(avoid)
+
+
+def _merge_busy_windows(windows: list[tuple[datetime, datetime]]) -> list[BusyWindow]:
+    """Sort and merge overlapping/touching intervals into ``BusyWindow``s."""
+    if not windows:
+        return []
+    ordered = sorted(windows, key=lambda w: (w[0], w[1]))
+    merged: list[list[datetime]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return [BusyWindow(start_at=s, end_at=e) for s, e in merged]
+
+
+def _subtract_busy(
+    start_at: datetime,
+    end_at: datetime,
+    busy: list[BusyWindow],
+) -> list[tuple[datetime, datetime]]:
+    """Return the free gaps in ``[start_at, end_at)`` after removing busy windows.
+
+    ``busy`` is assumed sorted by ``start_at`` and non-overlapping (the shape
+    ``get_free_busy`` returns).
+    """
+    gaps: list[tuple[datetime, datetime]] = []
+    cursor = start_at
+    for window in busy:
+        # ``busy`` is sorted by ``start_at``; once a window opens at/after the
+        # search end, every later window does too, so nothing can clip the
+        # remaining gap — break before a past-``end_at`` window inflates it.
+        if window.start_at >= end_at:
+            break
+        ws = max(window.start_at, start_at)
+        we = min(window.end_at, end_at)
+        if we <= cursor:
+            continue
+        if ws > cursor:
+            gaps.append((cursor, ws))
+        cursor = we
+        if cursor >= end_at:
+            break
+    if cursor < end_at:
+        gaps.append((cursor, end_at))
+    return [(s, e) for s, e in gaps if e > s]
+
+
+def _slot_matches_constraints(
+    local_start: datetime,
+    *,
+    part_of_day: str | None,
+    avoid_weekdays: frozenset[str],
+) -> bool:
+    """Soft-preference check for the structured (pre-parsed) finder constraints."""
+    if avoid_weekdays and _SLOT_WEEKDAY_CODES[local_start.weekday()] in avoid_weekdays:
+        return False
+    if part_of_day is not None:
+        bounds = _PART_OF_DAY_BOUNDS.get(part_of_day)
+        if bounds is not None and not (bounds[0] <= local_start.hour < bounds[1]):
+            return False
+    return True
+
+
+def _compute_free_slots(
+    *,
+    search_start: datetime,
+    search_end: datetime,
+    busy: list[BusyWindow],
+    duration: timedelta,
+    scheduling_preferences: SchedulingPreferences | None = None,
+    part_of_day: str | None = None,
+    avoid_weekdays: frozenset[str] = frozenset(),
+    display_timezone: str | None = None,
+    limit: int = 10,
+) -> list[dict[str, str]]:
+    """Turn free/busy data into ranked, duration-sized open slots.
+
+    Subtracts ``busy`` from the search window, tiles each free gap into
+    ``duration``-sized candidate slots, hard-filters them through the owner's
+    scheduling-availability preferences (when configured), and ranks them
+    earliest-first with structured-constraint matches preferred. Returns at most
+    ``limit`` ``{"start_at", "end_at", "timezone"}`` dicts.
+    """
+    if duration <= timedelta(0) or limit < 1 or search_end <= search_start:
+        return []
+
+    apply_prefs = scheduling_preferences is not None and scheduling_preferences.has_constraints
+    tz = display_timezone or (scheduling_preferences.timezone if scheduling_preferences else None)
+
+    def _localize(dt: datetime) -> datetime:
+        if tz is None or dt.tzinfo is None:
+            return dt
+        return dt.astimezone(_coerce_zoneinfo(tz))
+
+    candidates: list[tuple[datetime, datetime, bool]] = []
+    for gap_start, gap_end in _subtract_busy(search_start, search_end, busy):
+        cursor = gap_start
+        while cursor + duration <= gap_end:
+            slot_end = cursor + duration
+            if not apply_prefs or scheduling_preferences.allows(cursor, slot_end):
+                matches = _slot_matches_constraints(
+                    _localize(cursor),
+                    part_of_day=part_of_day,
+                    avoid_weekdays=avoid_weekdays,
+                )
+                candidates.append((cursor, slot_end, matches))
+            cursor = slot_end
+
+    # Constraint-matching slots first, then earliest-first within each group.
+    candidates.sort(key=lambda c: (0 if c[2] else 1, c[0]))
+    result_tz = tz or "UTC"
+    return [
+        {
+            "start_at": start.isoformat(),
+            "end_at": end.isoformat(),
+            "timezone": result_tz,
+        }
+        for start, end, _ in candidates[:limit]
+    ]
+
+
 class CalendarProvider(abc.ABC):
     """Provider abstraction used by calendar tools."""
 
@@ -1825,6 +2001,24 @@ class CalendarProvider(abc.ABC):
         send_updates: str = "none",
     ) -> CalendarEvent:
         """Remove attendees from an existing event by email."""
+        ...
+
+    @abc.abstractmethod
+    async def get_free_busy(
+        self,
+        *,
+        calendar_ids: list[str],
+        start_at: datetime,
+        end_at: datetime,
+        timezone: str | None = None,
+    ) -> list[BusyWindow]:
+        """Return merged busy windows across ``calendar_ids`` over the window.
+
+        Generalizes the single-calendar, candidate-window free/busy lookup that
+        previously lived only inside :meth:`find_conflicts`. Busy windows from
+        every requested calendar are unioned, sorted by start, and overlapping or
+        touching intervals are merged. Returns an empty list when nothing is busy.
+        """
         ...
 
     @abc.abstractmethod
@@ -2562,6 +2756,72 @@ class _GoogleProvider(CalendarProvider):
             )
         return event
 
+    async def get_free_busy(
+        self,
+        *,
+        calendar_ids: list[str],
+        start_at: datetime,
+        end_at: datetime,
+        timezone: str | None = None,
+    ) -> list[BusyWindow]:
+        if not calendar_ids:
+            return []
+        if end_at <= start_at:
+            raise ValueError("end_at must be after start_at")
+
+        timezone_str = timezone or self._config.timezone
+        payload = await self._request_google_json(
+            "POST",
+            "/freeBusy",
+            json_body={
+                "timeMin": _google_rfc3339(start_at),
+                "timeMax": _google_rfc3339(end_at),
+                "timeZone": timezone_str,
+                "items": [{"id": calendar_id} for calendar_id in calendar_ids],
+            },
+        )
+        calendars_payload = payload.get("calendars")
+        if not isinstance(calendars_payload, dict):
+            raise CalendarAuthError("Google Calendar freeBusy response missing calendars object")
+
+        raw_windows: list[tuple[datetime, datetime]] = []
+        for calendar_id in calendar_ids:
+            calendar_payload = calendars_payload.get(calendar_id)
+            if not isinstance(calendar_payload, dict):
+                # Single-calendar callers tolerate a differently-keyed sole entry
+                # (preserves the pre-refactor find_conflicts fallback).
+                if len(calendar_ids) == 1 and len(calendars_payload) == 1:
+                    calendar_payload = next(iter(calendars_payload.values()))
+                else:
+                    raise CalendarAuthError(
+                        "Google Calendar freeBusy response missing calendar entry for requested id"
+                    )
+            if not isinstance(calendar_payload, dict):
+                raise CalendarAuthError(
+                    "Google Calendar freeBusy response calendar entry is invalid"
+                )
+
+            busy_payload = calendar_payload.get("busy")
+            if not isinstance(busy_payload, list):
+                raise CalendarAuthError("Google Calendar freeBusy response missing busy array")
+
+            for window in busy_payload:
+                if not isinstance(window, dict):
+                    continue
+                start_raw = window.get("start")
+                end_raw = window.get("end")
+                if not isinstance(start_raw, str) or not isinstance(end_raw, str):
+                    raise CalendarAuthError(
+                        "Google Calendar freeBusy busy windows must include start/end"
+                    )
+                window_start = _parse_google_datetime(start_raw)
+                window_end = _parse_google_datetime(end_raw)
+                if window_end <= window_start:
+                    continue
+                raw_windows.append((window_start, window_end))
+
+        return _merge_busy_windows(raw_windows)
+
     async def find_conflicts(
         self,
         *,
@@ -2584,63 +2844,25 @@ class _GoogleProvider(CalendarProvider):
         if end_at <= start_at:
             raise ValueError("candidate.end_at must be after candidate.start_at")
 
-        payload = await self._request_google_json(
-            "POST",
-            "/freeBusy",
-            json_body={
-                "timeMin": _google_rfc3339(start_at),
-                "timeMax": _google_rfc3339(end_at),
-                "timeZone": timezone_str,
-                "items": [{"id": calendar_id}],
-            },
+        # Free/busy lives in exactly one place now: delegate to get_free_busy for
+        # the single-calendar candidate window and wrap the merged busy windows
+        # back into the synthetic ``(busy)`` events this method has always returned.
+        windows = await self.get_free_busy(
+            calendar_ids=[calendar_id],
+            start_at=start_at,
+            end_at=end_at,
+            timezone=timezone_str,
         )
-        calendars_payload = payload.get("calendars")
-        if not isinstance(calendars_payload, dict):
-            raise CalendarAuthError("Google Calendar freeBusy response missing calendars object")
-
-        calendar_payload = calendars_payload.get(calendar_id)
-        if not isinstance(calendar_payload, dict):
-            if len(calendars_payload) == 1:
-                calendar_payload = next(iter(calendars_payload.values()))
-            else:
-                raise CalendarAuthError(
-                    "Google Calendar freeBusy response missing calendar entry for requested id"
-                )
-        if not isinstance(calendar_payload, dict):
-            raise CalendarAuthError("Google Calendar freeBusy response calendar entry is invalid")
-
-        busy_payload = calendar_payload.get("busy")
-        if not isinstance(busy_payload, list):
-            raise CalendarAuthError("Google Calendar freeBusy response missing busy array")
-
-        timezone = candidate.timezone or self._config.timezone
-        conflicts: list[CalendarEvent] = []
-        for index, window in enumerate(busy_payload):
-            if not isinstance(window, dict):
-                continue
-
-            start_raw = window.get("start")
-            end_raw = window.get("end")
-            if not isinstance(start_raw, str) or not isinstance(end_raw, str):
-                raise CalendarAuthError(
-                    "Google Calendar freeBusy busy windows must include start/end"
-                )
-
-            start_at = _parse_google_datetime(start_raw)
-            end_at = _parse_google_datetime(end_raw)
-            if end_at <= start_at:
-                continue
-
-            conflicts.append(
-                CalendarEvent(
-                    event_id=f"busy-{index + 1}",
-                    title="(busy)",
-                    start_at=start_at,
-                    end_at=end_at,
-                    timezone=timezone,
-                )
+        return [
+            CalendarEvent(
+                event_id=f"busy-{index + 1}",
+                title="(busy)",
+                start_at=window.start_at,
+                end_at=window.end_at,
+                timezone=timezone_str,
             )
-        return conflicts
+            for index, window in enumerate(windows)
+        ]
 
     async def sync_incremental(
         self,
@@ -2921,6 +3143,50 @@ class CalendarModule(Module):
                 "calendar_id": resolved_calendar_id,
                 "events": [module._event_to_payload(event) for event in events],
             }
+
+        @_tool("core")
+        async def calendar_find_free_slots(
+            duration_minutes: int,
+            search_start: datetime,
+            search_end: datetime,
+            calendar_ids: list[str] | None = None,
+            constraints: dict[str, Any] | None = None,
+            limit: int = 10,
+        ) -> dict[str, Any]:
+            """Find ranked open time slots over a window using free/busy data.
+
+            Read-only availability finder: it proposes slots and never creates,
+            updates, or deletes an event. Queries free/busy across the relevant
+            calendars, subtracts busy windows, tiles each free gap into
+            ``duration_minutes``-sized candidate slots, hard-filters them through
+            the owner's scheduling-availability preferences (earliest/latest
+            meeting time, allowed days, no-meeting blocks) when configured, and
+            ranks earliest-first with structured-constraint matches preferred.
+
+            Args:
+                duration_minutes: Length of the meeting to place (must be > 0).
+                search_start: Start of the window to search (timezone-aware).
+                search_end: End of the window to search (must be after start).
+                calendar_ids: Optional explicit calendars to span; defaults to
+                    every connected calendar.
+                constraints: Optional pre-parsed structured constraints, e.g.
+                    ``{"part_of_day": "morning", "avoid_weekdays": ["FR"]}``.
+                    The finder performs no LLM call; natural-language parsing
+                    ("mornings only", "avoid Fridays") happens at the call site.
+                limit: Maximum number of slots to return (default 10).
+
+            Returns ``{"slots": [{"start_at", "end_at", "timezone"}],
+            "duration_minutes", "calendar_ids"}``. A fully-busy window yields an
+            empty ``slots`` list (fail-open, not an error).
+            """
+            return await module._find_free_slots(
+                duration_minutes=duration_minutes,
+                search_start=search_start,
+                search_end=search_end,
+                calendar_ids=calendar_ids,
+                constraints=constraints,
+                limit=limit,
+            )
 
         @_tool("core")
         async def calendar_get_event(
@@ -9440,6 +9706,82 @@ class CalendarModule(Module):
             logger.warning("Failed to load owner scheduling preferences", exc_info=True)
             return None
         return SchedulingPreferences.from_row(row)
+
+    def _resolve_free_busy_calendar_ids(self, calendar_ids: list[str] | None) -> list[str]:
+        """Resolve which calendars an availability query should span.
+
+        An explicit list is validated through ``_resolve_calendar_id`` (rejecting
+        unknown ids). With no list, the query spans every connected calendar,
+        falling back to the default-target calendar before discovery completes.
+        """
+        if calendar_ids:
+            return [self._resolve_calendar_id(calendar_id) for calendar_id in calendar_ids]
+        if self._all_provider_calendar_ids:
+            return list(self._all_provider_calendar_ids)
+        return [self._resolve_calendar_id(None)]
+
+    async def _find_free_slots(
+        self,
+        *,
+        duration_minutes: int,
+        search_start: datetime,
+        search_end: datetime,
+        calendar_ids: list[str] | None = None,
+        constraints: dict[str, Any] | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Rank open slots over a window; backs ``calendar_find_free_slots``.
+
+        Read-only: queries the provider's free/busy, subtracts busy windows,
+        clips to owner scheduling preferences, and ranks the duration-sized open
+        slots. Raises ``ValueError`` on invalid duration/window/constraints;
+        fails open (empty slots) on a provider free/busy error.
+        """
+        if duration_minutes <= 0:
+            raise ValueError("duration_minutes must be a positive integer")
+        if limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        if search_end <= search_start:
+            raise ValueError("search_end must be after search_start")
+
+        part_of_day, avoid_weekdays = _parse_slot_constraints(constraints)
+        provider = self._require_provider()
+        resolved_ids = self._resolve_free_busy_calendar_ids(calendar_ids)
+
+        try:
+            busy = await provider.get_free_busy(
+                calendar_ids=resolved_ids,
+                start_at=search_start,
+                end_at=search_end,
+            )
+        except CalendarAuthError as exc:
+            logger.warning(
+                "calendar_find_free_slots free/busy lookup failed: %s", exc, exc_info=True
+            )
+            error_dict = _build_structured_error(
+                exc, provider=provider.name, calendar_id=",".join(resolved_ids)
+            )
+            error_dict["slots"] = []
+            error_dict["duration_minutes"] = duration_minutes
+            error_dict["calendar_ids"] = resolved_ids
+            return error_dict
+
+        scheduling_preferences = await self._load_scheduling_preferences()
+        slots = _compute_free_slots(
+            search_start=search_start,
+            search_end=search_end,
+            busy=busy,
+            duration=timedelta(minutes=duration_minutes),
+            scheduling_preferences=scheduling_preferences,
+            part_of_day=part_of_day,
+            avoid_weekdays=avoid_weekdays,
+            limit=limit,
+        )
+        return {
+            "slots": slots,
+            "duration_minutes": duration_minutes,
+            "calendar_ids": resolved_ids,
+        }
 
     @staticmethod
     def _build_suggested_slots(

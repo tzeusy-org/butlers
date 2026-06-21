@@ -37,6 +37,8 @@ import type {
   CalendarAuditResponse,
   CalendarSourceToggleRequest,
   CalendarSourceToggleResponse,
+  CalendarWorkspaceFindTimeRequest,
+  CalendarWorkspaceFindTimeResponse,
   CalendarWorkspaceMetaResponse,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
@@ -1123,6 +1125,19 @@ export function searchCalendarWorkspace(
   });
   return apiFetch<ApiResponse<CalendarWorkspaceSearchResponse>>(
     `/calendar/workspace/search?${sp.toString()}`,
+  );
+}
+
+/** Find ranked open time slots for the "Find time" panel. */
+export function findCalendarWorkspaceTime(
+  body: CalendarWorkspaceFindTimeRequest,
+): Promise<ApiResponse<CalendarWorkspaceFindTimeResponse>> {
+  return apiFetch<ApiResponse<CalendarWorkspaceFindTimeResponse>>(
+    "/calendar/workspace/find-time",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
   );
 }
 

@@ -74,3 +74,45 @@ describe("getCalendarWorkspace — facets + pagination params", () => {
     expect(url).toContain("editable=false");
   });
 });
+
+function mockFindTimeResponse(slots: unknown[]) {
+  const body = { data: { slots, duration_minutes: 60, calendar_ids: ["primary"] } };
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+    headers: { get: () => "application/json" },
+  });
+}
+
+import { findCalendarWorkspaceTime } from "./client.ts";
+
+describe("findCalendarWorkspaceTime — POST /calendar/workspace/find-time", () => {
+  it("POSTs the duration, window, and constraints", async () => {
+    const slot = {
+      start_at: "2026-06-22T09:00:00+00:00",
+      end_at: "2026-06-22T10:00:00+00:00",
+      timezone: "UTC",
+    };
+    mockFindTimeResponse([slot]);
+
+    const res = await findCalendarWorkspaceTime({
+      butler_name: "general",
+      duration_minutes: 60,
+      search_start: "2026-06-22T08:00:00Z",
+      search_end: "2026-06-29T08:00:00Z",
+      constraints: { part_of_day: "morning", avoid_weekdays: ["SA", "SU"] },
+      limit: 12,
+    });
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain("/calendar/workspace/find-time");
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string);
+    expect(sent.duration_minutes).toBe(60);
+    expect(sent.constraints).toEqual({ part_of_day: "morning", avoid_weekdays: ["SA", "SU"] });
+    expect(res.data.slots).toHaveLength(1);
+    expect(res.data.slots[0].start_at).toBe(slot.start_at);
+  });
+});

@@ -252,6 +252,64 @@ class CalendarSuggestedSlot(BaseModel):
     timezone: str
 
 
+_FIND_TIME_WEEKDAY_CODES = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
+
+
+class CalendarFindTimeConstraints(BaseModel):
+    """Structured (pre-parsed) constraints for the free-slot finder.
+
+    Natural-language constraints ("mornings only", "avoid Fridays") are parsed
+    into this structured form at the call site; the finder itself performs no LLM
+    call. Both fields are soft preferences used for ranking, not hard filters.
+    """
+
+    part_of_day: Literal["morning", "afternoon", "evening"] | None = None
+    avoid_weekdays: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_weekdays(self) -> CalendarFindTimeConstraints:
+        normalized: list[str] = []
+        for raw in self.avoid_weekdays:
+            code = str(raw).strip().upper()
+            if code not in _FIND_TIME_WEEKDAY_CODES:
+                raise ValueError(f"Invalid weekday {raw!r}; expected iCal codes like MO, TU, …, SU")
+            if code not in normalized:
+                normalized.append(code)
+        object.__setattr__(self, "avoid_weekdays", normalized)
+        return self
+
+
+class CalendarWorkspaceFindTimeRequest(BaseModel):
+    """Request payload for POST /api/calendar/workspace/find-time."""
+
+    butler_name: str
+    duration_minutes: int = Field(gt=0, le=24 * 60)
+    search_start: datetime
+    search_end: datetime
+    calendar_ids: list[str] | None = None
+    constraints: CalendarFindTimeConstraints | None = None
+    limit: int = Field(default=10, gt=0, le=100)
+
+    @model_validator(mode="after")
+    def _validate_window(self) -> CalendarWorkspaceFindTimeRequest:
+        if self.search_end <= self.search_start:
+            raise ValueError("search_end must be after search_start")
+        return self
+
+
+class CalendarWorkspaceFindTimeResponse(BaseModel):
+    """Response payload for POST /api/calendar/workspace/find-time.
+
+    ``slots`` are ranked open time slots (earliest-first, constraint matches
+    preferred). An empty list means the search window had no gap long enough for
+    ``duration_minutes`` (fail-open, not an error).
+    """
+
+    slots: list[CalendarSuggestedSlot] = Field(default_factory=list)
+    duration_minutes: int
+    calendar_ids: list[str] = Field(default_factory=list)
+
+
 class CalendarWorkspaceMutationResponse(BaseModel):
     """Typed response payload for calendar workspace mutation endpoints.
 
