@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
@@ -58,17 +57,16 @@ class PermissionsMatrix(BaseModel):
 
 
 class PermissionUpdate(BaseModel):
-    """Request body for updating a single permission cell."""
+    """Request body for updating a single permission cell.
+
+    ``reason`` defaults to an empty string so that a missing field flows into
+    the route handler's ``reason_required`` guard (which returns the
+    spec-mandated ``{"error": "reason_required"}`` body) rather than tripping a
+    generic Pydantic "field required" validation error.
+    """
 
     granted: bool
-    reason: str
-
-    @field_validator("reason")
-    @classmethod
-    def reason_must_not_be_blank(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("reason_required")
-        return v
+    reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -167,10 +165,9 @@ async def set_permission(
     Returns HTTP 422 with ``{"error": "reason_required"}`` when ``reason``
     is empty or whitespace-only.  On success calls ``audit.append``.
     """
-    # Pydantic already validates reason via the field_validator; the 422 is
-    # raised automatically by FastAPI when validation fails.  We add an
-    # explicit guard here as belt-and-suspenders and to produce the exact
-    # error body required by the spec.
+    # Enforce the non-empty reason here (not via a Pydantic validator) so the
+    # spec-mandated {"error": "reason_required"} body is returned for empty,
+    # missing, or whitespace-only reasons.
     if not body.reason or not body.reason.strip():
         raise HTTPException(status_code=422, detail={"error": "reason_required"})
 
@@ -209,18 +206,3 @@ async def set_permission(
             updated_at=now,
         )
     )
-
-
-# ---------------------------------------------------------------------------
-# Validation error override — produce {"error": "reason_required"} on 422
-# ---------------------------------------------------------------------------
-
-
-# FastAPI / Pydantic generates a generic validation-error body by default.
-# The spec mandates the exact shape {"error": "reason_required"}.  We expose
-# a helper that the permission endpoint's Pydantic model raises so the
-# FastAPI default handler already produces a 422; callers reading the detail
-# will see the spec-compliant payload because we set it in the HTTPException
-# above.  No additional handler wiring is needed.
-def _reason_required_response() -> dict[str, Any]:
-    return {"error": "reason_required"}

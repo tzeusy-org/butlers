@@ -282,10 +282,12 @@ async def test_put_permission_empty_reason_returns_422(app):
         )
 
     assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "reason_required"
+    pool.execute.assert_not_called()
 
 
 async def test_put_permission_whitespace_reason_returns_422(app):
-    """Whitespace-only reason returns HTTP 422."""
+    """Whitespace-only reason returns HTTP 422 with {error: reason_required}."""
     pool = _make_pool()
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
@@ -297,6 +299,30 @@ async def test_put_permission_whitespace_reason_returns_422(app):
         )
 
     assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "reason_required"
+    pool.execute.assert_not_called()
+
+
+async def test_put_permission_missing_reason_returns_422(app):
+    """A request body with no reason field returns 422 with {error: reason_required}.
+
+    The reason guard lives in the route handler (not a Pydantic validator), so a
+    missing field defaults to "" and still yields the spec-mandated body shape
+    rather than a generic Pydantic "field required" error.
+    """
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.put(
+            "/api/permissions/chronicler/spawn",
+            json={"granted": True},
+        )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "reason_required"
+    pool.execute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
