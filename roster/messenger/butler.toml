@@ -20,6 +20,15 @@ url = "http://localhost:41100/mcp"
 name = "butlers"
 schema = "messenger"
 
+# Deterministic, zero-LLM calendar meeting-prep message-context contribution.
+# Precomputes recent email threads per attendee into messenger.state under
+# calendar/prep/<event_id>; the prep-rail read endpoint merges it by entity_id.
+[[butler.schedule]]
+name = "calendar_prep_contribution"
+cron = "54 6 * * *"
+dispatch_mode = "job"
+job_name = "calendar_prep_contribution"
+
 [modules.calendar]
 provider = "google"
 groups = ["core"]

@@ -81,6 +81,12 @@ cron = "50 6 * * *"
 dispatch_mode = "job"
 job_name = "calendar_overlay_contribution"
 
+[[butler.schedule]]
+name = "calendar_prep_contribution"
+cron = "56 6 * * *"
+dispatch_mode = "job"
+job_name = "calendar_prep_contribution"
+
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
 # [modules.google_drive]

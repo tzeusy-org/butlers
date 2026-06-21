@@ -560,6 +560,26 @@ async def _run_relationship_calendar_prep_contribution_job(
     return await run_relationship_calendar_prep_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_messenger_calendar_prep_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run messenger butler calendar meeting-prep message-context job (deterministic, zero LLM)."""
+    from butlers.jobs.calendar_prep import run_messenger_calendar_prep_contribution
+
+    return await run_messenger_calendar_prep_contribution(pool=pool, job_args=job_args)
+
+
+async def _run_travel_calendar_prep_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run travel butler calendar meeting-prep message-context job (deterministic, zero LLM)."""
+    from butlers.jobs.calendar_prep import run_travel_calendar_prep_contribution
+
+    return await run_travel_calendar_prep_contribution(pool=pool, job_args=job_args)
+
+
 async def _run_relationship_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1137,7 +1157,12 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "travel": {
             "daily_briefing_contribution": _run_travel_briefing_contribution_job,
             "calendar_overlay_contribution": _run_travel_calendar_overlay_contribution_job,
+            "calendar_prep_contribution": _run_travel_calendar_prep_contribution_job,
             "insight_scan": _run_travel_insight_scan_job,
+            "session_process_logs_prune": _run_session_process_logs_prune_job,
+        },
+        "messenger": {
+            "calendar_prep_contribution": _run_messenger_calendar_prep_contribution_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "education": {

@@ -80,6 +80,16 @@ NOTE_PREDICATES: tuple[str, ...] = ("contact_note", "meeting_note", "life_event"
 #: Cap on the number of notes surfaced per attendee (highest-importance first).
 MAX_NOTES_PER_ATTENDEE = 5
 
+#: How far back the message-context job scans for recent email threads with an
+#: attendee. Bounded so the scan stays cheap and the surfaced context is recent.
+MESSAGE_CONTEXT_LOOKBACK_DAYS = 90
+
+#: Cap on the number of recent threads surfaced per attendee (most-recent first).
+MAX_THREADS_PER_ATTENDEE = 3
+
+#: Max characters of a message body surfaced as a thread snippet.
+SNIPPET_MAX_LEN = 200
+
 
 # ---------------------------------------------------------------------------
 # Envelope schema
@@ -374,3 +384,275 @@ async def run_relationship_calendar_prep_contribution(
         "attendees": attendees_total,
         "pruned": pruned,
     }
+
+
+# ---------------------------------------------------------------------------
+# Email/message-context prep contribution job (messenger / travel)
+# ---------------------------------------------------------------------------
+
+
+def _truncate_snippet(text: str) -> str:
+    """Collapse whitespace and truncate a message body to a one-line snippet."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= SNIPPET_MAX_LEN:
+        return collapsed
+    return collapsed[: SNIPPET_MAX_LEN - 1].rstrip() + "…"
+
+
+async def _fetch_message_context_by_entity(
+    pool: asyncpg.Pool,
+    entity_ids: list[Any],
+    *,
+    since: datetime,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return the most-recent email threads per attendee entity from message_inbox.
+
+    Reads ``switchboard.message_inbox`` — the persistent inbound-message store the
+    email/message-owning butlers can see — grouping inbound ``email``-channel
+    messages by the resolved sender entity (``source_sender_entity_id``) and the
+    thread identity. The sender of an inbound email is the attendee, so grouping
+    by the resolved sender entity yields the threads that attendee wrote, keyed by
+    the same ``entity_id`` the prep merge joins on.
+
+    This is the deterministic precompute read (a scheduled job reading the message
+    store), NOT a request-time cross-schema read. It is fail-open: if the
+    ``switchboard.message_inbox`` table is unreadable (absent / no grant) the job
+    surfaces no message context this run rather than raising.
+
+    Returns ``{entity_id_str: [thread_context, ...]}`` capped at
+    :data:`MAX_THREADS_PER_ATTENDEE` most-recent threads per entity.
+    """
+    if not entity_ids:
+        return {}
+
+    entity_id_strs = [str(eid) for eid in entity_ids]
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT
+                COALESCE(request_context ->> 'source_sender_entity_id',
+                         request_context ->> 'source_entity_id')         AS entity_id,
+                COALESCE(request_context ->> 'source_thread_identity',
+                         id::text)                                       AS thread_identity,
+                MAX(received_at)                                         AS last_message_at,
+                COUNT(*)                                                 AS message_count,
+                (array_agg(request_context ->> 'subject'
+                           ORDER BY received_at DESC))[1]                AS subject,
+                (array_agg(normalized_text
+                           ORDER BY received_at DESC))[1]               AS latest_text
+            FROM switchboard.message_inbox
+            WHERE direction = 'inbound'
+              AND request_context ->> 'source_channel' = 'email'
+              AND COALESCE(request_context ->> 'source_sender_entity_id',
+                           request_context ->> 'source_entity_id') = ANY($1::text[])
+              AND received_at >= $2
+            GROUP BY entity_id, thread_identity
+            ORDER BY entity_id, last_message_at DESC
+            """,
+            entity_id_strs,
+            since,
+        )
+    except Exception:
+        logger.warning(
+            "calendar prep message-context: switchboard.message_inbox read failed; "
+            "surfacing no message context this run",
+            exc_info=True,
+        )
+        return {}
+
+    threads_by_entity: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        eid = row["entity_id"]
+        if not eid:
+            continue
+        bucket = threads_by_entity.setdefault(eid, [])
+        if len(bucket) >= MAX_THREADS_PER_ATTENDEE:
+            continue
+        snippet = _truncate_snippet(row["latest_text"] or "")
+        subject = (row["subject"] or "").strip()
+        if not subject:
+            subject = snippet[:80] if snippet else "(no subject)"
+        last_message_at = row["last_message_at"]
+        bucket.append(
+            {
+                "channel": "email",
+                "thread_id": row["thread_identity"],
+                "subject": subject,
+                "snippet": snippet,
+                "last_message_at": (
+                    last_message_at.isoformat() if last_message_at is not None else None
+                ),
+                "message_count": int(row["message_count"]),
+            }
+        )
+    return threads_by_entity
+
+
+async def run_email_calendar_prep_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+    *,
+    butler_name: str,
+) -> dict[str, Any]:
+    """Email/message-owning butler calendar meeting-prep contribution (deterministic, zero LLM).
+
+    Companion to :func:`run_relationship_calendar_prep_contribution` for the
+    butlers that own the email/message channel (messenger, travel). For each
+    entity-linked event in the rolling lookahead window, it precomputes the
+    ``message_context`` panel — the recent email threads each attendee wrote —
+    and writes one envelope per event under ``calendar/prep/<event_id>`` into the
+    butler's OWN ``state`` store. The existing prep-rail read endpoint merges this
+    envelope into the relationship-sourced attendees by ``entity_id`` through the
+    cross-schema ``calendar.v_prep_contributions`` view.
+
+    Per RFC-0010/0020 there is NO direct cross-butler Gmail read at request time
+    and NO per-request LLM: the recent-threads precompute reads the persisted
+    inbound-message store (``switchboard.message_inbox``) during this scheduled
+    job, and the read endpoint serves only the cached view.
+
+    To preserve the prep rail's honest empty-state, an envelope is written ONLY
+    for events where at least one attendee has recent message context; events with
+    no message context are skipped and any previously-written key is pruned.
+    """
+    del job_args
+
+    today = today_sgt()
+    today_str = today.isoformat()
+    now_utc = datetime.now(tz=UTC)
+
+    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
+    window_start = sgt_midnight.astimezone(UTC)
+    window_end = (sgt_midnight + timedelta(days=PREP_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
+    message_since = now_utc - timedelta(days=MESSAGE_CONTEXT_LOOKBACK_DAYS)
+
+    # --- Upcoming entity-linked events in the window (own calendar projection) ---
+    event_rows = await pool.fetch(
+        """
+        SELECT ce.id AS event_id,
+               ce.title AS title,
+               ce.starts_at AS starts_at,
+               array_agg(DISTINCT cee.entity_id) AS entity_ids
+        FROM calendar_event_entities cee
+        JOIN calendar_events ce ON ce.id = cee.event_id
+        WHERE ce.starts_at >= $1
+          AND ce.starts_at < $2
+          AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
+        GROUP BY ce.id, ce.title, ce.starts_at
+        ORDER BY ce.starts_at ASC
+        """,
+        window_start,
+        window_end,
+    )
+
+    all_entity_ids: set[Any] = set()
+    for row in event_rows:
+        for eid in row["entity_ids"] or []:
+            if eid is not None:
+                all_entity_ids.add(eid)
+
+    names_by_id: dict[Any, str] = {}
+    if all_entity_ids:
+        entity_id_list = list(all_entity_ids)
+        name_rows = await pool.fetch(
+            """
+            SELECT id, COALESCE(canonical_name, 'Unknown') AS name
+            FROM public.entities
+            WHERE id = ANY($1::uuid[])
+            """,
+            entity_id_list,
+        )
+        for row in name_rows:
+            names_by_id[row["id"]] = row["name"]
+
+    threads_by_entity = await _fetch_message_context_by_entity(
+        pool, list(all_entity_ids), since=message_since
+    )
+
+    live_event_ids: set[str] = set()
+    events_written = 0
+    attendees_total = 0
+    threads_total = 0
+
+    for row in event_rows:
+        event_id = str(row["event_id"])
+
+        attendees: list[PrepAttendee] = []
+        for eid in row["entity_ids"] or []:
+            if eid is None:
+                continue
+            name = names_by_id.get(eid)
+            if name is None:
+                continue
+            threads = threads_by_entity.get(str(eid))
+            if not threads:
+                # Email envelope only carries attendees with message context, so an
+                # event with no recent threads contributes nothing (honest empty-state).
+                continue
+            attendees.append(
+                {
+                    "entity_id": str(eid),
+                    "name": name,
+                    "dunbar_tier": None,
+                    "notes": [],
+                    "last_met": None,
+                    "last_met_event": None,
+                    "message_context": threads,
+                }
+            )
+            threads_total += len(threads)
+
+        if not attendees:
+            continue
+
+        attendees.sort(key=lambda a: a["name"].lower())
+        attendees_total += len(attendees)
+        live_event_ids.add(event_id)
+
+        envelope: PrepContribution = {
+            "butler": butler_name,
+            "event_id": event_id,
+            "event_title": str(row["title"] or "Untitled"),
+            "event_starts_at": row["starts_at"].isoformat(),
+            "has_context": True,
+            "attendees": attendees,
+        }
+        await state_set(pool, prep_key(event_id), envelope)
+        events_written += 1
+
+    pruned = await prune_old_prep_contributions(pool, live_event_ids=live_event_ids)
+
+    logger.info(
+        "%s calendar prep message-context: date=%s events_written=%d attendees=%d "
+        "threads=%d pruned=%d",
+        butler_name,
+        today_str,
+        events_written,
+        attendees_total,
+        threads_total,
+        pruned,
+    )
+
+    return {
+        "butler": butler_name,
+        "date": today_str,
+        "events_written": events_written,
+        "attendees": attendees_total,
+        "threads": threads_total,
+        "pruned": pruned,
+    }
+
+
+async def run_messenger_calendar_prep_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Messenger butler calendar meeting-prep message-context contribution job."""
+    return await run_email_calendar_prep_contribution(pool, job_args, butler_name="messenger")
+
+
+async def run_travel_calendar_prep_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Travel butler calendar meeting-prep message-context contribution job."""
+    return await run_email_calendar_prep_contribution(pool, job_args, butler_name="travel")
