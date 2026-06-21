@@ -127,6 +127,31 @@ async def entity_create(
     return {"entity_id": str(entity_id)}
 
 
+async def entity_find_by_canonical(
+    pool: Pool,
+    canonical_name: str,
+    entity_type: Literal["person", "organization", "place", "other"],
+) -> dict[str, Any] | None:
+    """Return a live entity matching an exact canonical name/type pair."""
+    row = await pool.fetchrow(
+        """
+        SELECT id, canonical_name, entity_type, aliases, metadata,
+               roles, created_at, updated_at
+        FROM public.entities
+        WHERE LOWER(canonical_name) = LOWER($1)
+          AND entity_type = $2
+          AND (metadata->>'merged_into') IS NULL
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        """,
+        canonical_name,
+        entity_type,
+    )
+    if row is None:
+        return None
+    return _serialize_row(dict(row))
+
+
 async def entity_get(
     pool: Pool,
     entity_id: str,

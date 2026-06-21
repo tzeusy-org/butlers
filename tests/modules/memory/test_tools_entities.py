@@ -24,6 +24,7 @@ from butlers.modules.memory.tools.entities import (
     _repoint_episode_entities,
     _retract_facts_on_conn,
     entity_create,
+    entity_find_by_canonical,
     entity_get,
     entity_merge,
     entity_neighbors,
@@ -169,6 +170,33 @@ class TestEntityCreate:
         )
         result = await entity_create(pool, "Alice", "person")
         assert result == {"entity_id": str(new_id)}
+
+
+# ---------------------------------------------------------------------------
+# entity_find_by_canonical
+# ---------------------------------------------------------------------------
+
+
+class TestEntityFindByCanonical:
+    async def test_returns_serialized_live_entity(self, pool: AsyncMock) -> None:
+        pool.fetchrow = AsyncMock(return_value=_entity_row())
+
+        result = await entity_find_by_canonical(pool, "Alice", "person")
+
+        assert result is not None
+        assert result["id"] == ENTITY_STR
+        assert result["canonical_name"] == "Alice"
+        assert isinstance(result["created_at"], str)
+        sql = pool.fetchrow.await_args.args[0]
+        assert "LOWER(canonical_name) = LOWER($1)" in sql
+        assert "(metadata->>'merged_into') IS NULL" in sql
+
+    async def test_returns_none_when_not_found(self, pool: AsyncMock) -> None:
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        result = await entity_find_by_canonical(pool, "Alice", "person")
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

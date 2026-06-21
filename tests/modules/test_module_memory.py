@@ -163,6 +163,52 @@ class TestRegisterTools:
 
         return registered_tools
 
+    async def _register_with_mock_entities(
+        self, entities: MagicMock
+    ) -> tuple[dict[str, Any], MagicMock]:
+        """Register memory tools with a mocked entities module."""
+        mod = MemoryModule()
+        mcp = MagicMock()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="fake_pool")
+        registered_tools: dict[str, Any] = {}
+        tools = MagicMock()
+        tools.context = MagicMock()
+        tools.entities = entities
+        tools.feedback = MagicMock()
+        tools.management = MagicMock()
+        tools.preferences = MagicMock()
+        tools.reading = MagicMock()
+        tools.writing = MagicMock()
+
+        def capture_tool():
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool.side_effect = capture_tool
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "butlers.modules.memory.consolidation": MagicMock(),
+                "butlers.modules.memory.reembedding": MagicMock(),
+                "butlers.modules.memory.tools": tools,
+                "butlers.modules.memory.tools.writing": tools.writing,
+                "butlers.modules.memory.tools.reading": tools.reading,
+                "butlers.modules.memory.tools.feedback": tools.feedback,
+                "butlers.modules.memory.tools.management": tools.management,
+                "butlers.modules.memory.tools.context": tools.context,
+                "butlers.modules.memory.tools.entities": entities,
+                "butlers.modules.memory.tools.preferences": tools.preferences,
+            },
+        ):
+            await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="education")
+
+        return registered_tools, fake_db
+
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
         # Exact name set subsumes the count contract.
@@ -172,6 +218,45 @@ class TestRegisterTools:
         registered = await self._register_and_capture()
         for tool_name, tool_fn in registered.items():
             assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
+
+    async def test_memory_entity_create_duplicate_returns_existing_entity_id(self):
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(
+            side_effect=ValueError(
+                "Entity with canonical_name='Existing Learner' and entity_type='person' "
+                "already exists."
+            )
+        )
+        entities.entity_find_by_canonical = AsyncMock(
+            return_value={"id": "550e8400-e29b-41d4-a716-446655440000"}
+        )
+        registered_tools, fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name="Existing Learner",
+            entity_type="person",
+        )
+
+        assert result == {"entity_id": "550e8400-e29b-41d4-a716-446655440000"}
+        entities.entity_find_by_canonical.assert_awaited_once_with(
+            fake_db.pool,
+            "Existing Learner",
+            "person",
+        )
+
+    async def test_memory_entity_create_validation_errors_still_raise(self):
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(side_effect=ValueError("Invalid entity_type 'ghost'"))
+        entities.entity_find_by_canonical = AsyncMock()
+        registered_tools, _fake_db = await self._register_with_mock_entities(entities)
+
+        with pytest.raises(ValueError, match="Invalid entity_type"):
+            await registered_tools["memory_entity_create"](
+                canonical_name="Ghost",
+                entity_type="ghost",
+            )
+
+        entities.entity_find_by_canonical.assert_not_awaited()
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""

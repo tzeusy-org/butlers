@@ -64,12 +64,10 @@ When `memory_entity_resolve` returns zero candidates:
 
 ### Idempotency on Duplicate Entity Names
 
-If `memory_entity_create` raises a unique constraint violation (entity already exists for this `(canonical_name, entity_type)`), this is not an error. It means the entity was already created by a prior session or concurrent processing:
+If `memory_entity_create` returns an existing `entity_id` for this `(canonical_name, entity_type)`, this is not an error. It means the entity was already created by a prior session or concurrent processing:
 
-1. Catch the `ValueError` from `memory_entity_create`.
-2. Call `memory_entity_resolve(name, entity_type=<same_type>)` to obtain the existing `entity_id`.
-3. Use that `entity_id` to anchor the fact.
-4. Do not treat this as a failure — the outcome is correct entity anchoring.
+1. Use the returned `entity_id` to anchor the fact.
+2. Do not treat this as a failure — the outcome is correct entity anchoring.
 
 ### Permanence
 
