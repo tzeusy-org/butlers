@@ -644,3 +644,29 @@ body {
     box-shadow: 0 0 0 2px var(--fg);
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Printable agenda (bu-8yi687)
+ * Print isolation for the calendar agenda overlay: when the agenda is open
+ * (its [data-agenda-print-root] is mounted), printing shows ONLY the agenda.
+ * Interactive chrome inside the overlay is marked [data-agenda-no-print].
+ * ---------------------------------------------------------------------------*/
+@media print {
+  body:has([data-agenda-print-root]) * {
+    visibility: hidden !important;
+  }
+  body:has([data-agenda-print-root]) [data-agenda-print-root],
+  body:has([data-agenda-print-root]) [data-agenda-print-root] * {
+    visibility: visible !important;
+  }
+  [data-agenda-print-root] {
+    position: absolute !important;
+    inset: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  [data-agenda-no-print] {
+    display: none !important;
+  }
+}

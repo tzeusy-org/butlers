@@ -15,7 +15,9 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import icalendar
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
@@ -3135,4 +3137,120 @@ async def toggle_calendar_source(
             calendar_id=row["calendar_id"],
             enabled=request.enabled,
         )
+    )
+
+
+# ---------------------------------------------------------------------------
+# ICS export (data portability — owner sovereignty / anti-lock-in)
+# ---------------------------------------------------------------------------
+
+export_router = APIRouter(prefix="/api/calendar", tags=["calendar", "export"])
+
+# PRODID identifying Butlers as the generating product (RFC 5545 §3.7.3).
+_ICS_PRODID = "-//Butlers//Calendar Export//EN"
+
+
+def _entry_to_vevent(entry: UnifiedCalendarEntry, *, dtstamp: datetime) -> icalendar.Event:
+    """Project one :class:`UnifiedCalendarEntry` into an iCalendar VEVENT.
+
+    The ``SUMMARY`` is the entry title **verbatim** — the ``BUTLER:`` prefix on
+    butler-authored events is preserved so the export is a faithful, honest copy
+    of what the workspace shows. All-day entries emit DATE-valued DTSTART/DTEND;
+    timed entries emit the tz-aware datetimes (serialized as UTC ``Z`` instants).
+    """
+    event = icalendar.Event()
+    # UID is stable per workspace instance, domain-suffixed for global uniqueness
+    # so re-exports update rather than duplicate the event in the target client.
+    event.add("uid", f"{entry.entry_id}@butlers")
+    event.add("summary", entry.title)
+    if entry.all_day:
+        event.add("dtstart", entry.start_at.date())
+        event.add("dtend", entry.end_at.date())
+    else:
+        event.add("dtstart", entry.start_at)
+        event.add("dtend", entry.end_at)
+    event.add("dtstamp", dtstamp)
+
+    metadata = entry.metadata or {}
+    description = metadata.get("description")
+    if isinstance(description, str) and description.strip():
+        event.add("description", description)
+    location = metadata.get("location")
+    if isinstance(location, str) and location.strip():
+        event.add("location", location)
+    if entry.status == "cancelled":
+        event.add("status", "CANCELLED")
+    return event
+
+
+def _build_calendar_ics(entries: list[UnifiedCalendarEntry], *, dtstamp: datetime) -> bytes:
+    """Build a valid VCALENDAR byte stream from workspace entries."""
+    cal = icalendar.Calendar()
+    cal.add("prodid", _ICS_PRODID)
+    cal.add("version", "2.0")
+    cal.add("calscale", "GREGORIAN")
+    cal.add("method", "PUBLISH")
+    for entry in entries:
+        cal.add_component(_entry_to_vevent(entry, dtstamp=dtstamp))
+    return cal.to_ical()
+
+
+@export_router.get("/export/ics")
+async def export_calendar_ics(
+    view: str = Query("user", pattern="^(user|butler)$"),
+    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
+    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
+    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
+    sources: list[str] | None = Query(None, description="Optional source_key filters"),
+    status: str | None = Query(None, description="Optional computed-status facet"),
+    source_type: str | None = Query(None, description="Optional computed source_type facet"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> StreamingResponse:
+    """Stream the workspace entries for a range as a downloadable ICS file.
+
+    Read-only data-portability export (owner sovereignty / anti-lock-in): no
+    provider write, no LLM session. Reuses the same workspace projection and
+    ``view`` / ``butlers`` / ``sources`` / ``status`` / ``source_type`` filters
+    as ``GET /api/calendar/workspace`` so the export matches what the user sees,
+    and preserves the ``BUTLER:`` title prefix verbatim on butler-authored
+    events.
+
+    Out of scope (follow-up): ICS subscribe / ``webcal`` live feed and ``.ics``
+    import-with-dedup — this endpoint is a one-shot download only.
+    """
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+    if status is not None and status not in _WORKSPACE_STATUS_FACETS:
+        raise HTTPException(status_code=400, detail=f"Unknown status facet: {status}")
+    if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
+        raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
+
+    # Reuse the workspace read/projection unbounded (no keyset pagination): an
+    # export wants every entry in the range, not a single page. Timestamps stay
+    # in their source instant (display_tz=None → UTC), which ICS serializes as Z.
+    workspace_rows = await _fetch_workspace_rows(
+        db,
+        view=view,
+        start=start,
+        end=end,
+        butlers=butlers,
+        sources=sources,
+        status=status,
+        source_type=source_type,
+    )
+    entries: list[UnifiedCalendarEntry] = []
+    for row in workspace_rows:
+        try:
+            entries.append(_normalize_entry(row, view=view, display_tz=None))
+        except ValueError:
+            continue
+
+    ics_bytes = _build_calendar_ics(entries, dtstamp=datetime.now(UTC))
+    filename = f"butlers-calendar-{start.date().isoformat()}-{end.date().isoformat()}.ics"
+    return StreamingResponse(
+        iter((ics_bytes,)),
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

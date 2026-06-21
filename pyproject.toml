@@ -11,6 +11,7 @@ dependencies = [
     "fastmcp",
     "asyncpg",
     "croniter",
+    "icalendar>=5.0.0",
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp",
     "opentelemetry-instrumentation-fastapi",
