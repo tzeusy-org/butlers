@@ -29,6 +29,7 @@ Version marker:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -216,6 +217,22 @@ class CalendarWorkspaceRow:
     last_error: str | None
     full_sync_required: bool
     #: The butler schema this row was fetched from (set by the query function).
+    db_butler: str = ""
+
+
+@dataclass
+class CalendarSearchMatch:
+    """A single full-text search hit: a workspace row plus its trigram rank.
+
+    Wraps a :class:`CalendarWorkspaceRow` (the searchable event instance) with
+    the ``search_rank`` computed by the query (trigram similarity, or ``0.0``
+    when the schema degraded to an ``ILIKE`` fallback).  The wrapping keeps the
+    v1 :data:`WORKSPACE_COLUMNS` contract untouched — the rank is carried
+    alongside the row rather than added to the frozen DTO.
+    """
+
+    row: CalendarWorkspaceRow
+    rank: float
     db_butler: str = ""
 
 
@@ -643,3 +660,201 @@ async def query_calendar_proposals(
         for row in raw_rows:
             rows.append(row_to_proposal(row, db_butler=butler_name))
     return rows
+
+
+def _build_search_sql(
+    *,
+    butlers: list[str] | None,
+    sources: list[str] | None,
+    with_similarity: bool,
+) -> str:
+    """Build the fan-out search SQL for one schema.
+
+    ``$1`` is the (already-stripped) free-text query, ``$2`` is the lane.
+    Optional ``butlers`` / ``sources`` filters and the trailing ``LIMIT`` bind
+    to subsequent positional params; the param positions are **identical** for
+    the trigram and ``ILIKE`` variants so the same args tuple drives both — the
+    only difference is the rank expression and ordering, which depend on the
+    ``pg_trgm`` ``similarity()`` function being available.
+
+    Matching is always done with ``ILIKE '%q%'`` (index-accelerated by the GIN
+    trigram index when present, a plain seq-scan otherwise), so the ``ILIKE``
+    fallback does not require the extension at all.
+    """
+    # $1 = query, $2 = lane.  ILIKE substring match across all three columns.
+    conditions: list[str] = [
+        "s.lane = $2",
+        (
+            "(e.title ILIKE '%' || $1 || '%'"
+            " OR e.description ILIKE '%' || $1 || '%'"
+            " OR e.location ILIKE '%' || $1 || '%')"
+        ),
+        "COALESCE(i.status, e.status) != 'cancelled'",
+    ]
+    idx = 3
+    if butlers:
+        conditions.append(
+            f"COALESCE(s.butler_name, e.metadata->>'butler_name', '') = ANY(${idx}::text[])"
+        )
+        idx += 1
+    if sources:
+        conditions.append(f"s.source_key = ANY(${idx}::text[])")
+        idx += 1
+    limit_idx = idx
+
+    if with_similarity:
+        rank_expr = (
+            "GREATEST("
+            "similarity(e.title, $1),"
+            " similarity(COALESCE(e.description, ''), $1),"
+            " similarity(COALESCE(e.location, ''), $1)"
+            ")"
+        )
+        order_by = "search_rank DESC, i.starts_at ASC, i.id ASC"
+    else:
+        rank_expr = "0.0"
+        order_by = "i.starts_at ASC, i.id ASC"
+
+    where = " AND ".join(conditions)
+    return f"""
+        SELECT {WORKSPACE_COLUMNS}, {rank_expr} AS search_rank
+        FROM calendar_event_instances AS i
+        JOIN calendar_events AS e ON e.id = i.event_id
+        JOIN calendar_sources AS s ON s.id = i.source_id
+        LEFT JOIN LATERAL (
+            SELECT cursor_name, last_synced_at, last_success_at, last_error_at, last_error,
+                   full_sync_required, updated_at
+            FROM calendar_sync_cursors
+            WHERE source_id = s.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+        ) AS c ON TRUE
+        WHERE {where}
+        ORDER BY {order_by}
+        LIMIT ${limit_idx}
+    """
+
+
+def _search_rank(row: asyncpg.Record) -> float:
+    """Read the computed ``search_rank`` from a search result row (0.0 fallback)."""
+    try:
+        value = row["search_rank"]
+    except (KeyError, IndexError, TypeError):
+        return 0.0
+    try:
+        return float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def query_calendar_event_search(
+    db: DatabaseManager,
+    *,
+    q: str,
+    view: str,
+    butlers: list[str] | None = None,
+    sources: list[str] | None = None,
+    limit: int = 50,
+) -> list[CalendarSearchMatch]:
+    """Fan-out full-text search over the ``calendar_events`` projection.
+
+    Matches a free-text query ``q`` against event ``title``, ``description``,
+    and ``location`` across all calendar-enabled butler schemas (or the
+    ``butlers`` subset), honoring the ``view`` lane and optional ``sources``
+    scoping — the same semantics as the workspace read.  Each hit carries the
+    matching event instance's date(s) so callers can group by day and jump-to.
+
+    Ranking & degradation
+    ----------------------
+    Results are ranked by trigram ``similarity()`` (highest first), then by
+    ``(starts_at, id)``.  The search is **fail-open**: a per-schema trigram
+    query failure (e.g. the ``pg_trgm`` extension or GIN index is absent in that
+    schema) is caught and retried with an ``ILIKE``-only fallback; if even that
+    fails the schema is skipped.  Schemas where the index is present still
+    return their ranked matches.  A missing/blank ``q`` returns ``[]`` (the whole
+    projection is never returned).
+
+    Parameters
+    ----------
+    db:
+        The :class:`~butlers.api.db.DatabaseManager` instance.
+    q:
+        Free-text query.  Leading/trailing whitespace is stripped; blank → ``[]``.
+    view:
+        Lane filter (``'user'`` or ``'butler'``).
+    butlers:
+        If provided, restrict to these butler schemas.
+    sources:
+        If provided, restrict to sources with these ``source_key`` values.
+    limit:
+        Maximum number of matches to return (applied per-schema in SQL and
+        globally after the cross-schema merge + rank sort).
+
+    Returns
+    -------
+    list[CalendarSearchMatch]
+        Ranked matches (highest trigram relevance first), capped at ``limit``.
+    """
+    query = (q or "").strip()
+    if not query:
+        return []
+
+    query_targets: list[str] | None
+    if butlers:
+        query_targets = sorted(set(butlers))
+    else:
+        query_targets = db.butlers_with_module("calendar")
+    if not query_targets:
+        return []
+
+    trgm_sql = _build_search_sql(butlers=butlers, sources=sources, with_similarity=True)
+    ilike_sql = _build_search_sql(butlers=butlers, sources=sources, with_similarity=False)
+
+    args: list[Any] = [query, view]
+    if butlers:
+        args.append(sorted(set(butlers)))
+    if sources:
+        args.append(sources)
+    args.append(limit)
+    bind = tuple(args)
+
+    async def _search_one(name: str) -> tuple[str, list[CalendarSearchMatch]]:
+        try:
+            pool = db.pool(name)
+        except Exception:
+            logger.warning("calendar search: no pool for butler %s; skipping", name, exc_info=True)
+            return (name, [])
+        try:
+            rows = await pool.fetch(trgm_sql, *bind)
+        except Exception:
+            # Fail-open: pg_trgm / the GIN index is unavailable in this schema.
+            logger.warning(
+                "calendar search: trigram query failed for %s; falling back to ILIKE",
+                name,
+                exc_info=True,
+            )
+            try:
+                rows = await pool.fetch(ilike_sql, *bind)
+            except Exception:
+                logger.warning(
+                    "calendar search: ILIKE fallback failed for %s; skipping", name, exc_info=True
+                )
+                return (name, [])
+        matches = [
+            CalendarSearchMatch(
+                row=row_to_workspace(row, db_butler=name),
+                rank=_search_rank(row),
+                db_butler=name,
+            )
+            for row in rows
+        ]
+        return (name, matches)
+
+    results = await asyncio.gather(*[_search_one(n) for n in query_targets])
+
+    merged: list[CalendarSearchMatch] = []
+    for _name, matches in results:
+        merged.extend(matches)
+
+    merged.sort(key=lambda m: (-m.rank, m.row.instance_starts_at, str(m.row.instance_id)))
+    return merged[:limit]

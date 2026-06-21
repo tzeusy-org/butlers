@@ -32,6 +32,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceMetaResponse,
     CalendarWorkspaceMutationResponse,
     CalendarWorkspaceReadResponse,
+    CalendarWorkspaceSearchResponse,
     CalendarWorkspaceSourceFreshness,
     CalendarWorkspaceSyncRequest,
     CalendarWorkspaceSyncResponse,
@@ -43,6 +44,7 @@ from butlers.api.models.calendar_workspace import (
 )
 from butlers.api.read_models.calendar_workspace_v1 import (
     CalendarProposalRow,
+    query_calendar_event_search,
     query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
@@ -708,6 +710,62 @@ async def get_workspace(
         lanes=_build_lane_definitions(source_freshness),
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
+
+
+@router.get("/search", response_model=ApiResponse[CalendarWorkspaceSearchResponse])
+async def search_workspace(
+    q: str = Query("", description="Free-text query over title/description/location"),
+    view: str = Query("user", pattern="^(user|butler)$"),
+    timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
+    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
+    sources: list[str] | None = Query(None, description="Optional source_key filters"),
+    limit: int = Query(50, ge=1, le=200, description="Max matches to return"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarWorkspaceSearchResponse]:
+    """Full-text search over the calendar projection, ranked by trigram relevance.
+
+    Matches ``q`` against ``calendar_events`` title/description/location fanned
+    out across butler schemas (honoring the ``view`` lane and ``butlers`` /
+    ``sources`` scoping), and returns ``UnifiedCalendarEntry``-shaped rows
+    carrying each match's date(s) so the UI can group by day and jump-to.
+
+    A missing or blank ``q`` returns an empty list (NOT the whole calendar) and
+    never errors. The search degrades fail-open when a schema lacks the
+    ``pg_trgm`` extension/index (ILIKE fallback or skip), so it does not 500.
+    """
+    import dataclasses
+
+    display_tz: ZoneInfo | None = None
+    if timezone is not None:
+        try:
+            display_tz = ZoneInfo(timezone.strip())
+        except ZoneInfoNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+
+    if not q.strip():
+        return ApiResponse[CalendarWorkspaceSearchResponse](
+            data=CalendarWorkspaceSearchResponse(entries=[])
+        )
+
+    matches = await query_calendar_event_search(
+        db,
+        q=q,
+        view=view,
+        butlers=butlers,
+        sources=sources,
+        limit=limit,
+    )
+
+    entries: list[UnifiedCalendarEntry] = []
+    for match in matches:
+        row = dataclasses.asdict(match.row)
+        try:
+            entries.append(_normalize_entry(row, view=view, display_tz=display_tz))
+        except ValueError:
+            continue
+
+    data = CalendarWorkspaceSearchResponse(entries=entries)
+    return ApiResponse[CalendarWorkspaceSearchResponse](data=data)
 
 
 @router.get("/entries/{entry_id}", response_model=ApiResponse[UnifiedCalendarEntry])

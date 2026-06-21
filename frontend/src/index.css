@@ -615,3 +615,32 @@ body {
   background: oklch(0.810 0.185 84 / 0.05);
   border-left: 2px solid var(--amber);
 }
+
+/* ---------------------------------------------------------------------------
+ * Calendar search jump-to flash
+ *
+ * Applied transiently (~2.2s) to the calendar entry a user jumped to from the
+ * search palette, so the eye lands on it after the grid navigates to its day.
+ * Neutral foreground pulse only — no state hues.
+ * ---------------------------------------------------------------------------*/
+@keyframes calendar-entry-flash {
+  0% {
+    box-shadow: 0 0 0 2px var(--fg);
+    background-color: oklch(from var(--fg) l c h / 0.12);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+    background-color: transparent;
+  }
+}
+.calendar-entry-flash {
+  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  position: relative;
+  z-index: 20;
+}
+@media (prefers-reduced-motion: reduce) {
+  .calendar-entry-flash {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--fg);
+  }
+}

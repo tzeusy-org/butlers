@@ -38,6 +38,8 @@ import type {
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
+  CalendarWorkspaceSearchParams,
+  CalendarWorkspaceSearchResponse,
   UnifiedCalendarEntry,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceSyncRequest,
@@ -1068,6 +1070,26 @@ export function getCalendarWorkspace(
 /** Fetch calendar workspace metadata: capabilities, sources, and lanes. */
 export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspaceMetaResponse>> {
   return apiFetch<ApiResponse<CalendarWorkspaceMetaResponse>>("/calendar/workspace/meta");
+}
+
+/** Full-text search calendar events by title/description/location, ranked by relevance. */
+export function searchCalendarWorkspace(
+  params: CalendarWorkspaceSearchParams,
+): Promise<ApiResponse<CalendarWorkspaceSearchResponse>> {
+  const sp = new URLSearchParams();
+  sp.set("q", params.q);
+  sp.set("view", params.view);
+  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  params.butlers?.forEach((butler) => {
+    if (butler) sp.append("butlers", butler);
+  });
+  params.sources?.forEach((source) => {
+    if (source) sp.append("sources", source);
+  });
+  return apiFetch<ApiResponse<CalendarWorkspaceSearchResponse>>(
+    `/calendar/workspace/search?${sp.toString()}`,
+  );
 }
 
 /** Trigger calendar workspace sync globally or for a selected source. */

@@ -607,6 +607,21 @@ export interface CalendarWorkspaceParams {
   sources?: string[];
 }
 
+/** Query parameters for GET /api/calendar/workspace/search. */
+export interface CalendarWorkspaceSearchParams {
+  q: string;
+  view: CalendarWorkspaceView;
+  timezone?: string;
+  butlers?: string[];
+  sources?: string[];
+  limit?: number;
+}
+
+/** Response payload for GET /api/calendar/workspace/search. */
+export interface CalendarWorkspaceSearchResponse {
+  entries: UnifiedCalendarEntry[];
+}
+
 /** Request payload for POST /api/calendar/workspace/sync. */
 export interface CalendarWorkspaceSyncRequest {
   all?: boolean;

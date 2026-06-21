@@ -37,6 +37,7 @@ import {
   useCalendarWorkspace,
   useCalendarWorkspaceAudit,
   useCalendarWorkspaceMeta,
+  useCalendarWorkspaceSearch,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
   useSetPrimaryCalendar,
@@ -1235,6 +1236,136 @@ function resolveOwnerFromEntry(entry: UnifiedCalendarEntry): {
 }
 
 // ---------------------------------------------------------------------------
+// CalendarSearchPalette — command-palette-style full-text event search
+// ---------------------------------------------------------------------------
+
+/**
+ * Full-text search palette over the calendar projection.  Lists matches grouped
+ * by day (ranked by trigram relevance from the backend); selecting a match (or
+ * pressing Enter on the top result) calls ``onJump`` so the page can navigate
+ * the grid to that day and flash the event.
+ */
+function CalendarSearchPalette({
+  open,
+  onOpenChange,
+  view,
+  timezone,
+  onJump,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  view: CalendarWorkspaceView;
+  timezone: string;
+  onJump: (entry: UnifiedCalendarEntry) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+
+  // Debounce keystrokes before hitting the search endpoint. (Internal state is
+  // reset by remounting: the parent only renders this component while open.)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(query), 180);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const searchView: CalendarWorkspaceView = view === "butler" ? "butler" : "user";
+  const searchQuery = useCalendarWorkspaceSearch(
+    { q: debounced, view: searchView, timezone, limit: 50 },
+    { enabled: open },
+  );
+
+  const entriesData = searchQuery.data?.data.entries;
+  const results = entriesData ?? [];
+  const groups = useMemo(() => {
+    const byDay: Array<{ day: string; date: Date; items: UnifiedCalendarEntry[] }> = [];
+    const idx = new Map<string, number>();
+    for (const entry of entriesData ?? []) {
+      const d = new Date(entry.start_at);
+      const key = format(d, "yyyy-MM-dd");
+      let gi = idx.get(key);
+      if (gi === undefined) {
+        gi = byDay.length;
+        idx.set(key, gi);
+        byDay.push({ day: key, date: startOfDay(d), items: [] });
+      }
+      byDay[gi].items.push(entry);
+    }
+    return byDay;
+  }, [entriesData]);
+
+  const trimmed = debounced.trim();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[80vh] w-[90vw] max-w-[90vw] flex-col overflow-hidden sm:w-[34rem] sm:max-w-[34rem]">
+        <DialogHeader>
+          <DialogTitle>Search events</DialogTitle>
+          <DialogDescription>
+            Find an event by title, description, or location. Press Enter to jump to the top match.
+          </DialogDescription>
+        </DialogHeader>
+        <Input
+          autoFocus
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && results.length > 0) {
+              event.preventDefault();
+              onJump(results[0]);
+            }
+          }}
+          placeholder="Search calendar…"
+          aria-label="Search calendar events"
+        />
+        <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
+          {trimmed.length === 0 ? (
+            <Voice variant="italic" className="text-[var(--mfg)]">
+              Type to search across all events.
+            </Voice>
+          ) : searchQuery.isLoading ? (
+            <Voice variant="italic" className="text-[var(--mfg)]">
+              Searching…
+            </Voice>
+          ) : results.length === 0 ? (
+            <Voice variant="italic" className="text-[var(--mfg)]">
+              No matching events.
+            </Voice>
+          ) : (
+            groups.map((group) => (
+              <section key={group.day} className="mb-4">
+                <div className="mb-1 border-b border-[var(--border)] pb-1">
+                  <Eyebrow>{format(group.date, "EEE · MMM d, yyyy")}</Eyebrow>
+                </div>
+                <div role="list">
+                  {group.items.map((entry) => (
+                    <button
+                      key={entry.entry_id}
+                      type="button"
+                      onClick={() => onJump(entry)}
+                      className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                    >
+                      <Mono muted className="w-14 shrink-0 tabular-nums">
+                        {entry.all_day ? "all day" : format(new Date(entry.start_at), "HH:mm")}
+                      </Mono>
+                      <span className="truncate text-sm text-[var(--fg)]">{entry.title}</span>
+                      {entry.butler_name ? (
+                        <Mono muted className="ml-auto hidden shrink-0 sm:inline">
+                          {entry.butler_name}
+                        </Mono>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // CalendarWorkspacePage
 // ---------------------------------------------------------------------------
 
@@ -1373,6 +1504,10 @@ export default function CalendarWorkspacePage() {
   // Detail panel — replaces modal-only editing with a right-docked panel
   const [selectedEntry, setSelectedEntry] = useState<UnifiedCalendarEntry | null>(null);
 
+  // Search command palette + jump-to-and-flash
+  const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
+  const [flashedEntryId, setFlashedEntryId] = useState<string | null>(null);
+
   function openDetailPanel(entry: UnifiedCalendarEntry) {
     setSelectedEntry(entry);
   }
@@ -1488,6 +1623,37 @@ export default function CalendarWorkspacePage() {
     const rows = workspaceQuery.data?.data.entries ?? [];
     return [...rows].sort((a, b) => a.start_at.localeCompare(b.start_at));
   }, [workspaceQuery.data?.data.entries]);
+
+  // Jump from a search match: navigate the grid to the match's day, then flash it.
+  const handleSearchJump = useCallback(
+    (entry: UnifiedCalendarEntry) => {
+      setSearchPaletteOpen(false);
+      const target = new Date(entry.start_at);
+      updateQuery({ view: entry.view === "butler" ? "butler" : "user", range: "day", anchor: target });
+      setFlashedEntryId(entry.entry_id);
+    },
+    [updateQuery],
+  );
+
+  // Once the grid has the flashed entry rendered, scroll it into view and pulse it.
+  useEffect(() => {
+    if (!flashedEntryId) return;
+    if (workspaceQuery.isFetching) return;
+    const el = document.querySelector<HTMLElement>(
+      `[data-calendar-entry-id="${CSS.escape(flashedEntryId)}"]`,
+    );
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("calendar-entry-flash");
+    const timer = window.setTimeout(() => {
+      el.classList.remove("calendar-entry-flash");
+      setFlashedEntryId(null);
+    }, 2200);
+    return () => {
+      window.clearTimeout(timer);
+      el.classList.remove("calendar-entry-flash");
+    };
+  }, [flashedEntryId, entries, workspaceQuery.isFetching]);
 
   const sourceByKey = useMemo(() => {
     const lookup = new Map<string, CalendarWorkspaceSourceFreshness>();
@@ -2473,6 +2639,9 @@ export default function CalendarWorkspacePage() {
           >
             {syncButtonLabel}
           </PillButton>
+          <PillButton onClick={() => setSearchPaletteOpen(true)} aria-label="Search events">
+            Search
+          </PillButton>
           <PillButton onClick={() => setSourcesDialogOpen(true)} aria-label="Configure sources">
             Sources
             {disabledSources.size > 0 ? (
@@ -2794,6 +2963,7 @@ export default function CalendarWorkspacePage() {
                           <button
                             key={entry.entry_id}
                             type="button"
+                            data-calendar-entry-id={entry.entry_id}
                             title={entry.title}
                             onClick={() => openDetailPanel(entry)}
                             className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
@@ -2880,6 +3050,7 @@ export default function CalendarWorkspacePage() {
                           <button
                             key={entry.entry_id}
                             type="button"
+                            data-calendar-entry-id={entry.entry_id}
                             title={entry.title}
                             onClick={(evt) => {
                               evt.stopPropagation();
@@ -3026,6 +3197,7 @@ export default function CalendarWorkspacePage() {
                           <button
                             key={entry.entry_id}
                             type="button"
+                            data-calendar-entry-id={entry.entry_id}
                             className={cn(
                               "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
                               paused && "opacity-50",
@@ -3179,6 +3351,16 @@ export default function CalendarWorkspacePage() {
         </aside>
       ) : null}
       </div>
+
+      {searchPaletteOpen ? (
+        <CalendarSearchPalette
+          open={searchPaletteOpen}
+          onOpenChange={setSearchPaletteOpen}
+          view={view}
+          timezone={timezone}
+          onJump={handleSearchJump}
+        />
+      ) : null}
 
       <Dialog open={sourcesDialogOpen} onOpenChange={setSourcesDialogOpen}>
         <DialogContent className="w-[90vw] max-w-[90vw] sm:w-[80vw] sm:max-w-[80vw] max-h-[80vh] overflow-y-auto">

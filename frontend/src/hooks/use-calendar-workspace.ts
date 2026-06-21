@@ -11,6 +11,7 @@ import {
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
+  searchCalendarWorkspace,
   setPrimaryCalendar,
   syncCalendarWorkspace,
 } from "@/api/index.ts";
@@ -18,6 +19,7 @@ import type {
   CalendarAuditParams,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceParams,
+  CalendarWorkspaceSearchParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
   SetPrimaryCalendarRequest,
@@ -38,6 +40,20 @@ export function useCalendarWorkspace(
     queryFn: () => getCalendarWorkspace(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 30_000,
+  });
+}
+
+/** Full-text search calendar events; disabled until the query is non-blank. */
+export function useCalendarWorkspaceSearch(
+  params: CalendarWorkspaceSearchParams,
+  options?: { enabled?: boolean },
+) {
+  const trimmed = params.q.trim();
+  return useQuery({
+    queryKey: ["calendar-workspace-search", { ...params, q: trimmed }],
+    queryFn: () => searchCalendarWorkspace({ ...params, q: trimmed }),
+    enabled: (options?.enabled ?? true) && trimmed.length > 0,
+    staleTime: 10_000,
   });
 }
 

@@ -90,6 +90,18 @@ class CalendarWorkspaceReadResponse(BaseModel):
     lanes: list[CalendarWorkspaceLaneDefinition] = Field(default_factory=list)
 
 
+class CalendarWorkspaceSearchResponse(BaseModel):
+    """Read payload for GET /api/calendar/workspace/search.
+
+    ``entries`` are ``UnifiedCalendarEntry`` rows ranked by trigram relevance
+    (highest first), each carrying the matching event instance's date(s) so the
+    UI can group results by day and jump-to the event.  A blank query yields an
+    empty list.
+    """
+
+    entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
+
+
 class CalendarWorkspaceCapabilitiesSync(BaseModel):
     """Sync capabilities for the calendar workspace."""
 
