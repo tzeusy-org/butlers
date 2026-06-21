@@ -1536,7 +1536,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             SELECT
                 f.entity_id,
                 COUNT(f.id) AS interaction_count
-            FROM relationship.facts f
+            FROM facts f
             WHERE f.predicate LIKE 'interaction_%'
               AND f.scope = 'relationship'
               AND f.validity = 'active'
