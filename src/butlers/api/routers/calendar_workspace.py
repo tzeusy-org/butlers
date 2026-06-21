@@ -10,6 +10,7 @@ import logging
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -37,8 +38,14 @@ from butlers.api.models.calendar_workspace import (
     CalendarButlerEventPreviewResponse,
     CalendarConflictEntry,
     CalendarDayBriefingResponse,
+    CalendarDedupRulesModel,
+    CalendarDedupRulesUpdateRequest,
+    CalendarDuplicateCluster,
+    CalendarDuplicatesResponse,
     CalendarIcsImportedEvent,
     CalendarIcsImportResponse,
+    CalendarKeepSeparateRequest,
+    CalendarKeepSeparateResponse,
     CalendarPrepAttendee,
     CalendarPrepNote,
     CalendarPrepResponse,
@@ -70,9 +77,14 @@ from butlers.api.models.calendar_workspace import (
     UnifiedCalendarEntry,
 )
 from butlers.api.read_models.calendar_workspace_v1 import (
+    DEDUP_DEFAULT_STRATEGY,
+    DEDUP_STRATEGIES,
+    CalendarDedupRules,
     CalendarOverlayRow,
     CalendarPrepRow,
     CalendarProposalRow,
+    load_dedup_rules,
+    load_keep_separate_keys,
     query_calendar_event_search,
     query_calendar_overlays,
     query_calendar_prep,
@@ -81,7 +93,9 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
+    set_keep_separate,
     update_calendar_proposal_status,
+    update_dedup_rules,
 )
 from butlers.api.routers.audit import log_audit_entry
 from butlers.google_account_registry import list_google_accounts
@@ -267,18 +281,6 @@ def _starts_epoch_ms(starts_at: datetime | None) -> int:
     timezone-serialization agnostic across butler schemas / providers.
     """
     return int(starts_at.timestamp() * 1000) if starts_at else 0
-
-
-def _origin_collapse_key(row: Mapping[str, Any]) -> tuple[str, int]:
-    """Pass-1 read-model collapse key: exact event identity.
-
-    Keys on ``(origin_ref, starts_epoch)`` — the same provider event synced into
-    every butler's projection collapses to one instance. ``calendar_id`` is
-    deliberately excluded (Google aliases "primary" and the explicit address).
-    """
-    origin_ref = row.get("origin_ref") or ""
-    starts_at = _coerce_datetime(row.get("instance_starts_at"))
-    return (str(origin_ref), _starts_epoch_ms(starts_at))
 
 
 def _title_collapse_key(row: Mapping[str, Any]) -> tuple[str, int]:
@@ -499,6 +501,21 @@ async def _fetch_sources(
     return [dataclasses.asdict(row) for row in source_rows]
 
 
+@dataclass
+class _DedupCluster:
+    """A group of >1 workspace rows the cross-source dedup would collapse.
+
+    ``members`` is keyset-ordered, so ``members[0]`` is the survivor the read
+    keeps and ``members[1:]`` are the collapsed-away duplicates.  ``keep_separate``
+    is true when the user pinned this cluster so it is NOT collapsed.
+    """
+
+    cluster_key: str
+    match_pass: str
+    members: list[dict[str, Any]]
+    keep_separate: bool = False
+
+
 async def _fetch_workspace_rows(
     db: DatabaseManager,
     *,
@@ -512,6 +529,8 @@ async def _fetch_workspace_rows(
     editable: bool | None = None,
     cursor: tuple[datetime, UUID] | None = None,
     limit: int | None = None,
+    dedup_strategy: str | None = None,
+    keep_separate: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch calendar event-instance rows via the versioned read-model boundary.
 
@@ -528,6 +547,49 @@ async def _fetch_workspace_rows(
     Rows from every butler schema are merged and re-sorted by the global keyset
     order ``(starts_at, id)`` so dedup and cursor pagination are deterministic
     across schemas.
+
+    ``dedup_strategy`` selects which collapse passes run (defaults to
+    ``balanced``); ``keep_separate`` pins cluster keys the user chose not to
+    collapse.  Both flow into :func:`_dedup_workspace_rows`.
+    """
+    flattened = await _fetch_flattened_workspace_rows(
+        db,
+        view=view,
+        start=start,
+        end=end,
+        butlers=butlers,
+        sources=sources,
+        status=status,
+        source_type=source_type,
+        editable=editable,
+        cursor=cursor,
+        limit=limit,
+    )
+    deduped, _clusters = _dedup_workspace_rows(
+        flattened, strategy=dedup_strategy, keep_separate=keep_separate
+    )
+    return deduped
+
+
+async def _fetch_flattened_workspace_rows(
+    db: DatabaseManager,
+    *,
+    view: str,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None = None,
+    sources: list[str] | None = None,
+    status: str | None = None,
+    source_type: str | None = None,
+    editable: bool | None = None,
+    cursor: tuple[datetime, UUID] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch pre-dedup workspace rows (flat dicts), globally sorted by keyset.
+
+    Splits the fetch+flatten+sort half out of :func:`_fetch_workspace_rows` so
+    both the deduped workspace read **and** the duplicate-review surface can share
+    the same source rows (the surface needs the rows *before* collapse).
     """
     import dataclasses
 
@@ -549,38 +611,108 @@ async def _fetch_workspace_rows(
     # Re-sort across schemas by the global keyset order so dedup keeps the
     # lowest-id copy deterministically and cursor pagination is stable.
     flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
+    return flattened
 
-    # Deduplicate across butler databases: the same Google Calendar event
-    # is synced into every butler's projection tables.  Keep only one
-    # instance per unique event.
-    #
-    # Pass 1 — exact event identity: key on (origin_ref, starts_epoch).
-    # We deliberately exclude calendar_id because Google treats "primary"
-    # and the explicit email address as aliases for the same calendar, so
-    # the same event is returned under different calendar_id values.
-    # Epoch-ms avoids timezone-serialization differences across DBs.
-    #
-    # Pass 2 — cross-calendar copies: events duplicated to a group
-    # calendar get a new origin_ref from Google.  Collapse those via
-    # (title, starts_epoch) so each real-world event shows once.
-    seen_ref: set[tuple[str, int]] = set()
-    after_pass1: list[dict[str, Any]] = []
-    for row in flattened:
-        key = _origin_collapse_key(row)
-        if key in seen_ref:
-            continue
-        seen_ref.add(key)
-        after_pass1.append(row)
 
-    seen_title: set[tuple[str, int]] = set()
-    deduped: list[dict[str, Any]] = []
-    for row in after_pass1:
-        title_key = _title_collapse_key(row)
-        if title_key in seen_title:
-            continue
-        seen_title.add(title_key)
-        deduped.append(row)
-    return deduped
+def _cluster_key(row: Mapping[str, Any], match_pass: str, *, aggressive: bool) -> str:
+    """Serialise a row's dedup-cluster identity for the given pass.
+
+    ``origin_ref`` pass keys on (origin_ref, start); ``title`` pass keys on
+    (normalised title, start).  ``aggressive`` strips non-alphanumerics from the
+    title so punctuation/spacing variants collapse together.  The SOH (``\\x01``)
+    separator never appears in titles/refs, so the key round-trips unambiguously.
+    """
+    epoch = _starts_epoch_ms(_coerce_datetime(row.get("instance_starts_at")))
+    if match_pass == "origin_ref":
+        value = row.get("origin_ref") or ""
+    else:
+        value = (row.get("title") or "").strip().lower()
+        if aggressive:
+            value = re.sub(r"[^a-z0-9]+", "", value)
+    return f"{match_pass}\x01{value}\x01{epoch}"
+
+
+def _dedup_workspace_rows(
+    rows: list[dict[str, Any]],
+    *,
+    strategy: str | None = None,
+    keep_separate: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[_DedupCluster]]:
+    """Collapse cross-source duplicate rows; return (deduped_rows, clusters).
+
+    The same Google Calendar event is synced into every butler's projection
+    tables, and cross-calendar copies get fresh ``origin_ref`` values, so the read
+    must collapse them to one entry.  This runs up to two passes (governed by
+    ``strategy``) over the globally-sorted rows, keeping the lowest-keyset copy:
+
+    - **Pass 1** ``origin_ref`` — exact event identity ``(origin_ref, start)``.
+      ``calendar_id`` is deliberately excluded (Google aliases ``primary`` and the
+      explicit address for the same calendar).  Always runs.
+    - **Pass 2** ``title`` — cross-calendar copies ``(title, start)``.  Runs for
+      ``balanced`` (default) and ``aggressive``; skipped for ``exact``.
+
+    Any cluster whose key is in ``keep_separate`` is **not** collapsed — all its
+    members survive and its rows are protected from later passes — but it is still
+    reported in the returned clusters (flagged ``keep_separate``).  The returned
+    clusters are every group of >1 members the dedup *would* collapse (the data
+    the review surface exposes), regardless of whether they were kept separate.
+
+    Behaviour for the default ``balanced`` strategy with no overrides is identical
+    to the original two-pass dedup.
+    """
+    resolved_strategy = strategy if strategy in DEDUP_STRATEGIES else DEDUP_DEFAULT_STRATEGY
+    pinned = keep_separate or set()
+    passes = ["origin_ref"] if resolved_strategy == "exact" else ["origin_ref", "title"]
+    aggressive = resolved_strategy == "aggressive"
+
+    survivors = list(rows)
+    clusters: dict[str, _DedupCluster] = {}
+    # Instance ids of rows in a kept-separate cluster — protected from collapse in
+    # this and every later pass so a keep-separate decision always holds.
+    protected: set[Any] = set()
+
+    for match_pass in passes:
+        members_by_key: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        for row in survivors:
+            if row.get("instance_id") in protected:
+                continue
+            ck = _cluster_key(row, match_pass, aggressive=aggressive)
+            if ck not in members_by_key:
+                members_by_key[ck] = []
+                order.append(ck)
+            members_by_key[ck].append(row)
+
+        for ck in order:
+            members = members_by_key[ck]
+            if len(members) <= 1:
+                continue
+            is_pinned = ck in pinned
+            clusters[ck] = _DedupCluster(
+                cluster_key=ck,
+                match_pass=match_pass,
+                members=members,
+                keep_separate=is_pinned,
+            )
+            if is_pinned:
+                for member in members:
+                    protected.add(member.get("instance_id"))
+
+        new_survivors: list[dict[str, Any]] = []
+        for row in survivors:
+            if row.get("instance_id") in protected:
+                new_survivors.append(row)
+                continue
+            ck = _cluster_key(row, match_pass, aggressive=aggressive)
+            members = members_by_key.get(ck, [row])
+            if len(members) <= 1:
+                new_survivors.append(row)
+            elif members[0].get("instance_id") == row.get("instance_id"):
+                new_survivors.append(row)  # keep the lowest-keyset copy
+            # else: a collapsed-away duplicate — dropped
+        survivors = new_survivors
+
+    return survivors, list(clusters.values())
 
 
 def _normalize_entry(
@@ -1229,6 +1361,12 @@ async def get_workspace(
         )
         return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
+    # Honor the persisted cross-source dedup rules + keep-separate overrides so
+    # the live read collapses (or keeps apart) exactly what the duplicate-review
+    # surface shows. Both loads fail open to defaults / no overrides.
+    dedup_rules = await load_dedup_rules(db)
+    keep_separate = await load_keep_separate_keys(db)
+
     # Fetch one extra row beyond the page so we can derive ``has_more`` without
     # a separate count query (keyset pagination, no ``total``).
     workspace_rows = await _fetch_workspace_rows(
@@ -1243,6 +1381,8 @@ async def get_workspace(
         editable=editable,
         cursor=cursor_pos,
         limit=limit + 1,
+        dedup_strategy=dedup_rules.match_strategy,
+        keep_separate=keep_separate,
     )
     source_rows = await _fetch_sources(
         db,
@@ -1328,6 +1468,167 @@ async def get_workspace(
         has_more=has_more,
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
+
+
+def _rules_to_model(rules: CalendarDedupRules) -> CalendarDedupRulesModel:
+    """Map the read-model dedup-rules DTO to the API model."""
+    return CalendarDedupRulesModel(
+        match_strategy=rules.match_strategy,  # type: ignore[arg-type]
+        noisy_threshold=rules.noisy_threshold,
+    )
+
+
+@router.get("/duplicates", response_model=ApiResponse[CalendarDuplicatesResponse])
+async def get_workspace_duplicates(
+    view: str = Query("user", pattern="^(user|butler)$"),
+    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
+    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
+    timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
+    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
+    sources: list[str] | None = Query(None, description="Optional source_key filters"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarDuplicatesResponse]:
+    """Expose the cross-source duplicate clusters the read-model collapses.
+
+    The workspace read silently collapses duplicate events synced into multiple
+    butler schemas / cross-calendar copies. This surface re-runs the same dedup
+    over the (un-collapsed) rows and returns every cluster of >1 members it would
+    collapse, plus the active rules. Clusters smaller than ``noisy_threshold`` are
+    filtered out. Keep-separate clusters are still reported (flagged).
+
+    Fails open: any read failure yields ``available=false`` with an empty cluster
+    list, never an HTTP 500.
+    """
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+
+    display_tz: ZoneInfo | None = None
+    if timezone is not None:
+        try:
+            display_tz = ZoneInfo(timezone.strip())
+        except ZoneInfoNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+
+    rules = await load_dedup_rules(db)
+    try:
+        keep_separate = await load_keep_separate_keys(db)
+        flattened = await _fetch_flattened_workspace_rows(
+            db,
+            view=view,
+            start=start,
+            end=end,
+            butlers=butlers,
+            sources=sources,
+        )
+        _deduped, clusters = _dedup_workspace_rows(
+            flattened, strategy=rules.match_strategy, keep_separate=keep_separate
+        )
+    except Exception:
+        logger.warning("get_workspace_duplicates failed; degrading", exc_info=True)
+        return ApiResponse[CalendarDuplicatesResponse](
+            data=CalendarDuplicatesResponse(
+                clusters=[], rules=_rules_to_model(rules), available=False
+            )
+        )
+
+    cluster_models: list[CalendarDuplicateCluster] = []
+    for cluster in clusters:
+        if len(cluster.members) < rules.noisy_threshold:
+            continue
+        try:
+            entries = [
+                _normalize_entry(member, view=view, display_tz=display_tz)
+                for member in cluster.members
+            ]
+        except ValueError:
+            continue
+        cluster_models.append(
+            CalendarDuplicateCluster(
+                cluster_key=cluster.cluster_key,
+                match_pass=cluster.match_pass,  # type: ignore[arg-type]
+                member_count=len(cluster.members),
+                keep_separate=cluster.keep_separate,
+                kept_entry=entries[0],
+                duplicate_entries=entries[1:],
+            )
+        )
+
+    # Most-duplicated clusters first, then by the kept entry's start.
+    cluster_models.sort(key=lambda c: (-c.member_count, c.kept_entry.start_at))
+    return ApiResponse[CalendarDuplicatesResponse](
+        data=CalendarDuplicatesResponse(
+            clusters=cluster_models, rules=_rules_to_model(rules), available=True
+        )
+    )
+
+
+@router.patch("/dedup-rules", response_model=ApiResponse[CalendarDedupRulesModel])
+async def patch_dedup_rules(
+    body: CalendarDedupRulesUpdateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarDedupRulesModel]:
+    """Persist the cross-source dedup match-strategy / noisy-threshold settings.
+
+    Omitted fields are left unchanged. Validation (strategy enum, threshold
+    bounds) is enforced by the request model; an empty body is a no-op that
+    returns the current rules.
+    """
+    if body.match_strategy is not None and body.match_strategy not in DEDUP_STRATEGIES:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown match_strategy: {body.match_strategy}"
+        )
+    try:
+        rules = await update_dedup_rules(
+            db,
+            match_strategy=body.match_strategy,
+            noisy_threshold=body.noisy_threshold,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await log_audit_entry(
+        db,
+        "calendar",
+        "calendar.workspace.dedup_rules.update",
+        {"match_strategy": rules.match_strategy, "noisy_threshold": rules.noisy_threshold},
+    )
+    return ApiResponse[CalendarDedupRulesModel](data=_rules_to_model(rules))
+
+
+@router.post(
+    "/duplicates/keep-separate",
+    response_model=ApiResponse[CalendarKeepSeparateResponse],
+)
+async def post_keep_separate(
+    body: CalendarKeepSeparateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarKeepSeparateResponse]:
+    """Pin or unpin a duplicate cluster as keep-separate.
+
+    When ``keep_separate`` is true the dedup will no longer collapse the cluster
+    (every member shows in the workspace read); when false the override is
+    removed and the cluster collapses again.
+    """
+    try:
+        state = await set_keep_separate(
+            db,
+            cluster_key=body.cluster_key,
+            keep_separate=body.keep_separate,
+            match_pass=body.match_pass,
+            label=body.label,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await log_audit_entry(
+        db,
+        "calendar",
+        "calendar.workspace.dedup_keep_separate",
+        {"cluster_key": body.cluster_key, "keep_separate": body.keep_separate},
+    )
+    return ApiResponse[CalendarKeepSeparateResponse](
+        data=CalendarKeepSeparateResponse(cluster_key=body.cluster_key, keep_separate=state)
+    )
 
 
 @router.get("/search", response_model=ApiResponse[CalendarWorkspaceSearchResponse])

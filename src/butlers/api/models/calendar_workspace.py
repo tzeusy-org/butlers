@@ -773,3 +773,77 @@ class QuickAddParseResponse(BaseModel):
     parse_available: bool
     draft: QuickAddDraft | None = None
     reason: str | None = None
+
+
+class CalendarDedupRulesModel(BaseModel):
+    """The active cross-source dedup rules (workspace-global).
+
+    ``match_strategy`` selects which collapse passes run:
+    - ``exact`` — only the origin-ref identity pass.
+    - ``balanced`` (default) — origin-ref + title/start collapse (current behavior).
+    - ``aggressive`` — as ``balanced`` but strips non-alphanumerics from titles.
+
+    ``noisy_threshold`` is the minimum cluster size (collapsed-member count) for a
+    cluster to be reported on the review surface; default ``2`` reports every
+    duplicate group.
+    """
+
+    match_strategy: Literal["exact", "balanced", "aggressive"] = "balanced"
+    noisy_threshold: int = Field(2, ge=2, le=1000)
+
+
+class CalendarDedupRulesUpdateRequest(BaseModel):
+    """PATCH body for the dedup rules; omitted fields are left unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    match_strategy: Literal["exact", "balanced", "aggressive"] | None = None
+    noisy_threshold: int | None = Field(None, ge=2, le=1000)
+
+
+class CalendarDuplicateCluster(BaseModel):
+    """One collapsed cross-source duplicate cluster surfaced for review.
+
+    ``kept_entry`` is the survivor the read keeps (lowest keyset);
+    ``duplicate_entries`` are the copies the dedup collapses away.  When
+    ``keep_separate`` is true the user has pinned this cluster so the read does
+    NOT collapse it (every member is shown in the workspace).
+    """
+
+    cluster_key: str
+    match_pass: Literal["origin_ref", "title"]
+    member_count: int
+    keep_separate: bool = False
+    kept_entry: UnifiedCalendarEntry
+    duplicate_entries: list[UnifiedCalendarEntry]
+
+
+class CalendarDuplicatesResponse(BaseModel):
+    """Response for GET /api/calendar/workspace/duplicates.
+
+    ``available`` is ``false`` only when the underlying read could not run; an
+    empty ``clusters`` list with ``available=true`` genuinely means no duplicates
+    were collapsed in the window.
+    """
+
+    clusters: list[CalendarDuplicateCluster]
+    rules: CalendarDedupRulesModel
+    available: bool = True
+
+
+class CalendarKeepSeparateRequest(BaseModel):
+    """Body to pin/unpin a duplicate cluster as keep-separate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cluster_key: str = Field(..., min_length=1)
+    keep_separate: bool
+    match_pass: Literal["origin_ref", "title"] | None = None
+    label: str | None = None
+
+
+class CalendarKeepSeparateResponse(BaseModel):
+    """Result of a keep-separate toggle."""
+
+    cluster_key: str
+    keep_separate: bool

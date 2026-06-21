@@ -50,6 +50,33 @@ logger = logging.getLogger(__name__)
 READ_MODEL_VERSION = "calendar_workspace_v1"
 
 # ---------------------------------------------------------------------------
+# Cross-source dedup rules + keep-separate overrides (bu-tjo2m1)
+# ---------------------------------------------------------------------------
+#
+# The workspace read-model collapses cross-source duplicate events via a
+# two-pass dedup in ``routers/calendar_workspace.py``.  These settings let the
+# user steer that collapse: the *match strategy* selects which passes run and how
+# aggressively titles are normalised, the *noisy threshold* governs which
+# clusters the review surface reports, and the *keep-separate overrides* pin
+# specific clusters so the dedup never collapses them.
+#
+# Persistence lives in two ``public`` tables (migration ``core_144``) because the
+# dedup operates on the cross-schema *merge* of the workspace read — the rules
+# are workspace-global, not owned by any one butler schema.  Reads/writes go
+# through one deterministically-chosen calendar-enabled butler pool (the same
+# single-pool pattern used by :func:`query_calendar_overlays`).
+
+#: Allowed dedup match strategies.  ``exact`` runs only the origin-ref identity
+#: pass; ``balanced`` (default) adds the title/start collapse pass; ``aggressive``
+#: additionally strips non-alphanumerics from titles before comparing.
+DEDUP_STRATEGIES: tuple[str, ...] = ("exact", "balanced", "aggressive")
+DEDUP_DEFAULT_STRATEGY = "balanced"
+DEDUP_DEFAULT_NOISY_THRESHOLD = 2
+
+_DEDUP_RULES_TABLE = "public.calendar_dedup_rules"
+_DEDUP_OVERRIDES_TABLE = "public.calendar_dedup_overrides"
+
+# ---------------------------------------------------------------------------
 # Column projections (v1 schema contract)
 # ---------------------------------------------------------------------------
 
@@ -1223,3 +1250,157 @@ async def query_calendar_event_search(
     # Degraded only when EVERY targeted schema failed to respond; a partial
     # failure still returns whatever matched with ``available=True``.
     return CalendarSearchResults(matches=merged[:limit], available=any_ok)
+
+
+# ---------------------------------------------------------------------------
+# Dedup rules + keep-separate override store (bu-tjo2m1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CalendarDedupRules:
+    """The active cross-source dedup rules (workspace-global singleton)."""
+
+    match_strategy: str = DEDUP_DEFAULT_STRATEGY
+    noisy_threshold: int = DEDUP_DEFAULT_NOISY_THRESHOLD
+
+
+def _dedup_pool(db: DatabaseManager) -> asyncpg.Pool | None:
+    """Pick the deterministic butler pool used for the workspace-global dedup tables.
+
+    The rules/overrides live in ``public`` and govern the cross-schema merge, so a
+    single reader/writer pool is correct (fanning out would touch the same
+    ``public`` rows once per schema).  The chosen pool is the first
+    calendar-enabled butler (deterministic), falling back to any butler.  Returns
+    ``None`` when no pool is available (fail-open at the callers).
+    """
+    candidates = db.butlers_with_module("calendar") or db.butler_names
+    if not candidates:
+        return None
+    try:
+        return db.pool(sorted(candidates)[0])
+    except Exception:
+        logger.warning("dedup store: no pool available; degrading", exc_info=True)
+        return None
+
+
+async def load_dedup_rules(db: DatabaseManager) -> CalendarDedupRules:
+    """Load the active dedup rules, fail-open to defaults.
+
+    A missing ``public.calendar_dedup_rules`` table (pre-migration), an empty
+    table (never configured), or any query failure degrades to the defaults
+    (``balanced`` strategy, threshold ``2``) rather than raising.
+    """
+    pool = _dedup_pool(db)
+    if pool is None:
+        return CalendarDedupRules()
+    try:
+        row = await pool.fetchrow(
+            f"SELECT match_strategy, noisy_threshold FROM {_DEDUP_RULES_TABLE} WHERE id = TRUE"
+        )
+    except Exception:
+        logger.warning("load_dedup_rules failed; returning defaults (fail-open)", exc_info=True)
+        return CalendarDedupRules()
+    if row is None:
+        return CalendarDedupRules()
+    strategy = row["match_strategy"]
+    if strategy not in DEDUP_STRATEGIES:
+        strategy = DEDUP_DEFAULT_STRATEGY
+    return CalendarDedupRules(match_strategy=strategy, noisy_threshold=int(row["noisy_threshold"]))
+
+
+async def update_dedup_rules(
+    db: DatabaseManager,
+    *,
+    match_strategy: str | None = None,
+    noisy_threshold: int | None = None,
+) -> CalendarDedupRules:
+    """Upsert the singleton dedup rules row, returning the persisted rules.
+
+    Only provided (non-``None``) fields are written.  Validation of values is the
+    caller's responsibility (the API layer rejects unknown strategies / bad
+    thresholds with a 400 before reaching here).  Raises when no pool is
+    available — this is an explicit user write, not a fail-open read.
+    """
+    pool = _dedup_pool(db)
+    if pool is None:
+        raise RuntimeError("no calendar-enabled butler pool available for dedup rules")
+
+    fields: dict[str, Any] = {}
+    if match_strategy is not None:
+        fields["match_strategy"] = match_strategy
+    if noisy_threshold is not None:
+        fields["noisy_threshold"] = noisy_threshold
+    if not fields:
+        return await load_dedup_rules(db)
+
+    cols = ["id"] + list(fields.keys())
+    params: list[Any] = [True] + list(fields.values())
+    placeholders = ", ".join(f"${i}" for i in range(1, len(params) + 1))
+    set_clause = ", ".join(["updated_at = now()"] + [f"{col} = EXCLUDED.{col}" for col in fields])
+    row = await pool.fetchrow(
+        f"""
+        INSERT INTO {_DEDUP_RULES_TABLE} ({", ".join(cols)})
+        VALUES ({placeholders})
+        ON CONFLICT (id) DO UPDATE SET {set_clause}
+        RETURNING match_strategy, noisy_threshold
+        """,
+        *params,
+    )
+    return CalendarDedupRules(
+        match_strategy=row["match_strategy"], noisy_threshold=int(row["noisy_threshold"])
+    )
+
+
+async def load_keep_separate_keys(db: DatabaseManager) -> set[str]:
+    """Load the set of cluster keys the user pinned as keep-separate, fail-open.
+
+    A missing ``public.calendar_dedup_overrides`` table or any query failure
+    degrades to an empty set (no overrides) rather than raising.
+    """
+    pool = _dedup_pool(db)
+    if pool is None:
+        return set()
+    try:
+        rows = await pool.fetch(f"SELECT cluster_key FROM {_DEDUP_OVERRIDES_TABLE}")
+    except Exception:
+        logger.warning("load_keep_separate_keys failed; returning empty (fail-open)", exc_info=True)
+        return set()
+    return {row["cluster_key"] for row in rows}
+
+
+async def set_keep_separate(
+    db: DatabaseManager,
+    *,
+    cluster_key: str,
+    keep_separate: bool,
+    match_pass: str | None = None,
+    label: str | None = None,
+) -> bool:
+    """Pin (or unpin) a cluster as keep-separate, returning the new state.
+
+    When ``keep_separate`` is true an override row is upserted; when false the
+    override row is removed (the cluster collapses again).  Raises when no pool is
+    available — this is an explicit user write.
+    """
+    pool = _dedup_pool(db)
+    if pool is None:
+        raise RuntimeError("no calendar-enabled butler pool available for dedup overrides")
+
+    if keep_separate:
+        await pool.execute(
+            f"""
+            INSERT INTO {_DEDUP_OVERRIDES_TABLE} (cluster_key, match_pass, label)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (cluster_key) DO UPDATE
+                SET match_pass = EXCLUDED.match_pass, label = EXCLUDED.label
+            """,
+            cluster_key,
+            match_pass or "",
+            label,
+        )
+    else:
+        await pool.execute(
+            f"DELETE FROM {_DEDUP_OVERRIDES_TABLE} WHERE cluster_key = $1", cluster_key
+        )
+    return keep_separate
