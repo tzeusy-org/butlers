@@ -10,13 +10,13 @@ import logging
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import icalendar
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from butlers.api.calendar.quick_add import parse_quick_add
@@ -37,6 +37,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarButlerEventPreviewResponse,
     CalendarConflictEntry,
     CalendarDayBriefingResponse,
+    CalendarIcsImportedEvent,
+    CalendarIcsImportResponse,
     CalendarPrepAttendee,
     CalendarPrepNote,
     CalendarPrepResponse,
@@ -256,6 +258,39 @@ def _coerce_datetime(value: object) -> datetime | None:
             return None
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
     return None
+
+
+def _starts_epoch_ms(starts_at: datetime | None) -> int:
+    """Epoch-millisecond bucket for a start instant (0 when unknown).
+
+    Using epoch-ms instead of the serialized datetime makes the collapse keys
+    timezone-serialization agnostic across butler schemas / providers.
+    """
+    return int(starts_at.timestamp() * 1000) if starts_at else 0
+
+
+def _origin_collapse_key(row: Mapping[str, Any]) -> tuple[str, int]:
+    """Pass-1 read-model collapse key: exact event identity.
+
+    Keys on ``(origin_ref, starts_epoch)`` — the same provider event synced into
+    every butler's projection collapses to one instance. ``calendar_id`` is
+    deliberately excluded (Google aliases "primary" and the explicit address).
+    """
+    origin_ref = row.get("origin_ref") or ""
+    starts_at = _coerce_datetime(row.get("instance_starts_at"))
+    return (str(origin_ref), _starts_epoch_ms(starts_at))
+
+
+def _title_collapse_key(row: Mapping[str, Any]) -> tuple[str, int]:
+    """Pass-2 read-model collapse key: cross-calendar copies of one event.
+
+    Keys on ``(title, starts_epoch)`` so a real-world event duplicated to a
+    group calendar (and thus given a fresh ``origin_ref`` by Google) still shows
+    once. Reused by ``.ics`` import to dedup against existing entries.
+    """
+    title = (row.get("title") or "").strip().lower()
+    starts_at = _coerce_datetime(row.get("instance_starts_at"))
+    return (title, _starts_epoch_ms(starts_at))
 
 
 def _entry_status(raw_status: object, source_type: str, event_metadata: dict[str, Any]) -> str:
@@ -531,10 +566,7 @@ async def _fetch_workspace_rows(
     seen_ref: set[tuple[str, int]] = set()
     after_pass1: list[dict[str, Any]] = []
     for row in flattened:
-        origin_ref = row.get("origin_ref") or ""
-        starts_at = _coerce_datetime(row.get("instance_starts_at"))
-        starts_epoch = int(starts_at.timestamp() * 1000) if starts_at else 0
-        key = (origin_ref, starts_epoch)
+        key = _origin_collapse_key(row)
         if key in seen_ref:
             continue
         seen_ref.add(key)
@@ -543,10 +575,7 @@ async def _fetch_workspace_rows(
     seen_title: set[tuple[str, int]] = set()
     deduped: list[dict[str, Any]] = []
     for row in after_pass1:
-        title = (row.get("title") or "").strip().lower()
-        starts_at = _coerce_datetime(row.get("instance_starts_at"))
-        starts_epoch = int(starts_at.timestamp() * 1000) if starts_at else 0
-        title_key = (title, starts_epoch)
+        title_key = _title_collapse_key(row)
         if title_key in seen_title:
             continue
         seen_title.add(title_key)
@@ -3215,8 +3244,8 @@ async def export_calendar_ics(
     and preserves the ``BUTLER:`` title prefix verbatim on butler-authored
     events.
 
-    Out of scope (follow-up): ICS subscribe / ``webcal`` live feed and ``.ics``
-    import-with-dedup — this endpoint is a one-shot download only.
+    For a live re-rendering feed an external calendar app can subscribe to (so
+    it re-fetches on its own schedule), see ``GET /api/calendar/subscribe.ics``.
     """
     if end <= start:
         raise HTTPException(status_code=400, detail="end must be after start")
@@ -3227,9 +3256,42 @@ async def export_calendar_ics(
     if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
         raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
 
-    # Reuse the workspace read/projection unbounded (no keyset pagination): an
-    # export wants every entry in the range, not a single page. Timestamps stay
-    # in their source instant (display_tz=None → UTC), which ICS serializes as Z.
+    ics_bytes = await _render_workspace_ics(
+        db,
+        view=view,
+        start=start,
+        end=end,
+        butlers=butlers,
+        sources=sources,
+        status=status,
+        source_type=source_type,
+    )
+    filename = f"butlers-calendar-{start.date().isoformat()}-{end.date().isoformat()}.ics"
+    return StreamingResponse(
+        iter((ics_bytes,)),
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+async def _render_workspace_ics(
+    db: DatabaseManager,
+    *,
+    view: str,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None,
+    sources: list[str] | None,
+    status: str | None,
+    source_type: str | None,
+) -> bytes:
+    """Fetch the deduped workspace rows for a range and render them as ICS bytes.
+
+    Shared by the one-shot export and the live subscribe feed. Reuses the
+    workspace read/projection unbounded (no keyset pagination) — both surfaces
+    want every entry in the range, not a single page. Timestamps stay in their
+    source instant (``display_tz=None`` → UTC), which ICS serializes as ``Z``.
+    """
     workspace_rows = await _fetch_workspace_rows(
         db,
         view=view,
@@ -3246,11 +3308,266 @@ async def export_calendar_ics(
             entries.append(_normalize_entry(row, view=view, display_tz=None))
         except ValueError:
             continue
+    return _build_calendar_ics(entries, dtstamp=datetime.now(UTC))
 
-    ics_bytes = _build_calendar_ics(entries, dtstamp=datetime.now(UTC))
-    filename = f"butlers-calendar-{start.date().isoformat()}-{end.date().isoformat()}.ics"
+
+# Default rolling window for the subscribe feed, measured from "now": a calendar
+# app that subscribes wants recent history plus near-future entries on each
+# poll. Kept within the 90-day workspace cap (30 + 60 == 90).
+_SUBSCRIBE_PAST = timedelta(days=30)
+_SUBSCRIBE_FUTURE = timedelta(days=60)
+
+
+@export_router.get("/subscribe.ics")
+async def subscribe_calendar_ics(
+    view: str = Query("user", pattern="^(user|butler)$"),
+    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
+    sources: list[str] | None = Query(None, description="Optional source_key filters"),
+    status: str | None = Query(None, description="Optional computed-status facet"),
+    source_type: str | None = Query(None, description="Optional computed source_type facet"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> StreamingResponse:
+    """Read-only live ICS feed for external calendar-app subscription (webcal).
+
+    A calendar app subscribes to this stable URL (``webcal://…/subscribe.ics``)
+    and re-fetches on its own schedule; each fetch **re-renders the current
+    workspace entries** over a rolling ``now - 30d … now + 60d`` window, so the
+    subscriber always sees the live state. Same read-only projection, filters,
+    and ``BUTLER:`` prefix preservation as the export — no provider write, no
+    LLM session.
+
+    Served behind the same network boundary (localhost + Tailscale) as every
+    other dashboard/calendar endpoint; it adds no new unauthenticated surface
+    and no per-feed token (see ``security.md`` — the trust boundary is
+    network-level, not app-key). ``Content-Disposition: inline`` so clients
+    treat it as a subscription feed, not a one-shot download.
+    """
+    if status is not None and status not in _WORKSPACE_STATUS_FACETS:
+        raise HTTPException(status_code=400, detail=f"Unknown status facet: {status}")
+    if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
+        raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
+
+    now = datetime.now(UTC)
+    start = now - _SUBSCRIBE_PAST
+    end = now + _SUBSCRIBE_FUTURE
+    ics_bytes = await _render_workspace_ics(
+        db,
+        view=view,
+        start=start,
+        end=end,
+        butlers=butlers,
+        sources=sources,
+        status=status,
+        source_type=source_type,
+    )
     return StreamingResponse(
         iter((ics_bytes,)),
         media_type="text/calendar",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": 'inline; filename="butlers-calendar.ics"',
+            # Discourage stale caching so the subscriber re-renders live state.
+            "Cache-Control": "no-cache, max-age=0",
+        },
+    )
+
+
+# Upper bound on VEVENTs accepted in one import — a guardrail against a
+# pathological upload, not a product limit. Surfaced as a 413 when exceeded.
+_ICS_IMPORT_MAX_EVENTS = 1000
+
+
+class _ParsedIcsEvent:
+    """A normalized VEVENT extracted from an uploaded ``.ics`` payload."""
+
+    __slots__ = ("title", "start_at", "end_at", "all_day", "description", "location")
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        start_at: datetime,
+        end_at: datetime,
+        all_day: bool,
+        description: str | None,
+        location: str | None,
+    ) -> None:
+        self.title = title
+        self.start_at = start_at
+        self.end_at = end_at
+        self.all_day = all_day
+        self.description = description
+        self.location = location
+
+    @property
+    def collapse_key(self) -> tuple[str, int]:
+        """Same ``(title, starts_epoch)`` collapse key the read-model dedup uses.
+
+        Lets an imported event be matched against existing workspace entries with
+        :func:`_title_collapse_key`, so a re-import of the same ``.ics`` is a
+        no-op instead of creating duplicates.
+        """
+        return (self.title.strip().lower(), _starts_epoch_ms(self.start_at))
+
+
+def _coerce_ics_instant(value: object, *, all_day: bool) -> datetime | None:
+    """Coerce an icalendar DATE/DATE-TIME value into a tz-aware UTC datetime.
+
+    All-day DATE values anchor at UTC midnight so they share the start-instant
+    representation the workspace projection stores for all-day entries.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    return None
+
+
+def _parse_ics_events(raw: bytes) -> list[_ParsedIcsEvent]:
+    """Parse an uploaded ``.ics`` byte payload into normalized VEVENTs.
+
+    Skips VEVENTs missing a usable SUMMARY or DTSTART. A missing DTEND defaults
+    to the DTSTART (zero-length) so downstream creation always has both bounds.
+    Raises ``HTTPException(400)`` on a structurally invalid payload.
+    """
+    try:
+        cal = icalendar.Calendar.from_ical(raw)
+    except Exception as exc:  # icalendar raises ValueError subclasses on bad input
+        raise HTTPException(status_code=400, detail=f"Invalid ICS payload: {exc}") from exc
+
+    events: list[_ParsedIcsEvent] = []
+    for component in cal.walk("VEVENT"):
+        title = str(component.get("summary") or "").strip()
+        dtstart = component.get("dtstart")
+        if not title or dtstart is None:
+            continue
+        start_raw = getattr(dtstart, "dt", None)
+        all_day = isinstance(start_raw, date) and not isinstance(start_raw, datetime)
+        start_at = _coerce_ics_instant(start_raw, all_day=all_day)
+        if start_at is None:
+            continue
+
+        dtend = component.get("dtend")
+        end_raw = getattr(dtend, "dt", None) if dtend is not None else None
+        end_at = _coerce_ics_instant(end_raw, all_day=all_day) if end_raw is not None else None
+        if end_at is None or end_at < start_at:
+            end_at = start_at
+
+        description = component.get("description")
+        location = component.get("location")
+        events.append(
+            _ParsedIcsEvent(
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                all_day=all_day,
+                description=str(description).strip() if description else None,
+                location=str(location).strip() if location else None,
+            )
+        )
+    return events
+
+
+@export_router.post("/import/ics", response_model=ApiResponse[CalendarIcsImportResponse])
+async def import_calendar_ics(
+    file: UploadFile = File(..., description="The .ics file to import"),
+    butler_name: str = Form(..., description="Calendar-enabled butler to import into"),
+    calendar_id: str | None = Form(None, description="Optional target calendar id"),
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarIcsImportResponse]:
+    """Import an uploaded ``.ics`` into the user calendar, deduped against existing entries.
+
+    Each VEVENT is created through the blessed ``calendar_create_event`` MCP path
+    (same provider-write path as user-event creation) **only if** it is not
+    already present in the workspace. Deduplication reuses the read-model's
+    ``(title, starts_epoch)`` collapse key (:func:`_title_collapse_key`), so an
+    event that already exists — including every event on a re-import of the same
+    file — is skipped rather than duplicated. Duplicates within the uploaded file
+    itself are also collapsed.
+    """
+    butler_name = butler_name.strip()
+    if not butler_name:
+        raise HTTPException(status_code=400, detail="butler_name must be a non-empty string")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded .ics file is empty")
+
+    parsed = _parse_ics_events(raw)
+    if len(parsed) > _ICS_IMPORT_MAX_EVENTS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Import exceeds the {_ICS_IMPORT_MAX_EVENTS}-event limit",
+        )
+
+    if not parsed:
+        return ApiResponse[CalendarIcsImportResponse](
+            data=CalendarIcsImportResponse(parsed=0, imported=0, skipped_duplicates=0)
+        )
+
+    # Fetch existing user-view entries spanning the imported events' range so we
+    # can dedup against the live workspace using the read-model collapse keys.
+    range_start = min(event.start_at for event in parsed)
+    range_end = max(event.end_at for event in parsed) + timedelta(seconds=1)
+    existing_rows = await _fetch_workspace_rows(
+        db,
+        view="user",
+        start=range_start,
+        end=range_end,
+    )
+    seen_keys: set[tuple[str, int]] = {_title_collapse_key(row) for row in existing_rows}
+
+    imported_events: list[CalendarIcsImportedEvent] = []
+    skipped = 0
+    for event in parsed:
+        key = event.collapse_key
+        if key in seen_keys:
+            skipped += 1
+            continue
+        # Mark seen up-front so duplicate VEVENTs within this same file collapse.
+        seen_keys.add(key)
+
+        arguments: dict[str, Any] = {
+            "title": event.title,
+            "all_day": event.all_day,
+        }
+        if event.all_day:
+            arguments["start_at"] = event.start_at.date().isoformat()
+            arguments["end_at"] = event.end_at.date().isoformat()
+        else:
+            arguments["start_at"] = event.start_at.isoformat()
+            arguments["end_at"] = event.end_at.isoformat()
+        if event.description:
+            arguments["description"] = event.description
+        if event.location:
+            arguments["location"] = event.location
+        if calendar_id:
+            arguments["calendar_id"] = calendar_id
+
+        await _call_mcp_tool(mgr, butler_name, "calendar_create_event", arguments)
+        imported_events.append(
+            CalendarIcsImportedEvent(
+                title=event.title,
+                start_at=event.start_at,
+                all_day=event.all_day,
+            )
+        )
+
+    await log_audit_entry(
+        db,
+        butler_name,
+        "calendar.workspace.import_ics",
+        {
+            "parsed": len(parsed),
+            "imported": len(imported_events),
+            "skipped_duplicates": skipped,
+        },
+    )
+    return ApiResponse[CalendarIcsImportResponse](
+        data=CalendarIcsImportResponse(
+            parsed=len(parsed),
+            imported=len(imported_events),
+            skipped_duplicates=skipped,
+            imported_events=imported_events,
+        )
     )

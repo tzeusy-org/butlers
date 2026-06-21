@@ -533,6 +533,29 @@ class CalendarWorkspaceMutationResponse(BaseModel):
     projection_freshness: dict[str, Any] | None = None
 
 
+class CalendarIcsImportedEvent(BaseModel):
+    """One event that was created from an imported ``.ics`` payload."""
+
+    title: str
+    start_at: datetime
+    all_day: bool = False
+
+
+class CalendarIcsImportResponse(BaseModel):
+    """Result of a ``POST /api/calendar/import/ics`` import-with-dedup run.
+
+    ``imported`` and ``skipped_duplicates`` always sum to ``parsed`` (every
+    parseable VEVENT is either created or recognised as a duplicate). Re-importing
+    the same ``.ics`` yields ``imported == 0`` (a no-op) because every event
+    collapses onto an existing workspace entry via the read-model collapse keys.
+    """
+
+    parsed: int
+    imported: int
+    skipped_duplicates: int
+    imported_events: list[CalendarIcsImportedEvent] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Audit trail models — GET /api/calendar/workspace/audit
 # ---------------------------------------------------------------------------
