@@ -15,6 +15,7 @@ import {
   useMutateCalendarWorkspaceUserEvent,
   useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
+  useToggleCalendarSource,
 } from "@/hooks/use-calendar-workspace";
 
 vi.mock("@/hooks/use-calendar-workspace", () => ({
@@ -36,6 +37,13 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
   useSyncCalendarWorkspace: vi.fn(),
   useMutateCalendarWorkspaceUserEvent: vi.fn(),
   useSetPrimaryCalendar: vi.fn(),
+  useCalendarAccounts: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: { data: { accounts: [], health_available: true } },
+  })),
+  useToggleCalendarSource: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("sonner", () => ({
@@ -121,6 +129,7 @@ function setWorkspaceState(state?: Partial<UseWorkspaceResult>) {
             sync_state: "fresh",
             staleness_ms: 500,
             error_kind: "none",
+            sync_enabled: true,
           },
         ],
         lanes: [],
@@ -166,6 +175,7 @@ function setWorkspaceMetaState(state?: Partial<UseWorkspaceMetaResult>) {
             sync_state: "fresh",
             staleness_ms: 1000,
             error_kind: "none",
+            sync_enabled: true,
           },
           {
             source_id: "source-2",
@@ -187,6 +197,7 @@ function setWorkspaceMetaState(state?: Partial<UseWorkspaceMetaResult>) {
             sync_state: "fresh",
             staleness_ms: 1000,
             error_kind: "none",
+            sync_enabled: true,
           },
         ],
         writable_calendars: [
@@ -352,6 +363,7 @@ function setButlerWorkspaceFixtures() {
             sync_state: "fresh",
             staleness_ms: 900,
             error_kind: "none",
+            sync_enabled: true,
           },
           {
             source_id: "source-butler-2",
@@ -373,6 +385,7 @@ function setButlerWorkspaceFixtures() {
             sync_state: "fresh",
             staleness_ms: 900,
             error_kind: "none",
+            sync_enabled: true,
           },
         ],
         lanes: [
@@ -425,6 +438,7 @@ function setButlerWorkspaceFixtures() {
             sync_state: "fresh",
             staleness_ms: 900,
             error_kind: "none",
+            sync_enabled: true,
           },
           {
             source_id: "source-butler-2",
@@ -446,6 +460,7 @@ function setButlerWorkspaceFixtures() {
             sync_state: "fresh",
             staleness_ms: 900,
             error_kind: "none",
+            sync_enabled: true,
           },
         ],
         writable_calendars: [],
@@ -706,6 +721,7 @@ describe("CalendarWorkspacePage", () => {
               sync_state: "fresh",
               staleness_ms: 1000,
               error_kind: "none",
+              sync_enabled: true,
             },
           ],
           writable_calendars: [
@@ -1675,6 +1691,7 @@ describe("CalendarWorkspacePage", () => {
               sync_state: "fresh",
               staleness_ms: 900,
               error_kind: "none",
+              sync_enabled: true,
             },
           ],
           writable_calendars: [],
@@ -1747,6 +1764,7 @@ describe("CalendarWorkspacePage", () => {
               sync_state: "fresh",
               staleness_ms: 900,
               error_kind: "none",
+              sync_enabled: true,
             },
           ],
           writable_calendars: [],
@@ -1905,6 +1923,7 @@ describe("CalendarWorkspacePage", () => {
                 sync_state: lastError ? "failed" : "fresh",
                 staleness_ms: 900,
                 error_kind: errorKind,
+                sync_enabled: true,
               },
             ],
             writable_calendars: [],
@@ -1992,6 +2011,37 @@ describe("CalendarWorkspacePage", () => {
         (anchor) => anchor.textContent?.trim() === "Reconnect",
       );
       expect(reconnect).toBeUndefined();
+    });
+
+    it("toggling a source persists the change via POST /api/calendar/sources", async () => {
+      setButlerWorkspaceFixtures();
+      setSourceMeta("none", null);
+      setSyncState();
+      const toggleMutate = vi.fn();
+      vi.mocked(useToggleCalendarSource).mockReturnValue({
+        mutate: toggleMutate,
+        isPending: false,
+      } as unknown as ReturnType<typeof useToggleCalendarSource>);
+
+      await openSourcesDialog();
+
+      const checkbox = document.querySelector(
+        '[aria-label^="Toggle "]',
+      ) as HTMLElement | null;
+      expect(checkbox).not.toBeNull();
+      await act(async () => {
+        checkbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      expect(toggleMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          butler: "general",
+          source_key: "google:work",
+          enabled: false,
+        }),
+        expect.anything(),
+      );
     });
   });
 

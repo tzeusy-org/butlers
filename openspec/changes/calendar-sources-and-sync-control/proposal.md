@@ -35,11 +35,9 @@ this change exposes the calendar list that populates the selector.
   name, primary flag, access role, and whether it is the dedicated "Butlers"
   calendar. This is the source for the dashboard's per-event calendar selector
   and the sources drawer. (Tool surface impact: this change ADDS exactly one
-  tool. The normative "16 MCP tools total" count pin in the
-  `Calendar Event CRUD Tools` requirement is **not** re-pinned here to avoid a
-  conflicting number — the in-flight `calendar-recurrence-scope-editing` change
-  owns the re-pin of that count, and `calendar-availability-find-time` also
-  adds one tool; the final total is reconciled when those changes apply.)
+  tool and re-pins the normative MCP tool count in the
+  `Calendar Event CRUD Tools` requirement from 20 to 21. PR #2620 reconciled
+  the canonical surface to 20; `calendar_list_calendars` is the one new tool.)
 - **`calendar_force_sync` gains a `full` flag for cursor recovery.** When
   `full=true`, the sync runs against `sync_token=None` (a full re-sync over the
   configured window) instead of the stored incremental token, and the recovery
@@ -112,7 +110,4 @@ _None — this extends existing calendar MCP tools and dashboard endpoints._
 - Changing the default write-target routing (butler-authored events →
   dedicated "Butlers" calendar) — owned by the in-flight
   `calendar-route-butler-events-to-dedicated-calendar` change.
-- Re-pinning the normative MCP tool count — owned by
-  `calendar-recurrence-scope-editing` (16 → 18) and
-  `calendar-availability-find-time` (16 → 17).
 - A new sources DB table — source enable/disable reuses `calendar_sources`.

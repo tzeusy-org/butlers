@@ -22,6 +22,7 @@ import { Link, useSearchParams } from "react-router";
 
 import type {
   ApiResponse,
+  CalendarAccountEntry,
   CalendarAuditEntry,
   CalendarConflictEntry,
   CalendarSuggestedSlot,
@@ -36,6 +37,7 @@ import type {
   UnifiedCalendarSourceType,
 } from "@/api/types.ts";
 import {
+  useCalendarAccounts,
   useCalendarWorkspace,
   useCalendarWorkspaceAudit,
   useCalendarWorkspaceMeta,
@@ -44,6 +46,7 @@ import {
   useMutateCalendarWorkspaceUserEvent,
   useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
+  useToggleCalendarSource,
 } from "@/hooks/use-calendar-workspace";
 import {
   Dialog,
@@ -758,6 +761,16 @@ function syncDotState(syncState: string): "ok" | "degraded" | "error" | "waiting
   return "waiting";
 }
 
+/** Map a calendar account connector health state to a StateDot state. */
+function accountHealthDotState(
+  state: CalendarAccountEntry["health"]["state"],
+): "ok" | "degraded" | "error" | "waiting" {
+  if (state === "healthy") return "ok";
+  if (state === "error") return "error";
+  if (state === "degraded") return "degraded";
+  return "waiting";
+}
+
 // ---------------------------------------------------------------------------
 // CalendarActivityPanel — audit log view for the Activity tab
 // ---------------------------------------------------------------------------
@@ -1446,27 +1459,54 @@ export default function CalendarWorkspacePage() {
   );
 
   const [sourcesDialogOpen, setSourcesDialogOpen] = useState(false);
-  const [disabledSources, setDisabledSources] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem("calendar-disabled-sources");
-      if (stored) return new Set(JSON.parse(stored) as string[]);
-    } catch { /* ignore */ }
-    return new Set<string>();
-  });
+  // The backend is the source of truth for whether a calendar is enabled as a
+  // sync source (``sync_enabled`` on each connected source). We mirror that into
+  // a local Set for snappy optimistic toggling; it is re-seeded whenever meta
+  // refreshes.
+  const accountsQuery = useCalendarAccounts();
+  const toggleSourceMutation = useToggleCalendarSource();
+  const [disabledSources, setDisabledSources] = useState<Set<string>>(new Set<string>());
 
-  function toggleSourceEnabled(sourceKey: string) {
+  useEffect(() => {
+    if (toggleSourceMutation.isPending) return;
+    const serverDisabled = connectedSources
+      .filter((source) => source.sync_enabled === false)
+      .map((source) => source.source_key);
+    setDisabledSources(new Set(serverDisabled));
+  }, [connectedSources, toggleSourceMutation.isPending]);
+
+  function toggleSourceEnabled(source: CalendarWorkspaceSourceFreshness) {
+    const sourceKey = source.source_key;
+    const willEnable = disabledSources.has(sourceKey);
+    // Optimistically reflect the new state.
     setDisabledSources((prev) => {
       const next = new Set(prev);
-      if (next.has(sourceKey)) {
-        next.delete(sourceKey);
-      } else {
-        next.add(sourceKey);
-      }
-      try {
-        localStorage.setItem("calendar-disabled-sources", JSON.stringify([...next]));
-      } catch { /* ignore */ }
+      if (willEnable) next.delete(sourceKey);
+      else next.add(sourceKey);
       return next;
     });
+    if (!source.butler_name) {
+      toast.error("Cannot toggle this source: no owning butler resolved");
+      return;
+    }
+    toggleSourceMutation.mutate(
+      { butler: source.butler_name, source_key: sourceKey, enabled: willEnable },
+      {
+        onError: (err) => {
+          // Revert the optimistic update on failure.
+          setDisabledSources((prev) => {
+            const next = new Set(prev);
+            if (willEnable) next.add(sourceKey);
+            else next.delete(sourceKey);
+            return next;
+          });
+          toast.error(`Failed to update source: ${err.message}`);
+        },
+        onSuccess: () => {
+          toast.success(willEnable ? "Source enabled for sync" : "Source disabled");
+        },
+      },
+    );
   }
 
   const sourceFilters = useMemo(() => {
@@ -3521,9 +3561,57 @@ export default function CalendarWorkspacePage() {
           <DialogHeader>
             <DialogTitle>Configure Sources</DialogTitle>
             <DialogDescription>
-              Toggle sources to include or exclude them from the calendar view. Per-source sync and primary calendar controls.
+              Connected Google accounts and their calendars. Toggle a calendar to
+              enable or disable it as a sync source; a disabled calendar is
+              skipped by sync and hidden from the view.
             </DialogDescription>
           </DialogHeader>
+          {(() => {
+            const accounts = accountsQuery.data?.data.accounts ?? [];
+            const healthAvailable = accountsQuery.data?.data.health_available ?? true;
+            if (accounts.length === 0) return null;
+            return (
+              <div className="mb-3 space-y-1.5" role="list" aria-label="Connected accounts">
+                <Mono muted className="text-[11px] uppercase tracking-wide">
+                  Accounts
+                </Mono>
+                {accounts.map((account) => (
+                  <Row
+                    key={account.account_id}
+                    meta={
+                      <span className="inline-flex items-center gap-1.5">
+                        <StateDot state={accountHealthDotState(account.health.state)} />
+                        <Mono muted>
+                          {healthAvailable ? account.health.state : "health unavailable"}
+                        </Mono>
+                      </span>
+                    }
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="truncate text-sm font-medium text-[var(--fg)]"
+                        title={account.email ?? account.display_name ?? account.account_id}
+                      >
+                        {account.email || account.display_name || account.account_id}
+                      </span>
+                      {account.is_primary ? (
+                        <KindTag className="text-[var(--fg)]">primary</KindTag>
+                      ) : null}
+                      <KindTag>{account.status}</KindTag>
+                      {account.health.error_message ? (
+                        <span
+                          className="max-w-[16rem] truncate text-[11px] text-[var(--red)]"
+                          title={account.health.error_message}
+                        >
+                          {account.health.error_message}
+                        </span>
+                      ) : null}
+                    </div>
+                  </Row>
+                ))}
+              </div>
+            );
+          })()}
           {metaQuery.isLoading && connectedSources.length === 0 ? (
             <Voice variant="italic" className="text-[var(--mfg)]">
               Reading source metadata…
@@ -3574,7 +3662,7 @@ export default function CalendarWorkspacePage() {
                     mark={
                       <Checkbox
                         checked={isEnabled}
-                        onCheckedChange={() => toggleSourceEnabled(source.source_key)}
+                        onCheckedChange={() => toggleSourceEnabled(source)}
                         aria-label={`Toggle ${sourceName(source)}`}
                       />
                     }

@@ -40,6 +40,9 @@ from butlers.api.routers.butler_logs import router as butler_logs_router
 from butlers.api.routers.butler_management import router as butler_management_router
 from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.calendar_workspace import (
+    accounts_router as calendar_accounts_router,
+)
+from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
 )
 from butlers.api.routers.channel_defaults import router as channel_defaults_router
@@ -318,6 +321,7 @@ def create_app(
     app.include_router(timeline_router)
     app.include_router(timeline_saved_views_router)
     app.include_router(calendar_workspace_router)
+    app.include_router(calendar_accounts_router)
     app.include_router(search_router)
     app.include_router(audit_router)
     app.include_router(memory_router)

@@ -75,6 +75,10 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     #: right recovery CTA (Recover vs Reconnect). Additive: clients that ignore
     #: it observe the prior shape. ``none`` means the source is healthy.
     error_kind: Literal["none", "token_expired", "auth", "not_found", "transient"] = "none"
+    #: Whether this calendar is enabled as a sync source. Toggled via
+    #: ``POST /api/calendar/sources``. A disabled source is rendered "off" (not
+    #: failed) and is skipped by the sync loop. Default ``True`` (opt-out).
+    sync_enabled: bool = True
 
 
 class CalendarWorkspaceLaneDefinition(BaseModel):
@@ -323,3 +327,88 @@ class CalendarUndoResponse(BaseModel):
     request_id: str
     undone: bool
     result: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Accounts control plane — GET /api/calendar/accounts
+# ---------------------------------------------------------------------------
+
+CalendarAccountHealthState = Literal["healthy", "degraded", "error", "unknown"]
+
+
+class CalendarAccountHealth(BaseModel):
+    """Per-account Google Calendar connector health.
+
+    ``state == "unknown"`` is the graceful-degradation value used when the
+    connector health surface (``switchboard.connector_registry``) is
+    unavailable — the account is still returned, just without a live health
+    signal. ``error_kind`` mirrors the calendar sync ``error_kind`` taxonomy so
+    the UI can pick the right Recover/Reconnect CTA.
+    """
+
+    state: CalendarAccountHealthState = "unknown"
+    error_kind: Literal["none", "token_expired", "auth", "not_found", "transient"] = "none"
+    error_message: str | None = None
+    last_heartbeat_at: datetime | None = None
+    last_ingest_at: datetime | None = None
+
+
+class CalendarAccountEntry(BaseModel):
+    """One connected Google account with its calendar connector health."""
+
+    account_id: UUID
+    email: str | None = None
+    display_name: str | None = None
+    is_primary: bool = False
+    status: str
+    health: CalendarAccountHealth = Field(default_factory=CalendarAccountHealth)
+
+
+class CalendarAccountsResponse(BaseModel):
+    """Response payload for GET /api/calendar/accounts.
+
+    ``health_available`` is ``False`` when the connector health surface could
+    not be reached; accounts are still returned (with ``state="unknown"``), so
+    the drawer renders the account cards in a degraded state rather than failing.
+    """
+
+    accounts: list[CalendarAccountEntry] = Field(default_factory=list)
+    health_available: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Per-calendar source enable/disable — POST /api/calendar/sources
+# ---------------------------------------------------------------------------
+
+
+class CalendarSourceToggleRequest(BaseModel):
+    """Request payload for POST /api/calendar/sources.
+
+    Enables or disables a single calendar as a sync source by toggling the
+    ``sync_enabled`` flag on the existing ``calendar_sources`` row (no new
+    table). Identify the source by ``source_key`` (or ``source_id``) within the
+    owning ``butler`` schema.
+    """
+
+    butler: str
+    source_key: str | None = None
+    source_id: UUID | None = None
+    enabled: bool
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> CalendarSourceToggleRequest:
+        if self.source_key is None and self.source_id is None:
+            raise ValueError("Specify one of source_key or source_id")
+        if self.source_key is not None and self.source_id is not None:
+            raise ValueError("Specify at most one of source_key or source_id")
+        return self
+
+
+class CalendarSourceToggleResponse(BaseModel):
+    """Response payload for POST /api/calendar/sources."""
+
+    butler: str
+    source_key: str
+    source_id: UUID
+    calendar_id: str | None = None
+    enabled: bool

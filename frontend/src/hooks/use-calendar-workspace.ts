@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  getCalendarAccounts,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
   getCalendarWorkspaceEntry,
@@ -14,10 +15,12 @@ import {
   searchCalendarWorkspace,
   setPrimaryCalendar,
   syncCalendarWorkspace,
+  toggleCalendarSource,
 } from "@/api/index.ts";
 import type {
   ApiResponse,
   CalendarAuditParams,
+  CalendarSourceToggleRequest,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
@@ -146,6 +149,29 @@ export function useMutateCalendarWorkspaceButlerEvent() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+    },
+  });
+}
+
+/** List connected Google accounts joined with calendar connector health. */
+export function useCalendarAccounts(options?: CalendarWorkspaceQueryOptions) {
+  return useQuery({
+    queryKey: ["calendar-accounts"],
+    queryFn: () => getCalendarAccounts(),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? 60_000,
+  });
+}
+
+/** Enable/disable a calendar as a sync source and refresh workspace metadata. */
+export function useToggleCalendarSource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CalendarSourceToggleRequest) => toggleCalendarSource(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-accounts"] });
     },
   });
 }

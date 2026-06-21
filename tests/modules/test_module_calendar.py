@@ -2974,3 +2974,139 @@ class TestProjectionFreshnessErrorKind:
         assert by_key["flaky"]["error_kind"] == "transient"
         # Raw last_error remains available alongside the derived classification.
         assert by_key["expired"]["last_error"] == "sync token expired (410 Gone)"
+
+
+# ---------------------------------------------------------------------------
+# calendar_list_calendars MCP tool + per-source sync toggle [bu-6cf3ri]
+# ---------------------------------------------------------------------------
+
+
+class _ListCalendarsProvider:
+    """Provider double exposing list_calendars for the source-listing tool."""
+
+    def __init__(self, *, calendars=None, raises: bool = False) -> None:
+        self._calendars = calendars or []
+        self._raises = raises
+
+    @property
+    def name(self) -> str:
+        return "google"
+
+    async def list_calendars(self):
+        if self._raises:
+            raise RuntimeError("provider boom")
+        return list(self._calendars)
+
+
+class TestCalendarListCalendarsTool:
+    async def _register(self, provider, *, resolved_id="butlers@group.calendar.google.com"):
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = resolved_id
+        await mod.register_tools(
+            mcp=mcp, config={"provider": "google"}, db=None, butler_name="test-butler"
+        )
+        return mcp
+
+    async def test_shape_selectable_and_butlers_flag(self):
+        provider = _ListCalendarsProvider(
+            calendars=[
+                {
+                    "id": "owner@example.com",
+                    "summary": "Personal",
+                    "primary": True,
+                    "accessRole": "owner",
+                },
+                {"id": "work-cal", "summary": "Work", "accessRole": "writer"},
+                {"id": "holidays", "summary": "Holidays", "accessRole": "reader"},
+                {
+                    "id": "butlers@group.calendar.google.com",
+                    "summary": "Butlers",
+                    "accessRole": "owner",
+                },
+            ]
+        )
+        mcp = await self._register(provider)
+        result = await mcp.tools["calendar_list_calendars"]()
+
+        assert result["provider"] == "google"
+        by_id = {c["calendar_id"]: c for c in result["calendars"]}
+        # Every entry carries the normalized shape.
+        for cal in result["calendars"]:
+            assert set(cal) == {
+                "calendar_id",
+                "summary",
+                "primary",
+                "access_role",
+                "is_butlers_calendar",
+                "selectable",
+            }
+        # Primary flag + owner/writer selectable; reader is not selectable.
+        assert by_id["owner@example.com"]["primary"] is True
+        assert by_id["owner@example.com"]["selectable"] is True
+        assert by_id["work-cal"]["selectable"] is True
+        assert by_id["holidays"]["selectable"] is False
+        # The resolved calendar is flagged as the Butlers calendar.
+        butlers = by_id["butlers@group.calendar.google.com"]
+        assert butlers["is_butlers_calendar"] is True
+        assert by_id["owner@example.com"]["is_butlers_calendar"] is False
+
+    async def test_summary_override_preferred(self):
+        provider = _ListCalendarsProvider(
+            calendars=[
+                {"id": "c1", "summary": "Raw", "summaryOverride": "Renamed", "accessRole": "owner"}
+            ]
+        )
+        mcp = await self._register(provider)
+        result = await mcp.tools["calendar_list_calendars"]()
+        assert result["calendars"][0]["summary"] == "Renamed"
+
+    async def test_fail_open_empty_on_provider_error(self):
+        provider = _ListCalendarsProvider(raises=True)
+        mcp = await self._register(provider)
+        result = await mcp.tools["calendar_list_calendars"]()
+        assert result["calendars"] == []
+        assert result["status"] == "error"
+
+    async def test_empty_when_provider_lacks_list_calendars(self):
+        provider = SimpleNamespace(name="google")  # no list_calendars attr
+        mcp = await self._register(provider)
+        result = await mcp.tools["calendar_list_calendars"]()
+        assert result["calendars"] == []
+        assert "status" not in result  # not an error, just empty
+
+
+class TestSourceSyncEnabled:
+    async def test_default_enabled_when_row_absent(self):
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+        assert await mod._source_sync_enabled("provider:google:c1") is True
+
+    async def test_disabled_when_flag_false(self):
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"metadata": {"sync_enabled": False}})
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+        assert await mod._source_sync_enabled("provider:google:c1") is False
+
+    async def test_enabled_when_flag_absent_or_true(self):
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"metadata": {"butler_specific": True}})
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+        assert await mod._source_sync_enabled("provider:google:c1") is True
+
+    async def test_sync_calendar_skips_disabled_source(self):
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"metadata": {"sync_enabled": False}})
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+        mod._provider = _ListCalendarsProvider()
+        mod._config = CalendarConfig(provider="google")
+        # Pre-seed sync state so _load_sync_state is not queried before the skip.
+        mod._sync_states["c1"] = CalendarSyncState()
+        # full=False (background loop): a disabled source is skipped → returns False.
+        assert await mod._sync_calendar("c1", full=False) is False

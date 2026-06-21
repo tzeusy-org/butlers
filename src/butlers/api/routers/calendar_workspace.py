@@ -25,9 +25,14 @@ from butlers.api.models.calendar import (
     CalendarWorkspaceUserMutationRequest,
 )
 from butlers.api.models.calendar_workspace import (
+    CalendarAccountEntry,
+    CalendarAccountHealth,
+    CalendarAccountsResponse,
     CalendarAuditEntry,
     CalendarAuditResponse,
     CalendarConflictEntry,
+    CalendarSourceToggleRequest,
+    CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
     CalendarUndoResponse,
     CalendarWorkspaceLaneDefinition,
@@ -53,6 +58,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_workspace_entry,
 )
 from butlers.api.routers.audit import log_audit_entry
+from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import classify_sync_error_kind
 
 router = APIRouter(prefix="/api/calendar/workspace", tags=["calendar", "workspace"])
@@ -275,6 +281,9 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         full_sync_required=full_sync_required,
     )
 
+    source_metadata = _normalize_json_object(row.get("source_metadata"))
+    sync_enabled = source_metadata.get("sync_enabled") is not False
+
     return CalendarWorkspaceSourceFreshness(
         source_id=row["source_id"],
         source_key=row["source_key"],
@@ -295,6 +304,7 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         sync_state=sync_state,
         staleness_ms=staleness_ms,
         error_kind=classify_sync_error_kind(row.get("last_error")),
+        sync_enabled=sync_enabled,
     )
 
 
@@ -1058,6 +1068,12 @@ async def sync_workspace(
         for row in source_rows:
             if row.get("source_kind") != "provider_event" or not row.get("calendar_id"):
                 continue
+            # Skip sources disabled via POST /api/calendar/sources — a disabled
+            # source is off and must not be polled by the sync loop. An explicit
+            # single-source sync (scope="source") bypasses this filter so an
+            # operator can still recover a specific source on demand.
+            if _normalize_json_object(row.get("source_metadata")).get("sync_enabled") is False:
+                continue
             key = (str(row["db_butler"]), str(row["calendar_id"]))
             if key in seen:
                 continue
@@ -1761,3 +1777,210 @@ async def undo_calendar_mutation(
         result=mutation_result,
     )
     return ApiResponse[CalendarUndoResponse](data=data)
+
+
+# ===========================================================================
+# Accounts control plane + per-calendar source toggle
+#
+# These endpoints live under /api/calendar (NOT /api/calendar/workspace) so a
+# separate router is exported. ``deps.wire_db_dependencies`` overrides the
+# shared ``_get_db_manager`` stub for this module, which both routers reference.
+# ===========================================================================
+
+accounts_router = APIRouter(prefix="/api/calendar", tags=["calendar", "accounts"])
+
+_GOOGLE_CALENDAR_CONNECTOR_TYPE = "google_calendar"
+
+
+def _shared_pool(db: DatabaseManager) -> Any | None:
+    """Return the shared credential pool (for ``public.google_accounts``), or None."""
+    try:
+        return db.credential_shared_pool()
+    except Exception:
+        names = getattr(db, "butler_names", [])
+        if not names:
+            return None
+        try:
+            return db.pool(names[0])
+        except Exception:
+            logger.debug("calendar accounts: no shared/fallback pool available", exc_info=True)
+            return None
+
+
+def _switchboard_pool(db: DatabaseManager) -> Any | None:
+    """Return the switchboard pool (for ``connector_registry`` health), or None."""
+    try:
+        return db.pool("switchboard")
+    except Exception:
+        logger.debug("calendar accounts: switchboard pool unavailable", exc_info=True)
+        return None
+
+
+def _map_health_state(raw_state: object) -> str:
+    state = str(raw_state or "").strip().lower()
+    if state in {"healthy", "ok", "running", "connected"}:
+        return "healthy"
+    if state in {"error", "failed"}:
+        return "error"
+    if state in {"degraded", "stale", "warning"}:
+        return "degraded"
+    return "unknown"
+
+
+async def _fetch_calendar_heartbeats_by_email(
+    switchboard_pool: Any,
+) -> dict[str, dict[str, Any]] | None:
+    """Return per-email Google Calendar connector heartbeat rows.
+
+    The connector registers under ``endpoint_identity = "google_calendar:user:<email>"``.
+    Returns a dict mapping email → most-recent heartbeat row, or ``None`` when the
+    connector health surface cannot be reached (so the caller can mark
+    ``health_available = False`` and degrade gracefully).
+    """
+    if switchboard_pool is None:
+        return None
+    try:
+        rows = await switchboard_pool.fetch(
+            "SELECT cr.state, cr.last_heartbeat_at, cr.endpoint_identity,"
+            " cr.metadata, cr.error_message"
+            " FROM connector_registry cr"
+            " WHERE cr.connector_type = $1"
+            " ORDER BY cr.last_heartbeat_at DESC NULLS LAST",
+            _GOOGLE_CALENDAR_CONNECTOR_TYPE,
+        )
+    except Exception:
+        logger.debug("connector_registry query failed for google_calendar", exc_info=True)
+        return None
+    by_email: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        eid = row.get("endpoint_identity") or ""
+        parts = eid.split(":", 2)
+        if len(parts) != 3 or parts[0] != "google_calendar" or parts[1] != "user":
+            continue
+        email = parts[2]
+        if email and email not in by_email:
+            by_email[email] = dict(row)
+    return by_email
+
+
+def _build_account_health(heartbeat: dict[str, Any] | None) -> CalendarAccountHealth:
+    if heartbeat is None:
+        return CalendarAccountHealth(state="unknown")
+    state = _map_health_state(heartbeat.get("state"))
+    error_message = heartbeat.get("error_message")
+    error_message = str(error_message).strip() if error_message else None
+    last_ingest_at = None
+    meta = _normalize_json_object(heartbeat.get("metadata"))
+    raw_ingest = meta.get("last_ingest_at")
+    if isinstance(raw_ingest, str):
+        last_ingest_at = _coerce_datetime(raw_ingest)
+    return CalendarAccountHealth(
+        state=state,
+        error_kind=classify_sync_error_kind(error_message if state != "healthy" else None),
+        error_message=error_message if state != "healthy" else None,
+        last_heartbeat_at=_coerce_datetime(heartbeat.get("last_heartbeat_at")),
+        last_ingest_at=last_ingest_at,
+    )
+
+
+@accounts_router.get("/accounts", response_model=ApiResponse[CalendarAccountsResponse])
+async def list_calendar_accounts(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarAccountsResponse]:
+    """List connected Google accounts joined with Google Calendar connector health.
+
+    Read-only: this endpoint never connects or disconnects accounts (account
+    lifecycle lives in the Google accounts surface). When the connector health
+    surface is unavailable, accounts are still returned with an ``unknown``
+    health indicator and ``health_available = false`` rather than failing.
+    """
+    shared_pool = _shared_pool(db)
+    if shared_pool is None:
+        return ApiResponse[CalendarAccountsResponse](
+            data=CalendarAccountsResponse(accounts=[], health_available=False)
+        )
+
+    try:
+        accounts = await list_google_accounts(shared_pool)
+    except Exception:
+        logger.warning("calendar accounts: failed to list google_accounts", exc_info=True)
+        return ApiResponse[CalendarAccountsResponse](
+            data=CalendarAccountsResponse(accounts=[], health_available=False)
+        )
+
+    heartbeats = await _fetch_calendar_heartbeats_by_email(_switchboard_pool(db))
+    health_available = heartbeats is not None
+
+    entries: list[CalendarAccountEntry] = []
+    for account in accounts:
+        heartbeat = (heartbeats or {}).get(account.email) if account.email else None
+        entries.append(
+            CalendarAccountEntry(
+                account_id=account.id,
+                email=account.email,
+                display_name=account.display_name,
+                is_primary=account.is_primary,
+                status=account.status,
+                health=_build_account_health(heartbeat),
+            )
+        )
+
+    return ApiResponse[CalendarAccountsResponse](
+        data=CalendarAccountsResponse(accounts=entries, health_available=health_available)
+    )
+
+
+@accounts_router.post("/sources", response_model=ApiResponse[CalendarSourceToggleResponse])
+async def toggle_calendar_source(
+    request: CalendarSourceToggleRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarSourceToggleResponse]:
+    """Enable or disable a single calendar as a sync source.
+
+    Toggles the ``sync_enabled`` flag on the existing ``calendar_sources`` row
+    (JSONB ``metadata``) in the owning butler schema — no new table. A disabled
+    source is skipped by the sync loop and rendered "off" (not failed) in the
+    workspace meta.
+    """
+    if request.butler not in db.butler_names:
+        raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
+
+    pool = db.pool(request.butler)
+    if request.source_id is not None:
+        where_clause = "id = $2"
+        where_arg: Any = request.source_id
+    else:
+        where_clause = "source_key = $2"
+        where_arg = request.source_key
+
+    row = await pool.fetchrow(
+        f"""
+        UPDATE calendar_sources
+        SET metadata = COALESCE(metadata, '{{}}'::jsonb)
+                || jsonb_build_object('sync_enabled', $1::boolean),
+            updated_at = now()
+        WHERE {where_clause}
+        RETURNING id, source_key, calendar_id
+        """,
+        request.enabled,
+        where_arg,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Requested calendar source was not found")
+
+    await log_audit_entry(
+        db,
+        request.butler,
+        "calendar.workspace.source_toggle",
+        {"source_key": row["source_key"], "enabled": request.enabled},
+    )
+
+    return ApiResponse[CalendarSourceToggleResponse](
+        data=CalendarSourceToggleResponse(
+            butler=request.butler,
+            source_key=row["source_key"],
+            source_id=row["id"],
+            calendar_id=row["calendar_id"],
+            enabled=request.enabled,
+        )
+    )

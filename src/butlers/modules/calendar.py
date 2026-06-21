@@ -4830,6 +4830,64 @@ class CalendarModule(Module):
                 "persisted": persisted,
             }
 
+        @_tool("core")
+        async def calendar_list_calendars() -> dict[str, Any]:
+            """List the calendars available on the connected provider account.
+
+            Read-only. Wraps the provider's ``list_calendars()`` and normalizes
+            each entry into a butler-aware shape that backs the dashboard's
+            per-event calendar selector and the Sources drawer.
+
+            Each calendar is returned as
+            ``{calendar_id, summary, primary, access_role, is_butlers_calendar,
+            selectable}`` where:
+
+            - ``is_butlers_calendar`` flags the dedicated Butlers calendar
+              (``_resolved_calendar_id``).
+            - ``selectable`` is ``False`` for any calendar whose access role is
+              not ``writer`` or ``owner`` (read-only calendars cannot be a write
+              target).
+
+            Fail-open: a provider error returns an empty ``calendars`` list with
+            error metadata rather than raising.
+            """
+            provider = module._require_provider()
+            if not hasattr(provider, "list_calendars"):
+                return {"provider": provider.name, "calendars": []}
+            try:
+                raw_calendars = await provider.list_calendars()
+            except Exception as exc:
+                logger.warning("calendar_list_calendars failed: %s", exc, exc_info=True)
+                error_dict = _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id="",
+                )
+                error_dict["calendars"] = []
+                return error_dict
+
+            calendars: list[dict[str, Any]] = []
+            for cal in raw_calendars:
+                if not isinstance(cal, dict):
+                    continue
+                cal_id = cal.get("id")
+                if not isinstance(cal_id, str) or not cal_id:
+                    continue
+                summary = cal.get("summaryOverride") or cal.get("summary") or cal_id
+                access_role = cal.get("accessRole")
+                selectable = access_role in ("owner", "writer")
+                calendars.append(
+                    {
+                        "calendar_id": cal_id,
+                        "summary": summary,
+                        "primary": bool(cal.get("primary")),
+                        "access_role": access_role,
+                        "is_butlers_calendar": cal_id == module._resolved_calendar_id,
+                        "selectable": selectable,
+                    }
+                )
+            return {"provider": provider.name, "calendars": calendars}
+
         # ------------------------------------------------------------------
         # Reminder tools (source_kind = "internal_reminders")
         # ------------------------------------------------------------------
@@ -6289,6 +6347,33 @@ class CalendarModule(Module):
         exists = await pool.fetchval("SELECT to_regclass($1) IS NOT NULL", table_name)
         return bool(exists)
 
+    async def _source_sync_enabled(self, source_key: str) -> bool:
+        """Return whether the calendar source is enabled as a sync target.
+
+        Reads the per-source ``metadata.sync_enabled`` flag toggled via
+        ``POST /api/calendar/sources``. Defaults to ``True`` (enabled) when the
+        source row is absent, the projection tables are unavailable, or the flag
+        was never set — so the toggle is purely opt-out and never blocks sync by
+        omission. Fails open to enabled on any query error.
+        """
+        if not await self._projection_tables_available():
+            return True
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return True
+        try:
+            row = await pool.fetchrow(
+                "SELECT metadata FROM calendar_sources WHERE source_key = $1",
+                source_key,
+            )
+        except Exception as exc:
+            logger.debug("Failed to read sync_enabled for '%s': %s", source_key, exc)
+            return True
+        if row is None:
+            return True
+        metadata = self._normalize_json_object(row["metadata"])
+        return metadata.get("sync_enabled") is not False
+
     async def _ensure_calendar_source(
         self,
         *,
@@ -6324,7 +6409,11 @@ class CalendarModule(Module):
                 butler_name = EXCLUDED.butler_name,
                 display_name = EXCLUDED.display_name,
                 writable = EXCLUDED.writable,
-                metadata = EXCLUDED.metadata,
+                -- Shallow-merge so operator-set keys (e.g. ``sync_enabled``
+                -- toggled via POST /api/calendar/sources) survive the next
+                -- discovery/sync upsert instead of being clobbered.
+                metadata = COALESCE(calendar_sources.metadata, '{}'::jsonb)
+                    || EXCLUDED.metadata,
                 updated_at = now()
             RETURNING id
             """,
@@ -7241,6 +7330,16 @@ class CalendarModule(Module):
 
         source_id: uuid.UUID | None = None
         source_key = f"provider:{provider.name}:{calendar_id}"
+
+        # Honor the per-calendar source toggle (POST /api/calendar/sources): a
+        # source disabled by the operator is skipped by the background sync loop
+        # on subsequent syncs. An explicit operator-driven full re-sync
+        # (``full=True``, the Recover action) still runs so a disabled source
+        # can be recovered without first re-enabling it.
+        if not full and not await self._source_sync_enabled(source_key):
+            logger.info("Skipping disabled calendar source '%s'", source_key)
+            return False
+
         # Resolve a human-readable display name (e.g. "Work" instead of the raw
         # Google Calendar ID like "ae06dba...@group.calendar.google.com").
         display_name = await provider.get_calendar_summary(calendar_id) or calendar_id

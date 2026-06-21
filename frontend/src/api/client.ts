@@ -32,8 +32,11 @@ import type {
   ButlerDetail,
   ButlerSkill,
   ButlerSummary,
+  CalendarAccountsResponse,
   CalendarAuditParams,
   CalendarAuditResponse,
+  CalendarSourceToggleRequest,
+  CalendarSourceToggleResponse,
   CalendarWorkspaceMetaResponse,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
@@ -1128,6 +1131,21 @@ export function syncCalendarWorkspace(
   body: CalendarWorkspaceSyncRequest,
 ): Promise<ApiResponse<CalendarWorkspaceSyncResponse>> {
   return apiFetch<ApiResponse<CalendarWorkspaceSyncResponse>>("/calendar/workspace/sync", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** List connected Google accounts joined with Google Calendar connector health. */
+export function getCalendarAccounts(): Promise<ApiResponse<CalendarAccountsResponse>> {
+  return apiFetch<ApiResponse<CalendarAccountsResponse>>("/calendar/accounts");
+}
+
+/** Enable or disable a single calendar as a sync source. */
+export function toggleCalendarSource(
+  body: CalendarSourceToggleRequest,
+): Promise<ApiResponse<CalendarSourceToggleResponse>> {
+  return apiFetch<ApiResponse<CalendarSourceToggleResponse>>("/calendar/sources", {
     method: "POST",
     body: JSON.stringify(body),
   });

@@ -583,6 +583,12 @@ export interface CalendarWorkspaceSourceFreshness {
    * recovery CTA (Recover vs Reconnect). `none` means the source is healthy.
    */
   error_kind: CalendarWorkspaceErrorKind;
+  /**
+   * Whether this calendar is enabled as a sync source. Toggled via
+   * POST /api/calendar/sources. A disabled source is rendered "off" (not
+   * failed) and is skipped by the sync loop. Defaults to `true`.
+   */
+  sync_enabled: boolean;
 }
 
 /** Coarse per-source sync error classification surfaced alongside `last_error`. */
@@ -645,6 +651,52 @@ export interface CalendarWorkspaceMetaResponse {
   lane_definitions: CalendarWorkspaceLaneDefinition[];
   default_timezone: string;
   primary_calendar_id: string | null;
+}
+
+/** Per-account Google Calendar connector health state. */
+export type CalendarAccountHealthState = "healthy" | "degraded" | "error" | "unknown";
+
+/** Per-account Google Calendar connector health. */
+export interface CalendarAccountHealth {
+  state: CalendarAccountHealthState;
+  error_kind: CalendarWorkspaceErrorKind;
+  error_message: string | null;
+  last_heartbeat_at: string | null;
+  last_ingest_at: string | null;
+}
+
+/** One connected Google account with its calendar connector health. */
+export interface CalendarAccountEntry {
+  account_id: string;
+  email: string | null;
+  display_name: string | null;
+  is_primary: boolean;
+  status: string;
+  health: CalendarAccountHealth;
+}
+
+/** Response payload for GET /api/calendar/accounts. */
+export interface CalendarAccountsResponse {
+  accounts: CalendarAccountEntry[];
+  /** `false` when the connector health surface could not be reached. */
+  health_available: boolean;
+}
+
+/** Request payload for POST /api/calendar/sources. */
+export interface CalendarSourceToggleRequest {
+  butler: string;
+  source_key?: string;
+  source_id?: string;
+  enabled: boolean;
+}
+
+/** Response payload for POST /api/calendar/sources. */
+export interface CalendarSourceToggleResponse {
+  butler: string;
+  source_key: string;
+  source_id: string;
+  calendar_id: string | null;
+  enabled: boolean;
 }
 
 /** Request payload for PUT /api/calendar/workspace/primary. */
