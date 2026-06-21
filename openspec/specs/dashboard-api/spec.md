@@ -338,6 +338,8 @@ The following is the complete endpoint inventory grouped by domain.
 | POST | `/api/calendar/workspace/sync` | Trigger provider/projection sync |
 | POST | `/api/calendar/workspace/user-events` | Create/update/delete user-view events (MCP) |
 | POST | `/api/calendar/workspace/butler-events` | Create/update/delete/toggle butler events (MCP) |
+| GET | `/api/calendar/workspace/audit` | Calendar mutation audit trail (read-only) |
+| POST | `/api/calendar/workspace/undo/{action_id}` | Reverse a previously-applied calendar mutation |
 
 #### OAuth
 | Method | Path | Purpose |

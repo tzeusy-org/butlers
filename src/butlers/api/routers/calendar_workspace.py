@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -27,6 +27,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarAuditResponse,
     CalendarConflictEntry,
     CalendarSuggestedSlot,
+    CalendarUndoResponse,
     CalendarWorkspaceLaneDefinition,
     CalendarWorkspaceMetaResponse,
     CalendarWorkspaceMutationResponse,
@@ -1203,3 +1204,268 @@ async def get_calendar_audit(
     entries = [CalendarAuditEntry.model_validate(row) for row in page]
     data = CalendarAuditResponse(entries=entries, total=total, offset=offset, limit=limit)
     return ApiResponse[CalendarAuditResponse](data=data)
+
+
+# ---------------------------------------------------------------------------
+# Mutation undo — POST /api/calendar/workspace/undo/{action_id}
+# ---------------------------------------------------------------------------
+
+# Only user-lane mutations carry a reconstructable inverse; map each logged
+# action_type to the existing calendar MCP tool that reverses it.
+_UNDO_INVERSE_TOOL = {
+    "workspace_user_update": "calendar_update_event",
+    "workspace_user_delete": "calendar_create_event",
+    "workspace_user_create": "calendar_delete_event",
+}
+
+# Per-inverse-tool dispatch statuses that mean the original action is now
+# reversed. For an undo-of-create delete, "not_found" means the event is already
+# gone — effectively undone. For an update-restore, only "updated" counts (a
+# "not_found" there means the event vanished and the restore did NOT happen, so
+# the action stays undoable).
+_UNDO_SUCCESS_STATUSES = {
+    "calendar_update_event": frozenset({"updated"}),
+    "calendar_create_event": frozenset({"created"}),
+    "calendar_delete_event": frozenset({"deleted", "not_found"}),
+}
+
+_UNDO_LOOKUP_SQL = """
+    SELECT
+        id,
+        action_type,
+        action_status,
+        origin_ref,
+        action_payload,
+        action_result
+    FROM calendar_action_log
+    WHERE id = $1
+"""
+
+
+def _undo_update_args(pre_state: dict[str, Any]) -> dict[str, Any]:
+    """Build inverse calendar_update_event args that restore the pre-state."""
+    return {
+        "event_id": pre_state.get("event_id"),
+        "title": pre_state.get("title"),
+        "start_at": pre_state.get("start_at"),
+        "end_at": pre_state.get("end_at"),
+        "timezone": pre_state.get("timezone"),
+        "description": pre_state.get("description"),
+        "body": pre_state.get("body"),
+        "location": pre_state.get("location"),
+        "attendees": pre_state.get("attendees"),
+        "recurrence_rule": pre_state.get("recurrence_rule"),
+        "color_id": pre_state.get("color_id"),
+        "calendar_id": pre_state.get("calendar_id"),
+    }
+
+
+def _undo_create_args(pre_state: dict[str, Any]) -> dict[str, Any]:
+    """Build inverse calendar_create_event args that recreate the deleted event."""
+    return {
+        "title": pre_state.get("title"),
+        "start_at": pre_state.get("start_at"),
+        "end_at": pre_state.get("end_at"),
+        "timezone": pre_state.get("timezone"),
+        "description": pre_state.get("description"),
+        "body": pre_state.get("body"),
+        "location": pre_state.get("location"),
+        "attendees": pre_state.get("attendees"),
+        "recurrence_rule": pre_state.get("recurrence_rule"),
+        "color_id": pre_state.get("color_id"),
+        "calendar_id": pre_state.get("calendar_id"),
+    }
+
+
+def _created_event_id(action_result: dict[str, Any], origin_ref: object) -> str | None:
+    """Resolve the created event's provider id for an undo-of-create delete."""
+    event = action_result.get("event")
+    if isinstance(event, dict):
+        candidate = event.get("event_id")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    if isinstance(origin_ref, str) and origin_ref.strip():
+        return origin_ref.strip()
+    return None
+
+
+async def _find_action_owner(
+    db: DatabaseManager, action_id: UUID
+) -> tuple[str, dict[str, Any]] | None:
+    """Locate the butler schema and row owning *action_id*.
+
+    Action ids are globally unique UUIDs, so the first calendar butler with a
+    matching ``calendar_action_log`` row owns it.
+    """
+    targets = db.butlers_with_module("calendar")
+    results = await db.fan_out(_UNDO_LOOKUP_SQL, (action_id,), butler_names=targets)
+    for butler_name, rows in results.items():
+        if rows:
+            return butler_name, dict(rows[0])
+    return None
+
+
+@router.post("/undo/{action_id}", response_model=ApiResponse[CalendarUndoResponse])
+async def undo_calendar_mutation(
+    action_id: UUID,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarUndoResponse]:
+    """Reverse a single previously-applied calendar mutation.
+
+    Synthesizes the inverse mutation from the logged ``calendar_action_log``
+    row (``action_payload`` plus the captured pre-mutation ``pre_state`` in
+    ``action_result``) and dispatches it through the existing calendar MCP
+    tools with a freshly generated ``request_id`` — no new MCP tool, no
+    provider call from the API layer itself.
+
+    Fail-fast guards:
+    - unknown ``action_id`` → 404
+    - status not ``applied`` (pending/failed/noop) → 409
+    - already undone → 409
+    - applied but missing/expired pre-state (or unreversible type) → 422
+    """
+    owner = await _find_action_owner(db, action_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail=f"Unknown calendar action: {action_id}")
+    butler_name, row = owner
+
+    action_type = str(row["action_type"])
+    action_status = str(row["action_status"])
+    action_result = _normalize_json_object(row["action_result"])
+
+    if action_status != "applied":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Action {action_id} has status '{action_status}'; "
+                "only an 'applied' mutation can be undone."
+            ),
+        )
+
+    if isinstance(action_result.get("undo"), dict):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Action {action_id} was already undone.",
+        )
+
+    inverse_tool = _UNDO_INVERSE_TOOL.get(action_type)
+    if inverse_tool is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "action_id": str(action_id),
+                "action_type": action_type,
+                "reason": "Action type has no reconstructable inverse mutation.",
+            },
+        )
+
+    pre_state_raw = action_result.get("pre_state")
+    pre_state = pre_state_raw if isinstance(pre_state_raw, dict) else None
+
+    if action_type == "workspace_user_create":
+        event_id = _created_event_id(action_result, row["origin_ref"])
+        if event_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "action_id": str(action_id),
+                    "action_type": action_type,
+                    "reason": "Created event id is unavailable; cannot synthesize delete.",
+                },
+            )
+        # The created event's home calendar can live on the pre-state (absent for
+        # creates), the create result top-level, or the original action payload.
+        payload = _normalize_json_object(row["action_payload"])
+        calendar_id = None
+        for candidate in (
+            pre_state.get("calendar_id") if pre_state else None,
+            action_result.get("calendar_id"),
+            payload.get("calendar_id"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                calendar_id = candidate.strip()
+                break
+        arguments: dict[str, Any] = {"event_id": event_id}
+        if calendar_id:
+            arguments["calendar_id"] = calendar_id
+    else:
+        if pre_state is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "action_id": str(action_id),
+                    "action_type": action_type,
+                    "reason": (
+                        "Captured pre-state is missing or expired; cannot reconstruct inverse."
+                    ),
+                },
+            )
+        arguments = (
+            _undo_update_args(pre_state)
+            if action_type == "workspace_user_update"
+            else _undo_create_args(pre_state)
+        )
+
+    request_id = f"undo-{uuid4().hex}"
+    arguments["request_id"] = request_id
+
+    summary = {
+        "undo_of": str(action_id),
+        "action_type": action_type,
+        "inverse_tool": inverse_tool,
+        "request_id": request_id,
+    }
+    try:
+        mutation_result = await _call_mcp_tool(mgr, butler_name, inverse_tool, arguments)
+    except HTTPException:
+        await log_audit_entry(
+            db,
+            butler_name,
+            "calendar.workspace.undo",
+            summary,
+            result="error",
+            error="MCP call failed",
+        )
+        raise
+
+    undone = str(mutation_result.get("status")) in _UNDO_SUCCESS_STATUSES[inverse_tool]
+    if undone:
+        # Mark the original row so a repeated undo fails fast (409) rather than
+        # dispatching a second inverse. jsonb concat merges the marker in place.
+        marker = json.dumps(
+            {
+                "undo": {
+                    "request_id": request_id,
+                    "inverse_tool": inverse_tool,
+                    "status": mutation_result.get("status"),
+                }
+            }
+        )
+        try:
+            await db.pool(butler_name).execute(
+                """
+                UPDATE calendar_action_log
+                SET action_result = COALESCE(action_result, '{}'::jsonb) || $2::jsonb,
+                    updated_at = now()
+                WHERE id = $1
+                """,
+                action_id,
+                marker,
+            )
+        except Exception:  # pragma: no cover - defensive; undo already dispatched
+            logger.warning(
+                "Undo dispatched for action %s but marker write failed", action_id, exc_info=True
+            )
+
+    await log_audit_entry(db, butler_name, "calendar.workspace.undo", summary)
+
+    data = CalendarUndoResponse(
+        action_id=action_id,
+        action_type=action_type,
+        inverse_tool=inverse_tool,
+        request_id=request_id,
+        undone=undone,
+        result=mutation_result,
+    )
+    return ApiResponse[CalendarUndoResponse](data=data)

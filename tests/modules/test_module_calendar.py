@@ -738,6 +738,143 @@ class TestCalendarWriteAuditEmit:
 
 
 # ---------------------------------------------------------------------------
+# Reversible-mutation pre-state capture (undo prerequisite, bu-ytu9l4)
+# ---------------------------------------------------------------------------
+
+
+class TestReversibleMutationPreStateCapture:
+    """Pre-mutation pre-image is captured into action_result for undo.
+
+    Spec: module-calendar "Reversible Mutation Pre-State Capture". Present on
+    applied update/delete; absent on create and on non-applied (noop/failed)
+    outcomes.
+    """
+
+    async def _make_module_with_event(
+        self, event: CalendarEvent | None
+    ) -> tuple[CalendarModule, _ProviderDouble, _StubMCP]:
+        provider = _ProviderDouble(event=event)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        return mod, provider, mcp
+
+    @staticmethod
+    def _result_for_status(finalize_mock: AsyncMock, status: str) -> dict | None:
+        for call in finalize_mock.await_args_list:
+            if call.kwargs.get("action_status") == status:
+                return call.kwargs.get("action_result")
+        return None
+
+    async def test_update_captures_pre_state(self) -> None:
+        existing = _make_event(event_id="evt-1", title="Original", location="Room A")
+        mod, provider, mcp = await self._make_module_with_event(existing)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock) as fin,
+        ):
+            await mcp.tools["calendar_update_event"](event_id="evt-1", title="New title")
+
+        result = self._result_for_status(fin, "applied")
+        assert result is not None
+        pre = result["pre_state"]
+        assert pre["event_id"] == "evt-1"
+        assert pre["title"] == "Original"
+        assert pre["location"] == "Room A"
+        assert pre["calendar_id"] == "primary"
+        assert pre["start_at"] == existing.start_at.isoformat()
+        # Reuses the single pre-write get_event — no extra provider round-trip.
+        assert len(provider.get_calls) == 1
+
+    async def test_delete_captures_pre_state(self) -> None:
+        existing = _make_event(event_id="evt-2", title="To delete", location="Hall")
+
+        class _DeleteCapableDouble(_ProviderDouble):
+            async def delete_event(self, *, calendar_id, event_id, send_updates=None):
+                self.delete_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+
+        provider = _DeleteCapableDouble(event=existing)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock) as fin,
+        ):
+            await mcp.tools["calendar_delete_event"](event_id="evt-2")
+
+        result = self._result_for_status(fin, "applied")
+        assert result is not None
+        pre = result["pre_state"]
+        assert pre["event_id"] == "evt-2"
+        assert pre["title"] == "To delete"
+        assert pre["location"] == "Hall"
+        assert pre["calendar_id"] == "primary"
+
+    async def test_create_has_no_pre_state(self) -> None:
+        created = _make_event(
+            event_id="evt-3", title="BUTLER: New", butler_generated=True, butler_name="general"
+        )
+        mod, _, mcp = await self._make_module_with_event(created)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock) as fin,
+        ):
+            await mcp.tools["calendar_create_event"](
+                title="New",
+                start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+                end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            )
+
+        result = self._result_for_status(fin, "applied")
+        assert result is not None
+        assert "pre_state" not in result
+
+    async def test_update_noop_for_missing_event_has_no_pre_state(self) -> None:
+        # Provider returns None for get_event -> noop (not_found), no pre_state.
+        mod, _, mcp = await self._make_module_with_event(None)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock) as fin,
+        ):
+            await mcp.tools["calendar_update_event"](event_id="missing", title="x")
+
+        noop_result = self._result_for_status(fin, "noop")
+        assert noop_result is not None
+        assert "pre_state" not in noop_result
+
+
+# ---------------------------------------------------------------------------
 # Projection persistence
 # ---------------------------------------------------------------------------
 

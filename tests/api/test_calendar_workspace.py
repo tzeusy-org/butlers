@@ -688,3 +688,244 @@ async def test_entry_detail_returns_404_when_not_found(app):
         resp = await client.get(f"/api/calendar/workspace/entries/{uuid4()}")
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Mutation undo — POST /api/calendar/workspace/undo/{action_id}
+# ---------------------------------------------------------------------------
+
+
+_UNDO_PRE_STATE = {
+    "event_id": "evt-1",
+    "calendar_id": "primary",
+    "title": "Original title",
+    "start_at": "2026-06-20T10:00:00+00:00",
+    "end_at": "2026-06-20T11:00:00+00:00",
+    "timezone": "UTC",
+    "description": "Original description",
+    "body": None,
+    "location": "Room A",
+    "attendees": ["a@example.com"],
+    "recurrence_rule": None,
+    "color_id": None,
+}
+
+
+def _undo_action_row(
+    *,
+    action_type: str,
+    action_status: str = "applied",
+    action_result: dict | None = None,
+    action_payload: dict | None = None,
+    origin_ref: str | None = None,
+) -> dict:
+    return {
+        "id": uuid4(),
+        "action_type": action_type,
+        "action_status": action_status,
+        "origin_ref": origin_ref,
+        "action_payload": action_payload or {},
+        "action_result": action_result,
+    }
+
+
+def _build_undo_app(
+    app,
+    *,
+    action_rows: dict[str, list[dict]],
+    mcp_status: str = "updated",
+    calendar_butlers: list[str] | None = None,
+):
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.butlers_with_module = MagicMock(
+        return_value=calendar_butlers if calendar_butlers is not None else ["general"]
+    )
+
+    async def _fan_out(query: str, args=(), butler_names=None):
+        if "FROM calendar_action_log" in query:
+            rows = action_rows
+            if butler_names is not None:
+                rows = {k: v for k, v in rows.items() if k in butler_names}
+            return rows
+        return {}
+
+    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    _pool = MagicMock()
+    _pool.execute = AsyncMock()
+    mock_db.pool = MagicMock(return_value=_pool)
+
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result({"status": mcp_status}))
+
+    mock_mgr = AsyncMock(spec=MCPClientManager)
+
+    async def _get_client(name: str):
+        return mock_client
+
+    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
+    return app, mock_db, mock_client
+
+
+async def test_undo_update_reverse_applies_pre_state(app):
+    """Undo of an applied update dispatches calendar_update_event restoring pre-state."""
+    row = _undo_action_row(
+        action_type="workspace_user_update",
+        action_result={"status": "updated", "pre_state": _UNDO_PRE_STATE},
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="updated")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["action_type"] == "workspace_user_update"
+    assert data["inverse_tool"] == "calendar_update_event"
+    assert data["undone"] is True
+    assert data["request_id"].startswith("undo-")
+
+    tool_name, arguments = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_update_event"
+    assert arguments["event_id"] == "evt-1"
+    assert arguments["title"] == "Original title"
+    assert arguments["start_at"] == "2026-06-20T10:00:00+00:00"
+    assert arguments["calendar_id"] == "primary"
+    # Fresh request_id flows to the dispatch (idempotent + audited).
+    assert arguments["request_id"] == data["request_id"]
+
+
+async def test_undo_delete_recreates_event(app):
+    """Undo of an applied delete dispatches calendar_create_event from the pre-image."""
+    row = _undo_action_row(
+        action_type="workspace_user_delete",
+        action_result={"status": "deleted", "pre_state": _UNDO_PRE_STATE},
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="created")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["inverse_tool"] == "calendar_create_event"
+    assert data["undone"] is True
+
+    tool_name, arguments = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_create_event"
+    assert arguments["title"] == "Original title"
+    assert arguments["calendar_id"] == "primary"
+    assert "event_id" not in arguments  # create does not target an id
+    assert arguments["request_id"] == data["request_id"]
+
+
+async def test_undo_create_deletes_event(app):
+    """Undo of an applied create dispatches calendar_delete_event against the created id."""
+    row = _undo_action_row(
+        action_type="workspace_user_create",
+        action_result={
+            "status": "created",
+            "calendar_id": "primary",
+            "event": {"event_id": "evt-created-9"},
+        },
+        origin_ref="evt-created-9",
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="deleted")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["inverse_tool"] == "calendar_delete_event"
+    assert data["undone"] is True
+
+    tool_name, arguments = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_delete_event"
+    assert arguments["event_id"] == "evt-created-9"
+    assert arguments["calendar_id"] == "primary"
+    assert arguments["request_id"] == data["request_id"]
+
+
+async def test_undo_non_applied_returns_409(app):
+    """Undo of a pending/failed/noop action fails fast with 409, dispatching nothing."""
+    row = _undo_action_row(
+        action_type="workspace_user_update",
+        action_status="failed",
+        action_result={"status": "error"},
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 409
+    assert "failed" in resp.json()["detail"]
+    mock_client.call_tool.assert_not_awaited()
+
+
+async def test_undo_missing_pre_state_returns_422(app):
+    """Applied update without captured pre-state fails fast with 422 diagnostics."""
+    row = _undo_action_row(
+        action_type="workspace_user_update",
+        action_result={"status": "updated"},  # no pre_state
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["action_id"] == str(row["id"])
+    assert detail["action_type"] == "workspace_user_update"
+    assert "reason" in detail
+    mock_client.call_tool.assert_not_awaited()
+
+
+async def test_undo_unknown_id_returns_404(app):
+    """Undo of an unknown action id returns 404 and dispatches nothing."""
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": []})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{uuid4()}")
+
+    assert resp.status_code == 404
+    mock_client.call_tool.assert_not_awaited()
+
+
+async def test_undo_already_undone_returns_409(app):
+    """Repeated undo of an already-undone action fails fast with 409."""
+    row = _undo_action_row(
+        action_type="workspace_user_update",
+        action_result={
+            "status": "updated",
+            "pre_state": _UNDO_PRE_STATE,
+            "undo": {"request_id": "undo-prev", "inverse_tool": "calendar_update_event"},
+        },
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 409
+    assert "already undone" in resp.json()["detail"]
+    mock_client.call_tool.assert_not_awaited()

@@ -265,3 +265,26 @@ class CalendarAuditResponse(BaseModel):
     total: int = 0
     offset: int = 0
     limit: int = 50
+
+
+# ---------------------------------------------------------------------------
+# Undo model — POST /api/calendar/workspace/undo/{action_id}
+# ---------------------------------------------------------------------------
+
+
+class CalendarUndoResponse(BaseModel):
+    """Response payload for POST /api/calendar/workspace/undo/{action_id}.
+
+    Reports the original action that was reversed, the inverse calendar MCP
+    tool dispatched to reverse it, the freshly generated ``request_id`` carried
+    by that dispatch (so the undo is itself idempotent and audited), and the
+    raw inverse mutation result.  ``undone`` is ``True`` only when the inverse
+    dispatch succeeded and the original action was marked undone.
+    """
+
+    action_id: UUID
+    action_type: str
+    inverse_tool: str
+    request_id: str
+    undone: bool
+    result: dict[str, Any] = Field(default_factory=dict)

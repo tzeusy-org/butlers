@@ -3395,6 +3395,12 @@ class CalendarModule(Module):
             result["projection_freshness"] = await module._refresh_user_projection(
                 resolved_calendar_id
             )
+            # Capture the pre-mutation pre-image so the dashboard undo endpoint
+            # can reverse-apply an inverse calendar_update_event. Reuses the
+            # already-fetched existing_event — no extra provider round-trip.
+            result["pre_state"] = module._capture_event_pre_state(
+                existing_event, resolved_calendar_id
+            )
             await module._finalize_workspace_mutation(
                 idempotency_key=idempotency_key,
                 action_type="workspace_user_update",
@@ -3552,6 +3558,13 @@ class CalendarModule(Module):
             )
             result["projection_freshness"] = await module._refresh_user_projection(
                 resolved_calendar_id
+            )
+            # Capture the pre-deletion pre-image so the dashboard undo endpoint
+            # can reverse-apply an inverse calendar_create_event that recreates
+            # the event on its home calendar. Reuses the already-fetched
+            # existing_event — no extra provider round-trip.
+            result["pre_state"] = module._capture_event_pre_state(
+                existing_event, resolved_calendar_id
             )
             await module._finalize_workspace_mutation(
                 idempotency_key=idempotency_key,
@@ -8431,6 +8444,34 @@ class CalendarModule(Module):
             "comment": attendee.comment,
         }
         return payload
+
+    @staticmethod
+    def _capture_event_pre_state(event: CalendarEvent, calendar_id: str) -> dict[str, Any]:
+        """Capture the pre-mutation event pre-image for reversible mutations.
+
+        Stored under the ``pre_state`` key of a mutation's ``action_result`` so the
+        dashboard undo endpoint can reverse-apply an inverse mutation
+        (``calendar_update_event`` to restore, or ``calendar_create_event`` to
+        recreate) without an extra provider round-trip.  Reuses the
+        already-fetched ``existing_event`` — no additional provider call.
+
+        Only the fields an inverse mutation needs are captured; attendees are
+        flattened to their email addresses (the shape both inverse tools accept).
+        """
+        return {
+            "event_id": event.event_id,
+            "calendar_id": calendar_id,
+            "title": event.title,
+            "start_at": event.start_at.isoformat(),
+            "end_at": event.end_at.isoformat(),
+            "timezone": event.timezone,
+            "description": event.description,
+            "body": event.body,
+            "location": event.location,
+            "attendees": [a.email for a in event.attendees],
+            "recurrence_rule": event.recurrence_rule,
+            "color_id": event.color_id,
+        }
 
     @staticmethod
     def _event_to_payload(event: CalendarEvent) -> dict[str, Any]:
