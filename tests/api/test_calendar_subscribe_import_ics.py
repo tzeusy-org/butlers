@@ -404,3 +404,231 @@ async def test_import_rejects_invalid_payload(app):
         )
     assert resp.status_code == 400
     mock_client.call_tool.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Wide-span dedup pre-fetch chunking (bu-5xbpm)
+# --------------------------------------------------------------------------- #
+
+_DEDUP_WINDOW = timedelta(days=90)
+
+
+def _collect_dedup_windows(mock_db) -> list[tuple[datetime, datetime]]:
+    """Extract the ``(start, end)`` dedup pre-fetch windows from fan_out calls.
+
+    The read-model passes ``args = (view, end, start, ...)`` (see
+    ``query_calendar_workspace``), so each workspace query reveals the time
+    window it scanned.
+    """
+    windows: list[tuple[datetime, datetime]] = []
+    for call in mock_db.fan_out.await_args_list:
+        sql = call.args[0]
+        if "FROM calendar_event_instances AS i" not in sql:
+            continue
+        query_args = call.args[1]
+        end, start = query_args[1], query_args[2]
+        windows.append((start, end))
+    return windows
+
+
+def _build_filtering_app(app, *, rows_by_butler: dict[str, list[dict]]) -> tuple:
+    """Like ``_build_app`` but the workspace fan_out honours the window bounds.
+
+    Replicates the read-model overlap filter (``ends_at > start AND
+    starts_at < end``) so a windowed pre-fetch only sees rows inside each window
+    — letting the parity test prove the union over windows still catches every
+    existing entry scattered across a wide span.
+    """
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general", "relationship"]
+    mock_db.butlers_with_module = MagicMock(return_value=None)
+
+    async def _fan_out(query: str, args=(), butler_names=None):
+        if "FROM calendar_event_instances AS i" not in query:
+            return {}
+        end, start = args[1], args[2]
+        rows_to_scan = rows_by_butler
+        if butler_names is not None:
+            rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
+        filtered: dict[str, list[dict]] = {}
+        for butler, rows in rows_to_scan.items():
+            kept = [
+                r for r in rows if r["instance_ends_at"] > start and r["instance_starts_at"] < end
+            ]
+            if kept:
+                filtered[butler] = kept
+        return filtered
+
+    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(
+        return_value={"content": [{"type": "text", "text": '{"event_id": "evt-1"}'}]}
+    )
+    mock_mgr = AsyncMock(spec=MCPClientManager)
+    mock_mgr.get_client = AsyncMock(return_value=mock_client)
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
+    return app, mock_db, mock_mgr, mock_client
+
+
+async def test_import_wide_span_chunks_dedup_prefetch(app):
+    """A multi-month .ics dedups via several bounded windows, not one big query."""
+    app, mock_db, _, _ = _build_app(app, workspace_rows={})
+
+    base = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    # ~9 months of monthly events → span far exceeds the 90-day dedup window.
+    specs = [
+        (
+            f"Event-{i}",
+            base + timedelta(days=30 * i),
+            base + timedelta(days=30 * i, hours=1),
+        )
+        for i in range(10)
+    ]
+    ics = _build_ics(specs)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/import/ics",
+            data={"butler_name": "general"},
+            files={"file": ("cal.ics", ics, "text/calendar")},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["parsed"] == 10
+    assert body["imported"] == 10
+    assert body["skipped_duplicates"] == 0
+
+    windows = _collect_dedup_windows(mock_db)
+    # Wide span is bucketed into >1 bounded window — never one unbounded query.
+    assert len(windows) > 1
+    assert all((end - start) <= _DEDUP_WINDOW for start, end in windows)
+    # Windows tile the full span contiguously: no gaps, no overlap.
+    windows.sort()
+    range_start = min(s for _, s, _ in specs)
+    range_end = max(e for _, _, e in specs) + timedelta(seconds=1)
+    assert windows[0][0] == range_start
+    assert windows[-1][1] == range_end
+    for (_, prev_end), (next_start, _) in zip(windows, windows[1:]):
+        assert prev_end == next_start
+
+
+async def test_import_wide_span_reimport_is_noop_with_windowed_fetch(app):
+    """Result parity: a wide-span re-import skips every event even when existing
+    rows are scattered across distinct dedup windows."""
+    base = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    specs = [
+        (
+            f"Event-{i}",
+            base + timedelta(days=45 * i),
+            base + timedelta(days=45 * i, hours=1),
+        )
+        for i in range(8)
+    ]
+    rows = [
+        _workspace_event_row(
+            lane="user",
+            source_key="provider:google:primary",
+            source_kind="provider_event",
+            butler_name=None,
+            title=title,
+            start=start,
+            end=end,
+            calendar_id="primary",
+        )
+        for title, start, end in specs
+    ]
+    app, mock_db, _, mock_client = _build_filtering_app(app, rows_by_butler={"general": rows})
+
+    ics = _build_ics(specs)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/import/ics",
+            data={"butler_name": "general"},
+            files={"file": ("cal.ics", ics, "text/calendar")},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["parsed"] == 8
+    assert body["imported"] == 0
+    assert body["skipped_duplicates"] == 8
+    # No event recreated despite each existing row living in a different window.
+    mock_client.call_tool.assert_not_called()
+    # The pre-fetch was genuinely chunked (multiple bounded windows).
+    assert len(_collect_dedup_windows(mock_db)) > 1
+
+
+async def test_import_wide_span_partial_dedup_with_windowed_fetch(app):
+    """Across a wide span, only events matching an existing row are skipped; the
+    rest are created — proving windowed dedup is neither over- nor under-zealous."""
+    base = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    # Existing rows in window 1 (day 0) and a far later window (day ~180).
+    existing_specs = [
+        ("Kickoff", base, base + timedelta(hours=1)),
+        ("Review", base + timedelta(days=180), base + timedelta(days=180, hours=1)),
+    ]
+    rows = [
+        _workspace_event_row(
+            lane="user",
+            source_key="provider:google:primary",
+            source_kind="provider_event",
+            butler_name=None,
+            title=title,
+            start=start,
+            end=end,
+            calendar_id="primary",
+        )
+        for title, start, end in existing_specs
+    ]
+    app, mock_db, _, mock_client = _build_filtering_app(app, rows_by_butler={"general": rows})
+
+    import_specs = [
+        ("Kickoff", base, base + timedelta(hours=1)),  # dup (window 1)
+        ("Standup", base + timedelta(days=90), base + timedelta(days=90, hours=1)),  # new
+        ("Review", base + timedelta(days=180), base + timedelta(days=180, hours=1)),  # dup (later)
+    ]
+    ics = _build_ics(import_specs)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/import/ics",
+            data={"butler_name": "general"},
+            files={"file": ("cal.ics", ics, "text/calendar")},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["parsed"] == 3
+    assert body["imported"] == 1
+    assert body["skipped_duplicates"] == 2
+    # Only the genuinely-new "Standup" routed through the create path.
+    assert mock_client.call_tool.await_count == 1
+
+
+def test_ics_dedup_windows_tiles_contiguously_and_bounds_width():
+    """Unit-level guard on the windowing helper: contiguous tiling + bounded width."""
+    from butlers.api.routers.calendar_workspace import _ics_dedup_windows
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(days=400)
+    windows = _ics_dedup_windows(start, end, width=timedelta(days=90))
+
+    assert windows[0][0] == start
+    assert windows[-1][1] == end
+    assert all((w_end - w_start) <= timedelta(days=90) for w_start, w_end in windows)
+    for (_, prev_end), (next_start, _) in zip(windows, windows[1:]):
+        assert prev_end == next_start
+    # A narrow span stays a single window.
+    narrow = _ics_dedup_windows(start, start + timedelta(days=5))
+    assert narrow == [(start, start + timedelta(days=5))]

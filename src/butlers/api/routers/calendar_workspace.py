@@ -3676,6 +3676,43 @@ async def subscribe_calendar_ics(
 # pathological upload, not a product limit. Surfaced as a 413 when exceeded.
 _ICS_IMPORT_MAX_EVENTS = 1000
 
+# Width of each dedup pre-fetch window for ``.ics`` import. A wide ``.ics``
+# (multi-month / multi-year span) is fetched in fixed-size time buckets rather
+# than one unbounded range query. The read-model's range filter overlaps each
+# window, and the windows tile the span contiguously, so the union of per-window
+# collapse keys is identical to a single full-span fetch — the dedup result is
+# unchanged, only the per-query span is bounded.
+_ICS_DEDUP_PREFETCH_WINDOW = timedelta(days=90)
+
+
+def _ics_dedup_windows(
+    range_start: datetime,
+    range_end: datetime,
+    *,
+    width: timedelta = _ICS_DEDUP_PREFETCH_WINDOW,
+) -> list[tuple[datetime, datetime]]:
+    """Tile ``[range_start, range_end)`` into contiguous fixed-width windows.
+
+    Each window is fetched separately so a very wide ``.ics`` span does not issue
+    one giant range query against the workspace. The windows tile the span
+    contiguously, so any event overlapping the full span overlaps at least one
+    window; the read-model uses the same overlap filter (``ends_at > start AND
+    starts_at < end``), so the union of per-window collapse keys is identical to
+    a single full-span fetch (an event straddling a boundary appears in both
+    adjacent windows but contributes the same key, which a set collapses).
+    """
+    if width <= timedelta(0):
+        raise ValueError("dedup window width must be positive")
+    if range_end <= range_start:
+        return [(range_start, range_end)]
+    windows: list[tuple[datetime, datetime]] = []
+    cursor = range_start
+    while cursor < range_end:
+        nxt = min(cursor + width, range_end)
+        windows.append((cursor, nxt))
+        cursor = nxt
+    return windows
+
 
 class _ParsedIcsEvent:
     """A normalized VEVENT extracted from an uploaded ``.ics`` payload."""
@@ -3808,15 +3845,20 @@ async def import_calendar_ics(
 
     # Fetch existing user-view entries spanning the imported events' range so we
     # can dedup against the live workspace using the read-model collapse keys.
+    # A very wide ``.ics`` span is bucketed into fixed-size windows so we never
+    # issue one giant unbounded range query; the union of per-window collapse
+    # keys is identical to a single full-span fetch (see ``_ics_dedup_windows``).
     range_start = min(event.start_at for event in parsed)
     range_end = max(event.end_at for event in parsed) + timedelta(seconds=1)
-    existing_rows = await _fetch_workspace_rows(
-        db,
-        view="user",
-        start=range_start,
-        end=range_end,
-    )
-    seen_keys: set[tuple[str, int]] = {_title_collapse_key(row) for row in existing_rows}
+    seen_keys: set[tuple[str, int]] = set()
+    for window_start, window_end in _ics_dedup_windows(range_start, range_end):
+        existing_rows = await _fetch_workspace_rows(
+            db,
+            view="user",
+            start=window_start,
+            end=window_end,
+        )
+        seen_keys.update(_title_collapse_key(row) for row in existing_rows)
 
     imported_events: list[CalendarIcsImportedEvent] = []
     skipped = 0
