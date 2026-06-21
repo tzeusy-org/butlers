@@ -774,6 +774,12 @@ describe("CalendarWorkspacePage", () => {
           title: "Morning review",
         }),
       }),
+      // Blur-save attaches success/error callbacks so the auto-save outcome is
+      // surfaced (toast + "Saved ✓"/"Save failed" indicator).
+      expect.objectContaining({
+        onSuccess: expect.any(Function),
+        onError: expect.any(Function),
+      }),
     );
   });
 

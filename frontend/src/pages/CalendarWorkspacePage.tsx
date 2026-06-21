@@ -803,42 +803,83 @@ function CalendarEntryDetailPanel({
   const [locationDraft, setLocationDraft] = useState(
     typeof entry.metadata?.location === "string" ? entry.metadata.location : "",
   );
+  // Auto-save feedback: edits commit on blur, so surface the outcome explicitly
+  // ("Saving…/Saved/Save failed") since there is no Save button to anchor it.
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
 
-  function fireUserUpdate(patch: Record<string, unknown>) {
+  function fireUserUpdate(patch: Record<string, unknown>, label: string) {
     const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
     if (!butlerName || !entry.provider_event_id) return;
-    userMutation.mutate({
-      butler_name: butlerName,
-      action: "update",
-      request_id: `detail-update-${Date.now()}`,
-      payload: {
-        event_id: entry.provider_event_id,
-        calendar_id: calendarId ?? undefined,
-        ...patch,
+    setSaveStatus("idle");
+    userMutation.mutate(
+      {
+        butler_name: butlerName,
+        action: "update",
+        request_id: `detail-update-${Date.now()}`,
+        payload: {
+          event_id: entry.provider_event_id,
+          calendar_id: calendarId ?? undefined,
+          ...patch,
+        },
       },
-    });
+      {
+        onSuccess: (response) => {
+          const result = response.data.result;
+          if (!isCalendarMutationOk(result)) {
+            toast.error(`Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`);
+            setSaveStatus("error");
+            return;
+          }
+          toast.success(`Event ${label} updated.`);
+          setSaveStatus("saved");
+        },
+        onError: (error) => {
+          toast.error(error instanceof Error ? error.message : `Failed to update ${label}.`);
+          setSaveStatus("error");
+        },
+      },
+    );
   }
 
-  function fireButlerUpdate(patch: Record<string, unknown>) {
+  function fireButlerUpdate(patch: Record<string, unknown>, label: string) {
     const target = resolveButlerEventTarget(entry);
     if (!target || !entry.butler_name) return;
-    butlerMutation.mutate({
-      butler_name: entry.butler_name,
-      action: "update",
-      request_id: `detail-update-${Date.now()}`,
-      payload: {
-        event_id: target.eventId,
-        source_hint: target.sourceHint,
-        ...patch,
+    setSaveStatus("idle");
+    butlerMutation.mutate(
+      {
+        butler_name: entry.butler_name,
+        action: "update",
+        request_id: `detail-update-${Date.now()}`,
+        payload: {
+          event_id: target.eventId,
+          source_hint: target.sourceHint,
+          ...patch,
+        },
       },
-    });
+      {
+        onSuccess: (response) => {
+          const result = response.data.result;
+          if (!isCalendarMutationOk(result)) {
+            toast.error(`Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`);
+            setSaveStatus("error");
+            return;
+          }
+          toast.success(`Event ${label} updated.`);
+          setSaveStatus("saved");
+        },
+        onError: (error) => {
+          toast.error(error instanceof Error ? error.message : `Failed to update ${label}.`);
+          setSaveStatus("error");
+        },
+      },
+    );
   }
 
   function handleTitleBlur() {
     const trimmed = titleDraft.trim();
     if (!trimmed || trimmed === entry.title) return;
-    if (isUserEvent) fireUserUpdate({ title: trimmed });
-    else if (isButlerEvent) fireButlerUpdate({ title: trimmed });
+    if (isUserEvent) fireUserUpdate({ title: trimmed }, "title");
+    else if (isButlerEvent) fireButlerUpdate({ title: trimmed }, "title");
   }
 
   function handleDescriptionBlur() {
@@ -846,14 +887,14 @@ function CalendarEntryDetailPanel({
     const current =
       typeof entry.metadata?.description === "string" ? entry.metadata.description : "";
     if (trimmed === current) return;
-    if (isUserEvent) fireUserUpdate({ description: trimmed });
+    if (isUserEvent) fireUserUpdate({ description: trimmed }, "description");
   }
 
   function handleLocationBlur() {
     const trimmed = locationDraft.trim();
     const current = typeof entry.metadata?.location === "string" ? entry.metadata.location : "";
     if (trimmed === current) return;
-    if (isUserEvent) fireUserUpdate({ location: trimmed });
+    if (isUserEvent) fireUserUpdate({ location: trimmed }, "location");
   }
 
   const startDate = new Date(entry.start_at);
@@ -890,7 +931,26 @@ function CalendarEntryDetailPanel({
     >
       {/* Panel header */}
       <div className="flex items-start justify-between gap-2">
-        <Eyebrow as="div">Event detail</Eyebrow>
+        <div className="flex items-center gap-2">
+          <Eyebrow as="div">Event detail</Eyebrow>
+          {(canMutateUser || canMutateButler) ? (
+            <span
+              data-testid="detail-save-status"
+              className={cn(
+                "font-mono text-[10px] uppercase tracking-[0.12em]",
+                saveStatus === "error" ? "text-[var(--red)]" : "text-[var(--mfg)]",
+              )}
+            >
+              {isPending
+                ? "Saving…"
+                : saveStatus === "saved"
+                  ? "Saved ✓"
+                  : saveStatus === "error"
+                    ? "Save failed"
+                    : "Edits save on blur"}
+            </span>
+          ) : null}
+        </div>
         <button
           type="button"
           aria-label="Close detail panel"
@@ -914,7 +974,10 @@ function CalendarEntryDetailPanel({
             id="detail-title"
             data-testid="detail-title-input"
             value={titleDraft}
-            onChange={(e) => setTitleDraft(e.target.value)}
+            onChange={(e) => {
+              setTitleDraft(e.target.value);
+              setSaveStatus("idle");
+            }}
             onBlur={handleTitleBlur}
             disabled={isPending}
             className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm font-medium text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
@@ -1009,7 +1072,10 @@ function CalendarEntryDetailPanel({
             id="detail-description"
             data-testid="detail-description-input"
             value={descriptionDraft}
-            onChange={(e) => setDescriptionDraft(e.target.value)}
+            onChange={(e) => {
+              setDescriptionDraft(e.target.value);
+              setSaveStatus("idle");
+            }}
             onBlur={handleDescriptionBlur}
             disabled={isPending || !canMutateUser}
             rows={3}
@@ -1031,7 +1097,10 @@ function CalendarEntryDetailPanel({
             id="detail-location"
             data-testid="detail-location-input"
             value={locationDraft}
-            onChange={(e) => setLocationDraft(e.target.value)}
+            onChange={(e) => {
+              setLocationDraft(e.target.value);
+              setSaveStatus("idle");
+            }}
             onBlur={handleLocationBlur}
             disabled={isPending || !canMutateUser}
             className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
