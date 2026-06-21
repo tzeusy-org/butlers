@@ -201,48 +201,39 @@ def test_runtime_seed_config(tmp_path: Path):
         assert cfg_b.runtime_seed.max_concurrent_sessions >= 3
 
 
-def test_old_runtime_section_rejected(tmp_path: Path):
-    """Old [butler.runtime] section is rejected with clear error."""
-    old_toml = '[butler]\nname = "m"\nport = 7017\n[butler.runtime]\nmodel = "x"\n'
-    with pytest.raises(ConfigError, match=r"\[butler\.runtime\] is no longer supported"):
-        load_config(_write_toml(tmp_path, old_toml))
-
-
-def test_old_seed_configs_section_rejected(tmp_path: Path):
-    """Old [butler.seed_configs] section is rejected with clear error."""
-    old_toml = '[butler]\nname = "m"\nport = 7014\n[butler.seed_configs]\nmodel = "x"\n'
-    with pytest.raises(ConfigError, match=r"\[butler\.seed_configs\] has been merged"):
-        load_config(_write_toml(tmp_path, old_toml))
-
-
-def test_butler_runtime_rejected_even_when_runtime_seed_present(tmp_path: Path):
-    """[butler.runtime] must raise even if [butler.runtime_seed] is also set.
-
-    Allowing both silently would let two adjacent sections drift apart for the
-    same butler, which is the exact failure mode the canonicalisation is meant
-    to prevent. Regression guard for the pre-cleanup behaviour.
-    """
-    both_toml = (
-        '[butler]\nname = "m"\nport = 7020\n'
-        "[butler.runtime_seed]\nmax_concurrent_sessions = 2\n"
-        '[butler.runtime]\nmodel = "x"\n'
-    )
-    with pytest.raises(ConfigError, match=r"\[butler\.runtime\] is no longer supported"):
-        load_config(_write_toml(tmp_path, both_toml))
-
-
-def test_top_level_runtime_section_rejected(tmp_path: Path):
-    """Top-level [runtime] section is rejected at load time.
-
-    The runtime adapter type is fixed to ``DEFAULT_RUNTIME_TYPE`` for every
-    butler in the roster. A git-level [runtime] knob with no consumer
-    differentiation is cruft and invites silent drift, so ``load_config``
-    refuses to parse it — a fresh butler that re-introduces the section will
-    fail at load time instead of silently overriding the default.
-    """
-    bad_toml = '[butler]\nname = "m"\nport = 7030\n[runtime]\ntype = "codex"\n'
-    with pytest.raises(ConfigError, match=r"Top-level \[runtime\] section is no longer supported"):
-        load_config(_write_toml(tmp_path, bad_toml))
+@pytest.mark.parametrize(
+    "toml, match",
+    [
+        # Old [butler.runtime] section rejected with clear error.
+        (
+            '[butler]\nname = "m"\nport = 7017\n[butler.runtime]\nmodel = "x"\n',
+            r"\[butler\.runtime\] is no longer supported",
+        ),
+        # Old [butler.seed_configs] section rejected with clear error.
+        (
+            '[butler]\nname = "m"\nport = 7014\n[butler.seed_configs]\nmodel = "x"\n',
+            r"\[butler\.seed_configs\] has been merged",
+        ),
+        # [butler.runtime] must raise even if [butler.runtime_seed] is also set;
+        # allowing both silently would let the two sections drift apart.
+        (
+            '[butler]\nname = "m"\nport = 7020\n'
+            "[butler.runtime_seed]\nmax_concurrent_sessions = 2\n"
+            '[butler.runtime]\nmodel = "x"\n',
+            r"\[butler\.runtime\] is no longer supported",
+        ),
+        # Top-level [runtime] section is rejected at load time; the runtime
+        # adapter type is fixed for every roster butler, so this knob is cruft.
+        (
+            '[butler]\nname = "m"\nport = 7030\n[runtime]\ntype = "codex"\n',
+            r"Top-level \[runtime\] section is no longer supported",
+        ),
+    ],
+)
+def test_legacy_runtime_sections_rejected(tmp_path: Path, toml: str, match: str):
+    """Legacy/superseded runtime config sections are rejected at load time."""
+    with pytest.raises(ConfigError, match=match):
+        load_config(_write_toml(tmp_path, toml))
 
 
 def test_roster_runtime_identity_is_internally_consistent():
@@ -453,9 +444,10 @@ def test_oauth_section_absent_defaults_to_empty(tmp_path: Path):
     assert cfg.oauth == {}
 
 
-def test_oauth_section_single_provider(tmp_path: Path):
-    """[oauth.google] with a scopes list is parsed correctly."""
-    toml = (
+def test_oauth_section_valid_parsing(tmp_path: Path):
+    """Valid [oauth.<provider>] sections parse: single, multiple, and empty scopes."""
+    # Single provider with a scopes list.
+    single = (
         '[butler]\nname = "email"\nport = 41100\n\n'
         "[oauth.google]\n"
         "scopes = [\n"
@@ -463,32 +455,27 @@ def test_oauth_section_single_provider(tmp_path: Path):
         '  "https://www.googleapis.com/auth/calendar",\n'
         "]\n"
     )
-    cfg = load_config(_write_toml(tmp_path, toml))
-    assert "google" in cfg.oauth
+    cfg = load_config(_write_toml(tmp_path, single))
     assert cfg.oauth["google"] == [
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/calendar",
     ]
 
-
-def test_oauth_section_multiple_providers(tmp_path: Path):
-    """Multiple [oauth.<provider>] sections are each parsed into the oauth dict."""
-    toml = (
+    # Multiple providers each parsed into the oauth dict.
+    multiple = (
         '[butler]\nname = "music"\nport = 41101\n\n'
         "[oauth.spotify]\n"
         'scopes = ["user-read-recently-played", "user-top-read"]\n\n'
         "[oauth.google]\n"
         'scopes = ["https://www.googleapis.com/auth/calendar"]\n'
     )
-    cfg = load_config(_write_toml(tmp_path, toml))
+    cfg = load_config(_write_toml(tmp_path, multiple))
     assert set(cfg.oauth["spotify"]) == {"user-read-recently-played", "user-top-read"}
     assert cfg.oauth["google"] == ["https://www.googleapis.com/auth/calendar"]
 
-
-def test_oauth_section_empty_scopes_list(tmp_path: Path):
-    """[oauth.google] with scopes = [] is valid and results in an empty list."""
-    toml = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = []\n'
-    cfg = load_config(_write_toml(tmp_path, toml))
+    # scopes = [] is valid and yields an empty list.
+    empty = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = []\n'
+    cfg = load_config(_write_toml(tmp_path, empty))
     assert cfg.oauth["google"] == []
 
 

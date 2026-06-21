@@ -202,13 +202,13 @@ async def test_remind_validation_errors(tmp_path):
 
     future = datetime.now(UTC) + timedelta(hours=1)
     past = datetime.now(UTC) - timedelta(hours=1)
+    # Each invalid timing combination must be rejected (wording is not the contract).
     cases = [
-        ({"delay_minutes": 10, "remind_at": future}, "exactly one"),
-        ({}, "exactly one"),
-        ({"delay_minutes": 0}, "at least 1"),
-        ({"remind_at": past}, "future"),
+        {"delay_minutes": 10, "remind_at": future},  # both supplied
+        {},  # neither supplied
+        {"delay_minutes": 0},  # non-positive delay
+        {"remind_at": past},  # past time
     ]
-    for kwargs, match in cases:
+    for kwargs in cases:
         result = await tools["remind"](message="Test", channel="telegram", **kwargs)
-        assert result["status"] == "error"
-        assert match in result["error"].lower(), f"Expected '{match}' in error for {kwargs}"
+        assert result["status"] == "error", f"Expected error status for {kwargs}"

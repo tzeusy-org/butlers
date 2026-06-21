@@ -39,7 +39,10 @@ pytestmark = pytest.mark.unit
 
 class TestBriefingCacheInvalidateAll:
     def test_invalidate_all_clears_all_entries(self):
-        """invalidate_all() removes every cached entry."""
+        """invalidate_all() removes every cached entry; empty-cache call is a no-op."""
+        # Empty cache: must not raise.
+        BriefingCache(ttl_seconds=300).invalidate_all()
+
         cache = BriefingCache(ttl_seconds=300)
         cache.set("owner-a", {"greet": "Good morning.", "state_class": "quiet"})
         cache.set("owner-b", {"greet": "Good afternoon.", "state_class": "urgent"})
@@ -51,11 +54,6 @@ class TestBriefingCacheInvalidateAll:
 
         assert cache.get("owner-a") is None
         assert cache.get("owner-b") is None
-
-    def test_invalidate_all_on_empty_cache_is_noop(self):
-        """invalidate_all() on an empty cache does not raise."""
-        cache = BriefingCache(ttl_seconds=300)
-        cache.invalidate_all()  # must not raise
 
     def test_invalidate_all_does_not_affect_subsequent_sets(self):
         """After invalidate_all(), new entries can be set and retrieved."""

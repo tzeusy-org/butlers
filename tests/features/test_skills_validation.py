@@ -19,19 +19,23 @@ def test_list_valid_skills_empty_directory(tmp_path: Path) -> None:
     assert list_valid_skills(skills) == []
 
 
-def test_list_valid_skills_valid_and_invalid_names(
+def test_list_valid_skills_kebab_case_pattern(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Valid kebab-case names are returned; invalid names are skipped and logged; files ignored."""
+    """Valid kebab-case dirs are returned; invalid names skipped+logged; files ignored.
+
+    Exercises the ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ pattern across its edge cases.
+    """
     skills = tmp_path / "skills"
     skills.mkdir()
 
-    # Valid
-    for name in ["valid-skill", "another-valid", "a", "a1", "skill-123", "a-b-c-d"]:
+    # Valid (incl. single-char + numeric-suffix edge cases)
+    valid = ["valid-skill", "another-valid", "a", "a1", "skill-123", "a-b-c-d", "abc", "ab-cd"]
+    for name in valid:
         (skills / name).mkdir()
 
-    # Invalid
-    for name in [
+    # Invalid (incl. regex edge cases: leading number/dash, trailing dash, double dash)
+    invalid = [
         "Invalid_Name",
         "CamelCase",
         "123-starts-with-number",
@@ -39,7 +43,10 @@ def test_list_valid_skills_valid_and_invalid_names(
         "-starts-with-dash",
         "ends-with-dash-",
         "double--dash",
-    ]:
+        "A",
+        "1",
+    ]
+    for name in invalid:
         (skills / name).mkdir()
 
     # File (should be ignored)
@@ -48,27 +55,12 @@ def test_list_valid_skills_valid_and_invalid_names(
     with caplog.at_level(logging.WARNING):
         result = list_valid_skills(skills)
 
-    result_names = sorted([p.name for p in result])
-    assert result_names == ["a", "a-b-c-d", "a1", "another-valid", "skill-123", "valid-skill"]
+    result_names = sorted(p.name for p in result)
+    assert result_names == sorted(valid)
 
-    # All invalid names should appear in warnings
-    for invalid in ["Invalid_Name", "CamelCase", "123-starts-with-number"]:
-        assert invalid in caplog.text
-
-
-def test_list_valid_skills_edge_cases(tmp_path: Path) -> None:
-    """Regex pattern ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ edge cases."""
-    skills = tmp_path / "skills"
-    skills.mkdir()
-
-    for name in ["a", "abc", "a123", "ab-cd", "a-b-c", "skill-123-test"]:
-        (skills / name).mkdir()
-    for name in ["A", "1", "-a", "a-", "a--b"]:
-        (skills / name).mkdir()
-
-    result = list_valid_skills(skills)
-    result_names = sorted([p.name for p in result])
-    assert result_names == ["a", "a-b-c", "a123", "ab-cd", "abc", "skill-123-test"]
+    # Invalid names should appear in warnings.
+    for bad in ["Invalid_Name", "CamelCase", "123-starts-with-number"]:
+        assert bad in caplog.text
 
 
 def test_repo_skill_files_use_yaml_frontmatter() -> None:
@@ -79,6 +71,7 @@ def test_repo_skill_files_use_yaml_frontmatter() -> None:
     missing_frontmatter: list[str] = []
     missing_name: list[str] = []
     mismatched_name: list[str] = []
+    missing_description: list[str] = []
 
     for skill_file in skill_files:
         text = skill_file.read_text(encoding="utf-8")
@@ -118,6 +111,16 @@ def test_repo_skill_files_use_yaml_frontmatter() -> None:
         if skill_name != expected_name:
             mismatched_name.append(f"{rel_path} -> {skill_name!r} != {expected_name!r}")
 
+        # Every Codex-discoverable skill must carry a non-empty description.
+        desc_line = next(
+            (line for line in frontmatter if line and line.lstrip().startswith("description:")),
+            None,
+        )
+        desc_value = desc_line.split(":", 1)[1].strip().strip("'\"") if desc_line else ""
+        if not desc_value:
+            missing_description.append(rel_path)
+
     assert missing_frontmatter == []
     assert missing_name == []
     assert mismatched_name == []
+    assert missing_description == []

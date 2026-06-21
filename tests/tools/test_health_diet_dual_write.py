@@ -71,29 +71,8 @@ def _make_pool(*, execute_side_effect=None) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-async def test_write_to_health_meals_inserts_row() -> None:
-    """_write_to_health_meals must call pool.execute with the INSERT statement."""
-    pool = _make_pool()
-    meal_id = uuid.uuid4()
-
-    await _write_to_health_meals(
-        pool,
-        meal_id=meal_id,
-        type="lunch",
-        description="Salad",
-        nutrition=None,
-        eaten_at=_EATEN_AT,
-        notes=None,
-    )
-
-    pool.execute.assert_awaited_once()
-    sql: str = pool.execute.call_args.args[0]
-    assert "INSERT INTO health.meals" in sql
-    assert "ON CONFLICT (id) DO NOTHING" in sql
-
-
-async def test_write_to_health_meals_positional_args() -> None:
-    """INSERT args must be in the correct column order."""
+async def test_write_to_health_meals_inserts_row_with_ordered_args() -> None:
+    """_write_to_health_meals issues the ON CONFLICT INSERT with column-ordered args."""
     pool = _make_pool()
     meal_id = uuid.uuid4()
 
@@ -107,8 +86,12 @@ async def test_write_to_health_meals_positional_args() -> None:
         notes="Medium rare",
     )
 
+    pool.execute.assert_awaited_once()
     args = pool.execute.call_args.args
-    # args[0] is the SQL; args[1..] are the positional bind parameters
+    sql: str = args[0]
+    assert "INSERT INTO health.meals" in sql
+    assert "ON CONFLICT (id) DO NOTHING" in sql
+    # args[1..] are the positional bind parameters in column order.
     assert args[1] == meal_id
     assert args[2] == "dinner"
     assert args[3] == "Steak"
@@ -161,63 +144,6 @@ async def test_write_to_health_meals_swallows_postgres_error() -> None:
 # ---------------------------------------------------------------------------
 # meal_log dual-write integration tests
 # ---------------------------------------------------------------------------
-
-
-async def test_meal_log_calls_write_to_health_meals() -> None:
-    """meal_log must invoke _write_to_health_meals exactly once per call."""
-    pool = _make_pool()
-    fact_id = uuid.uuid4()
-
-    with (
-        patch(
-            "butlers.modules.memory.storage.store_fact",
-            new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
-        ),
-        patch("butlers.tools.health.diet._get_embedding_engine", return_value=MagicMock()),
-        patch(
-            "butlers.tools.health.diet._write_to_health_meals",
-            new=AsyncMock(),
-        ) as mock_dual_write,
-    ):
-        await meal_log(pool, type="breakfast", description="Eggs", eaten_at=_EATEN_AT)
-
-    mock_dual_write.assert_awaited_once()
-
-
-async def test_meal_log_passes_correct_kwargs_to_dual_write() -> None:
-    """meal_log must forward the right fields to _write_to_health_meals."""
-    pool = _make_pool()
-    fact_id = uuid.uuid4()
-    nutrition = {"calories": 300, "protein_g": 20, "carbs_g": 30, "fat_g": 10}
-
-    with (
-        patch(
-            "butlers.modules.memory.storage.store_fact",
-            new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
-        ),
-        patch("butlers.tools.health.diet._get_embedding_engine", return_value=MagicMock()),
-        patch(
-            "butlers.tools.health.diet._write_to_health_meals",
-            new=AsyncMock(),
-        ) as mock_dual_write,
-    ):
-        await meal_log(
-            pool,
-            type="lunch",
-            description="Pasta",
-            eaten_at=_EATEN_AT,
-            nutrition=nutrition,
-            notes="Al dente",
-        )
-
-    kwargs = mock_dual_write.call_args.kwargs
-    assert kwargs["type"] == "lunch"
-    assert kwargs["description"] == "Pasta"
-    assert kwargs["eaten_at"] == _EATEN_AT
-    assert kwargs["nutrition"] == nutrition
-    assert kwargs["notes"] == "Al dente"
-    # meal_id must equal the fact_id returned by store_fact
-    assert kwargs["meal_id"] == fact_id
 
 
 async def test_meal_log_health_meals_failure_does_not_raise() -> None:

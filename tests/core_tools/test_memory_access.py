@@ -107,10 +107,20 @@ async def test_memory_access_no_pool_returns_empty():
 # ---------------------------------------------------------------------------
 
 
-async def test_memory_access_with_module_returns_all_stores():
-    """When memory module is present, read and write list all three stores."""
+@pytest.mark.parametrize(
+    "facts, episodes, rules, expected_drops",
+    [
+        (2, 1, 0, 3),
+        (5, 3, 2, 10),
+        (0, 0, 0, 0),
+    ],
+)
+async def test_memory_access_with_module_returns_all_stores_and_drops_7d(
+    facts, episodes, rules, expected_drops
+):
+    """Memory module present: all three stores listed; drops_7d sums all tables."""
     daemon = SimpleNamespace(_modules=[_make_memory_module()])
-    pool = _make_pool(facts_dropped=2, episodes_dropped=1, rules_dropped=0)
+    pool = _make_pool(facts_dropped=facts, episodes_dropped=episodes, rules_dropped=rules)
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -118,29 +128,7 @@ async def test_memory_access_with_module_returns_all_stores():
     assert set(result["read"]) == {"episodes", "facts", "rules"}
     assert set(result["write"]) == {"episodes", "facts", "rules"}
     assert result["namespace"] == "memory-butler"
-    assert result["drops_7d"] == 3  # 2 + 1 + 0
-
-
-async def test_memory_access_drops_7d_aggregates_all_tables():
-    """drops_7d sums expired facts, expired episodes, and forgotten rules."""
-    daemon = SimpleNamespace(_modules=[_make_memory_module()])
-    pool = _make_pool(facts_dropped=5, episodes_dropped=3, rules_dropped=2)
-    tool = _register_and_grab(daemon, pool=pool)
-
-    result = await tool()
-
-    assert result["drops_7d"] == 10  # 5 + 3 + 2
-
-
-async def test_memory_access_drops_7d_zero_when_nothing_dropped():
-    """drops_7d is 0 when no memories were dropped in the window."""
-    daemon = SimpleNamespace(_modules=[_make_memory_module()])
-    pool = _make_pool(facts_dropped=0, episodes_dropped=0, rules_dropped=0)
-    tool = _register_and_grab(daemon, pool=pool)
-
-    result = await tool()
-
-    assert result["drops_7d"] == 0
+    assert result["drops_7d"] == expected_drops
 
 
 async def test_memory_access_drops_7d_degrades_on_db_error():
@@ -206,17 +194,3 @@ async def test_memory_access_ignores_non_memory_modules():
 
     assert result["read"] == []
     assert result["write"] == []
-
-
-async def test_memory_access_with_mixed_modules():
-    """Butler with memory + other modules still returns memory access correctly."""
-    other_mod = SimpleNamespace(name="telegram", _config=None)
-    mem_mod = _make_memory_module(embedding_model="all-MiniLM-L6-v2")
-    daemon = SimpleNamespace(_modules=[other_mod, mem_mod])
-    pool = _make_pool(facts_dropped=1, episodes_dropped=1, rules_dropped=1)
-    tool = _register_and_grab(daemon, pool=pool)
-
-    result = await tool()
-
-    assert set(result["read"]) == {"episodes", "facts", "rules"}
-    assert result["drops_7d"] == 3

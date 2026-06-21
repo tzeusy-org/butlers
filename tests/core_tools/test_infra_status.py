@@ -82,32 +82,27 @@ def _register_and_grab_status(modules, module_statuses=None):
 # ---------------------------------------------------------------------------
 
 
-async def test_status_includes_extra_fields_from_active_module():
-    """Extra fields returned by extra_status_fields() are merged into the module entry."""
-    mod = _make_module("email", extra_fields={"oauth_status": "granted", "credential_health": "ok"})
-    status = _register_and_grab_status([mod])
-
-    result = await status()
-
-    email_entry = result["modules"]["email"]
-    assert email_entry["status"] == "active"
-    assert email_entry["oauth_status"] == "granted"
-    assert email_entry["credential_health"] == "ok"
-
-
-async def test_status_extra_fields_not_configured():
-    """'not_configured' oauth_status is forwarded correctly from extra_status_fields()."""
+@pytest.mark.parametrize(
+    "oauth_status, credential_health",
+    [
+        ("granted", "ok"),
+        ("not_configured", "warning"),
+    ],
+)
+async def test_status_merges_extra_fields_from_active_module(oauth_status, credential_health):
+    """Extra fields from extra_status_fields() are forwarded into the module entry."""
     mod = _make_module(
         "email",
-        extra_fields={"oauth_status": "not_configured", "credential_health": "warning"},
+        extra_fields={"oauth_status": oauth_status, "credential_health": credential_health},
     )
     status = _register_and_grab_status([mod])
 
     result = await status()
 
     email_entry = result["modules"]["email"]
-    assert email_entry["oauth_status"] == "not_configured"
-    assert email_entry["credential_health"] == "warning"
+    assert email_entry["status"] == "active"
+    assert email_entry["oauth_status"] == oauth_status
+    assert email_entry["credential_health"] == credential_health
 
 
 async def test_status_extra_fields_exception_is_silenced():

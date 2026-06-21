@@ -257,9 +257,9 @@ def test_helpers_and_repr() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_secret_metadata_test_state_defaults() -> None:
-    """SecretMetadata test-state columns default to None (never probed)."""
-    meta = SecretMetadata(
+def test_secret_metadata_test_state_columns() -> None:
+    """SecretMetadata test-state columns default to None and roundtrip unchanged."""
+    common = dict(
         key="K",
         category="general",
         description=None,
@@ -270,25 +270,17 @@ def test_secret_metadata_test_state_defaults() -> None:
         expires_at=None,
         source="database",
     )
-    assert meta.last_verified is None
-    assert meta.last_test_ok is None
-    assert meta.last_test_code is None
-    assert meta.last_test_message is None
+    # Default (never probed).
+    defaults = SecretMetadata(**common)
+    assert defaults.last_verified is None
+    assert defaults.last_test_ok is None
+    assert defaults.last_test_code is None
+    assert defaults.last_test_message is None
 
-
-def test_secret_metadata_test_state_roundtrip() -> None:
-    """SecretMetadata stores and returns test-state column values unchanged."""
+    # Roundtrip of explicit values.
     verified_at = datetime(2026, 5, 15, 10, 30, 0, tzinfo=UTC)
     meta = SecretMetadata(
-        key="K",
-        category="general",
-        description=None,
-        is_sensitive=True,
-        is_set=True,
-        created_at=_NOW,
-        updated_at=_NOW,
-        expires_at=None,
-        source="database",
+        **common,
         last_verified=verified_at,
         last_test_ok=False,
         last_test_code=403,
@@ -305,9 +297,10 @@ def test_secret_metadata_test_state_roundtrip() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_entity_info_row_test_state_defaults() -> None:
-    """EntityInfoRow test-state columns default to None (never probed)."""
-    row = EntityInfoRow(
+def test_entity_info_row_columns_and_repr_no_leak() -> None:
+    """EntityInfoRow defaults/roundtrips test-state + nullable fields; repr hides value."""
+    # Defaults (never probed) with no test-state args supplied.
+    defaults = EntityInfoRow(
         id="00000000-0000-0000-0000-000000000001",
         entity_id="00000000-0000-0000-0000-000000000002",
         type="google_oauth_refresh",
@@ -317,14 +310,18 @@ def test_entity_info_row_test_state_defaults() -> None:
         secured=True,
         created_at=_NOW,
     )
-    assert row.last_verified is None
-    assert row.last_test_ok is None
-    assert row.last_test_code is None
-    assert row.last_test_message is None
+    assert defaults.last_verified is None
+    assert defaults.last_test_ok is None
+    assert defaults.last_test_code is None
+    assert defaults.last_test_message is None
+    # Security: repr must not expose the secret value.
+    r = repr(defaults)
+    assert "EntityInfoRow" in r
+    assert "google_oauth_refresh" in r
+    assert "secured=True" in r
+    assert "tok3n" not in r
 
-
-def test_entity_info_row_test_state_roundtrip() -> None:
-    """EntityInfoRow stores and returns test-state column values unchanged."""
+    # Roundtrip of explicit test-state values.
     verified_at = datetime(2026, 5, 20, 14, 0, 0, tzinfo=UTC)
     row = EntityInfoRow(
         id="00000000-0000-0000-0000-000000000001",
@@ -343,41 +340,9 @@ def test_entity_info_row_test_state_roundtrip() -> None:
     assert row.last_verified == verified_at
     assert row.last_test_ok is True
     assert row.last_test_code == 200
-    assert row.last_test_message is None
-    # Repr should not expose value
-    r = repr(row)
-    assert "EntityInfoRow" in r
-    assert "google_oauth_refresh" in r
-    assert "secured=True" in r
-    assert "tok3n" not in r  # value not in repr
 
-
-def test_entity_info_row_nullable_test_state_fields() -> None:
-    """EntityInfoRow accepts None for all four test-state columns (never-probed state)."""
-    row = EntityInfoRow(
-        id="abc",
-        entity_id="def",
-        type="telegram",
-        value="chat_id_123",
-        label=None,
-        is_primary=False,
-        secured=False,
-        created_at=_NOW,
-        last_verified=None,
-        last_test_ok=None,
-        last_test_code=None,
-        last_test_message=None,
-    )
-    # All nullable — verify no TypeError raised and values are None
-    assert row.last_verified is None
-    assert row.last_test_ok is None
-    assert row.last_test_code is None
-    assert row.last_test_message is None
-
-
-def test_entity_info_row_is_primary_nullable() -> None:
-    """EntityInfoRow accepts None for is_primary (DB column has no NOT NULL constraint)."""
-    row = EntityInfoRow(
+    # is_primary is nullable (DB column has no NOT NULL constraint).
+    nullable = EntityInfoRow(
         id="abc",
         entity_id="def",
         type="email",
@@ -387,4 +352,4 @@ def test_entity_info_row_is_primary_nullable() -> None:
         secured=False,
         created_at=_NOW,
     )
-    assert row.is_primary is None
+    assert nullable.is_primary is None

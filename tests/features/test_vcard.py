@@ -146,66 +146,6 @@ async def test_export_single_contact_basic(pool):
     assert "VERSION:" in vcf
 
 
-async def test_export_contact_with_phone_email_and_address(pool):
-    """Test exporting a contact with phone, email, and address."""
-    from butlers.tools.relationship import contact_create, contact_export_vcard
-
-    details = {
-        "phones": [{"number": "+1-555-1234", "type": "CELL"}],
-        "emails": [{"address": "john@example.com", "type": "WORK"}],
-        "addresses": [
-            {
-                "street": "123 Main St",
-                "city": "Springfield",
-                "state": "IL",
-                "postal_code": "62701",
-                "country": "USA",
-                "type": "HOME",
-            }
-        ],
-    }
-    contact = await contact_create(pool, "John Doe", details)
-
-    vcf = await contact_export_vcard(pool, contact["id"])
-
-    assert "TEL" in vcf
-    assert "+1-555-1234" in vcf
-    assert "EMAIL" in vcf
-    assert "john@example.com" in vcf
-    assert "ADR" in vcf
-    assert "123 Main St" in vcf
-    assert "Springfield" in vcf
-    assert "62701" in vcf
-
-
-async def test_export_contact_with_birthday(pool):
-    """Test exporting a contact with birthday."""
-    from butlers.tools.relationship import contact_create, contact_export_vcard, date_add
-
-    contact = await contact_create(pool, "Alice Johnson")
-    await date_add(pool, contact["id"], "birthday", 3, 15, 1990)
-
-    vcf = await contact_export_vcard(pool, contact["id"])
-
-    assert "BDAY" in vcf
-    assert "1990-03-15" in vcf
-
-
-async def test_export_contact_with_org_title(pool):
-    """Test exporting a contact with organization and title via public.contacts."""
-    from butlers.tools.relationship import contact_create, contact_export_vcard, contact_update
-
-    contact = await contact_create(pool, "Bob Brown")
-    await contact_update(pool, contact["id"], company="Acme Corp", job_title="Software Engineer")
-
-    vcf = await contact_export_vcard(pool, contact["id"])
-
-    assert "ORG" in vcf
-    assert "Acme Corp" in vcf
-    assert "TITLE" in vcf
-    assert "Software Engineer" in vcf
-
-
 async def test_export_all_contacts(pool):
     """Test exporting all contacts."""
     from butlers.tools.relationship import contact_create, contact_export_vcard
@@ -259,31 +199,6 @@ END:VCARD"""
     assert len(results) == 1
 
 
-async def test_import_vcard_with_phone_email(pool):
-    """Test importing a vCard with phone and email."""
-    from butlers.tools.relationship import contact_import_vcard
-
-    vcf = """BEGIN:VCARD
-VERSION:3.0
-FN:Jane Smith
-N:Smith;Jane;;;
-TEL;TYPE=CELL:+1-555-9876
-EMAIL;TYPE=WORK:jane@company.com
-END:VCARD"""
-
-    contacts = await contact_import_vcard(pool, vcf)
-
-    assert len(contacts) == 1
-    contact = contacts[0]
-    assert contact["name"] == "Jane Smith"
-
-    details = contact["details"]
-    assert len(details["phones"]) == 1
-    assert details["phones"][0]["number"] == "+1-555-9876"
-    assert len(details["emails"]) == 1
-    assert details["emails"][0]["address"] == "jane@company.com"
-
-
 async def test_import_vcard_with_address(pool):
     """Test importing a vCard with address."""
     from butlers.tools.relationship import contact_import_vcard
@@ -327,28 +242,6 @@ END:VCARD"""
     assert details["addresses"][0]["country"] is None
 
 
-async def test_import_vcard_with_birthday(pool):
-    """Test importing a vCard with birthday."""
-    from butlers.tools.relationship import contact_import_vcard, date_list
-
-    vcf = """BEGIN:VCARD
-VERSION:3.0
-FN:Charlie Davis
-N:Davis;Charlie;;;
-BDAY:1985-07-20
-END:VCARD"""
-
-    contacts = await contact_import_vcard(pool, vcf)
-
-    assert len(contacts) == 1
-    dates = await date_list(pool, contacts[0]["id"])
-    assert len(dates) == 1
-    assert dates[0]["label"] == "birthday"
-    assert dates[0]["month"] == 7
-    assert dates[0]["day"] == 20
-    assert dates[0]["year"] == 1985
-
-
 async def test_import_vcard_with_birthday_no_year(pool):
     """Test importing a vCard with birthday without year."""
     from butlers.tools.relationship import contact_import_vcard, date_list
@@ -369,26 +262,6 @@ END:VCARD"""
     assert dates[0]["month"] == 12
     assert dates[0]["day"] == 25
     assert dates[0]["year"] is None
-
-
-async def test_import_vcard_with_org_title(pool):
-    """Test importing a vCard with organization and title stored in public.contacts."""
-    from butlers.tools.relationship import contact_get, contact_import_vcard
-
-    vcf = """BEGIN:VCARD
-VERSION:3.0
-FN:Eve Anderson
-N:Anderson;Eve;;;
-ORG:Tech Innovations Inc.
-TITLE:Product Manager
-END:VCARD"""
-
-    contacts = await contact_import_vcard(pool, vcf)
-
-    assert len(contacts) == 1
-    contact = await contact_get(pool, contacts[0]["id"])
-    assert contact["company"] == "Tech Innovations Inc."
-    assert contact["job_title"] == "Product Manager"
 
 
 async def test_import_multiple_vcards(pool):

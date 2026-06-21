@@ -420,21 +420,6 @@ class TestGmailConnectorConformance:
 class TestCrossConnectorConformance:
     """Conformance tests that apply to all connectors."""
 
-    @pytest.mark.parametrize(
-        "connector_fixture,update_fixture",
-        [
-            ("telegram_connector", "telegram_update"),
-            ("gmail_connector", "gmail_message"),
-        ],
-    )
-    async def test_idempotency_key_stability(
-        self, connector_fixture: str, update_fixture: str, request: pytest.FixtureRequest
-    ) -> None:
-        """Test that connectors generate stable idempotency keys for the same source event."""
-        # This is a parametrized test placeholder - actual implementation would be per-connector
-        # The key requirement: same source event MUST produce same dedupe identity
-        pass
-
     async def test_telegram_mcp_error_handling(
         self, telegram_connector: TelegramBotConnector
     ) -> None:

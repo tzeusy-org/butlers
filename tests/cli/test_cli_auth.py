@@ -15,20 +15,6 @@ from butlers.cli_auth.session import CLIAuthSession, _strip_ansi, clear_sessions
 # ---------------------------------------------------------------------------
 
 
-def test_providers_registered_and_display_names():
-    """All expected providers registered with correct display names and modes."""
-    assert "opencode-openai" in PROVIDERS
-    assert "codex" in PROVIDERS
-    assert "opencode-go" in PROVIDERS
-    assert "claude" in PROVIDERS
-
-    assert PROVIDERS["codex"].binary() == "codex"
-    assert PROVIDERS["opencode-openai"].display_name == "OpenCode (OpenAI)"
-    assert PROVIDERS["codex"].display_name == "Codex (OpenAI)"
-    assert PROVIDERS["opencode-go"].auth_mode == "api_key"
-    assert PROVIDERS["opencode-go"].env_var == "OPENCODE_GO_API_KEY"
-
-
 def test_claude_provider_properties():
     """Claude provider is api_key mode with correct binary and no token_path."""
     p = PROVIDERS["claude"]

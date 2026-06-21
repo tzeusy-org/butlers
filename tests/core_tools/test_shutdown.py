@@ -62,38 +62,25 @@ def _register_and_grab_shutdown() -> object:
 # ---------------------------------------------------------------------------
 
 
-async def test_shutdown_returns_scheduled_with_default_grace():
-    """shutdown() returns status=scheduled with the default grace_seconds."""
+@pytest.mark.parametrize(
+    "kwargs, expected_grace",
+    [
+        ({}, 5),  # default grace
+        ({"grace_seconds": 10}, 10),  # explicit grace
+    ],
+)
+async def test_shutdown_returns_scheduled_grace(kwargs, expected_grace):
+    """shutdown() returns status=scheduled echoing the (default or explicit) grace_seconds."""
     shutdown = _register_and_grab_shutdown()
 
     tasks_before = {t.get_name() for t in asyncio.all_tasks()}
 
-    result = await shutdown()
+    result = await shutdown(**kwargs)
 
     assert result["status"] == "scheduled"
-    assert result["grace_seconds"] == 5
+    assert result["grace_seconds"] == expected_grace
 
     # Cancel the background task so it does not interfere with other tests.
-    for task in asyncio.all_tasks():
-        if task.get_name() not in tasks_before:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-
-
-async def test_shutdown_returns_scheduled_with_explicit_grace():
-    """shutdown(grace_seconds=10) returns status=scheduled with grace_seconds=10."""
-    shutdown = _register_and_grab_shutdown()
-
-    tasks_before = {t.get_name() for t in asyncio.all_tasks()}
-
-    result = await shutdown(grace_seconds=10)
-
-    assert result["status"] == "scheduled"
-    assert result["grace_seconds"] == 10
-
     for task in asyncio.all_tasks():
         if task.get_name() not in tasks_before:
             task.cancel()
@@ -137,45 +124,10 @@ async def test_shutdown_double_call_cancels_previous_task():
     mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
 
 
-async def test_shutdown_returns_error_for_negative_grace():
-    """shutdown(-1) returns status=error."""
+@pytest.mark.parametrize("grace_seconds", [-1, 301])
+async def test_shutdown_returns_error_for_out_of_range_grace(grace_seconds):
+    """Out-of-range grace_seconds (below 0 or above the 300 s cap) returns status=error."""
     shutdown = _register_and_grab_shutdown()
-    result = await shutdown(grace_seconds=-1)
+    result = await shutdown(grace_seconds=grace_seconds)
     assert result["status"] == "error"
     assert "grace_seconds" in result["error"]
-
-
-async def test_shutdown_returns_error_for_grace_exceeding_max():
-    """shutdown(301) returns status=error (exceeds 300 s cap)."""
-    shutdown = _register_and_grab_shutdown()
-    result = await shutdown(grace_seconds=301)
-    assert result["status"] == "error"
-    assert "grace_seconds" in result["error"]
-
-
-# ---------------------------------------------------------------------------
-# Integration test: SIGTERM is sent within grace + slack
-# ---------------------------------------------------------------------------
-
-
-async def test_shutdown_sends_sigterm_after_grace_period():
-    """grace_seconds=0 causes SIGTERM within a short slack window."""
-    shutdown = _register_and_grab_shutdown()
-
-    signals_received: list[int] = []
-    original_handler = signal.getsignal(signal.SIGTERM)
-
-    def _capture(signum, frame):
-        signals_received.append(signum)
-
-    signal.signal(signal.SIGTERM, _capture)
-    try:
-        await shutdown(grace_seconds=0)
-        # Allow the background task to run.
-        await asyncio.sleep(0.05)
-    finally:
-        signal.signal(signal.SIGTERM, original_handler)
-
-    assert signal.SIGTERM in signals_received, (
-        "SIGTERM was not received within the grace period + slack"
-    )

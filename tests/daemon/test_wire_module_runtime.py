@@ -436,14 +436,26 @@ async def test_wire_runtime_failure_is_non_fatal(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_self_healing_switchboard_client_wired_on_startup(tmp_path: Path) -> None:
-    """SelfHealingModule._switchboard_client is not None after startup (AC 1)."""
-    from butlers.modules.self_healing import SelfHealingModule
+@pytest.mark.parametrize(
+    "module_import, module_key",
+    [
+        ("butlers.modules.self_healing:SelfHealingModule", "self_healing"),  # AC 1
+        ("butlers.modules.qa:QaModule", "qa"),  # AC 2
+    ],
+)
+async def test_concrete_module_switchboard_client_wired_on_startup(
+    tmp_path: Path, module_import: str, module_key: str
+) -> None:
+    """Concrete modules (self_healing, qa) receive _switchboard_client after startup."""
+    import importlib
+
+    mod_path, cls_name = module_import.split(":")
+    module_cls = getattr(importlib.import_module(mod_path), cls_name)
 
     registry = ModuleRegistry()
-    registry.register(SelfHealingModule)
+    registry.register(module_cls)
 
-    butler_dir = _make_butler_toml(tmp_path, modules={"self_healing": {}})
+    butler_dir = _make_butler_toml(tmp_path, modules={module_key: {}})
     patches = _patch_infra()
 
     mock_client = AsyncMock()
@@ -469,52 +481,9 @@ async def test_self_healing_switchboard_client_wired_on_startup(tmp_path: Path) 
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
 
-    sh_mod = next(m for m in daemon._modules if m.name == "self_healing")
-    # AC 1: switchboard_client is not None after startup
-    assert sh_mod._switchboard_client is not None
-
-
-# ---------------------------------------------------------------------------
-# Tests: QaModule wiring (AC 2)
-# ---------------------------------------------------------------------------
-
-
-async def test_qa_module_switchboard_client_wired_on_startup(tmp_path: Path) -> None:
-    """QaModule._switchboard_client is not None after startup (AC 2)."""
-    from butlers.modules.qa import QaModule
-
-    registry = ModuleRegistry()
-    registry.register(QaModule)
-
-    butler_dir = _make_butler_toml(tmp_path, modules={"qa": {}})
-    patches = _patch_infra()
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["get_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
-    ):
-        daemon = ButlerDaemon(butler_dir, registry=registry)
-        await daemon.start()
-
-    qa_mod = next(m for m in daemon._modules if m.name == "qa")
-    # AC 2: switchboard_client is not None after startup
-    assert qa_mod._switchboard_client is not None
+    mod = next(m for m in daemon._modules if m.name == module_key)
+    # switchboard_client is not None after startup (real-module wiring guard).
+    assert mod._switchboard_client is not None
 
 
 # ---------------------------------------------------------------------------

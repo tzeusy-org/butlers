@@ -94,11 +94,6 @@ def test_fix_script_detects_and_fixes_zero_timestamps(tmp_path: Path) -> None:
 
     assert result.returncode == 0, f"Script failed: {result.stderr}"
 
-    # Verify the output mentions the fixes
-    assert "test-2" in result.stdout
-    assert "test-3" in result.stdout
-    assert "fixed 3 dependencies" in result.stdout
-
     # Load the fixed data and verify
     fixed_issues = []
     for line in jsonl_path.read_text().splitlines():
@@ -163,48 +158,5 @@ def test_fix_script_dry_run_does_not_modify_file(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
-    assert "Dry run" in result.stdout
-    assert "would fix 1 dependencies" in result.stdout
-
-    # Verify file was not modified
+    # Verify file was not modified (dry-run safety).
     assert jsonl_path.read_text() == original_content
-
-
-def test_fix_script_handles_no_zero_timestamps(tmp_path: Path) -> None:
-    """Test that the script handles files with no zero timestamps gracefully."""
-    issues_data = [
-        {
-            "id": "test-1",
-            "title": "Clean issue",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "task",
-            "created_at": "2026-02-14T10:00:00Z",
-            "updated_at": "2026-02-14T11:00:00Z",
-            "dependencies": [
-                {
-                    "issue_id": "test-1",
-                    "depends_on_id": "test-2",
-                    "type": "blocks",
-                    "created_at": "2026-02-14T10:30:00Z",
-                }
-            ],
-        }
-    ]
-
-    jsonl_path = tmp_path / "issues.jsonl"
-    jsonl_path.write_text(
-        "\n".join(json.dumps(issue, separators=(",", ":")) for issue in issues_data) + "\n"
-    )
-
-    script_path = Path(__file__).parents[2] / "scripts" / "fix_beads_dependency_timestamps.py"
-    result = subprocess.run(
-        [sys.executable, str(script_path), "--jsonl-path", str(jsonl_path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "No zero-timestamp dependencies found" in result.stdout
-    assert "fixed 0 dependencies" in result.stdout

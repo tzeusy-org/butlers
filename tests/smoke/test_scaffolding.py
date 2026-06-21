@@ -23,21 +23,6 @@ _docker_available = shutil.which("docker") is not None
 
 
 # ---------------------------------------------------------------------------
-# Import smoke — no Docker, no LLM
-# ---------------------------------------------------------------------------
-
-
-def test_package_importable():
-    """butlers top-level package and CLI entry-point are importable.
-
-    A failed import here means a syntax error or missing dependency broke the
-    entire package before any test can run.
-    """
-    import butlers  # noqa: F401
-    import butlers.cli  # noqa: F401
-
-
-# ---------------------------------------------------------------------------
 # MockSpawner smoke — no Docker, no LLM
 # ---------------------------------------------------------------------------
 

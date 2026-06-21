@@ -320,28 +320,6 @@ class TestStep8c2CliTokenRestore:
         results = await restore_tokens(store)
         assert all(v is False for v in results.values())
 
-    async def test_daemon_step_8c2_non_fatal_on_restore_error(self) -> None:
-        """Startup step 8c2: if restore_tokens raises, startup continues (non-fatal).
-
-        The daemon wraps restore_tokens in a bare try/except that logs at DEBUG
-        level and never re-raises. This test verifies the same pattern inline.
-        """
-        from butlers.cli_auth.persistence import restore_tokens
-
-        store = AsyncMock()
-        store.load = AsyncMock(side_effect=RuntimeError("DB gone"))
-
-        # Pattern mirrors daemon.py step 8c2 try/except block
-        raised = False
-        try:
-            results = await restore_tokens(store)
-            _restored = sum(1 for v in results.values() if v)
-        except Exception:
-            raised = True
-
-        # The exception must be swallowed (non-fatal)
-        assert not raised
-
     async def test_restore_tokens_logs_restored_count(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -548,91 +526,118 @@ class TestStep13cCalendarApprovalWiring:
 # ===========================================================================
 
 
-class TestStep6DbRoleWiring:
-    """Step 6: role is derived from db_schema and set on Database before connect().
+class _StopStartup(Exception):
+    """Sentinel raised from connect() to halt run_startup right after step 6."""
 
-    Covers three sub-tasks from bu-qi2ic:
-    3.1 Role assignment after set_schema()
-    3.2 Role assignment before await daemon.db.connect()
-    3.3 Injected-db path (daemon.db is not None) leaves role untouched
+
+class _RecordingDatabase:
+    """Fake Database that records role state at connect() time, then halts startup."""
+
+    def __init__(self) -> None:
+        self.schema: str | None = None
+        self.role: str | None = None
+        self.role_at_connect: str | None = None
+
+    def set_schema(self, schema: str | None) -> None:
+        self.schema = schema
+
+    async def provision(self) -> None:
+        return None
+
+    async def connect(self):
+        # Capture the role that was assigned before connect() is awaited.
+        self.role_at_connect = self.role
+        raise _StopStartup
+
+
+class TestStep6DbRoleWiring:
+    """Step 6: role is derived from db_schema and applied to Database before connect().
+
+    Behavioral replacement for the former source-string tests (bu-qi2ic 3.1-3.3):
+    drives lifecycle.run_startup with a recording fake Database and asserts the
+    DB-isolation role wiring (butler_{schema}_rw, applied before connect, skipped
+    when schema is None or the db is injected).
     """
 
-    def _make_config(self, *, schema: str | None) -> Any:
-        """Return a minimal config stub with the given db_schema."""
-        config = MagicMock()
-        config.db_name = "butlers"
-        config.db_schema = schema
-        return config
+    def _make_daemon(self, *, schema: str | None, injected_db=None) -> Any:
+        daemon = MagicMock()
+        daemon.db = injected_db
+        daemon.config.db_name = "butlers"
+        daemon.config.db_schema = schema
+        return daemon
 
-    def test_role_set_from_schema_before_connect(self) -> None:
-        """When db_schema is set, role is butler_{schema}_rw and applied before connect.
+    def _pre_step6_patches(self, lifecycle):
+        """Patch the pre-step-6 startup machinery so we can reach step 6 cleanly."""
+        return [
+            patch("butlers.core.logging.configure_logging"),
+            patch.object(lifecycle, "resolve_log_root", return_value=None),
+            patch.object(lifecycle, "init_telemetry"),
+            patch.object(lifecycle, "init_metrics"),
+            patch.object(lifecycle, "_flatten_config_for_secret_scan", return_value={}),
+            patch.object(lifecycle, "detect_secrets", return_value=[]),
+            patch.object(lifecycle, "validate_credentials"),
+        ]
 
-        We verify via source inspection that role assignment appears after
-        set_schema but before connect in the lifecycle source.
-        """
-        import inspect
+    async def _run_until_connect(self, daemon, fake_db: _RecordingDatabase):
+        from contextlib import ExitStack
 
-        from butlers.lifecycle import run_startup
+        from butlers import lifecycle
 
-        src = inspect.getsource(run_startup)
+        with ExitStack() as stack:
+            for p in self._pre_step6_patches(lifecycle):
+                stack.enter_context(p)
+            stack.enter_context(patch.object(lifecycle.Database, "from_env", return_value=fake_db))
+            try:
+                await lifecycle.run_startup(daemon)
+            except _StopStartup:
+                pass
 
-        # All three tokens must appear in order in the source
-        idx_set_schema = src.index("set_schema")
-        idx_role_assign = src.index("daemon.db.role")
-        idx_connect = src.index("daemon.db.connect")
+    async def test_role_set_from_schema_before_connect(self) -> None:
+        """db_schema set: role is butler_{schema}_rw and is applied before connect()."""
+        fake_db = _RecordingDatabase()
+        daemon = self._make_daemon(schema="health")
 
-        assert idx_set_schema < idx_role_assign, (
-            "role assignment must appear after set_schema() in run_startup source"
-        )
-        assert idx_role_assign < idx_connect, (
-            "role assignment must appear before daemon.db.connect() in run_startup source"
-        )
+        await self._run_until_connect(daemon, fake_db)
 
-    def test_role_naming_convention(self) -> None:
-        """Role is derived as butler_{schema}_rw per core_001_foundation convention."""
-        import inspect
+        assert fake_db.schema == "health"
+        # Role was butler_{schema}_rw AND was already set by the time connect() ran.
+        assert fake_db.role_at_connect == "butler_health_rw"
 
-        from butlers.lifecycle import run_startup
+    async def test_role_not_set_when_schema_is_none(self) -> None:
+        """db_schema None: no role is assigned on the non-injected path."""
+        fake_db = _RecordingDatabase()
+        daemon = self._make_daemon(schema=None)
 
-        src = inspect.getsource(run_startup)
+        await self._run_until_connect(daemon, fake_db)
 
-        # The naming template must be present literally
-        assert 'f"butler_{daemon.config.db_schema}_rw"' in src, (
-            "Role must be derived as 'butler_{db_schema}_rw'"
-        )
+        assert fake_db.role_at_connect is None
 
-    def test_role_not_set_when_schema_is_none(self) -> None:
-        """When db_schema is None/empty, no role assignment executes on the non-injected path.
+    async def test_injected_db_path_skips_role_wiring(self) -> None:
+        """Injected db: role wiring is skipped (the from_env/connect path never runs)."""
+        injected = MagicMock()
+        injected.pool = MagicMock()  # already connected
+        injected.role = None
+        daemon = self._make_daemon(schema="health", injected_db=injected)
 
-        We check that the assignment is guarded by `if daemon.config.db_schema:`.
-        """
-        import inspect
+        # Injected path takes the else branch and proceeds past step 6; halt it
+        # deterministically at the first post-step-6 helper (ButlerLogger).
+        from contextlib import ExitStack
 
-        from butlers.lifecycle import run_startup
+        from butlers import lifecycle
 
-        src = inspect.getsource(run_startup)
-        assert "if daemon.config.db_schema:" in src, (
-            "Role assignment must be guarded by 'if daemon.config.db_schema:'"
-        )
+        with ExitStack() as stack:
+            for p in self._pre_step6_patches(lifecycle):
+                stack.enter_context(p)
+            mock_from_env = stack.enter_context(patch.object(lifecycle.Database, "from_env"))
+            stack.enter_context(
+                patch("butlers.core.butler_logging.ButlerLogger", side_effect=_StopStartup)
+            )
+            try:
+                await lifecycle.run_startup(daemon)
+            except _StopStartup:
+                pass
 
-    def test_injected_db_path_skips_role_wiring(self) -> None:
-        """When daemon.db is already injected, role assignment is NOT executed.
-
-        The injected path (daemon.db is not None) goes into the else branch,
-        which must not set daemon.db.role.
-        """
-        import inspect
-
-        from butlers.lifecycle import run_startup
-
-        src = inspect.getsource(run_startup)
-
-        # Find the else branch that handles the injected path
-        # The else branch starts after the connect path
-        non_injected_block_end = src.index("else:")
-        injected_block = src[non_injected_block_end:]
-
-        # The role assignment string must NOT appear in the injected (else) block
-        assert "daemon.db.role" not in injected_block, (
-            "daemon.db.role must not be set on the injected-db (else) path"
-        )
+        # from_env (the non-injected provisioning path) must not be called, and the
+        # injected db's role must remain untouched.
+        mock_from_env.assert_not_called()
+        assert injected.role is None

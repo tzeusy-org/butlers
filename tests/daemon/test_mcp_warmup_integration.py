@@ -13,7 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,52 +20,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 pytestmark = pytest.mark.unit
-
-
-class TestLifecycleWarmupWiring:
-    """Step 14b: warmup is scheduled as a background task in lifecycle.run_startup."""
-
-    def test_warmup_task_scheduled_after_mcp_server_start(self) -> None:
-        """Source check: asyncio.create_task for warmup appears after _start_mcp_server
-        and before the scheduler loop task in run_startup."""
-        from butlers.lifecycle import run_startup
-
-        src = inspect.getsource(run_startup)
-
-        idx_mcp_start = src.index("_start_mcp_server")
-        idx_warmup = src.index("_warmup_mcp_endpoints_best_effort")
-        idx_scheduler = src.index("_scheduler_loop_task")
-
-        assert idx_mcp_start < idx_warmup, (
-            "warmup task must be scheduled after _start_mcp_server in run_startup"
-        )
-        assert idx_warmup < idx_scheduler, (
-            "warmup task must appear before scheduler loop start in run_startup"
-        )
-
-    def test_warmup_wrapped_in_create_task(self) -> None:
-        """Source check: warmup is wrapped in asyncio.create_task (non-blocking)."""
-        from butlers.lifecycle import run_startup
-
-        src = inspect.getsource(run_startup)
-
-        # The warmup must be scheduled as a task so it doesn't block startup.
-        # Find the line containing the warmup call and check it's part of a create_task block.
-        warmup_idx = src.index("_warmup_mcp_endpoints_best_effort")
-        # Walk backward from warmup_idx to find nearest asyncio.create_task
-        preceding = src[:warmup_idx]
-        # The create_task call should appear within the preceding 200 chars
-        assert "asyncio.create_task(" in preceding[-200:], (
-            "warmup must be wrapped in asyncio.create_task for non-blocking startup"
-        )
-
-    def test_lifecycle_imports_warmup_helper(self) -> None:
-        """lifecycle.py defines _warmup_mcp_endpoints_best_effort."""
-        from butlers import lifecycle
-
-        assert hasattr(lifecycle, "_warmup_mcp_endpoints_best_effort"), (
-            "_warmup_mcp_endpoints_best_effort must be defined in lifecycle module"
-        )
 
 
 class TestWarmupBestEffortContract:

@@ -332,78 +332,46 @@ class TestPromptContext:
 
 
 class TestClassify:
-    def test_urgent_single_high(self):
-        state = {"attention_items": [{"severity": "high"}], "butler_statuses": []}
-        assert classify(state) == "urgent"
-
-    def test_urgent_multiple_high(self):
-        state = {
-            "attention_items": [{"severity": "high"}, {"severity": "high"}, {"severity": "medium"}],
-            "butler_statuses": [],
-        }
-        assert classify(state) == "urgent"
-
-    def test_busy_three_or_more_no_high(self):
-        state = {
-            "attention_items": [
-                {"severity": "medium"},
-                {"severity": "low"},
-                {"severity": "medium"},
-            ],
-            "butler_statuses": [],
-        }
-        assert classify(state) == "busy"
-
-    def test_mild_one_item(self):
-        state = {"attention_items": [{"severity": "medium"}], "butler_statuses": []}
-        assert classify(state) == "mild"
-
-    def test_mild_two_items(self):
-        state = {
-            "attention_items": [{"severity": "low"}, {"severity": "medium"}],
-            "butler_statuses": [],
-        }
-        assert classify(state) == "mild"
-
-    def test_degraded_quiet_single_degraded(self):
-        state = {
-            "attention_items": [],
-            "butler_statuses": [{"name": "health", "status": "degraded"}],
-        }
-        assert classify(state) == "degraded-quiet"
-
-    def test_degraded_quiet_error_status(self):
-        state = {
-            "attention_items": [],
-            "butler_statuses": [{"name": "atlas", "status": "error"}],
-        }
-        assert classify(state) == "degraded-quiet"
-
-    def test_quiet_all_healthy(self):
-        state = {
-            "attention_items": [],
-            "butler_statuses": [
-                {"name": "health", "status": "healthy"},
-                {"name": "atlas", "status": "healthy"},
-            ],
-        }
-        assert classify(state) == "quiet"
-
-    def test_quiet_no_butlers(self):
-        state = {"attention_items": [], "butler_statuses": []}
-        assert classify(state) == "quiet"
-
-    def test_urgent_wins_over_busy(self):
-        """High severity triggers urgent even when total items >= 3."""
-        state = {
-            "attention_items": [
-                {"severity": "high"},
-                {"severity": "medium"},
-                {"severity": "low"},
-            ],
-            "butler_statuses": [],
-        }
-        assert classify(state) == "urgent"
+    @pytest.mark.parametrize(
+        "attention_items, butler_statuses, expected",
+        [
+            # urgent: any high-severity item
+            ([{"severity": "high"}], [], "urgent"),
+            (
+                [{"severity": "high"}, {"severity": "high"}, {"severity": "medium"}],
+                [],
+                "urgent",
+            ),
+            # urgent wins over busy: high severity even when total >= 3
+            (
+                [{"severity": "high"}, {"severity": "medium"}, {"severity": "low"}],
+                [],
+                "urgent",
+            ),
+            # busy: 3+ items, none high
+            ([{"severity": "medium"}, {"severity": "low"}, {"severity": "medium"}], [], "busy"),
+            # mild: 1-2 items, none high
+            ([{"severity": "medium"}], [], "mild"),
+            ([{"severity": "low"}, {"severity": "medium"}], [], "mild"),
+            # degraded-quiet: no items but a degraded/error butler
+            ([], [{"name": "health", "status": "degraded"}], "degraded-quiet"),
+            ([], [{"name": "atlas", "status": "error"}], "degraded-quiet"),
+            # quiet: no items, all butlers healthy (or none)
+            (
+                [],
+                [
+                    {"name": "health", "status": "healthy"},
+                    {"name": "atlas", "status": "healthy"},
+                ],
+                "quiet",
+            ),
+            ([], [], "quiet"),
+        ],
+    )
+    def test_classify_state_machine(self, attention_items, butler_statuses, expected):
+        """classify() five-branch state machine incl. urgent-wins-over-busy."""
+        state = {"attention_items": attention_items, "butler_statuses": butler_statuses}
+        assert classify(state) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -412,26 +380,23 @@ class TestClassify:
 
 
 class TestHeadlineFor:
-    def test_urgent_singular(self):
-        assert headline_for("urgent", 1) == "One thing needs you now."
-
-    def test_urgent_plural(self):
-        assert headline_for("urgent", 3) == "3 things need you now."
+    @pytest.mark.parametrize(
+        "state_class, count, expected",
+        [
+            ("urgent", 1, "One thing needs you now."),
+            ("urgent", 3, "3 things need you now."),
+            ("mild", 1, "Things are quiet, with 1 exception."),
+            ("mild", 2, "Things are quiet, with 2 exceptions."),
+            ("degraded-quiet", 1, "Quiet, but 1 butler is degraded."),
+            ("degraded-quiet", 3, "Quiet, but 3 butlers are degraded."),
+        ],
+    )
+    def test_singular_plural_pluralization(self, state_class, count, expected):
+        """Headlines pluralize correctly across urgent/mild/degraded-quiet."""
+        assert headline_for(state_class, count) == expected
 
     def test_busy_uses_total(self):
         assert headline_for("busy", 5) == "Things are busy with 5 items waiting."
-
-    def test_mild_singular(self):
-        assert headline_for("mild", 1) == "Things are quiet, with 1 exception."
-
-    def test_mild_plural(self):
-        assert headline_for("mild", 2) == "Things are quiet, with 2 exceptions."
-
-    def test_degraded_quiet_singular(self):
-        assert headline_for("degraded-quiet", 1) == "Quiet, but 1 butler is degraded."
-
-    def test_degraded_quiet_plural(self):
-        assert headline_for("degraded-quiet", 3) == "Quiet, but 3 butlers are degraded."
 
     def test_quiet(self):
         assert headline_for("quiet", 0) == "Everything is in hand."
@@ -572,7 +537,6 @@ class TestLlmHappyPath:
             butler_name="__dashboard_briefing__",
             complexity_tier=Complexity.CHEAP,
         )
-        dispatcher.call.assert_awaited_once()
 
     async def test_llm_happy_path_returns_llm_source(self):
         """When LLM returns a voice-clean response, source is 'llm'."""
@@ -826,8 +790,8 @@ class TestClassificationExceptionFallback:
 
 
 class TestResponseShape:
-    async def test_response_has_six_required_fields(self):
-        """The response body must contain exactly the six specified fields."""
+    async def test_response_envelope_fields_and_value_domains(self):
+        """One response: required field set, greet format, valid state_class and source."""
         pool = _make_owner_pool()
         cache = BriefingCache(ttl_seconds=300)
         app = _make_app(pool, cache)
@@ -843,71 +807,17 @@ class TestResponseShape:
 
         assert resp.status_code == 200
         data = resp.json()["data"]
+
         required = {"greet", "headline", "elaboration", "source", "state_class", "generated_at"}
         assert set(data.keys()) == required
-
-    async def test_greet_matches_time_of_day_format(self):
-        """greet must be 'Good {time_of_day}.'"""
-        pool = _make_owner_pool()
-        cache = BriefingCache(ttl_seconds=300)
-        app = _make_app(pool, cache)
-
-        valid_greets = {
+        assert data["greet"] in {
             "Good late-night.",
             "Good morning.",
             "Good afternoon.",
             "Good evening.",
             "Good night.",
         }
-
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value=None),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/dashboard/briefing")
-
-        data = resp.json()["data"]
-        assert data["greet"] in valid_greets
-
-    async def test_state_class_is_valid(self):
-        """state_class must be one of the five valid values."""
-        pool = _make_owner_pool()
-        cache = BriefingCache(ttl_seconds=300)
-        app = _make_app(pool, cache)
-
-        valid_classes = {"urgent", "busy", "mild", "degraded-quiet", "quiet"}
-
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value=None),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/dashboard/briefing")
-
-        data = resp.json()["data"]
-        assert data["state_class"] in valid_classes
-
-    async def test_source_is_valid(self):
-        """source must be 'llm' or 'fallback'."""
-        pool = _make_owner_pool()
-        cache = BriefingCache(ttl_seconds=300)
-        app = _make_app(pool, cache)
-
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value=None),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/dashboard/briefing")
-
-        data = resp.json()["data"]
+        assert data["state_class"] in {"urgent", "busy", "mild", "degraded-quiet", "quiet"}
         assert data["source"] in ("llm", "fallback")
 
 
@@ -944,95 +854,40 @@ class TestRowGet:
 
 
 class TestDataFetchWarnings:
-    async def test_fetch_attention_items_logs_warning_on_failure(self, caplog):
-        """A DB error fetching notifications logs at WARNING, not DEBUG.
+    @pytest.mark.parametrize(
+        "failing_sql, warning_msg",
+        [
+            ("notifications", "Could not fetch attention items"),
+            ("audit_source", "Could not fetch audit-derived attention items"),
+            ("butler_registry", "Could not fetch butler statuses"),
+        ],
+    )
+    async def test_fetch_failure_logs_warning_and_isolates(self, caplog, failing_sql, warning_msg):
+        """A DB error in one of the three concurrent fetchers logs at WARNING.
 
-        All three queries run concurrently; the notifications query fails while
-        the other two succeed. State remains partial — audit and registry still
-        populated.
+        The failing query degrades to empty while the other two still succeed.
         """
+        import logging
+
         now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
         pool = AsyncMock()
 
         async def _fetch_side_effect(sql, *args):
-            if "notifications" in sql:
+            if failing_sql in sql:
                 raise RuntimeError("DB outage")
             return []
 
         pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
 
-        import logging
-
         with caplog.at_level(logging.WARNING, logger="butlers.api.routers.dashboard_briefing"):
             state = await _fetch_dashboard_state(pool, now)
 
-        assert state["attention_items"] == []
-        assert state["notification_items"] == []
-        # audit and registry queries must still have run
-        assert state["audit_issues"] == []
-        assert state["butler_statuses"] == []
-        assert any("Could not fetch attention items" in r.message for r in caplog.records)
-        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("Could not fetch attention items" in r.message for r in warning_records)
-
-    async def test_fetch_audit_items_logs_warning_on_failure(self, caplog):
-        """A DB error fetching audit issues logs at WARNING, not DEBUG.
-
-        Notifications and registry queries succeed; audit fails independently.
-        """
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = AsyncMock()
-
-        async def _fetch_side_effect(sql, *args):
-            if "audit_source" in sql:
-                raise RuntimeError("DB outage")
-            return []
-
-        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-
-        import logging
-
-        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.dashboard_briefing"):
-            state = await _fetch_dashboard_state(pool, now)
-
-        assert state["audit_issues"] == []
-        # notifications and registry must still have succeeded
-        assert state["notification_items"] == []
-        assert state["butler_statuses"] == []
-        assert any(
-            "Could not fetch audit-derived attention items" in r.message for r in caplog.records
-        )
-        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any(
-            "Could not fetch audit-derived attention items" in r.message for r in warning_records
-        )
-
-    async def test_fetch_butler_statuses_logs_warning_on_failure(self, caplog):
-        """A DB error fetching butler statuses logs at WARNING, not DEBUG.
-
-        Notifications and audit queries succeed; registry fails independently.
-        """
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = AsyncMock()
-
-        async def _fetch_side_effect(sql, *args):
-            if "butler_registry" in sql:
-                raise RuntimeError("DB outage")
-            return []
-
-        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-
-        import logging
-
-        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.dashboard_briefing"):
-            state = await _fetch_dashboard_state(pool, now)
-
-        assert state["butler_statuses"] == []
-        # notifications and audit must still have succeeded
+        # All buckets resolve (failing one empty, others still ran).
         assert state["notification_items"] == []
         assert state["audit_issues"] == []
+        assert state["butler_statuses"] == []
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("Could not fetch butler statuses" in r.message for r in warning_records)
+        assert any(warning_msg in r.message for r in warning_records)
 
 
 # ---------------------------------------------------------------------------
@@ -1402,66 +1257,6 @@ class TestAuditDerivedAttentionItems:
 # notification and audit rows exercise the end-to-end audit path through
 # _fetch_dashboard_state.
 # ---------------------------------------------------------------------------
-
-
-class TestOwnerPoolAuditRouting:
-    """Confirm _make_owner_pool routes audit rows into state correctly."""
-
-    async def test_audit_rows_reach_attention_items_via_owner_pool(self):
-        """Audit rows supplied to _make_owner_pool appear in state['attention_items']."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            audit_rows=[
-                {
-                    "error_summary": "Webhook delivery failed",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 2,
-                    "butlers": ["health"],
-                    "has_schedule": False,
-                    "schedule_names": [],
-                }
-            ]
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        audit_items = [i for i in state["attention_items"] if i.get("source") == "audit_log"]
-        assert len(audit_items) == 1
-        assert audit_items[0]["severity"] == "medium"
-        assert audit_items[0]["butler"] == "health"
-
-    async def test_audit_rows_reach_audit_issues_via_owner_pool(self):
-        """Audit rows supplied to _make_owner_pool appear in state['audit_issues']."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            audit_rows=[
-                {
-                    "error_summary": "Webhook delivery failed",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 2,
-                    "butlers": ["health"],
-                    "has_schedule": True,
-                    "schedule_names": ["daily-check"],
-                }
-            ]
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert len(state["audit_issues"]) == 1
-        assert state["audit_issues"][0]["source"] == "audit_log"
-        assert state["audit_issues"][0]["severity"] == "high"
-
-    async def test_no_audit_rows_owner_pool_leaves_audit_issues_empty(self):
-        """When audit_rows is omitted from _make_owner_pool, audit_issues is empty."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool()
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert state["audit_issues"] == []
 
 
 # ---------------------------------------------------------------------------

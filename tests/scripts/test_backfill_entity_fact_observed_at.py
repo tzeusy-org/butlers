@@ -52,32 +52,11 @@ _mod = _load_script()
 
 
 # ---------------------------------------------------------------------------
-# SQL-shape tests (no DB)
-# ---------------------------------------------------------------------------
-
-
-class TestSqlShape:
-    def test_update_uses_coalesce_last_seen_created_at(self) -> None:
-        sql = _mod._UPDATE_BATCH_SQL.lower()
-        assert "coalesce(last_seen, created_at)" in sql.replace("\n", " ")
-        assert "set observed_at" in sql.replace("\n", " ")
-
-    def test_update_rechecks_observed_at_null(self) -> None:
-        """Concurrency safety: only stamp rows still NULL."""
-        sql = _mod._UPDATE_BATCH_SQL.lower()
-        assert "observed_at is null" in sql.replace("\n", " ")
-
-    def test_select_batch_is_bounded_by_limit(self) -> None:
-        sql = _mod._SELECT_BATCH_SQL.lower()
-        assert "where observed_at is null" in sql.replace("\n", " ")
-        assert "limit $1" in sql.replace("\n", " ")
-
-    def test_default_batch_size_positive(self) -> None:
-        assert _mod._DEFAULT_BATCH_SIZE > 0
-
-
-# ---------------------------------------------------------------------------
 # Behavior tests with a mocked pool
+#
+# The NULL-only stamping, bounded batching, and idempotency that the SQL
+# constants encode are asserted behaviorally below (bounded-batches checks the
+# LIMIT, idempotent-second-run / safety-valve check the IS NULL re-stamp).
 # ---------------------------------------------------------------------------
 
 
@@ -163,6 +142,16 @@ async def test_apply_passes_only_selected_ids_to_update() -> None:
 
     update_call = pool.execute.call_args_list[0]
     assert update_call.args[1] == ids, "UPDATE must target exactly the selected ids"
+
+
+def test_update_batch_sql_rechecks_null_and_derives_value() -> None:
+    """The batch UPDATE must re-check observed_at IS NULL (concurrency-safe) and
+    derive the value from COALESCE(last_seen, created_at) per the spec."""
+    sql = _mod._UPDATE_BATCH_SQL.lower()
+    # Re-check guard: without it a concurrent stamp would be clobbered.
+    assert "observed_at is null" in sql
+    # Value derivation per specs/relationship-facts/spec.md.
+    assert "coalesce(last_seen, created_at)" in sql
 
 
 @pytest.mark.asyncio
