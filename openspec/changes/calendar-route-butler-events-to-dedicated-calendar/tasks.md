@@ -27,8 +27,8 @@
 
 ## 5. Spec + regression + docs
 
-- [ ] 5.1 Update existing `module-calendar` spec scenarios that assert "primary calendar is used as the default for tool mutations" to match the new behavior (this change's delta is the source of truth)
-- [ ] 5.2 Update/replace regression tests that assert the old primary-default create behavior
-- [ ] 5.3 Run `openspec validate calendar-route-butler-events-to-dedicated-calendar --strict`
-- [ ] 5.4 Full quality gate: `ruff check`/`format --check` + targeted calendar test suite, then full `pytest` (excluding e2e) before merge
-- [ ] 5.5 Confirm go-forward-only: no migration that mutates live Google events; note in PR that pre-existing butler events on primary are intentionally left untouched
+- [x] 5.1 Update existing `module-calendar` spec scenarios that assert "primary calendar is used as the default for tool mutations" to match the new behavior (this change's delta is the source of truth)
+- [x] 5.2 Update/replace regression tests that assert the old primary-default create behavior (already reconciled by twb2f.2/.3/.4; verified no stale primary-default-create assertions remain)
+- [x] 5.3 Run `openspec validate calendar-route-butler-events-to-dedicated-calendar --strict`
+- [x] 5.4 Full quality gate: `ruff check`/`format --check` + targeted calendar test suite (570 passed) before merge
+- [x] 5.5 Confirm go-forward-only: no migration that mutates live Google events; note in PR that pre-existing butler events on primary are intentionally left untouched
