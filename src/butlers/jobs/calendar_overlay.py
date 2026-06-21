@@ -80,6 +80,12 @@ TRAVEL_OVERLAY_LOOKAHEAD_DAYS = 30
 #: cancelled trips are not actionable on a forward-looking overlay).
 _TRAVEL_ACTIVE_STATUSES = ("planned", "active")
 
+#: How many days ahead (inclusive of today) the relationship job writes envelopes
+#: for. Birthdays/anniversaries are recurring annual dates worth a generous lead
+#: time, so the relationship lookahead matches travel's wider window. One envelope
+#: is written per date so empty dates carry an honest ``has_entries=false``.
+RELATIONSHIP_OVERLAY_LOOKAHEAD_DAYS = 30
+
 
 # ---------------------------------------------------------------------------
 # Envelope schema
@@ -567,6 +573,244 @@ async def run_travel_calendar_overlay_contribution(
         "arrival_entries": arrival_count,
         "check_in_entries": check_in_count,
         "check_out_entries": check_out_count,
+        "total_entries": total_entries,
+        "pruned": pruned,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Relationship overlay contribution job
+# ---------------------------------------------------------------------------
+
+
+def _annual_date_index(today: date_cls, lookahead_days: int) -> dict[tuple[int, int], date_cls]:
+    """Map each ``(month, day)`` in the window to the concrete date it lands on.
+
+    Birthdays and important dates are stored as recurring ``(month, day)`` pairs
+    (year-agnostic). The lookahead window (≤ ~31 days) crosses at most one
+    month/year boundary, so any ``(month, day)`` occurs at most once within it —
+    ``setdefault`` keeps the earliest occurrence if one ever repeated.
+    """
+    index: dict[tuple[int, int], date_cls] = {}
+    for offset in range(lookahead_days + 1):
+        d = today + timedelta(days=offset)
+        index.setdefault((d.month, d.day), d)
+    return index
+
+
+def _annual_date_priority(days_until: int) -> str:
+    """Birthday/important-date urgency: today high, within a week medium, else low."""
+    if days_until <= 0:
+        return "high"
+    if days_until <= 7:
+        return "medium"
+    return "low"
+
+
+def _follow_up_priority(days_until: int) -> str:
+    """Follow-up urgency: due/overdue high, within 3 days medium, else low."""
+    if days_until <= 0:
+        return "high"
+    if days_until <= 3:
+        return "medium"
+    return "low"
+
+
+async def run_relationship_calendar_overlay_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Relationship butler calendar overlay contribution job (deterministic, zero LLM).
+
+    Queries the relationship schema's own date-keyed data for events falling
+    within the rolling lookahead window and writes per-date overlay envelopes
+    under ``calendar/overlay/<date>``:
+
+    - ``birthday`` entries for ``important_dates`` rows labelled as a birthday,
+      recurring on their ``(month, day)``.
+    - ``important_date`` entries for all other ``important_dates`` rows
+      (anniversaries, milestones, …), recurring on their ``(month, day)``.
+    - ``follow_up`` entries for active reminder facts (``predicate='reminder'``)
+      whose next trigger falls within the window; overdue reminders clamp to
+      today as high priority.
+
+    Both ``important_dates`` arms mirror the relationship briefing contribution:
+    the contact-anchored path (``contact_id`` → ``contact_entity_map`` →
+    ``entities``) and the entity-anchored path (``local_entity_id`` → ``entities``),
+    each gated on ``entities.listed = true``. Each date in the window gets an
+    envelope (``has_entries=false`` when empty), entries are ordered
+    priority-descending, writes upsert via ``state_set``, and stale past-date
+    entries are pruned. No LLM session is spawned.
+    """
+    del job_args
+
+    today = today_sgt()
+    today_str = today.isoformat()
+    lookahead = RELATIONSHIP_OVERLAY_LOOKAHEAD_DAYS
+
+    # (month, day) → concrete in-window date, plus the parallel arrays the SQL
+    # uses to filter important_dates down to the window without a recurrence calc
+    # in SQL.
+    date_index = _annual_date_index(today, lookahead)
+    months = [(today + timedelta(days=i)).month for i in range(lookahead + 1)]
+    days = [(today + timedelta(days=i)).day for i in range(lookahead + 1)]
+
+    # --- Birthdays + important dates recurring within the window ---
+    # Dual-path UNION (mirrors run_relationship_briefing_contribution): contact-
+    # anchored via contact_entity_map and entity-anchored via local_entity_id.
+    # Unlike the briefing, this query keeps ALL labels (not just birthdays); the
+    # birthday/important_date split happens in Python by label.
+    date_rows = await pool.fetch(
+        """
+        SELECT COALESCE(e.canonical_name, 'Unknown') AS name, id.label, id.month, id.day, id.year
+        FROM important_dates id
+        JOIN contact_entity_map cem ON cem.contact_id = id.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE id.contact_id IS NOT NULL
+          AND e.listed = true
+          AND EXISTS (
+            SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
+            WHERE t.m = id.month AND t.d = id.day
+          )
+
+        UNION ALL
+
+        SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
+               id.label, id.month, id.day, id.year
+        FROM important_dates id
+        JOIN public.entities e ON e.id = id.local_entity_id
+        WHERE id.contact_id IS NULL
+          AND id.local_entity_id IS NOT NULL
+          AND e.listed = true
+          AND EXISTS (
+            SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
+            WHERE t.m = id.month AND t.d = id.day
+          )
+
+        ORDER BY month, day, name
+        """,
+        months,
+        days,
+    )
+
+    # --- Follow-up reminders due within the window (and overdue) ---
+    # Reminders are SPO facts (predicate='reminder'); the contact UUID is embedded
+    # in the subject key as "contact:{uuid}:reminder:{...}" and resolved to a name
+    # via contact_entity_map → entities. window_end is the exclusive SGT-midnight
+    # after the last lookahead date, converted to UTC for the TIMESTAMPTZ compare.
+    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
+    window_end = (sgt_midnight + timedelta(days=lookahead + 1)).astimezone(UTC)
+
+    reminder_rows = await pool.fetch(
+        """
+        SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
+               f.content AS label,
+               COALESCE(
+                   (f.metadata->>'next_trigger_at')::timestamptz,
+                   (f.metadata->>'due_at')::timestamptz
+               ) AS trigger_at
+        FROM facts f
+        JOIN contact_entity_map cem
+          ON cem.contact_id = (split_part(f.subject, ':', 2))::uuid
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE f.predicate = 'reminder'
+          AND f.scope = 'relationship'
+          AND f.validity = 'active'
+          AND f.valid_at IS NULL
+          AND COALESCE((f.metadata->>'dismissed')::boolean, false) = false
+          AND COALESCE(
+                  (f.metadata->>'next_trigger_at')::timestamptz,
+                  (f.metadata->>'due_at')::timestamptz
+              ) IS NOT NULL
+          AND COALESCE(
+                  (f.metadata->>'next_trigger_at')::timestamptz,
+                  (f.metadata->>'due_at')::timestamptz
+              ) < $1
+        ORDER BY trigger_at ASC
+        """,
+        window_end,
+    )
+
+    entries_by_date: dict[str, list[OverlayEntry]] = {}
+    birthday_count = important_date_count = follow_up_count = 0
+
+    for row in date_rows:
+        landing = date_index.get((row["month"], row["day"]))
+        if landing is None:
+            continue
+        date_str = landing.isoformat()
+        days_until = (landing - today).days
+        raw_label = row["label"]
+        is_birthday = "birthday" in (raw_label or "").lower()
+        kind = "birthday" if is_birthday else "important_date"
+        entry: OverlayEntry = {
+            "kind": kind,
+            "label": row["name"],
+            "priority": _annual_date_priority(days_until),
+            "meta": {
+                "person": row["name"],
+                "occasion": raw_label,
+                "month": row["month"],
+                "day": row["day"],
+                "year": row["year"],
+            },
+        }
+        entries_by_date.setdefault(date_str, []).append(entry)
+        if is_birthday:
+            birthday_count += 1
+        else:
+            important_date_count += 1
+
+    for row in reminder_rows:
+        trigger = row["trigger_at"]
+        sgt_date = trigger.astimezone(SGT).date()
+        # Overdue reminders (trigger before today) clamp onto today as high-priority.
+        landing = today if sgt_date < today else sgt_date
+        date_str = landing.isoformat()
+        days_until = (landing - today).days
+        is_overdue = sgt_date < today
+        entry = {
+            "kind": "follow_up",
+            "label": row["label"] or "follow-up",
+            "priority": _follow_up_priority(days_until),
+            "meta": {
+                "person": row["name"],
+                "due_at": trigger.isoformat(),
+                "overdue": is_overdue,
+            },
+        }
+        entries_by_date.setdefault(date_str, []).append(entry)
+        follow_up_count += 1
+
+    dates_written, total_entries = await write_overlay_envelopes(
+        pool,
+        butler="relationship",
+        today=today,
+        lookahead_days=lookahead,
+        entries_by_date=entries_by_date,
+    )
+
+    pruned = await prune_old_overlay_contributions(pool, today=today_str)
+
+    logger.info(
+        "Relationship calendar overlay contribution: date=%s dates_written=%d "
+        "birthdays=%d important_dates=%d follow_ups=%d entries=%d pruned=%d",
+        today_str,
+        dates_written,
+        birthday_count,
+        important_date_count,
+        follow_up_count,
+        total_entries,
+        pruned,
+    )
+
+    return {
+        "butler": "relationship",
+        "date": today_str,
+        "dates_written": dates_written,
+        "birthday_entries": birthday_count,
+        "important_date_entries": important_date_count,
+        "follow_up_entries": follow_up_count,
         "total_entries": total_entries,
         "pruned": pruned,
     }

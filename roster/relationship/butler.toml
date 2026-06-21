@@ -85,6 +85,12 @@ dispatch_mode = "job"
 job_name = "daily_briefing_contribution"
 
 [[butler.schedule]]
+name = "calendar_overlay_contribution"
+cron = "50 6 * * *"
+dispatch_mode = "job"
+job_name = "calendar_overlay_contribution"
+
+[[butler.schedule]]
 name = "insight-scan"
 cron = "0 7 * * *"
 dispatch_mode = "job"

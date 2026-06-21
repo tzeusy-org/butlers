@@ -530,6 +530,16 @@ async def _run_health_insight_scan_job(
     return await mod.run_insight_scan(pool, ha_environment_reader=ha_reader)
 
 
+async def _run_relationship_calendar_overlay_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler calendar overlay contribution job (deterministic, zero LLM)."""
+    from butlers.jobs.calendar_overlay import run_relationship_calendar_overlay_contribution
+
+    return await run_relationship_calendar_overlay_contribution(pool=pool, job_args=job_args)
+
+
 async def _run_relationship_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1092,6 +1102,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "relationship": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_relationship_briefing_contribution_job,
+            "calendar_overlay_contribution": _run_relationship_calendar_overlay_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
             "memory_curation": _run_relationship_memory_curation_job,
