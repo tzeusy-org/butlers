@@ -47,6 +47,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StateDot, type AnyDotState } from "@/components/ui/StateDot";
 import { Time } from "@/components/ui/time";
 import { Voice } from "@/components/ui/Voice";
+import { parseScheduleTime } from "@/lib/medication-schedule";
 import { cn } from "@/lib/utils";
 import {
   useDeleteMedication,
@@ -345,17 +346,6 @@ interface NextDose {
   time: string;
   /** True when the soonest occurrence is tomorrow. */
   tomorrow: boolean;
-}
-
-/** Parse a schedule entry like "08:00" into minutes-since-midnight, or null. */
-function parseScheduleTime(raw: unknown): number | null {
-  if (typeof raw !== "string") return null;
-  const m = /^(\d{1,2}):(\d{2})$/.exec(raw.trim());
-  if (!m) return null;
-  const hours = Number(m[1]);
-  const mins = Number(m[2]);
-  if (hours > 23 || mins > 59) return null;
-  return hours * 60 + mins;
 }
 
 function computeNextDoses(medications: Medication[]): NextDose[] {
