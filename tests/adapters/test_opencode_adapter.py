@@ -328,6 +328,13 @@ _MIGRATION_NOISE = (
             "APIError: 503",
             id="nested-apierror-scalar-status",
         ),
+        pytest.param(
+            "",
+            json.dumps({"type": "error", "name": 402, "detail": "payment required"}),
+            1,
+            "402: payment required",
+            id="scalar-name-detail",
+        ),
         # Billing rejection messages under APIError.data are preserved for failover matching.
         pytest.param(
             "",

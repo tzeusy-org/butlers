@@ -91,7 +91,11 @@ def _stringify_error_payload(payload: Any) -> str | None:
         return stripped or None
     if isinstance(payload, dict):
         name = payload.get("name")
-        error_name = name.strip() if isinstance(name, str) and name.strip() else None
+        error_name = None
+        if isinstance(name, (str, int, float, bool)):
+            name_str = str(name).strip()
+            if name_str:
+                error_name = name_str
         for key in (
             "message",
             "detail",
