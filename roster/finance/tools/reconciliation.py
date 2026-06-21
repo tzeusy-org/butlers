@@ -415,7 +415,8 @@ async def reconcile_bills(
         days.  Default: 90.  The per-bill LOOKBACK/GRACE window applies inside.
     payee:
         Optional exact payee filter — restricts results to bills whose payee
-        equals this value (case-sensitive).
+        equals this value (case-sensitive).  Applied as a predicate in the bill
+        pre-fetch query, so the DB returns only matching-payee bills.
 
     Returns
     -------
@@ -440,14 +441,32 @@ async def reconcile_bills(
     # Pre-fetch all pending/overdue bills once to avoid N+1 queries.
     # match_transaction_to_bills receives an active-bills slice each iteration
     # (already-settled bills removed) and filters by currency in-memory.
-    all_bills_rows = await pool.fetch(
-        """
-        SELECT * FROM bills
-        WHERE status IN ('pending', 'overdue')
-          AND reconciled_transaction_id IS NULL
-        ORDER BY due_date ASC
-        """,
-    )
+    #
+    # The optional ``payee`` filter is pushed down into this query so the DB only
+    # returns bills for the requested payee — at scale we no longer fetch every
+    # open bill just to discard non-matching ones in Python.  The predicate uses
+    # exact equality to mirror the prior in-memory ``bill["payee"] != payee``
+    # check (case-sensitive), so results are identical to before.
+    if payee is not None:
+        all_bills_rows = await pool.fetch(
+            """
+            SELECT * FROM bills
+            WHERE status IN ('pending', 'overdue')
+              AND reconciled_transaction_id IS NULL
+              AND payee = $1
+            ORDER BY due_date ASC
+            """,
+            payee,
+        )
+    else:
+        all_bills_rows = await pool.fetch(
+            """
+            SELECT * FROM bills
+            WHERE status IN ('pending', 'overdue')
+              AND reconciled_transaction_id IS NULL
+            ORDER BY due_date ASC
+            """,
+        )
     all_bills: list[dict[str, Any]] = [dict(row) for row in all_bills_rows]
 
     # Fetch all unlinked debit transactions in the outer lookback window.
@@ -496,9 +515,9 @@ async def reconcile_bills(
             bill = match["bill"]
             bill_id = bill["id"]
 
-            # Apply optional payee filter
-            if payee is not None and bill["payee"] != payee:
-                continue
+            # No in-memory payee filter needed: the ``payee`` predicate is applied
+            # in the pre-fetch query above, so ``match`` can only reference a bill
+            # whose payee already matches.
 
             # Guard against settling the same bill twice in one sweep
             if bill_id in settled_bill_ids:
@@ -555,9 +574,8 @@ async def reconcile_bills(
         elif tier == "confirm":
             candidates = match["candidates"]
 
-            # Apply optional payee filter to each candidate bill
-            if payee is not None:
-                candidates = [c for c in candidates if c["payee"] == payee]
+            # No in-memory payee filter needed: the ``payee`` predicate is applied
+            # in the pre-fetch query above, so every candidate bill already matches.
             if not candidates:
                 continue
 

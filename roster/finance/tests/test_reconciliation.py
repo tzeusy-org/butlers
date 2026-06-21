@@ -895,6 +895,52 @@ class TestPaymentRecordedBeforeBill:
         row_m1 = await pool.fetchrow("SELECT status FROM bills WHERE id = $1", bill_b["id"])
         assert row_m1["status"] == "pending"
 
+    async def test_payee_filter_pushed_down_to_prefetch(self, pool, monkeypatch):
+        """The payee filter is applied in the bill pre-fetch query, not in-memory.
+
+        Proves the optimization: when payee= is supplied, the matcher only ever
+        sees bills for that payee — non-matching bills are filtered by the DB and
+        never materialized into the active-bills slice.
+        """
+        from butlers.tools.finance import reconciliation as recon
+
+        await _insert_bill(
+            pool,
+            payee="Starhub",
+            amount=50.00,
+            currency="SGD",
+            due_date=date.today() - timedelta(days=3),
+        )
+        await _insert_bill(
+            pool,
+            payee="M1",
+            amount=40.00,
+            currency="SGD",
+            due_date=date.today() - timedelta(days=3),
+        )
+        await _insert_txn(pool, merchant="Starhub", amount=50.00, currency="SGD")
+        await _insert_txn(pool, merchant="M1", amount=40.00, currency="SGD")
+
+        # Capture every bills slice handed to the matcher.
+        seen_payees: set[str] = set()
+        real_matcher = recon.match_transaction_to_bills
+
+        async def spy_matcher(pool, txn, *, bills=None):
+            if bills is not None:
+                seen_payees.update(b["payee"] for b in bills)
+            return await real_matcher(pool, txn, bills=bills)
+
+        monkeypatch.setattr(recon, "match_transaction_to_bills", spy_matcher)
+
+        result = await recon.reconcile_bills(pool=pool, payee="Starhub")
+
+        # The matcher never saw the M1 bill — it was excluded by the pre-fetch SQL.
+        assert seen_payees == {"Starhub"}
+        assert "M1" not in seen_payees
+        # And the observable result is identical to the in-memory-filtered behavior.
+        assert len(result["auto_settled"]) == 1
+        assert result["auto_settled"][0]["payee"] == "Starhub"
+
     async def test_overdue_bill_also_reconciled(self, pool):
         """Bills with status='overdue' are eligible for reconciliation."""
         from butlers.tools.finance.reconciliation import reconcile_bills
