@@ -7,11 +7,11 @@
 
 ## 2. View + grants migration (split unit: view)
 
-- [ ] 2.1 Add a core Alembic migration (next in chain after `core_136`) creating `calendar.v_overlay_contributions` as a UNION ALL view over `finance.state`, `travel.state`, `relationship.state`, and `health.state`, each filtered to `key LIKE 'calendar/overlay/%'` and annotated with a hardcoded `butler` string literal — mirroring `core_063_v_briefing_contributions.py`.
-- [ ] 2.2 Ensure the calendar reader role (`butler_calendar_rw`) exists best-effort (matching `_ensure_role_exists` in `core_063`) and grant SELECT on each contributing specialist's `state` table to that role.
-- [ ] 2.3 Reuse the `core_063` optional-schema guard: `_state_table_exists` via `to_regclass`; emit a NULL-returning stub UNION term (`SELECT NULL::text AS butler, NULL::text AS key, NULL::jsonb AS value WHERE FALSE`) for any specialist whose `state` table is absent at migration time.
-- [ ] 2.4 `downgrade()` drops the view and revokes the SELECT grants (reversible, auditable).
-- [ ] 2.5 Migration test: view created in `calendar` schema; upgrade/downgrade round-trips; UNION view is not updatable (INSERT/UPDATE/DELETE fails); empty-when-none (zero rows before any job runs).
+- [x] 2.1 Add a core Alembic migration (`core_140_v_overlay_contributions.py`, next in chain after `core_139`) creating `calendar.v_overlay_contributions` as a UNION ALL view over `finance.state`, `travel.state`, `relationship.state`, and `health.state`, each filtered to `key LIKE 'calendar/overlay/%'` and annotated with a hardcoded `butler` string literal — mirroring `core_063_v_briefing_contributions.py`.
+- [x] 2.2 Ensure the calendar reader role (`butler_calendar_rw`) exists best-effort (matching `_ensure_role_exists` in `core_063`) and grant SELECT on each contributing specialist's `state` table to that role.
+- [x] 2.3 Reuse the `core_063` optional-schema guard: `_state_table_exists` via `to_regclass`; emit a NULL-returning stub UNION term (`SELECT NULL::text AS butler, NULL::text AS key, NULL::jsonb AS value WHERE FALSE`) for any specialist whose `state` table is absent at migration time.
+- [x] 2.4 `downgrade()` drops the view and revokes the SELECT grants (reversible, auditable).
+- [x] 2.5 Migration test: view created in `calendar` schema; upgrade/downgrade round-trips; UNION view is not updatable (INSERT/UPDATE/DELETE fails); empty-when-none (zero rows before any job runs).
 
 ## 3. Per-butler contribution jobs (split units: job-finance / job-travel / job-relationship / job-health)
 
