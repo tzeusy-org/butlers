@@ -179,6 +179,34 @@ def _proposal_row(
     }
 
 
+def _overlay_row(
+    *,
+    butler: str,
+    date: str,
+    entries: list[dict] | None = None,
+    has_entries: bool | None = None,
+    envelope_butler: str | None = "__match__",
+) -> dict:
+    """Build a ``calendar.v_overlay_contributions`` row (column + JSONB value).
+
+    ``butler`` is the view's hardcoded source column. ``envelope_butler`` is the
+    ``value->>'butler'`` field; ``"__match__"`` (default) makes it equal the
+    column (the valid case), and an explicit value exercises the mismatch guard.
+    """
+    payload_entries = entries or []
+    payload_butler = butler if envelope_butler == "__match__" else envelope_butler
+    return {
+        "butler": butler,
+        "key": f"calendar/overlay/{date}",
+        "value": {
+            "butler": payload_butler,
+            "date": date,
+            "has_entries": (len(payload_entries) > 0) if has_entries is None else has_entries,
+            "entries": payload_entries,
+        },
+    }
+
+
 def _build_app(
     app,
     *,
@@ -186,6 +214,8 @@ def _build_app(
     source_rows: dict[str, list[dict]] | None = None,
     proposal_rows: dict[str, list[dict]] | None = None,
     proposals_raise: bool = False,
+    overlay_rows: dict[str, list[dict]] | None = None,
+    overlays_raise: bool = False,
     mcp_clients: dict[str, AsyncMock] | None = None,
     calendar_butlers: list[str] | None = None,
 ) -> tuple:
@@ -194,6 +224,13 @@ def _build_app(
     mock_db.butlers_with_module = MagicMock(return_value=calendar_butlers)
 
     async def _fan_out(query: str, args=(), butler_names=None):
+        if "FROM calendar.v_overlay_contributions" in query:
+            if overlays_raise:
+                raise RuntimeError('relation "calendar.v_overlay_contributions" does not exist')
+            rows_to_scan = overlay_rows or {}
+            if butler_names is not None:
+                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
+            return rows_to_scan
         if "FROM calendar_event_proposals AS p" in query:
             if proposals_raise:
                 # Simulate the table being absent / query failing for every
@@ -555,6 +592,153 @@ async def test_workspace_proposals_fail_open_on_missing_table(app):
     assert body["entries"] == []
     assert body["source_freshness"] == []
     assert body["lanes"] == []
+
+
+# ---------------------------------------------------------------------------
+# Overlays lane (view=overlays) — cached domain-context projection (bu-5m9ve8)
+# ---------------------------------------------------------------------------
+
+
+async def _get_overlays(app, *, start="2026-02-22T00:00:00Z", end="2026-02-23T00:00:00Z"):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.get(
+            "/api/calendar/workspace",
+            params={"view": "overlays", "start": start, "end": end},
+        )
+
+
+async def test_workspace_overlays_projects_in_range(app):
+    """view=overlays projects cached contributions into overlay_contribution entries.
+
+    Each in-range entry is tagged ``source_type=overlay_contribution``,
+    non-editable, with ``kind``/``priority``/``source_butler``/``meta`` in
+    metadata, and ``has_domain_context`` is true. Out-of-range envelopes do not
+    contribute entries.
+    """
+    in_range = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=[
+            {
+                "kind": "bill_due",
+                "label": "Electric Co",
+                "priority": "high",
+                "meta": {"amount": 84.2, "currency": "SGD"},
+            }
+        ],
+    )
+    out_of_range = _overlay_row(
+        butler="finance",
+        date="2026-03-15",
+        entries=[{"kind": "bill_due", "label": "Future Bill", "priority": "low", "meta": {}}],
+    )
+    app, _, _ = _build_app(
+        app,
+        overlay_rows={"finance": [in_range, out_of_range]},
+        calendar_butlers=["finance", "travel"],
+    )
+
+    # The window covers the SGT date 2026-02-22 (anchored at Asia/Singapore
+    # midnight = 2026-02-21T16:00Z). Use a wide UTC window to include it.
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["has_domain_context"] is True
+    assert len(body["entries"]) == 1
+    entry = body["entries"][0]
+    assert entry["view"] == "overlays"
+    assert entry["source_type"] == "overlay_contribution"
+    assert entry["editable"] is False
+    assert entry["title"] == "Electric Co"
+    assert entry["all_day"] is True
+    assert entry["metadata"]["kind"] == "bill_due"
+    assert entry["metadata"]["priority"] == "high"
+    assert entry["metadata"]["source_butler"] == "finance"
+    assert entry["metadata"]["meta"] == {"amount": 84.2, "currency": "SGD"}
+    # Overlays are read-only domain context — no provider sources/lanes.
+    assert body["source_freshness"] == []
+    assert body["lanes"] == []
+
+
+async def test_workspace_overlays_fail_open_on_missing_view(app):
+    """A missing/unreadable view degrades to empty + has_domain_context=false, never 500."""
+    app, _, _ = _build_app(app, overlays_raise=True, calendar_butlers=["finance"])
+
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["entries"] == []
+    assert body["has_domain_context"] is False
+
+
+async def test_workspace_overlays_butler_mismatch_skipped(app):
+    """A row whose value->>'butler' disagrees with the source column is skipped."""
+    mismatch = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=[{"kind": "bill_due", "label": "Spoofed", "priority": "high", "meta": {}}],
+        envelope_butler="travel",
+    )
+    app, _, _ = _build_app(app, overlay_rows={"finance": [mismatch]}, calendar_butlers=["finance"])
+
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["entries"] == []
+    # Mismatched envelopes contribute no domain context.
+    assert body["has_domain_context"] is False
+
+
+async def test_workspace_overlays_empty_envelope_sets_domain_context(app):
+    """An in-range envelope with has_entries=false yields no entries but domain context.
+
+    Honest empty-state: the specialist contributed for the date (even with zero
+    domain events), so ``has_domain_context`` is true while ``entries`` is empty.
+    """
+    empty = _overlay_row(butler="health", date="2026-02-22", entries=[], has_entries=False)
+    app, _, _ = _build_app(app, overlay_rows={"health": [empty]}, calendar_butlers=["health"])
+
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["entries"] == []
+    assert body["has_domain_context"] is True
+
+
+async def test_workspace_user_view_excludes_overlay_contributions(app):
+    """Overlay rows never appear in the user view (overlays are a separate lane)."""
+    overlay = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=[{"kind": "bill_due", "label": "Electric Co", "priority": "high", "meta": {}}],
+    )
+    app, _, _ = _build_app(
+        app,
+        overlay_rows={"finance": [overlay]},
+        calendar_butlers=["finance"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-02-21T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert all(e["source_type"] != "overlay_contribution" for e in body["entries"])
 
 
 # ---------------------------------------------------------------------------

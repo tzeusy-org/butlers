@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -50,8 +50,10 @@ from butlers.api.models.calendar_workspace import (
     UnifiedCalendarEntry,
 )
 from butlers.api.read_models.calendar_workspace_v1 import (
+    CalendarOverlayRow,
     CalendarProposalRow,
     query_calendar_event_search,
+    query_calendar_overlays,
     query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
@@ -78,6 +80,16 @@ _WORKSPACE_STATUS_FACETS = frozenset({"active", "paused", "cancelled", "error", 
 _WORKSPACE_SOURCE_TYPE_FACETS = frozenset(
     {"provider_event", "scheduled_task", "butler_reminder", "manual_butler_event"}
 )
+
+# Overlay contributions carry SGT calendar dates (the contribution jobs bucket
+# every domain event onto its Asia/Singapore date). When no display timezone is
+# requested, overlay entries are anchored at SGT midnight so they land on the
+# same calendar day the specialist computed.
+_OVERLAY_DEFAULT_TZ = ZoneInfo("Asia/Singapore")
+# Namespace for deterministic, stable overlay entry IDs. Overlay entries have no
+# natural DB id (they live inside a JSONB envelope), so the entry_id is derived
+# from (butler, date, index, kind, label) — stable across reads of the same view.
+_OVERLAY_ENTRY_NAMESPACE = uuid5(NAMESPACE_URL, "butlers/calendar/overlay-contribution")
 
 
 def _encode_workspace_cursor(starts_at: datetime, entry_id: UUID) -> str:
@@ -680,9 +692,157 @@ async def _fetch_proposal_entries(
     return entries
 
 
+def _normalize_overlay_envelope(
+    overlay: CalendarOverlayRow,
+    *,
+    start: datetime,
+    end: datetime,
+    display_tz: ZoneInfo | None,
+) -> tuple[list[UnifiedCalendarEntry], bool] | None:
+    """Project one overlay-contribution envelope into unified entries.
+
+    Returns ``None`` when the envelope is malformed and must be skipped (the
+    view's hardcoded ``butler`` column disagrees with the envelope's
+    ``value->>'butler'``, or a required field — ``butler`` / ``date`` /
+    ``has_entries`` — is missing). Otherwise returns ``(entries, in_range)`` for
+    a valid envelope: ``in_range`` is whether the target date falls within
+    ``[start, end)`` and ``entries`` is the (possibly empty) projection for this
+    window — empty when out of range or when ``has_entries`` is false. A valid
+    in-range envelope still signals ``has_domain_context`` even with no entries;
+    the caller distinguishes the cases via ``in_range`` and the entry count.
+
+    Computing range membership here (rather than re-parsing the date in a second
+    pass) keeps the date/timezone logic in one place.
+
+    Each entry in the envelope's ``entries`` array becomes a non-editable
+    ``UnifiedCalendarEntry`` (``source_type="overlay_contribution"``) carrying
+    ``kind`` / ``priority`` / ``source_butler`` / ``meta`` in ``metadata`` so the
+    FE can render the domain ribbon/pill (amount badge, trip span, etc.).
+    """
+    source_butler = overlay.butler
+    value = _normalize_json_object(overlay.value)
+
+    envelope_butler = value.get("butler")
+    date_str = value.get("date")
+    has_entries = value.get("has_entries")
+
+    # Required envelope fields and the butler-match guardrail (RFC 0010 #2): a
+    # row whose payload ``butler`` disagrees with the view's hardcoded source
+    # column is skipped (a contribution job wrote into the wrong schema).
+    if envelope_butler is None or date_str is None or has_entries is None:
+        logger.warning("overlay contribution missing required fields; skipping: %r", overlay.key)
+        return None
+    if source_butler is not None and envelope_butler != source_butler:
+        logger.warning(
+            "overlay contribution butler mismatch (column=%r payload=%r); skipping",
+            source_butler,
+            envelope_butler,
+        )
+        return None
+
+    try:
+        target_date = datetime.fromisoformat(str(date_str)).date()
+    except ValueError:
+        logger.warning("overlay contribution has unparseable date %r; skipping", date_str)
+        return None
+
+    tz = display_tz or _OVERLAY_DEFAULT_TZ
+    start_at = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
+    end_at = start_at + timedelta(days=1)
+
+    # Out-of-range envelopes contribute domain context (the specialist DID write
+    # for nearby dates) but no entries for this window.
+    in_range = start <= start_at < end
+    if not in_range:
+        return [], False
+
+    raw_entries = value.get("entries")
+    if not isinstance(raw_entries, list):
+        return [], True
+
+    entries: list[UnifiedCalendarEntry] = []
+    for index, raw_entry in enumerate(raw_entries):
+        if not isinstance(raw_entry, Mapping):
+            continue
+        kind = raw_entry.get("kind")
+        label = raw_entry.get("label")
+        if not kind or not label:
+            continue
+        priority = raw_entry.get("priority")
+        meta = raw_entry.get("meta") if isinstance(raw_entry.get("meta"), Mapping) else {}
+
+        entry_id = uuid5(
+            _OVERLAY_ENTRY_NAMESPACE,
+            f"{envelope_butler}:{target_date.isoformat()}:{index}:{kind}:{label}",
+        )
+        entries.append(
+            UnifiedCalendarEntry(
+                entry_id=entry_id,
+                view="overlays",
+                source_type="overlay_contribution",
+                source_key="overlays",
+                title=str(label),
+                start_at=start_at,
+                end_at=end_at,
+                timezone=tz.key,
+                all_day=True,
+                butler_name=envelope_butler,
+                status="active",
+                editable=False,
+                metadata={
+                    "source_type": "overlay_contribution",
+                    "kind": kind,
+                    "priority": priority,
+                    "source_butler": envelope_butler,
+                    "meta": dict(meta),
+                    "date": target_date.isoformat(),
+                },
+                source_butler=envelope_butler,
+            )
+        )
+    return entries, True
+
+
+async def _fetch_overlay_entries(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None,
+    display_tz: ZoneInfo | None,
+) -> tuple[list[UnifiedCalendarEntry], bool]:
+    """Fetch + project cached overlay contributions, failing open.
+
+    Returns ``(entries, has_domain_context)``. ``has_domain_context`` is ``True``
+    when at least one **valid** contribution envelope exists for a date within
+    ``[start, end)`` — even when that envelope has no entries (``has_entries``
+    false) — so the FE can distinguish "no domain context for this range" from
+    "context temporarily unavailable". A missing view, a missing specialist
+    ``state`` table, or any query failure yields ``([], False)`` — never a 500.
+    """
+    overlays = await query_calendar_overlays(db, butlers=butlers)
+
+    entries: list[UnifiedCalendarEntry] = []
+    has_domain_context = False
+    for overlay in overlays:
+        projected = _normalize_overlay_envelope(
+            overlay, start=start, end=end, display_tz=display_tz
+        )
+        if projected is None:
+            # Malformed envelope — skipped, contributes no domain context.
+            continue
+        projected_entries, in_range = projected
+        if in_range:
+            # A valid in-range envelope signals domain context for the range even
+            # when it projects zero entries (has_entries=false → honest empty-state).
+            has_domain_context = True
+            entries.extend(projected_entries)
+    return entries, has_domain_context
+
+
 @router.get("", response_model=ApiResponse[CalendarWorkspaceReadResponse])
 async def get_workspace(
-    view: str = Query(..., pattern="^(user|butler|proposals)$"),
+    view: str = Query(..., pattern="^(user|butler|proposals|overlays)$"),
     start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
     end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
     timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
@@ -744,6 +904,28 @@ async def get_workspace(
             lanes=[],
             next_cursor=None,
             has_more=False,
+        )
+        return ApiResponse[CalendarWorkspaceReadResponse](data=data)
+
+    if view == "overlays":
+        # Overlays lane: project precomputed domain-context contributions from
+        # the cached cross-schema view ``calendar.v_overlay_contributions``. This
+        # is a pure read of the precomputed view — NO LLM session and NO
+        # cross-schema fan-out at request time (RFC-0020 no-LLM variant). It
+        # fails open: a missing view / state table / query failure yields an
+        # empty entries list with ``has_domain_context=false``, never a 500.
+        # Overlays are read-only domain context, not provider/butler sources, so
+        # freshness/lanes are empty.
+        overlay_entries, has_domain_context = await _fetch_overlay_entries(
+            db, start=start, end=end, butlers=butlers, display_tz=display_tz
+        )
+        data = CalendarWorkspaceReadResponse(
+            entries=overlay_entries,
+            source_freshness=[],
+            lanes=[],
+            next_cursor=None,
+            has_more=False,
+            has_domain_context=has_domain_context,
         )
         return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 

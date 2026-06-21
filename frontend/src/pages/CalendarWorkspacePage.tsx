@@ -38,6 +38,7 @@ import type {
 } from "@/api/types.ts";
 import {
   useCalendarAccounts,
+  useCalendarOverlays,
   useCalendarWorkspace,
   useCalendarWorkspaceAudit,
   useCalendarWorkspaceMeta,
@@ -77,6 +78,13 @@ import {
   SNAP_MINUTES,
   snapMinutes,
 } from "@/lib/calendar-grid";
+import {
+  overlayAmountBadge,
+  overlayButlerAccent,
+  overlayKindGlyph,
+  overlayMetadata,
+  overlaysByDay,
+} from "@/lib/calendar-overlays";
 
 type CalendarRange = "month" | "week" | "day" | "list";
 
@@ -721,6 +729,42 @@ function KindTag({ children, className }: { children: React.ReactNode; className
     >
       {children}
     </span>
+  );
+}
+
+/**
+ * A single read-only cross-domain overlay pill (finance bill/renewal, travel
+ * leg, relationship date, health appointment). Structured only — title + a
+ * kind glyph + an optional structured amount badge, all drawn verbatim from the
+ * projected entry's `metadata`. Non-interactive context, so it renders as a
+ * static chip, not a button.
+ */
+function OverlayPill({ entry }: { entry: UnifiedCalendarEntry }) {
+  const md = overlayMetadata(entry);
+  const badge = overlayAmountBadge(md.meta);
+  const accent = overlayButlerAccent(md.source_butler);
+  const title = `${md.source_butler ?? "overlay"} · ${md.kind || "context"}${
+    md.priority ? ` (${md.priority})` : ""
+  }: ${entry.title}${badge ? ` — ${badge}` : ""}`;
+  return (
+    <div
+      data-overlay-entry-id={entry.entry_id}
+      data-overlay-kind={md.kind}
+      data-overlay-butler={md.source_butler ?? ""}
+      title={title}
+      className={cn(
+        "pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] border border-dashed bg-foreground/[0.02] px-1 py-0.5 text-left text-[10px] leading-none",
+        accent,
+      )}
+    >
+      <span aria-hidden className="shrink-0 font-mono">
+        {overlayKindGlyph(md.kind)}
+      </span>
+      <span className="truncate text-[var(--fg)]">{entry.title}</span>
+      {badge ? (
+        <span className="ml-auto shrink-0 font-mono tabular-nums text-[var(--mfg)]">{badge}</span>
+      ) : null}
+    </div>
   );
 }
 
@@ -1429,6 +1473,10 @@ export default function CalendarWorkspacePage() {
   const selectedCalendarId = searchParams.get("calendar") ?? "all";
   const selectedStatus = searchParams.get("status") ?? "all";
   const selectedSourceType = searchParams.get("kind") ?? "all";
+  // Cross-domain overlays are an additive, read-only context layer toggled on
+  // top of the primary user/butler view (not a separate view mode). The toggle
+  // is persisted in the URL so the layered view is shareable.
+  const overlaysEnabled = searchParams.get("overlays") === "1";
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const { start, end } = useMemo(() => computeWindow(range, anchor), [range, anchor]);
@@ -1547,6 +1595,17 @@ export default function CalendarWorkspacePage() {
         : (selectedSourceType as UnifiedCalendarSourceType),
   });
 
+  const overlaysQuery = useCalendarOverlays(
+    { start: start.toISOString(), end: end.toISOString(), timezone },
+    { enabled: overlaysEnabled },
+  );
+  const overlayEntries = useMemo(
+    () => (overlaysEnabled ? (overlaysQuery.data?.data.entries ?? []) : []),
+    [overlaysEnabled, overlaysQuery.data?.data.entries],
+  );
+  const hasDomainContext = overlaysQuery.data?.data.has_domain_context ?? false;
+  const overlaysByDayMap = useMemo(() => overlaysByDay(overlayEntries), [overlayEntries]);
+
   const syncMutation = useSyncCalendarWorkspace();
   const butlerMutation = useMutateCalendarWorkspaceButlerEvent();
   const userEventMutation = useMutateCalendarWorkspaceUserEvent();
@@ -1648,6 +1707,7 @@ export default function CalendarWorkspacePage() {
       calendar?: string;
       status?: string;
       kind?: string;
+      overlays?: boolean;
     }) => {
       const next = new URLSearchParams(searchParams);
 
@@ -1684,6 +1744,14 @@ export default function CalendarWorkspacePage() {
           next.delete("kind");
         } else {
           next.set("kind", nextValues.kind);
+        }
+      }
+
+      if (nextValues.overlays !== undefined) {
+        if (nextValues.overlays) {
+          next.set("overlays", "1");
+        } else {
+          next.delete("overlays");
         }
       }
 
@@ -2897,6 +2965,27 @@ export default function CalendarWorkspacePage() {
             </select>
           </div>
 
+          <button
+            type="button"
+            role="switch"
+            aria-checked={overlaysEnabled}
+            aria-label="Cross-domain overlays"
+            title="Domain overlays: finance bills/renewals, travel, relationship dates, health appointments"
+            onClick={() => updateQuery({ overlays: !overlaysEnabled })}
+            className={cn(
+              "flex h-7 items-center gap-1.5 rounded-[3px] border px-2 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+              overlaysEnabled
+                ? "border-[var(--fg)] bg-foreground/[0.06] text-[var(--fg)]"
+                : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+            )}
+          >
+            <StateDot state={overlaysEnabled ? "ok" : "waiting"} />
+            Overlays
+            {overlaysEnabled && overlaysQuery.isFetched && !hasDomainContext ? (
+              <span className="text-[var(--dim)]">· none</span>
+            ) : null}
+          </button>
+
           {view === "user" ? (
             <>
               <div className="flex items-center gap-2">
@@ -3098,6 +3187,7 @@ export default function CalendarWorkspacePage() {
               {monthDays.map((day) => {
                 const key = format(day, "yyyy-MM-dd");
                 const dayEntries = entriesByDay.get(key) ?? [];
+                const dayOverlays = overlaysEnabled ? (overlaysByDayMap.get(key) ?? []) : [];
                 const inMonth = isSameMonth(day, start);
                 const today = isToday(day);
                 return (
@@ -3161,6 +3251,18 @@ export default function CalendarWorkspacePage() {
                             +{dayEntries.length - 3} more
                           </button>
                         ) : null}
+                        {dayOverlays.length > 0 ? (
+                          <div className="mt-1 space-y-0.5 border-t border-dashed border-[var(--border)] pt-1">
+                            {dayOverlays.slice(0, 3).map((overlay) => (
+                              <OverlayPill key={overlay.entry_id} entry={overlay} />
+                            ))}
+                            {dayOverlays.length > 3 ? (
+                              <span className="block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+                                +{dayOverlays.length - 3} overlay
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -3202,7 +3304,12 @@ export default function CalendarWorkspacePage() {
               const hasAllDay = weekDays.some((day) =>
                 (entriesByDay.get(format(day, "yyyy-MM-dd")) ?? []).some((e) => e.all_day),
               );
-              if (!hasAllDay) return null;
+              const hasOverlays =
+                overlaysEnabled &&
+                weekDays.some(
+                  (day) => (overlaysByDayMap.get(format(day, "yyyy-MM-dd")) ?? []).length > 0,
+                );
+              if (!hasAllDay && !hasOverlays) return null;
               return (
                 <div
                   className="mb-2 grid border-b border-[var(--border)] pb-2"
@@ -3219,6 +3326,7 @@ export default function CalendarWorkspacePage() {
                   {weekDays.map((day) => {
                     const key = format(day, "yyyy-MM-dd");
                     const allDayEntries = (entriesByDay.get(key) ?? []).filter((e) => e.all_day);
+                    const dayOverlays = overlaysEnabled ? (overlaysByDayMap.get(key) ?? []) : [];
                     return (
                       <div key={key} className="space-y-1 px-1">
                         {allDayEntries.map((entry) => (
@@ -3235,6 +3343,9 @@ export default function CalendarWorkspacePage() {
                           >
                             {entry.title}
                           </button>
+                        ))}
+                        {dayOverlays.map((overlay) => (
+                          <OverlayPill key={overlay.entry_id} entry={overlay} />
                         ))}
                       </div>
                     );

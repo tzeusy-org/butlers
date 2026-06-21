@@ -304,6 +304,22 @@ class CalendarProposalRow:
     db_butler: str = ""
 
 
+@dataclass
+class CalendarOverlayRow:
+    """Typed DTO for a ``calendar.v_overlay_contributions`` row (v1).
+
+    Backs the overlays lane (``view=overlays``).  Each row is one per-date
+    contribution envelope: ``butler`` is the view's **hardcoded** source-schema
+    literal (RFC 0010 Guardrail #2), ``key`` is the ``calendar/overlay/<date>``
+    state key, and ``value`` is the raw envelope JSONB
+    (``{butler, date, has_entries, entries:[{kind, label, priority, meta}]}``).
+    """
+
+    butler: str | None
+    key: str | None
+    value: Any  # raw asyncpg value (dict or None)
+
+
 # ---------------------------------------------------------------------------
 # Row converters
 # ---------------------------------------------------------------------------
@@ -739,6 +755,70 @@ async def query_calendar_proposals(
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
             rows.append(row_to_proposal(row, db_butler=butler_name))
+    return rows
+
+
+async def query_calendar_overlays(
+    db: DatabaseManager,
+    *,
+    butlers: list[str] | None = None,
+) -> list[CalendarOverlayRow]:
+    """Read precomputed overlay contributions from ``calendar.v_overlay_contributions``.
+
+    Backs the overlays lane (``GET /api/calendar/workspace?view=overlays``). The
+    view is a **single** cross-schema UNION object living in the ``calendar``
+    schema (migration ``core_140``), so — unlike the per-schema proposals/event
+    reads — it is queried through exactly **one** butler pool rather than fanned
+    out across every calendar schema (fanning out would return the same view
+    rows once per schema, duplicating every overlay).  The chosen reader is the
+    first calendar-enabled butler (deterministic), whose pool can ``SELECT`` the
+    fully-qualified view.
+
+    **Fail-open contract.** This read MUST NOT raise. A missing view
+    (pre-migration), a missing contributing specialist ``state`` table, or any
+    query failure degrades to an empty list (logged at WARNING). The caller maps
+    an empty list to ``has_domain_context=false`` and never an HTTP 500.
+
+    Parameters
+    ----------
+    db:
+        The :class:`~butlers.api.db.DatabaseManager` instance.
+    butlers:
+        Optional explicit reader-schema override (primarily for tests). When
+        omitted, the calendar-enabled butlers are used.
+
+    Returns
+    -------
+    list[CalendarOverlayRow]
+        Flat list of overlay-contribution envelope rows, or ``[]`` on any
+        failure (fail-open).
+    """
+    candidates = butlers or db.butlers_with_module("calendar") or db.butler_names
+    if not candidates:
+        return []
+    # Read the shared view through a single deterministic pool — never fan out.
+    target = sorted(candidates)[0]
+
+    sql = "SELECT butler, key, value FROM calendar.v_overlay_contributions"
+    try:
+        results = await db.fan_out(sql, (), butler_names=[target])
+    except Exception:
+        logger.warning(
+            "query_calendar_overlays read failed; returning empty (fail-open)",
+            exc_info=True,
+        )
+        return []
+
+    rows: list[CalendarOverlayRow] = []
+    for _butler, raw_rows in results.items():
+        for row in raw_rows:
+            rows.append(
+                CalendarOverlayRow(
+                    butler=row["butler"],
+                    key=row["key"],
+                    value=row["value"],
+                )
+            )
     return rows
 
 

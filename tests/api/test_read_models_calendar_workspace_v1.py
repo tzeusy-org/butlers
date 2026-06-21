@@ -26,9 +26,11 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     READ_MODEL_VERSION,
     SOURCE_COLUMNS,
     WORKSPACE_COLUMNS,
+    CalendarOverlayRow,
     CalendarProposalRow,
     CalendarSourceRow,
     CalendarWorkspaceRow,
+    query_calendar_overlays,
     query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
@@ -646,3 +648,44 @@ def test_proposal_columns_non_empty():
     assert "calendar_event_proposals" not in PROPOSAL_COLUMNS  # columns only, no FROM
     assert "p.source_event_id" in PROPOSAL_COLUMNS
     assert "p.confidence" in PROPOSAL_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# query_calendar_overlays — single-pool read of the shared cross-schema view
+# ---------------------------------------------------------------------------
+
+
+async def test_query_calendar_overlays_reads_through_single_pool():
+    """The shared view is read via exactly one butler pool, never fanned out.
+
+    Fanning out would return the same view rows once per calendar schema,
+    duplicating every overlay. The reader is the first calendar-enabled butler.
+    """
+    db = _make_db({})
+    db.butlers_with_module = MagicMock(return_value=["travel", "finance", "health"])
+    row = {"butler": "finance", "key": "calendar/overlay/2026-02-22", "value": {"date": "x"}}
+    db.fan_out = AsyncMock(return_value={"finance": [row]})
+
+    rows = await query_calendar_overlays(db)
+
+    # Deterministic single reader = sorted(candidates)[0] == "finance".
+    _, kwargs = db.fan_out.call_args
+    assert kwargs.get("butler_names") == ["finance"]
+    sql = db.fan_out.call_args[0][0]
+    assert "calendar.v_overlay_contributions" in sql
+    assert len(rows) == 1
+    assert isinstance(rows[0], CalendarOverlayRow)
+    assert rows[0].butler == "finance"
+
+
+async def test_query_calendar_overlays_fail_open_on_error():
+    db = _make_db({})
+    db.fan_out = AsyncMock(side_effect=RuntimeError("view does not exist"))
+    assert await query_calendar_overlays(db) == []
+
+
+async def test_query_calendar_overlays_empty_when_no_calendar_butlers():
+    db = _make_db({})
+    db.butlers_with_module = MagicMock(return_value=None)
+    db.butler_names = []
+    assert await query_calendar_overlays(db) == []

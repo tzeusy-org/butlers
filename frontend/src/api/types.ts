@@ -482,12 +482,22 @@ export interface ScheduleUpdate {
 /** Workspace mode toggle for /butlers/calendar. */
 export type CalendarWorkspaceView = "user" | "butler";
 
+/**
+ * Read-lane selector accepted by GET /api/calendar/workspace. Extends the
+ * user/butler toggle with the read-only `proposals` and `overlays` lanes (the
+ * latter projects precomputed cross-domain overlay contributions). Overlays are
+ * fetched as an additive layer, not a primary view mode.
+ */
+export type CalendarWorkspaceQueryView = CalendarWorkspaceView | "proposals" | "overlays";
+
 /** Unified source categories for calendar entries. */
 export type UnifiedCalendarSourceType =
   | "provider_event"
   | "scheduled_task"
   | "butler_reminder"
-  | "manual_butler_event";
+  | "manual_butler_event"
+  | "proposed_event"
+  | "overlay_contribution";
 
 /** Freshness state returned by workspace source metadata. */
 export type CalendarWorkspaceSyncState = "fresh" | "stale" | "syncing" | "failed";
@@ -495,7 +505,7 @@ export type CalendarWorkspaceSyncState = "fresh" | "stale" | "syncing" | "failed
 /** Normalized event row returned by GET /api/calendar/workspace. */
 export interface UnifiedCalendarEntry {
   entry_id: string;
-  view: CalendarWorkspaceView;
+  view: CalendarWorkspaceQueryView;
   source_type: UnifiedCalendarSourceType;
   source_key: string;
   title: string;
@@ -619,6 +629,13 @@ export interface CalendarWorkspaceReadResponse {
   next_cursor: string | null;
   /** `true` while more pages remain for the requested window. */
   has_more: boolean;
+  /**
+   * Overlays lane (`view=overlays`) honest empty-state flag. `true` when at
+   * least one valid precomputed overlay contribution exists for the range;
+   * `false` when the cached view is absent/unreadable or no specialist has
+   * contributed. Always `false`/absent for the user/butler/proposals views.
+   */
+  has_domain_context?: boolean;
 }
 
 /** Sync capability flags in workspace metadata. */
@@ -722,7 +739,7 @@ export type CalendarWorkspaceStatusFacet =
 
 /** Query parameters for GET /api/calendar/workspace. */
 export interface CalendarWorkspaceParams {
-  view: CalendarWorkspaceView;
+  view: CalendarWorkspaceQueryView;
   start: string;
   end: string;
   timezone?: string;

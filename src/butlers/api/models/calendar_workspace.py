@@ -8,13 +8,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-CalendarWorkspaceView = Literal["user", "butler", "proposals"]
+CalendarWorkspaceView = Literal["user", "butler", "proposals", "overlays"]
 UnifiedCalendarSourceType = Literal[
     "provider_event",
     "scheduled_task",
     "butler_reminder",
     "manual_butler_event",
     "proposed_event",
+    "overlay_contribution",
 ]
 CalendarSyncState = Literal["fresh", "stale", "syncing", "failed"]
 
@@ -105,6 +106,12 @@ class CalendarWorkspaceReadResponse(BaseModel):
     lanes: list[CalendarWorkspaceLaneDefinition] = Field(default_factory=list)
     next_cursor: str | None = None
     has_more: bool = False
+    #: Overlays lane (``view=overlays``) honest empty-state flag. ``True`` when at
+    #: least one valid precomputed overlay contribution exists in range; ``False``
+    #: when the cached view is absent/unreadable or no specialist has contributed.
+    #: Always ``False`` for the user/butler/proposals views (additive — clients
+    #: that ignore it observe the prior shape).
+    has_domain_context: bool = False
 
 
 class CalendarWorkspaceSearchResponse(BaseModel):

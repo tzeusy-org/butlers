@@ -25,11 +25,12 @@
 
 ## 4. Workspace overlay projection (split unit: render)
 
-- [ ] 4.1 Add `"overlay_contribution"` to the `UnifiedCalendarSourceType` literal in `src/butlers/api/models/calendar_workspace.py`.
-- [ ] 4.2 Widen the `view` query parameter in `get_workspace` to accept `overlays`; read `calendar.v_overlay_contributions` for the requested `[start, end]` range, validate each envelope's `butler` against the view's source column, and project each entry into a `UnifiedCalendarEntry` (`source_type="overlay_contribution"`, `editable=false`, with `kind`, `priority`, `source_butler`, and the entry's `meta` in `metadata`).
-- [ ] 4.3 Add `has_domain_context: bool` to the `view=overlays` response envelope (true only when the view was reachable AND at least one specialist contributed for the range).
-- [ ] 4.4 Fail-open: absent view, missing specialist table, or query failure returns `entries: []` with `has_domain_context: false`, never HTTP 500.
-- [ ] 4.5 Tests: `view=overlays` projects entries for a range; `has_domain_context` true when contributions exist; fail-open on missing view; `"overlay_contribution"` never appears in `view=user` / `view=butler`; no LLM is invoked.
+- [x] 4.1 Add `"overlay_contribution"` to the `UnifiedCalendarSourceType` literal in `src/butlers/api/models/calendar_workspace.py`.
+- [x] 4.2 Widen the `view` query parameter in `get_workspace` to accept `overlays`; read `calendar.v_overlay_contributions` for the requested `[start, end]` range, validate each envelope's `butler` against the view's source column, and project each entry into a `UnifiedCalendarEntry` (`source_type="overlay_contribution"`, `editable=false`, with `kind`, `priority`, `source_butler`, and the entry's `meta` in `metadata`).
+- [x] 4.3 Add `has_domain_context: bool` to the `view=overlays` response envelope (true only when the view was reachable AND at least one specialist contributed for the range).
+- [x] 4.4 Fail-open: absent view, missing specialist table, or query failure returns `entries: []` with `has_domain_context: false`, never HTTP 500.
+- [x] 4.5 Tests: `view=overlays` projects entries for a range; `has_domain_context` true when contributions exist; fail-open on missing view; `"overlay_contribution"` never appears in `view=user` / `view=butler`; no LLM is invoked.
+- [x] 4.6 FE: render the overlays lane as Dispatch domain ribbons/pills on the relevant calendar days (finance bill/renewal amount pills, travel trip ribbons, relationship important-date markers, health appointment context), with a toggleable overlays filter chip; structured, no generated prose.
 
 ## 5. Meeting-prep rail read (split unit: prep-rail)
 

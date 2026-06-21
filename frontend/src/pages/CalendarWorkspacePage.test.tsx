@@ -20,6 +20,13 @@ import {
 
 vi.mock("@/hooks/use-calendar-workspace", () => ({
   useCalendarWorkspace: vi.fn(),
+  useCalendarOverlays: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    isFetched: false,
+    error: null,
+    data: { data: { entries: [], has_domain_context: false } },
+  })),
   useCalendarWorkspaceMeta: vi.fn(),
   useCalendarWorkspaceAudit: vi.fn(() => ({
     isLoading: false,

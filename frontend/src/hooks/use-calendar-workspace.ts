@@ -90,6 +90,32 @@ export function useCalendarWorkspace(
   });
 }
 
+/**
+ * Fetch the read-only cross-domain overlay layer (`view=overlays`) for a time
+ * window. Overlays are precomputed domain-context contributions (finance bills,
+ * travel legs, relationship dates, health appointments) projected onto calendar
+ * days — an additive layer toggled on top of the primary user/butler view, not
+ * a primary view mode. The read is fail-open server-side: a missing cached view
+ * yields `entries: []` with `has_domain_context: false`, never an error.
+ */
+export function useCalendarOverlays(
+  params: { start: string; end: string; timezone?: string },
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  return useQuery({
+    queryKey: ["calendar-overlays", params],
+    queryFn: () =>
+      getCalendarWorkspace({
+        view: "overlays",
+        start: params.start,
+        end: params.end,
+        timezone: params.timezone,
+      }),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? 60_000,
+  });
+}
+
 /** Full-text search calendar events; disabled until the query is non-blank. */
 export function useCalendarWorkspaceSearch(
   params: CalendarWorkspaceSearchParams,
