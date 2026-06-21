@@ -894,6 +894,39 @@ export interface CalendarWorkspaceButlerMutationRequest {
   payload: Record<string, unknown>;
 }
 
+/** Request payload for POST /api/calendar/workspace/parse-quick-add. */
+export interface QuickAddParseRequest {
+  /** Free-text phrase, e.g. "lunch with Sarah Fri 1pm at Tartine". */
+  text: string;
+  /** IANA timezone anchoring relative phrases like "Fri 1pm". */
+  timezone?: string;
+  /** Butler whose catalog model overrides apply for resolution. */
+  butler_name?: string;
+}
+
+/** A parsed draft event — advisory only, never auto-written. */
+export interface QuickAddDraft {
+  title: string;
+  start_at: string | null;
+  end_at: string | null;
+  all_day: boolean;
+  location: string | null;
+  description: string | null;
+}
+
+/**
+ * Response payload for POST /api/calendar/workspace/parse-quick-add.
+ *
+ * ``parse_available`` is false when no cheap-tier model is configured or the
+ * output could not be interpreted as a single event draft; ``draft`` is then
+ * null and ``reason`` explains why. The endpoint never writes.
+ */
+export interface QuickAddParseResponse {
+  parse_available: boolean;
+  draft: QuickAddDraft | null;
+  reason: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------

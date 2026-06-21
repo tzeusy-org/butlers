@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CalendarWorkspaceView = Literal["user", "butler", "proposals", "overlays"]
 UnifiedCalendarSourceType = Literal[
@@ -477,3 +477,73 @@ class CalendarSourceToggleResponse(BaseModel):
     source_id: UUID
     calendar_id: str | None = None
     enabled: bool
+
+
+# ---------------------------------------------------------------------------
+# Natural-language quick-add (parse-then-confirm)
+# ---------------------------------------------------------------------------
+
+
+class QuickAddParseRequest(BaseModel):
+    """Request payload for POST /api/calendar/workspace/parse-quick-add.
+
+    A parse-only request: a free-text ``text`` string is LLM-parsed into a
+    draft event for confirmation. ``timezone`` (IANA, e.g. ``Asia/Singapore``)
+    anchors relative phrases like "Fri 1pm". ``butler_name`` selects the
+    catalog model overrides for resolution; when omitted a neutral synthetic
+    name is used so the global catalog applies. ``now`` optionally pins the
+    reference "now" (ISO-8601) for deterministic relative-date resolution.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    timezone: str | None = None
+    butler_name: str | None = None
+    now: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _require_nonblank_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("text must be a non-empty string")
+        return normalized
+
+    @field_validator("timezone", "butler_name", "now")
+    @classmethod
+    def _normalize_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class QuickAddDraft(BaseModel):
+    """A parsed draft event — advisory only, never auto-written.
+
+    Field names mirror the ``calendar_create_event`` create payload so the
+    confirm step can submit the (possibly edited) draft to the existing
+    ``POST /api/calendar/workspace/user-events`` path with minimal mapping.
+    """
+
+    title: str
+    start_at: str | None = None
+    end_at: str | None = None
+    all_day: bool = False
+    location: str | None = None
+    description: str | None = None
+
+
+class QuickAddParseResponse(BaseModel):
+    """Response payload for POST /api/calendar/workspace/parse-quick-add.
+
+    ``parse_available`` is ``false`` when no cheap-tier model is configured or
+    the model output could not be interpreted as a single event draft; in that
+    case ``draft`` is ``None`` and ``reason`` carries a human-readable
+    explanation. The endpoint never fabricates an event and never writes.
+    """
+
+    parse_available: bool
+    draft: QuickAddDraft | None = None
+    reason: str | None = None

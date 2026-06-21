@@ -50,6 +50,8 @@ import type {
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceSyncResponse,
   CalendarWorkspaceUserMutationRequest,
+  QuickAddParseRequest,
+  QuickAddParseResponse,
   SetPrimaryCalendarRequest,
   SetPrimaryCalendarResponse,
   ContactDetail,
@@ -1185,6 +1187,25 @@ export function mutateCalendarWorkspaceUserEvent(
 ): Promise<ApiResponse<CalendarWorkspaceMutationResponse>> {
   return apiFetch<ApiResponse<CalendarWorkspaceMutationResponse>>(
     "/calendar/workspace/user-events",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/**
+ * Parse a natural-language phrase into a draft event (parse-only, no write).
+ *
+ * Confirmation is NOT a new write path: the caller submits the (possibly
+ * edited) draft to {@link mutateCalendarWorkspaceUserEvent} with
+ * ``action="create"`` and a fresh ``request_id``.
+ */
+export function parseCalendarQuickAdd(
+  body: QuickAddParseRequest,
+): Promise<ApiResponse<QuickAddParseResponse>> {
+  return apiFetch<ApiResponse<QuickAddParseResponse>>(
+    "/calendar/workspace/parse-quick-add",
     {
       method: "POST",
       body: JSON.stringify(body),

@@ -48,6 +48,11 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
     isError: false,
   })),
   useMutateCalendarWorkspaceUserEvent: vi.fn(),
+  useParseCalendarQuickAdd: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+    reset: vi.fn(),
+  })),
   useSetPrimaryCalendar: vi.fn(),
   useCalendarAccounts: vi.fn(() => ({
     isLoading: false,

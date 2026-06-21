@@ -48,6 +48,7 @@ export {
   findCalendarWorkspaceTime,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
+  parseCalendarQuickAdd,
   getCostSummary,
   getDailyCosts,
   createEntityInfo,

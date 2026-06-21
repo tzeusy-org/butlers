@@ -13,6 +13,7 @@ import {
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
+  parseCalendarQuickAdd,
   searchCalendarWorkspace,
   setPrimaryCalendar,
   syncCalendarWorkspace,
@@ -29,6 +30,7 @@ import type {
   CalendarWorkspaceSearchParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
+  QuickAddParseRequest,
   SetPrimaryCalendarRequest,
 } from "@/api/types.ts";
 
@@ -172,6 +174,20 @@ export function useMutateCalendarWorkspaceUserEvent() {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
+  });
+}
+
+/**
+ * Parse a natural-language quick-add phrase into a draft event (no write).
+ *
+ * Parse-only: this never mutates server state, so no query caches are
+ * invalidated. The returned draft is confirmed through the normal create
+ * mutation ({@link useMutateCalendarWorkspaceUserEvent}) with a fresh
+ * ``request_id``.
+ */
+export function useParseCalendarQuickAdd() {
+  return useMutation({
+    mutationFn: (body: QuickAddParseRequest) => parseCalendarQuickAdd(body),
   });
 }
 

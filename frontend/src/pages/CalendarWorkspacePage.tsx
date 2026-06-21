@@ -35,6 +35,7 @@ import type {
   CalendarWorkspaceUserMutationAction,
   CalendarWorkspaceView,
   CalendarWorkspaceWritableCalendar,
+  QuickAddDraft,
   UnifiedCalendarEntry,
   UnifiedCalendarSourceType,
 } from "@/api/types.ts";
@@ -61,6 +62,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ButlerMark } from "@/components/ui/ButlerMark";
@@ -2724,6 +2726,65 @@ export default function CalendarWorkspacePage() {
   }
 
   /**
+   * Confirm a natural-language quick-add draft. The draft is advisory; this
+   * routes it through the SAME user-event create path the structured form uses,
+   * with a fresh `request_id` — no separate write path. The owning butler /
+   * calendar is resolved exactly like the create dialog (preferred selected
+   * source, else the first submittable calendar).
+   */
+  async function confirmQuickAddDraft(draft: QuickAddDraft) {
+    if (submittableCalendars.length === 0) {
+      toast.error("No writable calendar sources are available for user events.");
+      return;
+    }
+    const title = draft.title.trim();
+    if (!title) {
+      toast.error("Title is required.");
+      return;
+    }
+
+    const selectedCalendar =
+      (selectedSourceKey !== "all" &&
+        submittableCalendars.find((c) => c.source_key === selectedSourceKey)) ||
+      submittableCalendars[0];
+    const butlerName = selectedCalendar.butler_name;
+    if (!butlerName) {
+      toast.error("Could not resolve owning butler for this calendar source.");
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      title,
+      timezone: defaultTimezone,
+      all_day: draft.all_day,
+    };
+    if (draft.start_at) payload.start_at = draft.start_at;
+    if (draft.end_at) payload.end_at = draft.end_at;
+    if (draft.location) payload.location = draft.location;
+    if (draft.description) payload.description = draft.description;
+    if (selectedCalendar.calendar_id) payload.calendar_id = selectedCalendar.calendar_id;
+
+    const requestId = buildRequestId("create");
+    const pendingMutation = {
+      butler_name: butlerName,
+      action: "create" as const,
+      payload,
+      request_id: requestId,
+    };
+    try {
+      const result = await userEventMutation.mutateAsync({
+        butler_name: butlerName,
+        action: "create",
+        request_id: requestId,
+        payload,
+      });
+      _handleUserMutationResult(result.data, "create", pendingMutation);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to add calendar event.");
+    }
+  }
+
+  /**
    * Re-submit the pending user-event mutation with a different time slot
    * (suggested by the conflict response).  Preserves the original request_id
    * so the audit log can correlate the retry with the initial attempt.
@@ -3269,6 +3330,23 @@ export default function CalendarWorkspacePage() {
           ) : null}
         </div>
       </div>
+
+      {/* Natural-language quick-add (parse-then-confirm) — user view only */}
+      {view === "user" ? (
+        <div className="flex items-start border-b border-[var(--border)] py-3">
+          <QuickAddBar
+            timezone={defaultTimezone}
+            butlerName={
+              (selectedSourceKey !== "all"
+                ? submittableCalendars.find((c) => c.source_key === selectedSourceKey)
+                : submittableCalendars[0]
+              )?.butler_name ?? undefined
+            }
+            disabled={!canCreateUserEvents}
+            onConfirm={confirmQuickAddDraft}
+          />
+        </div>
+      ) : null}
 
       {/* Activity panel — overlays the canvas when open */}
       {activityPanelOpen ? (

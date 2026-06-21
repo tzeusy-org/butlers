@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse
@@ -47,6 +48,9 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceSyncResponse,
     CalendarWorkspaceSyncTarget,
     CalendarWorkspaceWritableCalendar,
+    QuickAddDraft,
+    QuickAddParseRequest,
+    QuickAddParseResponse,
     SetPrimaryCalendarRequest,
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
@@ -1459,6 +1463,58 @@ async def _projection_freshness_after_mutation(
         return None
     freshness = status.get("projection_freshness")
     return freshness if isinstance(freshness, dict) else None
+
+
+def _shared_pool(db: DatabaseManager):
+    """Return the shared credential pool, raising 503 when unavailable.
+
+    The quick-add parse resolves its model from ``public.model_catalog`` via the
+    shared credential pool — the same pool the model-settings surface uses.
+    """
+    try:
+        return db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Shared database pool is not available",
+        ) from exc
+
+
+@router.post("/parse-quick-add", response_model=ApiResponse[QuickAddParseResponse])
+async def parse_quick_add_event(
+    body: QuickAddParseRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[QuickAddParseResponse]:
+    """Parse a natural-language string into a draft event for confirmation.
+
+    Parse-only and read-only: this endpoint never creates a calendar event and
+    performs no provider or projection write. It intentionally takes no MCP
+    client dependency — there is structurally no write path. Event creation
+    flows exclusively through ``POST /api/calendar/workspace/user-events`` on
+    confirm, with a fresh ``request_id``.
+
+    Degraded contract: when no cheap-tier model is configured (``resolve_model``
+    returns ``None``) or the model output cannot be interpreted as a single
+    event draft, the response is HTTP 200 with ``parse_available=false``, a
+    human-readable ``reason``, and no ``draft`` — never a fabricated event.
+    Blank input is rejected at the model boundary (HTTP 422).
+    """
+    pool = _shared_pool(db)
+    outcome = await parse_quick_add(
+        pool,
+        text=body.text,
+        butler_name=body.butler_name,
+        timezone=body.timezone,
+        now_iso=body.now,
+    )
+    draft = QuickAddDraft.model_validate(outcome.draft) if outcome.draft is not None else None
+    return ApiResponse[QuickAddParseResponse](
+        data=QuickAddParseResponse(
+            parse_available=outcome.parse_available,
+            draft=draft,
+            reason=outcome.reason,
+        )
+    )
 
 
 @router.post("/user-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])
