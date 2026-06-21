@@ -42,6 +42,7 @@ import type {
 } from "@/api/types.ts";
 import {
   useCalendarAccounts,
+  useCalendarDayBriefing,
   useCalendarOverlays,
   useCalendarWorkspace,
   useCalendarWorkspaceAudit,
@@ -65,6 +66,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -1823,6 +1825,18 @@ export default function CalendarWorkspacePage() {
   const hasDomainContext = overlaysQuery.data?.data.has_domain_context ?? false;
   const overlaysByDayMap = useMemo(() => overlaysByDay(overlayEntries), [overlayEntries]);
 
+  // Day-briefing card ("tomorrow at a glance"): the precomputed overlay
+  // contributions for tomorrow, grouped by butler/kind. Reads the same cached
+  // view as the overlays lane (no per-open LLM); only fetched while overlays are
+  // toggled on, so it shares that opt-in surface.
+  const briefingDate = useMemo(() => addDays(startOfDay(new Date()), 1), []);
+  const briefingDateParam = useMemo(() => format(briefingDate, "yyyy-MM-dd"), [briefingDate]);
+  const dayBriefingQuery = useCalendarDayBriefing(
+    { date: briefingDateParam, timezone },
+    { enabled: overlaysEnabled },
+  );
+  const dayBriefing = dayBriefingQuery.data?.data;
+
   const syncMutation = useSyncCalendarWorkspace();
   const butlerMutation = useMutateCalendarWorkspaceButlerEvent();
   const userEventMutation = useMutateCalendarWorkspaceUserEvent();
@@ -2072,6 +2086,17 @@ export default function CalendarWorkspacePage() {
       const target = new Date(entry.start_at);
       updateQuery({ view: entry.view === "butler" ? "butler" : "user", range: "day", anchor: target });
       setFlashedEntryId(entry.entry_id);
+    },
+    [updateQuery],
+  );
+
+  // Link a day-briefing chip to its underlying item: navigate the grid to the
+  // overlay entry's day (day view). Overlay entries are read-only domain context
+  // (synthetic ids), so the "link" is to the day they live on, not a detail dialog.
+  const handleBriefingSelect = useCallback(
+    (entry: UnifiedCalendarEntry) => {
+      const target = new Date(entry.start_at);
+      updateQuery({ range: "day", anchor: target });
     },
     [updateQuery],
   );
@@ -3393,6 +3418,21 @@ export default function CalendarWorkspacePage() {
             }
             disabled={!canCreateUserEvents}
             onConfirm={confirmQuickAddDraft}
+          />
+        </div>
+      ) : null}
+
+      {/* Day-briefing card ("tomorrow at a glance") — structured overlay summary,
+          shown alongside the overlays layer. No per-open LLM call. */}
+      {overlaysEnabled ? (
+        <div className="border-b border-[var(--border)] py-3">
+          <DayBriefingCard
+            heading={`Tomorrow · ${format(briefingDate, "EEE, MMM d")}`}
+            isLoading={dayBriefingQuery.isLoading}
+            groups={dayBriefing?.groups ?? []}
+            hasDomainContext={dayBriefing?.has_domain_context ?? false}
+            hasEntries={dayBriefing?.has_entries ?? false}
+            onSelectEntry={handleBriefingSelect}
           />
         </div>
       ) : null}

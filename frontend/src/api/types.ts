@@ -638,6 +638,44 @@ export interface CalendarWorkspaceReadResponse {
   has_domain_context?: boolean;
 }
 
+/** One `kind` bucket inside a day-briefing butler group (e.g. `bill_due`). */
+export interface DayBriefingKindGroup {
+  kind: string;
+  entries: UnifiedCalendarEntry[];
+}
+
+/** All of one specialist butler's overlay entries for the day, bucketed by kind. */
+export interface DayBriefingButlerGroup {
+  source_butler: string;
+  /** Total entries across this butler's kinds. */
+  count: number;
+  kinds: DayBriefingKindGroup[];
+}
+
+/**
+ * Response payload for GET /api/calendar/workspace/day-briefing — the structured
+ * "tomorrow at a glance" card assembled from the cached overlay view for a
+ * single target date. No per-open LLM call, no generated prose.
+ *
+ * Honest empty-state: `has_domain_context` is `true` when at least one
+ * specialist wrote a contribution for the date (even with zero entries), so the
+ * card renders; `false` when no specialist contributed (or the view is
+ * absent/unreadable) so the FE renders "No domain context for this day". The
+ * read is fail-open and does NOT use the `aggregates_available` envelope.
+ */
+export interface CalendarDayBriefingResponse {
+  /** Target date (ISO `yyyy-MM-dd`). */
+  date: string;
+  /** IANA timezone the day window was anchored in. */
+  timezone: string;
+  has_domain_context: boolean;
+  /** `true` when at least one overlay entry exists for the date. */
+  has_entries: boolean;
+  groups: DayBriefingButlerGroup[];
+  /** Flat, chip-ready list of every overlay entry on the date. */
+  entries: UnifiedCalendarEntry[];
+}
+
 /** Sync capability flags in workspace metadata. */
 export interface CalendarWorkspaceCapabilitiesSync {
   global: boolean;

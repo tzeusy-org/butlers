@@ -742,6 +742,126 @@ async def test_workspace_user_view_excludes_overlay_contributions(app):
 
 
 # ---------------------------------------------------------------------------
+# Day-briefing card (GET /day-briefing) — structured "tomorrow at a glance"
+# reading the precomputed overlay view, grouped by butler/kind (bu-jj0b3n)
+# ---------------------------------------------------------------------------
+
+
+async def _get_day_briefing(app, *, date="2026-02-22", timezone=None):
+    params = {"date": date}
+    if timezone is not None:
+        params["timezone"] = timezone
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.get("/api/calendar/workspace/day-briefing", params=params)
+
+
+async def test_day_briefing_groups_by_butler_and_kind(app):
+    """A populated day returns a structured payload grouped by butler/kind, no LLM."""
+    finance = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=[
+            {
+                "kind": "bill_due",
+                "label": "Electric Co",
+                "priority": "high",
+                "meta": {"amount": 84.2, "currency": "SGD"},
+            },
+            {
+                "kind": "subscription_renewal",
+                "label": "Spotify",
+                "priority": "low",
+                "meta": {"amount": 12, "currency": "SGD"},
+            },
+        ],
+    )
+    health = _overlay_row(
+        butler="health",
+        date="2026-02-22",
+        entries=[
+            {"kind": "appointment", "label": "Dentist", "priority": "high", "meta": {}},
+        ],
+    )
+    # The cached view is read through ONE deterministic pool (the first
+    # calendar butler), returning every butler's rows — so both envelopes sit
+    # under that single reader key, exactly as the cross-schema UNION view yields.
+    app, _, mock_mgr = _build_app(
+        app,
+        overlay_rows={"finance": [finance, health]},
+        calendar_butlers=["finance", "health"],
+    )
+
+    resp = await _get_day_briefing(app, date="2026-02-22")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["date"] == "2026-02-22"
+    assert body["has_domain_context"] is True
+    assert body["has_entries"] is True
+    # Flat chip-ready list carries every underlying item.
+    assert len(body["entries"]) == 3
+    assert all(e["source_type"] == "overlay_contribution" for e in body["entries"])
+
+    # Grouped by butler (sorted), then kind (sorted).
+    groups = body["groups"]
+    assert [g["source_butler"] for g in groups] == ["finance", "health"]
+    finance_group = groups[0]
+    assert finance_group["count"] == 2
+    assert [k["kind"] for k in finance_group["kinds"]] == ["bill_due", "subscription_renewal"]
+    assert finance_group["kinds"][0]["entries"][0]["title"] == "Electric Co"
+    health_group = groups[1]
+    assert health_group["count"] == 1
+    assert health_group["kinds"][0]["kind"] == "appointment"
+
+    # NO per-open LLM call: the day-briefing read never touches MCP.
+    mock_mgr.get_client.assert_not_called()
+
+
+async def test_day_briefing_honest_empty_state_when_no_contribution(app):
+    """No specialist contributed for the date → has_domain_context false, empty groups."""
+    app, _, _ = _build_app(app, overlay_rows={}, calendar_butlers=["finance", "health"])
+
+    resp = await _get_day_briefing(app, date="2026-02-22")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["entries"] == []
+    assert body["groups"] == []
+    assert body["has_domain_context"] is False
+    assert body["has_entries"] is False
+
+
+async def test_day_briefing_empty_envelope_sets_domain_context(app):
+    """An in-range envelope with has_entries=false → domain context true, zero entries."""
+    empty = _overlay_row(butler="health", date="2026-02-22", entries=[], has_entries=False)
+    app, _, _ = _build_app(app, overlay_rows={"health": [empty]}, calendar_butlers=["health"])
+
+    resp = await _get_day_briefing(app, date="2026-02-22")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["entries"] == []
+    assert body["groups"] == []
+    assert body["has_domain_context"] is True
+    assert body["has_entries"] is False
+
+
+async def test_day_briefing_fail_open_on_missing_view(app):
+    """A missing/unreadable view degrades to the empty-state, never HTTP 500."""
+    app, _, _ = _build_app(app, overlays_raise=True, calendar_butlers=["finance"])
+
+    resp = await _get_day_briefing(app, date="2026-02-22")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["entries"] == []
+    assert body["groups"] == []
+    assert body["has_domain_context"] is False
+
+
+# ---------------------------------------------------------------------------
 # Sync all — triggers each target butler
 # ---------------------------------------------------------------------------
 

@@ -34,6 +34,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarButlerEventPreviewRequest,
     CalendarButlerEventPreviewResponse,
     CalendarConflictEntry,
+    CalendarDayBriefingResponse,
     CalendarProposalAcceptRequest,
     CalendarProposalActionResponse,
     CalendarSourceToggleRequest,
@@ -52,6 +53,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceSyncResponse,
     CalendarWorkspaceSyncTarget,
     CalendarWorkspaceWritableCalendar,
+    DayBriefingButlerGroup,
+    DayBriefingKindGroup,
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
@@ -867,6 +870,101 @@ async def _fetch_overlay_entries(
             has_domain_context = True
             entries.extend(projected_entries)
     return entries, has_domain_context
+
+
+def _group_overlay_entries_by_butler_kind(
+    entries: list[UnifiedCalendarEntry],
+) -> list[DayBriefingButlerGroup]:
+    """Group projected overlay entries by ``source_butler`` then ``kind``.
+
+    Produces the structured day-briefing grouping: one
+    :class:`DayBriefingButlerGroup` per contributing specialist (deterministic
+    butler order), each carrying its entries bucketed into
+    :class:`DayBriefingKindGroup` rows by ``kind``.  Entry order within a kind is
+    preserved from the input (already priority/index ordered by the projection).
+
+    The butler/kind keys are read from each entry's ``metadata`` (the projection
+    stamps ``source_butler`` and ``kind`` there), falling back to the entry's
+    ``source_butler`` / ``butler_name`` so grouping never drops an entry.
+    """
+    # Preserve first-seen order of butlers/kinds while bucketing.
+    by_butler: dict[str, dict[str, list[UnifiedCalendarEntry]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for entry in entries:
+        md = entry.metadata or {}
+        source_butler = (
+            md.get("source_butler") or entry.source_butler or entry.butler_name or "unknown"
+        )
+        kind = md.get("kind") or "other"
+        by_butler[str(source_butler)][str(kind)].append(entry)
+
+    groups: list[DayBriefingButlerGroup] = []
+    for butler_name in sorted(by_butler):
+        kind_map = by_butler[butler_name]
+        kind_groups = [
+            DayBriefingKindGroup(kind=kind, entries=kind_map[kind]) for kind in sorted(kind_map)
+        ]
+        count = sum(len(kg.entries) for kg in kind_groups)
+        groups.append(
+            DayBriefingButlerGroup(source_butler=butler_name, count=count, kinds=kind_groups)
+        )
+    return groups
+
+
+@router.get("/day-briefing", response_model=ApiResponse[CalendarDayBriefingResponse])
+async def get_day_briefing(
+    date: datetime = Query(
+        ..., description="Target calendar date (ISO-8601; the date component is used)"
+    ),
+    timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
+    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarDayBriefingResponse]:
+    """Return the structured "tomorrow at a glance" day-briefing card for a date.
+
+    Reads the precomputed ``calendar.v_overlay_contributions`` view for the
+    single target date and groups that date's overlay entries by butler/kind.
+    This is a pure read of the cached overlay view — **NO per-open LLM call** and
+    no cross-schema fan-out at request time (RFC-0020 no-LLM variant). Any prose
+    comes only from the deferred batched pre-render (cf5), never from here.
+
+    Honest empty-state: ``has_domain_context`` is ``True`` when at least one
+    specialist wrote a contribution for the date (even ``has_entries=false``), so
+    the FE renders the card; ``False`` when no specialist contributed, so the FE
+    renders "No domain context for this day". The read is fail-open — a missing
+    view / specialist table / query failure degrades to the empty-state, never an
+    HTTP 500, and does NOT use the ``aggregates_available`` Prometheus envelope.
+    """
+    display_tz: ZoneInfo | None = None
+    if timezone is not None:
+        try:
+            display_tz = ZoneInfo(timezone.strip())
+        except ZoneInfoNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+
+    # Anchor the day window in the same timezone the overlay projection uses so
+    # the date's contributions land in range (SGT default — matches the jobs'
+    # bucketing).
+    tz = display_tz or _OVERLAY_DEFAULT_TZ
+    target_date = date.date()
+    start_at = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
+    end_at = start_at + timedelta(days=1)
+
+    overlay_entries, has_domain_context = await _fetch_overlay_entries(
+        db, start=start_at, end=end_at, butlers=butlers, display_tz=display_tz
+    )
+
+    groups = _group_overlay_entries_by_butler_kind(overlay_entries)
+    data = CalendarDayBriefingResponse(
+        date=target_date.isoformat(),
+        timezone=tz.key,
+        has_domain_context=has_domain_context,
+        has_entries=bool(overlay_entries),
+        groups=groups,
+        entries=overlay_entries,
+    )
+    return ApiResponse[CalendarDayBriefingResponse](data=data)
 
 
 @router.get("", response_model=ApiResponse[CalendarWorkspaceReadResponse])

@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   findCalendarWorkspaceTime,
   getCalendarAccounts,
+  getCalendarDayBriefing,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
   getCalendarWorkspaceEntry,
@@ -116,6 +117,29 @@ export function useCalendarOverlays(
         start: params.start,
         end: params.end,
         timezone: params.timezone,
+      }),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? 60_000,
+  });
+}
+
+/**
+ * Fetch the structured "tomorrow at a glance" day-briefing card for a target
+ * date. Reads the precomputed overlay view grouped by butler/kind — NO per-open
+ * LLM call. Fail-open server-side: a missing cached view yields an honest
+ * empty-state (`has_domain_context: false`), never an error.
+ */
+export function useCalendarDayBriefing(
+  params: { date: string; timezone?: string; butlers?: string[] },
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  return useQuery({
+    queryKey: ["calendar-day-briefing", params],
+    queryFn: () =>
+      getCalendarDayBriefing({
+        date: params.date,
+        timezone: params.timezone,
+        butlers: params.butlers,
       }),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 60_000,

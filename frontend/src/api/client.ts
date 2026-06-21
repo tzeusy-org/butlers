@@ -35,6 +35,7 @@ import type {
   CalendarAccountsResponse,
   CalendarAuditParams,
   CalendarAuditResponse,
+  CalendarDayBriefingResponse,
   CalendarSourceToggleRequest,
   CalendarSourceToggleResponse,
   CalendarWorkspaceFindTimeRequest,
@@ -1110,6 +1111,28 @@ export function getCalendarWorkspace(
 /** Fetch calendar workspace metadata: capabilities, sources, and lanes. */
 export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspaceMetaResponse>> {
   return apiFetch<ApiResponse<CalendarWorkspaceMetaResponse>>("/calendar/workspace/meta");
+}
+
+/**
+ * Fetch the structured "tomorrow at a glance" day-briefing card for a target
+ * date. Reads the precomputed overlay view grouped by butler/kind — no per-open
+ * LLM call. Fail-open server-side: a missing/unreadable view yields an honest
+ * empty-state (`has_domain_context: false`), never an error.
+ */
+export function getCalendarDayBriefing(params: {
+  date: string;
+  timezone?: string;
+  butlers?: string[];
+}): Promise<ApiResponse<CalendarDayBriefingResponse>> {
+  const sp = new URLSearchParams();
+  sp.set("date", params.date);
+  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+  params.butlers?.forEach((butler) => {
+    if (butler) sp.append("butlers", butler);
+  });
+  return apiFetch<ApiResponse<CalendarDayBriefingResponse>>(
+    `/calendar/workspace/day-briefing?${sp.toString()}`,
+  );
 }
 
 /** Full-text search calendar events by title/description/location, ranked by relevance. */

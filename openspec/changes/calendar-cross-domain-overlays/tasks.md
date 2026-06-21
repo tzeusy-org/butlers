@@ -40,9 +40,9 @@
 
 ## 6. Day-briefing card read (split unit: briefing)
 
-- [ ] 6.1 Add the day-briefing card read returning a structured "tomorrow at a glance" payload from the cached overlay view (grouped by butler/kind), with NO per-open LLM call.
-- [ ] 6.2 Honest empty-state: `has_domain_context: false` ⇒ the card renders "No domain context for this day" rather than being silently omitted.
-- [ ] 6.3 Tests: day-card payload assembled from the view; structured (not prose); honest empty-state; no LLM call in the path.
+- [x] 6.1 Add the day-briefing card read returning a structured "tomorrow at a glance" payload from the cached overlay view (grouped by butler/kind), with NO per-open LLM call.
+- [x] 6.2 Honest empty-state: `has_domain_context: false` ⇒ the card renders "No domain context for this day" rather than being silently omitted.
+- [x] 6.3 Tests: day-card payload assembled from the view; structured (not prose); honest empty-state; no LLM call in the path.
 
 ## 7. Spec validation + quality gate
 

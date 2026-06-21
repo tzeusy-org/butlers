@@ -142,6 +142,60 @@ class CalendarWorkspaceReadResponse(BaseModel):
     has_domain_context: bool = False
 
 
+class DayBriefingKindGroup(BaseModel):
+    """One ``kind`` bucket inside a butler's day-briefing group.
+
+    Holds the overlay entries of a single ``kind`` (e.g. ``bill_due``,
+    ``appointment``) so the FE can render a labelled row of chips, each linking
+    to the underlying domain item.
+    """
+
+    kind: str
+    entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
+
+
+class DayBriefingButlerGroup(BaseModel):
+    """All of one specialist butler's overlay entries for the target date.
+
+    Grouped first by ``source_butler`` then by ``kind`` so the card renders a
+    section per domain (finance / travel / relationship / health) with chips
+    bucketed by kind.  ``count`` is the total entries across this butler's kinds.
+    """
+
+    source_butler: str
+    count: int
+    kinds: list[DayBriefingKindGroup] = Field(default_factory=list)
+
+
+class CalendarDayBriefingResponse(BaseModel):
+    """Structured "tomorrow at a glance" day-briefing card payload.
+
+    Assembled from the cached ``calendar.v_overlay_contributions`` view for a
+    single target date — NO per-open LLM call and no generated prose.  Entries
+    are grouped by butler/kind (``groups``) and also returned as a flat,
+    chip-ready list (``entries``).
+
+    Honest empty-state contract:
+    - ``has_domain_context=True`` when at least one specialist wrote a
+      contribution for the date (even ``has_entries=false`` → zero entries); the
+      FE renders the card with whatever entries exist.
+    - ``has_domain_context=False`` when no specialist contributed (jobs not run
+      or the view is absent) → the FE renders "No domain context for this day"
+      rather than omitting the section.
+
+    Fail-open: a missing/unreadable view degrades to ``entries=[]`` /
+    ``has_domain_context=false`` (never HTTP 500) and does NOT use the
+    ``aggregates_available`` Prometheus degraded envelope.
+    """
+
+    date: str
+    timezone: str
+    has_domain_context: bool = False
+    has_entries: bool = False
+    groups: list[DayBriefingButlerGroup] = Field(default_factory=list)
+    entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
+
+
 class CalendarWorkspaceSearchResponse(BaseModel):
     """Read payload for GET /api/calendar/workspace/search.
 

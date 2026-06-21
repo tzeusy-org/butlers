@@ -39,6 +39,7 @@ export {
   updateCondition,
   deleteCondition,
   getCalendarAccounts,
+  getCalendarDayBriefing,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
   getCalendarWorkspaceEntry,

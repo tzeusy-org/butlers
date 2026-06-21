@@ -28,6 +28,22 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
     error: null,
     data: { data: { entries: [], has_domain_context: false } },
   })),
+  useCalendarDayBriefing: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    isFetched: false,
+    error: null,
+    data: {
+      data: {
+        date: "2026-02-23",
+        timezone: "Asia/Singapore",
+        has_domain_context: false,
+        has_entries: false,
+        groups: [],
+        entries: [],
+      },
+    },
+  })),
   useCalendarWorkspaceMeta: vi.fn(),
   useCalendarWorkspaceAudit: vi.fn(() => ({
     isLoading: false,
