@@ -13,12 +13,18 @@ a cross-butler typeahead that wants *only people* and must never leak credential
 material.
 
 Identity is stored across `public.entities` (the canonical person/org graph) and
-`public.contact_info` (per-channel identifiers, where `secured = true` marks
-credential entries — passwords, tokens, OAuth refresh tokens — that
-`contacts-identity` already requires to be masked in dashboard responses).
-`public.contacts` is vestigial. A small read-only endpoint scoped to person
-entities, matching on name/aliases and on **non-secured** `contact_info` values,
-gives the People field exactly what it needs without exposing secrets.
+`relationship.entity_facts` (the non-secret channel-identifier triples —
+`has-email`, `has-phone`, `has-website`, `has-handle` — keyed by entity id). The
+retired `public.contacts` / `public.contact_info` tables were dropped (core_134 /
+core_115) and re-pointed onto `relationship.entity_facts`; secret credentials
+(passwords, tokens, OAuth refresh tokens) were carved out to `public.entity_info`
+with `secured = true`, which `contacts-identity` requires to be masked in
+dashboard responses. A guardrail contract
+(`tests/contracts/test_contacts_schema_retired.py`) fails RED if live SQL
+references the retired tables. A small read-only endpoint scoped to person
+entities, matching on name/aliases and on the **non-secret** identifier triples,
+gives the People field exactly what it needs without ever touching the secret
+store.
 
 ## What Changes
 
@@ -26,14 +32,16 @@ gives the People field exactly what it needs without exposing secrets.
   returns person entities from the identity layer for the calendar People field
   (and any future contact-link typeahead). It matches the query `q` against
   `public.entities.canonical_name`/`aliases` (filtered to `entity_type =
-  'person'`) and against **non-secured** `public.contact_info.value` rows,
-  joining back to the person entity. Each result carries the entity id, the
-  display name, and the matched non-secured identifier (if any) for chip
-  rendering.
-- **Secured info is excluded from matching and from results.** Rows with
-  `secured = true` in `public.contact_info` MUST NOT be searched and MUST NOT
-  appear in the response — consistent with the existing
-  `contacts-identity` masking requirement ("Secured contact info entries").
+  'person'`, excluding merged/soft-deleted) and against the entity's non-secret
+  channel identifiers — active `has-*` literal triples in
+  `relationship.entity_facts` — joining back to the person entity. Each result
+  carries the entity id, the display name, and the matched non-secret identifier
+  (if any) for chip rendering.
+- **Secret credentials are excluded from matching and from results.** The secret
+  store `public.entity_info` (`secured = true`) is NEVER read by this endpoint,
+  so secret values are neither searched nor returned — consistent with the
+  existing `contacts-identity` masking requirement ("Secured contact info
+  entries").
 - **Empty / no-match behavior is well-defined.** A blank `q` and a `q` with no
   matches both return an empty result list (HTTP 200), never an error — the
   typeahead simply shows nothing.
@@ -53,8 +61,9 @@ _None — this adds a read endpoint to an existing capability._
 
 - `contacts-identity`: adds a read-only `GET /api/contacts/search?q=` endpoint
   that returns person entities from the identity layer (`public.entities` +
-  non-secured `public.contact_info`) for contact-link typeahead, with secured
-  info excluded from both matching and results.
+  non-secret `has-*` triples in `relationship.entity_facts`) for contact-link
+  typeahead, with secret credentials (`public.entity_info`, `secured = true`)
+  excluded from both matching and results.
 
 ## Impact
 
@@ -63,7 +72,7 @@ _None — this adds a read endpoint to an existing capability._
 - **Spec (`openspec/specs/contacts-identity/spec.md`):** one ADDED requirement
   ("Contact search endpoint for typeahead").
 - **No DB schema change / no migration.** Reads `public.entities` and
-  `public.contact_info` as they already exist.
+  `relationship.entity_facts` as they already exist.
 - **No front-end change in this delta.** The calendar People-field UI lands
   under `module-calendar` (FE-only) and consumes this endpoint.
 
@@ -76,5 +85,6 @@ _None — this adds a read endpoint to an existing capability._
   fact-scored, all-entity-type finder) — left untouched.
 - Returning organizations or places from the new endpoint (person entities
   only).
-- Revealing or returning secured `contact_info` values (those remain behind the
-  existing dedicated reveal endpoint and are out of this endpoint's contract).
+- Revealing or returning secret `public.entity_info` values (those remain behind
+  the existing dedicated reveal endpoint and are out of this endpoint's
+  contract).
