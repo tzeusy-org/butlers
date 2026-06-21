@@ -360,6 +360,31 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             payee=payee,
         )
 
+    @_tool("bills")
+    async def compose_bills_digest(
+        sweep: dict[str, Any],
+        bills: dict[str, Any],
+        predictions: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Compose the weekly upcoming-bills digest from tool outputs.
+
+        Single source of truth for the upcoming-bills-check digest format and
+        early-exit logic — do NOT re-derive the message in prose. Pass the raw
+        outputs of reconcile_bills(), upcoming_bills(), and predict_bills()
+        straight through; this returns the ready-to-send message.
+
+        sweep: output of reconcile_bills() — keys auto_settled, candidates.
+        bills: output of upcoming_bills() — keys needs_action, autopay,
+          predicted, totals.
+        predictions: output of predict_bills() — key predictions (list).
+
+        Returns:
+          message: the fully composed Telegram-ready digest string, or null
+            when nothing is worth sending (early exit — send nothing and exit).
+        """
+        message = _bills.compose_upcoming_bills_digest(sweep, bills, predictions)
+        return {"message": message}
+
     # =================================================================
     # Spending tools
     # =================================================================
