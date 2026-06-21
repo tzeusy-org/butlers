@@ -70,6 +70,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
+import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabilityDialog";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { MeetingPrepRailContainer } from "@/components/calendar/MeetingPrepRail";
 import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsPanel";
@@ -2184,6 +2185,7 @@ export default function CalendarWorkspacePage() {
 
   const [sourcesDialogOpen, setSourcesDialogOpen] = useState(false);
   const [agendaOpen, setAgendaOpen] = useState(false);
+  const [portabilityOpen, setPortabilityOpen] = useState(false);
   // The backend is the source of truth for whether a calendar is enabled as a
   // sync source (``sync_enabled`` on each connected source). We mirror that into
   // a local Set for snappy optimistic toggling; it is re-seeded whenever meta
@@ -4111,6 +4113,12 @@ export default function CalendarWorkspacePage() {
             Agenda
           </PillButton>
           <PillButton
+            onClick={() => setPortabilityOpen(true)}
+            aria-label="Export or import calendar"
+          >
+            Export / Import
+          </PillButton>
+          <PillButton
             onClick={() => setSourcesDialogOpen(true)}
             aria-label="Configure sources"
           >
@@ -5277,6 +5285,27 @@ export default function CalendarWorkspacePage() {
           onClose={() => setAgendaOpen(false)}
         />
       ) : null}
+
+      <CalendarPortabilityDialog
+        open={portabilityOpen}
+        onOpenChange={setPortabilityOpen}
+        exportParams={{
+          view: view === "butler" ? "butler" : "user",
+          start: start.toISOString(),
+          end: end.toISOString(),
+          sources: sourcesForQuery,
+          status:
+            selectedStatus === "all"
+              ? undefined
+              : (selectedStatus as CalendarWorkspaceStatusFacet),
+          source_type:
+            selectedSourceType === "all"
+              ? undefined
+              : (selectedSourceType as UnifiedCalendarSourceType),
+        }}
+        rangeLabel={headlineLabel(range, start, end)}
+        importTargets={submittableCalendars}
+      />
 
       <Dialog open={sourcesDialogOpen} onOpenChange={setSourcesDialogOpen}>
         <DialogContent className="w-[90vw] max-w-[90vw] sm:w-[80vw] sm:max-w-[80vw] max-h-[80vh] overflow-y-auto">

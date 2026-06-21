@@ -829,6 +829,34 @@ export interface CalendarWorkspaceMetaResponse {
   primary_calendar_id: string | null;
 }
 
+/** Query parameters for GET /api/calendar/export/ics (one-shot .ics download). */
+export interface CalendarIcsExportParams {
+  view: CalendarWorkspaceView;
+  /** Inclusive ISO-8601 range start. */
+  start: string;
+  /** Exclusive ISO-8601 range end. */
+  end: string;
+  butlers?: string[];
+  sources?: string[];
+  status?: CalendarWorkspaceStatusFacet;
+  source_type?: UnifiedCalendarSourceType;
+}
+
+/** One event created from an imported .ics payload. */
+export interface CalendarIcsImportedEvent {
+  title: string;
+  start_at: string;
+  all_day: boolean;
+}
+
+/** Result of POST /api/calendar/import/ics (import-with-dedup). */
+export interface CalendarIcsImportResponse {
+  parsed: number;
+  imported: number;
+  skipped_duplicates: number;
+  imported_events: CalendarIcsImportedEvent[];
+}
+
 /** Per-account Google Calendar connector health state. */
 export type CalendarAccountHealthState =
   | "healthy"

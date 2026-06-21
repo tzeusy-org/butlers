@@ -33,6 +33,8 @@ import type {
   ButlerSkill,
   ButlerSummary,
   CalendarAccountsResponse,
+  CalendarIcsExportParams,
+  CalendarIcsImportResponse,
   CalendarAuditParams,
   CalendarAuditResponse,
   CalendarDayBriefingResponse,
@@ -1200,6 +1202,111 @@ export function syncCalendarWorkspace(
 /** List connected Google accounts joined with Google Calendar connector health. */
 export function getCalendarAccounts(): Promise<ApiResponse<CalendarAccountsResponse>> {
   return apiFetch<ApiResponse<CalendarAccountsResponse>>("/calendar/accounts");
+}
+
+/**
+ * Resolve an API path to an absolute URL. `API_BASE_URL` is usually relative
+ * (`/api`), but the ICS export/subscribe URLs must be absolute so they work in
+ * an `<a download>` and when copied into an external calendar app.
+ */
+function absoluteApiUrl(path: string): string {
+  if (/^https?:\/\//i.test(API_BASE_URL)) return `${API_BASE_URL}${path}`;
+  const origin =
+    typeof window !== "undefined" && window.location ? window.location.origin : "";
+  return `${origin}${API_BASE_URL}${path}`;
+}
+
+function calendarIcsExportSearchParams(
+  params: CalendarIcsExportParams,
+): URLSearchParams {
+  const sp = new URLSearchParams();
+  sp.set("view", params.view);
+  sp.set("start", params.start);
+  sp.set("end", params.end);
+  params.butlers?.forEach((butler) => {
+    if (butler) sp.append("butlers", butler);
+  });
+  params.sources?.forEach((source) => {
+    if (source) sp.append("sources", source);
+  });
+  if (params.status != null) sp.set("status", params.status);
+  if (params.source_type != null) sp.set("source_type", params.source_type);
+  return sp;
+}
+
+/**
+ * Build the absolute download URL for the one-shot `.ics` export
+ * (`GET /api/calendar/export/ics`). Mirrors the workspace `view` / range /
+ * facet filters so the export matches what the user currently sees.
+ */
+export function calendarIcsExportUrl(params: CalendarIcsExportParams): string {
+  return absoluteApiUrl(
+    `/calendar/export/ics?${calendarIcsExportSearchParams(params).toString()}`,
+  );
+}
+
+/**
+ * Absolute `https`/`http` URL of the live subscribe feed
+ * (`GET /api/calendar/subscribe.ics`) — a read-only, self-refreshing ICS feed an
+ * external calendar app can subscribe to.
+ */
+export function calendarSubscribeUrl(): string {
+  return absoluteApiUrl("/calendar/subscribe.ics");
+}
+
+/**
+ * `webcal://` form of {@link calendarSubscribeUrl}. Most desktop/mobile calendar
+ * apps register the `webcal:` scheme and add the feed as a live subscription
+ * when the user opens this URL.
+ */
+export function calendarSubscribeWebcalUrl(): string {
+  return calendarSubscribeUrl().replace(/^https?:\/\//i, "webcal://");
+}
+
+/**
+ * Import an uploaded `.ics` file into a calendar-enabled butler, deduped against
+ * existing workspace entries (`POST /api/calendar/import/ics`). Sends multipart
+ * form-data; the browser sets the `Content-Type` boundary, so this does not go
+ * through {@link apiFetch} (which forces a JSON content type).
+ */
+export async function importCalendarIcs(args: {
+  file: File;
+  butlerName: string;
+  calendarId?: string | null;
+}): Promise<ApiResponse<CalendarIcsImportResponse>> {
+  const form = new FormData();
+  form.append("file", args.file);
+  form.append("butler_name", args.butlerName);
+  if (args.calendarId) form.append("calendar_id", args.calendarId);
+
+  const response = await fetch(`${API_BASE_URL}/calendar/import/ics`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+    body: form,
+  });
+
+  if (!response.ok) {
+    let code = "UNKNOWN_ERROR";
+    let message = response.statusText || "Import failed";
+    try {
+      const body = await response.json();
+      if (body.error) {
+        code = (body as ErrorResponse).error.code;
+        message = (body as ErrorResponse).error.message;
+      } else if (typeof body.detail === "string") {
+        message = body.detail;
+      } else if (Array.isArray(body.detail) && body.detail.length > 0) {
+        message = body.detail
+          .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
+          .join("; ");
+      }
+    } catch {
+      // Body is not JSON — keep the status-derived default.
+    }
+    throw new ApiError(code, message, response.status);
+  }
+
+  return (await response.json()) as ApiResponse<CalendarIcsImportResponse>;
 }
 
 /** Enable or disable a single calendar as a sync source. */
