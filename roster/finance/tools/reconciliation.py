@@ -33,6 +33,12 @@ from butlers.tools.finance.bills import _mirror_bill_to_spo
 LOOKBACK_DAYS = 45  # days before anchor that a payment can arrive early
 GRACE_DAYS = 7  # days after anchor that a payment can arrive late
 _AMOUNT_TOLERANCE_FLOOR = Decimal("1.00")  # minimum tolerance floor
+# Specificity guard: a single token (or substring) shorter than this is too
+# generic to anchor a payee match on its own. Without it, a very short payee
+# name (e.g. "AT", "BP") matches unrelated payees — "AT" is a whole-token
+# subset of "AT&T Wireless" and a substring of "Seattle Water". Real bank
+# payees that must keep matching are >= 3 chars ("DBS", "UOB", "HSBC", ...).
+_MIN_PAYEE_TOKEN_LEN = 3
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +72,45 @@ def _normalize_payee(name: str) -> str:
     return s
 
 
+def _is_specific_tokens(tokens: set[str]) -> bool:
+    """Whether a token set is specific enough to anchor a subset match.
+
+    A multi-token set is always specific. A single-token set is only specific
+    when that lone token is at least ``_MIN_PAYEE_TOKEN_LEN`` chars — this is
+    what stops a very short payee (e.g. "AT", "BP") from matching unrelated
+    payees that merely contain that token.
+    """
+    if len(tokens) == 1:
+        return len(next(iter(tokens))) >= _MIN_PAYEE_TOKEN_LEN
+    return len(tokens) >= 1
+
+
+def _specific_subset_match(a: set[str], b: set[str]) -> bool:
+    """True if one token set is a whole-token subset of the other and the
+    contained (smaller) set is specific enough to trust."""
+    if not a or not b:
+        return False
+    if a <= b:
+        return _is_specific_tokens(a)
+    if b <= a:
+        return _is_specific_tokens(b)
+    return False
+
+
+def _specific_containment(a: str, b: str) -> bool:
+    """True if the shorter of two normalized strings is a substring of the
+    other and is long enough (``_MIN_PAYEE_TOKEN_LEN``) to anchor a match.
+
+    Substring containment implies the contained string is no longer than its
+    container, so guarding the shorter string covers both directions and blocks
+    spurious hits like "at" inside "se[at]tle water".
+    """
+    if not a or not b:
+        return False
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return len(shorter) >= _MIN_PAYEE_TOKEN_LEN and shorter in longer
+
+
 def _payee_match(
     bill_payee: str,
     txn_merchant: str,
@@ -91,21 +136,23 @@ def _payee_match(
     if norm_bill == norm_txn or norm_bill == norm_alt:
         return True, True
 
-    # Whole-token subset match (spec: "one contains the other as a whole-token substring")
+    # Whole-token subset match (spec: "one contains the other as a whole-token substring").
+    # Guarded by a specificity check so a single very short token (e.g. "at", "bp")
+    # cannot anchor a cross-payee match against unrelated multi-token payees.
     bill_tokens = set(norm_bill.split()) - {""}
     txn_tokens = set(norm_txn.split()) - {""}
     alt_tokens = set(norm_alt.split()) - {""}
 
-    if bill_tokens:
-        if bill_tokens <= txn_tokens or txn_tokens <= bill_tokens:
-            return True, False
-        if alt_tokens and (bill_tokens <= alt_tokens or alt_tokens <= bill_tokens):
-            return True, False
-
-    # Raw string containment as a conservative fallback
-    if norm_bill and (norm_bill in norm_txn or norm_txn in norm_bill):
+    if _specific_subset_match(bill_tokens, txn_tokens):
         return True, False
-    if norm_alt and norm_bill and (norm_bill in norm_alt or norm_alt in norm_bill):
+    if _specific_subset_match(bill_tokens, alt_tokens):
+        return True, False
+
+    # Raw string containment as a conservative fallback (same specificity guard:
+    # the contained substring must be long enough to be meaningful).
+    if _specific_containment(norm_bill, norm_txn):
+        return True, False
+    if norm_alt and _specific_containment(norm_bill, norm_alt):
         return True, False
 
     return False, False
