@@ -11,6 +11,7 @@ Eligible (pre-tool-call systemic failures):
 - Runtime binary missing or unregistered runtime type (``FileNotFoundError``,
   ``ValueError`` with runtime mismatch message)
 - Provider/auth failures (``RuntimeError`` with recognized auth/provider message patterns)
+- OpenCode CLI ``APIError`` payloads flagged by the adapter as pre-tool-call
 - Rate-limit before work starts (``RuntimeError`` with recognized rate-limit message)
 - MCP discovery failure before any tool was executed (``MCPToolDiscoveryError``
   when ``tool_calls`` is empty)
@@ -88,7 +89,6 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "service unavailable",
     "backend unavailable",
     "no such model",
-    "apierror",
     "api error",
     # OpenCode-specific structured errors (exit 0 with stderr)
     "providermodelnotfounderror",
@@ -342,6 +342,17 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 "before any tool call was executed",
             )
 
+        # OpenCode may surface provider-side failures as a structured
+        # ``APIError`` envelope that has no stable vendor-specific wording.
+        # Trust it only when the adapter explicitly marked the failure as
+        # pre-tool-call and Gate 1 saw no captured MCP calls.
+        if _is_opencode_pre_tool_call_api_error(ctx, exc_msg):
+            logger.debug("Failover eligible: RuntimeError — OpenCode pre-tool-call APIError")
+            return FailoverDecision(
+                eligible=True,
+                reason="provider_api_error: OpenCode APIError before session work started",
+            )
+
         # Provider / auth failures
         if _matches_any(exc_msg, _PROVIDER_AUTH_MARKERS):
             logger.debug("Failover eligible: RuntimeError — provider/auth failure")
@@ -422,6 +433,16 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
 def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
     """Return True when any marker substring appears in text (already lowercased)."""
     return any(marker in text for marker in markers)
+
+
+def _is_opencode_pre_tool_call_api_error(ctx: FailoverContext, exc_msg: str) -> bool:
+    """Return True for OpenCode APIError envelopes raised before any tool work."""
+    process_info = ctx.process_info or {}
+    return (
+        process_info.get("runtime_type") == "opencode"
+        and process_info.get("is_pre_tool_call") is True
+        and "apierror" in exc_msg
+    )
 
 
 def _is_mcp_tool_discovery_error(exc: BaseException) -> bool:

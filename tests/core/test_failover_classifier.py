@@ -290,7 +290,6 @@ class TestProviderAuthErrorsEligible:
             "backend unavailable",
             "model not found in catalog",
             "no such model: claude-opus-99",
-            "OpenCode CLI exited with code 1: APIError: provider rejected the request",
             "OpenCode CLI exited with code 1: provider request failed upstream",
         ],
     )
@@ -310,6 +309,45 @@ class TestProviderAuthErrorsEligible:
         """RuntimeError with 'network error' is eligible."""
         dec = classify_failover_eligibility(_ctx(RuntimeError("network error: timeout connecting")))
         assert _eligible(dec)
+
+    def test_opencode_pre_tool_call_api_error_is_eligible(self) -> None:
+        """OpenCode APIError envelopes are provider failures when marked pre-tool-call."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "OpenCode CLI exited with code 1: APIError: provider rejected the request"
+                ),
+                process_info={"runtime_type": "opencode", "is_pre_tool_call": True},
+            )
+        )
+
+        assert _eligible(dec), dec.reason
+        assert "provider_api_error" in dec.reason
+
+    def test_opencode_pre_tool_call_api_error_does_not_require_cli_message(self) -> None:
+        """Adapter metadata, not message prefix wording, identifies OpenCode failures."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("APIError: provider rejected the request"),
+                process_info={"runtime_type": "opencode", "is_pre_tool_call": True},
+            )
+        )
+
+        assert _eligible(dec), dec.reason
+        assert "provider_api_error" in dec.reason
+
+    def test_opencode_api_error_without_pre_tool_call_metadata_is_default_closed(self) -> None:
+        """Generic APIError text is not enough without adapter pre-tool-call metadata."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "OpenCode CLI exited with code 1: APIError: provider rejected the request"
+                )
+            )
+        )
+
+        assert _suppressed(dec)
+        assert "default-closed" in dec.reason
 
 
 # ---------------------------------------------------------------------------

@@ -335,6 +335,14 @@ _MIGRATION_NOISE = (
             "402: payment required",
             id="scalar-name-detail",
         ),
+        # OpenCode APIError payloads can put the useful message beside data.
+        pytest.param(
+            "",
+            json.dumps({"type": "error", "error": {"name": "APIError", "message": "quota hit"}}),
+            1,
+            "APIError: quota hit",
+            id="nested-apierror-message-fallback",
+        ),
         # Billing rejection messages under APIError.data are preserved for failover matching.
         pytest.param(
             "",
