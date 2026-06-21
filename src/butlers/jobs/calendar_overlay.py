@@ -86,6 +86,13 @@ _TRAVEL_ACTIVE_STATUSES = ("planned", "active")
 #: is written per date so empty dates carry an honest ``has_entries=false``.
 RELATIONSHIP_OVERLAY_LOOKAHEAD_DAYS = 30
 
+#: How many days ahead (inclusive of today) the health job writes envelopes for.
+#: Medication reminders recur daily, so a tighter operational window (matching
+#: finance's near-term cadence) keeps the daily-reminder volume sensible; the
+#: rolling window advances every run, so appointments scheduled further out come
+#: into view as their date approaches.
+HEALTH_OVERLAY_LOOKAHEAD_DAYS = 14
+
 
 # ---------------------------------------------------------------------------
 # Envelope schema
@@ -811,6 +818,171 @@ async def run_relationship_calendar_overlay_contribution(
         "birthday_entries": birthday_count,
         "important_date_entries": important_date_count,
         "follow_up_entries": follow_up_count,
+        "total_entries": total_entries,
+        "pruned": pruned,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Health overlay contribution job
+# ---------------------------------------------------------------------------
+
+
+def _appointment_priority(days_until: int) -> str:
+    """Appointment urgency: same/next day high, within 3 days medium, else low."""
+    if days_until <= 1:
+        return "high"
+    if days_until <= 3:
+        return "medium"
+    return "low"
+
+
+async def run_health_calendar_overlay_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Health butler calendar overlay contribution job (deterministic, zero LLM).
+
+    Queries the health schema's own ``facts`` table (the butler's memory-backed
+    store of record for medications and appointments — the legacy relational
+    ``health.medications`` table is orphaned) and writes per-date overlay
+    envelopes under ``calendar/overlay/<date>``:
+
+    - ``appointment`` entries for appointment temporal facts (``predicate =
+      'appointment'``) whose ``valid_at`` falls within the lookahead window,
+      bucketed onto the SGT calendar date they land on.
+    - ``medication_reminder`` entries for active medication property facts
+      (``predicate = 'medication'``, ``metadata->>'active' = true``). Medications
+      recur daily, so one reminder is emitted per active medication on **every**
+      date in the lookahead window.
+
+    Each date in the window gets an envelope (``has_entries=false`` when empty),
+    entries are ordered priority-descending, writes upsert via ``state_set``, and
+    stale past-date entries are pruned. No LLM session is spawned.
+    """
+    del job_args
+
+    today = today_sgt()
+    today_str = today.isoformat()
+
+    # SGT-midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
+    # ``window_end`` is the exclusive SGT-midnight after the last lookahead date,
+    # so every in-window appointment buckets onto a date in [today, today+lookahead].
+    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
+    window_start = sgt_midnight.astimezone(UTC)
+    window_end = (sgt_midnight + timedelta(days=HEALTH_OVERLAY_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
+
+    # --- Appointments: temporal facts whose valid_at lands within the window ---
+    appointment_rows = await pool.fetch(
+        """
+        SELECT id, content, valid_at, metadata
+        FROM facts
+        WHERE predicate = 'appointment'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND valid_at >= $1
+          AND valid_at < $2
+        ORDER BY valid_at ASC
+        """,
+        window_start,
+        window_end,
+    )
+
+    # --- Active medications: property facts that recur daily ---
+    medication_rows = await pool.fetch(
+        """
+        SELECT id,
+               metadata->>'name' AS name,
+               metadata->>'dosage' AS dosage,
+               metadata->>'frequency' AS frequency,
+               metadata->'schedule' AS schedule
+        FROM facts
+        WHERE predicate = 'medication'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND (metadata->>'active')::boolean = true
+        ORDER BY metadata->>'name'
+        """,
+    )
+
+    entries_by_date: dict[str, list[OverlayEntry]] = {}
+
+    def _add(date_str: str, entry: OverlayEntry) -> None:
+        entries_by_date.setdefault(date_str, []).append(entry)
+
+    appointment_count = 0
+    for row in appointment_rows:
+        valid_at: datetime = row["valid_at"]
+        if valid_at is None or not (window_start <= valid_at < window_end):
+            continue
+        date_str = _sgt_date_str(valid_at)
+        days_until = (date_cls.fromisoformat(date_str) - today).days
+        meta = dict(row["metadata"] or {})
+        title = meta.get("title") or meta.get("name") or row["content"] or "Appointment"
+        entry: OverlayEntry = {
+            "kind": "appointment",
+            "label": str(title),
+            "priority": _appointment_priority(days_until),
+            "meta": {
+                "appointment_id": str(row["id"]),
+                "starts_at": valid_at.isoformat(),
+                "location": meta.get("location"),
+                "provider": meta.get("provider") or meta.get("doctor"),
+                "notes": meta.get("notes"),
+            },
+        }
+        _add(date_str, entry)
+        appointment_count += 1
+
+    # Medication reminders recur daily across the whole window.
+    medication_count = len(medication_rows)
+    if medication_count:
+        for offset in range(HEALTH_OVERLAY_LOOKAHEAD_DAYS + 1):
+            date_str = (today + timedelta(days=offset)).isoformat()
+            for row in medication_rows:
+                name = row["name"] or "Medication"
+                _add(
+                    date_str,
+                    {
+                        "kind": "medication_reminder",
+                        "label": str(name),
+                        "priority": "low",
+                        "meta": {
+                            "medication_id": str(row["id"]),
+                            "dosage": row["dosage"],
+                            "frequency": row["frequency"],
+                            "schedule": row["schedule"] or [],
+                        },
+                    },
+                )
+
+    dates_written, total_entries = await write_overlay_envelopes(
+        pool,
+        butler="health",
+        today=today,
+        lookahead_days=HEALTH_OVERLAY_LOOKAHEAD_DAYS,
+        entries_by_date=entries_by_date,
+    )
+
+    pruned = await prune_old_overlay_contributions(pool, today=today_str)
+
+    logger.info(
+        "Health calendar overlay contribution: date=%s dates_written=%d "
+        "appointments=%d medications=%d entries=%d pruned=%d",
+        today_str,
+        dates_written,
+        appointment_count,
+        medication_count,
+        total_entries,
+        pruned,
+    )
+
+    return {
+        "butler": "health",
+        "date": today_str,
+        "dates_written": dates_written,
+        "appointment_entries": appointment_count,
+        "medication_reminder_medications": medication_count,
         "total_entries": total_entries,
         "pruned": pruned,
     }
