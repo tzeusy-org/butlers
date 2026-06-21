@@ -487,6 +487,16 @@ async def _run_travel_briefing_contribution_job(
     return await run_travel_briefing_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_travel_calendar_overlay_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run travel butler calendar overlay contribution job (deterministic, zero LLM)."""
+    from butlers.jobs.calendar_overlay import run_travel_calendar_overlay_contribution
+
+    return await run_travel_calendar_overlay_contribution(pool=pool, job_args=job_args)
+
+
 async def _run_travel_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1093,6 +1103,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         },
         "travel": {
             "daily_briefing_contribution": _run_travel_briefing_contribution_job,
+            "calendar_overlay_contribution": _run_travel_calendar_overlay_contribution_job,
             "insight_scan": _run_travel_insight_scan_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },

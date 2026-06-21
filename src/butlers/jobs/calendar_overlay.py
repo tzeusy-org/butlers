@@ -5,7 +5,7 @@ envelopes for the calendar workspace's ``view=overlays`` read path. Each
 contributing specialist butler (finance, travel, relationship, health) writes
 per-date envelopes under state key ``calendar/overlay/<YYYY-MM-DD>`` carrying
 domain-relevant entries (``bill_due``, ``subscription_renewal``, ``departure``,
-``birthday``, ``appointment``, ...).
+``arrival``, ``check_in``, ``check_out``, ``birthday``, ``appointment``, ...).
 
 The cross-schema view ``calendar.v_overlay_contributions`` (migration
 ``core_140``) unions these ``calendar/overlay/%`` keys for the workspace read
@@ -36,14 +36,14 @@ Design reference: openspec/changes/calendar-cross-domain-overlays/
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
-from datetime import timedelta
 from typing import Any, TypedDict
 
 import asyncpg
 
 from butlers.core.state import state_delete, state_list, state_set
-from butlers.jobs.briefing import today_sgt
+from butlers.jobs.briefing import SGT, today_sgt
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,17 @@ OVERLAY_RETENTION_DAYS = 0
 
 #: Priority-descending sort rank. Lower rank sorts first.
 _PRIORITY_RANK: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
+
+#: How many days ahead (inclusive of today) the travel job writes envelopes for.
+#: Travel itineraries are planned further out than monthly bills, so the travel
+#: lookahead is wider than finance's. One envelope is written per date so empty
+#: dates carry an honest ``has_entries=false`` rather than being absent.
+TRAVEL_OVERLAY_LOOKAHEAD_DAYS = 30
+
+#: Trip lifecycle statuses whose bookings surface on the overlay. Matches the
+#: travel briefing contribution job (``planned``/``active`` only — completed and
+#: cancelled trips are not actionable on a forward-looking overlay).
+_TRAVEL_ACTIVE_STATUSES = ("planned", "active")
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +324,249 @@ async def run_finance_calendar_overlay_contribution(
         "dates_written": dates_written,
         "bill_due_entries": len(bills_rows),
         "subscription_renewal_entries": len(sub_rows),
+        "total_entries": total_entries,
+        "pruned": pruned,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Travel overlay contribution job
+# ---------------------------------------------------------------------------
+
+
+def _sgt_date_str(ts: datetime) -> str:
+    """Return the SGT calendar date (``YYYY-MM-DD``) a tz-aware timestamp falls on."""
+    return ts.astimezone(SGT).date().isoformat()
+
+
+def _departure_priority(days_until: int) -> str:
+    """Departure urgency: same/next day is high, within 3 days medium, else low."""
+    if days_until <= 1:
+        return "high"
+    if days_until <= 3:
+        return "medium"
+    return "low"
+
+
+def _checkin_priority(days_until: int) -> str:
+    """Check-in urgency mirrors departure: same/next day high, within 3 medium."""
+    return _departure_priority(days_until)
+
+
+async def run_travel_calendar_overlay_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Travel butler calendar overlay contribution job (deterministic, zero LLM).
+
+    Queries the travel schema's own ``legs`` and ``accommodations`` tables (joined
+    to ``trips`` for active/planned status) for itinerary events falling within the
+    rolling lookahead window and writes per-date overlay envelopes under
+    ``calendar/overlay/<date>``:
+
+    - ``departure`` entries for transport legs departing on a date in the window.
+    - ``arrival`` entries for transport legs arriving on a date in the window.
+    - ``check_in`` entries for accommodations whose check-in lands in the window.
+    - ``check_out`` entries for accommodations whose check-out lands in the window.
+
+    Timestamps are ``TIMESTAMPTZ``; each event is bucketed onto the SGT calendar
+    date it falls on. Each date in the window gets an envelope
+    (``has_entries=false`` when empty), entries are ordered priority-descending,
+    writes upsert via ``state_set``, and stale past-date entries are pruned. No
+    LLM session is spawned.
+    """
+    del job_args
+
+    today = today_sgt()
+    today_str = today.isoformat()
+
+    # SGT-midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
+    # ``window_end`` is the exclusive SGT-midnight after the last lookahead date,
+    # so every in-window timestamp buckets onto a date in [today, today+lookahead].
+    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
+    window_start = sgt_midnight.astimezone(UTC)
+    window_end = (sgt_midnight + timedelta(days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
+
+    # --- Transport legs departing or arriving within the window ---
+    leg_rows = await pool.fetch(
+        """
+        SELECT l.type, l.carrier, l.departure_city, l.arrival_city,
+               l.departure_at, l.arrival_at, l.pnr, l.seat, l.confirmation_number,
+               t.name AS trip_name, t.id AS trip_id
+        FROM travel.legs l
+        JOIN travel.trips t ON t.id = l.trip_id
+        WHERE t.status = ANY($3::text[])
+          AND (
+            (l.departure_at >= $1 AND l.departure_at < $2)
+            OR (l.arrival_at >= $1 AND l.arrival_at < $2)
+          )
+        ORDER BY l.departure_at ASC
+        """,
+        window_start,
+        window_end,
+        list(_TRAVEL_ACTIVE_STATUSES),
+    )
+
+    # --- Accommodations checking in or out within the window ---
+    accom_rows = await pool.fetch(
+        """
+        SELECT a.type, a.name, a.address, a.check_in, a.check_out,
+               a.confirmation_number, t.name AS trip_name, t.id AS trip_id
+        FROM travel.accommodations a
+        JOIN travel.trips t ON t.id = a.trip_id
+        WHERE t.status = ANY($3::text[])
+          AND (
+            (a.check_in >= $1 AND a.check_in < $2)
+            OR (a.check_out >= $1 AND a.check_out < $2)
+          )
+        ORDER BY a.check_in ASC NULLS LAST
+        """,
+        window_start,
+        window_end,
+        list(_TRAVEL_ACTIVE_STATUSES),
+    )
+
+    entries_by_date: dict[str, list[OverlayEntry]] = {}
+    departure_count = arrival_count = check_in_count = check_out_count = 0
+
+    def _add(date_str: str, entry: OverlayEntry) -> None:
+        entries_by_date.setdefault(date_str, []).append(entry)
+
+    def _in_window(ts: datetime | None) -> bool:
+        return ts is not None and window_start <= ts < window_end
+
+    for row in leg_rows:
+        trip_id = str(row["trip_id"])
+        carrier = row["carrier"] or row["type"]
+
+        if _in_window(row["departure_at"]):
+            date_str = _sgt_date_str(row["departure_at"])
+            days_until = (date_cls.fromisoformat(date_str) - today).days
+            origin = row["departure_city"] or "?"
+            dest = row["arrival_city"] or "?"
+            _add(
+                date_str,
+                {
+                    "kind": "departure",
+                    "label": f"{origin} → {dest}",
+                    "priority": _departure_priority(days_until),
+                    "meta": {
+                        "trip_id": trip_id,
+                        "trip_name": row["trip_name"],
+                        "type": row["type"],
+                        "carrier": carrier,
+                        "departure_city": row["departure_city"],
+                        "arrival_city": row["arrival_city"],
+                        "departure_at": row["departure_at"].isoformat(),
+                        "arrival_at": row["arrival_at"].isoformat(),
+                        "pnr": row["pnr"],
+                        "seat": row["seat"],
+                        "confirmation_number": row["confirmation_number"],
+                    },
+                },
+            )
+            departure_count += 1
+
+        if _in_window(row["arrival_at"]):
+            date_str = _sgt_date_str(row["arrival_at"])
+            days_until = (date_cls.fromisoformat(date_str) - today).days
+            dest = row["arrival_city"] or "?"
+            _add(
+                date_str,
+                {
+                    "kind": "arrival",
+                    "label": f"Arrive {dest}",
+                    "priority": "medium" if days_until <= 1 else "low",
+                    "meta": {
+                        "trip_id": trip_id,
+                        "trip_name": row["trip_name"],
+                        "type": row["type"],
+                        "carrier": carrier,
+                        "arrival_city": row["arrival_city"],
+                        "arrival_at": row["arrival_at"].isoformat(),
+                        "pnr": row["pnr"],
+                    },
+                },
+            )
+            arrival_count += 1
+
+    for row in accom_rows:
+        trip_id = str(row["trip_id"])
+        name = row["name"] or row["type"]
+
+        if _in_window(row["check_in"]):
+            date_str = _sgt_date_str(row["check_in"])
+            days_until = (date_cls.fromisoformat(date_str) - today).days
+            _add(
+                date_str,
+                {
+                    "kind": "check_in",
+                    "label": f"Check-in: {name}",
+                    "priority": _checkin_priority(days_until),
+                    "meta": {
+                        "trip_id": trip_id,
+                        "trip_name": row["trip_name"],
+                        "accommodation_type": row["type"],
+                        "name": row["name"],
+                        "address": row["address"],
+                        "check_in": row["check_in"].isoformat(),
+                        "confirmation_number": row["confirmation_number"],
+                    },
+                },
+            )
+            check_in_count += 1
+
+        if _in_window(row["check_out"]):
+            date_str = _sgt_date_str(row["check_out"])
+            days_until = (date_cls.fromisoformat(date_str) - today).days
+            _add(
+                date_str,
+                {
+                    "kind": "check_out",
+                    "label": f"Check-out: {name}",
+                    "priority": "medium" if days_until <= 1 else "low",
+                    "meta": {
+                        "trip_id": trip_id,
+                        "trip_name": row["trip_name"],
+                        "accommodation_type": row["type"],
+                        "name": row["name"],
+                        "check_out": row["check_out"].isoformat(),
+                    },
+                },
+            )
+            check_out_count += 1
+
+    dates_written, total_entries = await write_overlay_envelopes(
+        pool,
+        butler="travel",
+        today=today,
+        lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
+        entries_by_date=entries_by_date,
+    )
+
+    pruned = await prune_old_overlay_contributions(pool, today=today_str)
+
+    logger.info(
+        "Travel calendar overlay contribution: date=%s dates_written=%d "
+        "departures=%d arrivals=%d check_ins=%d check_outs=%d entries=%d pruned=%d",
+        today_str,
+        dates_written,
+        departure_count,
+        arrival_count,
+        check_in_count,
+        check_out_count,
+        total_entries,
+        pruned,
+    )
+
+    return {
+        "butler": "travel",
+        "date": today_str,
+        "dates_written": dates_written,
+        "departure_entries": departure_count,
+        "arrival_entries": arrival_count,
+        "check_in_entries": check_in_count,
+        "check_out_entries": check_out_count,
         "total_entries": total_entries,
         "pruned": pruned,
     }
