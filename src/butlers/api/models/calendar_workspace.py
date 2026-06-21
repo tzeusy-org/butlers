@@ -8,12 +8,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-CalendarWorkspaceView = Literal["user", "butler"]
+CalendarWorkspaceView = Literal["user", "butler", "proposals"]
 UnifiedCalendarSourceType = Literal[
     "provider_event",
     "scheduled_task",
     "butler_reminder",
     "manual_butler_event",
+    "proposed_event",
 ]
 CalendarSyncState = Literal["fresh", "stale", "syncing", "failed"]
 

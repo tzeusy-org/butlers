@@ -18,10 +18,10 @@
 
 ## 4. `proposals` workspace projection view
 
-- [ ] 4.1 Add `"proposed_event"` to the `UnifiedCalendarSourceType` literal in `src/butlers/api/models/calendar_workspace.py`
-- [ ] 4.2 Widen the `view` query pattern in `get_workspace` to accept `proposals` and project `calendar_event_proposals` rows with `status='pending'` into `UnifiedCalendarEntry` (tagged `source_type="proposed_event"`, `editable=false`, with `confidence`/`source_snippet`/provenance link in `metadata`)
-- [ ] 4.3 Make the read fail-open: an absent table or query failure returns an empty entries list, never HTTP 500
-- [ ] 4.4 Tests: `view=proposals` returns pending proposals only (not accepted/dismissed); fields/metadata populated; fail-open on missing table
+- [x] 4.1 Add `"proposed_event"` to the `UnifiedCalendarSourceType` literal in `src/butlers/api/models/calendar_workspace.py`
+- [x] 4.2 Widen the `view` query pattern in `get_workspace` to accept `proposals` and project `calendar_event_proposals` rows with `status='pending'` into `UnifiedCalendarEntry` (tagged `source_type="proposed_event"`, `editable=false`, with `confidence`/`source_snippet`/provenance link in `metadata`)
+- [x] 4.3 Make the read fail-open: an absent table or query failure returns an empty entries list, never HTTP 500
+- [x] 4.4 Tests: `view=proposals` returns pending proposals only (not accepted/dismissed); fields/metadata populated; fail-open on missing table
 
 ## 5. Accept / dismiss endpoints
 

@@ -42,6 +42,8 @@ from butlers.api.models.calendar_workspace import (
     UnifiedCalendarEntry,
 )
 from butlers.api.read_models.calendar_workspace_v1 import (
+    CalendarProposalRow,
+    query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
@@ -508,9 +510,94 @@ def _normalize_entry(
     )
 
 
+def _normalize_proposal_entry(
+    proposal: CalendarProposalRow,
+    *,
+    display_tz: ZoneInfo | None,
+) -> UnifiedCalendarEntry:
+    """Project a pending ``calendar_event_proposals`` row into a unified entry.
+
+    The entry is tagged ``source_type="proposed_event"`` and is non-editable in
+    place (``editable=False``).  The proposal provenance — ``confidence``,
+    ``source_snippet`` and the ``source_event_id`` link — is carried in
+    ``metadata`` for the proposals-lane UX (confidence chip + provenance).
+    """
+    start_at = _coerce_datetime(proposal.start_at)
+    end_at = _coerce_datetime(proposal.end_at)
+    if start_at is None or end_at is None:
+        raise ValueError("proposal row missing start/end timestamps")
+
+    if display_tz is not None:
+        start_at = start_at.astimezone(display_tz)
+        end_at = end_at.astimezone(display_tz)
+        timezone_name = display_tz.key
+    else:
+        timezone_name = str(proposal.timezone or "UTC")
+
+    entity_ids = proposal.entity_ids
+    entity_id_strs = [str(eid) for eid in entity_ids] if entity_ids else []
+
+    metadata: dict[str, Any] = {
+        "source_type": "proposed_event",
+        "confidence": proposal.confidence,
+        "source_snippet": proposal.source_snippet,
+        "source_event_id": proposal.source_event_id,
+        "entity_ids": entity_id_strs,
+        "description": proposal.description,
+        "location": proposal.location,
+        "proposal_status": proposal.status,
+    }
+
+    return UnifiedCalendarEntry(
+        entry_id=proposal.proposal_id,
+        view="proposals",
+        source_type="proposed_event",
+        source_key="proposals",
+        title=str(proposal.title or "Untitled"),
+        start_at=start_at,
+        end_at=end_at,
+        timezone=timezone_name,
+        all_day=False,
+        butler_name=proposal.butler_name,
+        status="active",
+        editable=False,
+        metadata=metadata,
+        source_butler=proposal.butler_name,
+    )
+
+
+async def _fetch_proposal_entries(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None,
+    display_tz: ZoneInfo | None,
+) -> list[UnifiedCalendarEntry]:
+    """Fetch + project pending proposals, failing open to an empty list.
+
+    The read MUST NEVER surface an HTTP 500: a missing
+    ``calendar_event_proposals`` table or any query failure degrades to an
+    empty entries list (the failure is logged in the read-model layer).
+    """
+    try:
+        proposals = await query_calendar_proposals(db, start=start, end=end, butlers=butlers)
+    except Exception:
+        logger.warning("proposals projection query failed; returning empty", exc_info=True)
+        return []
+
+    entries: list[UnifiedCalendarEntry] = []
+    for proposal in proposals:
+        try:
+            entries.append(_normalize_proposal_entry(proposal, display_tz=display_tz))
+        except ValueError:
+            continue
+    return entries
+
+
 @router.get("", response_model=ApiResponse[CalendarWorkspaceReadResponse])
 async def get_workspace(
-    view: str = Query(..., pattern="^(user|butler)$"),
+    view: str = Query(..., pattern="^(user|butler|proposals)$"),
     start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
     end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
     timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
@@ -530,6 +617,21 @@ async def get_workspace(
             display_tz = ZoneInfo(timezone.strip())
         except ZoneInfoNotFoundError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+
+    if view == "proposals":
+        # Proposals lane: project pending calendar_event_proposals rows. This
+        # read fails open — a missing table or query failure yields an empty
+        # entries list, never an HTTP 500. There are no provider sources or
+        # lanes for inferred proposals, so freshness/lanes are empty.
+        proposal_entries = await _fetch_proposal_entries(
+            db, start=start, end=end, butlers=butlers, display_tz=display_tz
+        )
+        data = CalendarWorkspaceReadResponse(
+            entries=proposal_entries,
+            source_freshness=[],
+            lanes=[],
+        )
+        return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
     workspace_rows = await _fetch_workspace_rows(
         db,

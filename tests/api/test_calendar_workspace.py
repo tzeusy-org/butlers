@@ -144,11 +144,48 @@ def _workspace_source_row(
     }
 
 
+def _proposal_row(
+    *,
+    butler_name: str | None = "general",
+    title: str = "Dentist appointment",
+    status: str = "pending",
+    confidence: float | None = 0.82,
+    source_snippet: str | None = "Your appointment is confirmed for Feb 22 at 2pm",
+    source_event_id: str | None = "ingest-evt-1",
+    entity_ids: list | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict:
+    start = start or datetime(2026, 2, 22, 14, 0, tzinfo=UTC)
+    end = end or datetime(2026, 2, 22, 15, 0, tzinfo=UTC)
+    now = datetime.now(tz=UTC)
+    return {
+        "proposal_id": uuid4(),
+        "butler_name": butler_name,
+        "title": title,
+        "start_at": start,
+        "end_at": end,
+        "description": "From your inbox",
+        "location": "123 Main St",
+        "timezone": "UTC",
+        "source_event_id": source_event_id,
+        "source_snippet": source_snippet,
+        "confidence": confidence,
+        "entity_ids": entity_ids if entity_ids is not None else [],
+        "status": status,
+        "accepted_event_id": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
 def _build_app(
     app,
     *,
     workspace_rows: dict[str, list[dict]] | None = None,
     source_rows: dict[str, list[dict]] | None = None,
+    proposal_rows: dict[str, list[dict]] | None = None,
+    proposals_raise: bool = False,
     mcp_clients: dict[str, AsyncMock] | None = None,
     calendar_butlers: list[str] | None = None,
 ) -> tuple:
@@ -157,6 +194,16 @@ def _build_app(
     mock_db.butlers_with_module = MagicMock(return_value=calendar_butlers)
 
     async def _fan_out(query: str, args=(), butler_names=None):
+        if "FROM calendar_event_proposals AS p" in query:
+            if proposals_raise:
+                # Simulate the table being absent / query failing for every
+                # schema. The real fan_out isolates this per-butler, but a
+                # top-level raise must also fail open (empty entries, no 500).
+                raise RuntimeError('relation "calendar_event_proposals" does not exist')
+            rows_to_scan = proposal_rows or {}
+            if butler_names is not None:
+                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
+            return rows_to_scan
         if "FROM calendar_event_instances AS i" in query:
             rows_to_scan = workspace_rows or {}
             if butler_names is not None:
@@ -237,6 +284,79 @@ async def test_workspace_returns_entries_and_source_freshness(app):
     # into the entry metadata rather than raising KeyError -> HTTP 500.
     assert entry["metadata"]["origin_instance_ref"] == user_row["origin_instance_ref"]
     assert len(body["source_freshness"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Proposals lane (view=proposals) — pending-only projection (bu-dn65mb)
+# ---------------------------------------------------------------------------
+
+
+async def test_workspace_proposals_returns_pending_only(app):
+    """view=proposals projects pending proposals into proposed_event entries.
+
+    Accepted/dismissed proposals are excluded at the SQL boundary (the query
+    carries ``status='pending'``), so the mock returns only the pending rows
+    that the WHERE clause would match.  The projected entry must be tagged
+    ``source_type=proposed_event``, non-editable, with confidence/source_snippet
+    /source_event_id provenance in metadata.
+    """
+    pending = _proposal_row(
+        title="Dentist appointment",
+        confidence=0.82,
+        source_snippet="confirmed for Feb 22 at 2pm",
+        source_event_id="ingest-evt-1",
+    )
+    app, _, _ = _build_app(app, proposal_rows={"general": [pending]})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "proposals",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert len(body["entries"]) == 1
+    entry = body["entries"][0]
+    assert entry["view"] == "proposals"
+    assert entry["source_type"] == "proposed_event"
+    assert entry["editable"] is False
+    assert entry["title"] == "Dentist appointment"
+    assert entry["metadata"]["confidence"] == 0.82
+    assert entry["metadata"]["source_snippet"] == "confirmed for Feb 22 at 2pm"
+    assert entry["metadata"]["source_event_id"] == "ingest-evt-1"
+    # Proposals have no provider sources/lanes.
+    assert body["source_freshness"] == []
+    assert body["lanes"] == []
+
+
+async def test_workspace_proposals_fail_open_on_missing_table(app):
+    """A missing calendar_event_proposals table degrades to empty, never 500."""
+    app, _, _ = _build_app(app, proposals_raise=True)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "proposals",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["entries"] == []
+    assert body["source_freshness"] == []
+    assert body["lanes"] == []
 
 
 # ---------------------------------------------------------------------------

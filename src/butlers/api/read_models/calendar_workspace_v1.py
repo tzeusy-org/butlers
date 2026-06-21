@@ -75,6 +75,28 @@ SOURCE_COLUMNS: str = (
     " c.full_sync_required"
 )
 
+#: Columns projected from ``calendar_event_proposals`` for the proposals lane
+#: (``view=proposals``).  Changing this list is a breaking change — create
+#: ``calendar_workspace_v2`` instead.  Adding new NULLABLE columns is safe.
+PROPOSAL_COLUMNS: str = (
+    "p.id AS proposal_id,"
+    " p.butler_name,"
+    " p.title,"
+    " p.start_at,"
+    " p.end_at,"
+    " p.description,"
+    " p.location,"
+    " p.timezone,"
+    " p.source_event_id,"
+    " p.source_snippet,"
+    " p.confidence,"
+    " p.entity_ids,"
+    " p.status,"
+    " p.accepted_event_id,"
+    " p.created_at,"
+    " p.updated_at"
+)
+
 #: Columns projected for the workspace event-instance view: instances joined
 #: to events, sources, and the latest sync cursor per source.
 #: Changing this list is a breaking change — create ``calendar_workspace_v2``
@@ -197,6 +219,35 @@ class CalendarWorkspaceRow:
     db_butler: str = ""
 
 
+@dataclass
+class CalendarProposalRow:
+    """Typed DTO for a ``calendar_event_proposals`` row (v1).
+
+    Backs the proposals lane (``view=proposals``).  ``status`` is always
+    ``'pending'`` for projected rows — accepted/dismissed proposals are
+    filtered out at the query boundary.
+    """
+
+    proposal_id: UUID
+    butler_name: str | None
+    title: str | None
+    start_at: datetime
+    end_at: datetime
+    description: str | None
+    location: str | None
+    timezone: str | None
+    source_event_id: str | None
+    source_snippet: str | None
+    confidence: float | None
+    entity_ids: Any  # raw asyncpg value (list[UUID] or None)
+    status: str
+    accepted_event_id: UUID | None
+    created_at: datetime | None
+    updated_at: datetime | None
+    #: The butler schema this row was fetched from (set by the query function).
+    db_butler: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Row converters
 # ---------------------------------------------------------------------------
@@ -274,6 +325,33 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         last_error_at=row["last_error_at"],
         last_error=row["last_error"],
         full_sync_required=bool(row["full_sync_required"] or False),
+        db_butler=db_butler,
+    )
+
+
+def row_to_proposal(row: asyncpg.Record, *, db_butler: str) -> CalendarProposalRow:
+    """Convert an asyncpg Record to a :class:`CalendarProposalRow`.
+
+    This is the single place that knows the column names from
+    :data:`PROPOSAL_COLUMNS`.
+    """
+    return CalendarProposalRow(
+        proposal_id=row["proposal_id"],
+        butler_name=row["butler_name"] or db_butler,
+        title=row["title"],
+        start_at=row["start_at"],
+        end_at=row["end_at"],
+        description=row["description"],
+        location=row["location"],
+        timezone=row["timezone"],
+        source_event_id=row["source_event_id"],
+        source_snippet=row["source_snippet"],
+        confidence=row["confidence"],
+        entity_ids=row["entity_ids"],
+        status=row["status"],
+        accepted_event_id=row["accepted_event_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
         db_butler=db_butler,
     )
 
@@ -485,4 +563,83 @@ async def query_calendar_workspace(
         for row in raw_rows:
             dto = row_to_workspace(row, db_butler=butler_name)
             rows.append(dto)
+    return rows
+
+
+async def query_calendar_proposals(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None = None,
+) -> list[CalendarProposalRow]:
+    """Fan-out query for **pending** ``calendar_event_proposals`` in a time range.
+
+    Backs the proposals lane (``GET /api/calendar/workspace?view=proposals``).
+    Only rows with ``status='pending'`` whose ``start_at`` falls in the
+    ``[start, end)`` range are returned; accepted and dismissed proposals are
+    excluded at the query boundary.
+
+    **Fail-open contract.** This read MUST NOT raise when the
+    ``calendar_event_proposals`` table is absent (calendar module disabled or a
+    schema that pre-dates the migration) or when the query otherwise fails.
+    :meth:`DatabaseManager.fan_out` already isolates per-butler failures (a
+    failing schema yields an empty result, logged), and the whole function is
+    additionally wrapped so an unexpected failure degrades to an empty list
+    rather than propagating an HTTP 500.
+
+    Parameters
+    ----------
+    db:
+        The :class:`~butlers.api.db.DatabaseManager` instance.
+    start:
+        Inclusive range start; proposals with ``start_at >= start`` are included.
+    end:
+        Exclusive range end; proposals with ``start_at < end`` are included.
+    butlers:
+        If provided, restrict to these butler schemas.
+
+    Returns
+    -------
+    list[CalendarProposalRow]
+        Flat list of pending proposal rows from all queried butler schemas,
+        ordered by ``start_at ASC, id ASC``.  Empty on any failure (fail-open).
+    """
+    conditions: list[str] = [
+        "p.status = 'pending'",
+        "p.start_at >= $1",
+        "p.start_at < $2",
+    ]
+    args: list[Any] = [start, end]
+    idx = 3
+
+    if butlers:
+        conditions.append(f"COALESCE(p.butler_name, '') = ANY(${idx}::text[])")
+        args.append(butlers)
+        idx += 1
+
+    where = " AND ".join(conditions)
+    sql = f"""
+        SELECT {PROPOSAL_COLUMNS}
+        FROM calendar_event_proposals AS p
+        WHERE {where}
+        ORDER BY p.start_at ASC, p.id ASC
+    """
+
+    query_targets: list[str] | None
+    if butlers:
+        query_targets = sorted(set(butlers))
+    else:
+        query_targets = db.butlers_with_module("calendar")
+
+    try:
+        results = await db.fan_out(sql, tuple(args), butler_names=query_targets)
+    except Exception:
+        logger.warning("query_calendar_proposals fan-out failed; returning empty", exc_info=True)
+        return []
+
+    rows: list[CalendarProposalRow] = []
+    for butler_name, raw_rows in results.items():
+        for row in raw_rows:
+            rows.append(row_to_proposal(row, db_butler=butler_name))
     return rows

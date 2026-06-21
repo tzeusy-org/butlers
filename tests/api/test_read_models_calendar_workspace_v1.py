@@ -22,13 +22,17 @@ from uuid import UUID
 import pytest
 
 from butlers.api.read_models.calendar_workspace_v1 import (
+    PROPOSAL_COLUMNS,
     READ_MODEL_VERSION,
     SOURCE_COLUMNS,
     WORKSPACE_COLUMNS,
+    CalendarProposalRow,
     CalendarSourceRow,
     CalendarWorkspaceRow,
+    query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
+    row_to_proposal,
     row_to_source,
     row_to_workspace,
 )
@@ -509,3 +513,90 @@ async def test_query_calendar_workspace_sql_has_lateral_join():
     assert "LATERAL" in sql
     assert "calendar_event_instances" in sql
     assert "calendar_events" in sql
+
+
+# ---------------------------------------------------------------------------
+# query_calendar_proposals — proposals lane projection (bu-dn65mb)
+# ---------------------------------------------------------------------------
+
+
+def _proposal_dict(**overrides) -> dict:
+    base = {
+        "proposal_id": UUID("40000000-0000-0000-0000-000000000004"),
+        "butler_name": "assistant",
+        "title": "Dentist appointment",
+        "start_at": _NOW,
+        "end_at": _NOW + timedelta(hours=1),
+        "description": "From your inbox",
+        "location": "123 Main St",
+        "timezone": "UTC",
+        "source_event_id": "ingest-evt-1",
+        "source_snippet": "confirmed for 10am",
+        "confidence": 0.9,
+        "entity_ids": [],
+        "status": "pending",
+        "accepted_event_id": None,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    base.update(overrides)
+    return base
+
+
+async def test_query_calendar_proposals_returns_typed_dtos():
+    db = _make_db({"assistant": [_make_record(_proposal_dict())]})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    rows = await query_calendar_proposals(db, start=start, end=end)
+
+    assert len(rows) == 1
+    assert isinstance(rows[0], CalendarProposalRow)
+    assert rows[0].title == "Dentist appointment"
+    assert rows[0].db_butler == "assistant"
+
+
+async def test_query_calendar_proposals_sql_filters_pending_and_range():
+    db = _make_db({})
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    await query_calendar_proposals(db, start=start, end=end)
+
+    sql = db.fan_out.call_args[0][0]
+    args = db.fan_out.call_args[0][1]
+    assert "calendar_event_proposals" in sql
+    assert "p.status = 'pending'" in sql
+    assert "p.start_at >= $1" in sql
+    assert "p.start_at < $2" in sql
+    assert args == (start, end)
+
+
+async def test_query_calendar_proposals_uses_butlers_with_module_when_no_butlers_arg():
+    db = _make_db({})
+    await query_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
+    db.butlers_with_module.assert_called_once_with("calendar")
+
+
+async def test_query_calendar_proposals_fail_open_on_fan_out_error():
+    db = _make_db({})
+    db.fan_out = AsyncMock(side_effect=RuntimeError("relation does not exist"))
+
+    rows = await query_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
+
+    assert rows == []
+
+
+def test_row_to_proposal_maps_columns():
+    record = _make_record(_proposal_dict(butler_name=None))
+    dto = row_to_proposal(record, db_butler="assistant")
+    # butler_name falls back to the db_butler schema name when NULL.
+    assert dto.butler_name == "assistant"
+    assert dto.source_event_id == "ingest-evt-1"
+    assert dto.confidence == 0.9
+
+
+def test_proposal_columns_non_empty():
+    assert "calendar_event_proposals" not in PROPOSAL_COLUMNS  # columns only, no FROM
+    assert "p.source_event_id" in PROPOSAL_COLUMNS
+    assert "p.confidence" in PROPOSAL_COLUMNS
