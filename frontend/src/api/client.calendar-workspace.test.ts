@@ -117,6 +117,100 @@ describe("findCalendarWorkspaceTime — POST /calendar/workspace/find-time", () 
   });
 });
 
+import { acceptCalendarProposal, ApiError, dismissCalendarProposal } from "./client.ts";
+
+function mockProposalActionResponse(status: string, acceptedEventId?: string | null) {
+  const body = {
+    data: {
+      proposal_id: "11111111-1111-1111-1111-111111111111",
+      status,
+      accepted_event_id: acceptedEventId ?? null,
+      butler_name: "general",
+    },
+  };
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+    headers: { get: () => "application/json" },
+  });
+}
+
+function mockErrorResponse(status: number, detail: string) {
+  const body = { detail };
+  mockFetch.mockResolvedValueOnce({
+    ok: false,
+    status,
+    statusText: "Error",
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+    headers: { get: () => "application/json" },
+  });
+}
+
+const PROPOSAL_ID = "11111111-1111-1111-1111-111111111111";
+
+describe("acceptCalendarProposal — POST /calendar/workspace/proposals/{id}/accept", () => {
+  it("POSTs to the accept endpoint with an empty body when no overrides given", async () => {
+    mockProposalActionResponse("accepted", "22222222-2222-2222-2222-222222222222");
+
+    const res = await acceptCalendarProposal(PROPOSAL_ID);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain(`/calendar/workspace/proposals/${PROPOSAL_ID}/accept`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({});
+    expect(res.data.status).toBe("accepted");
+    expect(res.data.accepted_event_id).toBe("22222222-2222-2222-2222-222222222222");
+  });
+
+  it("forwards inline overrides in the request body", async () => {
+    mockProposalActionResponse("accepted", "22222222-2222-2222-2222-222222222222");
+
+    await acceptCalendarProposal(PROPOSAL_ID, {
+      title: "Edited title",
+      start_at: "2026-06-22T09:00:00Z",
+      end_at: "2026-06-22T10:00:00Z",
+    });
+
+    const [, init] = mockFetch.mock.calls[0];
+    const sent = JSON.parse(init.body as string);
+    expect(sent.title).toBe("Edited title");
+    expect(sent.start_at).toBe("2026-06-22T09:00:00Z");
+    expect(sent.end_at).toBe("2026-06-22T10:00:00Z");
+  });
+
+  it("throws an ApiError carrying status 409 when the proposal is already dismissed", async () => {
+    mockErrorResponse(409, "Proposal is dismissed and cannot be accepted");
+
+    await expect(acceptCalendarProposal(PROPOSAL_ID)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+});
+
+describe("dismissCalendarProposal — POST /calendar/workspace/proposals/{id}/dismiss", () => {
+  it("POSTs to the dismiss endpoint (no body required)", async () => {
+    mockProposalActionResponse("dismissed");
+
+    const res = await dismissCalendarProposal(PROPOSAL_ID);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain(`/calendar/workspace/proposals/${PROPOSAL_ID}/dismiss`);
+    expect(init.method).toBe("POST");
+    expect(res.data.status).toBe("dismissed");
+  });
+
+  it("throws an ApiError carrying status 404 for an unknown proposal", async () => {
+    mockErrorResponse(404, "Proposal not found");
+
+    const err = await dismissCalendarProposal(PROPOSAL_ID).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(404);
+  });
+});
+
 import { previewCalendarWorkspaceButlerEvent } from "./client.ts";
 
 describe("previewCalendarWorkspaceButlerEvent — POST /calendar/workspace/butler-events/preview", () => {

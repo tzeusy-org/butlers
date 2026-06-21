@@ -531,6 +531,33 @@ export interface UnifiedCalendarEntry {
   source_session_id?: string | null;
 }
 
+/**
+ * Optional inline overrides applied when accepting a calendar proposal.
+ * Any field set here overrides the corresponding stored proposal value before
+ * the butler event is created on the Butlers subcalendar. An empty/omitted body
+ * accepts the proposal exactly as stored.
+ * Mirrors backend `CalendarProposalAcceptRequest`.
+ */
+export interface CalendarProposalAcceptRequest {
+  title?: string;
+  start_at?: string;
+  end_at?: string;
+  timezone?: string;
+  description?: string;
+  location?: string;
+}
+
+/**
+ * Result of an accept/dismiss action on a calendar proposal.
+ * Mirrors backend `CalendarProposalActionResponse`.
+ */
+export interface CalendarProposalActionResponse {
+  proposal_id: string;
+  status: string;
+  accepted_event_id?: string | null;
+  butler_name?: string | null;
+}
+
 /** Allowed status values for a calendar action log entry. */
 export type CalendarActionStatus = "pending" | "applied" | "failed" | "noop";
 

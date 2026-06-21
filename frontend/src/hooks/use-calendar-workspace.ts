@@ -5,6 +5,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  acceptCalendarProposal,
+  dismissCalendarProposal,
   findCalendarWorkspaceTime,
   getCalendarAccounts,
   getCalendarDayBriefing,
@@ -24,6 +26,7 @@ import {
 import type {
   ApiResponse,
   CalendarAuditParams,
+  CalendarProposalAcceptRequest,
   CalendarSourceToggleRequest,
   CalendarWorkspaceButlerEventPreviewRequest,
   CalendarWorkspaceButlerMutationRequest,
@@ -238,6 +241,62 @@ export function usePreviewCalendarWorkspaceButlerEvent() {
   return useMutation({
     mutationFn: (body: CalendarWorkspaceButlerEventPreviewRequest) =>
       previewCalendarWorkspaceButlerEvent(body),
+  });
+}
+
+/**
+ * Fetch pending calendar proposals (`view=proposals`) for a time window.
+ *
+ * Proposals are butler-extracted candidate events awaiting the user's
+ * accept/dismiss decision. The read fails open server-side (a missing proposals
+ * table yields `entries: []`, never an error). Bounded set — a single page is
+ * fetched, not the keyset walk used for the main grid.
+ */
+export function useCalendarProposals(
+  params: { start: string; end: string; timezone?: string },
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  return useQuery({
+    queryKey: ["calendar-proposals", params],
+    queryFn: () =>
+      getCalendarWorkspace({
+        view: "proposals",
+        start: params.start,
+        end: params.end,
+        timezone: params.timezone,
+      }),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? 60_000,
+  });
+}
+
+/** Invalidate every workspace-derived cache after a proposal mutation. */
+function invalidateWorkspaceAndProposals(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ["calendar-proposals"] });
+  queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+  queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+}
+
+/**
+ * Accept a calendar proposal (optionally with inline overrides). On success the
+ * proposal becomes a butler event on the Butlers subcalendar; caches that could
+ * reflect the new event and the now-resolved proposal are invalidated.
+ */
+export function useAcceptCalendarProposal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { proposalId: string; overrides?: CalendarProposalAcceptRequest }) =>
+      acceptCalendarProposal(vars.proposalId, vars.overrides),
+    onSettled: () => invalidateWorkspaceAndProposals(queryClient),
+  });
+}
+
+/** Dismiss a calendar proposal (no provider write) and refresh proposal caches. */
+export function useDismissCalendarProposal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { proposalId: string }) => dismissCalendarProposal(vars.proposalId),
+    onSettled: () => invalidateWorkspaceAndProposals(queryClient),
   });
 }
 

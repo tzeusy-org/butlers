@@ -42,9 +42,12 @@ import type {
 } from "@/api/types.ts";
 import {
   useCalendarAccounts,
+  useAcceptCalendarProposal,
   useCalendarDayBriefing,
   useCalendarOverlays,
+  useCalendarProposals,
   useCalendarWorkspace,
+  useDismissCalendarProposal,
   useCalendarWorkspaceAudit,
   useCalendarWorkspaceMeta,
   useCalendarWorkspaceSearch,
@@ -67,6 +70,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
+import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsPanel";
 import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -1847,6 +1851,22 @@ export default function CalendarWorkspacePage() {
   const [activityPanelOpen, setActivityPanelOpen] = useState(false);
   // Find-time panel state (mutually exclusive with the activity panel).
   const [findTimePanelOpen, setFindTimePanelOpen] = useState(false);
+  const [proposalsPanelOpen, setProposalsPanelOpen] = useState(false);
+
+  // Proposals lane: butler-extracted candidate events awaiting accept/dismiss.
+  // Fetched only while the panel is open; accept/dismiss mutations reconcile the
+  // optimistic lane state inside the panel.
+  const proposalsQuery = useCalendarProposals(
+    { start: start.toISOString(), end: end.toISOString(), timezone },
+    { enabled: proposalsPanelOpen },
+  );
+  const proposalEntries = useMemo(
+    () => (proposalsPanelOpen ? (proposalsQuery.data?.data.entries ?? []) : []),
+    [proposalsPanelOpen, proposalsQuery.data?.data.entries],
+  );
+  const acceptProposalMutation = useAcceptCalendarProposal();
+  const dismissProposalMutation = useDismissCalendarProposal();
+
   const [auditOffset, setAuditOffset] = useState(0);
   const AUDIT_PAGE_SIZE = 50;
   const auditQuery = useCalendarWorkspaceAudit(
@@ -3264,6 +3284,7 @@ export default function CalendarWorkspacePage() {
           onClick={() => {
             setActivityPanelOpen((prev) => !prev);
             setFindTimePanelOpen(false);
+            setProposalsPanelOpen(false);
             setAuditOffset(0);
           }}
         >
@@ -3276,9 +3297,22 @@ export default function CalendarWorkspacePage() {
           onClick={() => {
             setFindTimePanelOpen((prev) => !prev);
             setActivityPanelOpen(false);
+            setProposalsPanelOpen(false);
           }}
         >
           Find time
+        </PillButton>
+
+        <PillButton
+          active={proposalsPanelOpen}
+          aria-pressed={proposalsPanelOpen}
+          onClick={() => {
+            setProposalsPanelOpen((prev) => !prev);
+            setActivityPanelOpen(false);
+            setFindTimePanelOpen(false);
+          }}
+        >
+          Proposals
         </PillButton>
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:ml-auto">
@@ -3462,8 +3496,28 @@ export default function CalendarWorkspacePage() {
         </div>
       ) : null}
 
+      {/* Proposals panel — overlays the canvas when open */}
+      {proposalsPanelOpen ? (
+        <div className="flex min-h-0 flex-1 flex-col pt-5">
+          <CalendarProposalsPanel
+            entries={proposalEntries}
+            isLoading={proposalsQuery.isLoading}
+            isError={proposalsQuery.isError}
+            error={proposalsQuery.error instanceof Error ? proposalsQuery.error : null}
+            acceptMutation={acceptProposalMutation}
+            dismissMutation={dismissProposalMutation}
+          />
+        </div>
+      ) : null}
+
       {/* Canvas + detail panel */}
-      <div className={activityPanelOpen || findTimePanelOpen ? "hidden" : "flex min-h-0 flex-1"}>
+      <div
+        className={
+          activityPanelOpen || findTimePanelOpen || proposalsPanelOpen
+            ? "hidden"
+            : "flex min-h-0 flex-1"
+        }
+      >
       <div className="flex min-h-0 flex-1 flex-col pt-5">
         {workspaceQuery.isLoading ? (
           <Voice variant="italic" className="text-[var(--mfg)]">

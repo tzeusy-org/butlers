@@ -79,6 +79,14 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
     data: { data: { accounts: [], health_available: true } },
   })),
   useToggleCalendarSource: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCalendarProposals: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: { data: { entries: [] } },
+  })),
+  useAcceptCalendarProposal: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDismissCalendarProposal: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
 vi.mock("sonner", () => ({

@@ -37,6 +37,8 @@ import type {
   CalendarAuditResponse,
   CalendarDayBriefingResponse,
   CalendarSourceToggleRequest,
+  CalendarProposalAcceptRequest,
+  CalendarProposalActionResponse,
   CalendarSourceToggleResponse,
   CalendarWorkspaceFindTimeRequest,
   CalendarWorkspaceFindTimeResponse,
@@ -1265,6 +1267,44 @@ export function previewCalendarWorkspaceButlerEvent(
       method: "POST",
       body: JSON.stringify(body),
     },
+  );
+}
+
+/**
+ * Accept a calendar proposal — POST /calendar/workspace/proposals/{id}/accept.
+ *
+ * Reads the stored proposal payload (with optional inline `overrides`), creates
+ * the butler event on the Butlers subcalendar, and flips the proposal to
+ * `accepted`. Idempotent server-side (re-accept returns the existing
+ * `accepted_event_id`). Throws {@link ApiError} with status 404 (unknown id) or
+ * 409 (proposal already dismissed).
+ */
+export function acceptCalendarProposal(
+  proposalId: string,
+  overrides?: CalendarProposalAcceptRequest,
+): Promise<ApiResponse<CalendarProposalActionResponse>> {
+  return apiFetch<ApiResponse<CalendarProposalActionResponse>>(
+    `/calendar/workspace/proposals/${encodeURIComponent(proposalId)}/accept`,
+    {
+      method: "POST",
+      body: JSON.stringify(overrides ?? {}),
+    },
+  );
+}
+
+/**
+ * Dismiss a calendar proposal — POST /calendar/workspace/proposals/{id}/dismiss.
+ *
+ * Flips the proposal to `dismissed` with no provider write. Idempotent
+ * server-side. Throws {@link ApiError} with status 404 (unknown id) or 409
+ * (proposal already accepted).
+ */
+export function dismissCalendarProposal(
+  proposalId: string,
+): Promise<ApiResponse<CalendarProposalActionResponse>> {
+  return apiFetch<ApiResponse<CalendarProposalActionResponse>>(
+    `/calendar/workspace/proposals/${encodeURIComponent(proposalId)}/dismiss`,
+    { method: "POST" },
   );
 }
 
