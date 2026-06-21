@@ -32,6 +32,10 @@ from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
+from butlers.core.temporal.scheduling import (
+    SchedulingPreferences,
+    get_scheduling_preferences,
+)
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
 from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
@@ -75,6 +79,10 @@ BUTLER_NAME_PRIVATE_KEY = "butler_name"
 DEFAULT_BUTLER_NAME = "butler"
 VALID_CONFLICT_POLICIES = {"suggest", "fail", "allow_overlap"}
 DEFAULT_CONFLICT_SUGGESTION_COUNT = 3
+# Upper bound on how far ahead conflict-suggestion search walks when owner
+# scheduling-availability preferences are in effect, so an unsatisfiable
+# constraint set terminates instead of looping forever.
+_SUGGESTION_SEARCH_HORIZON = timedelta(days=90)
 
 # Rate-limit retry configuration (spec section 14.2, 15).
 # Retry on 429 Too Many Requests and 503 Service Unavailable with exponential backoff.
@@ -8368,10 +8376,12 @@ class CalendarModule(Module):
 
         suggested_slots: list[dict[str, str]] = []
         if conflict_policy == "suggest":
+            scheduling_preferences = await self._load_scheduling_preferences()
             suggested_slots = self._build_suggested_slots(
                 candidate,
                 conflicts,
                 count=DEFAULT_CONFLICT_SUGGESTION_COUNT,
+                scheduling_preferences=scheduling_preferences,
             )
         return {
             "status": "conflict",
@@ -8402,12 +8412,29 @@ class CalendarModule(Module):
             "timezone": conflict.timezone,
         }
 
+    async def _load_scheduling_preferences(self) -> SchedulingPreferences | None:
+        """Load the owner's scheduling-availability preferences for slot ranking.
+
+        Returns None when the store is unavailable or unconfigured, in which case
+        slot suggestions apply no life-availability filtering (back-compat).
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return None
+        try:
+            row = await get_scheduling_preferences(pool)
+        except Exception:  # fail-open: never block conflict resolution on prefs
+            logger.warning("Failed to load owner scheduling preferences", exc_info=True)
+            return None
+        return SchedulingPreferences.from_row(row)
+
     @staticmethod
     def _build_suggested_slots(
         candidate: CalendarEventCreate,
         conflicts: list[CalendarEvent],
         *,
         count: int,
+        scheduling_preferences: SchedulingPreferences | None = None,
     ) -> list[dict[str, str]]:
         if count < 1:
             return []
@@ -8418,10 +8445,25 @@ class CalendarModule(Module):
         last_conflict_end = max(conflict.end_at for conflict in conflicts)
         cursor = max(candidate.start_at, last_conflict_end)
 
+        # When the owner has scheduling-availability preferences, skip candidate
+        # slots that start before the earliest meeting time, end after the latest,
+        # fall on a disallowed weekday, or overlap a no-meeting block. Stepping in
+        # 15-minute increments is bounded by a search horizon so an unsatisfiable
+        # constraint set terminates rather than looping forever.
+        apply_prefs = scheduling_preferences is not None and scheduling_preferences.has_constraints
+        search_deadline = cursor + _SUGGESTION_SEARCH_HORIZON if apply_prefs else None
+        step = timedelta(minutes=15)
+
         suggestions: list[dict[str, str]] = []
-        for _ in range(count):
+        while len(suggestions) < count:
             suggestion_start = cursor
             suggestion_end = suggestion_start + duration
+            if apply_prefs:
+                if suggestion_start > search_deadline:
+                    break
+                if not scheduling_preferences.allows(suggestion_start, suggestion_end):
+                    cursor = suggestion_start + step
+                    continue
             suggestions.append(
                 {
                     "start_at": suggestion_start.isoformat(),
@@ -8429,7 +8471,7 @@ class CalendarModule(Module):
                     "timezone": candidate.timezone or "UTC",
                 }
             )
-            cursor = suggestion_end + timedelta(minutes=15)
+            cursor = suggestion_end + step
         return suggestions
 
     @staticmethod

@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2446,3 +2446,110 @@ class TestCalendarProposeEvent:
             end_at=datetime(2026, 7, 1, 11, 0, tzinfo=UTC),
         )
         assert result["proposal_id"] == str(proposal_id)
+
+
+# ---------------------------------------------------------------------------
+# Conflict suggested-slots honor owner scheduling-availability preferences
+# (bu-vj0ax8) — _build_suggested_slots clips out-of-hours / weekend / blocked
+# slots when prefs are configured, and is back-compatible when they are not.
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestedSlotsSchedulingPreferences:
+    def _candidate(self, start: datetime, end: datetime) -> CalendarEventCreate:
+        return CalendarEventCreate(title="Sync", start_at=start, end_at=end, timezone="UTC")
+
+    def test_no_prefs_back_compat(self):
+        """With no prefs, suggestions walk forward from the last conflict (unchanged)."""
+        candidate = self._candidate(
+            datetime(2026, 6, 22, 9, 0, tzinfo=UTC), datetime(2026, 6, 22, 10, 0, tzinfo=UTC)
+        )
+        conflict = _make_event(
+            start_at=datetime(2026, 6, 22, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 6, 22, 10, 0, tzinfo=UTC),
+        )
+        slots = CalendarModule._build_suggested_slots(
+            candidate, [conflict], count=3, scheduling_preferences=None
+        )
+        assert len(slots) == 3
+        # First suggestion starts right after the conflict ends.
+        assert slots[0]["start_at"] == datetime(2026, 6, 22, 10, 0, tzinfo=UTC).isoformat()
+
+    def test_prefs_skip_after_hours_slots(self):
+        """A late conflict pushes suggestions past latest -> next day's earliest."""
+        from butlers.core.temporal.scheduling import SchedulingPreferences
+
+        prefs = SchedulingPreferences(
+            timezone="UTC",
+            earliest_meeting_time=time(9, 0),
+            latest_meeting_time=time(18, 0),
+            meeting_days=frozenset({"MO", "TU", "WE", "TH", "FR"}),
+        )
+        # Conflict ends at 17:30 on Mon; a 1h slot from 17:30 ends 18:30 (> latest).
+        candidate = self._candidate(
+            datetime(2026, 6, 22, 17, 0, tzinfo=UTC), datetime(2026, 6, 22, 18, 0, tzinfo=UTC)
+        )
+        conflict = _make_event(
+            start_at=datetime(2026, 6, 22, 16, 30, tzinfo=UTC),
+            end_at=datetime(2026, 6, 22, 17, 30, tzinfo=UTC),
+        )
+        slots = CalendarModule._build_suggested_slots(
+            candidate, [conflict], count=2, scheduling_preferences=prefs
+        )
+        assert len(slots) == 2
+        for slot in slots:
+            start = datetime.fromisoformat(slot["start_at"])
+            end = datetime.fromisoformat(slot["end_at"])
+            assert start.time() >= time(9, 0)
+            assert end.time() <= time(18, 0)
+            assert start.weekday() < 5  # Mon–Fri only
+
+    def test_prefs_skip_weekend(self):
+        """Suggestions never land on a disallowed weekday."""
+        from butlers.core.temporal.scheduling import SchedulingPreferences
+
+        prefs = SchedulingPreferences(
+            timezone="UTC",
+            meeting_days=frozenset({"MO", "TU", "WE", "TH", "FR"}),
+        )
+        # Conflict on Fri 2026-06-26 late; next slots would be Sat/Sun without prefs.
+        candidate = self._candidate(
+            datetime(2026, 6, 26, 16, 0, tzinfo=UTC), datetime(2026, 6, 26, 17, 0, tzinfo=UTC)
+        )
+        conflict = _make_event(
+            start_at=datetime(2026, 6, 26, 23, 0, tzinfo=UTC),
+            end_at=datetime(2026, 6, 27, 0, 0, tzinfo=UTC),  # ends Sat 00:00
+        )
+        slots = CalendarModule._build_suggested_slots(
+            candidate, [conflict], count=1, scheduling_preferences=prefs
+        )
+        assert len(slots) == 1
+        start = datetime.fromisoformat(slots[0]["start_at"])
+        assert start.weekday() < 5  # not Sat/Sun -> jumps to Monday
+
+    def test_prefs_skip_no_meeting_block(self):
+        """Suggestions never overlap a no-meeting block (e.g. lunch)."""
+        from butlers.core.temporal.scheduling import SchedulingPreferences
+
+        prefs = SchedulingPreferences(
+            timezone="UTC",
+            earliest_meeting_time=time(9, 0),
+            latest_meeting_time=time(18, 0),
+            no_meeting_blocks=((time(12, 0), time(13, 0)),),
+        )
+        candidate = self._candidate(
+            datetime(2026, 6, 22, 11, 30, tzinfo=UTC), datetime(2026, 6, 22, 12, 30, tzinfo=UTC)
+        )
+        conflict = _make_event(
+            start_at=datetime(2026, 6, 22, 11, 0, tzinfo=UTC),
+            end_at=datetime(2026, 6, 22, 11, 30, tzinfo=UTC),
+        )
+        slots = CalendarModule._build_suggested_slots(
+            candidate, [conflict], count=2, scheduling_preferences=prefs
+        )
+        assert len(slots) == 2
+        for slot in slots:
+            start = datetime.fromisoformat(slot["start_at"])
+            end = datetime.fromisoformat(slot["end_at"])
+            # No overlap with [12:00, 13:00)
+            assert not (start.time() < time(13, 0) and time(12, 0) < end.time())

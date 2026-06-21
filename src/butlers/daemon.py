@@ -169,6 +169,8 @@ MESSENGER_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "delivery_preferences_get",
         "deferred_notifications_list",
         "deferred_notification_cancel",
+        "scheduling_preferences_set",
+        "scheduling_preferences_get",
     }
 )
 

@@ -1,9 +1,9 @@
 ## 1. Owner scheduling-availability preferences (foundation, bu-vj0ax8)
 
-- [ ] 1.1 Add owner-scoped scheduling-preferences storage (`earliest_meeting_time`, `latest_meeting_time`, `meeting_days`, `timezone`, `no_meeting_blocks`), distinct from per-butler notification `delivery_preferences`
-- [ ] 1.2 Add `scheduling_preferences_get` / `scheduling_preferences_set` MCP tools (reject invalid timezone; no row → no constraints)
-- [ ] 1.3 Thread the loaded scheduling preferences into `_build_suggested_slots` so it never proposes slots outside the allowed hours/days or inside a `no_meeting_blocks` interval
-- [ ] 1.4 Unit tests: set/get round-trip; `_build_suggested_slots` with prefs clips out-of-hours/weekend slots; with no prefs row, behaves as today
+- [x] 1.1 Add owner-scoped scheduling-preferences storage (`earliest_meeting_time`, `latest_meeting_time`, `meeting_days`, `timezone`, `no_meeting_blocks`), distinct from per-butler notification `delivery_preferences`
+- [x] 1.2 Add `scheduling_preferences_get` / `scheduling_preferences_set` MCP tools (reject invalid timezone; no row → no constraints)
+- [x] 1.3 Thread the loaded scheduling preferences into `_build_suggested_slots` so it never proposes slots outside the allowed hours/days or inside a `no_meeting_blocks` interval
+- [x] 1.4 Unit tests: set/get round-trip; `_build_suggested_slots` with prefs clips out-of-hours/weekend slots; with no prefs row, behaves as today
 
 ## 2. Generalize free/busy into a windowed multi-calendar provider method (bu-140q93)
 

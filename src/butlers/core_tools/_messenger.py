@@ -189,6 +189,83 @@ def register_messenger_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
 
+        @mcp.tool()
+        async def scheduling_preferences_set(
+            timezone: str,
+            earliest_meeting_time: str | None = None,
+            latest_meeting_time: str | None = None,
+            meeting_days: list[str] | None = None,
+            no_meeting_blocks: list[dict[str, str]] | None = None,
+        ) -> dict:
+            """Configure the owner's meeting-availability (life) hours.
+
+            These are the owner's LIFE no-meeting blocks ("don't schedule meetings
+            before 09:00 or on weekends") and are DISTINCT from notification quiet
+            hours (delivery_preferences). They are owner-scoped — a single record,
+            not per-butler — and feed calendar slot ranking so suggestions never
+            land outside the allowed hours/days or inside a no-meeting block.
+            Setting them does NOT change notification quiet-hours behavior.
+
+            Args:
+                timezone: IANA timezone string (required) used to interpret the
+                    times below in the owner's local time. Example: 'America/New_York'.
+                earliest_meeting_time: Earliest a meeting may start, 'HH:MM' (owner tz).
+                latest_meeting_time: Latest a meeting may end, 'HH:MM' (owner tz).
+                meeting_days: Allowed weekdays as iCal codes, e.g.
+                    ['MO','TU','WE','TH','FR']. Omit for any day.
+                no_meeting_blocks: Recurring daily blocks to keep free, e.g.
+                    [{'start': '12:00', 'end': '13:00'}] for a lunch break.
+
+            Returns:
+                The upserted owner scheduling-availability record.
+            """
+            from butlers.core.temporal.scheduling import upsert_scheduling_preferences
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            try:
+                result = await upsert_scheduling_preferences(
+                    _db_pool,
+                    timezone=timezone,
+                    earliest_meeting_time=earliest_meeting_time,
+                    latest_meeting_time=latest_meeting_time,
+                    meeting_days=meeting_days,
+                    no_meeting_blocks=no_meeting_blocks,
+                )
+                return {"status": "ok", "preferences": result}
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+
+        @mcp.tool()
+        async def scheduling_preferences_get() -> dict:
+            """Get the owner's meeting-availability (life) hours.
+
+            Returns the owner's scheduling-availability preferences (earliest/latest
+            meeting time, allowed weekdays, owner timezone, no-meeting blocks), or a
+            response indicating none are configured (in which case slot ranking
+            applies no life-availability filtering).
+
+            Returns:
+                Dict with 'preferences' key, or 'preferences': None if unconfigured.
+            """
+            from butlers.core.temporal.scheduling import get_scheduling_preferences
+
+            _db_pool = daemon.db.pool if daemon.db is not None else None
+            if _db_pool is None:
+                return {"status": "error", "error": "Database not available."}
+            prefs = await get_scheduling_preferences(_db_pool)
+            if prefs is None:
+                return {
+                    "status": "ok",
+                    "preferences": None,
+                    "message": (
+                        "No scheduling preferences configured. "
+                        "Slot ranking applies no life-availability filtering."
+                    ),
+                }
+            return {"status": "ok", "preferences": prefs}
+
     # Messenger-specific operational domain tools
     if butler_name == "messenger":
         from butlers.tools.messenger import (
