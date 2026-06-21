@@ -51,6 +51,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_workspace_entry,
 )
 from butlers.api.routers.audit import log_audit_entry
+from butlers.modules.calendar import classify_sync_error_kind
 
 router = APIRouter(prefix="/api/calendar/workspace", tags=["calendar", "workspace"])
 logger = logging.getLogger(__name__)
@@ -247,6 +248,7 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         full_sync_required=full_sync_required,
         sync_state=sync_state,
         staleness_ms=staleness_ms,
+        error_kind=classify_sync_error_kind(row.get("last_error")),
     )
 
 
@@ -945,21 +947,26 @@ async def sync_workspace(
         source_key: str | None = None,
         calendar_id: str | None = None,
     ) -> CalendarWorkspaceSyncTarget:
+        # Forward the cursor-recovery flag to the MCP tool. ``full=False``
+        # preserves today's incremental sync behavior.
+        forwarded_args = {**call_args, "full": request.full}
         try:
             client = await mcp_manager.get_client(butler_name)
-            result = await client.call_tool("calendar_force_sync", call_args)
+            result = await client.call_tool("calendar_force_sync", forwarded_args)
             parsed = _parse_mcp_payload(_extract_mcp_result_text(result))
             status = (
                 parsed.get("status", "sync_triggered")
                 if isinstance(parsed, dict)
                 else "sync_triggered"
             )
+            recovery = bool(parsed.get("recovery")) if isinstance(parsed, dict) else False
             return CalendarWorkspaceSyncTarget(
                 butler_name=butler_name,
                 source_key=source_key,
                 calendar_id=calendar_id,
                 status=status,
                 detail=_sync_detail(parsed),
+                recovery=recovery,
             )
         except ButlerUnreachableError as exc:
             return CalendarWorkspaceSyncTarget(
@@ -1013,6 +1020,7 @@ async def sync_workspace(
         scope=scope,
         requested_source_key=request.source_key,
         requested_source_id=request.source_id,
+        full=request.full,
         targets=targets,
         triggered_count=sum(1 for target in targets if target.status != "failed"),
     )

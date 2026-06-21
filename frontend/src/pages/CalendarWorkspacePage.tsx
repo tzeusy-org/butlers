@@ -2184,16 +2184,26 @@ export default function CalendarWorkspacePage() {
     }
   }
 
-  async function handleSyncSource(source: CalendarWorkspaceSourceFreshness) {
+  async function handleSyncSource(
+    source: CalendarWorkspaceSourceFreshness,
+    { full = false }: { full?: boolean } = {},
+  ) {
     setSyncingSourceKey(source.source_key);
     try {
       const result = await syncMutation.mutateAsync({
         source_key: source.source_key,
         butler: source.butler_name || undefined,
+        full,
       });
       const target = result.data.targets[0];
       if (target?.status === "failed") {
         toast.error(target.error || "Source sync failed.");
+      } else if (full) {
+        toast.success(
+          target?.recovery
+            ? `Full re-sync (recovery) ran for ${sourceName(source)}.`
+            : `Recovery sync triggered for ${sourceName(source)}.`,
+        );
       } else {
         toast.success(target?.detail || `Sync triggered for ${sourceName(source)}.`);
       }
@@ -3507,6 +3517,23 @@ export default function CalendarWorkspacePage() {
                         >
                           {syncingSourceKey === source.source_key ? "Syncing..." : "Sync now"}
                         </PillButton>
+                        <PillButton
+                          onClick={() => handleSyncSource(source, { full: true })}
+                          disabled={syncMutation.isPending || !source.butler_name}
+                          title="Full re-sync from scratch (cursor recovery)"
+                        >
+                          Recover
+                        </PillButton>
+                        {source.error_kind === "token_expired" ||
+                        source.error_kind === "auth" ? (
+                          <Link
+                            to="/ingestion?tab=connectors"
+                            className="inline-flex items-center rounded-[3px] border border-[var(--red)] px-2 py-0.5 text-[11px] font-medium text-[var(--red)] transition-colors hover:bg-[var(--red)]/10"
+                            title="This source needs re-authorization"
+                          >
+                            Reconnect
+                          </Link>
+                        ) : null}
                       </div>
                     }
                   >
@@ -3542,6 +3569,11 @@ export default function CalendarWorkspacePage() {
                             title={source.last_error}
                           >
                             <StateDot state="error" />
+                            {source.error_kind && source.error_kind !== "none" ? (
+                              <KindTag className="text-[var(--red)]">
+                                {source.error_kind}
+                              </KindTag>
+                            ) : null}
                             <span className="max-w-[16rem] truncate text-[11px] text-[var(--red)]">
                               {source.last_error}
                             </span>

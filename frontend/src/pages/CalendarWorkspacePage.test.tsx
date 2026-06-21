@@ -120,6 +120,7 @@ function setWorkspaceState(state?: Partial<UseWorkspaceResult>) {
             full_sync_required: false,
             sync_state: "fresh",
             staleness_ms: 500,
+            error_kind: "none",
           },
         ],
         lanes: [],
@@ -162,6 +163,7 @@ function setWorkspaceMetaState(state?: Partial<UseWorkspaceMetaResult>) {
             full_sync_required: false,
             sync_state: "fresh",
             staleness_ms: 1000,
+            error_kind: "none",
           },
           {
             source_id: "source-2",
@@ -182,6 +184,7 @@ function setWorkspaceMetaState(state?: Partial<UseWorkspaceMetaResult>) {
             full_sync_required: false,
             sync_state: "fresh",
             staleness_ms: 1000,
+            error_kind: "none",
           },
         ],
         writable_calendars: [
@@ -346,6 +349,7 @@ function setButlerWorkspaceFixtures() {
             full_sync_required: false,
             sync_state: "fresh",
             staleness_ms: 900,
+            error_kind: "none",
           },
           {
             source_id: "source-butler-2",
@@ -366,6 +370,7 @@ function setButlerWorkspaceFixtures() {
             full_sync_required: false,
             sync_state: "fresh",
             staleness_ms: 900,
+            error_kind: "none",
           },
         ],
         lanes: [
@@ -415,6 +420,7 @@ function setButlerWorkspaceFixtures() {
             full_sync_required: false,
             sync_state: "fresh",
             staleness_ms: 900,
+            error_kind: "none",
           },
           {
             source_id: "source-butler-2",
@@ -435,6 +441,7 @@ function setButlerWorkspaceFixtures() {
             full_sync_required: false,
             sync_state: "fresh",
             staleness_ms: 900,
+            error_kind: "none",
           },
         ],
         writable_calendars: [],
@@ -694,6 +701,7 @@ describe("CalendarWorkspacePage", () => {
               full_sync_required: false,
               sync_state: "fresh",
               staleness_ms: 1000,
+              error_kind: "none",
             },
           ],
           writable_calendars: [
@@ -1658,6 +1666,7 @@ describe("CalendarWorkspacePage", () => {
               full_sync_required: false,
               sync_state: "fresh",
               staleness_ms: 900,
+              error_kind: "none",
             },
           ],
           writable_calendars: [],
@@ -1729,6 +1738,7 @@ describe("CalendarWorkspacePage", () => {
               full_sync_required: false,
               sync_state: "fresh",
               staleness_ms: 900,
+              error_kind: "none",
             },
           ],
           writable_calendars: [],
@@ -1851,6 +1861,127 @@ describe("CalendarWorkspacePage", () => {
       });
 
       expect(container.querySelector('[data-testid="entry-detail-panel"]')).toBeNull();
+    });
+  });
+
+  describe("sync recovery cockpit", () => {
+    function setSourceMeta(errorKind: string, lastError: string | null) {
+      setWorkspaceMetaState({
+        data: {
+          data: {
+            capabilities: {
+              views: ["user", "butler"],
+              filters: { butlers: true, sources: true, timezone: true },
+              sync: { global: true, by_source: true },
+            },
+            connected_sources: [
+              {
+                source_id: "source-g1",
+                source_key: "google:work",
+                source_kind: "provider_event",
+                lane: "user",
+                provider: "google",
+                calendar_id: "work",
+                butler_name: "general",
+                display_name: "Work",
+                writable: true,
+                metadata: {},
+                cursor_name: "provider_sync",
+                last_synced_at: "2026-03-01T10:00:00Z",
+                last_success_at: lastError ? null : "2026-03-01T10:00:00Z",
+                last_error_at: lastError ? "2026-03-01T10:05:00Z" : null,
+                last_error: lastError,
+                full_sync_required: false,
+                sync_state: lastError ? "failed" : "fresh",
+                staleness_ms: 900,
+                error_kind: errorKind,
+              },
+            ],
+            writable_calendars: [],
+            lane_definitions: [],
+            default_timezone: "UTC",
+            primary_calendar_id: null,
+          },
+          meta: {},
+        },
+      } as Partial<UseWorkspaceMetaResult>);
+    }
+
+    async function openSourcesDialog() {
+      renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+      await act(async () => {
+        const configureButton = document.querySelector(
+          'button[aria-label="Configure sources"]',
+        ) as HTMLButtonElement;
+        configureButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+    }
+
+    it("Recover button triggers a full re-sync (full=true)", async () => {
+      setButlerWorkspaceFixtures();
+      setSourceMeta("none", null);
+      const syncMutateAsync = vi.fn().mockResolvedValue({
+        data: {
+          scope: "source",
+          requested_source_key: "google:work",
+          requested_source_id: null,
+          full: true,
+          targets: [
+            {
+              butler_name: "general",
+              source_key: "google:work",
+              calendar_id: "work",
+              status: "sync_completed",
+              detail: null,
+              error: null,
+              recovery: true,
+            },
+          ],
+          triggered_count: 1,
+        },
+        meta: {},
+      });
+      setSyncState({ mutateAsync: syncMutateAsync });
+
+      await openSourcesDialog();
+
+      const recoverButton = findButton("Recover");
+      expect(recoverButton).toBeDefined();
+      await act(async () => {
+        recoverButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      expect(syncMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ source_key: "google:work", full: true }),
+      );
+    });
+
+    it("shows a Reconnect CTA for a token-expired source", async () => {
+      setButlerWorkspaceFixtures();
+      setSourceMeta("token_expired", "sync token expired (410 Gone)");
+      setSyncState();
+
+      await openSourcesDialog();
+
+      const reconnect = Array.from(document.querySelectorAll("a")).find(
+        (anchor) => anchor.textContent?.trim() === "Reconnect",
+      );
+      expect(reconnect).toBeDefined();
+    });
+
+    it("hides the Reconnect CTA for a healthy source", async () => {
+      setButlerWorkspaceFixtures();
+      setSourceMeta("none", null);
+      setSyncState();
+
+      await openSourcesDialog();
+
+      const reconnect = Array.from(document.querySelectorAll("a")).find(
+        (anchor) => anchor.textContent?.trim() === "Reconnect",
+      );
+      expect(reconnect).toBeUndefined();
     });
   });
 

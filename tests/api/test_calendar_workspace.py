@@ -1049,3 +1049,140 @@ async def test_undo_already_undone_returns_409(app):
     assert resp.status_code == 409
     assert "already undone" in resp.json()["detail"]
     mock_client.call_tool.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Sync-health & cursor-recovery cockpit (bu-wwftzj)
+# ---------------------------------------------------------------------------
+
+
+async def test_sync_forwards_full_recovery_flag(app):
+    """POST /workspace/sync with full=true forwards full to calendar_force_sync.
+
+    The flag reaches the MCP tool and the per-target ``recovery`` result is
+    surfaced; the response echoes ``full``.
+    """
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ]
+    }
+    general_client = AsyncMock()
+    general_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "sync_completed", "full": True, "recovery": True})
+    )
+    app, _, _ = _build_app(
+        app,
+        source_rows=source_rows,
+        mcp_clients={"general": general_client},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/sync",
+            json={"source_key": "provider:google:primary", "butler": "general", "full": True},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["full"] is True
+    assert data["scope"] == "source"
+    assert data["targets"][0]["recovery"] is True
+
+    # The full flag must be forwarded to the MCP tool call.
+    call_args = general_client.call_tool.await_args
+    assert call_args.args[0] == "calendar_force_sync"
+    assert call_args.args[1]["full"] is True
+
+
+async def test_sync_incremental_default_does_not_force_full(app):
+    """Omitting full preserves incremental behavior: full=false is forwarded."""
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ]
+    }
+    general_client = AsyncMock()
+    general_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "sync_completed", "recovery": False})
+    )
+    app, _, _ = _build_app(app, source_rows=source_rows, mcp_clients={"general": general_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/sync",
+            json={"source_key": "provider:google:primary", "butler": "general"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["full"] is False
+    assert data["targets"][0]["recovery"] is False
+    assert general_client.call_tool.await_args.args[1]["full"] is False
+
+
+async def test_meta_carries_per_source_error_kind(app):
+    """GET /workspace/meta classifies each source's last_error into error_kind."""
+    token_expired = _workspace_source_row(
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        lane="user",
+        butler_name=None,
+        provider="google",
+        calendar_id="owner@example.com",
+        writable=True,
+        metadata={"account_email": "owner@example.com"},
+    )
+    token_expired["last_error"] = "sync token expired (410 Gone)"
+    token_expired["last_success_at"] = None
+    token_expired["last_error_at"] = datetime.now(tz=UTC)
+
+    healthy = _workspace_source_row(
+        source_key="provider:google:work",
+        source_kind="provider_event",
+        lane="user",
+        butler_name=None,
+        provider="google",
+        calendar_id="work@example.com",
+        writable=True,
+        metadata={"account_email": "owner@example.com"},
+    )
+
+    app, _, _ = _build_app(
+        app,
+        source_rows={"general": [token_expired, healthy]},
+        calendar_butlers=["general"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/meta")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    by_key = {s["source_key"]: s for s in data["connected_sources"]}
+    assert by_key["provider:google:primary"]["error_kind"] == "token_expired"
+    # Raw last_error is still available alongside the derived classification.
+    assert by_key["provider:google:primary"]["last_error"] == "sync token expired (410 Gone)"
+    assert by_key["provider:google:work"]["error_kind"] == "none"

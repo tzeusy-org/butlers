@@ -8,23 +8,23 @@
 
 ## 2. Cursor recovery: `full` flag on force-sync (bu-wwftzj)
 
-- [ ] 2.1 Add `full: bool = False` to `calendar_force_sync` and thread a `full` parameter into the internal sync entry so `full=true` forces `sync_token=None` (full re-sync over `config.sync.full_sync_window_days`)
-- [ ] 2.2 Log a recovery line whenever a token-expiry/full re-sync runs (410 fallback OR `full=true`) — "must log on recover"
-- [ ] 2.3 Keep `full=false` behavior identical to today's incremental sync
-- [ ] 2.4 Unit tests: `full=true` syncs with `sync_token=None` and logs recovery; `full=false` uses the stored token
+- [x] 2.1 Add `full: bool = False` to `calendar_force_sync` and thread a `full` parameter into the internal sync entry so `full=true` forces `sync_token=None` (full re-sync over `config.sync.full_sync_window_days`)
+- [x] 2.2 Log a recovery line whenever a token-expiry/full re-sync runs (410 fallback OR `full=true`) — "must log on recover"
+- [x] 2.3 Keep `full=false` behavior identical to today's incremental sync
+- [x] 2.4 Unit tests: `full=true` syncs with `sync_token=None` and logs recovery; `full=false` uses the stored token
 
 ## 3. Per-source `error_kind` in freshness (bu-wwftzj)
 
-- [ ] 3.1 Classify each source's error in `_projection_freshness_metadata` into `error_kind` ∈ {`none`, `token_expired`, `auth`, `not_found`, `transient`} from the cursor's `last_error`/`full_sync_required`
-- [ ] 3.2 Surface `error_kind` in the `calendar_sync_status` MCP tool payload
-- [ ] 3.3 Unit tests: token-expired, auth, not-found, transient, and healthy sources map to the expected `error_kind`
+- [x] 3.1 Classify each source's error in `_projection_freshness_metadata` into `error_kind` ∈ {`none`, `token_expired`, `auth`, `not_found`, `transient`} from the cursor's `last_error`/`full_sync_required`
+- [x] 3.2 Surface `error_kind` in the `calendar_sync_status` MCP tool payload
+- [x] 3.3 Unit tests: token-expired, auth, not-found, transient, and healthy sources map to the expected `error_kind`
 
 ## 4. Workspace sync endpoint recovery + error_kind (bu-wwftzj)
 
-- [ ] 4.1 Add `full: bool` to `CalendarWorkspaceSyncRequest` and forward it to `calendar_force_sync(full=...)` for the targeted source(s)
-- [ ] 4.2 Report per-target whether a full recovery ran in `CalendarWorkspaceSyncTarget`
-- [ ] 4.3 Add `error_kind` to `CalendarWorkspaceSourceFreshness` and populate it in `GET /api/calendar/workspace/meta`
-- [ ] 4.4 API tests: `POST .../workspace/sync` with `full=true` forwards the flag and marks the target full-recovered; `GET .../meta` returns `error_kind`
+- [x] 4.1 Add `full: bool` to `CalendarWorkspaceSyncRequest` and forward it to `calendar_force_sync(full=...)` for the targeted source(s)
+- [x] 4.2 Report per-target whether a full recovery ran in `CalendarWorkspaceSyncTarget`
+- [x] 4.3 Add `error_kind` to `CalendarWorkspaceSourceFreshness` and populate it in `GET /api/calendar/workspace/meta`
+- [x] 4.4 API tests: `POST .../workspace/sync` with `full=true` forwards the flag and marks the target full-recovered; `GET .../meta` returns `error_kind`
 
 ## 5. Accounts control plane (bu-6cf3ri)
 

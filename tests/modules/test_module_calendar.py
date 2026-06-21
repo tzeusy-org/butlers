@@ -56,6 +56,8 @@ from butlers.modules.calendar import (
     CalendarModule,
     CalendarProvider,
     CalendarRequestError,
+    CalendarSyncState,
+    CalendarSyncTokenExpiredError,
     CalendarTokenRefreshError,
     _coerce_expires_in_seconds,
     _extract_google_credential_value,
@@ -71,6 +73,7 @@ from butlers.modules.calendar import (
     _recurrence_lines_append_exdate,
     _recurrence_lines_bound_until,
     _safe_google_error_message,
+    classify_sync_error_kind,
 )
 
 pytestmark = pytest.mark.unit
@@ -2874,3 +2877,164 @@ class TestRecurrenceScopedMutation:
                 request_id=None,
                 tool_name="calendar_delete_event",
             )
+
+
+# ---------------------------------------------------------------------------
+# Sync-health & cursor-recovery cockpit (bu-wwftzj)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifySyncErrorKind:
+    """``classify_sync_error_kind`` maps raw last_error strings to coarse kinds."""
+
+    @pytest.mark.parametrize(
+        ("last_error", "expected"),
+        [
+            (None, "none"),
+            ("", "none"),
+            ("sync token expired (410 Gone); recovering via full re-sync", "token_expired"),
+            ("Google Calendar API request failed (410): Gone", "token_expired"),
+            ("Google Calendar API request failed (401): invalid_grant", "auth"),
+            ("403 Forbidden: insufficient permission", "auth"),
+            ("refresh token revoked", "auth"),
+            ("Google Calendar API request failed (404): Not Found", "not_found"),
+            ("connection reset by peer", "transient"),
+            ("temporary backend hiccup", "transient"),
+        ],
+    )
+    def test_classification(self, last_error, expected):
+        assert classify_sync_error_kind(last_error) == expected
+
+
+class TestCalendarForceSyncRecovery:
+    """``calendar_force_sync`` cursor-recovery: full vs incremental + token expiry."""
+
+    async def _make_sync_module(self, provider) -> tuple[CalendarModule, _StubMCP]:
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        mod._all_provider_calendar_ids = ["primary"]
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+            butler_name="test-butler",
+        )
+        # Isolate the provider-pull behavior from the internal push pipeline.
+        mod._push_internal_events_to_provider = AsyncMock()
+        return mod, mcp
+
+    @staticmethod
+    def _recording_provider():
+        class _Recording(_ProviderDouble):
+            def __init__(self) -> None:
+                super().__init__()
+                self.tokens: list[str | None] = []
+
+            async def sync_incremental(self, *, calendar_id, sync_token, full_sync_window_days=30):
+                self.tokens.append(sync_token)
+                return [], [], "new-token"
+
+        return _Recording()
+
+    async def test_force_incremental_uses_stored_token(self):
+        provider = self._recording_provider()
+        mod, mcp = await self._make_sync_module(provider)
+        mod._sync_states["primary"] = CalendarSyncState(sync_token="stored-token")
+
+        result = await mcp.tools["calendar_force_sync"]()
+
+        assert provider.tokens == ["stored-token"]
+        assert result["full"] is False
+        assert result["recovery"] is False
+
+    async def test_force_full_resync_ignores_token_and_logs(self, caplog):
+        provider = self._recording_provider()
+        mod, mcp = await self._make_sync_module(provider)
+        mod._sync_states["primary"] = CalendarSyncState(sync_token="stored-token")
+
+        with caplog.at_level(logging.INFO, logger="butlers.modules.calendar"):
+            result = await mcp.tools["calendar_force_sync"](full=True)
+
+        # full=True forces a full re-sync (sync_token=None), discarding the token.
+        assert provider.tokens == [None]
+        assert result["full"] is True
+        assert result["recovery"] is True
+        assert any("full re-sync" in record.getMessage().lower() for record in caplog.records), (
+            "a forced full re-sync must be logged"
+        )
+
+    async def test_token_expiry_recovery_is_logged(self, caplog):
+        class _Expiring(_ProviderDouble):
+            def __init__(self) -> None:
+                super().__init__()
+                self.tokens: list[str | None] = []
+
+            async def sync_incremental(self, *, calendar_id, sync_token, full_sync_window_days=30):
+                self.tokens.append(sync_token)
+                if sync_token is not None:
+                    raise CalendarSyncTokenExpiredError("sync token expired")
+                return [], [], "fresh-token"
+
+        provider = _Expiring()
+        mod, mcp = await self._make_sync_module(provider)
+        mod._sync_states["primary"] = CalendarSyncState(sync_token="stale-token")
+
+        with caplog.at_level(logging.WARNING, logger="butlers.modules.calendar"):
+            result = await mcp.tools["calendar_force_sync"]()
+
+        # Incremental attempt (token) then 410 fallback full re-sync (None).
+        assert provider.tokens == ["stale-token", None]
+        assert result["recovery"] is True
+        messages = " ".join(record.getMessage().lower() for record in caplog.records)
+        assert "410" in messages or "expired" in messages
+
+
+class TestProjectionFreshnessErrorKind:
+    """``_projection_freshness_metadata`` surfaces a per-source ``error_kind``."""
+
+    @staticmethod
+    def _source_row(*, source_key: str, last_error: str | None) -> _FakeRecord:
+        now = datetime.now(UTC)
+        return _FakeRecord(
+            {
+                "id": uuid.uuid4(),
+                "source_key": source_key,
+                "source_kind": "provider_event",
+                "lane": "user",
+                "provider": "google",
+                "calendar_id": f"{source_key}@example.com",
+                "butler_name": "test-butler",
+                "cursor_name": "provider_sync",
+                "last_synced_at": now,
+                "last_success_at": None if last_error else now,
+                "last_error_at": now if last_error else None,
+                "last_error": last_error,
+                "full_sync_required": False,
+            }
+        )
+
+    async def test_error_kind_per_source(self):
+        rows = [
+            self._source_row(source_key="healthy", last_error=None),
+            self._source_row(source_key="expired", last_error="sync token expired (410 Gone)"),
+            self._source_row(source_key="bad_auth", last_error="401 invalid_grant"),
+            self._source_row(source_key="missing", last_error="404 Not Found"),
+            self._source_row(source_key="flaky", last_error="connection reset"),
+        ]
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=rows)
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+
+        meta = await mod._projection_freshness_metadata()
+
+        by_key = {source["source_key"]: source for source in meta["sources"]}
+        assert by_key["healthy"]["error_kind"] == "none"
+        assert by_key["expired"]["error_kind"] == "token_expired"
+        assert by_key["bad_auth"]["error_kind"] == "auth"
+        assert by_key["missing"]["error_kind"] == "not_found"
+        assert by_key["flaky"]["error_kind"] == "transient"
+        # Raw last_error remains available alongside the derived classification.
+        assert by_key["expired"]["last_error"] == "sync token expired (410 Gone)"

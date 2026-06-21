@@ -110,6 +110,14 @@ SOURCE_KIND_INTERNAL_REMINDERS = "internal_reminders"
 PROJECTION_STATUS_FRESH = "fresh"
 PROJECTION_STATUS_STALE = "stale"
 PROJECTION_STATUS_FAILED = "failed"
+# Per-source error classification surfaced alongside the raw ``last_error`` so the
+# dashboard can show the right recovery CTA (Recover vs Reconnect). Healthy
+# sources report ``none``.
+SYNC_ERROR_KIND_NONE = "none"
+SYNC_ERROR_KIND_TOKEN_EXPIRED = "token_expired"
+SYNC_ERROR_KIND_AUTH = "auth"
+SYNC_ERROR_KIND_NOT_FOUND = "not_found"
+SYNC_ERROR_KIND_TRANSIENT = "transient"
 # Default duration for scheduled tasks when start_at/end_at are not set.
 DEFAULT_SCHEDULED_TASK_DURATION_MINUTES = 15
 # Interval for periodic internal projection refresh (startup + periodic background task).
@@ -163,6 +171,44 @@ class CalendarRequestError(CalendarAuthError):
 
 class CalendarSyncTokenExpiredError(CalendarAuthError):
     """Raised when a sync token is expired or invalid; caller should do a full sync."""
+
+
+def classify_sync_error_kind(last_error: str | None) -> str:
+    """Classify a source's raw ``last_error`` into a coarse ``error_kind``.
+
+    Returns one of :data:`SYNC_ERROR_KIND_NONE`, ``token_expired``, ``auth``,
+    ``not_found``, or ``transient`` so the dashboard can distinguish a stale
+    source that needs **Recover** (full re-sync) from one that needs
+    **Reconnect** (re-authorization). The raw ``last_error`` string remains the
+    source of truth; this is a derived hint only.
+
+    A missing/empty error maps to ``none`` — classification does not depend on
+    ``full_sync_required`` (a source pending a full re-sync without a recorded
+    error is *stale*, not *failed*).
+    """
+    if not last_error:
+        return SYNC_ERROR_KIND_NONE
+    text = last_error.lower()
+    if "410" in text or "gone" in text or "expired" in text or "sync token" in text:
+        return SYNC_ERROR_KIND_TOKEN_EXPIRED
+    if any(
+        token in text
+        for token in (
+            "auth",
+            "401",
+            "403",
+            "unauthor",
+            "forbidden",
+            "credential",
+            "permission",
+            "invalid_grant",
+            "refresh token",
+        )
+    ):
+        return SYNC_ERROR_KIND_AUTH
+    if "404" in text or "not found" in text or "notfound" in text:
+        return SYNC_ERROR_KIND_NOT_FOUND
+    return SYNC_ERROR_KIND_TRANSIENT
 
 
 def _is_transient_connectivity_error(exc: BaseException) -> bool:
@@ -4613,6 +4659,7 @@ class CalendarModule(Module):
                     "sync_token_valid": False,
                     "last_batch_change_count": 0,
                     "last_sync_error": None,
+                    "error_kind": SYNC_ERROR_KIND_NONE,
                     "projection_freshness": projection_freshness,
                 }
 
@@ -4638,12 +4685,14 @@ class CalendarModule(Module):
                 "sync_token_valid": sync_state.sync_token is not None,
                 "last_batch_change_count": sync_state.last_batch_change_count,
                 "last_sync_error": sync_state.last_sync_error,
+                "error_kind": classify_sync_error_kind(sync_state.last_sync_error),
                 "projection_freshness": projection_freshness,
             }
 
         @_tool("core")
         async def calendar_force_sync(
             calendar_id: str | None = None,
+            full: bool = False,
         ) -> dict[str, Any]:
             """Trigger an immediate sync outside the normal polling schedule (spec section 13.5).
 
@@ -4652,6 +4701,12 @@ class CalendarModule(Module):
             calendar.  When a specific ``calendar_id`` is given, syncs only
             that calendar.
 
+            When ``full=True`` this is the operator-driven **cursor recovery**
+            path: the sync ignores the stored incremental token and runs a full
+            re-sync over ``config.sync.full_sync_window_days`` (``sync_token=None``).
+            The default (``full=False``) preserves the incremental behavior using
+            the stored sync token. A forced full re-sync is logged.
+
             Fail-open: provider errors are recorded in last_sync_error rather than raised.
             """
             provider = module._require_provider()
@@ -4659,7 +4714,7 @@ class CalendarModule(Module):
             if calendar_id is not None:
                 # Sync a single specific calendar.
                 resolved = module._resolve_calendar_id(calendar_id)
-                await module._sync_calendar(resolved)
+                recovery = await module._sync_calendar(resolved, full=full)
                 # Push internal events to the Butlers Google Calendar.
                 try:
                     await module._push_internal_events_to_provider()
@@ -4670,9 +4725,12 @@ class CalendarModule(Module):
                     "status": "sync_completed",
                     "provider": provider.name,
                     "calendar_id": resolved,
+                    "full": full,
+                    "recovery": recovery,
                     "last_sync_at": sync_state.last_sync_at,
                     "last_batch_change_count": sync_state.last_batch_change_count,
                     "last_sync_error": sync_state.last_sync_error,
+                    "error_kind": classify_sync_error_kind(sync_state.last_sync_error),
                     "projection_freshness": await module._projection_freshness_metadata(),
                 }
 
@@ -4684,9 +4742,11 @@ class CalendarModule(Module):
 
             total_updated = 0
             errors: list[str] = []
+            recovered_calendars: list[str] = []
             for cid in cal_ids:
                 try:
-                    await module._sync_calendar(cid)
+                    if await module._sync_calendar(cid, full=full):
+                        recovered_calendars.append(cid)
                 except Exception as exc:
                     errors.append(f"{cid}: {exc}")
                 state = module._sync_states.get(cid, CalendarSyncState())
@@ -4706,6 +4766,9 @@ class CalendarModule(Module):
                 "provider": provider.name,
                 "calendars_synced": len(cal_ids),
                 "total_changes": total_updated,
+                "full": full,
+                "recovery": bool(recovered_calendars),
+                "recovered_calendars": recovered_calendars,
                 "errors": errors or None,
                 "projection_freshness": await module._projection_freshness_metadata(),
             }
@@ -7138,6 +7201,7 @@ class CalendarModule(Module):
                     "full_sync_required": full_sync_required,
                     "sync_state": sync_state,
                     "staleness_ms": staleness_ms,
+                    "error_kind": classify_sync_error_kind(last_error),
                 }
             )
 
@@ -7151,16 +7215,25 @@ class CalendarModule(Module):
             "sources": source_payloads,
         }
 
-    async def _sync_calendar(self, calendar_id: str) -> None:
-        """Run one incremental sync cycle for ``calendar_id``.
+    async def _sync_calendar(self, calendar_id: str, *, full: bool = False) -> bool:
+        """Run one sync cycle for ``calendar_id``.
 
         Loads the saved sync token, calls the provider's sync endpoint, handles
         token expiration (falls back to full sync), and persists the new token.
         Errors are logged and swallowed so the poller stays alive.
+
+        When ``full=True`` this is operator-driven **cursor recovery**: the
+        stored incremental token is ignored and a full re-sync runs against
+        ``sync_token=None`` over ``config.sync.full_sync_window_days``. A forced
+        full re-sync is logged.
+
+        Returns ``True`` when a full re-sync ran (either because ``full=True`` or
+        because an expired token forced a 410 recovery), so callers can report
+        whether a recovery was performed.
         """
         provider = self._provider
         if provider is None:
-            return
+            return False
 
         config = self._require_config()
         sync_state = self._sync_states.get(calendar_id) or await self._load_sync_state(calendar_id)
@@ -7192,7 +7265,11 @@ class CalendarModule(Module):
         except Exception as exc:
             logger.debug("Failed to ensure provider calendar source '%s': %s", source_key, exc)
 
-        effective_sync_token = sync_state.sync_token
+        # Forced full re-sync (cursor recovery): ignore the stored incremental
+        # token so the provider returns a full window instead of a delta.
+        if full:
+            logger.info("Forced full re-sync (cursor recovery) for calendar '%s'", calendar_id)
+        effective_sync_token = None if full else sync_state.sync_token
         cursor_checkpoint: dict[str, Any] = {}
         if source_id is not None:
             try:
@@ -7204,12 +7281,14 @@ class CalendarModule(Module):
                 logger.debug("Failed loading projection cursor for '%s': %s", source_key, exc)
                 cursor_row = None
             if cursor_row is not None:
-                cursor_token = cursor_row.get("sync_token")
-                if isinstance(cursor_token, str):
-                    effective_sync_token = cursor_token
+                # A forced full recovery deliberately discards the stored token.
+                if not full:
+                    cursor_token = cursor_row.get("sync_token")
+                    if isinstance(cursor_token, str):
+                        effective_sync_token = cursor_token
                 cursor_checkpoint = self._normalize_json_object(cursor_row.get("checkpoint"))
 
-        performed_full_resync = False
+        performed_full_resync = full
         error_message: str | None = None
 
         try:
@@ -7220,9 +7299,32 @@ class CalendarModule(Module):
             )
         except CalendarSyncTokenExpiredError:
             logger.warning(
-                "Sync token expired for calendar '%s'; performing full re-sync", calendar_id
+                "Sync token expired (410 Gone) for calendar '%s'; recovering via full re-sync",
+                calendar_id,
             )
             performed_full_resync = True
+            # Record the token-expiry up-front so the source's ``error_kind`` is
+            # observable as ``token_expired`` even if the recovery below also
+            # fails. The success path overwrites this with a healthy cursor once
+            # the full re-sync lands.
+            token_expired_error = "sync token expired (410 Gone); recovering via full re-sync"
+            await self._upsert_projection_cursor(
+                source_id=source_id,
+                cursor_name=SYNC_CURSOR_PROVIDER,
+                sync_token=None,
+                checkpoint={
+                    **cursor_checkpoint,
+                    "provider": provider.name,
+                    "calendar_id": calendar_id,
+                    "error_kind": SYNC_ERROR_KIND_TOKEN_EXPIRED,
+                    "recovery": True,
+                },
+                full_sync_required=True,
+                last_synced_at=now,
+                last_success_at=self._coerce_datetime(cursor_checkpoint.get("last_success_at")),
+                last_error_at=now,
+                last_error=token_expired_error,
+            )
             try:
                 updated_events, cancelled_ids, next_token = await provider.sync_incremental(
                     calendar_id=calendar_id,
@@ -7281,7 +7383,7 @@ class CalendarModule(Module):
                     error=error_message,
                 )
                 await self._project_internal_sources()
-                return
+                return performed_full_resync
         except CalendarRequestError as exc:
             if exc.status_code == 404:
                 logger.warning(
@@ -7290,7 +7392,7 @@ class CalendarModule(Module):
                 self._all_provider_calendar_ids = [
                     cid for cid in self._all_provider_calendar_ids if cid != calendar_id
                 ]
-                return
+                return performed_full_resync
             raise
         except CalendarAuthError as exc:
             logger.error(
@@ -7334,7 +7436,7 @@ class CalendarModule(Module):
                 error=error_message,
             )
             await self._project_internal_sources()
-            return
+            return performed_full_resync
 
         if source_id is not None:
             try:
@@ -7440,6 +7542,7 @@ class CalendarModule(Module):
             len(updated_events),
             len(cancelled_ids),
         )
+        return performed_full_resync
 
     async def _run_sync_poller(self) -> None:
         """Background task: poll for calendar changes at the configured interval.

@@ -578,7 +578,20 @@ export interface CalendarWorkspaceSourceFreshness {
   full_sync_required: boolean;
   sync_state: CalendarWorkspaceSyncState;
   staleness_ms: number | null;
+  /**
+   * Coarse classification of `last_error` so the workspace can pick the right
+   * recovery CTA (Recover vs Reconnect). `none` means the source is healthy.
+   */
+  error_kind: CalendarWorkspaceErrorKind;
 }
+
+/** Coarse per-source sync error classification surfaced alongside `last_error`. */
+export type CalendarWorkspaceErrorKind =
+  | "none"
+  | "token_expired"
+  | "auth"
+  | "not_found"
+  | "transient";
 
 /** Butler lane descriptor used by butler-view layouts. */
 export interface CalendarWorkspaceLaneDefinition {
@@ -671,6 +684,11 @@ export interface CalendarWorkspaceSyncRequest {
   source_key?: string;
   source_id?: string;
   butler?: string;
+  /**
+   * Operator-driven cursor recovery. When true, the targeted source(s) run a
+   * full re-sync ignoring the stored incremental token. Default false.
+   */
+  full?: boolean;
 }
 
 /** One sync trigger attempt result. */
@@ -681,6 +699,8 @@ export interface CalendarWorkspaceSyncTarget {
   status: string;
   detail: string | null;
   error: string | null;
+  /** Whether a full re-sync (cursor recovery) ran for this target. */
+  recovery: boolean;
 }
 
 /** Response payload for POST /api/calendar/workspace/sync. */
@@ -688,6 +708,8 @@ export interface CalendarWorkspaceSyncResponse {
   scope: "all" | "source";
   requested_source_key: string | null;
   requested_source_id: string | null;
+  /** Echoes whether the request asked for a full recovery sync. */
+  full: boolean;
   targets: CalendarWorkspaceSyncTarget[];
   triggered_count: number;
 }

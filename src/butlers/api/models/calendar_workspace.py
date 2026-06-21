@@ -71,6 +71,10 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     full_sync_required: bool = False
     sync_state: CalendarSyncState = "stale"
     staleness_ms: int | None = None
+    #: Coarse classification of ``last_error`` so the workspace can pick the
+    #: right recovery CTA (Recover vs Reconnect). Additive: clients that ignore
+    #: it observe the prior shape. ``none`` means the source is healthy.
+    error_kind: Literal["none", "token_expired", "auth", "not_found", "transient"] = "none"
 
 
 class CalendarWorkspaceLaneDefinition(BaseModel):
@@ -155,6 +159,10 @@ class CalendarWorkspaceSyncRequest(BaseModel):
     source_key: str | None = None
     source_id: UUID | None = None
     butler: str | None = None
+    #: Operator-driven cursor recovery. When true, the targeted source(s) run a
+    #: full re-sync (``calendar_force_sync(full=true)``) ignoring the stored
+    #: incremental token. Default false preserves incremental behavior.
+    full: bool = False
 
     @model_validator(mode="after")
     def _validate_scope(self) -> CalendarWorkspaceSyncRequest:
@@ -174,6 +182,9 @@ class CalendarWorkspaceSyncTarget(BaseModel):
     status: str
     detail: str | None = None
     error: str | None = None
+    #: Whether a full re-sync (cursor recovery) ran for this target. Mirrors the
+    #: ``recovery`` flag returned by ``calendar_force_sync``.
+    recovery: bool = False
 
 
 class CalendarWorkspaceSyncResponse(BaseModel):
@@ -182,6 +193,8 @@ class CalendarWorkspaceSyncResponse(BaseModel):
     scope: Literal["all", "source"]
     requested_source_key: str | None = None
     requested_source_id: UUID | None = None
+    #: Echoes whether the request asked for a full recovery sync.
+    full: bool = False
     targets: list[CalendarWorkspaceSyncTarget] = Field(default_factory=list)
     triggered_count: int = 0
 
