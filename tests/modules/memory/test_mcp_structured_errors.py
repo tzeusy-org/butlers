@@ -33,160 +33,62 @@ pytestmark = pytest.mark.unit
 
 
 class TestInferRecoverySteps:
-    """Unit tests for _infer_recovery_steps(), covering all 6 ValueError patterns."""
-
-    # --- Scenario 1: Invalid entity_id ---
-
-    def test_invalid_entity_id_recovery(self) -> None:
-        """entity_id not found returns an entity-resolve recovery message."""
-        exc = ValueError("entity_id UUID('abc') does not exist in entities table")
-        recovery = _infer_recovery_steps(exc)
-        assert "memory_entity_resolve" in recovery
-        assert "entity_id" in recovery or "entity" in recovery.lower()
-
-    def test_invalid_entity_id_mentions_create_option(self) -> None:
-        """Recovery for missing entity_id mentions memory_entity_create as fallback."""
-        exc = ValueError("entity_id UUID('abc') does not exist in entities table")
-        recovery = _infer_recovery_steps(exc)
-        assert "memory_entity_create" in recovery
-
-    # --- Scenario 2: Edge predicate missing object_entity_id ---
-
-    def test_edge_predicate_missing_object_entity_id_recovery(self) -> None:
-        """Edge predicate violation returns recovery mentioning object_entity_id."""
-        exc = ValueError(
-            "Predicate 'parent_of' is registered as an edge predicate "
-            "(is_edge=true) and requires object_entity_id to be set. "
-            "Call memory_entity_resolve(identifier=<target_name>) to resolve "
-            "the target entity, then retry with object_entity_id."
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "object_entity_id" in recovery
-        assert "memory_entity_resolve" in recovery
-
-    def test_edge_predicate_recovery_mentions_target_entity(self) -> None:
-        """Edge predicate recovery explains the need to resolve a target entity."""
-        exc = ValueError(
-            "Predicate 'knows' is registered as an edge predicate "
-            "(is_edge=true) and requires object_entity_id to be set."
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "target" in recovery.lower() or "entity" in recovery.lower()
-
-    # --- Scenario 3: Temporal predicate missing valid_at ---
-
-    def test_temporal_predicate_missing_valid_at_recovery(self) -> None:
-        """Temporal predicate violation returns recovery mentioning valid_at."""
-        exc = ValueError(
-            "Predicate 'interaction' is registered as a temporal predicate "
-            "(is_temporal=true) and requires valid_at to be set. "
-            "Omitting valid_at would cause supersession to destroy previous records."
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "valid_at" in recovery
-
-    def test_temporal_predicate_recovery_mentions_iso8601(self) -> None:
-        """Recovery for temporal predicate includes ISO-8601 format guidance."""
-        exc = ValueError(
-            "Predicate 'meal_breakfast' is registered as a temporal predicate "
-            "(is_temporal=true) and requires valid_at to be set."
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "ISO-8601" in recovery or "iso" in recovery.lower()
-
-    # --- Scenario 4: Self-referencing edge ---
-
-    def test_self_referencing_edge_recovery(self) -> None:
-        """Self-referencing edge returns recovery explaining entities must differ."""
-        exc = ValueError(
-            "Self-referencing edges are not allowed: entity_id and object_entity_id must differ"
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "different" in recovery.lower() or "differ" in recovery.lower()
-        assert "object_entity_id" in recovery
-
-    def test_self_referencing_edge_recovery_mentions_resolve(self) -> None:
-        """Self-referencing edge recovery suggests resolving the correct target."""
-        exc = ValueError(
-            "Self-referencing edges are not allowed: entity_id and object_entity_id must differ"
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "memory_entity_resolve" in recovery
-
-    # --- Scenario 5: UUID in content without object_entity_id ---
-
-    def test_embedded_uuid_in_content_recovery(self) -> None:
-        """UUID in content returns recovery explaining to use object_entity_id."""
-        exc = ValueError(
-            "content contains an embedded UUID (550e8400-e29b-41d4-a716-446655440000) but "
-            "object_entity_id is not set. If this fact describes a relationship between "
-            "entities, pass the target entity's UUID as object_entity_id instead of "
-            "embedding it in content."
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "object_entity_id" in recovery
-        assert "content" in recovery.lower() or "embed" in recovery.lower()
-
-    def test_embedded_uuid_recovery_mentions_resolve(self) -> None:
-        """UUID in content recovery mentions memory_entity_resolve."""
-        exc = ValueError(
-            "content contains an embedded UUID (abc-123) but object_entity_id is not set."
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "memory_entity_resolve" in recovery
-
-    # --- Scenario 6: Invalid permanence ---
-
-    def test_invalid_permanence_recovery(self) -> None:
-        """Invalid permanence returns recovery listing valid permanence values."""
-        exc = ValueError(
-            "Invalid permanence: 'forever'. Must be one of "
-            "['ephemeral', 'permanent', 'stable', 'standard', 'volatile']"
-        )
-        recovery = _infer_recovery_steps(exc)
-        assert "permanent" in recovery
-        assert "stable" in recovery
-        assert "standard" in recovery
-        assert "volatile" in recovery
-        assert "ephemeral" in recovery
-
-    # --- Generic fallback ---
-
-    def test_unknown_error_returns_generic_recovery(self) -> None:
-        """An unrecognized ValueError message returns the generic fallback recovery."""
-        exc = ValueError("Something completely unexpected happened in the database")
-        recovery = _infer_recovery_steps(exc)
-        assert recovery  # non-empty
-        assert "memory_store_fact" in recovery or "memory_predicate_list" in recovery
-
-    # --- Recovery strings are non-empty ---
+    """_infer_recovery_steps() maps each ValueError class to actionable next-tool hints."""
 
     @pytest.mark.parametrize(
-        "error_msg",
+        ("error_msg", "required_substrings"),
         [
-            "entity_id UUID('abc') does not exist in entities table",
+            # Scenario 1: invalid entity_id → resolve + create fallback
+            (
+                "entity_id UUID('abc') does not exist in entities table",
+                ["memory_entity_resolve", "memory_entity_create"],
+            ),
+            # Scenario 2: edge predicate missing object_entity_id
             (
                 "Predicate 'parent_of' is registered as an edge predicate "
-                "(is_edge=true) and requires object_entity_id to be set."
+                "(is_edge=true) and requires object_entity_id to be set. "
+                "Call memory_entity_resolve(identifier=<target_name>) to resolve "
+                "the target entity, then retry with object_entity_id.",
+                ["object_entity_id", "memory_entity_resolve"],
             ),
+            # Scenario 3: temporal predicate missing valid_at (+ ISO-8601 guidance)
             (
                 "Predicate 'interaction' is registered as a temporal predicate "
-                "(is_temporal=true) and requires valid_at to be set."
+                "(is_temporal=true) and requires valid_at to be set.",
+                ["valid_at", "ISO-8601"],
             ),
-            "Self-referencing edges are not allowed: entity_id and object_entity_id must differ",
-            "content contains an embedded UUID (abc-123) but object_entity_id is not set.",
+            # Scenario 4: self-referencing edge
+            (
+                "Self-referencing edges are not allowed: "
+                "entity_id and object_entity_id must differ",
+                ["object_entity_id", "memory_entity_resolve"],
+            ),
+            # Scenario 5: UUID embedded in content
+            (
+                "content contains an embedded UUID (abc-123) but object_entity_id is not set.",
+                ["object_entity_id", "memory_entity_resolve"],
+            ),
+            # Scenario 6: invalid permanence → lists the valid enum values
             (
                 "Invalid permanence: 'forever'. Must be one of "
-                "['ephemeral', 'permanent', 'stable', 'standard', 'volatile']"
+                "['ephemeral', 'permanent', 'stable', 'standard', 'volatile']",
+                ["permanent", "stable", "standard", "volatile", "ephemeral"],
             ),
         ],
     )
-    def test_all_scenarios_return_non_empty_recovery(self, error_msg: str) -> None:
-        """Every recognized error pattern must return a non-empty recovery string."""
-        exc = ValueError(error_msg)
-        recovery = _infer_recovery_steps(exc)
-        assert isinstance(recovery, str)
-        assert len(recovery) > 0
+    def test_recovery_routing_per_pattern(
+        self, error_msg: str, required_substrings: list[str]
+    ) -> None:
+        recovery = _infer_recovery_steps(ValueError(error_msg))
+        assert isinstance(recovery, str) and recovery
+        for needle in required_substrings:
+            assert needle in recovery, f"{needle!r} missing from recovery for {error_msg!r}"
+
+    def test_unknown_error_returns_generic_recovery(self) -> None:
+        """An unrecognized ValueError message returns the generic fallback recovery."""
+        recovery = _infer_recovery_steps(ValueError("Something completely unexpected happened"))
+        assert recovery  # non-empty
+        assert "memory_store_fact" in recovery or "memory_predicate_list" in recovery
 
 
 # ---------------------------------------------------------------------------
@@ -247,201 +149,79 @@ class TestMemoryStoreFactStructuredErrors:
             return_value={"source_entity_id": entity_id},
         )
 
-    # --- Scenario 1: Invalid entity_id (entity does not exist) ---
-
-    async def test_invalid_entity_id_returns_structured_error(self) -> None:
-        """ValueError for missing entity returns structured dict, not raw exception.
-
-        WHEN memory_store_fact is called and storage raises ValueError for a
-        non-existent entity_id,
-        THEN the MCP tool MUST return a structured dict with error, message, recovery.
-        """
-        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
-        writing.memory_store_fact = AsyncMock(
-            side_effect=ValueError(
-                f"entity_id UUID('{entity_uuid}') does not exist in entities table"
-            )
-        )
-
-        with self._patch_routing(entity_uuid):
-            result = await fact_tool(
-                subject="user",
-                predicate="name",
-                content="Alice",
-                entity_id=entity_uuid,
-            )
-
-        assert "error" in result
-        assert "message" in result
-        assert "recovery" in result
-        assert "memory_entity_resolve" in result["recovery"]
-
-    # --- Scenario 2: Edge predicate missing object_entity_id ---
-
-    async def test_edge_predicate_missing_object_returns_structured_error(self) -> None:
-        """ValueError for edge predicate without object_entity_id returns structured dict.
-
-        WHEN memory_store_fact is called with an edge predicate and no object_entity_id,
-        THEN the MCP tool MUST return a structured dict with recovery mentioning
-        memory_entity_resolve() and object_entity_id.
-        """
-        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
-        writing.memory_store_fact = AsyncMock(
-            side_effect=ValueError(
+    @pytest.mark.parametrize(
+        ("error_msg", "extra_kwargs", "recovery_substrings"),
+        [
+            # Scenario 1: invalid entity_id
+            (
+                "entity_id UUID('550e8400-e29b-41d4-a716-446655440000') "
+                "does not exist in entities table",
+                {},
+                ["memory_entity_resolve"],
+            ),
+            # Scenario 2: edge predicate missing object_entity_id
+            (
                 "Predicate 'parent_of' is registered as an edge predicate "
                 "(is_edge=true) and requires object_entity_id to be set. "
                 "Call memory_entity_resolve(identifier=<target_name>) to resolve "
-                "the target entity, then retry with object_entity_id."
-            )
-        )
-
-        with self._patch_routing(entity_uuid):
-            result = await fact_tool(
-                subject="Alice",
-                predicate="parent_of",
-                content="Bob",
-                entity_id=entity_uuid,
-            )
-
-        assert "error" in result
-        assert "message" in result
-        assert "recovery" in result
-        assert "object_entity_id" in result["recovery"]
-        assert "memory_entity_resolve" in result["recovery"]
-
-    # --- Scenario 3: Temporal predicate missing valid_at ---
-
-    async def test_temporal_predicate_missing_valid_at_returns_structured_error(self) -> None:
-        """ValueError for temporal predicate without valid_at returns structured dict.
-
-        WHEN memory_store_fact is called with a temporal predicate and no valid_at,
-        THEN the MCP tool MUST return a structured dict with recovery explaining
-        the valid_at ISO-8601 requirement.
-        """
-        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
-        writing.memory_store_fact = AsyncMock(
-            side_effect=ValueError(
+                "the target entity, then retry with object_entity_id.",
+                {"predicate": "parent_of"},
+                ["object_entity_id", "memory_entity_resolve"],
+            ),
+            # Scenario 3: temporal predicate missing valid_at
+            (
                 "Predicate 'interaction' is registered as a temporal predicate "
                 "(is_temporal=true) and requires valid_at to be set. "
-                "Omitting valid_at would cause supersession to destroy previous records "
-                "for this predicate. Provide an ISO-8601 valid_at timestamp."
-            )
-        )
-
-        with self._patch_routing(entity_uuid):
-            result = await fact_tool(
-                subject="Alice",
-                predicate="interaction",
-                content="had a phone call",
-                entity_id=entity_uuid,
-            )
-
-        assert "error" in result
-        assert "message" in result
-        assert "recovery" in result
-        assert "valid_at" in result["recovery"]
-
-    # --- Scenario 4: Self-referencing edge ---
-
-    async def test_self_referencing_edge_returns_structured_error(self) -> None:
-        """ValueError for self-referencing edge returns structured dict.
-
-        WHEN memory_store_fact is called with entity_id == object_entity_id,
-        THEN the MCP tool MUST return a structured dict with recovery explaining
-        that entity_id and object_entity_id must be different.
-        """
-        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
-        writing.memory_store_fact = AsyncMock(
-            side_effect=ValueError(
-                "Self-referencing edges are not allowed: entity_id and object_entity_id must differ"
-            )
-        )
-
-        with self._patch_routing(entity_uuid):
-            result = await fact_tool(
-                subject="Alice",
-                predicate="knows",
-                content="herself",
-                entity_id=entity_uuid,
-                object_entity_id=entity_uuid,
-            )
-
-        assert "error" in result
-        assert "message" in result
-        assert "recovery" in result
-        assert "object_entity_id" in result["recovery"]
-
-    # --- Scenario 5: UUID in content without object_entity_id ---
-
-    async def test_uuid_in_content_returns_structured_error(self) -> None:
-        """ValueError for UUID embedded in content returns structured dict.
-
-        WHEN memory_store_fact is called with a UUID in content and no object_entity_id,
-        THEN the MCP tool MUST return a structured dict with recovery explaining
-        to use object_entity_id instead.
-        """
-        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        embedded_uuid = "660e8400-e29b-41d4-a716-446655440001"
-        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
-        writing.memory_store_fact = AsyncMock(
-            side_effect=ValueError(
-                f"content contains an embedded UUID ({embedded_uuid}) but "
-                "object_entity_id is not set. If this fact describes a "
-                "relationship between entities, pass the target entity's UUID "
-                "as object_entity_id instead of embedding it in content."
-            )
-        )
-
-        with self._patch_routing(entity_uuid):
-            result = await fact_tool(
-                subject="Alice",
-                predicate="knows",
-                content=f"knows entity {embedded_uuid}",
-                entity_id=entity_uuid,
-            )
-
-        assert "error" in result
-        assert "message" in result
-        assert "recovery" in result
-        assert "object_entity_id" in result["recovery"]
-        assert "memory_entity_resolve" in result["recovery"]
-
-    # --- Scenario 6: Invalid permanence ---
-
-    async def test_invalid_permanence_returns_structured_error(self) -> None:
-        """ValueError for invalid permanence returns structured dict.
-
-        WHEN memory_store_fact is called with an invalid permanence value,
-        THEN the MCP tool MUST return a structured dict with recovery listing
-        the valid permanence values.
-        """
-        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
-        writing.memory_store_fact = AsyncMock(
-            side_effect=ValueError(
+                "Provide an ISO-8601 valid_at timestamp.",
+                {"predicate": "interaction"},
+                ["valid_at"],
+            ),
+            # Scenario 4: self-referencing edge
+            (
+                "Self-referencing edges are not allowed: "
+                "entity_id and object_entity_id must differ",
+                {"predicate": "knows", "object_entity_id": "550e8400-e29b-41d4-a716-446655440000"},
+                ["object_entity_id"],
+            ),
+            # Scenario 5: UUID embedded in content
+            (
+                "content contains an embedded UUID (660e8400-e29b-41d4-a716-446655440001) but "
+                "object_entity_id is not set.",
+                {"predicate": "knows"},
+                ["object_entity_id", "memory_entity_resolve"],
+            ),
+            # Scenario 6: invalid permanence
+            (
                 "Invalid permanence: 'forever'. Must be one of "
-                "['ephemeral', 'permanent', 'stable', 'standard', 'volatile']"
-            )
-        )
+                "['ephemeral', 'permanent', 'stable', 'standard', 'volatile']",
+                {"permanence": "forever"},
+                ["permanent"],
+            ),
+        ],
+    )
+    async def test_value_error_returns_structured_dict(
+        self, error_msg: str, extra_kwargs: dict, recovery_substrings: list[str]
+    ) -> None:
+        """Each validation failure class returns {error, message, recovery} (isError=false)."""
+        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        mod, fact_tool, pool, writing = await self._setup_and_get_fact_tool()
+        writing.memory_store_fact = AsyncMock(side_effect=ValueError(error_msg))
 
+        kwargs: dict[str, Any] = {
+            "subject": "user",
+            "predicate": "name",
+            "content": "Alice",
+            "entity_id": entity_uuid,
+            **extra_kwargs,
+        }
         with self._patch_routing(entity_uuid):
-            result = await fact_tool(
-                subject="user",
-                predicate="name",
-                content="Alice",
-                entity_id=entity_uuid,
-                permanence="forever",  # type: ignore[arg-type]
-            )
+            result = await fact_tool(**kwargs)
 
         assert "error" in result
         assert "message" in result
         assert "recovery" in result
-        # Must list at least some of the valid permanence values
-        assert "permanent" in result["recovery"] or "stable" in result["recovery"]
+        for needle in recovery_substrings:
+            assert needle in result["recovery"]
 
     # --- Structured dict shape ---
 

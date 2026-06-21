@@ -74,43 +74,33 @@ class TestRoutingResult:
 # ---------------------------------------------------------------------------
 
 
+def _route_call(butler: str) -> dict:
+    return {
+        "name": "route_to_butler",
+        "args": {"butler": butler},
+        "result": {"status": "ok", "butler": butler},
+    }
+
+
 class TestExtractRoutedButlers:
-    def test_single_route_to_butler_call(self):
-        tool_calls = [
-            {
-                "name": "route_to_butler",
-                "args": {"butler": "health", "prompt": "test"},
-                "result": {"status": "ok", "butler": "health"},
-            }
-        ]
+    @pytest.mark.parametrize(
+        ("tool_calls", "expected_routed", "expected_acked"),
+        [
+            ([_route_call("health")], {"health"}, {"health"}),  # single
+            (
+                [_route_call("health"), _route_call("finance")],
+                {"health", "finance"},
+                {"health", "finance"},
+            ),  # multi
+            ([], set(), set()),  # empty
+            ([{"name": "other_tool", "args": {}, "result": {}}], set(), set()),  # non-route ignored
+        ],
+    )
+    def test_extract_routed_butlers(self, tool_calls, expected_routed, expected_acked):
         routed, acked, failed = _extract_routed_butlers(tool_calls)
-        assert "health" in routed
-        assert "health" in acked
-
-    def test_multi_route_to_butler_calls(self):
-        tool_calls = [
-            {
-                "name": "route_to_butler",
-                "args": {"butler": "health"},
-                "result": {"status": "ok", "butler": "health"},
-            },
-            {
-                "name": "route_to_butler",
-                "args": {"butler": "finance"},
-                "result": {"status": "ok", "butler": "finance"},
-            },
-        ]
-        routed, acked, failed = _extract_routed_butlers(tool_calls)
-        assert set(routed) == {"health", "finance"}
-
-    def test_empty_tool_calls(self):
-        routed, acked, failed = _extract_routed_butlers([])
-        assert routed == [] and acked == [] and failed == []
-
-    def test_non_route_calls_ignored(self):
-        tool_calls = [{"name": "other_tool", "args": {}, "result": {}}]
-        routed, acked, failed = _extract_routed_butlers(tool_calls)
-        assert routed == []
+        assert set(routed) == expected_routed
+        assert set(acked) == expected_acked
+        assert failed == []
 
 
 # ---------------------------------------------------------------------------
@@ -306,48 +296,27 @@ class TestInferFallbackTarget:
         {"name": "general", "description": "General"},
     ]
 
-    def test_direct_route_to(self):
-        out = _infer_fallback_target_from_cc_output("Routed to finance.", self._BUTLERS)
-        assert out == "finance"
-
-    def test_intervening_words(self):
-        """'Routed this to finance' — word between verb and preposition."""
-        assert (
-            _infer_fallback_target_from_cc_output("Routed this to `finance` only.", self._BUTLERS)
-            == "finance"
-        )
-
-    def test_backtick_wrapped(self):
-        assert (
-            _infer_fallback_target_from_cc_output("Route to `health`.", self._BUTLERS) == "health"
-        )
-
-    def test_route_for(self):
-        assert (
-            _infer_fallback_target_from_cc_output("Routed for finance.", self._BUTLERS) == "finance"
-        )
-
-    def test_no_match_returns_none(self):
-        assert _infer_fallback_target_from_cc_output("Nothing relevant.", self._BUTLERS) is None
-
-    def test_empty_string_returns_none(self):
-        assert _infer_fallback_target_from_cc_output("", self._BUTLERS) is None
-
-    def test_multiple_targets_returns_none(self):
-        assert (
-            _infer_fallback_target_from_cc_output(
-                "Routed to finance and routed to health.", self._BUTLERS
-            )
-            is None
-        )
-
-    def test_real_switchboard_output(self):
-        """Actual output from the gpt-5.4-mini session that triggered the bug."""
-        text = (
-            "Routed this to `finance` only.\n\n"
-            "Reason: the message is an order cancellation with payment/refund details."
-        )
-        assert _infer_fallback_target_from_cc_output(text, self._BUTLERS) == "finance"
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("Routed to finance.", "finance"),  # direct "route to X"
+            ("Routed this to `finance` only.", "finance"),  # intervening words + backtick
+            ("Route to `health`.", "health"),  # backtick-wrapped
+            ("Routed for finance.", "finance"),  # "route for X"
+            ("Nothing relevant.", None),  # no match
+            ("", None),  # empty string
+            # multiple distinct targets is ambiguous → None (single-target only)
+            ("Routed to finance and routed to health.", None),
+            # real gpt-5.4-mini output that triggered the bug
+            (
+                "Routed this to `finance` only.\n\n"
+                "Reason: the message is an order cancellation with payment/refund details.",
+                "finance",
+            ),
+        ],
+    )
+    def test_infer_fallback_target(self, text: str, expected: str | None):
+        assert _infer_fallback_target_from_cc_output(text, self._BUTLERS) == expected
 
 
 class TestPipelineConfig:

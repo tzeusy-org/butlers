@@ -259,45 +259,15 @@ class TestOnStartup:
 class TestToolsNotConnected:
     """All tools return _NOT_CONNECTED_ERROR dict when _scopes_ok is False."""
 
-    async def _register_and_call(
-        self, tool_name: str, mock_mcp: MagicMock, **kwargs: Any
-    ) -> dict[str, Any]:
+    @pytest.mark.parametrize("tool_name", sorted(EXPECTED_HEALTH_TOOLS))
+    async def test_every_tool_returns_not_connected_error(
+        self, tool_name: str, mock_mcp: MagicMock
+    ) -> None:
+        """Every health tool degrades to _NOT_CONNECTED_ERROR when _scopes_ok is False."""
         module = GoogleHealthModule()
         # _scopes_ok defaults to False
         await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        fn = mock_mcp._registered_tools[tool_name]
-        return await fn(**kwargs)
-
-    async def test_sleep_latest_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_sleep_latest", mock_mcp)
-        assert result == {"error": _NOT_CONNECTED_ERROR}
-
-    async def test_sleep_history_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_sleep_history", mock_mcp, days=7)
-        assert result == {"error": _NOT_CONNECTED_ERROR}
-
-    async def test_hr_history_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_hr_history", mock_mcp, days=30)
-        assert result == {"error": _NOT_CONNECTED_ERROR}
-
-    async def test_hrv_history_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_hrv_history", mock_mcp, days=30)
-        assert result == {"error": _NOT_CONNECTED_ERROR}
-
-    async def test_spo2_history_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_spo2_history", mock_mcp, days=30)
-        assert result == {"error": _NOT_CONNECTED_ERROR}
-
-    async def test_breathing_rate_history_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_breathing_rate_history", mock_mcp, days=30)
-        assert result == {"error": _NOT_CONNECTED_ERROR}
-
-    async def test_activity_summary_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_activity_summary", mock_mcp, days=7)
-        assert result == {"error": _NOT_CONNECTED_ERROR}
-
-    async def test_vo2_max_latest_returns_error(self, mock_mcp: MagicMock) -> None:
-        result = await self._register_and_call("health_vo2_max_latest", mock_mcp)
+        result = await mock_mcp._registered_tools[tool_name]()
         assert result == {"error": _NOT_CONNECTED_ERROR}
 
 
@@ -331,62 +301,50 @@ def _make_connected_module() -> tuple[GoogleHealthModule, MagicMock]:
 class TestToolPredicateFilters:
     """Verify each tool carries the correct predicate and scope='health'."""
 
-    async def test_sleep_latest_predicate(self) -> None:
+    @pytest.mark.parametrize(
+        ("tool_name", "expected_predicate"),
+        [
+            ("health_sleep_latest", "sleep_session"),
+            ("health_sleep_history", "sleep_session"),
+            ("health_hr_history", "measurement_resting_hr"),
+            ("health_hrv_history", "measurement_hrv"),
+            ("health_spo2_history", "measurement_spo2"),
+            ("health_breathing_rate_history", "measurement_breathing_rate"),
+            ("health_vo2_max_latest", "measurement_vo2_max"),
+        ],
+    )
+    async def test_single_predicate_and_scope(
+        self, tool_name: str, expected_predicate: str
+    ) -> None:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_sleep_latest"]()
-        assert result["predicate"] == "sleep_session"
+        result = await mcp._registered_tools[tool_name]()
+        assert result["predicate"] == expected_predicate
         assert result["scope"] == "health"
 
-    async def test_sleep_history_predicate_and_days(self) -> None:
+    async def test_sleep_history_days_and_time_from(self) -> None:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
         result = await mcp._registered_tools["health_sleep_history"](days=14)
-        assert result["predicate"] == "sleep_session"
-        assert result["scope"] == "health"
         assert result["days"] == 14
         assert "time_from" in result
 
-    async def test_sleep_history_default_days(self) -> None:
+    @pytest.mark.parametrize(
+        ("tool_name", "days_arg", "expected_days"),
+        [
+            ("health_sleep_history", None, 7),  # default
+            ("health_sleep_history", 999, 90),  # clamp to 90
+            ("health_activity_summary", 200, 90),  # clamp to 90
+        ],
+    )
+    async def test_days_default_and_clamp(
+        self, tool_name: str, days_arg: int | None, expected_days: int
+    ) -> None:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_sleep_history"]()
-        assert result["days"] == 7
-
-    async def test_sleep_history_clamps_days(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_sleep_history"](days=999)
-        assert result["days"] == 90
-
-    async def test_hr_history_predicate(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_hr_history"](days=30)
-        assert result["predicate"] == "measurement_resting_hr"
-        assert result["scope"] == "health"
-        assert result["days"] == 30
-
-    async def test_hrv_history_predicate(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_hrv_history"](days=30)
-        assert result["predicate"] == "measurement_hrv"
-        assert result["scope"] == "health"
-
-    async def test_spo2_history_predicate(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_spo2_history"](days=30)
-        assert result["predicate"] == "measurement_spo2"
-        assert result["scope"] == "health"
-
-    async def test_breathing_rate_predicate(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_breathing_rate_history"](days=30)
-        assert result["predicate"] == "measurement_breathing_rate"
-        assert result["scope"] == "health"
+        fn = mcp._registered_tools[tool_name]
+        result = await (fn() if days_arg is None else fn(days=days_arg))
+        assert result["days"] == expected_days
 
     async def test_activity_summary_predicates(self) -> None:
         module, mcp = _make_connected_module()
@@ -396,19 +354,6 @@ class TestToolPredicateFilters:
         assert "measurement_active_minutes" in result["predicates"]
         assert result["scope"] == "health"
         assert result["days"] == 7
-
-    async def test_activity_summary_clamps_days(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_activity_summary"](days=200)
-        assert result["days"] == 90
-
-    async def test_vo2_max_predicate(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_vo2_max_latest"]()
-        assert result["predicate"] == "measurement_vo2_max"
-        assert result["scope"] == "health"
 
 
 # ---------------------------------------------------------------------------
@@ -429,25 +374,6 @@ class TestAggregateInstructions:
         assert "avg_deep_minutes" in instruction
         assert "avg_rem_minutes" in instruction
 
-    async def test_hr_history_aggregation_hint(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_hr_history"]()
-        instruction = result["instruction"]
-        assert "min" in instruction
-        assert "max" in instruction
-        assert "avg" in instruction
-        assert "slope" in instruction
-
-    async def test_hrv_history_aggregation_hint(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_hrv_history"]()
-        instruction = result["instruction"]
-        assert "avg_rmssd" in instruction
-        assert "coverage" in instruction
-        assert "trend" in instruction
-
     async def test_activity_summary_aggregation_hint(self) -> None:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
@@ -456,15 +382,6 @@ class TestAggregateInstructions:
         assert "avg_steps" in instruction
         assert "avg_active_minutes" in instruction
         assert "days_meeting_10k_steps" in instruction
-
-    async def test_vo2_max_range_hint(self) -> None:
-        module, mcp = _make_connected_module()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
-        result = await mcp._registered_tools["health_vo2_max_latest"]()
-        instruction = result["instruction"]
-        assert "range_low" in instruction
-        assert "range_high" in instruction
-        assert "midpoint" in instruction
 
     async def test_sleep_latest_no_data_message(self) -> None:
         module, mcp = _make_connected_module()

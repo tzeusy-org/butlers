@@ -9,6 +9,8 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.email_guard import (
     _context_conflicts,
@@ -46,29 +48,22 @@ class TestContextConflicts:
 
 
 class TestGetEmailContext:
-    async def test_returns_context_when_row_exists(self) -> None:
+    @pytest.mark.parametrize(
+        ("fetchrow_return", "fetchrow_side_effect", "expected"),
+        [
+            ({"context": "personal"}, None, "personal"),  # row exists
+            (None, None, None),  # row missing
+            ({"context": None}, None, None),  # context column null
+            (None, Exception("DB unavailable"), None),  # db error degrades to None
+        ],
+    )
+    async def test_get_email_context(self, fetchrow_return, fetchrow_side_effect, expected) -> None:
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"context": "personal"})
-        result = await _get_email_context(pool, "user@example.com")
-        assert result == "personal"
-
-    async def test_returns_none_when_row_missing(self) -> None:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        result = await _get_email_context(pool, "user@example.com")
-        assert result is None
-
-    async def test_returns_none_on_db_error(self) -> None:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(side_effect=Exception("DB unavailable"))
-        result = await _get_email_context(pool, "user@example.com")
-        assert result is None
-
-    async def test_returns_none_when_context_column_null(self) -> None:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"context": None})
-        result = await _get_email_context(pool, "user@example.com")
-        assert result is None
+        if fetchrow_side_effect is not None:
+            pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+        else:
+            pool.fetchrow = AsyncMock(return_value=fetchrow_return)
+        assert await _get_email_context(pool, "user@example.com") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -79,25 +74,23 @@ class TestGetEmailContext:
 class TestIsPrimaryEmail:
     """Tests for email primacy via the shared is_primary_contact helper (email channel)."""
 
-    async def test_true_when_is_primary_set(self) -> None:
+    @pytest.mark.parametrize(
+        ("fetchrow_return", "fetchrow_side_effect", "expected"),
+        [
+            ({"primary": True}, None, True),  # is_primary set
+            ({"primary": False}, None, False),  # not primary
+            (None, None, False),  # row missing
+            (None, Exception("column missing"), False),  # db error → not primary
+        ],
+    )
+    async def test_is_primary_email(self, fetchrow_return, fetchrow_side_effect, expected) -> None:
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"primary": True})
-        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is True
-
-    async def test_false_when_not_primary(self) -> None:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"primary": False})
-        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is False
-
-    async def test_false_when_row_missing(self) -> None:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is False
-
-    async def test_false_on_db_error(self) -> None:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(side_effect=Exception("column missing"))
-        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is False
+        if fetchrow_side_effect is not None:
+            pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+        else:
+            pool.fetchrow = AsyncMock(return_value=fetchrow_return)
+        result = await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com")
+        assert result is expected
 
 
 # ---------------------------------------------------------------------------

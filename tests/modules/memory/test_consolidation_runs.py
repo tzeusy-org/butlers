@@ -51,18 +51,12 @@ def _load_core():
 
 @pytest.mark.unit
 class TestCore119Structure:
-    def test_file_exists(self):
+    def test_migration_wiring(self):
+        """core_119 exists, declares its revision/down_revision chain, and is callable."""
         assert _CORE_MIGRATION_PATH.exists(), f"Migration file not found: {_CORE_MIGRATION_PATH}"
-
-    def test_revision(self):
-        assert _load_core().revision == "core_119"
-
-    def test_down_revision_chains_from_head(self):
-        # Must chain from the current core head (core_118).
-        assert _load_core().down_revision == "core_118"
-
-    def test_upgrade_downgrade_callable(self):
         mod = _load_core()
+        assert mod.revision == "core_119"
+        assert mod.down_revision == "core_118"  # chains from the current core head
         assert callable(mod.upgrade)
         assert callable(mod.downgrade)
 

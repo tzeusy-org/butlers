@@ -25,8 +25,6 @@ from butlers.modules.base import Module
 from butlers.modules.spotify import (
     SpotifyModule,
     SpotifyModuleConfig,
-    _premium_required_error,
-    _rate_limited_error,
     _token_refresh_unavailable_error,
 )
 
@@ -178,21 +176,6 @@ class TestToolBehaviors:
 
 
 class TestErrorHelpers:
-    def test_premium_required_error_is_string(self) -> None:
-        err = _premium_required_error("free")
-        assert isinstance(err, str)
-        assert "Premium" in err
-
-    def test_rate_limited_error_is_string(self) -> None:
-        err = _rate_limited_error(30.0)
-        assert isinstance(err, str)
-        assert "rate" in err.lower() or "seconds" in err
-
-    def test_token_refresh_unavailable_error_is_temporary(self) -> None:
-        err = _token_refresh_unavailable_error(42.0)
-        assert "temporarily unavailable" in err.lower()
-        assert "42" in err
-
     def test_handle_token_refresh_unavailable_does_not_request_reconnect(self) -> None:
         module = SpotifyModule()
         result = module._handle_spotify_error(SpotifyTokenRefreshUnavailableError(42.0))

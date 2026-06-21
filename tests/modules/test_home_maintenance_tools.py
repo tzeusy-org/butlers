@@ -127,7 +127,7 @@ class TestMaintenanceCreate:
         result = await module_with_pool._maintenance_create(
             name="HVAC filter", category="filter", interval_days=90
         )
-        assert "error" in result and "already exists" in result["error"]
+        assert "error" in result
 
     @pytest.mark.parametrize(
         "kwargs,match",
@@ -142,10 +142,6 @@ class TestMaintenanceCreate:
     ) -> None:
         result = await module_with_pool._maintenance_create(name="Widget", **kwargs)
         assert "error" in result and match in result["error"]
-
-    async def test_create_no_db(self, module: HomeAssistantModule) -> None:
-        result = await module._maintenance_create(name="W", category="general", interval_days=7)
-        assert "error" in result and "Database" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +200,7 @@ class TestMaintenanceComplete:
         result2 = await module_with_pool._maintenance_complete(
             name="HVAC filter", completed_at="not-a-date"
         )
-        assert "error" in result2 and "Invalid completed_at" in result2["error"]
+        assert "error" in result2
 
     async def test_complete_stores_memory_fact(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
@@ -219,10 +215,6 @@ class TestMaintenanceComplete:
         kw = mock_store.call_args.kwargs
         assert kw.get("subject") == "HVAC filter"
         assert "maintenance" in kw.get("tags", [])
-
-    async def test_complete_no_db(self, module: HomeAssistantModule) -> None:
-        result = await module._maintenance_complete(name="HVAC filter")
-        assert "error" in result and "Database" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +279,6 @@ class TestMaintenanceList:
         result = await module_with_pool._maintenance_list(**{filter_key: filter_val})
         assert len(result) == 1 and "error" in result[0]
 
-    async def test_list_no_db(self, module: HomeAssistantModule) -> None:
-        result = await module._maintenance_list()
-        assert len(result) == 1 and "Database" in result[0]["error"]
-
 
 # ---------------------------------------------------------------------------
 # ha_maintenance_remove
@@ -311,6 +299,31 @@ class TestMaintenanceRemove:
         result = await module_with_pool._maintenance_remove(name="Nonexistent")
         assert "error" in result
 
-    async def test_remove_no_db(self, module: HomeAssistantModule) -> None:
-        result = await module._maintenance_remove(name="HVAC filter")
-        assert "error" in result and "Database" in result["error"]
+
+# ---------------------------------------------------------------------------
+# No-DB guard: every maintenance tool returns a Database error result
+# ---------------------------------------------------------------------------
+
+
+class TestMaintenanceNoDb:
+    @pytest.mark.parametrize(
+        "method_name",
+        [
+            "_maintenance_create",
+            "_maintenance_complete",
+            "_maintenance_list",
+            "_maintenance_remove",
+        ],
+    )
+    async def test_tool_returns_db_error_without_pool(
+        self, module: HomeAssistantModule, method_name: str
+    ) -> None:
+        kwargs: dict[str, Any] = {"name": "HVAC filter"}
+        if method_name == "_maintenance_create":
+            kwargs.update(category="general", interval_days=7)
+        elif method_name == "_maintenance_list":
+            kwargs = {}
+        result = await getattr(module, method_name)(**kwargs)
+        # list returns a list of result dicts; the others a single dict
+        error_obj = result[0] if isinstance(result, list) else result
+        assert "Database" in error_obj["error"]

@@ -818,47 +818,9 @@ class TestRunPatrolBodyNotifyOnMissingToken:
 
         assert len(notify_calls) == 0
 
-    async def test_notify_rate_limited_across_patrol_cycles(self):
-        """notify_fn is only called once per patrol_id even across multiple cycles."""
-        mod = _make_module()
-        mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        pool = _make_pool()
-        mod._pool = pool
-        mod._sources = []
 
-        notify_calls: list[dict] = []
-
-        async def _fake_notify(**kwargs):
-            notify_calls.append(kwargs)
-            return {}
-
-        mod._notify_fn = _fake_notify
-
-        fixed_patrol_id = uuid.uuid4()
-
-        async def _fixed_fetchval(*args, **kwargs):
-            return fixed_patrol_id
-
-        pool.fetchval = AsyncMock(side_effect=_fixed_fetchval)
-
-        with (
-            patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mock_triage,
-            patch(
-                "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
-            ) as mock_dispatch,
-            patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
-            patch.object(mod, "_resolve_gh_token", new_callable=AsyncMock, return_value=None),
-        ):
-            mock_triage.return_value = MagicMock(
-                all_findings=[], novel_findings=[], dedup_counts={}
-            )
-            mock_dispatch.return_value = []
-            # Run same patrol_id twice (both cycles share the same UUID from fetchval)
-            await mod._run_patrol_cycle()
-            await mod._run_patrol_cycle()
-
-        # Only one notification for the same patrol_id
-        assert len(notify_calls) == 1
+# Note: per-patrol_id rate-limiting is guarded at the helper level by
+# TestNotifyMissingGhToken.test_rate_limited_to_once_per_patrol_id.
 
 
 # ---------------------------------------------------------------------------

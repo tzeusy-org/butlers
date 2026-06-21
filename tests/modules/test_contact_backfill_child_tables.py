@@ -82,6 +82,63 @@ def _entity_id() -> uuid.UUID:
     return uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
 
+# Per-method (upsert callable, populated-contact) pairs used by the shared
+# graceful-degradation parametrization below.
+def _addresses_contact() -> CanonicalContact:
+    return CanonicalContact(
+        external_id="people/1",
+        addresses=[ContactAddress(street="1 Main St")],
+    )
+
+
+def _dates_contact() -> CanonicalContact:
+    return CanonicalContact(
+        external_id="people/1",
+        birthdays=[ContactDate(month=1, day=1)],
+    )
+
+
+def _labels_contact() -> CanonicalContact:
+    return CanonicalContact(
+        external_id="people/1",
+        group_memberships=["contactGroups/myContacts"],
+    )
+
+
+_UPSERT_METHODS = [
+    ("upsert_addresses", _addresses_contact),
+    ("upsert_important_dates", _dates_contact),
+    ("upsert_labels", _labels_contact),
+]
+
+
+@pytest.mark.parametrize(("method_name", "contact_factory"), _UPSERT_METHODS)
+async def test_upsert_skips_when_table_absent(method_name: str, contact_factory) -> None:
+    """No writes when the child table does not exist (cross-chain migration hazard)."""
+    pool = _FakePool(tables_exist=False, entity_columns_exist=False)
+    writer = _writer(pool)
+    await getattr(writer, method_name)(_entity_id(), contact_factory())
+    assert pool.executes == []
+
+
+@pytest.mark.parametrize(("method_name", "contact_factory"), _UPSERT_METHODS)
+async def test_upsert_skips_when_anchor_column_absent(method_name: str, contact_factory) -> None:
+    """No writes when contacts_004 local_entity_id anchor column is absent."""
+    pool = _FakePool(tables_exist=True, entity_columns_exist=False)
+    writer = _writer(pool)
+    await getattr(writer, method_name)(_entity_id(), contact_factory())
+    assert pool.executes == []
+
+
+@pytest.mark.parametrize("method_name", [m for m, _ in _UPSERT_METHODS])
+async def test_upsert_no_op_for_empty_contact(method_name: str) -> None:
+    """No writes when the contact carries no rows for this child table."""
+    pool = _FakePool(tables_exist=True, entity_columns_exist=True)
+    writer = _writer(pool)
+    await getattr(writer, method_name)(_entity_id(), CanonicalContact(external_id="people/1"))
+    assert pool.executes == []
+
+
 # ---------------------------------------------------------------------------
 # upsert_addresses
 # ---------------------------------------------------------------------------
@@ -104,33 +161,6 @@ async def test_upsert_addresses_writes_when_table_and_column_exist() -> None:
     sql, _ = pool.executes[0]
     assert "INSERT INTO addresses" in sql
     assert "local_entity_id" in sql
-
-
-async def test_upsert_addresses_skips_when_table_absent() -> None:
-    pool = _FakePool(tables_exist=False, entity_columns_exist=False)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(
-        external_id="people/1",
-        addresses=[ContactAddress(street="1 Main St")],
-    )
-    await writer.upsert_addresses(_entity_id(), contact)
-
-    assert pool.executes == [], "no writes expected when table absent"
-
-
-async def test_upsert_addresses_skips_when_column_absent() -> None:
-    """Table exists but contacts_004 migration has not applied local_entity_id."""
-    pool = _FakePool(tables_exist=True, entity_columns_exist=False)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(
-        external_id="people/1",
-        addresses=[ContactAddress(street="1 Main St")],
-    )
-    await writer.upsert_addresses(_entity_id(), contact)
-
-    assert pool.executes == [], "no writes expected when anchor column absent"
 
 
 async def test_upsert_addresses_skips_entry_with_no_street() -> None:
@@ -167,16 +197,6 @@ async def test_upsert_addresses_clears_invalid_country_code() -> None:
     # country arg is at position 8 (0-indexed: local_entity_id, label, street, line2,
     # city, province, postal_code, country → index 7)
     assert args[7] is None, "invalid country code must be stored as NULL"
-
-
-async def test_upsert_addresses_no_op_for_empty_list() -> None:
-    pool = _FakePool(tables_exist=True, entity_columns_exist=True)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(external_id="people/1")
-    await writer.upsert_addresses(_entity_id(), contact)
-
-    assert pool.executes == []
 
 
 # ---------------------------------------------------------------------------
@@ -237,30 +257,6 @@ async def test_upsert_important_dates_uses_custom_label() -> None:
     assert args[1] == "nameday"
 
 
-async def test_upsert_important_dates_skips_when_table_absent() -> None:
-    pool = _FakePool(tables_exist=False, entity_columns_exist=False)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(
-        external_id="people/1",
-        birthdays=[ContactDate(month=1, day=1)],
-    )
-    await writer.upsert_important_dates(_entity_id(), contact)
-    assert pool.executes == []
-
-
-async def test_upsert_important_dates_skips_when_column_absent() -> None:
-    pool = _FakePool(tables_exist=True, entity_columns_exist=False)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(
-        external_id="people/1",
-        birthdays=[ContactDate(month=1, day=1)],
-    )
-    await writer.upsert_important_dates(_entity_id(), contact)
-    assert pool.executes == []
-
-
 async def test_upsert_important_dates_skips_entry_with_null_month_or_day() -> None:
     """Dates with NULL month or day must be skipped (schema is NOT NULL)."""
     pool = _FakePool(tables_exist=True, entity_columns_exist=True)
@@ -273,15 +269,6 @@ async def test_upsert_important_dates_skips_entry_with_null_month_or_day() -> No
             ContactDate(month=3, day=None),  # day missing
         ],
     )
-    await writer.upsert_important_dates(_entity_id(), contact)
-    assert pool.executes == []
-
-
-async def test_upsert_important_dates_no_op_for_empty_lists() -> None:
-    pool = _FakePool(tables_exist=True, entity_columns_exist=True)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(external_id="people/1")
     await writer.upsert_important_dates(_entity_id(), contact)
     assert pool.executes == []
 
@@ -325,39 +312,6 @@ async def test_upsert_labels_skips_empty_label_name() -> None:
         external_id="people/1",
         group_memberships=[""],
     )
-    await writer.upsert_labels(_entity_id(), contact)
-    assert pool.executes == []
-
-
-async def test_upsert_labels_skips_when_tables_absent() -> None:
-    pool = _FakePool(tables_exist=False, entity_columns_exist=False)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(
-        external_id="people/1",
-        group_memberships=["contactGroups/myContacts"],
-    )
-    await writer.upsert_labels(_entity_id(), contact)
-    assert pool.executes == []
-
-
-async def test_upsert_labels_skips_when_column_absent() -> None:
-    pool = _FakePool(tables_exist=True, entity_columns_exist=False)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(
-        external_id="people/1",
-        group_memberships=["contactGroups/myContacts"],
-    )
-    await writer.upsert_labels(_entity_id(), contact)
-    assert pool.executes == []
-
-
-async def test_upsert_labels_no_op_for_empty_memberships() -> None:
-    pool = _FakePool(tables_exist=True, entity_columns_exist=True)
-    writer = _writer(pool)
-
-    contact = CanonicalContact(external_id="people/1")
     await writer.upsert_labels(_entity_id(), contact)
     assert pool.executes == []
 

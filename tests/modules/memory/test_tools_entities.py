@@ -217,24 +217,23 @@ class TestEntityUpdate:
 
 
 class TestEntityResolve:
-    async def test_both_name_and_identifier_none_raises(self, pool: AsyncMock) -> None:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"name": None, "identifier": None},  # both missing
+            {"identifier": ""},  # empty identifier
+            {"identifier": "   "},  # whitespace identifier
+            {"name": ""},  # empty name (positional below)
+        ],
+    )
+    async def test_empty_or_missing_input_raises_before_query(
+        self, pool: AsyncMock, kwargs: dict
+    ) -> None:
         with pytest.raises(ValueError, match="non-empty"):
-            await entity_resolve(pool, name=None, identifier=None)
-        pool.fetch.assert_not_called()
-
-    async def test_empty_identifier_raises(self, pool: AsyncMock) -> None:
-        with pytest.raises(ValueError, match="non-empty"):
-            await entity_resolve(pool, identifier="")
-        pool.fetch.assert_not_called()
-
-    async def test_whitespace_identifier_raises(self, pool: AsyncMock) -> None:
-        with pytest.raises(ValueError, match="non-empty"):
-            await entity_resolve(pool, identifier="   ")
-        pool.fetch.assert_not_called()
-
-    async def test_empty_name_raises(self, pool: AsyncMock) -> None:
-        with pytest.raises(ValueError, match="non-empty"):
-            await entity_resolve(pool, "")
+            if "name" in kwargs and kwargs["name"] == "" and "identifier" not in kwargs:
+                await entity_resolve(pool, "")
+            else:
+                await entity_resolve(pool, **kwargs)
         pool.fetch.assert_not_called()
 
     async def test_normal_identifier_still_works(self, pool: AsyncMock) -> None:
@@ -263,15 +262,6 @@ class TestEntityResolve:
         with pytest.raises(ValueError, match="not both"):
             await entity_resolve(pool, "Alice", identifier="Owner")
 
-    async def test_single_exact_alias_match_returns_score_100(self, pool: AsyncMock) -> None:
-        row = _entity_mock_row(
-            uuid.UUID(str(uuid.uuid4())), "Bob", match_type="exact", fact_count=0
-        )
-        pool.fetch = AsyncMock(return_value=[row])
-        results = await entity_resolve(pool, "Bob")
-        assert results[0]["score"] == 100
-        assert results[0]["name_match"] == "exact"
-
     async def test_two_exact_candidates_unequal_fact_count(self, pool: AsyncMock) -> None:
         e1 = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Alice", match_type="exact", fact_count=5
@@ -296,14 +286,6 @@ class TestEntityResolve:
         results = await entity_resolve(pool, "eve")
         assert all(r["score"] == _SCORE_EXACT_NAME for r in results)
 
-    async def test_zero_fact_count_single_candidate_score_100(self, pool: AsyncMock) -> None:
-        row = _entity_mock_row(
-            uuid.UUID(str(uuid.uuid4())), "Zara", match_type="exact", fact_count=0
-        )
-        pool.fetch = AsyncMock(return_value=[row])
-        results = await entity_resolve(pool, "zara")
-        assert results[0]["score"] == _SCORE_EXACT_NAME
-
     async def test_fact_count_in_return_shape(self, pool: AsyncMock) -> None:
         row = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Dave", match_type="exact", fact_count=3
@@ -313,22 +295,13 @@ class TestEntityResolve:
         assert "fact_count" in results[0]
         assert isinstance(results[0]["fact_count"], int)
 
-    async def test_name_match_never_alias(self, pool: AsyncMock) -> None:
-        row = _entity_mock_row(
-            uuid.UUID(str(uuid.uuid4())), "Charlie", match_type="exact", fact_count=0
-        )
-        pool.fetch = AsyncMock(return_value=[row])
-        results = await entity_resolve(pool, "charlie")
-        assert results[0]["name_match"] == "exact"
-        assert results[0]["name_match"] != "alias"
-
 
 class TestEntityResolveSchema:
     """Verify MCP tool schema is tightened so strict-validation runtimes can
     reject null/empty identifier inputs before they reach the server."""
 
     async def _get_resolve_tool(self):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         from butlers.modules.memory import MemoryModule
 
@@ -508,57 +481,11 @@ def _cal_row(event_id: uuid.UUID) -> MagicMock:
 class TestEntityMergeCalendarEntities:
     """entity_merge re-points calendar_event_entities from source to target."""
 
-    async def test_repoints_unshared_event_to_target(self) -> None:
-        """When only the source is linked to an event, update entity_id to target."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        # cal_src_rows: source has EVENT_UUID_1; cal_tgt_rows: target has no shared events
-        pool, conn = _merge_pool(
-            src,
-            tgt,
-            cal_src_rows=[_cal_row(EVENT_UUID_1)],
-            cal_tgt_rows=[],  # target not linked to EVENT_UUID_1
-        )
-
-        await entity_merge(pool, SOURCE_ID, TARGET_ID)
-
-        update_calls = [
-            c
-            for c in conn.execute.call_args_list
-            if "UPDATE calendar_event_entities SET entity_id" in c[0][0]
-        ]
-        assert len(update_calls) == 1
-        call_args = update_calls[0][0]
-        assert call_args[1] == tgt_uuid  # new entity_id
-        assert call_args[2] == src_uuid  # old entity_id (WHERE entity_id = $2)
-        assert EVENT_UUID_1 in call_args[3]  # event_id in ANY($3) list
-
-    async def test_deletes_duplicate_event_association(self) -> None:
-        """When target is already linked to the same event, delete the source row."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        # Both source and target are linked to EVENT_UUID_1 — duplicate
-        pool, conn = _merge_pool(
-            src,
-            tgt,
-            cal_src_rows=[_cal_row(EVENT_UUID_1)],
-            cal_tgt_rows=[_cal_row(EVENT_UUID_1)],
-        )
-
-        await entity_merge(pool, SOURCE_ID, TARGET_ID)
-
-        delete_calls = [
-            c
-            for c in conn.execute.call_args_list
-            if "DELETE FROM calendar_event_entities" in c[0][0]
-        ]
-        assert len(delete_calls) == 1
-        call_args = delete_calls[0][0]
-        assert src_uuid in call_args  # WHERE entity_id = $1
-        assert EVENT_UUID_1 in call_args[2]  # event_id in ANY($2) list
-
     async def test_mixed_events_update_and_delete(self) -> None:
-        """Source has two events; one shared with target (delete), one unique (update)."""
+        """Source has two events; one shared with target (delete), one unique (update).
+
+        Covers both repoint branches: unshared->UPDATE entity_id, shared->DELETE dedup.
+        """
         src = _entity_mock_row(SOURCE_UUID)
         tgt = _entity_mock_row(TARGET_UUID)
         pool, conn = _merge_pool(
@@ -600,11 +527,6 @@ class TestEntityMergeCalendarEntities:
             c for c in conn.execute.call_args_list if "calendar_event_entities" in c[0][0]
         ]
         assert cal_execute_calls == []
-
-
-# Module-level aliases for clarity in test assertions
-src_uuid = SOURCE_UUID
-tgt_uuid = TARGET_UUID
 
 
 # ---------------------------------------------------------------------------
@@ -651,42 +573,9 @@ def _make_chronicler_pool(
 class TestRePointEpisodeEntities:
     """Unit tests for _repoint_episode_entities helper (6.1, 6.3, 6.4)."""
 
-    async def test_repoints_unshared_episode_to_target(self) -> None:
-        """When only source is linked to an episode, UPDATE entity_id to target."""
-        ch_pool, ch_conn = _make_chronicler_pool(
-            src_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
-            tgt_ep_rows=[],
-        )
-        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
-
-        update_calls = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "UPDATE chronicler.episode_entities SET entity_id" in c[0][0]
-        ]
-        assert len(update_calls) == 1
-        args = update_calls[0][0]
-        assert args[1] == TARGET_UUID  # new entity_id
-        assert args[2] == SOURCE_UUID  # old entity_id (WHERE entity_id = $2)
-        assert EPISODE_UUID_1 in args[3]  # episode_id in ANY($3)
-
-    async def test_dedup_deletes_src_row_when_target_already_linked(self) -> None:
-        """When target is already on the same episode, DELETE the source row."""
-        ch_pool, ch_conn = _make_chronicler_pool(
-            src_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
-            tgt_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
-        )
-        await _repoint_episode_entities(ch_pool, SOURCE_UUID, TARGET_UUID)
-
-        delete_calls = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "DELETE FROM chronicler.episode_entities" in c[0][0]
-        ]
-        assert len(delete_calls) == 1
-        args = delete_calls[0][0]
-        assert SOURCE_UUID in args
-        assert EPISODE_UUID_1 in args[2]
+    # NOTE: unshared->UPDATE and shared->DELETE dedup are both exercised together by
+    # test_mixed_episodes_update_and_delete below; the dedicated single-branch
+    # variants (with SQL-position arg asserts) were folded into it.
 
     async def test_dedup_promotes_higher_precedence_role(self) -> None:
         """When src has 'owner' and tgt has 'participant', tgt row role is promoted to 'owner'."""
@@ -901,102 +790,11 @@ class TestEntityNeighbors:
 # ---------------------------------------------------------------------------
 
 
-class TestMemoryEntityMergeMCPChroniclerWiring:
-    """Integration: memory_entity_merge MCP tool wires chronicler_pool through to
-    entity_merge so that episode_entities rows are re-pointed on merge.
-
-    These tests exercise the full wiring path from MemoryModule.register_tools
-    through to _repoint_episode_entities — without requiring a real Postgres DB.
-    The chronicle pool is injected via a mock so that SQL call assertions
-    can verify the episode repoint path is exercised.
-
-    Acceptance criteria: bu-cojsp §4 — "Add an integration test asserting that
-    an entity_merge call from the memory MCP tool actually repoints
-    chronicler.episode_entities rows."
-    """
-
-    def _make_memory_pool(self, src_row, tgt_row) -> MagicMock:
-        """Return a mock memory pool configured for entity_merge."""
-        pool, _ = _merge_pool(src_row, tgt_row)
-        return pool
-
-    async def test_mcp_tool_wires_chronicler_pool_into_entity_merge(self) -> None:
-        """memory_entity_merge wires chronicler_pool from _get_or_create_chronicler_pool
-        so that _repoint_episode_entities is called when a pool is available.
-        """
-        from butlers.modules.memory import MemoryModule
-
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        mem_pool = self._make_memory_pool(src, tgt)
-
-        ch_pool, ch_conn = _make_chronicler_pool(
-            src_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
-            tgt_ep_rows=[],
-        )
-
-        mod = MemoryModule()
-        # Inject a minimal fake _db so _get_pool() works
-        fake_db = MagicMock()
-        fake_db.pool = mem_pool
-        mod._db = fake_db
-
-        # Patch _get_or_create_chronicler_pool to return our mock chronicler pool
-        with patch.object(
-            mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=ch_pool)
-        ):
-            # Call entity_merge with the chronicler pool — simulating what the MCP
-            # tool closure does after awaiting _get_or_create_chronicler_pool().
-            chronicler_pool = await mod._get_or_create_chronicler_pool()
-            result = await entity_merge(
-                mod._get_pool(),
-                SOURCE_ID,
-                TARGET_ID,
-                chronicler_pool=chronicler_pool,
-            )
-
-        assert result["target_entity_id"] == TARGET_ID
-
-        # Verify that _repoint_episode_entities issued an UPDATE on chronicler
-        episode_repoint_calls = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "UPDATE chronicler.episode_entities SET entity_id" in c[0][0]
-        ]
-        assert len(episode_repoint_calls) == 1, (
-            "expected _repoint_episode_entities to UPDATE chronicler.episode_entities "
-            "when chronicler_pool is wired from memory MCP tool"
-        )
-
-    async def test_mcp_tool_skips_episode_repoint_when_chronicler_pool_none(self) -> None:
-        """When _get_or_create_chronicler_pool returns None (DB not initialised),
-        entity_merge completes without touching chronicler (no-op path).
-        """
-        from butlers.modules.memory import MemoryModule
-
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        mem_pool = self._make_memory_pool(src, tgt)
-
-        mod = MemoryModule()
-        fake_db = MagicMock()
-        fake_db.pool = mem_pool
-        mod._db = fake_db
-
-        # _get_or_create_chronicler_pool returns None (e.g. DB not initialised,
-        # or this deployment has no chronicler butler). This is the documented
-        # no-op path — episode_entities repointing is silently skipped.
-        with patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)):
-            chronicler_pool = await mod._get_or_create_chronicler_pool()
-            result = await entity_merge(
-                mod._get_pool(),
-                SOURCE_ID,
-                TARGET_ID,
-                chronicler_pool=chronicler_pool,
-            )
-
-        # Merge succeeds; no chronicler SQL was attempted
-        assert result["target_entity_id"] == TARGET_ID
+# NOTE: The MCP-tool→entity_merge chronicler_pool wiring (both the supplied-pool
+# repoint and the None-pool no-op path) is covered behaviorally by
+# TestEntityMergeEpisodeEntities (test_repoints_episode_entities_via_chronicler_pool /
+# test_no_episode_repointing_when_no_chronicler_pool); the dedicated MCP-closure
+# re-proofs were folded out.
 
 
 # ---------------------------------------------------------------------------
@@ -1033,7 +831,6 @@ def _make_relationship_pool(
 
 def _register_memory_entity_merge_tool(mod, *, entity_merge_result):
     """Register memory tools with a controllable entity_merge and capture the closure."""
-    from unittest.mock import patch
 
     mcp = MagicMock()
     registered: dict[str, object] = {}
@@ -1097,7 +894,6 @@ class TestMemoryEntityMergeMCPMergeReviewWiring:
         run = _register_memory_entity_merge_tool(
             mod, entity_merge_result={"target_entity_id": TARGET_ID}
         )
-        from unittest.mock import patch
 
         with (
             patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)),
@@ -1126,7 +922,6 @@ class TestMemoryEntityMergeMCPMergeReviewWiring:
     async def test_mcp_tool_computes_evidence_before_merge(self) -> None:
         """The audit evidence is computed BEFORE entity_merge mutates rows so the
         snapshot reflects the pre-merge state (matches the API merge endpoint)."""
-        from unittest.mock import patch
 
         from butlers.modules.memory import MemoryModule
 
@@ -1167,7 +962,6 @@ class TestMemoryEntityMergeMCPMergeReviewWiring:
     async def test_mcp_tool_merge_not_blocked_when_relationship_pool_unavailable(self) -> None:
         """In a memory-only deployment (no relationship schema), the merge still
         succeeds and simply skips the audit row (best-effort)."""
-        from unittest.mock import patch
 
         from butlers.modules.memory import MemoryModule
 

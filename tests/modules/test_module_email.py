@@ -224,65 +224,47 @@ class TestEmailModuleExtraStatusFields:
         result = await mod.extra_status_fields()
         assert result == {}
 
-    async def test_active_primary_account_returns_granted(self) -> None:
-        """Active primary account → oauth_status='granted', credential_health='ok'."""
+    @pytest.mark.parametrize(
+        ("fetchrow_return", "fetchrow_side_effect", "expected"),
+        [
+            # account status row → (oauth_status, credential_health) mapping
+            ({"status": "active"}, None, {"oauth_status": "granted", "credential_health": "ok"}),
+            (
+                {"status": "revoked"},
+                None,
+                {"oauth_status": "reauth_needed", "credential_health": "error"},
+            ),
+            (
+                {"status": "expired"},
+                None,
+                {"oauth_status": "reauth_needed", "credential_health": "error"},
+            ),
+            (
+                None,
+                None,
+                {"oauth_status": "not_configured", "credential_health": "warning"},
+            ),
+            # DB query failure degrades to {} (no exception propagated)
+            (None, Exception("connection refused"), {}),
+        ],
+    )
+    async def test_status_mapping(self, fetchrow_return, fetchrow_side_effect, expected) -> None:
+        """extra_status_fields maps each account status to OAuth/credential health."""
         mod = EmailModule()
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"status": "active"})
+        if fetchrow_side_effect is not None:
+            pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+        else:
+            pool.fetchrow = AsyncMock(return_value=fetchrow_return)
         mod._pool = pool
 
         result = await mod.extra_status_fields()
 
-        assert result["oauth_status"] == "granted"
-        assert result["credential_health"] == "ok"
-        pool.fetchrow.assert_awaited_once()
-
-    async def test_revoked_account_returns_reauth_needed(self) -> None:
-        """Revoked primary account → oauth_status='reauth_needed', credential_health='error'."""
-        mod = EmailModule()
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"status": "revoked"})
-        mod._pool = pool
-
-        result = await mod.extra_status_fields()
-
-        assert result["oauth_status"] == "reauth_needed"
-        assert result["credential_health"] == "error"
-
-    async def test_expired_account_returns_reauth_needed(self) -> None:
-        """Expired primary account → oauth_status='reauth_needed', credential_health='error'."""
-        mod = EmailModule()
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"status": "expired"})
-        mod._pool = pool
-
-        result = await mod.extra_status_fields()
-
-        assert result["oauth_status"] == "reauth_needed"
-        assert result["credential_health"] == "error"
-
-    async def test_no_primary_account_returns_not_configured(self) -> None:
-        """No primary account row → oauth_status='not_configured', credential_health='warning'."""
-        mod = EmailModule()
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        mod._pool = pool
-
-        result = await mod.extra_status_fields()
-
-        assert result["oauth_status"] == "not_configured"
-        assert result["credential_health"] == "warning"
-
-    async def test_db_query_error_returns_empty(self) -> None:
-        """DB query failure returns {} without propagating exception."""
-        mod = EmailModule()
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(side_effect=Exception("connection refused"))
-        mod._pool = pool
-
-        result = await mod.extra_status_fields()
-
-        assert result == {}
+        if expected:
+            assert result["oauth_status"] == expected["oauth_status"]
+            assert result["credential_health"] == expected["credential_health"]
+        else:
+            assert result == {}
 
     async def test_on_startup_stores_pool(self) -> None:
         """on_startup stores db.pool into _pool for later OAuth status queries."""

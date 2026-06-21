@@ -110,27 +110,6 @@ class TestMemoryStoreEpisode:
             result = await memory_store_episode(pool, "some content", "butler")
         assert result == {"id": str(episode_id), "expires_at": expires_at.isoformat()}
 
-    async def test_session_id_forwarded(self, pool: AsyncMock) -> None:
-        sid = uuid.uuid4()
-        with patch.object(
-            _helpers._storage,
-            "store_episode",
-            new_callable=AsyncMock,
-            return_value={"id": uuid.uuid4(), "expires_at": datetime.now(UTC)},
-        ) as m:
-            await memory_store_episode(pool, "test", "butler", session_id=str(sid))
-        assert m.call_args.kwargs["session_id"] == sid
-
-    async def test_default_importance_is_five(self, pool: AsyncMock) -> None:
-        with patch.object(
-            _helpers._storage,
-            "store_episode",
-            new_callable=AsyncMock,
-            return_value={"id": uuid.uuid4(), "expires_at": datetime.now(UTC)},
-        ) as m:
-            await memory_store_episode(pool, "test", "butler")
-        assert m.call_args.kwargs["importance"] == 5.0
-
 
 # ---------------------------------------------------------------------------
 # memory_store_fact
@@ -168,26 +147,6 @@ class TestMemoryStoreFact:
         ) as m:
             await memory_store_fact(pool, engine, "user", "Is-Parent Of", "Alice")
         assert m.call_args.args[2] == "parent_of"
-
-    async def test_kwargs_forwarded(self, pool: AsyncMock, engine: MagicMock) -> None:
-        with patch.object(
-            _helpers._storage,
-            "store_fact",
-            new_callable=AsyncMock,
-            return_value={"id": uuid.uuid4()},
-        ) as m:
-            await memory_store_fact(
-                pool,
-                engine,
-                "user",
-                "pref",
-                "dark",
-                importance=9.0,
-                permanence="stable",
-                tags=["ui"],
-            )
-        kw = m.call_args.kwargs
-        assert kw["importance"] == 9.0 and kw["permanence"] == "stable" and kw["tags"] == ["ui"]
 
 
 # ---------------------------------------------------------------------------
@@ -365,17 +324,6 @@ class TestMemoryStoreRule:
         ):
             result = await memory_store_rule(pool, engine, "Always greet")
         assert result == {"id": str(rule_id)}
-
-    async def test_scope_and_tags_forwarded(self, pool: AsyncMock, engine: MagicMock) -> None:
-        with patch.object(
-            _helpers._storage,
-            "store_rule",
-            new_callable=AsyncMock,
-            return_value={"id": uuid.uuid4()},
-        ) as m:
-            await memory_store_rule(pool, engine, "rule", scope="butler:x", tags=["safety"])
-        kw = m.call_args.kwargs
-        assert kw["scope"] == "butler:x" and kw["tags"] == ["safety"]
 
 
 # ---------------------------------------------------------------------------

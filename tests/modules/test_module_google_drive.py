@@ -114,20 +114,13 @@ class TestToolRegistration:
         assert set(mcp._registered_tools.keys()) == EXPECTED_DRIVE_TOOLS
 
     async def test_butler_name_param_takes_precedence_over_db_schema(self) -> None:
-        """butler_name param must win over db.schema in register_tools."""
+        """butler_name param is stored directly and wins over db.schema."""
         module = GoogleDriveModule()
         mcp = _make_mock_mcp()
         db = MagicMock()
         db.schema = "schema_value"
         await module.register_tools(mcp=mcp, config={}, db=db, butler_name="param_value")
         assert module._butler_name == "param_value"
-
-    async def test_butler_name_stored_from_param(self) -> None:
-        """butler_name is stored directly from the parameter."""
-        module = GoogleDriveModule()
-        mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="finance")
-        assert module._butler_name == "finance"
 
 
 # ---------------------------------------------------------------------------

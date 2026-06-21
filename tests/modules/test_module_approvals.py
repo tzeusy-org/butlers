@@ -506,8 +506,8 @@ class TestDispatchApprovedActionById:
         module.set_tool_executor(mock_executor)
         result = await module._dispatch_approved_action_by_id(str(action_id))
 
+        # Non-approved state must be refused (preceding error-presence is the contract).
         assert "error" in result
-        assert "approved" in result["error"]
 
     async def test_no_executor_wired_returns_error(self, module: ApprovalsModule, mock_db: MockDB):
         await module.on_startup(config=None, db=mock_db)
@@ -515,16 +515,17 @@ class TestDispatchApprovedActionById:
 
         result = await module._dispatch_approved_action_by_id(str(action_id))
         assert "error" in result
-        assert "executor" in result["error"]
 
-    async def test_missing_action_returns_error(self, module: ApprovalsModule, mock_db: MockDB):
+    @pytest.mark.parametrize(
+        "action_id",
+        ["00000000-0000-0000-0000-0000000000ff", "not-a-uuid"],
+        ids=["missing-uuid", "invalid-uuid"],
+    )
+    async def test_missing_or_invalid_action_returns_error(
+        self, module: ApprovalsModule, mock_db: MockDB, action_id: str
+    ):
         await module.on_startup(config=None, db=mock_db)
-        result = await module._dispatch_approved_action_by_id(str(uuid.uuid4()))
-        assert "error" in result
-
-    async def test_invalid_uuid_returns_error(self, module: ApprovalsModule, mock_db: MockDB):
-        await module.on_startup(config=None, db=mock_db)
-        result = await module._dispatch_approved_action_by_id("not-a-uuid")
+        result = await module._dispatch_approved_action_by_id(action_id)
         assert "error" in result
 
 

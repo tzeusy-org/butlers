@@ -57,25 +57,34 @@ class MockPool:
 
 
 class TestComputeFingerprint:
-    def test_deterministic(self) -> None:
-        fp1 = compute_fingerprint("email_send", {"to": "alice@example.com", "subject": "Hi"})
-        fp2 = compute_fingerprint("email_send", {"to": "alice@example.com", "subject": "Hi"})
-        assert fp1 == fp2
-
-    def test_key_order_independent(self) -> None:
-        fp1 = compute_fingerprint("tool", {"a": "1", "b": "2"})
-        fp2 = compute_fingerprint("tool", {"b": "2", "a": "1"})
-        assert fp1 == fp2
-
-    def test_different_tools_different_fingerprint(self) -> None:
-        assert compute_fingerprint("tool_a", {"x": "1"}) != compute_fingerprint(
-            "tool_b", {"x": "1"}
-        )
-
-    def test_different_args_different_fingerprint(self) -> None:
-        assert compute_fingerprint("tool", {"to": "alice@example.com"}) != compute_fingerprint(
-            "tool", {"to": "bob@example.com"}
-        )
+    @pytest.mark.parametrize(
+        ("left", "right", "expect_equal"),
+        [
+            # deterministic + key-order independence: equivalent inputs collide
+            (
+                ("email_send", {"to": "alice@example.com", "subject": "Hi"}),
+                ("email_send", {"subject": "Hi", "to": "alice@example.com"}),
+                True,
+            ),
+            # differing tool name diverges
+            (("tool_a", {"x": "1"}), ("tool_b", {"x": "1"}), False),
+            # differing args diverge
+            (
+                ("tool", {"to": "alice@example.com"}),
+                ("tool", {"to": "bob@example.com"}),
+                False,
+            ),
+        ],
+    )
+    def test_fingerprint_equality(
+        self,
+        left: tuple[str, dict[str, str]],
+        right: tuple[str, dict[str, str]],
+        expect_equal: bool,
+    ) -> None:
+        fp1 = compute_fingerprint(*left)
+        fp2 = compute_fingerprint(*right)
+        assert (fp1 == fp2) is expect_equal
 
     def test_returns_non_empty_string(self) -> None:
         fp = compute_fingerprint("tool", {"a": "1"})

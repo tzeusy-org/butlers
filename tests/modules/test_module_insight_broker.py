@@ -159,30 +159,16 @@ class TestSwitchboardButlerToml:
         """[modules.insight_broker] is present in butler.toml."""
         assert "insight_broker" in switchboard_config.modules
 
-    def test_insight_delivery_cycle_schedule_present(self, switchboard_config):
-        """insight-delivery-cycle schedule is declared in butler.toml."""
+    def test_insight_delivery_cycle_schedule_fully_wired(self, switchboard_config):
+        """insight-delivery-cycle is declared as a job dispatch with cron '0 8 * * *'."""
+        from butlers.config import ScheduleDispatchMode
+
         schedule_names = [s.name for s in switchboard_config.schedules]
         assert "insight-delivery-cycle" in schedule_names
 
-    def test_insight_delivery_cycle_cron(self, switchboard_config):
-        """insight-delivery-cycle uses cron '0 8 * * *'."""
         schedule = next(
             s for s in switchboard_config.schedules if s.name == "insight-delivery-cycle"
         )
         assert schedule.cron == "0 8 * * *"
-
-    def test_insight_delivery_cycle_dispatch_mode(self, switchboard_config):
-        """insight-delivery-cycle dispatch_mode is 'job'."""
-        from butlers.config import ScheduleDispatchMode
-
-        schedule = next(
-            s for s in switchboard_config.schedules if s.name == "insight-delivery-cycle"
-        )
         assert schedule.dispatch_mode == ScheduleDispatchMode.JOB
-
-    def test_insight_delivery_cycle_job_name(self, switchboard_config):
-        """insight-delivery-cycle job_name is 'insight_delivery_cycle'."""
-        schedule = next(
-            s for s in switchboard_config.schedules if s.name == "insight-delivery-cycle"
-        )
         assert schedule.job_name == "insight_delivery_cycle"

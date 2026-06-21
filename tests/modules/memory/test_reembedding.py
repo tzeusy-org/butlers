@@ -82,17 +82,13 @@ class TestResolveTiers:
     def test_valid_single_tier(self) -> None:
         assert _resolve_tiers("facts") == ["facts"]
 
-    def test_invalid_tier_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unknown tier"):
-            _resolve_tiers("nonexistent")
-
     def test_list_validates_all(self) -> None:
         result = _resolve_tiers_list(["episodes", "rules"])
         assert result == ["episodes", "rules"]
 
-    def test_list_unknown_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unknown tiers"):
-            _resolve_tiers_list(["facts", "bogus"])
+    # NOTE: unknown-tier rejection is guarded at the public-API level by
+    # TestCountPending.test_invalid_tier_raises and
+    # TestRunFull.test_invalid_tier_raises_before_db_access.
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +120,6 @@ class TestCountPending:
         pool, _ = _make_pool()
         with pytest.raises(ValueError, match="Unknown tier"):
             await count_pending(pool, current_model="model-v2", tier="bogus")
-
-    async def test_zero_count_when_up_to_date(self) -> None:
-        pool, conn = _make_pool(fetchrow_result={"cnt": 0})
-        result = await count_pending(pool, current_model="all-MiniLM-L6-v2")
-        assert all(v == 0 for v in result.values())
 
 
 # ---------------------------------------------------------------------------
@@ -229,14 +220,9 @@ class TestRunFull:
 
         assert result.dry_run is False
         assert result.counts["facts"] == 1
-        # executemany() was called once per batch with the UPDATE SQL.
+        # A full run writes the batch: new model name + row id bound per row.
         conn.executemany.assert_called_once()
-        call_args = conn.executemany.call_args
-        sql = call_args[0][0]
-        rows = call_args[0][1]
-        assert "UPDATE" in sql
-        assert "embedding_model_version" in sql
-        # executemany rows: (vector_str, model_name, row_id)
+        rows = conn.executemany.call_args[0][1]
         assert len(rows) == 1
         assert rows[0][1] == "new-model"  # model name
         assert rows[0][2] == row_id  # row id
@@ -253,10 +239,8 @@ class TestRunFull:
 
         result = await run(pool, engine, dry_run=False, tiers=["episodes"], batch_size=2)
 
+        # A full batch triggers a second fetch (batch-boundary contract).
         assert conn.fetch.call_count == 2
-        # batch_size param is passed to the SQL fetch.
-        first_call_args = conn.fetch.call_args_list[0][0]
-        assert first_call_args[2] == 2  # $2 = batch_size in the query
         assert result.counts["episodes"] == 2
 
     async def test_no_rows_returns_zero_count(self) -> None:

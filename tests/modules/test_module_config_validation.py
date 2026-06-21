@@ -401,9 +401,11 @@ class TestUnconfiguredRequiredSchemaModules:
 class TestMissingRequiredField:
     """Missing a required field marks the module as failed (non-fatal)."""
 
-    async def test_missing_required_field_marks_failed(self, tmp_path: Path) -> None:
-        """Omitting a required field (api_key) marks module as failed."""
-        butler_dir = _make_butler_toml(tmp_path, modules={"strict_mod": {"timeout": 10}})
+    async def test_missing_required_field_marks_failed_and_names_field(
+        self, tmp_path: Path
+    ) -> None:
+        """Omitting a required field marks the module config-failed AND names it."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"strict_mod": {}})
         registry = _make_registry(StrictModule)
         patches = _patch_infra()
 
@@ -424,70 +426,17 @@ class TestMissingRequiredField:
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()  # Non-fatal — should not raise
 
-        assert daemon._module_statuses["strict_mod"].status == "failed"
-        assert daemon._module_statuses["strict_mod"].phase == "config"
-
-    async def test_missing_required_field_error_mentions_field_name(self, tmp_path: Path) -> None:
-        """The error message should mention the missing field name."""
-        butler_dir = _make_butler_toml(tmp_path, modules={"strict_mod": {}})
-        registry = _make_registry(StrictModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
-
-        assert daemon._module_statuses["strict_mod"].status == "failed"
-        assert "api_key" in daemon._module_statuses["strict_mod"].error
+        status = daemon._module_statuses["strict_mod"]
+        assert status.status == "failed"
+        assert status.phase == "config"
+        assert "api_key" in status.error  # operator-facing error names the field
 
 
 class TestExtraFieldRejected:
     """Extra/unknown fields in the config mark the module as failed (non-fatal)."""
 
-    async def test_extra_field_marks_failed(self, tmp_path: Path) -> None:
-        """An unknown field marks the module as config-failed."""
-        butler_dir = _make_butler_toml(
-            tmp_path,
-            modules={"strict_mod": {"api_key": "sk-123", "unknown_field": "bad"}},
-        )
-        registry = _make_registry(StrictModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
-
-        assert daemon._module_statuses["strict_mod"].status == "failed"
-        assert daemon._module_statuses["strict_mod"].phase == "config"
-
-    async def test_extra_field_error_mentions_field_name(self, tmp_path: Path) -> None:
-        """The error message should mention the extra field name."""
+    async def test_extra_field_marks_failed_and_names_field(self, tmp_path: Path) -> None:
+        """An unknown field marks the module config-failed AND names it in the error."""
         butler_dir = _make_butler_toml(
             tmp_path,
             modules={"defaults_mod": {"host": "x", "bogus": "y"}},
@@ -512,8 +461,10 @@ class TestExtraFieldRejected:
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
 
-        assert daemon._module_statuses["defaults_mod"].status == "failed"
-        assert "bogus" in daemon._module_statuses["defaults_mod"].error
+        status = daemon._module_statuses["defaults_mod"]
+        assert status.status == "failed"
+        assert status.phase == "config"
+        assert "bogus" in status.error  # operator-facing error names the offending field
 
 
 class TestTypeMismatch:

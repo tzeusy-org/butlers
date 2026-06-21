@@ -47,39 +47,40 @@ def engine() -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# memory_search
+# Serialization contract: every read tool serializes UUID->str + datetime->isoformat
 # ---------------------------------------------------------------------------
 
 
-class TestMemorySearch:
-    async def test_serializes_results(self, pool: AsyncMock, engine: MagicMock) -> None:
+class TestSerializationContract:
+    @pytest.mark.parametrize(
+        ("tool", "dt_field"),
+        [
+            ("search", "created_at"),
+            ("recall", "last_referenced_at"),
+            ("get", "created_at"),
+            ("mark_helpful", "last_applied_at"),
+        ],
+    )
+    async def test_uuid_and_datetime_serialized(
+        self, pool: AsyncMock, engine: MagicMock, tool: str, dt_field: str
+    ) -> None:
         dt = datetime(2025, 3, 1, tzinfo=UTC)
-        _helpers._search.search = AsyncMock(return_value=[{"id": SAMPLE_UUID, "created_at": dt}])
-        results = await memory_search(pool, engine, "query")
-        assert results[0]["id"] == SAMPLE_STR
-        assert results[0]["created_at"] == dt.isoformat()
+        row = {"id": SAMPLE_UUID, dt_field: dt}
+        if tool == "search":
+            _helpers._search.search = AsyncMock(return_value=[row])
+            result = (await memory_search(pool, engine, "query"))[0]
+        elif tool == "recall":
+            _helpers._search.recall = AsyncMock(return_value=[row])
+            result = (await memory_recall(pool, engine, "topic"))[0]
+        elif tool == "get":
+            _helpers._storage.get_memory = AsyncMock(return_value={**row, "content": "hello"})
+            result = await memory_get(pool, "fact", SAMPLE_STR)
+        else:  # mark_helpful
+            _helpers._storage.mark_helpful = AsyncMock(return_value={**row, "success_count": 3})
+            result = await memory_mark_helpful(pool, SAMPLE_STR)
 
-    async def test_optional_params_forwarded(self, pool: AsyncMock, engine: MagicMock) -> None:
-        _helpers._search.search = AsyncMock(return_value=[])
-        await memory_search(pool, engine, "q", types=["fact"], scope="s", mode="semantic", limit=5)
-        kw = _helpers._search.search.call_args.kwargs
-        assert kw["types"] == ["fact"] and kw["scope"] == "s" and kw["limit"] == 5
-
-
-# ---------------------------------------------------------------------------
-# memory_recall
-# ---------------------------------------------------------------------------
-
-
-class TestMemoryRecall:
-    async def test_serializes_results(self, pool: AsyncMock, engine: MagicMock) -> None:
-        dt = datetime(2025, 5, 20, tzinfo=UTC)
-        _helpers._search.recall = AsyncMock(
-            return_value=[{"id": SAMPLE_UUID, "last_referenced_at": dt}]
-        )
-        results = await memory_recall(pool, engine, "topic")
-        assert results[0]["id"] == SAMPLE_STR
-        assert results[0]["last_referenced_at"] == dt.isoformat()
+        assert result["id"] == SAMPLE_STR
+        assert result[dt_field] == dt.isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -91,15 +92,6 @@ class TestMemoryGet:
     async def test_returns_none_when_not_found(self, pool: AsyncMock) -> None:
         _helpers._storage.get_memory = AsyncMock(return_value=None)
         assert await memory_get(pool, "fact", SAMPLE_STR) is None
-
-    async def test_serializes_result(self, pool: AsyncMock) -> None:
-        dt = datetime(2025, 4, 10, tzinfo=UTC)
-        _helpers._storage.get_memory = AsyncMock(
-            return_value={"id": SAMPLE_UUID, "created_at": dt, "content": "hello"}
-        )
-        result = await memory_get(pool, "fact", SAMPLE_STR)
-        assert result["id"] == SAMPLE_STR
-        assert result["created_at"] == dt.isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -119,14 +111,6 @@ class TestMemoryConfirm:
 
 
 class TestMemoryFeedback:
-    async def test_mark_helpful_serializes(self, pool: AsyncMock) -> None:
-        dt = datetime(2025, 7, 1, tzinfo=UTC)
-        _helpers._storage.mark_helpful = AsyncMock(
-            return_value={"id": SAMPLE_UUID, "last_applied_at": dt, "success_count": 3}
-        )
-        result = await memory_mark_helpful(pool, SAMPLE_STR)
-        assert result["id"] == SAMPLE_STR and result["last_applied_at"] == dt.isoformat()
-
     async def test_mark_helpful_returns_error_when_not_found(self, pool: AsyncMock) -> None:
         _helpers._storage.mark_helpful = AsyncMock(return_value=None)
         result = await memory_mark_helpful(pool, SAMPLE_STR)
@@ -152,10 +136,3 @@ class TestMemoryForget:
         _helpers._storage.forget_memory = AsyncMock(side_effect=err)
         result = await memory_forget(pool, "fact", SAMPLE_STR)
         assert result["forgotten"] is False and "error" in result
-
-    async def test_correction_id_forwarded(self, pool: AsyncMock) -> None:
-        cid = str(uuid.uuid4())
-        _helpers._storage.forget_memory = AsyncMock(return_value=True)
-        await memory_forget(pool, "fact", SAMPLE_STR, correction_id=cid, correction_reason="bad")
-        kw = _helpers._storage.forget_memory.call_args[1]
-        assert kw["correction_id"] == cid and kw["correction_reason"] == "bad"

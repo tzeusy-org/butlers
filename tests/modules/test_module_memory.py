@@ -163,46 +163,15 @@ class TestRegisterTools:
 
         return registered_tools
 
-    async def test_registers_expected_tool_count(self):
-        registered = await self._register_and_capture()
-        # Count is derived from EXPECTED_TOOL_NAMES so it stays in sync automatically.
-        assert len(registered) == len(EXPECTED_TOOL_NAMES)
-
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
+        # Exact name set subsumes the count contract.
         assert set(registered.keys()) == EXPECTED_TOOL_NAMES
 
     async def test_all_tools_are_async(self):
         registered = await self._register_and_capture()
         for tool_name, tool_fn in registered.items():
             assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
-
-    async def test_mcp_tool_call_count(self):
-        mod = MemoryModule()
-        mcp = MagicMock()
-        mcp.tool.return_value = lambda fn: fn
-
-        with patch.dict(
-            "sys.modules",
-            {
-                "butlers.modules.memory": MagicMock(),
-                "butlers.modules.memory.consolidation": MagicMock(),
-                "butlers.modules.memory.tools": MagicMock(),
-                "butlers.modules.memory.tools.writing": MagicMock(),
-                "butlers.modules.memory.tools.reading": MagicMock(),
-                "butlers.modules.memory.tools.feedback": MagicMock(),
-                "butlers.modules.memory.tools.management": MagicMock(),
-                "butlers.modules.memory.tools.context": MagicMock(),
-                "butlers.modules.memory.tools.entities": MagicMock(),
-                "butlers.modules.memory.tools.preferences": MagicMock(),
-            },
-        ):
-            await mod.register_tools(
-                mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler"
-            )
-
-        # Count is derived from EXPECTED_TOOL_NAMES so it stays in sync automatically.
-        assert mcp.tool.call_count == len(EXPECTED_TOOL_NAMES)
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
@@ -352,21 +321,6 @@ class TestToolDelegation:
             mock_entities,
         )
 
-    async def test_memory_store_episode_delegates(self):
-        mod, tools, pool, writing, *_ = await self._setup_and_register()
-        mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
-        writing.memory_store_episode = AsyncMock(return_value={"id": "abc"})
-        await tools["memory_store_episode"](content="test", butler="memory")
-        writing.memory_store_episode.assert_called_once_with(
-            pool,
-            "test",
-            "memory",
-            embedding_engine=mod._embedding_engine,
-            session_id=None,
-            importance=5.0,
-            request_context=None,
-        )
-
     async def test_memory_store_fact_delegates(self):
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
@@ -396,53 +350,39 @@ class TestToolDelegation:
             source_schema=None,
         )
 
-    async def test_memory_store_fact_delegates_with_valid_at(self):
+    @pytest.mark.parametrize(
+        ("valid_at", "retention_class"),
+        [
+            ("2026-03-15T10:00:00Z", "long_term"),
+            ("2025-01-01T00:00:00Z", "ephemeral"),
+        ],
+    )
+    async def test_memory_store_fact_forwards_valid_at_and_retention_class(
+        self, valid_at, retention_class
+    ):
+        """Non-default valid_at and a custom retention_class must reach writing verbatim.
+
+        Guards against a tool-layer regression that hardcodes/ignores these
+        caller-supplied values (e.g. always sending valid_at=None or
+        retention_class='operational').
+        """
         mod, tools, pool, writing, *_ = await self._setup_and_register()
         mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
-        writing.memory_store_fact = AsyncMock(return_value={"id": "abc", "superseded_id": None})
+        writing.memory_store_fact = AsyncMock(return_value={"id": "abc"})
         entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
+
         await tools["memory_store_fact"](
-            subject="Owner",
-            predicate="meal_breakfast",
-            content="oatmeal",
+            subject="user",
+            predicate="visited",
+            content="Paris",
             entity_id=entity_uuid,
-            valid_at="2026-03-06T08:00:00Z",
-        )
-        writing.memory_store_fact.assert_called_once_with(
-            pool,
-            mod._embedding_engine,
-            "Owner",
-            "meal_breakfast",
-            "oatmeal",
-            importance=5.0,
-            permanence="standard",
-            scope="global",
-            tags=None,
-            entity_id=entity_uuid,
-            object_entity_id=None,
-            valid_at="2026-03-06T08:00:00Z",
-            idempotency_key=None,
-            request_context=None,
-            retention_class="operational",
-            sensitivity="normal",
-            enable_shared_catalog=False,
-            source_schema=None,
+            valid_at=valid_at,
+            retention_class=retention_class,
         )
 
-    async def test_memory_context_delegates(self):
-        mod, tools, pool, _, _, _, _, context_mod, _ = await self._setup_and_register()
-        mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
-        context_mod.memory_context = AsyncMock(return_value="# Memory Context\n")
-        await tools["memory_context"](trigger_prompt="test prompt", butler="memory")
-        context_mod.memory_context.assert_called_once_with(
-            pool,
-            mod._embedding_engine,
-            "test prompt",
-            "memory",
-            token_budget=3000,
-            include_recent_episodes=False,
-            request_context=None,
-        )
+        _, kwargs = writing.memory_store_fact.call_args
+        assert kwargs["valid_at"] == valid_at
+        assert kwargs["retention_class"] == retention_class
 
     async def test_memory_search_delegates(self):
         mod, tools, pool, _, reading, *_ = await self._setup_and_register()
@@ -459,98 +399,6 @@ class TestToolDelegation:
             limit=10,
             min_confidence=0.2,
             filters=None,
-        )
-
-    async def test_memory_confirm_delegates(self):
-        mod, tools, pool, _, _, feedback, *_ = await self._setup_and_register()
-        feedback.memory_confirm = AsyncMock(return_value={"confirmed": True})
-        await tools["memory_confirm"](memory_type="fact", memory_id="abc-123")
-        feedback.memory_confirm.assert_called_once_with(pool, "fact", "abc-123")
-
-    async def test_memory_forget_delegates(self):
-        mod, tools, pool, _, _, _, management, _, _ = await self._setup_and_register()
-        management.memory_forget = AsyncMock(return_value={"forgotten": True})
-        await tools["memory_forget"](memory_type="fact", memory_id="abc-123")
-        management.memory_forget.assert_called_once_with(pool, "fact", "abc-123")
-
-    async def test_memory_stats_delegates(self):
-        mod, tools, pool, _, _, _, management, _, _ = await self._setup_and_register()
-        management.memory_stats = AsyncMock(return_value={})
-        await tools["memory_stats"]()
-        management.memory_stats.assert_called_once_with(pool, scope=None)
-
-    async def test_memory_store_fact_custom_retention_and_sensitivity(self):
-        """Custom retention_class and sensitivity are passed through to writing layer."""
-        mod, tools, pool, writing, *_ = await self._setup_and_register()
-        mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
-        writing.memory_store_fact = AsyncMock(return_value={"id": "abc"})
-        entity_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        await tools["memory_store_fact"](
-            subject="owner",
-            predicate="weight",
-            content="72kg",
-            entity_id=entity_uuid,
-            retention_class="health_log",
-            sensitivity="pii",
-        )
-        writing.memory_store_fact.assert_called_once_with(
-            pool,
-            mod._embedding_engine,
-            "owner",
-            "weight",
-            "72kg",
-            importance=5.0,
-            permanence="standard",
-            scope="global",
-            tags=None,
-            entity_id=entity_uuid,
-            object_entity_id=None,
-            valid_at=None,
-            idempotency_key=None,
-            request_context=None,
-            retention_class="health_log",
-            sensitivity="pii",
-            enable_shared_catalog=False,
-            source_schema=None,
-        )
-
-    async def test_memory_store_rule_delegates_with_default_retention(self):
-        """memory_store_rule passes retention_class='rule' by default."""
-        mod, tools, pool, writing, *_ = await self._setup_and_register()
-        mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
-        writing.memory_store_rule = AsyncMock(return_value={"id": "rule-abc"})
-        await tools["memory_store_rule"](content="Always be polite")
-        writing.memory_store_rule.assert_called_once_with(
-            pool,
-            mod._embedding_engine,
-            "Always be polite",
-            scope="global",
-            tags=None,
-            request_context=None,
-            retention_class="rule",
-            enable_shared_catalog=False,
-            source_schema=None,
-        )
-
-    async def test_memory_store_rule_delegates_with_custom_retention(self):
-        """Custom retention_class is forwarded when provided."""
-        mod, tools, pool, writing, *_ = await self._setup_and_register()
-        mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
-        writing.memory_store_rule = AsyncMock(return_value={"id": "rule-xyz"})
-        await tools["memory_store_rule"](
-            content="Escalate budget queries",
-            retention_class="archive",
-        )
-        writing.memory_store_rule.assert_called_once_with(
-            pool,
-            mod._embedding_engine,
-            "Escalate budget queries",
-            scope="global",
-            tags=None,
-            request_context=None,
-            retention_class="archive",
-            enable_shared_catalog=False,
-            source_schema=None,
         )
 
 

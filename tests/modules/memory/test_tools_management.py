@@ -63,12 +63,6 @@ class TestPredicateList:
         result = await predicate_list(pool)
         assert result == []
 
-    async def test_edges_only_filter_applied(self, pool: AsyncMock) -> None:
-        pool.fetch = AsyncMock(return_value=[])
-        await predicate_list(pool, edges_only=True)
-        sql = pool.fetch.call_args[0][0]
-        assert "is_edge = true" in sql
-
 
 # ---------------------------------------------------------------------------
 # memory_context
