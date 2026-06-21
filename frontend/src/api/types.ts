@@ -516,6 +516,14 @@ export type CalendarWorkspaceSyncState =
 /** Normalized event row returned by GET /api/calendar/workspace. */
 export interface UnifiedCalendarEntry {
   entry_id: string;
+  /**
+   * `calendar_events.id` for entries backed by a stored calendar event; `null`
+   * for entries with no underlying event row (pending proposals, overlay
+   * contributions). This is the id the meeting-prep rail
+   * (`GET /api/calendar/workspace/prep/{event_id}`) keys on — distinct from
+   * `entry_id`, which is the per-instance id.
+   */
+  event_id: string | null;
   view: CalendarWorkspaceQueryView;
   source_type: UnifiedCalendarSourceType;
   source_key: string;

@@ -1856,13 +1856,12 @@ function CalendarEntryDetailPanel({
           precomputed prep view — fail-open to an honest "No prep context yet"
           empty-state (the expected state for most events today). Shown only for
           provider (user-calendar) meetings, where attendee prep is meaningful.
-          NOTE: `UnifiedCalendarEntry` exposes only the instance id (`entry_id`),
-          not the underlying `calendar_events.id` the prep contributions are keyed
-          on; passing it relies on the endpoint's fail-open empty-state. A
-          backend follow-up should surface `event_id` on the entry so the rail
-          matches contributions once coverage is populated. */}
+          Keyed on `event_id` (= `calendar_events.id`, bu-jemrk) — the id the prep
+          contributions are keyed on — not the per-instance `entry_id`. When the
+          entry has no backing event row, `event_id` is null and the container
+          gates the fetch (no spurious prep request). */}
       {isUserEvent ? (
-        <MeetingPrepRailContainer eventId={entry.entry_id} heading={entry.title} />
+        <MeetingPrepRailContainer eventId={entry.event_id} heading={entry.title} />
       ) : null}
 
       {/* Description (user events only) */}

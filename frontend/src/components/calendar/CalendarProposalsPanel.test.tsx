@@ -41,6 +41,7 @@ afterEach(() => {
 function proposalEntry(overrides: Partial<UnifiedCalendarEntry> = {}): UnifiedCalendarEntry {
   return {
     entry_id: "11111111-1111-1111-1111-111111111111",
+    event_id: null,
     view: "proposals",
     source_type: "proposed_event",
     source_key: "proposals",

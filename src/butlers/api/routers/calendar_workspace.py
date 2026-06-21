@@ -615,6 +615,7 @@ def _normalize_entry(
 
     return UnifiedCalendarEntry(
         entry_id=row["instance_id"],
+        event_id=_safe_uuid(row.get("event_id")),
         view=view,
         source_type=source_type,
         source_key=row["source_key"],

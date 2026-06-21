@@ -317,6 +317,10 @@ async def test_workspace_returns_entries_and_source_freshness(app):
     assert len(body["entries"]) == 1
     entry = body["entries"][0]
     assert entry["view"] == "user"
+    # bu-jemrk: ``event_id`` (calendar_events.id) is propagated distinctly from
+    # the per-instance ``entry_id`` so the meeting-prep rail keys on the right id.
+    assert entry["event_id"] == str(user_row["event_id"])
+    assert entry["event_id"] != entry["entry_id"]
     # Regression guard (bu-99m0s): the v1 read-model strictly reads
     # ``origin_instance_ref`` from every workspace row, so it must round-trip
     # into the entry metadata rather than raising KeyError -> HTTP 500.
@@ -562,6 +566,9 @@ async def test_workspace_proposals_returns_pending_only(app):
     entry = body["entries"][0]
     assert entry["view"] == "proposals"
     assert entry["source_type"] == "proposed_event"
+    # bu-jemrk: a pending proposal has no backing calendar_events row, so
+    # ``event_id`` must be null (the prep rail is hidden for these entries).
+    assert entry["event_id"] is None
     assert entry["editable"] is False
     assert entry["title"] == "Dentist appointment"
     assert entry["metadata"]["confidence"] == 0.82
@@ -652,6 +659,9 @@ async def test_workspace_overlays_projects_in_range(app):
     entry = body["entries"][0]
     assert entry["view"] == "overlays"
     assert entry["source_type"] == "overlay_contribution"
+    # bu-jemrk: overlay contributions have no backing calendar_events row, so
+    # ``event_id`` must be null (no prep rail for synthetic overlay entries).
+    assert entry["event_id"] is None
     assert entry["editable"] is False
     assert entry["title"] == "Electric Co"
     assert entry["all_day"] is True
@@ -1302,6 +1312,8 @@ async def test_entry_detail_returns_entry(app):
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["entry_id"] == str(instance_id)
+    # bu-jemrk: the single-entry read also carries the backing calendar_events.id.
+    assert data["event_id"] == str(row["event_id"])
     assert data["title"] == "Calendar item"
     assert data["view"] == "user"
 

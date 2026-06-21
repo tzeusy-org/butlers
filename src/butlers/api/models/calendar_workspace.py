@@ -24,6 +24,12 @@ class UnifiedCalendarEntry(BaseModel):
     """Normalized calendar workspace row for user/butler views."""
 
     entry_id: UUID
+    #: ``calendar_events.id`` for entries backed by a stored calendar event.
+    #: ``None`` for entries with no underlying ``calendar_events`` row (e.g.
+    #: pending proposals and overlay contributions).  This is the id the
+    #: meeting-prep rail (``GET /api/calendar/workspace/prep/{event_id}``) keys
+    #: on — distinct from ``entry_id`` which is the per-instance id.
+    event_id: UUID | None = None
     view: CalendarWorkspaceView
     source_type: UnifiedCalendarSourceType
     source_key: str
