@@ -46,13 +46,13 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 #### Scenario: Set permission requires reason
 - **WHEN** `PUT /api/permissions/{butler}/{perm}` is called
 - **THEN** the request body is `{granted: bool, reason: str}` and `reason` MUST be a non-empty string after trimming whitespace
-- **AND** if `reason` is empty or missing, the response is `422 Unprocessable Entity` with body `{error: "reason_required"}`
+- **AND** if `reason` is empty or missing, the response is `422 Unprocessable Entity` with body `{detail: {error: "reason_required"}}` (FastAPI wraps the `HTTPException.detail` payload; the frontend reads `body.detail.error`)
 - **AND** on success, `audit.append("permission.set", target=f"{butler}.{perm}", note=reason)` is invoked
 - **AND** the response includes the updated cell.
 
 #### Scenario: Reason field rejects credential patterns
 - **WHEN** `PUT /api/permissions/{butler}/{perm}` is called with a `reason` that matches the case-insensitive pattern `(password|token|secret|api[_-]?key|credential|private[_-]?key)`
-- **THEN** the response is `422 Unprocessable Entity` with body `{error: "reason_contains_credential"}`
+- **THEN** the response is `422 Unprocessable Entity` with body `{detail: {error: "reason_contains_credential"}}` (FastAPI wraps the `HTTPException.detail` payload; the frontend reads `body.detail.error`)
 - **AND** no state change occurs; no audit row is written.
 - **AND** the check is implemented as `validate_no_secrets(text)` in `src/butlers/api/security.py` and reused by any future endpoint that takes free-text reason input.
 
