@@ -11,6 +11,7 @@ import CalendarWorkspacePage from "@/pages/CalendarWorkspacePage";
 import {
   useCalendarWorkspace,
   useCalendarWorkspaceMeta,
+  useFindCalendarWorkspaceTime,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
   usePreviewCalendarWorkspaceButlerEvent,
@@ -85,8 +86,14 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
     error: null,
     data: { data: { entries: [] } },
   })),
-  useAcceptCalendarProposal: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useDismissCalendarProposal: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useAcceptCalendarProposal: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  })),
+  useDismissCalendarProposal: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  })),
 }));
 
 vi.mock("sonner", () => ({
@@ -102,14 +109,19 @@ vi.mock("@/hooks/use-debounce", () => ({
   useDebounce: <T,>(value: T) => value,
 }));
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 type UseWorkspaceResult = ReturnType<typeof useCalendarWorkspace>;
 type UseWorkspaceMetaResult = ReturnType<typeof useCalendarWorkspaceMeta>;
-type UseButlerMutationResult = ReturnType<typeof useMutateCalendarWorkspaceButlerEvent>;
+type UseButlerMutationResult = ReturnType<
+  typeof useMutateCalendarWorkspaceButlerEvent
+>;
 type UseSyncResult = ReturnType<typeof useSyncCalendarWorkspace>;
-type UseUserMutationResult = ReturnType<typeof useMutateCalendarWorkspaceUserEvent>;
+type UseUserMutationResult = ReturnType<
+  typeof useMutateCalendarWorkspaceUserEvent
+>;
 
 const mutateButlerEvent = vi.fn();
 const mutateUserEvent = vi.fn();
@@ -286,7 +298,9 @@ function setButlerMutationState(state?: Partial<UseButlerMutationResult>) {
   } as UseButlerMutationResult);
 }
 
-type UsePreviewResult = ReturnType<typeof usePreviewCalendarWorkspaceButlerEvent>;
+type UsePreviewResult = ReturnType<
+  typeof usePreviewCalendarWorkspaceButlerEvent
+>;
 const previewMutate = vi.fn();
 
 function setRecurrencePreviewState(
@@ -298,7 +312,9 @@ function setRecurrencePreviewState(
       window_start: "2026-03-01T09:00:00+00:00",
       window_end: "2026-05-30T09:00:00+00:00",
       effective_cron: "0 9 * * 1",
-      notes: ["INTERVAL=2 is not supported by the butler scheduler — will fire every week."],
+      notes: [
+        "INTERVAL=2 is not supported by the butler scheduler — will fire every week.",
+      ],
     },
   },
 ) {
@@ -581,7 +597,10 @@ describe("CalendarWorkspacePage", () => {
     setPrimaryCalendarState();
     previewMutate.mockReset();
     setRecurrencePreviewState();
-    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
 
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -599,7 +618,10 @@ describe("CalendarWorkspacePage", () => {
 
   function renderPage(initialEntry: string) {
     const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
     });
     act(() => {
       root.render(
@@ -608,12 +630,12 @@ describe("CalendarWorkspacePage", () => {
             <Routes>
               <Route
                 path="/calendar"
-                element={(
+                element={
                   <>
                     <CalendarWorkspacePage />
                     <SearchEcho />
                   </>
-                )}
+                }
               />
             </Routes>
           </MemoryRouter>
@@ -638,9 +660,9 @@ describe("CalendarWorkspacePage", () => {
   }
 
   function findDialogByTitle(title: string): Element | undefined {
-    return Array.from(document.querySelectorAll('[data-slot="dialog-content"]')).find((dialog) =>
-      dialog.textContent?.includes(title),
-    );
+    return Array.from(
+      document.querySelectorAll('[data-slot="dialog-content"]'),
+    ).find((dialog) => dialog.textContent?.includes(title));
   }
 
   it("restores view/range from deep-link query state", () => {
@@ -671,7 +693,9 @@ describe("CalendarWorkspacePage", () => {
   it("applies calendar/source filters to workspace query params", async () => {
     renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
 
-    const calendarSelect = container.querySelector("#calendar-filter") as HTMLSelectElement;
+    const calendarSelect = container.querySelector(
+      "#calendar-filter",
+    ) as HTMLSelectElement;
     expect(calendarSelect).toBeDefined();
 
     await act(async () => {
@@ -733,12 +757,16 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const dialog = findDialogByTitle("Create user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#event-title",
+    ) as HTMLInputElement;
     expect(titleInput).toBeDefined();
 
     await act(async () => {
@@ -748,7 +776,9 @@ describe("CalendarWorkspacePage", () => {
 
     const form = titleInput.closest("form") as HTMLFormElement;
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
       await flush();
     });
 
@@ -830,7 +860,9 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
@@ -860,7 +892,9 @@ describe("CalendarWorkspacePage", () => {
     const panel = container.querySelector('[data-testid="entry-detail-panel"]');
     expect(panel).toBeDefined();
 
-    const titleInput = panel?.querySelector('[data-testid="detail-title-input"]') as HTMLInputElement;
+    const titleInput = panel?.querySelector(
+      '[data-testid="detail-title-input"]',
+    ) as HTMLInputElement;
     expect(titleInput).toBeDefined();
 
     // Update the title draft
@@ -914,17 +948,23 @@ describe("CalendarWorkspacePage", () => {
     expect(rowDeleteButton).toBeDefined();
 
     await act(async () => {
-      rowDeleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      rowDeleteButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const deleteDialog = findDialogByTitle("Delete Event");
-    const confirmDeleteButton = Array.from(deleteDialog?.querySelectorAll("button") ?? []).find(
+    const confirmDeleteButton = Array.from(
+      deleteDialog?.querySelectorAll("button") ?? [],
+    ).find(
       (button) => button.textContent?.trim() === "Delete",
     ) as HTMLButtonElement;
 
     await act(async () => {
-      confirmDeleteButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      confirmDeleteButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
@@ -997,12 +1037,16 @@ describe("CalendarWorkspacePage", () => {
 
     const rowDeleteButton = findButton("Delete");
     await act(async () => {
-      rowDeleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      rowDeleteButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     // The three-option scope sheet renders for a recurring occurrence.
-    const scopeSheet = document.querySelector('[data-testid="delete-recurrence-scope"]');
+    const scopeSheet = document.querySelector(
+      '[data-testid="delete-recurrence-scope"]',
+    );
     expect(scopeSheet).not.toBeNull();
     const followingRadio = document.querySelector(
       '[data-testid="delete-scope-following"] input',
@@ -1015,11 +1059,15 @@ describe("CalendarWorkspacePage", () => {
     });
 
     const deleteDialog = findDialogByTitle("Delete Event");
-    const confirmDeleteButton = Array.from(deleteDialog?.querySelectorAll("button") ?? []).find(
+    const confirmDeleteButton = Array.from(
+      deleteDialog?.querySelectorAll("button") ?? [],
+    ).find(
       (button) => button.textContent?.trim() === "Delete",
     ) as HTMLButtonElement;
     await act(async () => {
-      confirmDeleteButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      confirmDeleteButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
@@ -1058,12 +1106,16 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const dialog = findDialogByTitle("Create user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#event-title",
+    ) as HTMLInputElement;
     await act(async () => {
       setInputValue(titleInput, "Team review");
       await flush();
@@ -1071,7 +1123,9 @@ describe("CalendarWorkspacePage", () => {
 
     const form = titleInput.closest("form") as HTMLFormElement;
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
       await flush();
     });
 
@@ -1121,12 +1175,16 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const dialog = findDialogByTitle("Create user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#event-title",
+    ) as HTMLInputElement;
     await act(async () => {
       setInputValue(titleInput, "Team review");
       await flush();
@@ -1134,7 +1192,9 @@ describe("CalendarWorkspacePage", () => {
 
     const form = titleInput.closest("form") as HTMLFormElement;
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
       await flush();
     });
 
@@ -1150,10 +1210,14 @@ describe("CalendarWorkspacePage", () => {
     expect(conflictCard?.textContent).toContain("Overlaps 1 event");
     expect(conflictCard?.textContent).toContain("Existing meeting");
     // Suggested-slot pill is rendered.
-    const pills = dialog?.querySelectorAll('[data-testid="conflict-slot-pill"]');
+    const pills = dialog?.querySelectorAll(
+      '[data-testid="conflict-slot-pill"]',
+    );
     expect(pills?.length).toBe(1);
     // Book anyway button is rendered.
-    const bookAnyway = dialog?.querySelector('[data-testid="conflict-book-anyway"]');
+    const bookAnyway = dialog?.querySelector(
+      '[data-testid="conflict-book-anyway"]',
+    );
     expect(bookAnyway).toBeDefined();
   });
 
@@ -1193,12 +1257,16 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const dialog = findDialogByTitle("Create user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#event-title",
+    ) as HTMLInputElement;
     await act(async () => {
       setInputValue(titleInput, "Cross-day test");
       await flush();
@@ -1206,11 +1274,15 @@ describe("CalendarWorkspacePage", () => {
 
     const form = titleInput.closest("form") as HTMLFormElement;
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
       await flush();
     });
 
-    const pills = dialog?.querySelectorAll('[data-testid="conflict-slot-pill"]') as NodeListOf<HTMLButtonElement>;
+    const pills = dialog?.querySelectorAll(
+      '[data-testid="conflict-slot-pill"]',
+    ) as NodeListOf<HTMLButtonElement>;
     expect(pills?.length).toBe(2);
     // First pill: same day — time only, no date prefix
     expect(pills[0].textContent).toMatch(/^\d+:\d+ [AP]M/);
@@ -1279,12 +1351,16 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const dialog = findDialogByTitle("Create user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#event-title",
+    ) as HTMLInputElement;
     await act(async () => {
       setInputValue(titleInput, "Team review");
       await flush();
@@ -1293,12 +1369,16 @@ describe("CalendarWorkspacePage", () => {
     // First submit → conflict
     const form = titleInput.closest("form") as HTMLFormElement;
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
       await flush();
     });
 
     expect(callCount).toBe(1);
-    const pill = dialog?.querySelector('[data-testid="conflict-slot-pill"]') as HTMLButtonElement;
+    const pill = dialog?.querySelector(
+      '[data-testid="conflict-slot-pill"]',
+    ) as HTMLButtonElement;
     expect(pill).toBeDefined();
 
     // Click the slot pill → re-submit
@@ -1369,12 +1449,16 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const dialog = findDialogByTitle("Create user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#event-title",
+    ) as HTMLInputElement;
     await act(async () => {
       setInputValue(titleInput, "Override test");
       await flush();
@@ -1382,13 +1466,17 @@ describe("CalendarWorkspacePage", () => {
 
     const form = titleInput.closest("form") as HTMLFormElement;
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
       await flush();
     });
 
     expect(callCount).toBe(1);
 
-    const bookAnyway = dialog?.querySelector('[data-testid="conflict-book-anyway"]') as HTMLButtonElement;
+    const bookAnyway = dialog?.querySelector(
+      '[data-testid="conflict-book-anyway"]',
+    ) as HTMLButtonElement;
     expect(bookAnyway).toBeDefined();
 
     await act(async () => {
@@ -1409,12 +1497,16 @@ describe("CalendarWorkspacePage", () => {
       'button[aria-label="Create user event"]',
     ) as HTMLButtonElement;
     await act(async () => {
-      openCreateButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openCreateButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     const dialog = findDialogByTitle("Create user event");
-    const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#event-title",
+    ) as HTMLInputElement;
     await act(async () => {
       setInputValue(titleInput, "Team review");
       await flush();
@@ -1422,12 +1514,16 @@ describe("CalendarWorkspacePage", () => {
 
     const form = titleInput.closest("form") as HTMLFormElement;
     await act(async () => {
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
       await flush();
     });
 
     // Default user-mutation fixture returns result.status === "created".
-    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("created"));
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringContaining("created"),
+    );
     expect(toast.error).not.toHaveBeenCalled();
   });
 
@@ -1453,7 +1549,9 @@ describe("CalendarWorkspacePage", () => {
     });
 
     const dialog = findDialogByTitle("Create butler event");
-    const titleInput = dialog?.querySelector("#calendar-event-title") as HTMLInputElement;
+    const titleInput = dialog?.querySelector(
+      "#calendar-event-title",
+    ) as HTMLInputElement;
     expect(titleInput).toBeDefined();
 
     await act(async () => {
@@ -1461,7 +1559,9 @@ describe("CalendarWorkspacePage", () => {
       await flush();
     });
 
-    const saveButton = Array.from(dialog?.querySelectorAll("button") ?? []).find(
+    const saveButton = Array.from(
+      dialog?.querySelectorAll("button") ?? [],
+    ).find(
       (button) => button.textContent?.trim() === "Create event",
     ) as HTMLButtonElement;
     await act(async () => {
@@ -1498,9 +1598,13 @@ describe("CalendarWorkspacePage", () => {
     expect(dialog).toBeDefined();
 
     // No recurrence yet -> no preview strip.
-    expect(dialog?.querySelector('[data-testid="recurrence-preview"]')).toBeNull();
+    expect(
+      dialog?.querySelector('[data-testid="recurrence-preview"]'),
+    ).toBeNull();
 
-    const frequencySelect = dialog?.querySelector("#calendar-frequency") as HTMLSelectElement;
+    const frequencySelect = dialog?.querySelector(
+      "#calendar-frequency",
+    ) as HTMLSelectElement;
     expect(frequencySelect).toBeDefined();
     await act(async () => {
       frequencySelect.value = "WEEKLY";
@@ -1512,18 +1616,23 @@ describe("CalendarWorkspacePage", () => {
     expect(previewMutate).toHaveBeenCalled();
     const [previewBody] = previewMutate.mock.calls.at(-1) ?? [];
     expect(previewBody).toEqual(
-      expect.objectContaining({ rrule: expect.stringContaining("FREQ=WEEKLY"), limit: 6 }),
+      expect.objectContaining({
+        rrule: expect.stringContaining("FREQ=WEEKLY"),
+        limit: 6,
+      }),
     );
 
     // Strip renders projected dates, the +N sentinel, and the lossy note.
     const strip = dialog?.querySelector('[data-testid="recurrence-preview"]');
     expect(strip).not.toBeNull();
-    expect(strip?.querySelector('[data-testid="recurrence-preview-more"]')?.textContent).toContain(
-      "+7 more in 90 days",
-    );
-    expect(strip?.querySelector('[data-testid="recurrence-preview-note"]')?.textContent).toContain(
-      "INTERVAL=2",
-    );
+    expect(
+      strip?.querySelector('[data-testid="recurrence-preview-more"]')
+        ?.textContent,
+    ).toContain("+7 more in 90 days");
+    expect(
+      strip?.querySelector('[data-testid="recurrence-preview-note"]')
+        ?.textContent,
+    ).toContain("INTERVAL=2");
   });
 
   it("updates butler event title via detail panel inline edit", async () => {
@@ -1541,7 +1650,9 @@ describe("CalendarWorkspacePage", () => {
     const panel = container.querySelector('[data-testid="entry-detail-panel"]');
     expect(panel).toBeDefined();
 
-    const titleInput = panel?.querySelector('[data-testid="detail-title-input"]') as HTMLInputElement;
+    const titleInput = panel?.querySelector(
+      '[data-testid="detail-title-input"]',
+    ) as HTMLInputElement;
     expect(titleInput).toBeDefined();
 
     await act(async () => {
@@ -1569,16 +1680,29 @@ describe("CalendarWorkspacePage", () => {
     );
   });
 
-  function firePointer(el: Element, type: string, clientY: number, clientX = 20) {
+  function firePointer(
+    el: Element,
+    type: string,
+    clientY: number,
+    clientX = 20,
+  ) {
     el.dispatchEvent(
-      new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, button: 0, clientX, clientY }),
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        button: 0,
+        clientX,
+        clientY,
+      }),
     );
   }
 
   function findGridEvent(label: string): HTMLButtonElement | undefined {
     // Grid event blocks are absolutely positioned via an inline `top` offset.
     return Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes(label) && button.style.top !== "",
+      (button) =>
+        button.textContent?.includes(label) && button.style.top !== "",
     );
   }
 
@@ -1599,7 +1723,9 @@ describe("CalendarWorkspacePage", () => {
 
     const dialog = findDialogByTitle("Create user event");
     expect(dialog).toBeDefined();
-    const startInput = dialog?.querySelector("#event-start") as HTMLInputElement;
+    const startInput = dialog?.querySelector(
+      "#event-start",
+    ) as HTMLInputElement;
     const endInput = dialog?.querySelector("#event-end") as HTMLInputElement;
     expect(startInput.value).toBe("2026-03-01T09:00");
     expect(endInput.value).toBe("2026-03-01T10:00");
@@ -1607,10 +1733,16 @@ describe("CalendarWorkspacePage", () => {
 
   it("drag-moving a user event dispatches an update with new start/end", async () => {
     const userMutateAsync = vi.fn().mockResolvedValue({
-      data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+      data: {
+        result: { status: "updated" },
+        conflicts: [],
+        suggested_slots: [],
+      },
       meta: {},
     });
-    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    setUserMutationState({
+      mutateAsync: userMutateAsync,
+    } as Partial<UseUserMutationResult>);
     renderPage("/calendar?view=user&range=day&anchor=2026-03-01");
 
     const eventButton = findGridEvent("Morning planning");
@@ -1639,10 +1771,16 @@ describe("CalendarWorkspacePage", () => {
 
   it("snaps a moved user event back when the update soft-fails", async () => {
     const userMutateAsync = vi.fn().mockResolvedValue({
-      data: { result: { status: "failed", error: "calendar rejected" }, conflicts: [], suggested_slots: [] },
+      data: {
+        result: { status: "failed", error: "calendar rejected" },
+        conflicts: [],
+        suggested_slots: [],
+      },
       meta: {},
     });
-    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    setUserMutationState({
+      mutateAsync: userMutateAsync,
+    } as Partial<UseUserMutationResult>);
     renderPage("/calendar?view=user&range=day&anchor=2026-03-01");
 
     const eventButton = findGridEvent("Morning planning");
@@ -1658,15 +1796,23 @@ describe("CalendarWorkspacePage", () => {
     expect(userMutateAsync).toHaveBeenCalledTimes(1);
     expect(toast.error).toHaveBeenCalled();
     // No undo ghost is left behind on a failed move.
-    expect(document.querySelector('[data-testid="calendar-move-ghost"]')).toBeNull();
+    expect(
+      document.querySelector('[data-testid="calendar-move-ghost"]'),
+    ).toBeNull();
   });
 
   it("drag-moving a recurring occurrence opens the scope sheet and applies the chosen scope", async () => {
     const userMutateAsync = vi.fn().mockResolvedValue({
-      data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+      data: {
+        result: { status: "updated" },
+        conflicts: [],
+        suggested_slots: [],
+      },
       meta: {},
     });
-    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    setUserMutationState({
+      mutateAsync: userMutateAsync,
+    } as Partial<UseUserMutationResult>);
     setWorkspaceState({
       data: {
         data: {
@@ -1708,7 +1854,9 @@ describe("CalendarWorkspacePage", () => {
     const eventButton = findGridEvent("Standup");
     expect(eventButton).toBeDefined();
     // Recurring occurrences are now draggable/resizable; the drop routes through the scope sheet.
-    expect(eventButton?.querySelector('[data-testid="calendar-resize-handle"]')).not.toBeNull();
+    expect(
+      eventButton?.querySelector('[data-testid="calendar-resize-handle"]'),
+    ).not.toBeNull();
 
     await act(async () => {
       firePointer(eventButton!, "pointerdown", 600);
@@ -1719,7 +1867,9 @@ describe("CalendarWorkspacePage", () => {
 
     // The drag does not commit directly — it opens the recurrence scope sheet.
     expect(userMutateAsync).not.toHaveBeenCalled();
-    const scopeSheet = document.querySelector('[data-testid="edit-recurrence-scope"]');
+    const scopeSheet = document.querySelector(
+      '[data-testid="edit-recurrence-scope"]',
+    );
     expect(scopeSheet).not.toBeNull();
 
     const followingRadio = document.querySelector(
@@ -1731,7 +1881,9 @@ describe("CalendarWorkspacePage", () => {
     });
 
     const editDialog = findDialogByTitle("Edit recurring event");
-    const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+    const saveButton = Array.from(
+      editDialog?.querySelectorAll("button") ?? [],
+    ).find(
       (button) => button.textContent?.trim() === "Save changes",
     ) as HTMLButtonElement;
     await act(async () => {
@@ -1756,10 +1908,16 @@ describe("CalendarWorkspacePage", () => {
 
   it("reports an error (not success) when a recurring edit returns status=conflict", async () => {
     const userMutateAsync = vi.fn().mockResolvedValue({
-      data: { result: { status: "conflict" }, conflicts: [], suggested_slots: [] },
+      data: {
+        result: { status: "conflict" },
+        conflicts: [],
+        suggested_slots: [],
+      },
       meta: {},
     });
-    setUserMutationState({ mutateAsync: userMutateAsync } as Partial<UseUserMutationResult>);
+    setUserMutationState({
+      mutateAsync: userMutateAsync,
+    } as Partial<UseUserMutationResult>);
     setWorkspaceState({
       data: {
         data: {
@@ -1807,7 +1965,9 @@ describe("CalendarWorkspacePage", () => {
     });
 
     const editDialog = findDialogByTitle("Edit recurring event");
-    const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+    const saveButton = Array.from(
+      editDialog?.querySelectorAll("button") ?? [],
+    ).find(
       (button) => button.textContent?.trim() === "Save changes",
     ) as HTMLButtonElement;
     await act(async () => {
@@ -1818,9 +1978,13 @@ describe("CalendarWorkspacePage", () => {
     // A conflict is NOT a success: surface an error and keep the scope sheet open
     // (the edit never landed) instead of falsely reporting the change applied.
     expect(userMutateAsync).toHaveBeenCalledTimes(1);
-    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("conflicts"));
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("conflicts"),
+    );
     expect(toast.success).not.toHaveBeenCalled();
-    expect(document.querySelector('[data-testid="edit-recurrence-scope"]')).not.toBeNull();
+    expect(
+      document.querySelector('[data-testid="edit-recurrence-scope"]'),
+    ).not.toBeNull();
   });
 
   it("shows an error toast (not success) when a butler delete soft-fails", async () => {
@@ -1851,7 +2015,9 @@ describe("CalendarWorkspacePage", () => {
     });
 
     expect(mutateButlerEvent).toHaveBeenCalled();
-    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("event no longer exists"));
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("event no longer exists"),
+    );
     expect(toast.success).not.toHaveBeenCalled();
   });
 
@@ -1926,7 +2092,9 @@ describe("CalendarWorkspacePage", () => {
     expect(body.action).toBe("snooze");
     expect(typeof body.payload.due_at).toBe("string");
     expect(body.payload.event_id).toBeTruthy();
-    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("Snoozed to"));
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringContaining("Snoozed to"),
+    );
   });
 
   it("dismisses a due reminder from the grid", async () => {
@@ -2010,7 +2178,11 @@ describe("CalendarWorkspacePage", () => {
 
     const setPrimaryMutate = vi.fn((_body, options) => {
       options?.onSuccess?.({
-        data: { old_calendar_id: null, new_calendar_id: "work", persisted: false },
+        data: {
+          old_calendar_id: null,
+          new_calendar_id: "work",
+          persisted: false,
+        },
         meta: {},
       });
     });
@@ -2029,12 +2201,16 @@ describe("CalendarWorkspacePage", () => {
     const setPrimaryButton = findButton("Set as primary");
     expect(setPrimaryButton).toBeDefined();
     await act(async () => {
-      setPrimaryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      setPrimaryButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
     expect(setPrimaryMutate).toHaveBeenCalled();
-    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("not persisted"));
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("not persisted"),
+    );
     expect(toast.success).not.toHaveBeenCalled();
   });
 
@@ -2083,7 +2259,11 @@ describe("CalendarWorkspacePage", () => {
 
     const setPrimaryMutate = vi.fn((_body, options) => {
       options?.onSuccess?.({
-        data: { old_calendar_id: null, new_calendar_id: "work", persisted: true },
+        data: {
+          old_calendar_id: null,
+          new_calendar_id: "work",
+          persisted: true,
+        },
         meta: {},
       });
     });
@@ -2101,7 +2281,9 @@ describe("CalendarWorkspacePage", () => {
 
     const setPrimaryButton = findButton("Set as primary");
     await act(async () => {
-      setPrimaryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      setPrimaryButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
       await flush();
     });
 
@@ -2159,16 +2341,22 @@ describe("CalendarWorkspacePage", () => {
         await flush();
       });
 
-      const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+      const panel = container.querySelector(
+        '[data-testid="entry-detail-panel"]',
+      );
       expect(panel).toBeDefined();
 
       // Provenance: source_butler name visible
-      const sourceButlerEl = panel?.querySelector('[data-testid="detail-source-butler"]');
+      const sourceButlerEl = panel?.querySelector(
+        '[data-testid="detail-source-butler"]',
+      );
       expect(sourceButlerEl).toBeDefined();
       expect(sourceButlerEl?.textContent).toContain("general");
 
       // Provenance: session link visible
-      const sessionLink = panel?.querySelector('[data-testid="detail-session-link"]');
+      const sessionLink = panel?.querySelector(
+        '[data-testid="detail-session-link"]',
+      );
       expect(sessionLink).toBeDefined();
 
       // sync_state chip visible (non-null sync_state → chip rendered)
@@ -2184,16 +2372,22 @@ describe("CalendarWorkspacePage", () => {
         await flush();
       });
 
-      expect(container.querySelector('[data-testid="entry-detail-panel"]')).toBeDefined();
+      expect(
+        container.querySelector('[data-testid="entry-detail-panel"]'),
+      ).toBeDefined();
 
-      const closeBtn = container.querySelector('button[aria-label="Close detail panel"]') as HTMLButtonElement;
+      const closeBtn = container.querySelector(
+        'button[aria-label="Close detail panel"]',
+      ) as HTMLButtonElement;
       expect(closeBtn).toBeDefined();
       await act(async () => {
         closeBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await flush();
       });
 
-      expect(container.querySelector('[data-testid="entry-detail-panel"]')).toBeNull();
+      expect(
+        container.querySelector('[data-testid="entry-detail-panel"]'),
+      ).toBeNull();
     });
 
     function setRecurringUserEntry(mutateAsync: ReturnType<typeof vi.fn>) {
@@ -2243,7 +2437,9 @@ describe("CalendarWorkspacePage", () => {
         detailButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await flush();
       });
-      const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+      const panel = container.querySelector(
+        '[data-testid="entry-detail-panel"]',
+      );
       const titleInput = panel?.querySelector(
         '[data-testid="detail-title-input"]',
       ) as HTMLInputElement;
@@ -2259,7 +2455,11 @@ describe("CalendarWorkspacePage", () => {
 
     it("editing a recurring event from the detail panel opens the scope sheet (this scope)", async () => {
       const mutateAsync = vi.fn().mockResolvedValue({
-        data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+        data: {
+          result: { status: "updated" },
+          conflicts: [],
+          suggested_slots: [],
+        },
         meta: {},
       });
       setRecurringUserEntry(mutateAsync);
@@ -2267,12 +2467,16 @@ describe("CalendarWorkspacePage", () => {
 
       // The blur defers to the scope sheet instead of committing immediately.
       expect(mutateAsync).not.toHaveBeenCalled();
-      const scopeSheet = document.querySelector('[data-testid="edit-recurrence-scope"]');
+      const scopeSheet = document.querySelector(
+        '[data-testid="edit-recurrence-scope"]',
+      );
       expect(scopeSheet).not.toBeNull();
 
       // Default scope is "this"; confirm passes recurrence_scope + instance_start_at.
       const editDialog = findDialogByTitle("Edit recurring event");
-      const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+      const saveButton = Array.from(
+        editDialog?.querySelectorAll("button") ?? [],
+      ).find(
         (button) => button.textContent?.trim() === "Save changes",
       ) as HTMLButtonElement;
       await act(async () => {
@@ -2295,7 +2499,11 @@ describe("CalendarWorkspacePage", () => {
 
     it("editing a recurring event with the series scope omits recurrence_scope", async () => {
       const mutateAsync = vi.fn().mockResolvedValue({
-        data: { result: { status: "updated" }, conflicts: [], suggested_slots: [] },
+        data: {
+          result: { status: "updated" },
+          conflicts: [],
+          suggested_slots: [],
+        },
         meta: {},
       });
       setRecurringUserEntry(mutateAsync);
@@ -2310,7 +2518,9 @@ describe("CalendarWorkspacePage", () => {
       });
 
       const editDialog = findDialogByTitle("Edit recurring event");
-      const saveButton = Array.from(editDialog?.querySelectorAll("button") ?? []).find(
+      const saveButton = Array.from(
+        editDialog?.querySelectorAll("button") ?? [],
+      ).find(
         (button) => button.textContent?.trim() === "Save changes",
       ) as HTMLButtonElement;
       await act(async () => {
@@ -2320,7 +2530,10 @@ describe("CalendarWorkspacePage", () => {
 
       expect(mutateAsync).toHaveBeenCalledTimes(1);
       const payload = mutateAsync.mock.calls[0][0].payload;
-      expect(payload).toMatchObject({ event_id: "rec-evt", title: "Weekly sync (renamed)" });
+      expect(payload).toMatchObject({
+        event_id: "rec-evt",
+        title: "Weekly sync (renamed)",
+      });
       expect(payload).not.toHaveProperty("recurrence_scope");
       expect(payload).not.toHaveProperty("instance_start_at");
     });
@@ -2376,7 +2589,9 @@ describe("CalendarWorkspacePage", () => {
         const configureButton = document.querySelector(
           'button[aria-label="Configure sources"]',
         ) as HTMLButtonElement;
-        configureButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        configureButton.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
         await flush();
       });
     }
@@ -2412,7 +2627,9 @@ describe("CalendarWorkspacePage", () => {
       const recoverButton = findButton("Recover");
       expect(recoverButton).toBeDefined();
       await act(async () => {
-        recoverButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        recoverButton?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
         await flush();
       });
 
@@ -2733,6 +2950,108 @@ describe("CalendarWorkspacePage", () => {
         container.querySelectorAll('[data-testid="butler-lane-row"]'),
       ).filter((el) => el.textContent?.includes("more instance"));
       expect(overflowText.length).toBe(2);
+    });
+  });
+
+  describe("find-time degraded state", () => {
+    it("renders an honest 'free/busy unavailable' state, not a fake empty result", async () => {
+      const mutateAsync = vi.fn().mockResolvedValue({
+        data: {
+          slots: [],
+          duration_minutes: 30,
+          calendar_ids: [],
+          available: false,
+          reason: "Butler 'general' is unreachable",
+        },
+      });
+      vi.mocked(useFindCalendarWorkspaceTime).mockReturnValue({
+        mutateAsync,
+        isPending: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useFindCalendarWorkspaceTime>);
+
+      renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+      // Open the Find-time panel (toggle button on the toolbar).
+      await act(async () => {
+        findButton("Find time")?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+        await flush();
+      });
+
+      // Submit the search form.
+      const form = container
+        .querySelector("#find-time-duration")
+        ?.closest("form");
+      expect(form).toBeTruthy();
+      await act(async () => {
+        form?.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+        await flush();
+      });
+
+      expect(mutateAsync).toHaveBeenCalled();
+      const unavailable = document.querySelector(
+        '[data-testid="find-time-unavailable"]',
+      );
+      expect(unavailable).toBeTruthy();
+      expect(unavailable?.textContent).toContain("Free/busy is unavailable");
+      expect(unavailable?.textContent).toContain("unreachable");
+      // The honest degraded state must NOT masquerade as "no open slots".
+      expect(
+        document.querySelector('[data-testid="find-time-slots"]'),
+      ).toBeNull();
+    });
+
+    it("renders ranked slots when free/busy is available", async () => {
+      const mutateAsync = vi.fn().mockResolvedValue({
+        data: {
+          slots: [
+            {
+              start_at: "2026-03-02T09:00:00Z",
+              end_at: "2026-03-02T09:30:00Z",
+              timezone: "UTC",
+            },
+          ],
+          duration_minutes: 30,
+          calendar_ids: ["primary"],
+          available: true,
+          reason: null,
+        },
+      });
+      vi.mocked(useFindCalendarWorkspaceTime).mockReturnValue({
+        mutateAsync,
+        isPending: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useFindCalendarWorkspaceTime>);
+
+      renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+      await act(async () => {
+        findButton("Find time")?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+        await flush();
+      });
+
+      const form = container
+        .querySelector("#find-time-duration")
+        ?.closest("form");
+      await act(async () => {
+        form?.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+        await flush();
+      });
+
+      expect(
+        document.querySelector('[data-testid="find-time-slots"]'),
+      ).toBeTruthy();
+      expect(
+        document.querySelector('[data-testid="find-time-unavailable"]'),
+      ).toBeNull();
     });
   });
 });

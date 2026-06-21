@@ -254,9 +254,16 @@ class CalendarWorkspaceSearchResponse(BaseModel):
     (highest first), each carrying the matching event instance's date(s) so the
     UI can group results by day and jump-to the event.  A blank query yields an
     empty list.
+
+    Honest degraded contract (fail-open, never HTTP 500): ``available`` is
+    ``False`` only when every calendar schema failed to respond, so ``entries``
+    is empty because the search could not run — NOT because nothing matched. The
+    UI must render "search unavailable" rather than a misleading "no results".
+    ``available=True`` covers both real hits and a genuine empty result set.
     """
 
     entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
+    available: bool = True
 
 
 class CalendarWorkspaceCapabilitiesSync(BaseModel):
@@ -434,13 +441,26 @@ class CalendarWorkspaceFindTimeResponse(BaseModel):
     """Response payload for POST /api/calendar/workspace/find-time.
 
     ``slots`` are ranked open time slots (earliest-first, constraint matches
-    preferred). An empty list means the search window had no gap long enough for
-    ``duration_minutes`` (fail-open, not an error).
+    preferred).
+
+    Honest degraded contract (fail-open, never HTTP 500): finding time depends
+    on a cross-source free/busy lookup dispatched to the calendar butler over
+    MCP, which may be unreachable.
+
+    - ``available=True`` — the free/busy lookup ran. An empty ``slots`` list then
+      means the window genuinely had no gap long enough for ``duration_minutes``.
+    - ``available=False`` — the lookup could not run (butler unreachable / MCP
+      transport failure); ``slots`` is empty because nothing was checked, NOT
+      because the calendar is open. ``reason`` carries a human-readable
+      explanation and the UI must render "free/busy unavailable" rather than a
+      misleading "no open slots".
     """
 
     slots: list[CalendarSuggestedSlot] = Field(default_factory=list)
     duration_minutes: int
     calendar_ids: list[str] = Field(default_factory=list)
+    available: bool = True
+    reason: str | None = None
 
 
 class CalendarButlerEventPreviewRequest(BaseModel):

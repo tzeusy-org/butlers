@@ -238,7 +238,11 @@ async def test_search_falls_back_to_ilike_when_trigram_unavailable(app):
 
 
 async def test_search_skips_schema_when_both_queries_fail(app):
-    """A fully-failing schema is skipped; healthy schemas still return."""
+    """A fully-failing schema is skipped; healthy schemas still return.
+
+    A *partial* failure is NOT degraded: at least one schema responded, so the
+    envelope stays ``available=true`` with whatever matched.
+    """
     healthy = _search_row(title="Dentist healthy", search_rank=0.7)
     app, _, _ = _build_app(
         app,
@@ -247,5 +251,39 @@ async def test_search_skips_schema_when_both_queries_fail(app):
     )
     resp = await _get(app, {"view": "user", "q": "dentist"})
     assert resp.status_code == 200
-    entries = resp.json()["data"]["entries"]
-    assert [e["title"] for e in entries] == ["Dentist healthy"]
+    data = resp.json()["data"]
+    assert [e["title"] for e in data["entries"]] == ["Dentist healthy"]
+    assert data["available"] is True
+
+
+async def test_search_degrades_open_when_all_schemas_fail(app):
+    """Fault injection: when EVERY targeted schema fails, signal ``available=false``.
+
+    Empty ``entries`` then means the search could not run, NOT that nothing
+    matched — the UI must render "search unavailable" rather than "no results".
+    """
+    app, _, _ = _build_app(
+        app,
+        rows_by_butler={"general": [], "relationship": []},
+        calendar_butlers=["general", "relationship"],
+        fail_all_for={"general", "relationship"},
+    )
+    resp = await _get(app, {"view": "user", "q": "dentist"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["entries"] == []
+    assert data["available"] is False
+
+
+async def test_search_available_true_on_genuine_empty(app):
+    """A successful search with zero hits is honest (``available=true``)."""
+    app, _, _ = _build_app(
+        app,
+        rows_by_butler={"general": []},
+        calendar_butlers=["general"],
+    )
+    resp = await _get(app, {"view": "user", "q": "nonexistent"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["entries"] == []
+    assert data["available"] is True

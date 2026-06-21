@@ -30,6 +30,7 @@ import type {
   CalendarFindTimePartOfDay,
   CalendarSuggestedSlot,
   CalendarWorkspaceButlerEventPreviewRequest,
+  CalendarWorkspaceFindTimeResponse,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSourceFreshness,
@@ -174,7 +175,10 @@ function serializeAnchor(value: Date): string {
   return format(value, "yyyy-MM-dd");
 }
 
-function computeWindow(range: CalendarRange, anchor: Date): { start: Date; end: Date } {
+function computeWindow(
+  range: CalendarRange,
+  anchor: Date,
+): { start: Date; end: Date } {
   switch (range) {
     case "month": {
       const start = startOfMonth(anchor);
@@ -196,7 +200,11 @@ function computeWindow(range: CalendarRange, anchor: Date): { start: Date; end: 
   }
 }
 
-function shiftAnchor(anchor: Date, range: CalendarRange, direction: -1 | 1): Date {
+function shiftAnchor(
+  anchor: Date,
+  range: CalendarRange,
+  direction: -1 | 1,
+): Date {
   switch (range) {
     case "month":
       return addMonths(anchor, direction);
@@ -240,7 +248,9 @@ function titleize(value: string): string {
 
 /** Truncate hashed Google Calendar IDs (e.g. 07fd80d3…10b@group.calendar.google.com). */
 function truncateCalendarId(value: string): string {
-  const match = value.match(/^([a-f0-9]{20,})@(group\.calendar\.google\.com)$/i);
+  const match = value.match(
+    /^([a-f0-9]{20,})@(group\.calendar\.google\.com)$/i,
+  );
   if (match) {
     const hash = match[1];
     return `${hash.slice(0, 8)}\u2026${hash.slice(-3)}@${match[2]}`;
@@ -267,7 +277,9 @@ function sourceName(source: CalendarWorkspaceSourceFreshness): string {
 }
 
 function formatLaneTitle(butlerName: string): string {
-  return butlerName.replace(/[_-]/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
+  return butlerName
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (s) => s.toUpperCase());
 }
 
 function formatLocalDateTimeInput(value: Date): string {
@@ -357,7 +369,11 @@ function maybeText(value: unknown): string {
  */
 // NOTE: 'conflict' is intentionally excluded — it is handled as an interactive
 // conflict-resolution flow (ConflictCard), not a terminal failure.
-const CALENDAR_MUTATION_FAILURE_STATUSES = new Set(["error", "not_found", "failed"]);
+const CALENDAR_MUTATION_FAILURE_STATUSES = new Set([
+  "error",
+  "not_found",
+  "failed",
+]);
 
 /**
  * Inspect a calendar MCP mutation result envelope to distinguish genuine
@@ -392,11 +408,16 @@ function isCalendarMutationOk(result: unknown): boolean {
  * preferring an explicit `error`/`message`/`detail` field and falling back to
  * the `status` string.
  */
-function calendarMutationErrorMessage(result: unknown, fallback: string): string {
+function calendarMutationErrorMessage(
+  result: unknown,
+  fallback: string,
+): string {
   if (typeof result === "object" && result !== null) {
     const record = result as Record<string, unknown>;
     const explicit =
-      maybeText(record.error) || maybeText(record.message) || maybeText(record.detail);
+      maybeText(record.error) ||
+      maybeText(record.message) ||
+      maybeText(record.detail);
     if (explicit) {
       return explicit;
     }
@@ -412,13 +433,19 @@ function calendarMutationErrorMessage(result: unknown, fallback: string): string
 }
 
 function buildRequestId(action: CalendarWorkspaceUserMutationAction): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return `calendar-${action}-${crypto.randomUUID()}`;
   }
   return `calendar-${action}-${Date.now()}`;
 }
 
-function defaultFormWindow(anchor: Date): { startAtLocal: string; endAtLocal: string } {
+function defaultFormWindow(anchor: Date): {
+  startAtLocal: string;
+  endAtLocal: string;
+} {
   const start = new Date(anchor);
   // If the caller provided an explicit time (hours or minutes set), use it as-is.
   // Otherwise round to the next whole hour, bumping forward if in the past.
@@ -438,7 +465,10 @@ function defaultFormWindow(anchor: Date): { startAtLocal: string; endAtLocal: st
   };
 }
 
-function createDefaultButlerDraft(timezone: string, butlerName: string): ButlerEventDraft {
+function createDefaultButlerDraft(
+  timezone: string,
+  butlerName: string,
+): ButlerEventDraft {
   const base = new Date();
   base.setSeconds(0, 0);
   base.setMinutes(0);
@@ -479,7 +509,8 @@ function resolveButlerEventTarget(
 
   const metadata = entry.metadata ?? {};
   const originRef =
-    typeof metadata.origin_ref === "string" && metadata.origin_ref.trim().length > 0
+    typeof metadata.origin_ref === "string" &&
+    metadata.origin_ref.trim().length > 0
       ? metadata.origin_ref.trim()
       : null;
   if (!originRef) {
@@ -488,7 +519,10 @@ function resolveButlerEventTarget(
 
   return {
     eventId: originRef,
-    sourceHint: entry.source_type === "scheduled_task" ? "scheduled_task" : "butler_reminder",
+    sourceHint:
+      entry.source_type === "scheduled_task"
+        ? "scheduled_task"
+        : "butler_reminder",
   };
 }
 
@@ -522,7 +556,10 @@ function minuteOfDay(date: Date): number {
 function formatMinuteLabel(minutes: number): string {
   const clamped = Math.min(MINUTES_PER_DAY, Math.max(0, minutes));
   if (clamped === MINUTES_PER_DAY) return "24:00";
-  return format(new Date(2000, 0, 1, Math.floor(clamped / 60), clamped % 60), "HH:mm");
+  return format(
+    new Date(2000, 0, 1, Math.floor(clamped / 60), clamped % 60),
+    "HH:mm",
+  );
 }
 
 /** Build a UTC ISO string for a given calendar day at `minutes` past local midnight. */
@@ -593,8 +630,20 @@ type DragOrigin =
 /** Live preview of the current drag, rendered as a translucent block. */
 type GridDragPreview =
   | { mode: "create"; dayIndex: number; startMin: number; endMin: number }
-  | { mode: "move"; dayIndex: number; startMin: number; endMin: number; entryId: string }
-  | { mode: "resize"; dayIndex: number; startMin: number; endMin: number; entryId: string };
+  | {
+      mode: "move";
+      dayIndex: number;
+      startMin: number;
+      endMin: number;
+      entryId: string;
+    }
+  | {
+      mode: "resize";
+      dayIndex: number;
+      startMin: number;
+      endMin: number;
+      entryId: string;
+    };
 
 /** Ghost left at an event's prior slot after a successful move, enabling one-click undo. */
 interface MovedGhost {
@@ -649,7 +698,9 @@ function occurrenceImpactText(
   if (!providerEventId) {
     return "Changes only this occurrence.";
   }
-  const loaded = entries.filter((e) => e.provider_event_id === providerEventId).length;
+  const loaded = entries.filter(
+    (e) => e.provider_event_id === providerEventId,
+  ).length;
   return loaded > 1
     ? `Changes 1 of ~${loaded} loaded occurrences.`
     : "Changes only this occurrence.";
@@ -696,7 +747,9 @@ function RecurrenceScopeFieldset({
             className="mt-1"
           />
           <span className="flex flex-col">
-            <span className="font-medium">{RECURRENCE_SCOPE_LABELS[value]}</span>
+            <span className="font-medium">
+              {RECURRENCE_SCOPE_LABELS[value]}
+            </span>
             <Mono muted className="text-xs">
               {impacts[value]}
             </Mono>
@@ -716,7 +769,9 @@ interface RecurringOverflowSentinel {
 
 type LaneRowItem = UnifiedCalendarEntry | RecurringOverflowSentinel;
 
-function isOverflowSentinel(item: LaneRowItem): item is RecurringOverflowSentinel {
+function isOverflowSentinel(
+  item: LaneRowItem,
+): item is RecurringOverflowSentinel {
   return (item as RecurringOverflowSentinel)._kind === "overflow";
 }
 
@@ -725,7 +780,10 @@ function isOverflowSentinel(item: LaneRowItem): item is RecurringOverflowSentine
  * RecurringOverflowSentinel after each truncated group so the UI can render "... and N more".
  * Order within each group is preserved (caller should pre-sort by start_at).
  */
-function capLaneEntriesByDay(entries: UnifiedCalendarEntry[], cap: number): LaneRowItem[] {
+function capLaneEntriesByDay(
+  entries: UnifiedCalendarEntry[],
+  cap: number,
+): LaneRowItem[] {
   // Build ordered list of (dayKey, groupKey) pairs while preserving insertion order
   const order: Array<[string, string]> = [];
   const seen = new Set<string>();
@@ -804,7 +862,10 @@ function PillButton({
 }
 
 /** Commit button (§4c) — fg background, bg text. At most one per surface. */
-function CommitButton({ className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+function CommitButton({
+  className,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       type="button"
@@ -910,7 +971,13 @@ function SnoozeMenu({
 }
 
 /** Mono uppercase kind tag (§4d) — labels a kind, never celebrates it. */
-function KindTag({ children, className }: { children: React.ReactNode; className?: string }) {
+function KindTag({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
     <span
       className={cn(
@@ -953,14 +1020,19 @@ function OverlayPill({ entry }: { entry: UnifiedCalendarEntry }) {
       </span>
       <span className="truncate text-[var(--fg)]">{entry.title}</span>
       {badge ? (
-        <span className="ml-auto shrink-0 font-mono tabular-nums text-[var(--mfg)]">{badge}</span>
+        <span className="ml-auto shrink-0 font-mono tabular-nums text-[var(--mfg)]">
+          {badge}
+        </span>
       ) : null}
     </div>
   );
 }
 
 /** Server-side status facet options for GET /api/calendar/workspace. */
-const STATUS_FACET_OPTIONS: Array<{ value: CalendarWorkspaceStatusFacet; label: string }> = [
+const STATUS_FACET_OPTIONS: Array<{
+  value: CalendarWorkspaceStatusFacet;
+  label: string;
+}> = [
   { value: "active", label: "Active" },
   { value: "paused", label: "Paused" },
   { value: "error", label: "Error" },
@@ -969,7 +1041,10 @@ const STATUS_FACET_OPTIONS: Array<{ value: CalendarWorkspaceStatusFacet; label: 
 ];
 
 /** Server-side source-type facet options for GET /api/calendar/workspace. */
-const SOURCE_TYPE_FACET_OPTIONS: Array<{ value: UnifiedCalendarSourceType; label: string }> = [
+const SOURCE_TYPE_FACET_OPTIONS: Array<{
+  value: UnifiedCalendarSourceType;
+  label: string;
+}> = [
   { value: "provider_event", label: "Provider event" },
   { value: "scheduled_task", label: "Schedule" },
   { value: "butler_reminder", label: "Reminder" },
@@ -989,7 +1064,9 @@ const FIELD_SELECT_CLASS =
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 /** Map a source sync_state to a Dispatch StateDot state. Benign in-progress reads as waiting. */
-function syncDotState(syncState: string): "ok" | "degraded" | "error" | "waiting" {
+function syncDotState(
+  syncState: string,
+): "ok" | "degraded" | "error" | "waiting" {
   if (syncState === "fresh") return "ok";
   if (syncState === "failed") return "error";
   if (syncState === "stale") return "degraded";
@@ -1012,21 +1089,31 @@ function accountHealthDotState(
 
 function auditStatusLabel(status: CalendarAuditEntry["action_status"]): string {
   switch (status) {
-    case "applied": return "applied";
-    case "pending": return "pending";
-    case "failed": return "failed";
-    case "noop": return "noop";
-    default: return String(status);
+    case "applied":
+      return "applied";
+    case "pending":
+      return "pending";
+    case "failed":
+      return "failed";
+    case "noop":
+      return "noop";
+    default:
+      return String(status);
   }
 }
 
 function auditStatusColor(status: CalendarAuditEntry["action_status"]): string {
   switch (status) {
-    case "applied": return "text-[var(--green)]";
-    case "pending": return "text-[var(--yellow)]";
-    case "failed": return "text-[var(--red)]";
-    case "noop": return "text-[var(--mfg)]";
-    default: return "text-[var(--mfg)]";
+    case "applied":
+      return "text-[var(--green)]";
+    case "pending":
+      return "text-[var(--yellow)]";
+    case "failed":
+      return "text-[var(--red)]";
+    case "noop":
+      return "text-[var(--mfg)]";
+    default:
+      return "text-[var(--mfg)]";
   }
 }
 
@@ -1035,7 +1122,14 @@ interface CalendarActivityPanelProps {
     isLoading: boolean;
     isError: boolean;
     error: Error | null;
-    data?: { data?: { entries?: CalendarAuditEntry[]; total?: number; offset?: number; limit?: number } };
+    data?: {
+      data?: {
+        entries?: CalendarAuditEntry[];
+        total?: number;
+        offset?: number;
+        limit?: number;
+      };
+    };
   };
   offset: number;
   limit: number;
@@ -1047,13 +1141,19 @@ interface CalendarFindTimePanelProps {
   onSelectSlot: (slot: CalendarSuggestedSlot) => void;
 }
 
-const FIND_TIME_HORIZON_OPTIONS: ReadonlyArray<{ label: string; days: number }> = [
+const FIND_TIME_HORIZON_OPTIONS: ReadonlyArray<{
+  label: string;
+  days: number;
+}> = [
   { label: "Next 7 days", days: 7 },
   { label: "Next 14 days", days: 14 },
   { label: "Next 30 days", days: 30 },
 ];
 
-const FIND_TIME_DURATION_OPTIONS: ReadonlyArray<{ label: string; minutes: number }> = [
+const FIND_TIME_DURATION_OPTIONS: ReadonlyArray<{
+  label: string;
+  minutes: number;
+}> = [
   { label: "30 minutes", minutes: 30 },
   { label: "45 minutes", minutes: 45 },
   { label: "1 hour", minutes: 60 },
@@ -1061,7 +1161,10 @@ const FIND_TIME_DURATION_OPTIONS: ReadonlyArray<{ label: string; minutes: number
   { label: "2 hours", minutes: 120 },
 ];
 
-const FIND_TIME_PART_OF_DAY_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
+const FIND_TIME_PART_OF_DAY_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: string;
+}> = [
   { label: "Any time of day", value: "any" },
   { label: "Mornings", value: "morning" },
   { label: "Afternoons", value: "afternoon" },
@@ -1073,12 +1176,18 @@ const FIND_TIME_PART_OF_DAY_OPTIONS: ReadonlyArray<{ label: string; value: strin
  * slots, and select one to prefill the create-event form. Read-only — selecting
  * a slot drives a separate create call; this panel never mutates an event.
  */
-function CalendarFindTimePanel({ butlerName, onSelectSlot }: CalendarFindTimePanelProps) {
+function CalendarFindTimePanel({
+  butlerName,
+  onSelectSlot,
+}: CalendarFindTimePanelProps) {
   const [durationMinutes, setDurationMinutes] = useState(30);
-  const [partOfDay, setPartOfDay] = useState<"any" | CalendarFindTimePartOfDay>("any");
+  const [partOfDay, setPartOfDay] = useState<"any" | CalendarFindTimePartOfDay>(
+    "any",
+  );
   const [avoidWeekends, setAvoidWeekends] = useState(false);
   const [horizonDays, setHorizonDays] = useState(14);
-  const [slots, setSlots] = useState<CalendarSuggestedSlot[] | null>(null);
+  const [result, setResult] =
+    useState<CalendarWorkspaceFindTimeResponse | null>(null);
 
   const findMutation = useFindCalendarWorkspaceTime();
 
@@ -1102,13 +1211,16 @@ function CalendarFindTimePanel({ butlerName, onSelectSlot }: CalendarFindTimePan
         duration_minutes: durationMinutes,
         search_start: now.toISOString(),
         search_end: addDays(now, horizonDays).toISOString(),
-        constraints: Object.keys(constraints).length > 0 ? constraints : undefined,
+        constraints:
+          Object.keys(constraints).length > 0 ? constraints : undefined,
         limit: 12,
       });
-      setSlots(response.data.slots);
+      setResult(response.data);
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to find open time slots.",
+        error instanceof Error
+          ? error.message
+          : "Failed to find open time slots.",
       );
     }
   }
@@ -1198,19 +1310,37 @@ function CalendarFindTimePanel({ butlerName, onSelectSlot }: CalendarFindTimePan
       {findMutation.isError ? (
         <div role="alert" className="flex items-start gap-2">
           <StateDot state="error" className="mt-[7px]" />
-          <p className="text-sm text-[var(--fg)]">Failed to find open time slots.</p>
+          <p className="text-sm text-[var(--fg)]">
+            Failed to find open time slots.
+          </p>
         </div>
-      ) : slots === null ? (
+      ) : result === null ? (
         <Voice variant="italic" className="text-[var(--mfg)]">
           Choose a duration and search for open time.
         </Voice>
-      ) : slots.length === 0 ? (
+      ) : result.available === false ? (
+        <div
+          role="status"
+          className="flex items-start gap-2"
+          data-testid="find-time-unavailable"
+        >
+          <StateDot state="degraded" className="mt-[7px]" />
+          <p className="text-sm text-[var(--fg)]">
+            Free/busy is unavailable right now, so open time couldn&rsquo;t be
+            checked.{" "}
+            <span className="text-[var(--mfg)]">
+              {result.reason ??
+                "The calendar source is unreachable — try again shortly."}
+            </span>
+          </p>
+        </div>
+      ) : result.slots.length === 0 ? (
         <Voice variant="italic" className="text-[var(--mfg)]">
           No open slots match those constraints in the selected window.
         </Voice>
       ) : (
         <ul className="flex flex-col gap-1.5" data-testid="find-time-slots">
-          {slots.map((slot) => {
+          {result.slots.map((slot) => {
             const start = parseISO(slot.start_at);
             const end = parseISO(slot.end_at);
             return (
@@ -1241,7 +1371,12 @@ function CalendarFindTimePanel({ butlerName, onSelectSlot }: CalendarFindTimePan
   );
 }
 
-function CalendarActivityPanel({ auditQuery, offset, limit, onPageChange }: CalendarActivityPanelProps) {
+function CalendarActivityPanel({
+  auditQuery,
+  offset,
+  limit,
+  onPageChange,
+}: CalendarActivityPanelProps) {
   const entries = auditQuery.data?.data?.entries ?? [];
   const total = auditQuery.data?.data?.total ?? 0;
   const hasPrev = offset > 0;
@@ -1261,7 +1396,9 @@ function CalendarActivityPanel({ auditQuery, offset, limit, onPageChange }: Cale
         <p className="text-sm text-[var(--fg)]">
           Failed to load activity log.{" "}
           <span className="text-[var(--mfg)]">
-            {auditQuery.error instanceof Error ? auditQuery.error.message : "Unknown error"}
+            {auditQuery.error instanceof Error
+              ? auditQuery.error.message
+              : "Unknown error"}
           </span>
         </p>
       </div>
@@ -1279,13 +1416,20 @@ function CalendarActivityPanel({ auditQuery, offset, limit, onPageChange }: Cale
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex items-center justify-between gap-4">
         <Mono muted className="tabular-nums">
-          {total} {total === 1 ? "entry" : "entries"} total · showing {offset + 1}–{Math.min(offset + limit, total)}
+          {total} {total === 1 ? "entry" : "entries"} total · showing{" "}
+          {offset + 1}–{Math.min(offset + limit, total)}
         </Mono>
         <div className="flex items-center gap-1">
-          <PillButton disabled={!hasPrev} onClick={() => onPageChange(Math.max(0, offset - limit))}>
+          <PillButton
+            disabled={!hasPrev}
+            onClick={() => onPageChange(Math.max(0, offset - limit))}
+          >
             ‹ Prev
           </PillButton>
-          <PillButton disabled={!hasNext} onClick={() => onPageChange(offset + limit)}>
+          <PillButton
+            disabled={!hasNext}
+            onClick={() => onPageChange(offset + limit)}
+          >
             Next ›
           </PillButton>
         </div>
@@ -1293,7 +1437,9 @@ function CalendarActivityPanel({ auditQuery, offset, limit, onPageChange }: Cale
 
       <div className="min-h-0 flex-1 overflow-y-auto pr-1" role="list">
         {entries.map((entry) => {
-          const createdAt = entry.created_at ? format(new Date(entry.created_at), "yyyy-MM-dd HH:mm:ss") : "";
+          const createdAt = entry.created_at
+            ? format(new Date(entry.created_at), "yyyy-MM-dd HH:mm:ss")
+            : "";
           const summaryTitle =
             typeof entry.payload_summary?.title === "string"
               ? entry.payload_summary.title
@@ -1332,14 +1478,21 @@ function CalendarActivityPanel({ auditQuery, offset, limit, onPageChange }: Cale
                   ) : null}
                 </div>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
-                  <Mono muted className="tabular-nums">{createdAt}</Mono>
+                  <Mono muted className="tabular-nums">
+                    {createdAt}
+                  </Mono>
                   {entry.error ? (
-                    <span className="max-w-[20rem] truncate text-[11px] text-[var(--red)]" title={entry.error}>
+                    <span
+                      className="max-w-[20rem] truncate text-[11px] text-[var(--red)]"
+                      title={entry.error}
+                    >
                       {entry.error}
                     </span>
                   ) : null}
                   {entry.origin_ref ? (
-                    <Mono muted className="truncate">{entry.origin_ref}</Mono>
+                    <Mono muted className="truncate">
+                      {entry.origin_ref}
+                    </Mono>
                   ) : null}
                 </div>
               </div>
@@ -1385,21 +1538,26 @@ function CalendarEntryDetailPanel({
 }: CalendarEntryDetailPanelProps) {
   const isUserEvent = entry.source_type === "provider_event";
   const isButlerEvent =
-    entry.source_type === "scheduled_task" || entry.source_type === "butler_reminder";
+    entry.source_type === "scheduled_task" ||
+    entry.source_type === "butler_reminder";
   const isPending = userMutation.isPending || butlerMutation.isPending;
 
   // Inline editable fields — initialized from entry, updated on server response
   // Inline-editable drafts — state is reset on mount (key={entry.entry_id} at call site)
   const [titleDraft, setTitleDraft] = useState(entry.title);
   const [descriptionDraft, setDescriptionDraft] = useState(
-    typeof entry.metadata?.description === "string" ? entry.metadata.description : "",
+    typeof entry.metadata?.description === "string"
+      ? entry.metadata.description
+      : "",
   );
   const [locationDraft, setLocationDraft] = useState(
     typeof entry.metadata?.location === "string" ? entry.metadata.location : "",
   );
   // Auto-save feedback: edits commit on blur, so surface the outcome explicitly
   // ("Saving…/Saved/Save failed") since there is no Save button to anchor it.
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
+    "idle",
+  );
 
   function fireUserUpdate(patch: Record<string, unknown>, label: string) {
     const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
@@ -1426,7 +1584,9 @@ function CalendarEntryDetailPanel({
         onSuccess: (response) => {
           const result = response.data.result;
           if (!isCalendarMutationOk(result)) {
-            toast.error(`Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`);
+            toast.error(
+              `Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`,
+            );
             setSaveStatus("error");
             return;
           }
@@ -1434,7 +1594,11 @@ function CalendarEntryDetailPanel({
           setSaveStatus("saved");
         },
         onError: (error) => {
-          toast.error(error instanceof Error ? error.message : `Failed to update ${label}.`);
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : `Failed to update ${label}.`,
+          );
           setSaveStatus("error");
         },
       },
@@ -1460,7 +1624,9 @@ function CalendarEntryDetailPanel({
         onSuccess: (response) => {
           const result = response.data.result;
           if (!isCalendarMutationOk(result)) {
-            toast.error(`Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`);
+            toast.error(
+              `Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`,
+            );
             setSaveStatus("error");
             return;
           }
@@ -1468,7 +1634,11 @@ function CalendarEntryDetailPanel({
           setSaveStatus("saved");
         },
         onError: (error) => {
-          toast.error(error instanceof Error ? error.message : `Failed to update ${label}.`);
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : `Failed to update ${label}.`,
+          );
           setSaveStatus("error");
         },
       },
@@ -1485,14 +1655,19 @@ function CalendarEntryDetailPanel({
   function handleDescriptionBlur() {
     const trimmed = descriptionDraft.trim();
     const current =
-      typeof entry.metadata?.description === "string" ? entry.metadata.description : "";
+      typeof entry.metadata?.description === "string"
+        ? entry.metadata.description
+        : "";
     if (trimmed === current) return;
     if (isUserEvent) fireUserUpdate({ description: trimmed }, "description");
   }
 
   function handleLocationBlur() {
     const trimmed = locationDraft.trim();
-    const current = typeof entry.metadata?.location === "string" ? entry.metadata.location : "";
+    const current =
+      typeof entry.metadata?.location === "string"
+        ? entry.metadata.location
+        : "";
     if (trimmed === current) return;
     if (isUserEvent) fireUserUpdate({ location: trimmed }, "location");
   }
@@ -1502,7 +1677,9 @@ function CalendarEntryDetailPanel({
   const startFmt = entry.all_day
     ? format(startDate, "EEE, MMM d")
     : format(startDate, "EEE, MMM d · HH:mm");
-  const endFmt = entry.all_day ? format(endDate, "EEE, MMM d") : format(endDate, "HH:mm");
+  const endFmt = entry.all_day
+    ? format(endDate, "EEE, MMM d")
+    : format(endDate, "HH:mm");
 
   // Attendees from Google Calendar event metadata
   const attendees = useMemo(() => {
@@ -1510,14 +1687,20 @@ function CalendarEntryDetailPanel({
     if (!raw || typeof raw !== "object") return [] as string[];
     const list = (raw as Record<string, unknown>).attendees;
     if (!Array.isArray(list)) return [] as string[];
-    return list.map((a) => {
-      if (typeof a === "string") return a;
-      if (typeof a === "object" && a !== null) {
-        const obj = a as Record<string, unknown>;
-        return typeof obj.email === "string" ? obj.email : typeof obj.displayName === "string" ? obj.displayName : "";
-      }
-      return "";
-    }).filter(Boolean);
+    return list
+      .map((a) => {
+        if (typeof a === "string") return a;
+        if (typeof a === "object" && a !== null) {
+          const obj = a as Record<string, unknown>;
+          return typeof obj.email === "string"
+            ? obj.email
+            : typeof obj.displayName === "string"
+              ? obj.displayName
+              : "";
+        }
+        return "";
+      })
+      .filter(Boolean);
   }, [entry.metadata?.event_metadata]);
 
   const canMutateUser =
@@ -1533,12 +1716,14 @@ function CalendarEntryDetailPanel({
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2">
           <Eyebrow as="div">Event detail</Eyebrow>
-          {(canMutateUser || canMutateButler) ? (
+          {canMutateUser || canMutateButler ? (
             <span
               data-testid="detail-save-status"
               className={cn(
                 "font-mono text-[10px] uppercase tracking-[0.12em]",
-                saveStatus === "error" ? "text-[var(--red)]" : "text-[var(--mfg)]",
+                saveStatus === "error"
+                  ? "text-[var(--red)]"
+                  : "text-[var(--mfg)]",
               )}
             >
               {isPending
@@ -1583,7 +1768,9 @@ function CalendarEntryDetailPanel({
             className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm font-medium text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
           />
         ) : (
-          <span className="text-sm font-medium text-[var(--fg)]">{entry.title}</span>
+          <span className="text-sm font-medium text-[var(--fg)]">
+            {entry.title}
+          </span>
         )}
       </div>
 
@@ -1613,18 +1800,22 @@ function CalendarEntryDetailPanel({
         </span>
         <div className="flex items-center gap-2">
           {entry.butler_name ? <ButlerMark name={entry.butler_name} /> : null}
-          <Mono muted className="truncate">{entry.source_key}</Mono>
+          <Mono muted className="truncate">
+            {entry.source_key}
+          </Mono>
         </div>
       </div>
 
       {/* Provenance */}
-      {(entry.source_butler || entry.source_session_id) ? (
+      {entry.source_butler || entry.source_session_id ? (
         <div className="flex flex-col gap-1">
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
             Provenance
           </span>
           {entry.source_butler ? (
-            <Mono muted data-testid="detail-source-butler">{entry.source_butler}</Mono>
+            <Mono muted data-testid="detail-source-butler">
+              {entry.source_butler}
+            </Mono>
           ) : null}
           {entry.source_session_id ? (
             <Link
@@ -1768,7 +1959,8 @@ function CalendarSearchPalette({
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const searchView: CalendarWorkspaceView = view === "butler" ? "butler" : "user";
+  const searchView: CalendarWorkspaceView =
+    view === "butler" ? "butler" : "user";
   const searchQuery = useCalendarWorkspaceSearch(
     { q: debounced, view: searchView, timezone, limit: 50 },
     { enabled: open },
@@ -1776,8 +1968,15 @@ function CalendarSearchPalette({
 
   const entriesData = searchQuery.data?.data.entries;
   const results = entriesData ?? [];
+  // Honest degraded signal: false only when every calendar schema failed to
+  // respond, so an empty result means "could not search", not "no matches".
+  const searchAvailable = searchQuery.data?.data.available !== false;
   const groups = useMemo(() => {
-    const byDay: Array<{ day: string; date: Date; items: UnifiedCalendarEntry[] }> = [];
+    const byDay: Array<{
+      day: string;
+      date: Date;
+      items: UnifiedCalendarEntry[];
+    }> = [];
     const idx = new Map<string, number>();
     for (const entry of entriesData ?? []) {
       const d = new Date(entry.start_at);
@@ -1801,7 +2000,8 @@ function CalendarSearchPalette({
         <DialogHeader>
           <DialogTitle>Search events</DialogTitle>
           <DialogDescription>
-            Find an event by title, description, or location. Press Enter to jump to the top match.
+            Find an event by title, description, or location. Press Enter to
+            jump to the top match.
           </DialogDescription>
         </DialogHeader>
         <Input
@@ -1826,6 +2026,21 @@ function CalendarSearchPalette({
             <Voice variant="italic" className="text-[var(--mfg)]">
               Searching…
             </Voice>
+          ) : !searchAvailable ? (
+            <div
+              role="status"
+              className="flex items-start gap-2"
+              data-testid="search-unavailable"
+            >
+              <StateDot state="degraded" className="mt-[7px]" />
+              <p className="text-sm text-[var(--fg)]">
+                Search is unavailable right now.{" "}
+                <span className="text-[var(--mfg)]">
+                  The calendar index couldn&rsquo;t be reached — results may be
+                  incomplete. Try again shortly.
+                </span>
+              </p>
+            </div>
           ) : results.length === 0 ? (
             <Voice variant="italic" className="text-[var(--mfg)]">
               No matching events.
@@ -1845,11 +2060,18 @@ function CalendarSearchPalette({
                       className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
                     >
                       <Mono muted className="w-14 shrink-0 tabular-nums">
-                        {entry.all_day ? "all day" : format(new Date(entry.start_at), "HH:mm")}
+                        {entry.all_day
+                          ? "all day"
+                          : format(new Date(entry.start_at), "HH:mm")}
                       </Mono>
-                      <span className="truncate text-sm text-[var(--fg)]">{entry.title}</span>
+                      <span className="truncate text-sm text-[var(--fg)]">
+                        {entry.title}
+                      </span>
                       {entry.butler_name ? (
-                        <Mono muted className="ml-auto hidden shrink-0 sm:inline">
+                        <Mono
+                          muted
+                          className="ml-auto hidden shrink-0 sm:inline"
+                        >
                           {entry.butler_name}
                         </Mono>
                       ) : null}
@@ -1886,7 +2108,10 @@ export default function CalendarWorkspacePage() {
   const overlaysEnabled = searchParams.get("overlays") === "1";
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const { start, end } = useMemo(() => computeWindow(range, anchor), [range, anchor]);
+  const { start, end } = useMemo(
+    () => computeWindow(range, anchor),
+    [range, anchor],
+  );
 
   const metaQuery = useCalendarWorkspaceMeta();
   const connectedSources = useMemo(
@@ -1915,7 +2140,9 @@ export default function CalendarWorkspacePage() {
       selectedSourceKey !== "all"
         ? submittableCalendars.find((c) => c.source_key === selectedSourceKey)
         : undefined;
-    return selected?.butler_name || submittableCalendars[0]?.butler_name || null;
+    return (
+      selected?.butler_name || submittableCalendars[0]?.butler_name || null
+    );
   }, [submittableCalendars, selectedSourceKey]);
 
   const userSources = useMemo(
@@ -1930,7 +2157,9 @@ export default function CalendarWorkspacePage() {
   // refreshes.
   const accountsQuery = useCalendarAccounts();
   const toggleSourceMutation = useToggleCalendarSource();
-  const [disabledSources, setDisabledSources] = useState<Set<string>>(new Set<string>());
+  const [disabledSources, setDisabledSources] = useState<Set<string>>(
+    new Set<string>(),
+  );
 
   useEffect(() => {
     if (toggleSourceMutation.isPending) return;
@@ -1955,7 +2184,11 @@ export default function CalendarWorkspacePage() {
       return;
     }
     toggleSourceMutation.mutate(
-      { butler: source.butler_name, source_key: sourceKey, enabled: willEnable },
+      {
+        butler: source.butler_name,
+        source_key: sourceKey,
+        enabled: willEnable,
+      },
       {
         onError: (err) => {
           // Revert the optimistic update on failure.
@@ -1968,7 +2201,9 @@ export default function CalendarWorkspacePage() {
           toast.error(`Failed to update source: ${err.message}`);
         },
         onSuccess: () => {
-          toast.success(willEnable ? "Source enabled for sync" : "Source disabled");
+          toast.success(
+            willEnable ? "Source enabled for sync" : "Source disabled",
+          );
         },
       },
     );
@@ -1977,24 +2212,38 @@ export default function CalendarWorkspacePage() {
   const sourceFilters = useMemo(() => {
     let filtered = userSources;
     if (selectedCalendarId !== "all") {
-      filtered = filtered.filter((source) => source.calendar_id === selectedCalendarId);
+      filtered = filtered.filter(
+        (source) => source.calendar_id === selectedCalendarId,
+      );
     }
     if (selectedSourceKey !== "all") {
-      filtered = filtered.filter((source) => source.source_key === selectedSourceKey);
+      filtered = filtered.filter(
+        (source) => source.source_key === selectedSourceKey,
+      );
     }
     return filtered.map((source) => source.source_key);
   }, [selectedCalendarId, selectedSourceKey, userSources]);
 
   const sourcesForQuery = useMemo(() => {
-    const hasCalendarFilter = selectedSourceKey !== "all" || selectedCalendarId !== "all";
+    const hasCalendarFilter =
+      selectedSourceKey !== "all" || selectedCalendarId !== "all";
     const hasDisabled = disabledSources.size > 0;
 
     if (view === "user" && (hasCalendarFilter || hasDisabled)) {
-      const base = hasCalendarFilter ? sourceFilters : userSources.map((s) => s.source_key);
+      const base = hasCalendarFilter
+        ? sourceFilters
+        : userSources.map((s) => s.source_key);
       return base.filter((key) => !disabledSources.has(key));
     }
     return undefined;
-  }, [disabledSources, selectedCalendarId, selectedSourceKey, sourceFilters, userSources, view]);
+  }, [
+    disabledSources,
+    selectedCalendarId,
+    selectedSourceKey,
+    sourceFilters,
+    userSources,
+    view,
+  ]);
 
   const workspaceQuery = useCalendarWorkspace({
     view,
@@ -2021,14 +2270,20 @@ export default function CalendarWorkspacePage() {
     [overlaysEnabled, overlaysQuery.data?.data.entries],
   );
   const hasDomainContext = overlaysQuery.data?.data.has_domain_context ?? false;
-  const overlaysByDayMap = useMemo(() => overlaysByDay(overlayEntries), [overlayEntries]);
+  const overlaysByDayMap = useMemo(
+    () => overlaysByDay(overlayEntries),
+    [overlayEntries],
+  );
 
   // Day-briefing card ("tomorrow at a glance"): the precomputed overlay
   // contributions for tomorrow, grouped by butler/kind. Reads the same cached
   // view as the overlays lane (no per-open LLM); only fetched while overlays are
   // toggled on, so it shares that opt-in surface.
   const briefingDate = useMemo(() => addDays(startOfDay(new Date()), 1), []);
-  const briefingDateParam = useMemo(() => format(briefingDate, "yyyy-MM-dd"), [briefingDate]);
+  const briefingDateParam = useMemo(
+    () => format(briefingDate, "yyyy-MM-dd"),
+    [briefingDate],
+  );
   const dayBriefingQuery = useCalendarDayBriefing(
     { date: briefingDateParam, timezone },
     { enabled: overlaysEnabled },
@@ -2070,9 +2325,12 @@ export default function CalendarWorkspacePage() {
 
   const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
   const [userEventDialogOpen, setUserEventDialogOpen] = useState(false);
-  const [userEventDialogMode, setUserEventDialogMode] = useState<UserEventDialogMode>("create");
-  const [activeUserEntry, setActiveUserEntry] = useState<UnifiedCalendarEntry | null>(null);
-  const [deleteCandidate, setDeleteCandidate] = useState<UnifiedCalendarEntry | null>(null);
+  const [userEventDialogMode, setUserEventDialogMode] =
+    useState<UserEventDialogMode>("create");
+  const [activeUserEntry, setActiveUserEntry] =
+    useState<UnifiedCalendarEntry | null>(null);
+  const [deleteCandidate, setDeleteCandidate] =
+    useState<UnifiedCalendarEntry | null>(null);
   // Recurrence scope for deleting a recurring occurrence: 'this' (just this
   // occurrence, EXDATE), 'following' (this + later, UNTIL split), or 'series'
   // (the whole recurring event). Reset to 'this' whenever a new candidate opens.
@@ -2086,7 +2344,9 @@ export default function CalendarWorkspacePage() {
     label: string;
   } | null>(null);
   const [editScope, setEditScope] = useState<RecurrenceScope>("this");
-  const [userEventForm, setUserEventForm] = useState<UserEventFormState | null>(null);
+  const [userEventForm, setUserEventForm] = useState<UserEventFormState | null>(
+    null,
+  );
   // Conflict state: set when the server returns status='conflict' for a user-event mutation.
   // Holds the detected conflicts, suggested slots, and the pending mutation args so re-submission
   // (slot pill or "Book anyway") can replay the same mutation with adjusted parameters.
@@ -2103,41 +2363,50 @@ export default function CalendarWorkspacePage() {
   const [butlerEventDialogOpen, setButlerEventDialogOpen] = useState(false);
   const [butlerEventDialogMode, setButlerEventDialogMode] =
     useState<ButlerEventDialogMode>("create");
-  const [butlerEventDraft, setButlerEventDraft] = useState<ButlerEventDraft | null>(null);
-  const [editingButlerEntry, setEditingButlerEntry] = useState<UnifiedCalendarEntry | null>(null);
+  const [butlerEventDraft, setButlerEventDraft] =
+    useState<ButlerEventDraft | null>(null);
+  const [editingButlerEntry, setEditingButlerEntry] =
+    useState<UnifiedCalendarEntry | null>(null);
 
   // Live recurrence dry-run preview for the butler-event dialog. Debounced so we
   // don't fire a request on every keystroke; only runs when a recurrence is set.
   const recurrencePreview = usePreviewCalendarWorkspaceButlerEvent();
   const debouncedButlerDraft = useDebounce(butlerEventDraft, 400);
-  const recurrencePreviewRequest = useMemo<CalendarWorkspaceButlerEventPreviewRequest | null>(() => {
-    if (!debouncedButlerDraft) return null;
-    const startAt = parseLocalDateTimeInput(debouncedButlerDraft.startAtLocal);
-    if (!startAt) return null;
-    const untilAt = debouncedButlerDraft.hasUntilAt
-      ? parseLocalDateTimeInput(debouncedButlerDraft.untilAtLocal)
-      : null;
-    const tz = debouncedButlerDraft.timezone.trim() || timezone;
-    if (debouncedButlerDraft.recurrenceFrequency !== "NONE") {
-      return {
-        rrule: buildRRule(debouncedButlerDraft.recurrenceFrequency, untilAt),
-        start_at: startAt.toISOString(),
-        timezone: tz,
-        limit: 6,
-      };
-    }
-    if (debouncedButlerDraft.eventKind === "scheduled_task" && debouncedButlerDraft.cron.trim()) {
-      return {
-        cron: debouncedButlerDraft.cron.trim(),
-        start_at: startAt.toISOString(),
-        until_at: untilAt ? untilAt.toISOString() : null,
-        timezone: tz,
-        limit: 6,
-      };
-    }
-    return null;
-  }, [debouncedButlerDraft, timezone]);
-  const { mutate: runRecurrencePreview, reset: resetRecurrencePreview } = recurrencePreview;
+  const recurrencePreviewRequest =
+    useMemo<CalendarWorkspaceButlerEventPreviewRequest | null>(() => {
+      if (!debouncedButlerDraft) return null;
+      const startAt = parseLocalDateTimeInput(
+        debouncedButlerDraft.startAtLocal,
+      );
+      if (!startAt) return null;
+      const untilAt = debouncedButlerDraft.hasUntilAt
+        ? parseLocalDateTimeInput(debouncedButlerDraft.untilAtLocal)
+        : null;
+      const tz = debouncedButlerDraft.timezone.trim() || timezone;
+      if (debouncedButlerDraft.recurrenceFrequency !== "NONE") {
+        return {
+          rrule: buildRRule(debouncedButlerDraft.recurrenceFrequency, untilAt),
+          start_at: startAt.toISOString(),
+          timezone: tz,
+          limit: 6,
+        };
+      }
+      if (
+        debouncedButlerDraft.eventKind === "scheduled_task" &&
+        debouncedButlerDraft.cron.trim()
+      ) {
+        return {
+          cron: debouncedButlerDraft.cron.trim(),
+          start_at: startAt.toISOString(),
+          until_at: untilAt ? untilAt.toISOString() : null,
+          timezone: tz,
+          limit: 6,
+        };
+      }
+      return null;
+    }, [debouncedButlerDraft, timezone]);
+  const { mutate: runRecurrencePreview, reset: resetRecurrencePreview } =
+    recurrencePreview;
   useEffect(() => {
     if (!butlerEventDialogOpen || !recurrencePreviewRequest) {
       resetRecurrencePreview();
@@ -2153,7 +2422,8 @@ export default function CalendarWorkspacePage() {
   const recurrencePreviewData = recurrencePreview.data?.data ?? null;
   const timeGridRef = useRef<HTMLDivElement>(null);
   // Detail panel — replaces modal-only editing with a right-docked panel
-  const [selectedEntry, setSelectedEntry] = useState<UnifiedCalendarEntry | null>(null);
+  const [selectedEntry, setSelectedEntry] =
+    useState<UnifiedCalendarEntry | null>(null);
 
   // Search command palette + jump-to-and-flash
   const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
@@ -2215,7 +2485,8 @@ export default function CalendarWorkspacePage() {
 
       if (nextValues.view) next.set("view", nextValues.view);
       if (nextValues.range) next.set("range", nextValues.range);
-      if (nextValues.anchor) next.set("anchor", serializeAnchor(nextValues.anchor));
+      if (nextValues.anchor)
+        next.set("anchor", serializeAnchor(nextValues.anchor));
 
       if (nextValues.source !== undefined) {
         if (!nextValues.source || nextValues.source === "all") {
@@ -2283,7 +2554,9 @@ export default function CalendarWorkspacePage() {
     }
 
     if (selectedSourceKey !== "all" && selectedCalendarId !== "all") {
-      const source = userSources.find((item) => item.source_key === selectedSourceKey);
+      const source = userSources.find(
+        (item) => item.source_key === selectedSourceKey,
+      );
       if (source?.calendar_id !== selectedCalendarId) {
         updateQuery({ source: "all" });
       }
@@ -2307,7 +2580,11 @@ export default function CalendarWorkspacePage() {
     (entry: UnifiedCalendarEntry) => {
       setSearchPaletteOpen(false);
       const target = new Date(entry.start_at);
-      updateQuery({ view: entry.view === "butler" ? "butler" : "user", range: "day", anchor: target });
+      updateQuery({
+        view: entry.view === "butler" ? "butler" : "user",
+        range: "day",
+        anchor: target,
+      });
       setFlashedEntryId(entry.entry_id);
     },
     [updateQuery],
@@ -2378,11 +2655,11 @@ export default function CalendarWorkspacePage() {
   }, [range, start]);
 
   const weekDays = useMemo(() => {
-    if (range === "week") return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+    if (range === "week")
+      return Array.from({ length: 7 }, (_, i) => addDays(start, i));
     if (range === "day") return [start];
     return [] as Date[];
   }, [range, start]);
-
 
   // Collect the set of Google account emails from source metadata.
   // The backend stores `account_email` on each source during calendar discovery.
@@ -2402,11 +2679,16 @@ export default function CalendarWorkspacePage() {
     userSources.forEach((source) => {
       if (!source.calendar_id) return;
       if (!deduped.has(source.calendar_id)) {
-        const raw = truncateCalendarId(source.display_name || source.calendar_id);
+        const raw = truncateCalendarId(
+          source.display_name || source.calendar_id,
+        );
         deduped.set(source.calendar_id, titleize(raw));
       }
     });
-    return Array.from(deduped.entries()).map(([calendarId, label]) => ({ calendarId, label }));
+    return Array.from(deduped.entries()).map(([calendarId, label]) => ({
+      calendarId,
+      label,
+    }));
   }, [userSources]);
 
   const butlerLaneRows = useMemo(() => {
@@ -2443,14 +2725,16 @@ export default function CalendarWorkspacePage() {
     });
 
     return [...laneMap.entries()]
-      .map(([laneId, descriptor]): ButlerLaneRows => ({
-        laneId,
-        butlerName: descriptor.butlerName,
-        title: descriptor.title,
-        entries: [...(grouped.get(descriptor.butlerName) ?? [])].sort((a, b) =>
-          a.start_at.localeCompare(b.start_at),
-        ),
-      }))
+      .map(
+        ([laneId, descriptor]): ButlerLaneRows => ({
+          laneId,
+          butlerName: descriptor.butlerName,
+          title: descriptor.title,
+          entries: [...(grouped.get(descriptor.butlerName) ?? [])].sort(
+            (a, b) => a.start_at.localeCompare(b.start_at),
+          ),
+        }),
+      )
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [entries, lanes]);
 
@@ -2469,8 +2753,12 @@ export default function CalendarWorkspacePage() {
     return [...names].sort((a, b) => a.localeCompare(b));
   }, [butlerLaneRows, connectedSources]);
 
-  function resolveSourceForForm(sourceKey: string): CalendarWorkspaceWritableCalendar | undefined {
-    return writableCalendars.find((calendar) => calendar.source_key === sourceKey);
+  function resolveSourceForForm(
+    sourceKey: string,
+  ): CalendarWorkspaceWritableCalendar | undefined {
+    return writableCalendars.find(
+      (calendar) => calendar.source_key === sourceKey,
+    );
   }
 
   function resolveEntryOwner(entry: UnifiedCalendarEntry): {
@@ -2487,17 +2775,16 @@ export default function CalendarWorkspacePage() {
       null;
 
     const calendarId =
-      entry.calendar_id ||
-      source?.calendar_id ||
-      writable?.calendar_id ||
-      null;
+      entry.calendar_id || source?.calendar_id || writable?.calendar_id || null;
 
     return { butlerName, calendarId };
   }
 
   function openUserCreateDialog(forDate?: Date, endDate?: Date) {
     if (submittableCalendars.length === 0) {
-      toast.error("No writable calendar sources are available for user events.");
+      toast.error(
+        "No writable calendar sources are available for user events.",
+      );
       return;
     }
 
@@ -2508,7 +2795,9 @@ export default function CalendarWorkspacePage() {
         : submittableCalendars[0].source_key;
     const { startAtLocal, endAtLocal } = defaultFormWindow(forDate ?? anchor);
     // A drag gesture supplies an explicit end; prefer it over the default window.
-    const resolvedEndLocal = endDate ? format(endDate, "yyyy-MM-dd'T'HH:mm") : endAtLocal;
+    const resolvedEndLocal = endDate
+      ? format(endDate, "yyyy-MM-dd'T'HH:mm")
+      : endAtLocal;
 
     setUserEventDialogMode("create");
     setActiveUserEntry(null);
@@ -2555,7 +2844,9 @@ export default function CalendarWorkspacePage() {
       const gutter = gutterRef.current?.getBoundingClientRect().width ?? 0;
       const usable = rect.width - gutter;
       if (usable <= 0) return 0;
-      const idx = Math.floor((clientX - rect.left - gutter) / (usable / weekDays.length));
+      const idx = Math.floor(
+        (clientX - rect.left - gutter) / (usable / weekDays.length),
+      );
       return Math.min(weekDays.length - 1, Math.max(0, idx));
     },
     [weekDays.length],
@@ -2603,7 +2894,8 @@ export default function CalendarWorkspacePage() {
       }
 
       patchEntryTimeInCache(entry.entry_id, nextStartIso, nextEndIso);
-      const rollback = () => patchEntryTimeInCache(entry.entry_id, prevStartIso, prevEndIso);
+      const rollback = () =>
+        patchEntryTimeInCache(entry.entry_id, prevStartIso, prevEndIso);
 
       try {
         let result: unknown;
@@ -2662,13 +2954,23 @@ export default function CalendarWorkspacePage() {
           toast.success("Reverted.");
         } else {
           // Leave a ghost at the old window so the move can be undone in one click.
-          setMovedGhost({ entry, prevStartIso, prevEndIso, nextStartIso, nextEndIso });
+          setMovedGhost({
+            entry,
+            prevStartIso,
+            prevEndIso,
+            nextStartIso,
+            nextEndIso,
+          });
           toast.success("Event moved.");
         }
       } catch (error) {
         rollback();
         setMovedGhost(null);
-        toast.error(error instanceof Error ? error.message : "Failed to save calendar change.");
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Failed to save calendar change.",
+        );
       }
     },
     [butlerMutation, defaultTimezone, patchEntryTimeInCache, userEventMutation],
@@ -2682,7 +2984,9 @@ export default function CalendarWorkspacePage() {
           start_at: ghost.nextStartIso,
           end_at: ghost.nextEndIso,
         };
-        void commitTimeChange(moved, ghost.prevStartIso, ghost.prevEndIso, { isUndo: true });
+        void commitTimeChange(moved, ghost.prevStartIso, ghost.prevEndIso, {
+          isUndo: true,
+        });
       }
       return null;
     });
@@ -2701,7 +3005,8 @@ export default function CalendarWorkspacePage() {
 
     if (
       !origin.moved &&
-      Math.abs(event.clientX - origin.downX) + Math.abs(event.clientY - origin.downY) >
+      Math.abs(event.clientX - origin.downX) +
+        Math.abs(event.clientY - origin.downY) >
         DRAG_THRESHOLD_PX
     ) {
       origin.moved = true;
@@ -2710,13 +3015,32 @@ export default function CalendarWorkspacePage() {
 
     const pointerMin = pointerToMinutes(event.clientY);
     if (origin.mode === "create") {
-      const { startMin, endMin } = normalizeDragWindow(origin.anchorMin, pointerMin);
-      setGridDrag({ mode: "create", dayIndex: origin.dayIndex, startMin, endMin });
+      const { startMin, endMin } = normalizeDragWindow(
+        origin.anchorMin,
+        pointerMin,
+      );
+      setGridDrag({
+        mode: "create",
+        dayIndex: origin.dayIndex,
+        startMin,
+        endMin,
+      });
     } else if (origin.mode === "move") {
       const dayIndex = pointerToDayIndex(event.clientX);
-      const deltaMin = pointerMin - origin.grabOffsetMin - origin.originStartMin;
-      const { startMin, endMin } = shiftWindow(origin.originStartMin, origin.durationMin, deltaMin);
-      setGridDrag({ mode: "move", dayIndex, startMin, endMin, entryId: origin.entry.entry_id });
+      const deltaMin =
+        pointerMin - origin.grabOffsetMin - origin.originStartMin;
+      const { startMin, endMin } = shiftWindow(
+        origin.originStartMin,
+        origin.durationMin,
+        deltaMin,
+      );
+      setGridDrag({
+        mode: "move",
+        dayIndex,
+        startMin,
+        endMin,
+        entryId: origin.entry.entry_id,
+      });
     } else {
       const endMin = resizeWindowEnd(origin.startMin, pointerMin);
       setGridDrag({
@@ -2748,7 +3072,10 @@ export default function CalendarWorkspacePage() {
 
     const pointerMin = pointerToMinutes(event.clientY);
     if (origin.mode === "create") {
-      const { startMin, endMin } = normalizeDragWindow(origin.anchorMin, pointerMin);
+      const { startMin, endMin } = normalizeDragWindow(
+        origin.anchorMin,
+        pointerMin,
+      );
       const day = weekDays[origin.dayIndex] ?? weekDays[0];
       const startDate = new Date(day);
       startDate.setHours(0, 0, 0, 0);
@@ -2760,9 +3087,18 @@ export default function CalendarWorkspacePage() {
     } else if (origin.mode === "move") {
       const dayIndex = pointerToDayIndex(event.clientX);
       const day = weekDays[dayIndex] ?? weekDays[0];
-      const deltaMin = pointerMin - origin.grabOffsetMin - origin.originStartMin;
-      const { startMin, endMin } = shiftWindow(origin.originStartMin, origin.durationMin, deltaMin);
-      commitDragTimeChange(origin.entry, isoAtMinute(day, startMin), isoAtMinute(day, endMin));
+      const deltaMin =
+        pointerMin - origin.grabOffsetMin - origin.originStartMin;
+      const { startMin, endMin } = shiftWindow(
+        origin.originStartMin,
+        origin.durationMin,
+        deltaMin,
+      );
+      commitDragTimeChange(
+        origin.entry,
+        isoAtMinute(day, startMin),
+        isoAtMinute(day, endMin),
+      );
     } else {
       const day = weekDays[origin.dayIndex] ?? weekDays[0];
       const endMin = resizeWindowEnd(origin.startMin, pointerMin);
@@ -2785,7 +3121,8 @@ export default function CalendarWorkspacePage() {
     nextEndIso: string,
   ) {
     if (isRecurringUserEntry(entry)) {
-      if (nextStartIso === entry.start_at && nextEndIso === entry.end_at) return;
+      if (nextStartIso === entry.start_at && nextEndIso === entry.end_at)
+        return;
       openRecurringEdit(
         entry,
         {
@@ -2827,7 +3164,10 @@ export default function CalendarWorkspacePage() {
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
-  function beginMoveDrag(event: React.PointerEvent, entry: UnifiedCalendarEntry) {
+  function beginMoveDrag(
+    event: React.PointerEvent,
+    entry: UnifiedCalendarEntry,
+  ) {
     if (event.button !== 0 || !isGridDraggable(entry)) return;
     const originStartMin = minuteOfDay(new Date(entry.start_at));
     const durationMin = Math.max(
@@ -2872,9 +3212,13 @@ export default function CalendarWorkspacePage() {
   async function handleSyncAll() {
     try {
       const result = await syncMutation.mutateAsync({ all: true });
-      toast.success(`Sync triggered for ${result.data.triggered_count} source(s).`);
+      toast.success(
+        `Sync triggered for ${result.data.triggered_count} source(s).`,
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to trigger sync.");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to trigger sync.",
+      );
     }
   }
 
@@ -2899,10 +3243,16 @@ export default function CalendarWorkspacePage() {
             : `Recovery sync triggered for ${sourceName(source)}.`,
         );
       } else {
-        toast.success(target?.detail || `Sync triggered for ${sourceName(source)}.`);
+        toast.success(
+          target?.detail || `Sync triggered for ${sourceName(source)}.`,
+        );
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to trigger source sync.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to trigger source sync.",
+      );
     } finally {
       setSyncingSourceKey(null);
     }
@@ -2941,10 +3291,14 @@ export default function CalendarWorkspacePage() {
     if (!isCalendarMutationOk(rawResult)) {
       const detail = calendarMutationErrorMessage(
         rawResult,
-        action === "create" ? "Failed to create calendar event." : "Failed to update calendar event.",
+        action === "create"
+          ? "Failed to create calendar event."
+          : "Failed to update calendar event.",
       );
       toast.error(
-        action === "create" ? `Failed to create event: ${detail}` : `Failed to update event: ${detail}`,
+        action === "create"
+          ? `Failed to create event: ${detail}`
+          : `Failed to update event: ${detail}`,
       );
       return;
     }
@@ -2989,9 +3343,13 @@ export default function CalendarWorkspacePage() {
     }
 
     const selectedCalendar = resolveSourceForForm(userEventForm.sourceKey);
-    const fallbackOwner = activeUserEntry ? resolveEntryOwner(activeUserEntry) : null;
-    const butlerName = selectedCalendar?.butler_name || fallbackOwner?.butlerName || null;
-    const calendarId = selectedCalendar?.calendar_id || fallbackOwner?.calendarId || null;
+    const fallbackOwner = activeUserEntry
+      ? resolveEntryOwner(activeUserEntry)
+      : null;
+    const butlerName =
+      selectedCalendar?.butler_name || fallbackOwner?.butlerName || null;
+    const calendarId =
+      selectedCalendar?.calendar_id || fallbackOwner?.calendarId || null;
 
     if (!butlerName) {
       toast.error("Could not resolve owning butler for this calendar source.");
@@ -3033,7 +3391,12 @@ export default function CalendarWorkspacePage() {
     setUserEventConflict(null);
 
     const requestId = buildRequestId(action);
-    const pendingMutation = { butler_name: butlerName, action, payload, request_id: requestId };
+    const pendingMutation = {
+      butler_name: butlerName,
+      action,
+      payload,
+      request_id: requestId,
+    };
 
     try {
       const result = await userEventMutation.mutateAsync({
@@ -3044,7 +3407,11 @@ export default function CalendarWorkspacePage() {
       });
       _handleUserMutationResult(result.data, action, pendingMutation);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to save calendar event.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to save calendar event.",
+      );
     }
   }
 
@@ -3057,7 +3424,9 @@ export default function CalendarWorkspacePage() {
    */
   async function confirmQuickAddDraft(draft: QuickAddDraft) {
     if (submittableCalendars.length === 0) {
-      toast.error("No writable calendar sources are available for user events.");
+      toast.error(
+        "No writable calendar sources are available for user events.",
+      );
       return;
     }
     const title = draft.title.trim();
@@ -3085,7 +3454,8 @@ export default function CalendarWorkspacePage() {
     if (draft.end_at) payload.end_at = draft.end_at;
     if (draft.location) payload.location = draft.location;
     if (draft.description) payload.description = draft.description;
-    if (selectedCalendar.calendar_id) payload.calendar_id = selectedCalendar.calendar_id;
+    if (selectedCalendar.calendar_id)
+      payload.calendar_id = selectedCalendar.calendar_id;
 
     const requestId = buildRequestId("create");
     const pendingMutation = {
@@ -3103,7 +3473,11 @@ export default function CalendarWorkspacePage() {
       });
       _handleUserMutationResult(result.data, "create", pendingMutation);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to add calendar event.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to add calendar event.",
+      );
     }
   }
 
@@ -3117,7 +3491,12 @@ export default function CalendarWorkspacePage() {
       return;
     }
     const { pendingMutation } = userEventConflict;
-    const updatedPayload = { ...pendingMutation.payload, start_at: slot.start_at, end_at: slot.end_at, timezone: slot.timezone };
+    const updatedPayload = {
+      ...pendingMutation.payload,
+      start_at: slot.start_at,
+      end_at: slot.end_at,
+      timezone: slot.timezone,
+    };
     const updatedPending = { ...pendingMutation, payload: updatedPayload };
     try {
       const result = await userEventMutation.mutateAsync({
@@ -3126,9 +3505,17 @@ export default function CalendarWorkspacePage() {
         request_id: pendingMutation.request_id, // same request_id per spec
         payload: updatedPayload,
       });
-      _handleUserMutationResult(result.data, pendingMutation.action, updatedPending);
+      _handleUserMutationResult(
+        result.data,
+        pendingMutation.action,
+        updatedPending,
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to save calendar event.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to save calendar event.",
+      );
     }
   }
 
@@ -3141,10 +3528,17 @@ export default function CalendarWorkspacePage() {
       return;
     }
     const { pendingMutation } = userEventConflict;
-    const overridePayload = { ...pendingMutation.payload, conflict_policy: "allow_overlap" };
+    const overridePayload = {
+      ...pendingMutation.payload,
+      conflict_policy: "allow_overlap",
+    };
     // Use a new request_id since this is a distinct user decision (override, not retry).
     const overrideRequestId = buildRequestId(pendingMutation.action);
-    const overridePending = { ...pendingMutation, payload: overridePayload, request_id: overrideRequestId };
+    const overridePending = {
+      ...pendingMutation,
+      payload: overridePayload,
+      request_id: overrideRequestId,
+    };
     try {
       const result = await userEventMutation.mutateAsync({
         butler_name: pendingMutation.butler_name,
@@ -3152,9 +3546,17 @@ export default function CalendarWorkspacePage() {
         request_id: overrideRequestId,
         payload: overridePayload,
       });
-      _handleUserMutationResult(result.data, pendingMutation.action, overridePending);
+      _handleUserMutationResult(
+        result.data,
+        pendingMutation.action,
+        overridePending,
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to save calendar event.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to save calendar event.",
+      );
     }
   }
 
@@ -3201,10 +3603,16 @@ export default function CalendarWorkspacePage() {
         return;
       }
       const status = maybeText(mutationResult?.status);
-      toast.success(status ? `Deleted event (${status}).` : "Deleted calendar event.");
+      toast.success(
+        status ? `Deleted event (${status}).` : "Deleted calendar event.",
+      );
       setDeleteCandidate(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to delete calendar event.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to delete calendar event.",
+      );
     }
   }
 
@@ -3256,7 +3664,9 @@ export default function CalendarWorkspacePage() {
       // would close the dialog without the edit ever landing.
       const status = maybeText(result?.status);
       if (status === "conflict") {
-        toast.error(`Could not update ${label}: the new time conflicts with another event.`);
+        toast.error(
+          `Could not update ${label}: the new time conflicts with another event.`,
+        );
         return;
       }
       if (!isCalendarMutationOk(result)) {
@@ -3268,7 +3678,9 @@ export default function CalendarWorkspacePage() {
       toast.success(`Event ${label} updated.`);
       setRecurringEdit(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : `Failed to update ${label}.`);
+      toast.error(
+        error instanceof Error ? error.message : `Failed to update ${label}.`,
+      );
     }
   }
 
@@ -3311,7 +3723,10 @@ export default function CalendarWorkspacePage() {
         onSuccess: (response) => {
           const mutationResult = response.data.result;
           if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(mutationResult, "Toggle failed");
+            const detail = calendarMutationErrorMessage(
+              mutationResult,
+              "Toggle failed",
+            );
             toast.error(`${enabled ? "Resume" : "Pause"} failed: ${detail}`);
             return;
           }
@@ -3349,7 +3764,10 @@ export default function CalendarWorkspacePage() {
         onSuccess: (response) => {
           const mutationResult = response.data.result;
           if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(mutationResult, "Delete failed");
+            const detail = calendarMutationErrorMessage(
+              mutationResult,
+              "Delete failed",
+            );
             toast.error(`Delete failed: ${detail}`);
             return;
           }
@@ -3384,7 +3802,10 @@ export default function CalendarWorkspacePage() {
         onSuccess: (response) => {
           const mutationResult = response.data.result;
           if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(mutationResult, "Snooze failed");
+            const detail = calendarMutationErrorMessage(
+              mutationResult,
+              "Snooze failed",
+            );
             toast.error(`Snooze failed: ${detail}`);
             return;
           }
@@ -3415,14 +3836,19 @@ export default function CalendarWorkspacePage() {
         onSuccess: (response) => {
           const mutationResult = response.data.result;
           if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(mutationResult, "Dismiss failed");
+            const detail = calendarMutationErrorMessage(
+              mutationResult,
+              "Dismiss failed",
+            );
             toast.error(`Dismiss failed: ${detail}`);
             return;
           }
           toast.success("Reminder dismissed");
         },
         onError: (error) => {
-          toast.error(error instanceof Error ? error.message : "Dismiss failed");
+          toast.error(
+            error instanceof Error ? error.message : "Dismiss failed",
+          );
         },
       },
     );
@@ -3460,8 +3886,13 @@ export default function CalendarWorkspacePage() {
         toast.error("End time must be after start time");
         return;
       }
-      if (butlerEventDraft.recurrenceFrequency === "NONE" && !butlerEventDraft.cron.trim()) {
-        toast.error("Scheduled events require either a recurrence frequency or cron expression");
+      if (
+        butlerEventDraft.recurrenceFrequency === "NONE" &&
+        !butlerEventDraft.cron.trim()
+      ) {
+        toast.error(
+          "Scheduled events require either a recurrence frequency or cron expression",
+        );
         return;
       }
     }
@@ -3470,7 +3901,10 @@ export default function CalendarWorkspacePage() {
       return;
     }
 
-    const recurrenceRule = buildRRule(butlerEventDraft.recurrenceFrequency, untilAt);
+    const recurrenceRule = buildRRule(
+      butlerEventDraft.recurrenceFrequency,
+      untilAt,
+    );
     const payload: Record<string, unknown> = {
       title: butlerEventDraft.title.trim(),
       start_at: startAt.toISOString(),
@@ -3492,7 +3926,8 @@ export default function CalendarWorkspacePage() {
       payload.until_at = untilAt.toISOString();
     }
 
-    const action: "create" | "update" = butlerEventDialogMode === "create" ? "create" : "update";
+    const action: "create" | "update" =
+      butlerEventDialogMode === "create" ? "create" : "update";
     if (action === "update") {
       if (!editingButlerEntry) {
         toast.error("Missing event context for update");
@@ -3518,7 +3953,10 @@ export default function CalendarWorkspacePage() {
         onSuccess: (response) => {
           const mutationResult = response.data.result;
           if (!isCalendarMutationOk(mutationResult)) {
-            const detail = calendarMutationErrorMessage(mutationResult, "Event mutation failed");
+            const detail = calendarMutationErrorMessage(
+              mutationResult,
+              "Event mutation failed",
+            );
             toast.error(
               action === "create"
                 ? `Failed to create butler event: ${detail}`
@@ -3526,18 +3964,25 @@ export default function CalendarWorkspacePage() {
             );
             return;
           }
-          toast.success(action === "create" ? "Butler event created" : "Butler event updated");
+          toast.success(
+            action === "create"
+              ? "Butler event created"
+              : "Butler event updated",
+          );
           closeButlerEventDialog(false);
         },
         onError: (error) => {
-          toast.error(error instanceof Error ? error.message : "Event mutation failed");
+          toast.error(
+            error instanceof Error ? error.message : "Event mutation failed",
+          );
         },
       },
     );
   }
 
   const syncButtonLabel = syncMutation.isPending ? "Syncing..." : "Sync now";
-  const canCreateUserEvents = view === "user" && submittableCalendars.length > 0;
+  const canCreateUserEvents =
+    view === "user" && submittableCalendars.length > 0;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -3545,7 +3990,8 @@ export default function CalendarWorkspacePage() {
       <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 pb-5">
         <div className="min-w-0">
           <Eyebrow as="div" className="mb-2.5">
-            Calendar · {view === "user" ? "User" : "Butler"} view · {timezone} · {format(anchor, "yyyy")}
+            Calendar · {view === "user" ? "User" : "Butler"} view · {timezone} ·{" "}
+            {format(anchor, "yyyy")}
           </Eyebrow>
           <Display>{headlineLabel(range, start, end)}</Display>
         </div>
@@ -3560,17 +4006,28 @@ export default function CalendarWorkspacePage() {
           >
             {syncButtonLabel}
           </PillButton>
-          <PillButton onClick={() => setSearchPaletteOpen(true)} aria-label="Search events">
+          <PillButton
+            onClick={() => setSearchPaletteOpen(true)}
+            aria-label="Search events"
+          >
             Search
           </PillButton>
-          <PillButton onClick={() => setSourcesDialogOpen(true)} aria-label="Configure sources">
+          <PillButton
+            onClick={() => setSourcesDialogOpen(true)}
+            aria-label="Configure sources"
+          >
             Sources
             {disabledSources.size > 0 ? (
-              <span className="tabular-nums text-[var(--dim)]">· {disabledSources.size} hidden</span>
+              <span className="tabular-nums text-[var(--dim)]">
+                · {disabledSources.size} hidden
+              </span>
             ) : null}
           </PillButton>
           {view === "butler" ? (
-            <CommitButton onClick={() => openButlerCreateDialog()} disabled={butlerMutation.isPending}>
+            <CommitButton
+              onClick={() => openButlerCreateDialog()}
+              disabled={butlerMutation.isPending}
+            >
               Create butler event
             </CommitButton>
           ) : (
@@ -3622,16 +4079,23 @@ export default function CalendarWorkspacePage() {
         <div className="flex items-center gap-1">
           <PillButton
             aria-label="Previous range"
-            onClick={() => updateQuery({ anchor: shiftAnchor(anchor, range, -1) })}
+            onClick={() =>
+              updateQuery({ anchor: shiftAnchor(anchor, range, -1) })
+            }
           >
             ‹
           </PillButton>
-          <PillButton aria-label="Jump to today" onClick={() => updateQuery({ anchor: new Date() })}>
+          <PillButton
+            aria-label="Jump to today"
+            onClick={() => updateQuery({ anchor: new Date() })}
+          >
             Today
           </PillButton>
           <PillButton
             aria-label="Next range"
-            onClick={() => updateQuery({ anchor: shiftAnchor(anchor, range, 1) })}
+            onClick={() =>
+              updateQuery({ anchor: shiftAnchor(anchor, range, 1) })
+            }
           >
             ›
           </PillButton>
@@ -3777,7 +4241,9 @@ export default function CalendarWorkspacePage() {
                   id="source-filter"
                   className={SELECT_CLASS}
                   value={selectedSourceKey}
-                  onChange={(event) => updateQuery({ source: event.target.value })}
+                  onChange={(event) =>
+                    updateQuery({ source: event.target.value })
+                  }
                 >
                   <option value="all">All sources</option>
                   {userSources
@@ -3805,7 +4271,9 @@ export default function CalendarWorkspacePage() {
             timezone={defaultTimezone}
             butlerName={
               (selectedSourceKey !== "all"
-                ? submittableCalendars.find((c) => c.source_key === selectedSourceKey)
+                ? submittableCalendars.find(
+                    (c) => c.source_key === selectedSourceKey,
+                  )
                 : submittableCalendars[0]
               )?.butler_name ?? undefined
             }
@@ -3848,7 +4316,10 @@ export default function CalendarWorkspacePage() {
           <CalendarFindTimePanel
             butlerName={findTimeButlerName}
             onSelectSlot={(slot) => {
-              openUserCreateDialog(parseISO(slot.start_at), parseISO(slot.end_at));
+              openUserCreateDialog(
+                parseISO(slot.start_at),
+                parseISO(slot.end_at),
+              );
               setFindTimePanelOpen(false);
             }}
           />
@@ -3862,7 +4333,11 @@ export default function CalendarWorkspacePage() {
             entries={proposalEntries}
             isLoading={proposalsQuery.isLoading}
             isError={proposalsQuery.isError}
-            error={proposalsQuery.error instanceof Error ? proposalsQuery.error : null}
+            error={
+              proposalsQuery.error instanceof Error
+                ? proposalsQuery.error
+                : null
+            }
             acceptMutation={acceptProposalMutation}
             dismissMutation={dismissProposalMutation}
           />
@@ -3877,110 +4352,667 @@ export default function CalendarWorkspacePage() {
             : "flex min-h-0 flex-1"
         }
       >
-      <div className="flex min-h-0 flex-1 flex-col pt-5">
-        {workspaceQuery.isLoading ? (
-          <Voice variant="italic" className="text-[var(--mfg)]">
-            Drawing the calendar…
-          </Voice>
-        ) : workspaceQuery.isError ? (
-          <div role="alert" className="flex items-start gap-2 py-1">
-            <StateDot state="error" className="mt-[7px]" />
-            <p className="text-sm text-[var(--fg)]">
-              The calendar workspace failed to load.{" "}
-              <span className="text-[var(--mfg)]">
-                {workspaceQuery.error instanceof Error
-                  ? workspaceQuery.error.message
-                  : "Unknown error"}
-              </span>
-            </p>
-          </div>
-        ) : view === "butler" ? (
-          /* ---- Butler lanes ---- */
-          butlerLaneRows.length === 0 ? (
+        <div className="flex min-h-0 flex-1 flex-col pt-5">
+          {workspaceQuery.isLoading ? (
             <Voice variant="italic" className="text-[var(--mfg)]">
-              No butler lanes yet.
+              Drawing the calendar…
             </Voice>
-          ) : (
-            <div className="min-h-0 flex-1 space-y-8 overflow-y-auto pr-1">
-              {butlerLaneRows.map((lane) => (
-                <section key={lane.laneId}>
-                  <div className="mb-1 flex items-center justify-between gap-3 border-b border-[var(--border)] pb-2">
-                    <div className="flex min-w-0 items-center gap-2.5">
-                      <ButlerMark name={lane.butlerName} tone="fill" />
-                      <span className="truncate text-[15px] font-medium text-[var(--fg)]">
-                        {lane.title}
-                      </span>
-                      <Mono muted className="tabular-nums">
-                        {lane.entries.length} {lane.entries.length === 1 ? "event" : "events"}
-                      </Mono>
+          ) : workspaceQuery.isError ? (
+            <div role="alert" className="flex items-start gap-2 py-1">
+              <StateDot state="error" className="mt-[7px]" />
+              <p className="text-sm text-[var(--fg)]">
+                The calendar workspace failed to load.{" "}
+                <span className="text-[var(--mfg)]">
+                  {workspaceQuery.error instanceof Error
+                    ? workspaceQuery.error.message
+                    : "Unknown error"}
+                </span>
+              </p>
+            </div>
+          ) : view === "butler" ? (
+            /* ---- Butler lanes ---- */
+            butlerLaneRows.length === 0 ? (
+              <Voice variant="italic" className="text-[var(--mfg)]">
+                No butler lanes yet.
+              </Voice>
+            ) : (
+              <div className="min-h-0 flex-1 space-y-8 overflow-y-auto pr-1">
+                {butlerLaneRows.map((lane) => (
+                  <section key={lane.laneId}>
+                    <div className="mb-1 flex items-center justify-between gap-3 border-b border-[var(--border)] pb-2">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <ButlerMark name={lane.butlerName} tone="fill" />
+                        <span className="truncate text-[15px] font-medium text-[var(--fg)]">
+                          {lane.title}
+                        </span>
+                        <Mono muted className="tabular-nums">
+                          {lane.entries.length}{" "}
+                          {lane.entries.length === 1 ? "event" : "events"}
+                        </Mono>
+                      </div>
+                      <PillButton
+                        onClick={() => openButlerCreateDialog(lane.butlerName)}
+                        disabled={butlerMutation.isPending}
+                      >
+                        Add event
+                      </PillButton>
                     </div>
-                    <PillButton
-                      onClick={() => openButlerCreateDialog(lane.butlerName)}
-                      disabled={butlerMutation.isPending}
+
+                    {lane.entries.length === 0 ? (
+                      <Voice
+                        variant="italic"
+                        className="py-2 text-[var(--mfg)]"
+                      >
+                        No events in this lane.
+                      </Voice>
+                    ) : (
+                      <div role="list">
+                        {capLaneEntriesByDay(
+                          lane.entries,
+                          RECURRING_INSTANCE_CAP,
+                        ).map((item) =>
+                          isOverflowSentinel(item) ? (
+                            <div
+                              key={item.sentinelKey}
+                              data-testid="butler-lane-row"
+                              className="border-b border-[var(--border-soft)] py-2 pl-[68px]"
+                            >
+                              <span className="font-serif text-[13px] italic text-[var(--mfg)]">
+                                and {item.hiddenCount} more instance
+                                {item.hiddenCount === 1 ? "" : "s"} of &ldquo;
+                                {item.title}&rdquo;
+                              </span>
+                            </div>
+                          ) : (
+                            <Row
+                              key={item.entry_id}
+                              data-testid="butler-lane-row"
+                              mark={
+                                <Mono
+                                  muted
+                                  className="inline-block w-14 tabular-nums"
+                                >
+                                  {item.all_day
+                                    ? "all day"
+                                    : format(new Date(item.start_at), "HH:mm")}
+                                </Mono>
+                              }
+                              meta={
+                                <div className="flex items-center gap-1.5">
+                                  <PillButton
+                                    onClick={() => openDetailPanel(item)}
+                                    disabled={butlerMutation.isPending}
+                                  >
+                                    Edit
+                                  </PillButton>
+                                  <PillButton
+                                    onClick={() => handleButlerToggle(item)}
+                                    disabled={butlerMutation.isPending}
+                                  >
+                                    {isPausedEntry(item) ? "Resume" : "Pause"}
+                                  </PillButton>
+                                  <SnoozeMenu
+                                    disabled={butlerMutation.isPending}
+                                    onSnooze={(iso) =>
+                                      handleButlerSnooze(item, iso)
+                                    }
+                                  />
+                                  {item.source_type === "butler_reminder" ? (
+                                    <PillButton
+                                      data-testid="butler-dismiss-button"
+                                      onClick={() => handleButlerDismiss(item)}
+                                      disabled={butlerMutation.isPending}
+                                      className="hover:border-[var(--red)] hover:text-[var(--red)]"
+                                    >
+                                      Dismiss
+                                    </PillButton>
+                                  ) : null}
+                                  <PillButton
+                                    onClick={() => handleButlerDelete(item)}
+                                    disabled={butlerMutation.isPending}
+                                    className="hover:border-[var(--red)] hover:text-[var(--red)]"
+                                  >
+                                    Delete
+                                  </PillButton>
+                                </div>
+                              }
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span className="truncate text-sm text-[var(--fg)]">
+                                  {item.title}
+                                </span>
+                                <KindTag>
+                                  {item.source_type === "scheduled_task"
+                                    ? "schedule"
+                                    : "reminder"}
+                                </KindTag>
+                                {isPausedEntry(item) ? (
+                                  <KindTag className="text-[var(--mfg)]">
+                                    paused
+                                  </KindTag>
+                                ) : null}
+                              </div>
+                            </Row>
+                          ),
+                        )}
+                      </div>
+                    )}
+                  </section>
+                ))}
+              </div>
+            )
+          ) : range === "month" ? (
+            /* ---- Month matrix ---- */
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="mb-2 grid grid-cols-7">
+                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(
+                  (label) => (
+                    <Eyebrow key={label} as="div" className="px-2">
+                      {label}
+                    </Eyebrow>
+                  ),
+                )}
+              </div>
+              <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 overflow-y-auto border-l border-t border-[var(--border)]">
+                {monthDays.map((day) => {
+                  const key = format(day, "yyyy-MM-dd");
+                  const dayEntries = entriesByDay.get(key) ?? [];
+                  const dayOverlays = overlaysEnabled
+                    ? (overlaysByDayMap.get(key) ?? [])
+                    : [];
+                  const inMonth = isSameMonth(day, start);
+                  const today = isToday(day);
+                  return (
+                    <div
+                      key={key}
+                      className={cn(
+                        "relative min-h-[5.5rem] overflow-hidden border-b border-r border-[var(--border)] p-1.5",
+                        !inMonth && "bg-foreground/[0.02]",
+                      )}
                     >
-                      Add event
-                    </PillButton>
+                      {view === "user" ? (
+                        <button
+                          type="button"
+                          aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
+                          onClick={() => openUserCreateDialog(day)}
+                          className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
+                        />
+                      ) : null}
+                      <div className="pointer-events-none relative z-10">
+                        <div className="mb-1 flex items-center justify-between">
+                          {today ? (
+                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-[4px] bg-[var(--fg)] px-1 font-mono text-[11px] tabular-nums text-[var(--bg)]">
+                              {format(day, "d")}
+                            </span>
+                          ) : (
+                            <span
+                              className={cn(
+                                "font-mono text-[11px] tabular-nums",
+                                inMonth
+                                  ? "text-[var(--fg)]"
+                                  : "text-[var(--dim)]",
+                              )}
+                            >
+                              {format(day, "d")}
+                            </span>
+                          )}
+                        </div>
+                        <div className="space-y-0.5">
+                          {dayEntries.slice(0, 3).map((entry) => (
+                            <button
+                              key={entry.entry_id}
+                              type="button"
+                              data-calendar-entry-id={entry.entry_id}
+                              title={entry.title}
+                              onClick={() => openDetailPanel(entry)}
+                              className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                            >
+                              {!entry.all_day ? (
+                                <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+                                  {format(new Date(entry.start_at), "HH:mm")}
+                                </span>
+                              ) : null}
+                              <span className="truncate">{entry.title}</span>
+                            </button>
+                          ))}
+                          {dayEntries.length > 3 ? (
+                            <button
+                              type="button"
+                              aria-label={`${dayEntries.length - 3} more on ${format(day, "MMM d")} — open day view`}
+                              onClick={() =>
+                                updateQuery({ range: "day", anchor: day })
+                              }
+                              className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                            >
+                              +{dayEntries.length - 3} more
+                            </button>
+                          ) : null}
+                          {dayOverlays.length > 0 ? (
+                            <div className="mt-1 space-y-0.5 border-t border-dashed border-[var(--border)] pt-1">
+                              {dayOverlays.slice(0, 3).map((overlay) => (
+                                <OverlayPill
+                                  key={overlay.entry_id}
+                                  entry={overlay}
+                                />
+                              ))}
+                              {dayOverlays.length > 3 ? (
+                                <span className="block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+                                  +{dayOverlays.length - 3} overlay
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : range === "week" || range === "day" ? (
+            /* ---- Time grid — mono gutter, no hour rules (Design Language: Calendar) ---- */
+            <div className="flex min-h-0 flex-1 flex-col">
+              {/* Column headers */}
+              <div
+                className="mb-2 grid"
+                style={{
+                  gridTemplateColumns:
+                    range === "week"
+                      ? "3.25rem repeat(7, minmax(0, 1fr))"
+                      : "3.25rem minmax(0, 1fr)",
+                }}
+              >
+                <div />
+                {weekDays.map((day) => (
+                  <div
+                    key={format(day, "yyyy-MM-dd")}
+                    className="px-2 text-center"
+                  >
+                    <Eyebrow className={cn(isToday(day) && "text-[var(--fg)]")}>
+                      {format(day, "EEE")}
+                    </Eyebrow>{" "}
+                    <span
+                      className={cn(
+                        "font-mono text-[12px] tabular-nums",
+                        isToday(day) ? "text-[var(--fg)]" : "text-[var(--mfg)]",
+                      )}
+                    >
+                      {format(day, "d")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* All-day row */}
+              {(() => {
+                const hasAllDay = weekDays.some((day) =>
+                  (entriesByDay.get(format(day, "yyyy-MM-dd")) ?? []).some(
+                    (e) => e.all_day,
+                  ),
+                );
+                const hasOverlays =
+                  overlaysEnabled &&
+                  weekDays.some(
+                    (day) =>
+                      (overlaysByDayMap.get(format(day, "yyyy-MM-dd")) ?? [])
+                        .length > 0,
+                  );
+                if (!hasAllDay && !hasOverlays) return null;
+                return (
+                  <div
+                    className="mb-2 grid border-b border-[var(--border)] pb-2"
+                    style={{
+                      gridTemplateColumns:
+                        range === "week"
+                          ? "3.25rem repeat(7, minmax(0, 1fr))"
+                          : "3.25rem minmax(0, 1fr)",
+                    }}
+                  >
+                    <div className="pr-2 pt-0.5 text-right">
+                      <Eyebrow>All day</Eyebrow>
+                    </div>
+                    {weekDays.map((day) => {
+                      const key = format(day, "yyyy-MM-dd");
+                      const allDayEntries = (
+                        entriesByDay.get(key) ?? []
+                      ).filter((e) => e.all_day);
+                      const dayOverlays = overlaysEnabled
+                        ? (overlaysByDayMap.get(key) ?? [])
+                        : [];
+                      return (
+                        <div key={key} className="space-y-1 px-1">
+                          {allDayEntries.map((entry) => (
+                            <button
+                              key={entry.entry_id}
+                              type="button"
+                              data-calendar-entry-id={entry.entry_id}
+                              title={entry.title}
+                              onClick={(evt) => {
+                                evt.stopPropagation();
+                                openDetailPanel(entry);
+                              }}
+                              className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06]"
+                            >
+                              {entry.title}
+                            </button>
+                          ))}
+                          {dayOverlays.map((overlay) => (
+                            <OverlayPill
+                              key={overlay.entry_id}
+                              entry={overlay}
+                            />
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              {/* Scrollable time grid */}
+              <div ref={timeGridRef} className="min-h-0 flex-1 overflow-y-auto">
+                <div
+                  ref={gridBodyRef}
+                  className="grid h-[var(--calendar-grid-height)]"
+                  style={{
+                    gridTemplateColumns:
+                      range === "week"
+                        ? "3.25rem repeat(7, minmax(0, 1fr))"
+                        : "3.25rem minmax(0, 1fr)",
+                  }}
+                >
+                  {/* Hour gutter */}
+                  <div ref={gutterRef} className="relative">
+                    {HOURS.map((h) => (
+                      <div
+                        key={h}
+                        className="absolute right-2 -translate-y-1/2 font-mono text-[10px] leading-none tabular-nums text-[var(--mfg)]"
+                        style={{ top: h * HOUR_HEIGHT_PX }}
+                      >
+                        {h === 0
+                          ? ""
+                          : format(new Date(2000, 0, 1, h), "HH:mm")}
+                      </div>
+                    ))}
                   </div>
 
-                  {lane.entries.length === 0 ? (
-                    <Voice variant="italic" className="py-2 text-[var(--mfg)]">
-                      No events in this lane.
-                    </Voice>
-                  ) : (
-                    <div role="list">
-                      {capLaneEntriesByDay(lane.entries, RECURRING_INSTANCE_CAP).map((item) =>
-                        isOverflowSentinel(item) ? (
+                  {/* Day columns */}
+                  {weekDays.map((day, dayIndex) => {
+                    const key = format(day, "yyyy-MM-dd");
+                    const dayEntries = (entriesByDay.get(key) ?? []).filter(
+                      (e) => !e.all_day,
+                    );
+                    const ghost =
+                      movedGhost &&
+                      isSameDay(new Date(movedGhost.prevStartIso), day)
+                        ? movedGhost
+                        : null;
+                    return (
+                      <div
+                        key={key}
+                        className="relative border-l border-[var(--border)]"
+                      >
+                        {view === "user" ? (
+                          <button
+                            type="button"
+                            aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
+                            className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
+                            onPointerDown={(evt) =>
+                              beginCreateDrag(evt, dayIndex)
+                            }
+                            onPointerMove={handleGridPointerMove}
+                            onPointerUp={handleGridPointerUp}
+                            onPointerCancel={handleGridPointerCancel}
+                            onClick={(evt) => {
+                              // Swallow the click that trails a completed drag-create.
+                              if (suppressClickRef.current) {
+                                suppressClickRef.current = false;
+                                return;
+                              }
+                              const rect =
+                                evt.currentTarget.getBoundingClientRect();
+                              // Keyboard activation (detail === 0) carries no pointer Y — default to the day.
+                              if (evt.detail === 0) {
+                                openUserCreateDialog(day);
+                                return;
+                              }
+                              const yPx = evt.clientY - rect.top;
+                              const snappedMin = Math.max(
+                                0,
+                                Math.floor(((yPx / HOUR_HEIGHT_PX) * 60) / 30) *
+                                  30,
+                              );
+                              const clickedDate = new Date(day);
+                              clickedDate.setHours(
+                                Math.floor(snappedMin / 60),
+                                snappedMin % 60,
+                                0,
+                                0,
+                              );
+                              openUserCreateDialog(clickedDate);
+                            }}
+                          />
+                        ) : null}
+                        {/* Drag preview (create / move / resize landing in this column). */}
+                        {gridDrag && gridDrag.dayIndex === dayIndex ? (
                           <div
-                            key={item.sentinelKey}
-                            data-testid="butler-lane-row"
-                            className="border-b border-[var(--border-soft)] py-2 pl-[68px]"
+                            aria-hidden
+                            data-testid="calendar-drag-preview"
+                            className="pointer-events-none absolute inset-x-0.5 z-20 rounded-[3px] border border-dashed border-[var(--fg)]/60 bg-[var(--fg)]/10"
+                            style={{
+                              top: (gridDrag.startMin / 60) * HOUR_HEIGHT_PX,
+                              height:
+                                ((gridDrag.endMin - gridDrag.startMin) / 60) *
+                                HOUR_HEIGHT_PX,
+                              minHeight: 16,
+                            }}
                           >
-                            <span className="font-serif text-[13px] italic text-[var(--mfg)]">
-                              and {item.hiddenCount} more instance{item.hiddenCount === 1 ? "" : "s"} of
-                              {" "}
-                              &ldquo;{item.title}&rdquo;
+                            <span className="block px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-[var(--fg)]">
+                              {formatMinuteLabel(gridDrag.startMin)}–
+                              {formatMinuteLabel(gridDrag.endMin)}
                             </span>
                           </div>
-                        ) : (
+                        ) : null}
+                        {/* "Moved" ghost — one-click undo of the last move/resize. */}
+                        {ghost ? (
+                          <button
+                            type="button"
+                            data-testid="calendar-move-ghost"
+                            title="Undo move"
+                            onClick={(evt) => {
+                              evt.stopPropagation();
+                              undoMove();
+                            }}
+                            className="absolute inset-x-0.5 z-20 flex items-center justify-center rounded-[3px] border border-dashed border-[var(--fg)]/40 bg-[var(--bg)]/70 text-[10px] font-medium text-[var(--mfg)] transition-colors hover:text-[var(--fg)]"
+                            style={{
+                              top:
+                                (minuteOfDay(new Date(ghost.prevStartIso)) /
+                                  60) *
+                                HOUR_HEIGHT_PX,
+                              height: Math.max(
+                                (differenceInMinutes(
+                                  new Date(ghost.prevEndIso),
+                                  new Date(ghost.prevStartIso),
+                                ) /
+                                  60) *
+                                  HOUR_HEIGHT_PX,
+                                16,
+                              ),
+                            }}
+                          >
+                            Undo
+                          </button>
+                        ) : null}
+                        {dayEntries.map((entry) => {
+                          const s = new Date(entry.start_at);
+                          const e = new Date(entry.end_at);
+                          const topMin = getHours(s) * 60 + getMinutes(s);
+                          const durationMin = Math.max(
+                            differenceInMinutes(e, s),
+                            15,
+                          );
+                          const topPx = (topMin / 60) * HOUR_HEIGHT_PX;
+                          const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
+                          const paused = isPausedEntry(entry);
+                          const draggable = isGridDraggable(entry);
+                          const isDragSource =
+                            gridDrag &&
+                            gridDrag.mode !== "create" &&
+                            gridDrag.entryId === entry.entry_id;
+                          return (
+                            <button
+                              key={entry.entry_id}
+                              type="button"
+                              data-calendar-entry-id={entry.entry_id}
+                              className={cn(
+                                "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                                paused && "opacity-50",
+                                draggable &&
+                                  "cursor-grab touch-none active:cursor-grabbing",
+                                isDragSource && "opacity-40",
+                              )}
+                              style={{
+                                top: topPx,
+                                height: heightPx,
+                                minHeight: 16,
+                              }}
+                              title={`${format(s, "HH:mm")}–${format(e, "HH:mm")} · ${entry.title}`}
+                              onPointerDown={
+                                draggable
+                                  ? (evt) => beginMoveDrag(evt, entry)
+                                  : undefined
+                              }
+                              onPointerMove={
+                                draggable ? handleGridPointerMove : undefined
+                              }
+                              onPointerUp={
+                                draggable ? handleGridPointerUp : undefined
+                              }
+                              onPointerCancel={
+                                draggable ? handleGridPointerCancel : undefined
+                              }
+                              onClick={() => {
+                                // Swallow the click that trails a completed move/resize drag.
+                                if (suppressClickRef.current) {
+                                  suppressClickRef.current = false;
+                                  return;
+                                }
+                                openDetailPanel(entry);
+                              }}
+                            >
+                              <span className="block truncate text-[11px] font-medium leading-tight text-[var(--fg)]">
+                                {entry.title}
+                              </span>
+                              {heightPx >= 32 ? (
+                                <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+                                  {format(s, "HH:mm")}–{format(e, "HH:mm")}
+                                </span>
+                              ) : null}
+                              {draggable ? (
+                                <span
+                                  aria-hidden
+                                  data-testid="calendar-resize-handle"
+                                  className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize touch-none"
+                                  onPointerDown={(evt) =>
+                                    beginResizeDrag(evt, entry, dayIndex)
+                                  }
+                                  onPointerMove={handleGridPointerMove}
+                                  onPointerUp={handleGridPointerUp}
+                                  onPointerCancel={handleGridPointerCancel}
+                                />
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : entries.length === 0 ? (
+            <Voice variant="italic" className="text-[var(--mfg)]">
+              No events in this range.
+            </Voice>
+          ) : (
+            /* ---- Agenda list, grouped by day ---- */
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              {(() => {
+                const groups: Array<{
+                  day: string;
+                  date: Date;
+                  items: UnifiedCalendarEntry[];
+                }> = [];
+                const groupIndex = new Map<string, number>();
+                for (const entry of entries) {
+                  const d = new Date(entry.start_at);
+                  const dayKey = format(d, "yyyy-MM-dd");
+                  let gi = groupIndex.get(dayKey);
+                  if (gi === undefined) {
+                    gi = groups.length;
+                    groupIndex.set(dayKey, gi);
+                    groups.push({
+                      day: dayKey,
+                      date: startOfDay(d),
+                      items: [],
+                    });
+                  }
+                  groups[gi].items.push(entry);
+                }
+                return groups.map((group) => (
+                  <section key={group.day} className="mb-6">
+                    <div className="mb-1 flex items-baseline gap-2 border-b border-[var(--border)] pb-1.5">
+                      <Eyebrow
+                        className={cn(
+                          isToday(group.date) && "text-[var(--fg)]",
+                        )}
+                      >
+                        {format(group.date, "EEE · MMM d")}
+                      </Eyebrow>
+                      {isToday(group.date) ? (
+                        <KindTag className="text-[var(--mfg)]">today</KindTag>
+                      ) : null}
+                    </div>
+                    <div role="list">
+                      {group.items.map((entry) => {
+                        const canMutate =
+                          view === "user" &&
+                          entry.source_type === "provider_event" &&
+                          !!entry.provider_event_id &&
+                          entry.editable;
+                        return (
                           <Row
-                            key={item.entry_id}
-                            data-testid="butler-lane-row"
+                            key={entry.entry_id}
                             mark={
-                              <Mono muted className="inline-block w-14 tabular-nums">
-                                {item.all_day ? "all day" : format(new Date(item.start_at), "HH:mm")}
+                              <Mono
+                                muted
+                                className="inline-block w-14 tabular-nums"
+                              >
+                                {entry.all_day
+                                  ? "all day"
+                                  : format(new Date(entry.start_at), "HH:mm")}
                               </Mono>
                             }
                             meta={
                               <div className="flex items-center gap-1.5">
                                 <PillButton
-                                  onClick={() => openDetailPanel(item)}
-                                  disabled={butlerMutation.isPending}
+                                  onClick={() => openDetailPanel(entry)}
+                                  disabled={userEventMutation.isPending}
                                 >
-                                  Edit
+                                  Detail
                                 </PillButton>
                                 <PillButton
-                                  onClick={() => handleButlerToggle(item)}
-                                  disabled={butlerMutation.isPending}
-                                >
-                                  {isPausedEntry(item) ? "Resume" : "Pause"}
-                                </PillButton>
-                                <SnoozeMenu
-                                  disabled={butlerMutation.isPending}
-                                  onSnooze={(iso) => handleButlerSnooze(item, iso)}
-                                />
-                                {item.source_type === "butler_reminder" ? (
-                                  <PillButton
-                                    data-testid="butler-dismiss-button"
-                                    onClick={() => handleButlerDismiss(item)}
-                                    disabled={butlerMutation.isPending}
-                                    className="hover:border-[var(--red)] hover:text-[var(--red)]"
-                                  >
-                                    Dismiss
-                                  </PillButton>
-                                ) : null}
-                                <PillButton
-                                  onClick={() => handleButlerDelete(item)}
-                                  disabled={butlerMutation.isPending}
+                                  onClick={() => {
+                                    setDeleteScope(
+                                      isRecurringUserEntry(entry)
+                                        ? "this"
+                                        : "series",
+                                    );
+                                    setDeleteCandidate(entry);
+                                  }}
+                                  disabled={
+                                    !canMutate || userEventMutation.isPending
+                                  }
                                   className="hover:border-[var(--red)] hover:text-[var(--red)]"
                                 >
                                   Delete
@@ -3989,506 +5021,62 @@ export default function CalendarWorkspacePage() {
                             }
                           >
                             <div className="flex min-w-0 items-center gap-2">
-                              <span className="truncate text-sm text-[var(--fg)]">{item.title}</span>
-                              <KindTag>
-                                {item.source_type === "scheduled_task" ? "schedule" : "reminder"}
-                              </KindTag>
-                              {isPausedEntry(item) ? (
-                                <KindTag className="text-[var(--mfg)]">paused</KindTag>
+                              {entry.butler_name ? (
+                                <ButlerMark name={entry.butler_name} />
                               ) : null}
+                              <span
+                                className={cn(
+                                  "truncate text-sm text-[var(--fg)]",
+                                  isCancelledEntry(entry) &&
+                                    "text-[var(--mfg)] line-through",
+                                )}
+                              >
+                                {entry.title}
+                              </span>
+                              {isCancelledEntry(entry) ? (
+                                <KindTag
+                                  data-testid="entry-cancelled-tag"
+                                  className="text-[var(--red)]"
+                                >
+                                  cancelled
+                                </KindTag>
+                              ) : null}
+                              <Mono muted className="hidden truncate sm:inline">
+                                {entry.butler_name ?? entry.source_key}
+                              </Mono>
                             </div>
                           </Row>
-                        ),
-                      )}
-                    </div>
-                  )}
-                </section>
-              ))}
-            </div>
-          )
-        ) : range === "month" ? (
-          /* ---- Month matrix ---- */
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="mb-2 grid grid-cols-7">
-              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
-                <Eyebrow key={label} as="div" className="px-2">
-                  {label}
-                </Eyebrow>
-              ))}
-            </div>
-            <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 overflow-y-auto border-l border-t border-[var(--border)]">
-              {monthDays.map((day) => {
-                const key = format(day, "yyyy-MM-dd");
-                const dayEntries = entriesByDay.get(key) ?? [];
-                const dayOverlays = overlaysEnabled ? (overlaysByDayMap.get(key) ?? []) : [];
-                const inMonth = isSameMonth(day, start);
-                const today = isToday(day);
-                return (
-                  <div
-                    key={key}
-                    className={cn(
-                      "relative min-h-[5.5rem] overflow-hidden border-b border-r border-[var(--border)] p-1.5",
-                      !inMonth && "bg-foreground/[0.02]",
-                    )}
-                  >
-                    {view === "user" ? (
-                      <button
-                        type="button"
-                        aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                        onClick={() => openUserCreateDialog(day)}
-                        className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
-                      />
-                    ) : null}
-                    <div className="pointer-events-none relative z-10">
-                      <div className="mb-1 flex items-center justify-between">
-                        {today ? (
-                          <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-[4px] bg-[var(--fg)] px-1 font-mono text-[11px] tabular-nums text-[var(--bg)]">
-                            {format(day, "d")}
-                          </span>
-                        ) : (
-                          <span
-                            className={cn(
-                              "font-mono text-[11px] tabular-nums",
-                              inMonth ? "text-[var(--fg)]" : "text-[var(--dim)]",
-                            )}
-                          >
-                            {format(day, "d")}
-                          </span>
-                        )}
-                      </div>
-                      <div className="space-y-0.5">
-                        {dayEntries.slice(0, 3).map((entry) => (
-                          <button
-                            key={entry.entry_id}
-                            type="button"
-                            data-calendar-entry-id={entry.entry_id}
-                            title={entry.title}
-                            onClick={() => openDetailPanel(entry)}
-                            className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
-                          >
-                            {!entry.all_day ? (
-                              <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                {format(new Date(entry.start_at), "HH:mm")}
-                              </span>
-                            ) : null}
-                            <span className="truncate">{entry.title}</span>
-                          </button>
-                        ))}
-                        {dayEntries.length > 3 ? (
-                          <button
-                            type="button"
-                            aria-label={`${dayEntries.length - 3} more on ${format(day, "MMM d")} — open day view`}
-                            onClick={() => updateQuery({ range: "day", anchor: day })}
-                            className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
-                          >
-                            +{dayEntries.length - 3} more
-                          </button>
-                        ) : null}
-                        {dayOverlays.length > 0 ? (
-                          <div className="mt-1 space-y-0.5 border-t border-dashed border-[var(--border)] pt-1">
-                            {dayOverlays.slice(0, 3).map((overlay) => (
-                              <OverlayPill key={overlay.entry_id} entry={overlay} />
-                            ))}
-                            {dayOverlays.length > 3 ? (
-                              <span className="block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                +{dayOverlays.length - 3} overlay
-                              </span>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : range === "week" || range === "day" ? (
-          /* ---- Time grid — mono gutter, no hour rules (Design Language: Calendar) ---- */
-          <div className="flex min-h-0 flex-1 flex-col">
-            {/* Column headers */}
-            <div
-              className="mb-2 grid"
-              style={{
-                gridTemplateColumns:
-                  range === "week" ? "3.25rem repeat(7, minmax(0, 1fr))" : "3.25rem minmax(0, 1fr)",
-              }}
-            >
-              <div />
-              {weekDays.map((day) => (
-                <div key={format(day, "yyyy-MM-dd")} className="px-2 text-center">
-                  <Eyebrow className={cn(isToday(day) && "text-[var(--fg)]")}>
-                    {format(day, "EEE")}
-                  </Eyebrow>{" "}
-                  <span
-                    className={cn(
-                      "font-mono text-[12px] tabular-nums",
-                      isToday(day) ? "text-[var(--fg)]" : "text-[var(--mfg)]",
-                    )}
-                  >
-                    {format(day, "d")}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* All-day row */}
-            {(() => {
-              const hasAllDay = weekDays.some((day) =>
-                (entriesByDay.get(format(day, "yyyy-MM-dd")) ?? []).some((e) => e.all_day),
-              );
-              const hasOverlays =
-                overlaysEnabled &&
-                weekDays.some(
-                  (day) => (overlaysByDayMap.get(format(day, "yyyy-MM-dd")) ?? []).length > 0,
-                );
-              if (!hasAllDay && !hasOverlays) return null;
-              return (
-                <div
-                  className="mb-2 grid border-b border-[var(--border)] pb-2"
-                  style={{
-                    gridTemplateColumns:
-                      range === "week"
-                        ? "3.25rem repeat(7, minmax(0, 1fr))"
-                        : "3.25rem minmax(0, 1fr)",
-                  }}
-                >
-                  <div className="pr-2 pt-0.5 text-right">
-                    <Eyebrow>All day</Eyebrow>
-                  </div>
-                  {weekDays.map((day) => {
-                    const key = format(day, "yyyy-MM-dd");
-                    const allDayEntries = (entriesByDay.get(key) ?? []).filter((e) => e.all_day);
-                    const dayOverlays = overlaysEnabled ? (overlaysByDayMap.get(key) ?? []) : [];
-                    return (
-                      <div key={key} className="space-y-1 px-1">
-                        {allDayEntries.map((entry) => (
-                          <button
-                            key={entry.entry_id}
-                            type="button"
-                            data-calendar-entry-id={entry.entry_id}
-                            title={entry.title}
-                            onClick={(evt) => {
-                              evt.stopPropagation();
-                              openDetailPanel(entry);
-                            }}
-                            className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06]"
-                          >
-                            {entry.title}
-                          </button>
-                        ))}
-                        {dayOverlays.map((overlay) => (
-                          <OverlayPill key={overlay.entry_id} entry={overlay} />
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-
-            {/* Scrollable time grid */}
-            <div ref={timeGridRef} className="min-h-0 flex-1 overflow-y-auto">
-              <div
-                ref={gridBodyRef}
-                className="grid h-[var(--calendar-grid-height)]"
-                style={{
-                  gridTemplateColumns:
-                    range === "week"
-                      ? "3.25rem repeat(7, minmax(0, 1fr))"
-                      : "3.25rem minmax(0, 1fr)",
-                }}
-              >
-                {/* Hour gutter */}
-                <div ref={gutterRef} className="relative">
-                  {HOURS.map((h) => (
-                    <div
-                      key={h}
-                      className="absolute right-2 -translate-y-1/2 font-mono text-[10px] leading-none tabular-nums text-[var(--mfg)]"
-                      style={{ top: h * HOUR_HEIGHT_PX }}
-                    >
-                      {h === 0 ? "" : format(new Date(2000, 0, 1, h), "HH:mm")}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Day columns */}
-                {weekDays.map((day, dayIndex) => {
-                  const key = format(day, "yyyy-MM-dd");
-                  const dayEntries = (entriesByDay.get(key) ?? []).filter((e) => !e.all_day);
-                  const ghost =
-                    movedGhost && isSameDay(new Date(movedGhost.prevStartIso), day)
-                      ? movedGhost
-                      : null;
-                  return (
-                    <div key={key} className="relative border-l border-[var(--border)]">
-                      {view === "user" ? (
-                        <button
-                          type="button"
-                          aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                          className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
-                          onPointerDown={(evt) => beginCreateDrag(evt, dayIndex)}
-                          onPointerMove={handleGridPointerMove}
-                          onPointerUp={handleGridPointerUp}
-                          onPointerCancel={handleGridPointerCancel}
-                          onClick={(evt) => {
-                            // Swallow the click that trails a completed drag-create.
-                            if (suppressClickRef.current) {
-                              suppressClickRef.current = false;
-                              return;
-                            }
-                            const rect = evt.currentTarget.getBoundingClientRect();
-                            // Keyboard activation (detail === 0) carries no pointer Y — default to the day.
-                            if (evt.detail === 0) {
-                              openUserCreateDialog(day);
-                              return;
-                            }
-                            const yPx = evt.clientY - rect.top;
-                            const snappedMin = Math.max(
-                              0,
-                              Math.floor(((yPx / HOUR_HEIGHT_PX) * 60) / 30) * 30,
-                            );
-                            const clickedDate = new Date(day);
-                            clickedDate.setHours(Math.floor(snappedMin / 60), snappedMin % 60, 0, 0);
-                            openUserCreateDialog(clickedDate);
-                          }}
-                        />
-                      ) : null}
-                      {/* Drag preview (create / move / resize landing in this column). */}
-                      {gridDrag && gridDrag.dayIndex === dayIndex ? (
-                        <div
-                          aria-hidden
-                          data-testid="calendar-drag-preview"
-                          className="pointer-events-none absolute inset-x-0.5 z-20 rounded-[3px] border border-dashed border-[var(--fg)]/60 bg-[var(--fg)]/10"
-                          style={{
-                            top: (gridDrag.startMin / 60) * HOUR_HEIGHT_PX,
-                            height: ((gridDrag.endMin - gridDrag.startMin) / 60) * HOUR_HEIGHT_PX,
-                            minHeight: 16,
-                          }}
-                        >
-                          <span className="block px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-[var(--fg)]">
-                            {formatMinuteLabel(gridDrag.startMin)}–{formatMinuteLabel(gridDrag.endMin)}
-                          </span>
-                        </div>
-                      ) : null}
-                      {/* "Moved" ghost — one-click undo of the last move/resize. */}
-                      {ghost ? (
-                        <button
-                          type="button"
-                          data-testid="calendar-move-ghost"
-                          title="Undo move"
-                          onClick={(evt) => {
-                            evt.stopPropagation();
-                            undoMove();
-                          }}
-                          className="absolute inset-x-0.5 z-20 flex items-center justify-center rounded-[3px] border border-dashed border-[var(--fg)]/40 bg-[var(--bg)]/70 text-[10px] font-medium text-[var(--mfg)] transition-colors hover:text-[var(--fg)]"
-                          style={{
-                            top:
-                              (minuteOfDay(new Date(ghost.prevStartIso)) / 60) * HOUR_HEIGHT_PX,
-                            height: Math.max(
-                              (differenceInMinutes(
-                                new Date(ghost.prevEndIso),
-                                new Date(ghost.prevStartIso),
-                              ) /
-                                60) *
-                                HOUR_HEIGHT_PX,
-                              16,
-                            ),
-                          }}
-                        >
-                          Undo
-                        </button>
-                      ) : null}
-                      {dayEntries.map((entry) => {
-                        const s = new Date(entry.start_at);
-                        const e = new Date(entry.end_at);
-                        const topMin = getHours(s) * 60 + getMinutes(s);
-                        const durationMin = Math.max(differenceInMinutes(e, s), 15);
-                        const topPx = (topMin / 60) * HOUR_HEIGHT_PX;
-                        const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
-                        const paused = isPausedEntry(entry);
-                        const draggable = isGridDraggable(entry);
-                        const isDragSource =
-                          gridDrag &&
-                          gridDrag.mode !== "create" &&
-                          gridDrag.entryId === entry.entry_id;
-                        return (
-                          <button
-                            key={entry.entry_id}
-                            type="button"
-                            data-calendar-entry-id={entry.entry_id}
-                            className={cn(
-                              "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
-                              paused && "opacity-50",
-                              draggable && "cursor-grab touch-none active:cursor-grabbing",
-                              isDragSource && "opacity-40",
-                            )}
-                            style={{ top: topPx, height: heightPx, minHeight: 16 }}
-                            title={`${format(s, "HH:mm")}–${format(e, "HH:mm")} · ${entry.title}`}
-                            onPointerDown={
-                              draggable ? (evt) => beginMoveDrag(evt, entry) : undefined
-                            }
-                            onPointerMove={draggable ? handleGridPointerMove : undefined}
-                            onPointerUp={draggable ? handleGridPointerUp : undefined}
-                            onPointerCancel={draggable ? handleGridPointerCancel : undefined}
-                            onClick={() => {
-                              // Swallow the click that trails a completed move/resize drag.
-                              if (suppressClickRef.current) {
-                                suppressClickRef.current = false;
-                                return;
-                              }
-                              openDetailPanel(entry);
-                            }}
-                          >
-                            <span className="block truncate text-[11px] font-medium leading-tight text-[var(--fg)]">
-                              {entry.title}
-                            </span>
-                            {heightPx >= 32 ? (
-                              <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                                {format(s, "HH:mm")}–{format(e, "HH:mm")}
-                              </span>
-                            ) : null}
-                            {draggable ? (
-                              <span
-                                aria-hidden
-                                data-testid="calendar-resize-handle"
-                                className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize touch-none"
-                                onPointerDown={(evt) => beginResizeDrag(evt, entry, dayIndex)}
-                                onPointerMove={handleGridPointerMove}
-                                onPointerUp={handleGridPointerUp}
-                                onPointerCancel={handleGridPointerCancel}
-                              />
-                            ) : null}
-                          </button>
                         );
                       })}
                     </div>
-                  );
-                })}
-              </div>
+                  </section>
+                ));
+              })()}
             </div>
-          </div>
-        ) : entries.length === 0 ? (
-          <Voice variant="italic" className="text-[var(--mfg)]">
-            No events in this range.
-          </Voice>
-        ) : (
-          /* ---- Agenda list, grouped by day ---- */
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            {(() => {
-              const groups: Array<{ day: string; date: Date; items: UnifiedCalendarEntry[] }> = [];
-              const groupIndex = new Map<string, number>();
-              for (const entry of entries) {
-                const d = new Date(entry.start_at);
-                const dayKey = format(d, "yyyy-MM-dd");
-                let gi = groupIndex.get(dayKey);
-                if (gi === undefined) {
-                  gi = groups.length;
-                  groupIndex.set(dayKey, gi);
-                  groups.push({ day: dayKey, date: startOfDay(d), items: [] });
-                }
-                groups[gi].items.push(entry);
-              }
-              return groups.map((group) => (
-                <section key={group.day} className="mb-6">
-                  <div className="mb-1 flex items-baseline gap-2 border-b border-[var(--border)] pb-1.5">
-                    <Eyebrow className={cn(isToday(group.date) && "text-[var(--fg)]")}>
-                      {format(group.date, "EEE · MMM d")}
-                    </Eyebrow>
-                    {isToday(group.date) ? (
-                      <KindTag className="text-[var(--mfg)]">today</KindTag>
-                    ) : null}
-                  </div>
-                  <div role="list">
-                    {group.items.map((entry) => {
-                      const canMutate =
-                        view === "user" &&
-                        entry.source_type === "provider_event" &&
-                        !!entry.provider_event_id &&
-                        entry.editable;
-                      return (
-                        <Row
-                          key={entry.entry_id}
-                          mark={
-                            <Mono muted className="inline-block w-14 tabular-nums">
-                              {entry.all_day ? "all day" : format(new Date(entry.start_at), "HH:mm")}
-                            </Mono>
-                          }
-                          meta={
-                            <div className="flex items-center gap-1.5">
-                              <PillButton
-                                onClick={() => openDetailPanel(entry)}
-                                disabled={userEventMutation.isPending}
-                              >
-                                Detail
-                              </PillButton>
-                              <PillButton
-                                onClick={() => {
-                                  setDeleteScope(isRecurringUserEntry(entry) ? "this" : "series");
-                                  setDeleteCandidate(entry);
-                                }}
-                                disabled={!canMutate || userEventMutation.isPending}
-                                className="hover:border-[var(--red)] hover:text-[var(--red)]"
-                              >
-                                Delete
-                              </PillButton>
-                            </div>
-                          }
-                        >
-                          <div className="flex min-w-0 items-center gap-2">
-                            {entry.butler_name ? <ButlerMark name={entry.butler_name} /> : null}
-                            <span
-                              className={cn(
-                                "truncate text-sm text-[var(--fg)]",
-                                isCancelledEntry(entry) && "text-[var(--mfg)] line-through",
-                              )}
-                            >
-                              {entry.title}
-                            </span>
-                            {isCancelledEntry(entry) ? (
-                              <KindTag
-                                data-testid="entry-cancelled-tag"
-                                className="text-[var(--red)]"
-                              >
-                                cancelled
-                              </KindTag>
-                            ) : null}
-                            <Mono muted className="hidden truncate sm:inline">
-                              {entry.butler_name ?? entry.source_key}
-                            </Mono>
-                          </div>
-                        </Row>
-                      );
-                    })}
-                  </div>
-                </section>
-              ));
-            })()}
-          </div>
-        )}
-      </div>
+          )}
+        </div>
 
-      {/* Right-docked detail panel */}
-      {selectedEntry ? (
-        <aside
-          data-testid="entry-detail-panel-aside"
-          className="flex min-h-0 w-80 shrink-0 flex-col border-l border-[var(--border)] pl-5 pt-5"
-        >
-          <CalendarEntryDetailPanel
-            key={selectedEntry.entry_id}
-            entry={selectedEntry}
-            onClose={closeDetailPanel}
-            onDelete={(entry) => {
-              setDeleteScope(isRecurringUserEntry(entry) ? "this" : "series");
-              setDeleteCandidate(entry);
-              closeDetailPanel();
-            }}
-            onRecurringEdit={openRecurringEdit}
-            userMutation={userEventMutation}
-            butlerMutation={butlerMutation}
-          />
-        </aside>
-      ) : null}
+        {/* Right-docked detail panel */}
+        {selectedEntry ? (
+          <aside
+            data-testid="entry-detail-panel-aside"
+            className="flex min-h-0 w-80 shrink-0 flex-col border-l border-[var(--border)] pl-5 pt-5"
+          >
+            <CalendarEntryDetailPanel
+              key={selectedEntry.entry_id}
+              entry={selectedEntry}
+              onClose={closeDetailPanel}
+              onDelete={(entry) => {
+                setDeleteScope(isRecurringUserEntry(entry) ? "this" : "series");
+                setDeleteCandidate(entry);
+                closeDetailPanel();
+              }}
+              onRecurringEdit={openRecurringEdit}
+              userMutation={userEventMutation}
+              butlerMutation={butlerMutation}
+            />
+          </aside>
+        ) : null}
       </div>
 
       {searchPaletteOpen ? (
@@ -4506,17 +5094,22 @@ export default function CalendarWorkspacePage() {
           <DialogHeader>
             <DialogTitle>Configure Sources</DialogTitle>
             <DialogDescription>
-              Connected Google accounts and their calendars. Toggle a calendar to
-              enable or disable it as a sync source; a disabled calendar is
+              Connected Google accounts and their calendars. Toggle a calendar
+              to enable or disable it as a sync source; a disabled calendar is
               skipped by sync and hidden from the view.
             </DialogDescription>
           </DialogHeader>
           {(() => {
             const accounts = accountsQuery.data?.data.accounts ?? [];
-            const healthAvailable = accountsQuery.data?.data.health_available ?? true;
+            const healthAvailable =
+              accountsQuery.data?.data.health_available ?? true;
             if (accounts.length === 0) return null;
             return (
-              <div className="mb-3 space-y-1.5" role="list" aria-label="Connected accounts">
+              <div
+                className="mb-3 space-y-1.5"
+                role="list"
+                aria-label="Connected accounts"
+              >
                 <Mono muted className="text-[11px] uppercase tracking-wide">
                   Accounts
                 </Mono>
@@ -4525,9 +5118,13 @@ export default function CalendarWorkspacePage() {
                     key={account.account_id}
                     meta={
                       <span className="inline-flex items-center gap-1.5">
-                        <StateDot state={accountHealthDotState(account.health.state)} />
+                        <StateDot
+                          state={accountHealthDotState(account.health.state)}
+                        />
                         <Mono muted>
-                          {healthAvailable ? account.health.state : "health unavailable"}
+                          {healthAvailable
+                            ? account.health.state
+                            : "health unavailable"}
                         </Mono>
                       </span>
                     }
@@ -4535,9 +5132,15 @@ export default function CalendarWorkspacePage() {
                     <div className="flex min-w-0 items-center gap-2">
                       <span
                         className="truncate text-sm font-medium text-[var(--fg)]"
-                        title={account.email ?? account.display_name ?? account.account_id}
+                        title={
+                          account.email ??
+                          account.display_name ??
+                          account.account_id
+                        }
                       >
-                        {account.email || account.display_name || account.account_id}
+                        {account.email ||
+                          account.display_name ||
+                          account.account_id}
                       </span>
                       {account.is_primary ? (
                         <KindTag className="text-[var(--fg)]">primary</KindTag>
@@ -4567,157 +5170,208 @@ export default function CalendarWorkspacePage() {
             </Voice>
           ) : (
             <div role="list">
-              {[...connectedSources].sort((a, b) => {
-                // Sort: primary first, then user-email calendars, then enabled, then disabled
-                const aPrimary = (a.lane === "user" && a.calendar_id === primaryCalendarId) ? 1 : 0;
-                const bPrimary = (b.lane === "user" && b.calendar_id === primaryCalendarId) ? 1 : 0;
-                if (aPrimary !== bPrimary) return bPrimary - aPrimary;
+              {[...connectedSources]
+                .sort((a, b) => {
+                  // Sort: primary first, then user-email calendars, then enabled, then disabled
+                  const aPrimary =
+                    a.lane === "user" && a.calendar_id === primaryCalendarId
+                      ? 1
+                      : 0;
+                  const bPrimary =
+                    b.lane === "user" && b.calendar_id === primaryCalendarId
+                      ? 1
+                      : 0;
+                  if (aPrimary !== bPrimary) return bPrimary - aPrimary;
 
-                const aIsAcct = (a.provider === "google" && a.calendar_id && googleAccountEmails.has(a.calendar_id)) ? 1 : 0;
-                const bIsAcct = (b.provider === "google" && b.calendar_id && googleAccountEmails.has(b.calendar_id)) ? 1 : 0;
-                if (aIsAcct !== bIsAcct) return bIsAcct - aIsAcct;
+                  const aIsAcct =
+                    a.provider === "google" &&
+                    a.calendar_id &&
+                    googleAccountEmails.has(a.calendar_id)
+                      ? 1
+                      : 0;
+                  const bIsAcct =
+                    b.provider === "google" &&
+                    b.calendar_id &&
+                    googleAccountEmails.has(b.calendar_id)
+                      ? 1
+                      : 0;
+                  if (aIsAcct !== bIsAcct) return bIsAcct - aIsAcct;
 
-                const aOff = disabledSources.has(a.source_key) ? 1 : 0;
-                const bOff = disabledSources.has(b.source_key) ? 1 : 0;
-                return aOff - bOff;
-              }).map((source) => {
-                const isPrimary =
-                  source.lane === "user" &&
-                  source.calendar_id != null &&
-                  source.calendar_id === primaryCalendarId;
-                const canSetPrimary =
-                  source.lane === "user" &&
-                  source.writable &&
-                  source.calendar_id != null &&
-                  source.calendar_id !== primaryCalendarId &&
-                  source.butler_name != null;
-                const isEnabled = !disabledSources.has(source.source_key);
-                const acctEmail = typeof source.metadata?.account_email === "string" ? source.metadata.account_email : undefined;
-                const calIdDisplay = (() => {
-                  if (acctEmail && source.calendar_id && source.calendar_id !== acctEmail) {
-                    return `${acctEmail} ${truncateCalendarId(source.calendar_id)}`;
-                  }
-                  return truncateCalendarId(source.calendar_id ?? source.provider ?? source.source_kind);
-                })();
-
-                return (
-                  <Row
-                    key={source.source_key}
-                    className={cn(!isEnabled && "opacity-50")}
-                    mark={
-                      <Checkbox
-                        checked={isEnabled}
-                        onCheckedChange={() => toggleSourceEnabled(source)}
-                        aria-label={`Toggle ${sourceName(source)}`}
-                      />
+                  const aOff = disabledSources.has(a.source_key) ? 1 : 0;
+                  const bOff = disabledSources.has(b.source_key) ? 1 : 0;
+                  return aOff - bOff;
+                })
+                .map((source) => {
+                  const isPrimary =
+                    source.lane === "user" &&
+                    source.calendar_id != null &&
+                    source.calendar_id === primaryCalendarId;
+                  const canSetPrimary =
+                    source.lane === "user" &&
+                    source.writable &&
+                    source.calendar_id != null &&
+                    source.calendar_id !== primaryCalendarId &&
+                    source.butler_name != null;
+                  const isEnabled = !disabledSources.has(source.source_key);
+                  const acctEmail =
+                    typeof source.metadata?.account_email === "string"
+                      ? source.metadata.account_email
+                      : undefined;
+                  const calIdDisplay = (() => {
+                    if (
+                      acctEmail &&
+                      source.calendar_id &&
+                      source.calendar_id !== acctEmail
+                    ) {
+                      return `${acctEmail} ${truncateCalendarId(source.calendar_id)}`;
                     }
-                    meta={
-                      <div className="flex items-center gap-1.5">
-                        {canSetPrimary ? (
-                          <PillButton
-                            onClick={() => {
-                              primaryMutation.mutate(
-                                {
-                                  butler_name: source.butler_name!,
-                                  calendar_id: source.calendar_id!,
-                                },
-                                {
-                                  onSuccess: (response) => {
-                                    if (response.data.persisted === false) {
-                                      toast.error(
-                                        "Failed to set primary: change was not persisted",
-                                      );
-                                      return;
-                                    }
-                                    toast.success("Primary calendar updated");
+                    return truncateCalendarId(
+                      source.calendar_id ??
+                        source.provider ??
+                        source.source_kind,
+                    );
+                  })();
+
+                  return (
+                    <Row
+                      key={source.source_key}
+                      className={cn(!isEnabled && "opacity-50")}
+                      mark={
+                        <Checkbox
+                          checked={isEnabled}
+                          onCheckedChange={() => toggleSourceEnabled(source)}
+                          aria-label={`Toggle ${sourceName(source)}`}
+                        />
+                      }
+                      meta={
+                        <div className="flex items-center gap-1.5">
+                          {canSetPrimary ? (
+                            <PillButton
+                              onClick={() => {
+                                primaryMutation.mutate(
+                                  {
+                                    butler_name: source.butler_name!,
+                                    calendar_id: source.calendar_id!,
                                   },
-                                  onError: (err) =>
-                                    toast.error(`Failed to set primary: ${err.message}`),
-                                },
-                              );
-                            }}
-                            disabled={primaryMutation.isPending}
+                                  {
+                                    onSuccess: (response) => {
+                                      if (response.data.persisted === false) {
+                                        toast.error(
+                                          "Failed to set primary: change was not persisted",
+                                        );
+                                        return;
+                                      }
+                                      toast.success("Primary calendar updated");
+                                    },
+                                    onError: (err) =>
+                                      toast.error(
+                                        `Failed to set primary: ${err.message}`,
+                                      ),
+                                  },
+                                );
+                              }}
+                              disabled={primaryMutation.isPending}
+                            >
+                              Set as primary
+                            </PillButton>
+                          ) : null}
+                          <PillButton
+                            onClick={() => handleSyncSource(source)}
+                            disabled={
+                              syncMutation.isPending || !source.butler_name
+                            }
                           >
-                            Set as primary
+                            {syncingSourceKey === source.source_key
+                              ? "Syncing..."
+                              : "Sync now"}
                           </PillButton>
-                        ) : null}
-                        <PillButton
-                          onClick={() => handleSyncSource(source)}
-                          disabled={syncMutation.isPending || !source.butler_name}
-                        >
-                          {syncingSourceKey === source.source_key ? "Syncing..." : "Sync now"}
-                        </PillButton>
-                        <PillButton
-                          onClick={() => handleSyncSource(source, { full: true })}
-                          disabled={syncMutation.isPending || !source.butler_name}
-                          title="Full re-sync from scratch (cursor recovery)"
-                        >
-                          Recover
-                        </PillButton>
-                        {source.error_kind === "token_expired" ||
-                        source.error_kind === "auth" ? (
-                          <Link
-                            to="/ingestion?tab=connectors"
-                            className="inline-flex items-center rounded-[3px] border border-[var(--red)] px-2 py-0.5 text-[11px] font-medium text-[var(--red)] transition-colors hover:bg-[var(--red)]/10"
-                            title="This source needs re-authorization"
+                          <PillButton
+                            onClick={() =>
+                              handleSyncSource(source, { full: true })
+                            }
+                            disabled={
+                              syncMutation.isPending || !source.butler_name
+                            }
+                            title="Full re-sync from scratch (cursor recovery)"
                           >
-                            Reconnect
-                          </Link>
-                        ) : null}
-                      </div>
-                    }
-                  >
-                    <div className="flex min-w-0 flex-col gap-1">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {source.butler_name ? <ButlerMark name={source.butler_name} /> : null}
-                        <span
-                          className="truncate text-sm font-medium text-[var(--fg)]"
-                          title={sourceName(source)}
-                        >
-                          {sourceName(source)}
-                        </span>
-                        {isPrimary ? <KindTag className="text-[var(--fg)]">primary</KindTag> : null}
-                        <KindTag>{source.lane}</KindTag>
-                      </div>
-                      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                        <span className="min-w-0 max-w-full truncate" title={source.calendar_id ?? undefined}>
-                          <Mono muted>{calIdDisplay}</Mono>
-                        </span>
-                        <span className="inline-flex items-center gap-1.5">
-                          <StateDot state={syncDotState(source.sync_state)} />
-                          <Mono muted>{source.sync_state}</Mono>
-                        </span>
-                        <Mono muted>
-                          {formatStaleness(source.staleness_ms)}
-                          {formatOptionalTimestamp(source.last_success_at)
-                            ? ` \u00b7 ${formatOptionalTimestamp(source.last_success_at)}`
-                            : ""}
-                        </Mono>
-                        {source.last_error ? (
+                            Recover
+                          </PillButton>
+                          {source.error_kind === "token_expired" ||
+                          source.error_kind === "auth" ? (
+                            <Link
+                              to="/ingestion?tab=connectors"
+                              className="inline-flex items-center rounded-[3px] border border-[var(--red)] px-2 py-0.5 text-[11px] font-medium text-[var(--red)] transition-colors hover:bg-[var(--red)]/10"
+                              title="This source needs re-authorization"
+                            >
+                              Reconnect
+                            </Link>
+                          ) : null}
+                        </div>
+                      }
+                    >
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <div className="flex min-w-0 items-center gap-2">
+                          {source.butler_name ? (
+                            <ButlerMark name={source.butler_name} />
+                          ) : null}
                           <span
-                            className="inline-flex min-w-0 items-center gap-1.5"
-                            title={source.last_error}
+                            className="truncate text-sm font-medium text-[var(--fg)]"
+                            title={sourceName(source)}
                           >
-                            <StateDot state="error" />
-                            {source.error_kind && source.error_kind !== "none" ? (
-                              <KindTag className="text-[var(--red)]">
-                                {source.error_kind}
-                              </KindTag>
-                            ) : null}
-                            <span className="max-w-[16rem] truncate text-[11px] text-[var(--red)]">
-                              {source.last_error}
-                            </span>
+                            {sourceName(source)}
                           </span>
-                        ) : null}
+                          {isPrimary ? (
+                            <KindTag className="text-[var(--fg)]">
+                              primary
+                            </KindTag>
+                          ) : null}
+                          <KindTag>{source.lane}</KindTag>
+                        </div>
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                          <span
+                            className="min-w-0 max-w-full truncate"
+                            title={source.calendar_id ?? undefined}
+                          >
+                            <Mono muted>{calIdDisplay}</Mono>
+                          </span>
+                          <span className="inline-flex items-center gap-1.5">
+                            <StateDot state={syncDotState(source.sync_state)} />
+                            <Mono muted>{source.sync_state}</Mono>
+                          </span>
+                          <Mono muted>
+                            {formatStaleness(source.staleness_ms)}
+                            {formatOptionalTimestamp(source.last_success_at)
+                              ? ` \u00b7 ${formatOptionalTimestamp(source.last_success_at)}`
+                              : ""}
+                          </Mono>
+                          {source.last_error ? (
+                            <span
+                              className="inline-flex min-w-0 items-center gap-1.5"
+                              title={source.last_error}
+                            >
+                              <StateDot state="error" />
+                              {source.error_kind &&
+                              source.error_kind !== "none" ? (
+                                <KindTag className="text-[var(--red)]">
+                                  {source.error_kind}
+                                </KindTag>
+                              ) : null}
+                              <span className="max-w-[16rem] truncate text-[11px] text-[var(--red)]">
+                                {source.last_error}
+                              </span>
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  </Row>
-                );
-              })}
+                    </Row>
+                  );
+                })}
             </div>
           )}
           <DialogFooter>
-            <PillButton onClick={() => setSourcesDialogOpen(false)}>Close</PillButton>
+            <PillButton onClick={() => setSourcesDialogOpen(false)}>
+              Close
+            </PillButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4736,7 +5390,9 @@ export default function CalendarWorkspacePage() {
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>
-              {userEventDialogMode === "create" ? "Create user event" : "Edit user event"}
+              {userEventDialogMode === "create"
+                ? "Create user event"
+                : "Edit user event"}
             </DialogTitle>
             <DialogDescription>
               {userEventDialogMode === "create"
@@ -4757,13 +5413,18 @@ export default function CalendarWorkspacePage() {
                   value={userEventForm.sourceKey}
                   onChange={(event) =>
                     setUserEventForm((current) =>
-                      current ? { ...current, sourceKey: event.target.value } : current,
+                      current
+                        ? { ...current, sourceKey: event.target.value }
+                        : current,
                     )
                   }
                   disabled={userEventMutation.isPending}
                 >
                   {submittableCalendars.map((calendar) => (
-                    <option key={calendar.source_key} value={calendar.source_key}>
+                    <option
+                      key={calendar.source_key}
+                      value={calendar.source_key}
+                    >
                       {calendar.display_name || calendar.calendar_id}
                     </option>
                   ))}
@@ -4779,7 +5440,9 @@ export default function CalendarWorkspacePage() {
                   value={userEventForm.title}
                   onChange={(event) =>
                     setUserEventForm((current) =>
-                      current ? { ...current, title: event.target.value } : current,
+                      current
+                        ? { ...current, title: event.target.value }
+                        : current,
                     )
                   }
                   disabled={userEventMutation.isPending}
@@ -4797,7 +5460,9 @@ export default function CalendarWorkspacePage() {
                     value={userEventForm.startAtLocal}
                     onChange={(event) =>
                       setUserEventForm((current) =>
-                        current ? { ...current, startAtLocal: event.target.value } : current,
+                        current
+                          ? { ...current, startAtLocal: event.target.value }
+                          : current,
                       )
                     }
                     disabled={userEventMutation.isPending}
@@ -4813,7 +5478,9 @@ export default function CalendarWorkspacePage() {
                     value={userEventForm.endAtLocal}
                     onChange={(event) =>
                       setUserEventForm((current) =>
-                        current ? { ...current, endAtLocal: event.target.value } : current,
+                        current
+                          ? { ...current, endAtLocal: event.target.value }
+                          : current,
                       )
                     }
                     disabled={userEventMutation.isPending}
@@ -4830,7 +5497,9 @@ export default function CalendarWorkspacePage() {
                   value={userEventForm.timezone}
                   onChange={(event) =>
                     setUserEventForm((current) =>
-                      current ? { ...current, timezone: event.target.value } : current,
+                      current
+                        ? { ...current, timezone: event.target.value }
+                        : current,
                     )
                   }
                   disabled={userEventMutation.isPending}
@@ -4838,7 +5507,10 @@ export default function CalendarWorkspacePage() {
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="event-description" className="text-sm font-medium">
+                <label
+                  htmlFor="event-description"
+                  className="text-sm font-medium"
+                >
                   Description
                 </label>
                 <Textarea
@@ -4846,7 +5518,9 @@ export default function CalendarWorkspacePage() {
                   value={userEventForm.description}
                   onChange={(event) =>
                     setUserEventForm((current) =>
-                      current ? { ...current, description: event.target.value } : current,
+                      current
+                        ? { ...current, description: event.target.value }
+                        : current,
                     )
                   }
                   className="min-h-20"
@@ -4863,7 +5537,9 @@ export default function CalendarWorkspacePage() {
                   value={userEventForm.location}
                   onChange={(event) =>
                     setUserEventForm((current) =>
-                      current ? { ...current, location: event.target.value } : current,
+                      current
+                        ? { ...current, location: event.target.value }
+                        : current,
                     )
                   }
                   disabled={userEventMutation.isPending}
@@ -4879,7 +5555,8 @@ export default function CalendarWorkspacePage() {
                   {/* Amber chip */}
                   <div className="flex items-center gap-2">
                     <span className="inline-flex items-center rounded-full bg-[var(--amber,#f59e0b)] px-2.5 py-0.5 text-xs font-medium text-white">
-                      Overlaps {userEventConflict.conflicts.length} event{userEventConflict.conflicts.length !== 1 ? "s" : ""}
+                      Overlaps {userEventConflict.conflicts.length} event
+                      {userEventConflict.conflicts.length !== 1 ? "s" : ""}
                     </span>
                   </div>
 
@@ -4887,11 +5564,17 @@ export default function CalendarWorkspacePage() {
                   {userEventConflict.conflicts.length > 0 ? (
                     <ul className="space-y-1">
                       {userEventConflict.conflicts.slice(0, 3).map((c) => (
-                        <li key={c.event_id} className="flex items-baseline gap-2 text-sm opacity-60">
+                        <li
+                          key={c.event_id}
+                          className="flex items-baseline gap-2 text-sm opacity-60"
+                        >
                           <span className="w-1.5 h-1.5 rounded-full bg-current shrink-0 mt-1.5" />
-                          <span className="min-w-0 truncate font-medium">{c.title}</span>
+                          <span className="min-w-0 truncate font-medium">
+                            {c.title}
+                          </span>
                           <span className="shrink-0 tabular-nums text-xs">
-                            {format(parseISO(c.start_at), "h:mm a")}–{format(parseISO(c.end_at), "h:mm a")}
+                            {format(parseISO(c.start_at), "h:mm a")}–
+                            {format(parseISO(c.end_at), "h:mm a")}
                           </span>
                         </li>
                       ))}
@@ -4901,30 +5584,40 @@ export default function CalendarWorkspacePage() {
                   {/* Suggested-slot pills */}
                   {userEventConflict.suggested_slots.length > 0 ? (
                     <div className="space-y-1.5">
-                      <p className="text-xs font-medium opacity-70">Suggested times:</p>
+                      <p className="text-xs font-medium opacity-70">
+                        Suggested times:
+                      </p>
                       <div className="flex flex-wrap gap-2">
-                        {userEventConflict.suggested_slots.slice(0, 3).map((slot, idx) => {
-                          const originalDay = format(
-                            parseISO(userEventConflict.pendingMutation.payload.start_at as string),
-                            "yyyy-MM-dd",
-                          );
-                          const slotDay = format(parseISO(slot.start_at), "yyyy-MM-dd");
-                          const isDifferentDay = slotDay !== originalDay;
-                          return (
-                            <button
-                              key={idx}
-                              type="button"
-                              data-testid="conflict-slot-pill"
-                              onClick={() => submitConflictSlot(slot)}
-                              disabled={userEventMutation.isPending}
-                              className="rounded-full border border-[var(--amber,#f59e0b)] px-3 py-1 text-xs font-medium hover:bg-[color-mix(in_srgb,var(--amber,#f59e0b)_15%,transparent)] transition-colors disabled:opacity-40"
-                            >
-                              {isDifferentDay
-                                ? `${format(parseISO(slot.start_at), "MMM d, h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`
-                                : `${format(parseISO(slot.start_at), "h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`}
-                            </button>
-                          );
-                        })}
+                        {userEventConflict.suggested_slots
+                          .slice(0, 3)
+                          .map((slot, idx) => {
+                            const originalDay = format(
+                              parseISO(
+                                userEventConflict.pendingMutation.payload
+                                  .start_at as string,
+                              ),
+                              "yyyy-MM-dd",
+                            );
+                            const slotDay = format(
+                              parseISO(slot.start_at),
+                              "yyyy-MM-dd",
+                            );
+                            const isDifferentDay = slotDay !== originalDay;
+                            return (
+                              <button
+                                key={idx}
+                                type="button"
+                                data-testid="conflict-slot-pill"
+                                onClick={() => submitConflictSlot(slot)}
+                                disabled={userEventMutation.isPending}
+                                className="rounded-full border border-[var(--amber,#f59e0b)] px-3 py-1 text-xs font-medium hover:bg-[color-mix(in_srgb,var(--amber,#f59e0b)_15%,transparent)] transition-colors disabled:opacity-40"
+                              >
+                                {isDifferentDay
+                                  ? `${format(parseISO(slot.start_at), "MMM d, h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`
+                                  : `${format(parseISO(slot.start_at), "h:mm a")} – ${format(parseISO(slot.end_at), "h:mm a")}`}
+                              </button>
+                            );
+                          })}
                       </div>
                     </div>
                   ) : null}
@@ -4949,7 +5642,10 @@ export default function CalendarWorkspacePage() {
                 >
                   Cancel
                 </PillButton>
-                <CommitButton type="submit" disabled={userEventMutation.isPending}>
+                <CommitButton
+                  type="submit"
+                  disabled={userEventMutation.isPending}
+                >
                   {userEventMutation.isPending
                     ? "Saving..."
                     : userEventDialogMode === "create"
@@ -4962,14 +5658,20 @@ export default function CalendarWorkspacePage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={butlerEventDialogOpen} onOpenChange={closeButlerEventDialog}>
+      <Dialog
+        open={butlerEventDialogOpen}
+        onOpenChange={closeButlerEventDialog}
+      >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              {butlerEventDialogMode === "create" ? "Create butler event" : "Edit butler event"}
+              {butlerEventDialogMode === "create"
+                ? "Create butler event"
+                : "Edit butler event"}
             </DialogTitle>
             <DialogDescription>
-              Create or update schedule/reminder events in butler lanes, including recurring-until boundaries.
+              Create or update schedule/reminder events in butler lanes,
+              including recurring-until boundaries.
             </DialogDescription>
           </DialogHeader>
 
@@ -4977,7 +5679,12 @@ export default function CalendarWorkspacePage() {
             <div className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <label htmlFor="calendar-butler-name" className="text-sm font-medium">Butler lane</label>
+                  <label
+                    htmlFor="calendar-butler-name"
+                    className="text-sm font-medium"
+                  >
+                    Butler lane
+                  </label>
                   <select
                     id="calendar-butler-name"
                     value={butlerEventDraft.butlerName}
@@ -4994,7 +5701,9 @@ export default function CalendarWorkspacePage() {
                     }
                     className={FIELD_SELECT_CLASS}
                   >
-                    {availableButlers.length === 0 ? <option value="">No butlers available</option> : null}
+                    {availableButlers.length === 0 ? (
+                      <option value="">No butlers available</option>
+                    ) : null}
                     {availableButlers.map((butlerName) => (
                       <option key={butlerName} value={butlerName}>
                         {formatLaneTitle(butlerName)}
@@ -5004,7 +5713,12 @@ export default function CalendarWorkspacePage() {
                 </div>
 
                 <div className="space-y-2">
-                  <label htmlFor="calendar-event-kind" className="text-sm font-medium">Event type</label>
+                  <label
+                    htmlFor="calendar-event-kind"
+                    className="text-sm font-medium"
+                  >
+                    Event type
+                  </label>
                   <select
                     id="calendar-event-kind"
                     value={butlerEventDraft.eventKind}
@@ -5028,7 +5742,12 @@ export default function CalendarWorkspacePage() {
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="calendar-event-title" className="text-sm font-medium">Title</label>
+                <label
+                  htmlFor="calendar-event-title"
+                  className="text-sm font-medium"
+                >
+                  Title
+                </label>
                 <Input
                   id="calendar-event-title"
                   value={butlerEventDraft.title}
@@ -5049,7 +5768,12 @@ export default function CalendarWorkspacePage() {
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <label htmlFor="calendar-start-at" className="text-sm font-medium">Start</label>
+                  <label
+                    htmlFor="calendar-start-at"
+                    className="text-sm font-medium"
+                  >
+                    Start
+                  </label>
                   <Input
                     id="calendar-start-at"
                     type="datetime-local"
@@ -5068,7 +5792,12 @@ export default function CalendarWorkspacePage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label htmlFor="calendar-timezone" className="text-sm font-medium">Timezone</label>
+                  <label
+                    htmlFor="calendar-timezone"
+                    className="text-sm font-medium"
+                  >
+                    Timezone
+                  </label>
                   <Input
                     id="calendar-timezone"
                     value={butlerEventDraft.timezone}
@@ -5090,7 +5819,12 @@ export default function CalendarWorkspacePage() {
               {butlerEventDraft.eventKind === "scheduled_task" ? (
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
-                    <label htmlFor="calendar-end-at" className="text-sm font-medium">End</label>
+                    <label
+                      htmlFor="calendar-end-at"
+                      className="text-sm font-medium"
+                    >
+                      End
+                    </label>
                     <Input
                       id="calendar-end-at"
                       type="datetime-local"
@@ -5109,7 +5843,12 @@ export default function CalendarWorkspacePage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <label htmlFor="calendar-cron" className="text-sm font-medium">Cron (optional)</label>
+                    <label
+                      htmlFor="calendar-cron"
+                      className="text-sm font-medium"
+                    >
+                      Cron (optional)
+                    </label>
                     <Input
                       id="calendar-cron"
                       value={butlerEventDraft.cron}
@@ -5132,7 +5871,12 @@ export default function CalendarWorkspacePage() {
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <label htmlFor="calendar-frequency" className="text-sm font-medium">Recurrence</label>
+                  <label
+                    htmlFor="calendar-frequency"
+                    className="text-sm font-medium"
+                  >
+                    Recurrence
+                  </label>
                   <select
                     id="calendar-frequency"
                     value={butlerEventDraft.recurrenceFrequency}
@@ -5141,7 +5885,8 @@ export default function CalendarWorkspacePage() {
                         current
                           ? {
                               ...current,
-                              recurrenceFrequency: event.target.value as RecurrenceFrequency,
+                              recurrenceFrequency: event.target
+                                .value as RecurrenceFrequency,
                             }
                           : current,
                       )
@@ -5183,7 +5928,12 @@ export default function CalendarWorkspacePage() {
 
               {butlerEventDraft.hasUntilAt ? (
                 <div className="space-y-2">
-                  <label htmlFor="calendar-until-at" className="text-sm font-medium">Until</label>
+                  <label
+                    htmlFor="calendar-until-at"
+                    className="text-sm font-medium"
+                  >
+                    Until
+                  </label>
                   <Input
                     id="calendar-until-at"
                     type="datetime-local"
@@ -5208,19 +5958,26 @@ export default function CalendarWorkspacePage() {
                   data-testid="recurrence-preview"
                   className="space-y-1.5 rounded-[3px] border border-[var(--border)] p-3"
                 >
-                  <Eyebrow>Preview ({Intl.DateTimeFormat().resolvedOptions().timeZone})</Eyebrow>
+                  <Eyebrow>
+                    Preview ({Intl.DateTimeFormat().resolvedOptions().timeZone})
+                  </Eyebrow>
                   {recurrencePreview.isError ? (
                     <p className="text-sm text-[var(--mfg)]">
-                      Couldn’t preview this recurrence — check the rule or cron expression.
+                      Couldn’t preview this recurrence — check the rule or cron
+                      expression.
                     </p>
                   ) : recurrencePreviewData ? (
                     recurrencePreviewData.occurrences.length === 0 ? (
-                      <p className="text-sm text-[var(--mfg)]">No occurrences in the next 90 days.</p>
+                      <p className="text-sm text-[var(--mfg)]">
+                        No occurrences in the next 90 days.
+                      </p>
                     ) : (
                       <>
                         <ul className="space-y-0.5 text-sm tabular-nums text-[var(--fg)]">
                           {recurrencePreviewData.occurrences.map((iso) => (
-                            <li key={iso}>{format(parseISO(iso), "EEE, MMM d · h:mm a")}</li>
+                            <li key={iso}>
+                              {format(parseISO(iso), "EEE, MMM d · h:mm a")}
+                            </li>
                           ))}
                         </ul>
                         {recurrencePreviewData.more_count > 0 ? (
@@ -5277,7 +6034,10 @@ export default function CalendarWorkspacePage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!deleteCandidate} onOpenChange={(open) => (!open ? setDeleteCandidate(null) : null)}>
+      <Dialog
+        open={!!deleteCandidate}
+        onOpenChange={(open) => (!open ? setDeleteCandidate(null) : null)}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete Event</DialogTitle>
@@ -5295,14 +6055,20 @@ export default function CalendarWorkspacePage() {
               scope={deleteScope}
               onChange={setDeleteScope}
               impacts={{
-                this: occurrenceImpactText(entries, deleteCandidate.provider_event_id),
+                this: occurrenceImpactText(
+                  entries,
+                  deleteCandidate.provider_event_id,
+                ),
                 following: "Removes this occurrence and every later one.",
                 series: "Deletes the entire recurring series.",
               }}
             />
           ) : null}
           <DialogFooter>
-            <PillButton onClick={() => setDeleteCandidate(null)} disabled={userEventMutation.isPending}>
+            <PillButton
+              onClick={() => setDeleteCandidate(null)}
+              disabled={userEventMutation.isPending}
+            >
               Cancel
             </PillButton>
             <PillButton
@@ -5337,7 +6103,10 @@ export default function CalendarWorkspacePage() {
               scope={editScope}
               onChange={setEditScope}
               impacts={{
-                this: occurrenceImpactText(entries, recurringEdit.entry.provider_event_id),
+                this: occurrenceImpactText(
+                  entries,
+                  recurringEdit.entry.provider_event_id,
+                ),
                 following: "Updates this occurrence and every later one.",
                 series: "Updates the entire recurring series.",
               }}
@@ -5350,7 +6119,10 @@ export default function CalendarWorkspacePage() {
             >
               Cancel
             </PillButton>
-            <CommitButton onClick={confirmRecurringEdit} disabled={userEventMutation.isPending}>
+            <CommitButton
+              onClick={confirmRecurringEdit}
+              disabled={userEventMutation.isPending}
+            >
               {userEventMutation.isPending ? "Saving..." : "Save changes"}
             </CommitButton>
           </DialogFooter>

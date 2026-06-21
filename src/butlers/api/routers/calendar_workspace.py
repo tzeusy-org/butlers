@@ -1330,10 +1330,10 @@ async def search_workspace(
 
     if not q.strip():
         return ApiResponse[CalendarWorkspaceSearchResponse](
-            data=CalendarWorkspaceSearchResponse(entries=[])
+            data=CalendarWorkspaceSearchResponse(entries=[], available=True)
         )
 
-    matches = await query_calendar_event_search(
+    results = await query_calendar_event_search(
         db,
         q=q,
         view=view,
@@ -1343,14 +1343,14 @@ async def search_workspace(
     )
 
     entries: list[UnifiedCalendarEntry] = []
-    for match in matches:
+    for match in results.matches:
         row = dataclasses.asdict(match.row)
         try:
             entries.append(_normalize_entry(row, view=view, display_tz=display_tz))
         except ValueError:
             continue
 
-    data = CalendarWorkspaceSearchResponse(entries=entries)
+    data = CalendarWorkspaceSearchResponse(entries=entries, available=results.available)
     return ApiResponse[CalendarWorkspaceSearchResponse](data=data)
 
 
@@ -2463,10 +2463,15 @@ async def find_time(
             slots=slots,
             duration_minutes=body.duration_minutes,
             calendar_ids=calendar_ids,
+            available=True,
         )
         await log_audit_entry(db, body.butler_name, "calendar.workspace.find_time", summary)
         return ApiResponse[CalendarWorkspaceFindTimeResponse](data=response_payload)
-    except HTTPException:
+    except HTTPException as exc:
+        # Fail-open + explicit-degraded: a free/busy lookup that cannot reach the
+        # butler must NOT 500 the panel. Return an honest degraded envelope so the
+        # UI renders "free/busy unavailable" instead of a misleading "no slots".
+        reason = exc.detail if isinstance(exc.detail, str) else "free/busy lookup unavailable"
         await log_audit_entry(
             db,
             body.butler_name,
@@ -2475,7 +2480,15 @@ async def find_time(
             result="error",
             error="MCP call failed",
         )
-        raise
+        return ApiResponse[CalendarWorkspaceFindTimeResponse](
+            data=CalendarWorkspaceFindTimeResponse(
+                slots=[],
+                duration_minutes=body.duration_minutes,
+                calendar_ids=list(body.calendar_ids or []),
+                available=False,
+                reason=reason,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.routers.calendar_workspace import _get_db_manager
 
 
@@ -1854,6 +1854,70 @@ async def test_find_time_rejects_inverted_window(app):
             },
         )
     assert resp.status_code == 422
+
+
+async def test_find_time_degrades_open_when_butler_unreachable(app):
+    """Fault injection: an unreachable free/busy source must NOT 500 the panel.
+
+    The endpoint follows the fail-open + explicit-degraded convention — it
+    returns HTTP 200 with ``available=false``, an empty ``slots`` list, and a
+    human-readable ``reason`` so the UI renders "free/busy unavailable" rather
+    than a misleading "no open slots".
+    """
+    app, _, mock_mgr = _build_app(app)
+    mock_mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("general"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/find-time",
+            json={
+                "butler_name": "general",
+                "duration_minutes": 60,
+                "search_start": "2026-06-22T08:00:00Z",
+                "search_end": "2026-06-22T18:00:00Z",
+                "calendar_ids": ["primary"],
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["available"] is False
+    assert data["slots"] == []
+    assert data["duration_minutes"] == 60
+    assert data["calendar_ids"] == ["primary"]
+    assert isinstance(data["reason"], str) and data["reason"]
+
+
+async def test_find_time_available_true_on_success(app):
+    """Honest success: a reachable lookup returns ``available=true``."""
+    mcp_result = {"slots": [], "duration_minutes": 30, "calendar_ids": ["primary"]}
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
+
+    app, _, mock_mgr = _build_app(app)
+    mock_mgr.get_client = AsyncMock(return_value=mock_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/find-time",
+            json={
+                "butler_name": "general",
+                "duration_minutes": 30,
+                "search_start": "2026-06-22T08:00:00Z",
+                "search_end": "2026-06-22T18:00:00Z",
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # available=true with empty slots = genuinely no gap, not a degraded source.
+    assert data["available"] is True
+    assert data["slots"] == []
+    assert data["reason"] is None
 
 
 # ---------------------------------------------------------------------------

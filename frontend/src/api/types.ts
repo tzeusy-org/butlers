@@ -118,7 +118,11 @@ export interface ModuleStatus {
 export interface ButlerDetail extends ButlerSummary {
   db_name?: string | null;
   db_schema?: string | null;
-  modules: { name: string; enabled: boolean; config?: Record<string, unknown> | null }[];
+  modules: {
+    name: string;
+    enabled: boolean;
+    config?: Record<string, unknown> | null;
+  }[];
   schedules: { name: string; cron: string; prompt?: string | null }[];
   skills: string[];
   /** Process facts card data for the Overview tab. Null when detail extension is unavailable. */
@@ -488,7 +492,10 @@ export type CalendarWorkspaceView = "user" | "butler";
  * latter projects precomputed cross-domain overlay contributions). Overlays are
  * fetched as an additive layer, not a primary view mode.
  */
-export type CalendarWorkspaceQueryView = CalendarWorkspaceView | "proposals" | "overlays";
+export type CalendarWorkspaceQueryView =
+  | CalendarWorkspaceView
+  | "proposals"
+  | "overlays";
 
 /** Unified source categories for calendar entries. */
 export type UnifiedCalendarSourceType =
@@ -500,7 +507,11 @@ export type UnifiedCalendarSourceType =
   | "overlay_contribution";
 
 /** Freshness state returned by workspace source metadata. */
-export type CalendarWorkspaceSyncState = "fresh" | "stale" | "syncing" | "failed";
+export type CalendarWorkspaceSyncState =
+  | "fresh"
+  | "stale"
+  | "syncing"
+  | "failed";
 
 /** Normalized event row returned by GET /api/calendar/workspace. */
 export interface UnifiedCalendarEntry {
@@ -736,7 +747,11 @@ export interface CalendarWorkspaceMetaResponse {
 }
 
 /** Per-account Google Calendar connector health state. */
-export type CalendarAccountHealthState = "healthy" | "degraded" | "error" | "unknown";
+export type CalendarAccountHealthState =
+  | "healthy"
+  | "degraded"
+  | "error"
+  | "unknown";
 
 /** Per-account Google Calendar connector health. */
 export interface CalendarAccountHealth {
@@ -835,6 +850,12 @@ export interface CalendarWorkspaceSearchParams {
 /** Response payload for GET /api/calendar/workspace/search. */
 export interface CalendarWorkspaceSearchResponse {
   entries: UnifiedCalendarEntry[];
+  /**
+   * Honest degraded signal (fail-open). `false` only when every calendar schema
+   * failed to respond, so `entries` is empty because the search could not run —
+   * NOT because nothing matched. Render "search unavailable", not "no results".
+   */
+  available: boolean;
 }
 
 /** Request payload for POST /api/calendar/workspace/sync. */
@@ -874,7 +895,10 @@ export interface CalendarWorkspaceSyncResponse {
 }
 
 /** Allowed mutation actions for user-view calendar events. */
-export type CalendarWorkspaceUserMutationAction = "create" | "update" | "delete";
+export type CalendarWorkspaceUserMutationAction =
+  | "create"
+  | "update"
+  | "delete";
 
 /** Allowed actions for butler-lane event mutations. */
 export type CalendarWorkspaceButlerMutationAction =
@@ -936,11 +960,22 @@ export interface CalendarWorkspaceFindTimeResponse {
   slots: CalendarSuggestedSlot[];
   duration_minutes: number;
   calendar_ids: string[];
+  /**
+   * Honest degraded signal (fail-open). `false` when the cross-source free/busy
+   * lookup could not run (butler unreachable); `slots` is then empty because
+   * nothing was checked — NOT because the calendar is open. Render "free/busy
+   * unavailable" with `reason`, not "no open slots".
+   */
+  available: boolean;
+  /** Human-readable explanation when `available` is `false`. */
+  reason: string | null;
 }
 
 /** Response payload for calendar workspace mutation endpoints. */
 export interface CalendarWorkspaceMutationResponse {
-  action: CalendarWorkspaceUserMutationAction | CalendarWorkspaceButlerMutationAction;
+  action:
+    | CalendarWorkspaceUserMutationAction
+    | CalendarWorkspaceButlerMutationAction;
   tool_name: string;
   request_id: string | null;
   result: Record<string, unknown>;
@@ -2704,7 +2739,13 @@ export interface SecretUpsertRequest {
 }
 
 /** Known secret categories for grouping. */
-export type SecretCategory = "core" | "telegram" | "email" | "google" | "gemini" | "general";
+export type SecretCategory =
+  | "core"
+  | "telegram"
+  | "email"
+  | "google"
+  | "gemini"
+  | "general";
 
 /** Predefined secret key templates with descriptions and auto-detected categories. */
 export interface SecretTemplate {
@@ -2846,7 +2887,7 @@ export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
   liveness: string; // "online" | "stale" | "offline"
-  state: string;    // "healthy" | "degraded" | "error"
+  state: string; // "healthy" | "degraded" | "error"
   error_message: string | null;
   version: string | null;
   uptime_s: number | null;
@@ -2874,7 +2915,13 @@ export interface ConnectorScopeEntry {
 
 /** Auth block from connector-oauth-scope-surface backend. */
 export interface ConnectorAuthBlock {
-  status: "ok" | "degraded" | "expired" | "rotation-needed" | "unsupported" | "unconfigured";
+  status:
+    | "ok"
+    | "degraded"
+    | "expired"
+    | "rotation-needed"
+    | "unsupported"
+    | "unconfigured";
   type: string;
   note: string | null;
   expires_at: string | null;
@@ -3663,7 +3710,13 @@ export interface ConnectorRoutingRulesResponse {
 // ---------------------------------------------------------------------------
 
 /** Valid complexity tier values for the model catalog (canonical six). */
-export type ComplexityTier = "reasoning" | "workhorse" | "cheap" | "specialty" | "local" | "legacy";
+export type ComplexityTier =
+  | "reasoning"
+  | "workhorse"
+  | "cheap"
+  | "specialty"
+  | "local"
+  | "legacy";
 
 /** Per-model pricing (USD per 1M tokens). Keyed by model_id. */
 export interface ModelPricingEntry {
@@ -4004,7 +4057,10 @@ export interface OwnTracksTokenResponse {
 // ---------------------------------------------------------------------------
 
 /** Connection state for the Home Assistant integration. */
-export type HomeAssistantState = "connected" | "disconnected" | "not_configured";
+export type HomeAssistantState =
+  | "connected"
+  | "disconnected"
+  | "not_configured";
 
 /** Response from GET /api/settings/home-assistant */
 export interface HomeAssistantStatusResponse {
@@ -6216,7 +6272,10 @@ export interface LatencyStatsParams {
 // ---------------------------------------------------------------------------
 
 /** Discriminated event type for activity feed entries. */
-export type ActivityEventType = "session_completed" | "approval_raised" | "memory_write";
+export type ActivityEventType =
+  | "session_completed"
+  | "approval_raised"
+  | "memory_write";
 
 /** A single event in the butler activity feed. */
 export interface ButlerActivityEvent {
@@ -6427,7 +6486,11 @@ export interface NeighboursParams {
  * - ``substring``    — query is a substring of the name or an alias (score 50)
  * - ``predicate``    — query matches a predicate label (score 30)
  */
-export type EntityFinderMatchKind = "prefix" | "contact_fact" | "substring" | "predicate";
+export type EntityFinderMatchKind =
+  | "prefix"
+  | "contact_fact"
+  | "substring"
+  | "predicate";
 
 /** A single result from GET /api/butlers/relationship/entities/search. */
 export interface EntityFinderSearchResult {

@@ -282,6 +282,26 @@ class CalendarSearchMatch:
 
 
 @dataclass
+class CalendarSearchResults:
+    """Result envelope for :func:`query_calendar_event_search`.
+
+    Carries the ranked ``matches`` plus an honest ``available`` degraded signal
+    so the API can follow the repo's fail-open + explicit-degraded convention:
+
+    - ``available=True`` — the search ran across at least one targeted schema
+      (or there were no calendar schemas to search at all); ``matches`` is the
+      complete, ranked result set (possibly empty → genuinely no hits).
+    - ``available=False`` — every targeted schema failed to respond (pool down,
+      or both the trigram and ``ILIKE`` queries raised), so ``matches`` is empty
+      because the search could not run, NOT because nothing matched. The UI must
+      render "search unavailable" rather than a misleading "no results".
+    """
+
+    matches: list[CalendarSearchMatch]
+    available: bool = True
+
+
+@dataclass
 class CalendarProposalRow:
     """Typed DTO for a ``calendar_event_proposals`` row (v1).
 
@@ -1094,7 +1114,7 @@ async def query_calendar_event_search(
     butlers: list[str] | None = None,
     sources: list[str] | None = None,
     limit: int = 50,
-) -> list[CalendarSearchMatch]:
+) -> CalendarSearchResults:
     """Fan-out full-text search over the ``calendar_events`` projection.
 
     Matches a free-text query ``q`` against event ``title``, ``description``,
@@ -1131,12 +1151,14 @@ async def query_calendar_event_search(
 
     Returns
     -------
-    list[CalendarSearchMatch]
-        Ranked matches (highest trigram relevance first), capped at ``limit``.
+    CalendarSearchResults
+        Ranked matches (highest trigram relevance first), capped at ``limit``,
+        plus an ``available`` flag that is ``False`` only when every targeted
+        schema failed to respond (fail-open degraded signal).
     """
     query = (q or "").strip()
     if not query:
-        return []
+        return CalendarSearchResults(matches=[])
 
     query_targets: list[str] | None
     if butlers:
@@ -1144,7 +1166,7 @@ async def query_calendar_event_search(
     else:
         query_targets = db.butlers_with_module("calendar")
     if not query_targets:
-        return []
+        return CalendarSearchResults(matches=[])
 
     trgm_sql = _build_search_sql(butlers=butlers, sources=sources, with_similarity=True)
     ilike_sql = _build_search_sql(butlers=butlers, sources=sources, with_similarity=False)
@@ -1157,12 +1179,12 @@ async def query_calendar_event_search(
     args.append(limit)
     bind = tuple(args)
 
-    async def _search_one(name: str) -> tuple[str, list[CalendarSearchMatch]]:
+    async def _search_one(name: str) -> tuple[str, list[CalendarSearchMatch], bool]:
         try:
             pool = db.pool(name)
         except Exception:
             logger.warning("calendar search: no pool for butler %s; skipping", name, exc_info=True)
-            return (name, [])
+            return (name, [], False)
         try:
             rows = await pool.fetch(trgm_sql, *bind)
         except Exception:
@@ -1178,7 +1200,7 @@ async def query_calendar_event_search(
                 logger.warning(
                     "calendar search: ILIKE fallback failed for %s; skipping", name, exc_info=True
                 )
-                return (name, [])
+                return (name, [], False)
         matches = [
             CalendarSearchMatch(
                 row=row_to_workspace(row, db_butler=name),
@@ -1187,13 +1209,17 @@ async def query_calendar_event_search(
             )
             for row in rows
         ]
-        return (name, matches)
+        return (name, matches, True)
 
     results = await asyncio.gather(*[_search_one(n) for n in query_targets])
 
     merged: list[CalendarSearchMatch] = []
-    for _name, matches in results:
+    any_ok = False
+    for _name, matches, ok in results:
+        any_ok = any_ok or ok
         merged.extend(matches)
 
     merged.sort(key=lambda m: (-m.rank, m.row.instance_starts_at, str(m.row.instance_id)))
-    return merged[:limit]
+    # Degraded only when EVERY targeted schema failed to respond; a partial
+    # failure still returns whatever matched with ``available=True``.
+    return CalendarSearchResults(matches=merged[:limit], available=any_ok)
