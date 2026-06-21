@@ -901,14 +901,16 @@ class QaModule(Module):
         if self._pool is None:
             return {"status": "skipped", "reason": "no_db_pool"}
 
-        # Use a non-blocking acquire attempt to avoid a TOCTOU race between
-        # checking locked() and entering _run_patrol_cycle.  acquire() is
-        # wrapped in wait_for(timeout=0) to return immediately: if the lock is
-        # already held the coroutine is cancelled and we return a skip response.
-        try:
-            await asyncio.wait_for(self._patrol_lock.acquire(), timeout=0)
-        except TimeoutError:
+        # Non-blocking acquire.  asyncio is single-threaded and cooperative, so
+        # there is no await point between ``locked()`` returning False and
+        # ``acquire()`` completing on a free lock — the check-then-acquire is
+        # race-free.  (The previous ``wait_for(acquire(), timeout=0)`` was
+        # broken: with timeout=0, wait_for creates the acquire task but cancels
+        # it before it can run, so it ALWAYS raised TimeoutError even for a free
+        # lock, falsely reporting ``patrol_already_running``.)
+        if self._patrol_lock.locked():
             return {"status": "skipped", "reason": "patrol_already_running"}
+        await self._patrol_lock.acquire()
 
         # We now hold the lock — run the patrol body directly (not via
         # _run_patrol_cycle which would try to re-acquire), then release.

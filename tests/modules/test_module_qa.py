@@ -402,6 +402,51 @@ class TestForcePatrol:
             mod._patrol_lock.release()
         assert result["reason"] == "patrol_already_running"
 
+    async def test_succeeds_when_lock_free(self):
+        """Regression (bu-tg9n9): force-patrol must run when no patrol is
+        actually running.  The old ``wait_for(acquire(), timeout=0)`` acquire
+        always raised TimeoutError even for a *free* lock, falsely reporting
+        ``patrol_already_running``.
+        """
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True)
+        mod._pool = _make_pool()
+        mod._run_patrol_body = AsyncMock(
+            return_value={
+                "status": "completed",
+                "patrol_id": "abc",
+                "findings_count": 2,
+                "novel_count": 1,
+                "dispatched_count": 0,
+                "sources_polled": ["log_scanner"],
+            }
+        )
+        assert not mod._patrol_lock.locked()
+        result = await mod._handle_force_patrol()
+        mod._run_patrol_body.assert_awaited_once()
+        assert result["status"] == "completed"
+        assert result["patrol_id"] == "abc"
+        assert result.get("reason") != "patrol_already_running"
+        # Lock must be released after the cycle so the next patrol can run.
+        assert not mod._patrol_lock.locked()
+
+    async def test_lock_released_on_error(self):
+        """The patrol lock must be released even when the patrol body raises,
+        otherwise a single failure would permanently wedge force-patrol with a
+        false ``patrol_already_running``.
+        """
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True)
+        mod._pool = _make_pool()
+        mod._run_patrol_body = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await mod._handle_force_patrol()
+        assert not mod._patrol_lock.locked()
+        # A subsequent run with the lock free must NOT be falsely rejected.
+        mod._run_patrol_body = AsyncMock(return_value={"status": "completed"})
+        result = await mod._handle_force_patrol()
+        assert result["status"] == "completed"
+
 
 class TestGetQaStatus:
     def test_returns_correct_fields_and_defaults(self):
