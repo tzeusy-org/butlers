@@ -6,6 +6,15 @@ import tailwindcss from '@tailwindcss/vite'
 // https://vite.dev/config/
 export default defineConfig({
   test: {
+    // Pin the runner timezone to UTC so date/time-sensitive specs are
+    // deterministic on any machine. Several CalendarWorkspacePage grid-drag and
+    // find-time specs render the grid in the *workspace* timezone (UTC in those
+    // fixtures) while the grid's day columns are derived from browser-local
+    // dates; when the runner's zone differs from UTC (e.g. a dev box in
+    // Asia/Singapore, UTC+8) events/overlays bucket onto a neighbouring day
+    // column and date math goes off-by-one. CI runs in UTC, so pinning UTC here
+    // aligns local runs with CI rather than weakening any assertion.
+    env: { TZ: "UTC" },
     // Installs global browser API stubs (e.g. ResizeObserver) before each test
     // file so that jsdom-incompatible primitives work without per-file boilerplate.
     setupFiles: ["./src/test/setup.ts"],
