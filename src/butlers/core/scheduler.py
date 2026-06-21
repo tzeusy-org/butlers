@@ -1969,6 +1969,8 @@ async def schedule_create(
     end_at: datetime | None = None,
     until_at: datetime | None = None,
     display_title: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
     calendar_event_id: str | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
@@ -2099,12 +2101,17 @@ async def schedule_create(
                 end_at,
                 until_at,
                 display_title,
+                description,
+                location,
                 calendar_event_id,
                 source,
                 enabled,
                 next_run_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'db', true, $14)
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                'db', true, $16
+            )
             RETURNING id
             """,
             name,
@@ -2119,6 +2126,8 @@ async def schedule_create(
             end_at,
             until_at,
             display_title,
+            description,
+            location,
             calendar_event_id,
             next_run_at,
         )
@@ -2140,8 +2149,8 @@ async def schedule_update(
 
     Allowed fields: ``name``, ``cron``, ``dispatch_mode``, ``prompt``,
     ``job_name``, ``job_args``, ``complexity``, ``enabled``, ``timezone``,
-    ``start_at``, ``end_at``, ``until_at``, ``display_title``, and
-    ``calendar_event_id``.
+    ``start_at``, ``end_at``, ``until_at``, ``display_title``, ``description``,
+    ``location``, and ``calendar_event_id``.
     If ``cron`` is updated, recomputes ``next_run_at``.
     If ``enabled`` is set to ``true``, recomputes ``next_run_at``.
     If ``enabled`` is set to ``false``, sets ``next_run_at`` to ``NULL``.
@@ -2169,6 +2178,8 @@ async def schedule_update(
         "end_at",
         "until_at",
         "display_title",
+        "description",
+        "location",
         "calendar_event_id",
     }
     invalid = set(fields.keys()) - allowed

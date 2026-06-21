@@ -4159,6 +4159,8 @@ class CalendarModule(Module):
             start_at: datetime,
             end_at: datetime | None = None,
             timezone: str | None = None,
+            description: str | None = None,
+            location: str | None = None,
             recurrence_rule: str | None = None,
             cron: str | None = None,
             until_at: datetime | None = None,
@@ -4168,7 +4170,14 @@ class CalendarModule(Module):
             request_id: str | None = None,
             _approval_bypass: bool = False,
         ) -> dict[str, Any]:
-            """Create a butler-view workspace event as schedule or reminder."""
+            """Create a butler-view workspace event as schedule or reminder.
+
+            ``description`` and ``location`` are optional free-text fields carried
+            onto the underlying scheduler/reminder row, surfaced on the workspace
+            projection, and pushed to the Butlers Google subcalendar event. They
+            let butler-authored events (e.g. accepted calendar proposals) preserve
+            the proposal's description/location instead of dropping them.
+            """
             normalized_butler = butler_name.strip()
             if not normalized_butler:
                 raise ValueError("butler_name must be a non-empty string")
@@ -4182,6 +4191,8 @@ class CalendarModule(Module):
             normalized_title = title.strip()
             if not normalized_title:
                 raise ValueError("title must be a non-empty string")
+            normalized_description = _normalize_optional_text(description)
+            normalized_location = _normalize_optional_text(location)
             effective_timezone = (timezone or module._require_config().timezone).strip()
             _ensure_valid_timezone(effective_timezone)
             effective_end = end_at or (start_at + timedelta(minutes=15))
@@ -4211,6 +4222,8 @@ class CalendarModule(Module):
                 "start_at": start_at,
                 "end_at": effective_end,
                 "timezone": effective_timezone,
+                "description": normalized_description,
+                "location": normalized_location,
                 "recurrence_rule": normalized_rule,
                 "cron": cron,
                 "until_at": until_at,
@@ -4254,6 +4267,8 @@ class CalendarModule(Module):
                         action=action,
                         action_args=action_args,
                         calendar_event_id=event_link_id,
+                        description=normalized_description,
+                        location=normalized_location,
                     )
                     origin_ref = str(reminder["id"])
                     result: dict[str, Any] = {
@@ -4301,6 +4316,8 @@ class CalendarModule(Module):
                             end_at=effective_end,
                             until_at=until_at,
                             display_title=normalized_title,
+                            description=normalized_description,
+                            location=normalized_location,
                             calendar_event_id=str(event_link_id),
                             stagger_key=module._butler_name,
                         )
@@ -4338,6 +4355,8 @@ class CalendarModule(Module):
                             end_at=effective_end,
                             until_at=until_at,
                             display_title=normalized_title,
+                            description=normalized_description,
+                            location=normalized_location,
                             calendar_event_id=str(event_link_id),
                             stagger_key=module._butler_name,
                         )
@@ -5736,7 +5755,8 @@ class CalendarModule(Module):
             rows = await pool.fetch(
                 """
                 SELECT id, name, cron, timezone, start_at, end_at, until_at,
-                       display_title, calendar_event_id, enabled, updated_at
+                       display_title, description, location,
+                       calendar_event_id, enabled, updated_at
                 FROM scheduled_tasks
                 WHERE dispatch_mode != 'job'
                 """
@@ -5749,6 +5769,13 @@ class CalendarModule(Module):
                 title = str(record.get("display_title") or record.get("name") or "Scheduled task")
                 timezone = str(record.get("timezone") or "UTC")
                 cron_expr = record.get("cron")
+                task_description = _normalize_optional_text(record.get("description"))
+                task_location = _normalize_optional_text(record.get("location"))
+                # Prefer the author-supplied description; fall back to a cron note
+                # so recurring tasks still show their schedule on Google.
+                event_description = task_description or (
+                    f"Cron: {cron_expr}" if cron_expr else None
+                )
                 start_at = self._coerce_datetime(record.get("start_at"))
                 end_at = self._coerce_datetime(record.get("end_at"))
 
@@ -5789,7 +5816,8 @@ class CalendarModule(Module):
                                 start_at=occ_start,
                                 end_at=occ_end,
                                 timezone=timezone,
-                                description=f"Cron: {cron_expr}" if cron_expr else None,
+                                description=event_description,
+                                location=task_location,
                                 private_metadata={
                                     "butler_generated": "true",
                                     "butler_name": self._butler_name,
@@ -5818,6 +5846,8 @@ class CalendarModule(Module):
                                 start_at=occ_start,
                                 end_at=occ_end,
                                 timezone=timezone,
+                                description=event_description,
+                                location=task_location,
                             ),
                         )
                         updated += 1
@@ -7323,6 +7353,7 @@ class CalendarModule(Module):
             """
             SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
                    timezone, start_at, end_at, until_at, display_title,
+                   description, location,
                    calendar_event_id, enabled, updated_at
             FROM scheduled_tasks
             WHERE dispatch_mode != 'job'
@@ -7395,8 +7426,8 @@ class CalendarModule(Module):
                 source_id=source_id,
                 origin_ref=origin_ref,
                 title=title,
-                description=None,
-                location=None,
+                description=_normalize_optional_text(record.get("description")),
+                location=_normalize_optional_text(record.get("location")),
                 timezone=timezone,
                 starts_at=event_start_at,
                 ends_at=event_end_at,
@@ -9502,6 +9533,8 @@ class CalendarModule(Module):
         action: str,
         action_args: dict[str, Any] | None,
         calendar_event_id: str,
+        description: str | None = None,
+        location: str | None = None,
     ) -> dict[str, Any]:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -9545,6 +9578,10 @@ class CalendarModule(Module):
             add("recurrence_rule", normalized_rule)
         if "cron" in columns:
             add("cron", cron)
+        if description is not None and "description" in columns:
+            add("description", description)
+        if location is not None and "location" in columns:
+            add("location", location)
         if "dismissed" in columns:
             add("dismissed", False)
         if "calendar_event_id" in columns:

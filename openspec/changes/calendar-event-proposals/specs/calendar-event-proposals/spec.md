@@ -94,6 +94,13 @@ provider write. Both SHALL be idempotent on the proposal's current status.
 - **AND** the proposal row is set to `status="accepted"` with `accepted_event_id` recording the created event
 - **AND** the action is recorded in the audit log
 
+#### Scenario: Accept preserves the proposal's description and location
+
+- **WHEN** a pending proposal carries a `description` and/or `location` and accept is called
+- **THEN** both fields are forwarded to `calendar_create_butler_event` (which accepts `description` and `location` parameters), are stored on the underlying scheduler/reminder row, surface on the workspace projection, and are pushed to the Butlers subcalendar event
+- **AND** an inline `description`/`location` override in the request body takes precedence over the stored value
+- **BECAUSE** the create tool previously had no `description`/`location` parameters, so accepting a proposal silently dropped both (bu-cb0ap)
+
 #### Scenario: Dismiss discards without a provider write
 
 - **WHEN** `POST /api/calendar/workspace/proposals/{id}/dismiss` is called for a pending proposal

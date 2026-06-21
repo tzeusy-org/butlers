@@ -215,6 +215,8 @@ def _create_core_tables() -> None:
             end_at TIMESTAMPTZ,
             until_at TIMESTAMPTZ,
             display_title TEXT,
+            description TEXT,
+            location TEXT,
             calendar_event_id TEXT,
             complexity TEXT DEFAULT 'medium',
             source TEXT NOT NULL DEFAULT 'db',

@@ -2043,6 +2043,10 @@ async def test_accept_proposal_creates_event_and_flips_status(app, monkeypatch):
     assert tool_name == "calendar_create_butler_event"
     assert args["butler_name"] == "general"
     assert "calendar_id" not in args  # never targets the user's primary
+    # The proposal's description/location survive accept (bu-cb0ap): they are
+    # forwarded to the create tool rather than silently dropped.
+    assert args["description"] == "From your inbox"
+    assert args["location"] == "123 Main St"
 
     update.assert_awaited_once()
     assert update.await_args.kwargs["status"] == "accepted"
@@ -2275,3 +2279,37 @@ async def test_accept_proposal_applies_inline_overrides(app, monkeypatch):
     assert resp.status_code == 200
     _tool, args = create_client.call_tool.await_args.args
     assert args["title"] == "Overridden title"
+    # Unoverridden description/location still fall back to the stored proposal.
+    assert args["description"] == "From your inbox"
+    assert args["location"] == "123 Main St"
+
+
+async def test_accept_proposal_overrides_description_and_location(app, monkeypatch):
+    """Inline description/location overrides take precedence over stored values (bu-cb0ap)."""
+    proposal_id = uuid4()
+    event_id = uuid4()
+    pending = _proposal_dto(status="pending", proposal_id=proposal_id)
+    accepted = _proposal_dto(status="accepted", accepted_event_id=event_id, proposal_id=proposal_id)
+
+    fetch = AsyncMock(return_value=pending)
+    update = AsyncMock(return_value=accepted)
+    _patch_proposal_reads(monkeypatch, fetch=fetch, update=update)
+
+    create_client = AsyncMock()
+    create_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "created", "event_id": str(event_id)})
+    )
+    app, _, _ = _build_app(app, mcp_clients={"general": create_client})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            f"/api/calendar/workspace/proposals/{proposal_id}/accept",
+            json={"description": "Bring insurance card", "location": "Suite 200"},
+        )
+
+    assert resp.status_code == 200
+    _tool, args = create_client.call_tool.await_args.args
+    assert args["description"] == "Bring insurance card"
+    assert args["location"] == "Suite 200"
