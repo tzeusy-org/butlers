@@ -97,6 +97,31 @@ class CursorPaginatedResponse[T](BaseModel):
     meta: CursorPaginationMeta
 
 
+class KeysetMeta(BaseModel):
+    """Keyset (cursor) pagination metadata that also echoes the page ``limit``.
+
+    ``{"limit": 50, "next_cursor": "<opaque>|null", "has_more": true}``
+
+    Distinct from :class:`CursorPaginationMeta` (which omits ``limit``) so the
+    sessions list can surface the effective page size without disturbing other
+    cursor-paginated endpoints.
+    """
+
+    limit: int
+    next_cursor: str | None = None
+    has_more: bool
+
+
+class KeysetResponse[T](BaseModel):
+    """API response wrapper for keyset-paginated list endpoints.
+
+    ``{"data": [T, ...], "meta": KeysetMeta}``
+    """
+
+    data: list[T]
+    meta: KeysetMeta
+
+
 # ---------------------------------------------------------------------------
 # Common domain summaries
 # ---------------------------------------------------------------------------
@@ -433,6 +458,8 @@ from butlers.api.models.session import (  # noqa: E402
     HourlyActivity,
     HourlyActivityBucket,
     LatencyStats,
+    SessionAggregate,
+    SessionAggregateButler,
     SessionDetail,
     SessionKindBreakdown,
     SessionKindItem,
@@ -494,6 +521,8 @@ __all__ = [
     "HourlyActivity",
     "HourlyActivityBucket",
     "Issue",
+    "KeysetMeta",
+    "KeysetResponse",
     "LatencyStats",
     "ModuleInfo",
     "ModuleRuntimeStateResponse",
@@ -514,6 +543,8 @@ __all__ = [
     "ScheduleUpdate",
     "SecretEntry",
     "SecretUpsertRequest",
+    "SessionAggregate",
+    "SessionAggregateButler",
     "SessionDetail",
     "SessionKindBreakdown",
     "SessionKindItem",

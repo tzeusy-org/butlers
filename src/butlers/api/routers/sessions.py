@@ -31,6 +31,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.models import (
     ApiResponse,
+    KeysetMeta,
+    KeysetResponse,
     PaginatedResponse,
     PaginationMeta,
     SessionSummary,
@@ -42,6 +44,8 @@ from butlers.api.models.session import (
     HourlyActivityBucket,
     LatencyStats,
     ProcessLog,
+    SessionAggregate,
+    SessionAggregateButler,
     SessionDetail,
     SessionKindBreakdown,
     SessionKindItem,
@@ -50,9 +54,11 @@ from butlers.api.read_models.sessions_v1 import (
     SUMMARY_COLUMNS,
     SessionDetailRow,
     SessionSummaryRow,
+    decode_session_cursor,
+    query_session_aggregate_fan_out,
     query_session_detail_fan_out,
     query_session_detail_single,
-    query_session_summaries_fan_out,
+    query_session_summaries_keyset_fan_out,
     row_to_summary,
 )
 
@@ -76,12 +82,17 @@ def _build_where(
     *,
     trigger_source: str | None = None,
     success: bool | None = None,
+    running: bool = False,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
     request_id: str | None = None,
     start_idx: int = 1,
 ) -> tuple[str, list[object], int]:
     """Build a dynamic WHERE clause from the common session filter params.
+
+    ``running`` is the ``status=running`` surface: it adds a ``success IS NULL``
+    predicate (no bound arg).  It is mutually exclusive with ``success`` in
+    practice — the resolver returns ``success=None`` for ``status=running``.
 
     Returns (where_clause, args, next_param_idx).
     """
@@ -98,6 +109,9 @@ def _build_where(
         conditions.append(f"success = ${idx}")
         args.append(success)
         idx += 1
+
+    if running:
+        conditions.append("success IS NULL")
 
     if from_date is not None:
         conditions.append(f"started_at >= ${idx}")
@@ -124,11 +138,14 @@ def _resolve_success_filter(
 ) -> bool | None:
     """Resolve the effective ``success`` boolean filter from the two params.
 
-    The frontend status dropdown sends ``?status=success|failed`` (and omits the
-    param entirely for "all"). ``status`` is mapped to the ``success`` boolean:
+    The frontend status dropdown sends ``?status=success|failed|running`` (and
+    omits the param entirely for "all"). ``status`` is mapped to the ``success``
+    boolean:
 
     - ``status=success`` -> ``success=True``
     - ``status=failed``  -> ``success=False``
+    - ``status=running`` -> ``success=None`` (the ``success IS NULL`` predicate is
+      applied separately via the ``running`` flag, so the legacy bool must not leak)
     - ``status`` absent / ``all`` -> fall through to the legacy ``success`` bool.
 
     ``status`` takes precedence over the legacy ``success`` bool param when both
@@ -138,6 +155,8 @@ def _resolve_success_filter(
         return True
     if status == "failed":
         return False
+    if status == "running":
+        return None
     # status is None or "all" -> preserve backward-compatible success filtering
     return success
 
@@ -230,15 +249,30 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=PaginatedResponse[SessionSummary])
+# Query-budget: keyset (cursor) pagination — each butler fetches at most
+# limit+1 rows after the cursor position, ordered (started_at DESC, id DESC),
+# index-backed by ix_sessions_started_at (core_128).  NO count(*) is run (that
+# is the perf win over the prior offset/total path).  Combined cost is
+# O((limit+1) * butler_count) rows materialized, fanned out concurrently, then
+# merge-sorted in memory and truncated to limit.
+@router.get("", response_model=KeysetResponse[SessionSummary])
 async def list_sessions(
-    offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=1000, description="Max records to return"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Opaque cursor from the previous page's ``next_cursor`` field. "
+            "Omit to fetch the first page."
+        ),
+    ),
     butler: str | None = Query(None, description="Filter by butler name"),
     trigger_source: str | None = Query(None, description="Filter by trigger source"),
-    status: Literal["all", "success", "failed"] | None = Query(
+    status: Literal["all", "success", "failed", "running"] | None = Query(
         None,
-        description="Filter by session outcome: 'success', 'failed', or 'all' (no filter)",
+        description=(
+            "Filter by session outcome: 'success', 'failed', 'running' "
+            "(success IS NULL), or 'all' (no filter)"
+        ),
     ),
     success: bool | None = Query(
         None,
@@ -248,21 +282,34 @@ async def list_sessions(
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
     request_id: str | None = Query(None, description="Filter by request_id"),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> PaginatedResponse[SessionSummary]:
-    """Return paginated sessions aggregated across all butler databases.
+) -> KeysetResponse[SessionSummary]:
+    """Return keyset-paginated sessions aggregated across all butler databases.
 
     Uses ``DatabaseManager.fan_out()`` to query every registered butler DB
-    concurrently, then merges, sorts, and paginates the combined results.
-    When the ``butler`` query parameter is provided, only that butler's DB
-    is queried.
+    concurrently for ``limit + 1`` rows after the cursor position, then merges,
+    sorts ``(started_at DESC, id DESC)``, and truncates to ``limit``.  When the
+    ``butler`` query parameter is provided, only that butler's DB is queried.
 
-    The ``status`` param (``success`` | ``failed`` | ``all``) is the surface the
-    frontend status dropdown uses; it maps onto the ``success`` boolean filter
-    and takes precedence over the legacy ``success`` bool param.
+    No total count is computed — pagination is forward-only via the opaque
+    ``next_cursor``.  ``has_more`` is true when more rows exist beyond the page.
+
+    The ``status`` param (``success`` | ``failed`` | ``running`` | ``all``) is
+    the surface the frontend status dropdown uses; ``running`` maps onto
+    ``success IS NULL`` and ``success``/``failed`` onto the ``success`` boolean
+    filter (taking precedence over the legacy ``success`` bool param).
     """
-    where_clause, args, idx = _build_where(
+    # Validate the cursor early so a malformed value is a clean 422.
+    if cursor is not None:
+        try:
+            decode_session_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
+
+    # Keyset path indexes cursor params inside the read-model; the param index is unused here.
+    where_clause, args, _ = _build_where(
         trigger_source=trigger_source,
         success=_resolve_success_filter(status, success),
+        running=status == "running",
         from_date=from_date,
         to_date=to_date,
         request_id=request_id,
@@ -271,17 +318,97 @@ async def list_sessions(
     target_butlers = [butler] if butler else None
 
     # Fan out via the versioned sessions read-model boundary (sessions_v1)
-    result = await query_session_summaries_fan_out(
+    result = await query_session_summaries_keyset_fan_out(
+        db,
+        where_clause,
+        tuple(args),
+        limit=limit,
+        cursor=cursor,
+        butler_names=target_butlers,
+    )
+
+    return KeysetResponse[SessionSummary](
+        data=[_dto_to_summary(dto) for dto in result.rows],
+        meta=KeysetMeta(
+            limit=limit,
+            next_cursor=result.next_cursor,
+            has_more=result.has_more,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cross-butler aggregate: GET /api/sessions/aggregate
+# ---------------------------------------------------------------------------
+
+
+# Query-budget: one filter-aware aggregate scan per butler (count + three
+# FILTERed counts + two coalesced token sums), fanned out concurrently and
+# summed in memory.  No row materialization, no pagination.  Index-backed time
+# range via ix_sessions_started_at (core_128).  Powers the window-true KPI
+# strip; recomputed on filter change only (not on paging).
+@router.get("/aggregate", response_model=ApiResponse[SessionAggregate])
+async def get_session_aggregate(
+    butler: str | None = Query(None, description="Filter by butler name"),
+    trigger_source: str | None = Query(None, description="Filter by trigger source"),
+    status: Literal["all", "success", "failed", "running"] | None = Query(
+        None,
+        description=(
+            "Filter by session outcome: 'success', 'failed', 'running' "
+            "(success IS NULL), or 'all' (no filter)"
+        ),
+    ),
+    success: bool | None = Query(
+        None,
+        description="Legacy success filter (bool). Superseded by 'status' when both are set.",
+    ),
+    from_date: datetime | None = Query(None, description="Sessions started after this time"),
+    to_date: datetime | None = Query(None, description="Sessions started before this time"),
+    request_id: str | None = Query(None, description="Filter by request_id"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SessionAggregate]:
+    """Return a filter-aware, window-true session rollup across all butlers.
+
+    Shares the exact filter params and semantics of ``GET /api/sessions`` (minus
+    pagination), so the KPI strip reflects the same matching set the list shows.
+    Counts every matching session across the queried butlers — not just the
+    fetched page — and never derives a window number from page rows.
+
+    ``success_rate`` is ``success_count / (success_count + failed_count)`` or
+    ``null`` when no completed sessions exist.  Cost is intentionally omitted.
+    """
+    # Aggregate path binds no extra params beyond the WHERE clause; param index is unused here.
+    where_clause, args, _ = _build_where(
+        trigger_source=trigger_source,
+        success=_resolve_success_filter(status, success),
+        running=status == "running",
+        from_date=from_date,
+        to_date=to_date,
+        request_id=request_id,
+    )
+
+    target_butlers = [butler] if butler else None
+
+    result = await query_session_aggregate_fan_out(
         db, where_clause, tuple(args), butler_names=target_butlers
     )
 
-    # Sort merged rows descending and paginate
-    result.rows.sort(key=lambda s: s.started_at, reverse=True)
-    page = result.rows[offset : offset + limit]
+    rated = result.success_count + result.failed_count
+    success_rate = (result.success_count / rated) if rated > 0 else None
 
-    return PaginatedResponse[SessionSummary](
-        data=[_dto_to_summary(dto) for dto in page],
-        meta=PaginationMeta(total=result.total, offset=offset, limit=limit),
+    return ApiResponse[SessionAggregate](
+        data=SessionAggregate(
+            total=result.total,
+            success_count=result.success_count,
+            failed_count=result.failed_count,
+            running_count=result.running_count,
+            success_rate=success_rate,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            by_butler=[
+                SessionAggregateButler(butler=b.butler, count=b.count) for b in result.by_butler
+            ],
+        )
     )
 
 

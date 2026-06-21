@@ -1,8 +1,9 @@
 import { Time } from "@/components/ui/time";
 
 import type { SessionSummary } from "@/api/types";
-import { Badge } from "@/components/ui/badge";
+import { ButlerMark } from "@/components/ui/ButlerMark";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge";
+import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -64,50 +65,6 @@ function formatTokens(n: number | null): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
-}
-
-/** Map success field to a styled status badge. */
-function statusBadge(success: boolean | null) {
-  if (success === true) {
-    return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-        Success
-      </Badge>
-    );
-  }
-  if (success === false) {
-    return <Badge variant="destructive">Failed</Badge>;
-  }
-  return (
-    <Badge variant="outline" className="border-gray-400 text-gray-500">
-      Running
-    </Badge>
-  );
-}
-
-/** Deterministic color for butler badges. */
-const BUTLER_COLORS = [
-  "bg-blue-600",
-  "bg-violet-600",
-  "bg-amber-600",
-  "bg-teal-600",
-  "bg-rose-600",
-  "bg-indigo-600",
-  "bg-cyan-600",
-  "bg-orange-600",
-];
-
-function butlerBadge(name: string) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  }
-  const color = BUTLER_COLORS[Math.abs(hash) % BUTLER_COLORS.length];
-  return (
-    <Badge className={cn(color, "text-white hover:opacity-90")}>
-      {name}
-    </Badge>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -192,21 +149,47 @@ export function SessionTable({
           <SkeletonRows showButlerColumn={showButlerColumn} />
         ) : (
           sessions.map((session) => {
+            const interactive = Boolean(onSessionClick);
             return (
               <TableRow
                 key={session.id}
                 className={cn(
                   session.success === false && "bg-destructive/5",
-                  onSessionClick && "cursor-pointer",
+                  interactive &&
+                    "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 )}
                 onClick={() => onSessionClick?.(session)}
+                role={interactive ? "button" : undefined}
+                tabIndex={interactive ? 0 : undefined}
+                aria-label={
+                  interactive
+                    ? `Open session detail for ${session.butler ?? "session"}: ${truncate(session.prompt, 80)}`
+                    : undefined
+                }
+                onKeyDown={
+                  interactive
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSessionClick?.(session);
+                        }
+                      }
+                    : undefined
+                }
               >
                 <TableCell className="text-muted-foreground text-xs">
                   <Time value={session.started_at} mode="smart" />
                 </TableCell>
                 {showButlerColumn && (
                   <TableCell>
-                    {session.butler ? butlerBadge(session.butler) : "\u2014"}
+                    {session.butler ? (
+                      <span className="inline-flex items-center gap-2 text-foreground">
+                        <ButlerMark name={session.butler} tone="neutral" />
+                        {session.butler}
+                      </span>
+                    ) : (
+                      "\u2014"
+                    )}
                   </TableCell>
                 )}
                 <TableCell className="text-xs text-muted-foreground">
@@ -253,7 +236,7 @@ export function SessionTable({
                 <TableCell className="tabular-nums text-xs text-muted-foreground">
                   {formatDuration(session.duration_ms)}
                 </TableCell>
-                <TableCell>{statusBadge(session.success)}</TableCell>
+                <TableCell><StatusBadge success={session.success} /></TableCell>
                 <TableCell className="text-right tabular-nums text-xs text-muted-foreground">
                   {session.input_tokens != null || session.output_tokens != null
                     ? `${formatTokens(session.input_tokens)} / ${formatTokens(session.output_tokens)}`

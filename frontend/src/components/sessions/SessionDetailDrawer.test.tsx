@@ -374,6 +374,15 @@ describe("SessionDetailDrawer", () => {
     expect(document.body.textContent).not.toContain("Runtime Type");
   });
 
+  it("shows an error message (not a hung skeleton) when the detail fetch fails", () => {
+    setQueryState({ data: undefined, isError: true });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("could not be loaded");
+    expect(document.body.textContent).not.toContain("Loading session information");
+  });
+
   it("surfaces failed-then-retried tool call outcomes as separate timeline entries", () => {
     setQueryState({
       data: {

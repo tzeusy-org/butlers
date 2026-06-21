@@ -15,6 +15,7 @@ import { useSessionDetail } from "@/hooks/use-sessions";
 import { useQuery } from "@tanstack/react-query";
 import { getSession } from "@/api/index.ts";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { CollapsibleJson, ToolCallTimeline } from "@/components/sessions/ToolCallTimeline";
 
 // ---------------------------------------------------------------------------
@@ -34,24 +35,6 @@ function formatDuration(ms: number | null): string {
 function formatTokens(n: number | null): string {
   if (n == null) return "--";
   return n.toLocaleString();
-}
-
-function statusBadge(success: boolean | null) {
-  if (success === true) {
-    return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-        Success
-      </Badge>
-    );
-  }
-  if (success === false) {
-    return <Badge variant="destructive">Failed</Badge>;
-  }
-  return (
-    <Badge variant="outline" className="border-amber-500 text-amber-600">
-      Running
-    </Badge>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +137,7 @@ export default function SessionDetailPage() {
       <Breadcrumbs items={[{ label: "Sessions", href: "/sessions" }, { label: id.slice(0, 8) }]} />
       <div className="flex items-center gap-4">
         <h1 className="text-2xl font-bold tracking-tight">Session Detail</h1>
-        {statusBadge(session.success)}
+        <StatusBadge success={session.success} />
       </div>
 
       {/* Session metadata */}

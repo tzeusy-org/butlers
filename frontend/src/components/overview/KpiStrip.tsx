@@ -13,6 +13,8 @@
  * Doctrine: about/heart-and-soul/design-language.md §KPI strip
  */
 
+import { KPI_EYEBROW_STYLE } from "./kpi-eyebrow";
+
 interface KpiCell {
   eyebrow: string;
   value: string | number;
@@ -43,18 +45,7 @@ export function KpiStrip({ cells }: KpiStripProps) {
           }}
         >
           {/* Eyebrow */}
-          <p
-            className="tnum uppercase"
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "10px",
-              letterSpacing: "0.14em",
-              lineHeight: 1,
-              color: "var(--muted-foreground)",
-              margin: 0,
-              marginBottom: "6px",
-            }}
-          >
+          <p className="tnum uppercase" style={{ ...KPI_EYEBROW_STYLE, marginBottom: "6px" }}>
             {cell.eyebrow}
           </p>
           {/* Mega number */}

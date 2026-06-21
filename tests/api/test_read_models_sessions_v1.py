@@ -3,7 +3,9 @@
 Verifies:
 - ``row_to_summary`` converts a raw record to the typed DTO
 - ``row_to_detail`` converts a raw record with JSON coercion
-- ``query_session_summaries_fan_out`` returns a typed FanOutSummaryResult
+- ``query_session_summaries_keyset_fan_out`` merges + truncates + cursors
+- ``query_session_aggregate_fan_out`` sums scalars + builds by_butler
+- ``encode_session_cursor`` / ``decode_session_cursor`` round-trip
 - ``query_session_detail_fan_out`` returns the first matching butler's row
 - ``query_session_detail_single`` returns a typed SingleDetailResult
 - Version marker is stable and matches the module name
@@ -12,7 +14,7 @@ Verifies:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -23,12 +25,16 @@ from butlers.api.read_models.sessions_v1 import (
     DETAIL_COLUMNS,
     READ_MODEL_VERSION,
     SUMMARY_COLUMNS,
+    FanOutAggregateResult,
     FanOutDetailResult,
-    FanOutSummaryResult,
+    FanOutKeysetResult,
     SingleDetailResult,
+    decode_session_cursor,
+    encode_session_cursor,
+    query_session_aggregate_fan_out,
     query_session_detail_fan_out,
     query_session_detail_single,
-    query_session_summaries_fan_out,
+    query_session_summaries_keyset_fan_out,
     row_to_detail,
     row_to_summary,
 )
@@ -190,58 +196,258 @@ def test_row_to_detail_maps_all_scalar_fields():
 
 
 # ---------------------------------------------------------------------------
-# query_session_summaries_fan_out
+# Cursor round-trip
 # ---------------------------------------------------------------------------
 
 
-async def test_query_session_summaries_fan_out_aggregates_total():
-    """Total count is the sum of count rows across all butlers."""
+def test_session_cursor_round_trip():
+    """encode -> decode reproduces the (started_at, id) keyset position."""
+    sid = uuid4()
+    cursor = encode_session_cursor(_NOW, sid)
+    decoded_at, decoded_id = decode_session_cursor(cursor)
+    assert decoded_at == _NOW
+    assert decoded_id == sid
+
+
+def test_decode_session_cursor_rejects_garbage():
+    """A non-base64 / non-JSON cursor raises ValueError (router maps to 422)."""
+    with pytest.raises(ValueError):
+        decode_session_cursor("not-a-cursor")
+
+
+def test_decode_session_cursor_rejects_missing_fields():
+    """A base64url JSON token missing 't'/'id' is rejected."""
+    import base64
+
+    bad = base64.urlsafe_b64encode(json.dumps({"t": _NOW.isoformat()}).encode()).decode()
+    with pytest.raises(ValueError):
+        decode_session_cursor(bad)
+
+
+# ---------------------------------------------------------------------------
+# query_session_summaries_keyset_fan_out
+# ---------------------------------------------------------------------------
+
+
+def _summary_at(started_at: datetime):
+    """A summary record with a unique id and the given started_at."""
+    return _make_record(_summary_record(id=uuid4(), started_at=started_at))
+
+
+async def test_keyset_fan_out_merges_and_sorts_across_butlers():
+    """Rows from all butlers merge and sort by (started_at DESC, id DESC)."""
+    a1 = _summary_at(_NOW)
+    a2 = _summary_at(_NOW - timedelta(seconds=10))
+    g1 = _summary_at(_NOW - timedelta(seconds=5))
+
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out = AsyncMock(return_value={"atlas": [a1, a2], "general": [g1]})
 
-    count_result = {"atlas": [[3]], "general": [[2]]}
-    summary_row = _make_record(_summary_record())
-    data_result = {
-        "atlas": [summary_row, summary_row],
-        "general": [summary_row],
-    }
+    result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=50)
 
-    mock_db.fan_out = AsyncMock(side_effect=[count_result, data_result])
-
-    result = await query_session_summaries_fan_out(mock_db, "", ())
-
-    assert isinstance(result, FanOutSummaryResult)
-    assert result.total == 5
+    assert isinstance(result, FanOutKeysetResult)
+    started = [r.started_at for r in result.rows]
+    assert started == sorted(started, reverse=True)
+    # Every butler's rows must survive the merge and interleave by (started_at DESC).
+    # A descending order alone is satisfied by any single butler's subset, so pin
+    # the row count, the id set, and the exact interleaved order (a1=_NOW newest,
+    # g1=_NOW-5s, a2=_NOW-10s). Source records are subscriptable MagicMocks (use
+    # a1["id"]); merged rows are real SessionSummaryRow objects (use r.id).
     assert len(result.rows) == 3
+    assert {r.id for r in result.rows} == {a1["id"], a2["id"], g1["id"]}
+    assert [r.id for r in result.rows] == [a1["id"], g1["id"], a2["id"]]
+    assert result.has_more is False
+    assert result.next_cursor is None
 
 
-async def test_query_session_summaries_fan_out_passes_where_and_butler_names():
-    """WHERE clause, args, and butler_names are forwarded to fan_out calls."""
+async def test_keyset_fan_out_has_more_and_next_cursor():
+    """When merged length > limit, has_more is True and next_cursor is set.
+
+    next_cursor must encode the LAST returned row (index limit-1), not the
+    dropped sentinel.
+    """
+    rows = [_summary_at(_NOW - timedelta(seconds=i)) for i in range(3)]
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    # First call is COUNT, second call is data rows (empty is fine here)
-    mock_db.fan_out = AsyncMock(side_effect=[{"atlas": [[1]]}, {"atlas": []}])
+    mock_db.fan_out = AsyncMock(return_value={"atlas": rows})
 
-    await query_session_summaries_fan_out(
+    result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=2)
+
+    assert result.has_more is True
+    assert len(result.rows) == 2
+    decoded_at, decoded_id = decode_session_cursor(result.next_cursor)
+    assert decoded_id == result.rows[-1].id
+    assert decoded_at == result.rows[-1].started_at
+
+
+async def test_keyset_fan_out_has_more_boundary_crosses_butlers():
+    """The (limit+1)th global row may live in a DIFFERENT butler than row[0].
+
+    Each butler returns up to limit+1 rows; the merge-then-truncate boundary,
+    has_more, and next_cursor must all be computed on the MERGED set, not per
+    butler. With a single butler "compute has_more on merged length" and
+    "compute has_more per butler" are indistinguishable, so this pins the
+    cross-shard contract documented in query_session_summaries_keyset_fan_out.
+    """
+    # atlas holds the two newest, general the next three (older).
+    a0 = _summary_at(_NOW)
+    a1 = _summary_at(_NOW - timedelta(seconds=10))
+    g2 = _summary_at(_NOW - timedelta(seconds=20))
+    g3 = _summary_at(_NOW - timedelta(seconds=30))
+    g4 = _summary_at(_NOW - timedelta(seconds=40))
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out = AsyncMock(return_value={"atlas": [a0, a1], "general": [g2, g3, g4]})
+
+    result = await query_session_summaries_keyset_fan_out(
+        mock_db, "", (), limit=3, butler_names=["atlas", "general"]
+    )
+
+    # Merged DESC = [a0, a1, g2, g3, g4]; kept = first 3, has_more from the rest.
+    assert len(result.rows) == 3
+    assert result.has_more is True
+    assert result.rows[0].butler == "atlas"
+    # The limit-th (last kept) row crosses into the OTHER butler.
+    assert result.rows[-1].butler == "general"
+    assert result.rows[-1].id == g2["id"]
+    decoded_at, decoded_id = decode_session_cursor(result.next_cursor)
+    assert (decoded_at, decoded_id) == (g2["started_at"], g2["id"])
+    # next_cursor points at the last RETURNED row, not the first dropped one.
+    assert decoded_id != g3["id"]
+
+
+async def test_keyset_fan_out_appends_cursor_predicate():
+    """With a cursor, the SQL gains the (started_at, id) < (...) keyset predicate."""
+    cursor = encode_session_cursor(_NOW, uuid4())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+
+    await query_session_summaries_keyset_fan_out(
+        mock_db, " WHERE success = $1", (True,), limit=50, cursor=cursor, butler_names=["atlas"]
+    )
+
+    call = mock_db.fan_out.call_args_list[0]
+    sql = call.args[0]
+    assert "(started_at, id) < ($2, $3)" in sql
+    assert "LIMIT 51" in sql  # limit + 1
+    # The cursor (started_at, id) is appended after the existing WHERE arg, and
+    # the appended VALUES must be the decoded cursor tuple (a swapped/reordered
+    # or raw-string bind would still produce 3 args, so pin the values too).
+    assert len(call.args[1]) == 3
+    started_at, row_id = decode_session_cursor(cursor)
+    assert tuple(call.args[1][-2:]) == (started_at, row_id)
+    assert call.kwargs.get("butler_names") == ["atlas"]
+
+
+async def test_keyset_fan_out_first_page_no_predicate():
+    """Without a cursor, no keyset predicate is added and only WHERE args bind."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+
+    await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=50)
+
+    sql = mock_db.fan_out.call_args_list[0].args[0]
+    assert "(started_at, id) <" not in sql
+    assert "ORDER BY started_at DESC, id DESC" in sql
+
+
+# ---------------------------------------------------------------------------
+# query_session_aggregate_fan_out
+# ---------------------------------------------------------------------------
+
+
+def _agg_row(**vals):
+    base = {
+        "total": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "running_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    base.update(vals)
+    return _make_record(base)
+
+
+async def test_aggregate_fan_out_sums_scalars_across_butlers():
+    """Scalar fields are summed; by_butler holds per-butler totals desc."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out = AsyncMock(
+        return_value={
+            "atlas": [
+                _agg_row(
+                    total=10,
+                    success_count=8,
+                    failed_count=1,
+                    running_count=1,
+                    input_tokens=1000,
+                    output_tokens=400,
+                )
+            ],
+            "general": [
+                _agg_row(
+                    total=5,
+                    success_count=5,
+                    failed_count=0,
+                    running_count=0,
+                    input_tokens=200,
+                    output_tokens=100,
+                )
+            ],
+        }
+    )
+
+    result = await query_session_aggregate_fan_out(mock_db, "", ())
+
+    assert isinstance(result, FanOutAggregateResult)
+    assert result.total == 15
+    assert result.success_count == 13
+    assert result.failed_count == 1
+    assert result.running_count == 1
+    assert result.input_tokens == 1200
+    assert result.output_tokens == 500
+    # by_butler sorted by count desc, count>0 only
+    assert [(b.butler, b.count) for b in result.by_butler] == [("atlas", 10), ("general", 5)]
+
+
+async def test_aggregate_fan_out_omits_zero_count_butlers():
+    """Butlers with total==0 are excluded from by_butler."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "idle"]
+    mock_db.fan_out = AsyncMock(
+        return_value={
+            "atlas": [_agg_row(total=3, success_count=3)],
+            "idle": [_agg_row(total=0)],
+        }
+    )
+
+    result = await query_session_aggregate_fan_out(mock_db, "", ())
+
+    assert result.total == 3
+    assert [b.butler for b in result.by_butler] == ["atlas"]
+
+
+async def test_aggregate_fan_out_uses_filter_sql_and_butler_names():
+    """The aggregate SQL carries the FILTER clauses, WHERE, and butler_names."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out = AsyncMock(return_value={"atlas": [_agg_row(total=1, success_count=1)]})
+
+    await query_session_aggregate_fan_out(
         mock_db, " WHERE success = $1", (True,), butler_names=["atlas"]
     )
 
-    # Both fan_out calls should use butler_names=["atlas"]
-    calls = mock_db.fan_out.call_args_list
-    assert all(call.kwargs.get("butler_names") == ["atlas"] for call in calls)
-    # WHERE clause should be in the SQL
-    assert " WHERE success = $1" in calls[0].args[0]
-
-
-async def test_query_session_summaries_fan_out_empty_results():
-    """When no butlers have data, returns total=0 and empty rows."""
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.butler_names = []
-    mock_db.fan_out = AsyncMock(return_value={})
-
-    result = await query_session_summaries_fan_out(mock_db, "", ())
-    assert result.total == 0
-    assert result.rows == []
+    call = mock_db.fan_out.call_args_list[0]
+    sql = call.args[0]
+    assert "FILTER (WHERE success IS NULL)" in sql
+    assert "coalesce(sum(input_tokens), 0)" in sql
+    assert " WHERE success = $1" in sql
+    assert call.kwargs.get("butler_names") == ["atlas"]
 
 
 # ---------------------------------------------------------------------------

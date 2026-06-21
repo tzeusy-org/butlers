@@ -28,6 +28,7 @@ import {
   formatBucketKey,
   pivotSessionsIntoRows,
   useSessionStripeData,
+  type StripeFilterParams,
 } from "./session-stripe-utils"
 
 // ---------------------------------------------------------------------------
@@ -84,26 +85,40 @@ function StripeTooltip({ active, label, payload, unit }: CustomTooltipProps) {
 // ---------------------------------------------------------------------------
 
 export interface SessionStripeChartProps {
-  /** Rolling window length in hours. Defaults to 24. */
+  /** Rolling window length in hours. Defaults to 24. Ignored when filters carry a date range. */
   windowHours?: number
   butlers: ButlerSummary[]
+  /**
+   * Active page filters to scope the chart by (butler/trigger/status/since/until).
+   * When omitted (e.g. home dashboard), the chart shows the rolling window for
+   * all butlers, exactly as before.
+   */
+  filterParams?: StripeFilterParams
 }
 
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
-export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeChartProps) {
+export function SessionStripeChart({
+  windowHours = 24,
+  butlers,
+  filterParams,
+}: SessionStripeChartProps) {
   const { refetchInterval } = useAutoRefresh(60_000)
-  const { data, isLoading, isError } = useSessionStripeData(windowHours, refetchInterval)
+  const { data, isLoading, isError } = useSessionStripeData(
+    windowHours,
+    refetchInterval,
+    filterParams,
+  )
 
   const sessions = useMemo(() => data?.data ?? [], [data])
 
   // Memoize the pivot and name-ordering so they don't rerun on every render.
   // currentWindow() recomputes on every render so the pivot always aligns with
-  // the rolling window the hook uses on its next refetch.
+  // the window the hook uses on its next refetch.
   const { unit, rows, orderedNames } = useMemo(() => {
-    const w = currentWindow(windowHours)
+    const w = currentWindow(windowHours, filterParams)
     const u = bucketUnit(w.from, w.to)
     const r = pivotSessionsIntoRows(sessions, w.from, w.to, u)
 
@@ -117,7 +132,7 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
       ...Array.from(present).filter((n) => !knownSet.has(n)).sort(),
     ]
     return { unit: u, rows: r, orderedNames: ordered }
-  }, [sessions, windowHours, butlers])
+  }, [sessions, windowHours, butlers, filterParams])
 
   if (isLoading) {
     return <ChartSkeleton height="h-[200px]" testId="session-stripe-skeleton" />
@@ -140,7 +155,7 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
         className="flex h-[200px] items-center justify-center text-sm text-muted-foreground"
         data-testid="session-stripe-empty"
       >
-        No sessions in the past 24 hours
+        No sessions in the selected window.
       </div>
     )
   }
@@ -152,8 +167,8 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
           className="mb-1 text-xs text-muted-foreground"
           data-testid="session-stripe-truncated-warning"
         >
-          Showing the most recent {sessions.length.toLocaleString()} sessions out of{" "}
-          {data.meta.total.toLocaleString()} total. Use filters to narrow the window.
+          Showing the most recent {sessions.length.toLocaleString()} sessions. Some may be
+          omitted; narrow the window.
         </p>
       )}
       <ResponsiveContainer width="100%" height={200}>

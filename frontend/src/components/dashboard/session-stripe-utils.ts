@@ -4,6 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query"
 import { getSessions } from "@/api/index.ts"
+import type { KeysetMeta, SessionParams } from "@/api/types.ts"
 
 // ---------------------------------------------------------------------------
 // Row type
@@ -115,66 +116,103 @@ export function pivotSessionsIntoRows(
 /** Maximum sessions fetched in a single request — also the hard cap. */
 export const SESSIONS_HARD_CAP = 1000
 
-/** Shape returned by useSessionStripeData — extends PaginatedResponse with backpressure flag. */
+/** Shape returned by useSessionStripeData — keyset list plus a backpressure flag. */
 export interface SessionStripeResult {
   data: Array<{ butler?: string; started_at: string }>
-  meta: { total: number; offset: number; limit: number; has_more: boolean }
-  /** True when the backend total exceeds SESSIONS_HARD_CAP and results are truncated. */
+  meta: KeysetMeta
+  /** True when more rows exist beyond SESSIONS_HARD_CAP (results are truncated). */
   truncated: boolean
 }
 
-/** Compute the rolling window boundaries for the given span in hours. */
-function rollingWindow(windowHours: number): { from: Date; to: Date } {
-  const now = Date.now()
-  return {
-    from: new Date(now - windowHours * 60 * 60 * 1000),
-    to: new Date(now),
-  }
+/** Categorical filter fields the stripe chart forwards to the session list. */
+export type StripeFilterParams = Pick<
+  SessionParams,
+  "butler" | "trigger_source" | "status" | "request_id" | "since" | "until"
+>
+
+/** Parse a filter date string ("YYYY-MM-DD" or ISO) into a Date, or null. */
+function parseFilterDate(raw: string | undefined, endOfDay: boolean): Date | null {
+  if (!raw) return null
+  // Date-only inputs anchor to start/end of the UTC day so the pivot window
+  // covers the whole calendar day the user selected.
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+  const d = new Date(dateOnly ? `${raw}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z` : raw)
+  return Number.isNaN(d.getTime()) ? null : d
 }
 
 /**
- * Fetch sessions for a rolling window of `windowHours` hours in a single request
- * capped at SESSIONS_HARD_CAP rows.
+ * Compute the window boundaries for the stripe chart.
  *
- * When the backend total exceeds SESSIONS_HARD_CAP, the result is marked
- * `truncated: true` (derived from `meta.has_more`) so the UI can surface a
- * backpressure warning. Using a single request avoids repeated fan-out work on
- * the backend for every additional page.
+ * When the active filters carry `since`/`until`, those bound the window so the
+ * chart matches the table's date filter. Otherwise it falls back to a rolling
+ * trailing window of `windowHours` hours ending now.
+ */
+function resolveWindow(
+  windowHours: number,
+  filterParams?: StripeFilterParams,
+): { from: Date; to: Date } {
+  const now = Date.now()
+  const since = parseFilterDate(filterParams?.since, false)
+  const until = parseFilterDate(filterParams?.until, true)
+  const to = until ?? new Date(now)
+  const from = since ?? new Date(to.getTime() - windowHours * 60 * 60 * 1000)
+  return { from, to }
+}
+
+/**
+ * Fetch sessions for the chart window in a single request capped at
+ * SESSIONS_HARD_CAP rows.
+ *
+ * When more rows exist beyond the cap, the result is marked `truncated: true`
+ * (derived from keyset `meta.has_more`) so the UI can surface a backpressure
+ * warning. Using a single request avoids repeated fan-out on the backend.
  *
  * Window boundaries are recomputed inside `queryFn` on every refetch so the
- * chart always shows the *current* trailing window, not a closed interval
- * frozen at mount time.
+ * chart always shows the *current* window (rolling, or the filtered range),
+ * not a closed interval frozen at mount time. Active categorical filters
+ * (butler/trigger/status/request_id) are forwarded so the chart matches the
+ * page's filter set.
  *
  * Pass `refetchInterval` from `useAutoRefresh()` so the user's auto-refresh
  * preference is honoured. Use `false` to disable polling entirely.
  */
-async function fetchAllSessionsForWindow(windowHours: number): Promise<SessionStripeResult> {
-  const w = rollingWindow(windowHours)
+async function fetchAllSessionsForWindow(
+  windowHours: number,
+  filterParams?: StripeFilterParams,
+): Promise<SessionStripeResult> {
+  const w = resolveWindow(windowHours, filterParams)
   const page = await getSessions({
+    ...filterParams,
     since: w.from.toISOString(),
     until: w.to.toISOString(),
     limit: SESSIONS_HARD_CAP,
-    offset: 0,
   })
 
   return {
     data: page.data,
     meta: page.meta,
-    // has_more is true only when backend total > SESSIONS_HARD_CAP
+    // has_more is true only when more rows exist beyond SESSIONS_HARD_CAP
     truncated: page.meta.has_more,
   }
 }
 
-export function useSessionStripeData(windowHours = 24, refetchInterval: number | false = 60_000) {
+export function useSessionStripeData(
+  windowHours = 24,
+  refetchInterval: number | false = 60_000,
+  filterParams?: StripeFilterParams,
+) {
   return useQuery({
-    // Key on window length only; refetchInterval drives the rolling advance.
-    queryKey: ["session-stripe", windowHours],
-    queryFn: () => fetchAllSessionsForWindow(windowHours),
+    // Key on window length + filters; refetchInterval drives the rolling advance.
+    queryKey: ["session-stripe", windowHours, filterParams ?? null],
+    queryFn: () => fetchAllSessionsForWindow(windowHours, filterParams),
     refetchInterval,
   })
 }
 
-/** Return the current rolling window boundaries for pivot/display use. */
-export function currentWindow(windowHours = 24): { from: Date; to: Date } {
-  return rollingWindow(windowHours)
+/** Return the current window boundaries for pivot/display use. */
+export function currentWindow(
+  windowHours = 24,
+  filterParams?: StripeFilterParams,
+): { from: Date; to: Date } {
+  return resolveWindow(windowHours, filterParams)
 }

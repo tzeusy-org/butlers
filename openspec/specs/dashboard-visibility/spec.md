@@ -17,9 +17,10 @@ The Sessions page (`/sessions`) provides a paginated, filterable table of sessio
 
 #### Scenario: Session filter bar
 - **WHEN** the operator interacts with the filter bar
-- **THEN** six filter controls are available: Butler (dropdown populated from `/api/butlers`), Trigger Source (free-text), Request ID (free-text, monospace), Status (dropdown: All / Success / Failed), From date, To date
-- **AND** changing any filter resets pagination to page 0
+- **THEN** six filter controls are available: Butler (dropdown populated from `/api/butlers`), Trigger Source (free-text), Request ID (free-text, monospace), Status (dropdown: All / Success / Failed / Running), From date, To date
+- **AND** changing any filter resets pagination (clears the keyset cursor)
 - **AND** a "Clear filters" button appears when any filter departs from its default
+- **AND** the active filters and cursor are mirrored to the URL query string, so a filtered view is shareable and survives refresh (state initializes from the URL)
 
 #### Scenario: Butler dropdown populated dynamically
 - **WHEN** the Sessions page loads
@@ -32,9 +33,25 @@ The Sessions page (`/sessions`) provides a paginated, filterable table of sessio
 - **AND** the click event does not propagate to the row click handler (uses `e.stopPropagation()`)
 
 #### Scenario: Session row click opens detail drawer
-- **WHEN** the operator clicks a session row
+- **WHEN** the operator clicks a session row, OR focuses it and presses Enter or Space
 - **THEN** a `SessionDetailDrawer` (right-side sheet) opens for the clicked session
 - **AND** the drawer receives the session's `id` and `butler` name
+- **AND** interactive rows are keyboard-accessible (`role="button"`, `tabIndex=0`, visible focus ring); Space suppresses native page scroll
+
+#### Scenario: Session volume visualization
+- **WHEN** the Sessions page renders
+- **THEN** a session-volume-over-time chart (`SessionStripeChart`, stacked per-butler bars) is shown as the page's primary visualization above the filter bar
+- **AND** the chart is scoped to the active filter window (it observes the same filter params as the list, not the page cursor)
+
+#### Scenario: Window-true KPI strip
+- **WHEN** the Sessions page renders
+- **THEN** a KPI strip (`SessionsKpiStrip`) shows window-true aggregates from `GET /api/sessions/aggregate` (sessions count, success rate, tokens in/out, top butler), scoped to the active filters across all butlers and labeled "Matching filters"
+- **AND** the aggregate recomputes when filters change but NOT when the operator pages (it is never derived from the fetched page)
+- **AND** when there are no completed sessions, the success rate renders a dash rather than a fabricated number
+
+#### Scenario: Session list error state
+- **WHEN** the cross-butler session fetch fails
+- **THEN** the page renders an error region with a retry action (not the empty "No sessions found" state), so a failed read is never presented as "no sessions"
 
 ### Requirement: Session Table Visual Treatment
 The session table (`SessionTable`) applies visual affordances to communicate status at a glance without requiring the operator to read every cell.
@@ -45,16 +62,17 @@ The session table (`SessionTable`) applies visual affordances to communicate sta
 
 #### Scenario: Status badge variants
 - **WHEN** `success === true`
-- **THEN** a green "Success" badge is rendered (`bg-emerald-600`)
+- **THEN** a "Success" badge is rendered via the shared `StatusBadge` (a semantic-token green dot plus a mandatory "Success" label, since the green falls below the light-mode 3:1 non-text contrast floor and must not be the sole signal)
 - **WHEN** `success === false`
-- **THEN** a red "Failed" badge is rendered (destructive variant)
+- **THEN** a "Failed" badge is rendered via `StatusBadge` (destructive variant)
 - **WHEN** `success === null` (session in progress)
-- **THEN** an outlined "Running" badge is rendered
+- **THEN** a "Running" badge is rendered via `StatusBadge` (an amber/muted dot plus a "Running" label)
+- **AND** the same `StatusBadge` is used by the session table, the detail drawer, and the session detail page (one token-reading source; no hardcoded color literals)
 
-#### Scenario: Butler badge color determinism
+#### Scenario: Butler identity in the Butler column
 - **WHEN** a butler name is displayed in the Butler column
-- **THEN** a color-coded badge is rendered using a deterministic hash of the butler name mod 8 colors (blue, violet, amber, teal, rose, indigo, cyan, orange)
-- **AND** the same butler always gets the same color across all pages and sessions
+- **THEN** a neutral `ButlerMark` letter-mark is rendered alongside the butler name in plain foreground text
+- **AND** the butler hue resolves only onto the letter-mark (per the design-language butler-hue-scope rule), never as a badge background; the same butler maps to the same letter-mark hue across the dashboard
 
 #### Scenario: Timestamp display
 - **WHEN** a session's `started_at` is rendered in the table
@@ -439,14 +457,20 @@ All visibility surfaces use TanStack Query (React Query) for data fetching with 
 - **AND** butler list, cost summary, issues, and failed notifications use their respective default intervals
 
 ### Requirement: Pagination Consistency
-All paginated surfaces follow the same offset-based pagination pattern using backend `PaginationMeta` responses.
+Offset-paginated surfaces share the same offset-based pattern using backend `PaginationMeta` responses. The cross-butler Sessions list (`GET /api/sessions`) is the one exception: it uses keyset (cursor) pagination, to avoid the cross-butler count fan-out.
 
 #### Scenario: Offset-based pagination contract
-- **WHEN** any paginated surface (Sessions, Traces, Notifications, Audit Log) renders data
+- **WHEN** an offset-paginated surface (Traces, Notifications, Audit Log, and the per-butler `GET /api/butlers/{name}/sessions` list) renders data
 - **THEN** it sends `offset` and `limit` parameters derived from `page * PAGE_SIZE`
 - **AND** the response `meta` object contains `total`, `offset`, `limit`, and `has_more`
 - **AND** Previous/Next buttons are disabled at the start/end of the result set
 - **AND** a "Page X of Y" indicator shows current position
+
+#### Scenario: Cross-butler session keyset pagination
+- **WHEN** the cross-butler Sessions list (`GET /api/sessions`) renders data
+- **THEN** it sends `limit` and an opaque `cursor` (omitted on the first page); the response `meta` object contains `limit`, `next_cursor`, and `has_more` (no `total`, no `offset`)
+- **AND** rows are ordered `started_at DESC, id DESC`; "Older" advances via `next_cursor` and is disabled when `has_more` is false; "Newer" steps back through the visited cursors
+- **AND** no "Page X of Y" indicator is shown (a total is intentionally not computed)
 
 #### Scenario: Timeline cursor pagination
 - **WHEN** the Timeline page loads more events

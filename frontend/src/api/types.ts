@@ -49,6 +49,24 @@ export interface PaginatedResponse<T> {
   meta: PaginationMeta;
 }
 
+/**
+ * Keyset (cursor) pagination metadata for the cross-butler session list.
+ * Drops the expensive `count(*)` total in favour of an opaque forward cursor.
+ * `next_cursor` is base64url-encoded and opaque to the client; pass it back as
+ * the `cursor` query param to fetch the next (older) page.
+ */
+export interface KeysetMeta {
+  limit: number;
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+/** API response wrapper for keyset-paginated list endpoints. */
+export interface KeysetResponse<T> {
+  data: T[];
+  meta: KeysetMeta;
+}
+
 // ---------------------------------------------------------------------------
 // Domain summaries
 // ---------------------------------------------------------------------------
@@ -165,14 +183,39 @@ export interface SessionDetail {
   } | null;
 }
 
+/** One per-butler count bucket in a session aggregate, sorted by count desc. */
+export interface SessionAggregateButler {
+  butler: string;
+  count: number;
+}
+
+/**
+ * Window-scoped, filter-aware rollup returned by GET /api/sessions/aggregate.
+ * Counts span all butlers matching the active filters (window-true), NOT the
+ * fetched page. `success_rate` is null when no terminal sessions match
+ * (success_count + failed_count == 0). Cost is intentionally omitted.
+ */
+export interface SessionAggregate {
+  total: number;
+  success_count: number;
+  failed_count: number;
+  running_count: number;
+  success_rate: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  by_butler: SessionAggregateButler[];
+}
+
 /** Query parameters for session list endpoints. */
 export interface SessionParams {
   offset?: number;
   limit?: number;
+  /** Opaque keyset cursor for the cross-butler list. First page omits it. */
+  cursor?: string;
   butler?: string;
   trigger_source?: string;
   request_id?: string;
-  status?: string; // "all" | "success" | "failed"
+  status?: string; // "all" | "success" | "failed" | "running"
   since?: string;
   until?: string;
 }

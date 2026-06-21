@@ -72,9 +72,11 @@ import type {
   ScheduleCreate,
   ScheduleUpdate,
   SearchResults,
+  SessionAggregate,
   SessionDetail,
   SessionParams,
   SessionSummary,
+  KeysetResponse,
   StateEntry,
   StateSetRequest,
   TimelineParams,
@@ -528,6 +530,7 @@ function sessionSearchParams(params?: SessionParams): URLSearchParams {
     sp.set("trigger_source", params.trigger_source);
   if (params?.request_id != null && params.request_id !== "")
     sp.set("request_id", params.request_id);
+  if (params?.cursor != null && params.cursor !== "") sp.set("cursor", params.cursor);
   if (params?.status != null && params.status !== "all") sp.set("status", params.status);
   // Backend uses from_date/to_date; SessionParams uses since/until as field names.
   if (params?.since != null && params.since !== "") sp.set("from_date", params.since);
@@ -535,13 +538,36 @@ function sessionSearchParams(params?: SessionParams): URLSearchParams {
   return sp;
 }
 
-/** Fetch a paginated list of sessions across all butlers. */
+/**
+ * Fetch a keyset-paginated list of sessions across all butlers.
+ *
+ * Returns a {@link KeysetResponse}: `meta.next_cursor` is an opaque forward
+ * cursor (pass it back as `params.cursor` for the next/older page) and
+ * `meta.has_more` indicates whether more rows exist. There is no `total` —
+ * the cross-butler list dropped the expensive count for keyset performance.
+ */
 export function getSessions(
   params?: SessionParams,
-): Promise<PaginatedResponse<SessionSummary>> {
+): Promise<KeysetResponse<SessionSummary>> {
   const qs = sessionSearchParams(params).toString();
   const path = qs ? `/sessions?${qs}` : "/sessions";
-  return apiFetch<PaginatedResponse<SessionSummary>>(path);
+  return apiFetch<KeysetResponse<SessionSummary>>(path);
+}
+
+/**
+ * Fetch a window-scoped, filter-aware session aggregate across all butlers.
+ *
+ * Reuses the SAME filter mapping as {@link getSessions} (since→from_date,
+ * until→to_date) but is NOT paginated — the counts are window-true, not
+ * page-scoped. Callers should key any cache on the filter params only, never
+ * the cursor, so the rollup recomputes on filter change but not on paging.
+ */
+export function getSessionAggregate(
+  params?: SessionParams,
+): Promise<ApiResponse<SessionAggregate>> {
+  const qs = sessionSearchParams(params).toString();
+  const path = qs ? `/sessions/aggregate?${qs}` : "/sessions/aggregate";
+  return apiFetch<ApiResponse<SessionAggregate>>(path);
 }
 
 /** Fetch a single session by ID (cross-butler). */

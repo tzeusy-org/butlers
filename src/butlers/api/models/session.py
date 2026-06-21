@@ -108,6 +108,36 @@ class LatencyStats(BaseModel):
     model: str | None = None
 
 
+class SessionAggregateButler(BaseModel):
+    """A single butler's matching-session count for the aggregate rollup."""
+
+    butler: str
+    count: int
+
+
+class SessionAggregate(BaseModel):
+    """Window-scoped, filter-aware session rollup across all butlers.
+
+    Returned by ``GET /api/sessions/aggregate``.  ``total`` counts every session
+    matching the active filters across all queried butlers (window-true, not the
+    fetched page).  ``running_count`` is sessions with ``success IS NULL``.
+
+    ``success_rate`` is ``success_count / (success_count + failed_count)`` or
+    ``None`` when the denominator is 0 (no completed sessions to rate).
+
+    Cost is intentionally omitted — it is not part of the summary contract.
+    """
+
+    total: int
+    success_count: int
+    failed_count: int
+    running_count: int
+    success_rate: float | None = None
+    input_tokens: int
+    output_tokens: int
+    by_butler: list[SessionAggregateButler] = []
+
+
 class SessionDetail(BaseModel):
     """Full session record with all fields from the sessions table."""
 

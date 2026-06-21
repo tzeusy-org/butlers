@@ -4,8 +4,8 @@ import { Time } from "@/components/ui/time";
 import { CopyIcon, CheckIcon } from "lucide-react";
 
 import { useSessionDetail } from "@/hooks/use-sessions";
-import { Badge } from "@/components/ui/badge";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge";
+import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Sheet,
@@ -47,24 +47,6 @@ function formatDuration(ms: number | null): string {
 function formatTokens(n: number | null): string {
   if (n == null) return "\u2014";
   return n.toLocaleString();
-}
-
-function statusBadge(success: boolean | null) {
-  if (success === true) {
-    return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-        Success
-      </Badge>
-    );
-  }
-  if (success === false) {
-    return <Badge variant="destructive">Failed</Badge>;
-  }
-  return (
-    <Badge variant="outline" className="border-gray-400 text-gray-500">
-      Running
-    </Badge>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -139,16 +121,26 @@ export function SessionDetailDrawer({
   sessionId,
   onClose,
 }: SessionDetailDrawerProps) {
-  const { data, isLoading } = useSessionDetail(butler, sessionId);
+  const { data, isLoading, isError } = useSessionDetail(butler, sessionId);
   const session = data?.data ?? null;
 
   return (
     <Sheet open={sessionId != null} onOpenChange={(open) => !open && onClose()}>
       <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
-        {isLoading || !session ? (
+        {isError || (!isLoading && !session) ? (
           <>
             <SheetHeader>
-              <SheetTitle>Session Detail</SheetTitle>
+              <SheetTitle>Session detail</SheetTitle>
+              <SheetDescription>
+                This session could not be loaded. It may not exist or the butler may be
+                unavailable.
+              </SheetDescription>
+            </SheetHeader>
+          </>
+        ) : isLoading || !session ? (
+          <>
+            <SheetHeader>
+              <SheetTitle>Session detail</SheetTitle>
               <SheetDescription>Loading session information...</SheetDescription>
             </SheetHeader>
             <DrawerSkeleton />
@@ -159,7 +151,7 @@ export function SessionDetailDrawer({
             <SheetHeader>
               <SheetTitle className="flex items-center gap-2 text-sm">
                 <span className="font-mono truncate">{session.id}</span>
-                {statusBadge(session.success)}
+                <StatusBadge success={session.success} />
               </SheetTitle>
               <SheetDescription>
                 {session.butler} &mdash; {session.trigger_source}

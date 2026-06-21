@@ -1,8 +1,11 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 
 import type { SessionParams, SessionSummary } from "@/api/types";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
+import { SessionsKpiStrip } from "@/components/sessions/SessionsKpiStrip";
 import { SessionTable } from "@/components/sessions/SessionTable";
+import { SessionStripeChart } from "@/components/dashboard/SessionStripeChart";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Page } from "@/components/ui/page";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSessions } from "@/hooks/use-sessions";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
@@ -28,10 +32,11 @@ const STATUS_OPTIONS = [
   { value: "all", label: "All" },
   { value: "success", label: "Success" },
   { value: "failed", label: "Failed" },
+  { value: "running", label: "Running" },
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Filter state
+// URL-state — filters + cursor mirrored to the querystring (shareable, refresh-safe)
 // ---------------------------------------------------------------------------
 
 interface FilterState {
@@ -52,25 +57,55 @@ const EMPTY_FILTERS: FilterState = {
   until: "",
 };
 
+/** Parse filter state out of the querystring (URL is the source of truth). */
+function parseFilters(sp: URLSearchParams): FilterState {
+  return {
+    butler: sp.get("butler") ?? "all",
+    trigger_source: sp.get("trigger") ?? "",
+    request_id: sp.get("request") ?? "",
+    status: sp.get("status") ?? "all",
+    since: sp.get("since") ?? "",
+    until: sp.get("until") ?? "",
+  };
+}
+
+/** Write filter state into a URLSearchParams, omitting default/empty values. */
+function applyFilters(sp: URLSearchParams, f: FilterState): void {
+  const set = (key: string, value: string, empty: string) => {
+    if (value !== empty) sp.set(key, value);
+    else sp.delete(key);
+  };
+  set("butler", f.butler, "all");
+  set("trigger", f.trigger_source, "");
+  set("request", f.request_id, "");
+  set("status", f.status, "all");
+  set("since", f.since, "");
+  set("until", f.until, "");
+}
+
 // ---------------------------------------------------------------------------
 // SessionsPage
 // ---------------------------------------------------------------------------
 
 export default function SessionsPage() {
-  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
-  const [page, setPage] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = parseFilters(searchParams);
+  const cursor = searchParams.get("cursor") ?? undefined;
+
+  // History of cursors for pages BEFORE the current one (powers "Newer").
+  const [prevCursors, setPrevCursors] = useState<(string | undefined)[]>([]);
+
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedSessionButler, setSelectedSessionButler] = useState<string>("");
   const autoRefreshControl = useAutoRefresh(10_000);
 
-  // Fetch butler names for the dropdown
+  // Fetch butler names for the dropdown + chart hue ordering.
   const { data: butlersResponse } = useButlers();
-  const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
+  const butlers = butlersResponse?.data ?? [];
+  const butlerNames = butlers.map((b) => b.name);
 
-  // Build API params from filter state
-  const params: SessionParams = {
-    offset: page * PAGE_SIZE,
-    limit: PAGE_SIZE,
+  // Filter params shared by the chart and KPI strip (window-true, no cursor).
+  const filterParams: SessionParams = {
     ...(filters.butler !== "all" ? { butler: filters.butler } : {}),
     ...(filters.trigger_source ? { trigger_source: filters.trigger_source } : {}),
     ...(filters.request_id ? { request_id: filters.request_id } : {}),
@@ -79,24 +114,83 @@ export default function SessionsPage() {
     ...(filters.until ? { until: filters.until } : {}),
   };
 
-  const { data: sessionsResponse, isLoading } = useSessions(params, { refetchInterval: autoRefreshControl.refetchInterval });
+  // List params add pagination (cursor + limit) on top of the filters.
+  const params: SessionParams = {
+    limit: PAGE_SIZE,
+    ...(cursor ? { cursor } : {}),
+    ...filterParams,
+  };
+
+  const {
+    data: sessionsResponse,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useSessions(params, { refetchInterval: autoRefreshControl.refetchInterval });
   const sessions = sessionsResponse?.data ?? [];
   const meta = sessionsResponse?.meta;
-  const total = meta?.total ?? 0;
   const hasMore = meta?.has_more ?? false;
+  const nextCursor = meta?.next_cursor ?? null;
 
-  // Pagination helpers
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = page + 1;
+  const canGoNewer = cursor != null || prevCursors.length > 0;
+
+  // -- Filter handlers -------------------------------------------------------
 
   function handleFilterChange(key: keyof FilterState, value: string) {
-    setFilters((prev) => ({ ...prev, [key]: value }));
-    setPage(0);
+    setPrevCursors([]);
+    setSearchParams((prev) => {
+      const sp = new URLSearchParams(prev);
+      applyFilters(sp, { ...parseFilters(prev), [key]: value });
+      sp.delete("cursor");
+      return sp;
+    });
   }
 
   function handleClearFilters() {
-    setFilters(EMPTY_FILTERS);
-    setPage(0);
+    setPrevCursors([]);
+    setSearchParams((prev) => {
+      const sp = new URLSearchParams(prev);
+      applyFilters(sp, EMPTY_FILTERS);
+      sp.delete("cursor");
+      return sp;
+    });
+  }
+
+  function handleRequestIdClick(requestId: string) {
+    handleFilterChange("request_id", requestId);
+  }
+
+  // -- Keyset pagination handlers --------------------------------------------
+
+  function goOlder() {
+    if (!nextCursor) return;
+    setPrevCursors((s) => [...s, cursor]);
+    setSearchParams((prev) => {
+      const sp = new URLSearchParams(prev);
+      sp.set("cursor", nextCursor);
+      return sp;
+    });
+  }
+
+  function goNewer() {
+    if (prevCursors.length > 0) {
+      const target = prevCursors[prevCursors.length - 1];
+      setPrevCursors((s) => s.slice(0, -1));
+      setSearchParams((prev) => {
+        const sp = new URLSearchParams(prev);
+        if (target) sp.set("cursor", target);
+        else sp.delete("cursor");
+        return sp;
+      });
+    } else {
+      // Reload-safe fallback: jump back to the first page.
+      setSearchParams((prev) => {
+        const sp = new URLSearchParams(prev);
+        sp.delete("cursor");
+        return sp;
+      });
+    }
   }
 
   const hasActiveFilters =
@@ -112,28 +206,32 @@ export default function SessionsPage() {
     setSelectedSessionButler(session.butler ?? "");
   }
 
-  function handleRequestIdClick(requestId: string) {
-    setFilters((prev) => ({ ...prev, request_id: requestId }));
-    setPage(0);
-  }
-
   return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Sessions</h1>
-          <p className="text-muted-foreground mt-1">
-            Browse session history across all butlers.
-          </p>
-        </div>
+    <Page
+      archetype="list"
+      title="Sessions"
+      description="Browse session history across all butlers."
+      actions={
         <AutoRefreshToggle
           enabled={autoRefreshControl.enabled}
           interval={autoRefreshControl.interval}
           onToggle={autoRefreshControl.setEnabled}
           onIntervalChange={autoRefreshControl.setInterval}
         />
-      </div>
+      }
+      error={isError ? error : null}
+      onRetry={() => refetch()}
+      empty={null}
+    >
+      {/* KPI strip — window-true, scoped to the active filters (not the page rows) */}
+      <SessionsKpiStrip filterParams={filterParams} />
+
+      {/* Primary visualization — wired to the active filters, not the cursor */}
+      <Card>
+        <CardContent className="pt-6">
+          <SessionStripeChart butlers={butlers} filterParams={filterParams} />
+        </CardContent>
+      </Card>
 
       {/* Filter bar */}
       <Card>
@@ -141,9 +239,7 @@ export default function SessionsPage() {
           <div className="flex flex-wrap items-end gap-4">
             {/* Butler dropdown */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">
-                Butler
-              </label>
+              <label className="text-muted-foreground text-xs font-medium">Butler</label>
               <Select
                 value={filters.butler}
                 onValueChange={(v) => handleFilterChange("butler", v)}
@@ -198,9 +294,7 @@ export default function SessionsPage() {
 
             {/* Status dropdown */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">
-                Status
-              </label>
+              <label className="text-muted-foreground text-xs font-medium">Status</label>
               <Select
                 value={filters.status}
                 onValueChange={(v) => handleFilterChange("status", v)}
@@ -254,11 +348,7 @@ export default function SessionsPage() {
 
             {/* Clear filters */}
             {hasActiveFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClearFilters}
-              >
+              <Button variant="ghost" size="sm" onClick={handleClearFilters}>
                 Clear filters
               </Button>
             )}
@@ -279,28 +369,27 @@ export default function SessionsPage() {
         </CardContent>
       </Card>
 
-      {/* Pagination controls */}
-      {total > 0 && (
-        <div className="flex items-center justify-between">
-          <p className="text-muted-foreground text-sm">
-            Page {currentPage} of {totalPages}
-          </p>
+      {/* Keyset pagination controls (Newer / Older — no page count) */}
+      {(sessions.length > 0 || canGoNewer) && (
+        <div className="flex items-center justify-end">
           <div className="flex gap-2">
             <Button
               variant="outline"
               size="sm"
-              disabled={page === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={!canGoNewer}
+              onClick={goNewer}
+              data-testid="sessions-newer"
             >
-              Previous
+              Newer
             </Button>
             <Button
               variant="outline"
               size="sm"
               disabled={!hasMore}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={goOlder}
+              data-testid="sessions-older"
             >
-              Next
+              Older
             </Button>
           </div>
         </div>
@@ -312,6 +401,6 @@ export default function SessionsPage() {
         sessionId={selectedSessionId}
         onClose={() => setSelectedSessionId(null)}
       />
-    </div>
+    </Page>
   );
 }

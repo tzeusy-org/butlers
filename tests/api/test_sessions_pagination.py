@@ -1,15 +1,16 @@
 """Tests for /api/sessions and /api/butlers/{name}/sessions pagination.
 
 Verifies:
-- Backend accepts limit up to 1000 (raised from 200)
-- limit > 1000 is rejected with 422
-- Pagination meta (has_more, total, offset, limit) is correct
-- Butler-scoped endpoint also accepts limit up to 1000
+- Cross-butler /api/sessions uses keyset (cursor) pagination — no offset/total
+- Keyset meta (limit, next_cursor, has_more) is correct
+- next_cursor points to the last returned row; malformed cursor -> 422
+- Backend accepts limit up to 1000; limit > 1000 is rejected with 422
+- Butler-scoped endpoint keeps offset/total and accepts limit up to 1000
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.read_models.sessions_v1 import decode_session_cursor
 from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
 
 pytestmark = pytest.mark.unit
@@ -30,14 +32,14 @@ _NOW = datetime.now(tz=UTC)
 # ---------------------------------------------------------------------------
 
 
-def _make_session_row(*, butler: str = "atlas") -> dict:
+def _make_session_row(*, butler: str = "atlas", started_at: datetime | None = None) -> dict:
     return {
         "id": uuid4(),
         "prompt": "test prompt",
         "trigger_source": "api",
         "request_id": None,
         "success": True,
-        "started_at": _NOW,
+        "started_at": started_at or _NOW,
         "completed_at": _NOW,
         "duration_ms": 500,
         "model": "claude-sonnet",
@@ -47,10 +49,14 @@ def _make_session_row(*, butler: str = "atlas") -> dict:
     }
 
 
-def _make_app_with_sessions(rows: list[dict], *, total: int | None = None) -> object:
-    """Wire a fresh app with mock fan_out returning the given rows."""
-    if total is None:
-        total = len(rows)
+def _make_app_with_sessions(rows: list[dict]) -> object:
+    """Wire a fresh app with mock fan_out returning the given rows.
+
+    The keyset list endpoint runs a single data fan_out per request (no
+    count(*)); this mock returns the supplied rows for that query.  The
+    read-model fetches ``limit + 1`` and computes ``has_more`` from the merged
+    length, so pass ``limit + 1`` rows to exercise ``has_more=True``.
+    """
 
     def _make_record(row: dict):
         m = MagicMock()
@@ -59,11 +65,8 @@ def _make_app_with_sessions(rows: list[dict], *, total: int | None = None) -> ob
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    # fan_out returns {butler_name: [rows]}
     mock_db.fan_out = AsyncMock(
-        side_effect=lambda sql, args, **kw: (
-            {"atlas": [[total]]} if "count" in sql else {"atlas": [_make_record(r) for r in rows]}
-        )
+        side_effect=lambda sql, args, **kw: {"atlas": [_make_record(r) for r in rows]}
     )
 
     app = create_app()
@@ -128,32 +131,85 @@ async def test_sessions_rejects_limit_above_1000() -> None:
     assert resp.status_code == 422
 
 
-async def test_sessions_has_more_true_when_more_pages_exist() -> None:
-    """PaginationMeta.has_more is True when total > offset + limit."""
-    rows = [_make_session_row() for _ in range(50)]
-    app = _make_app_with_sessions(rows, total=300)
+async def test_sessions_has_more_true_when_more_rows_exist() -> None:
+    """KeysetMeta.has_more is True when the merge yields more than limit rows.
+
+    The read-model fetches limit+1 per butler; returning limit+1 rows means a
+    next page exists, so has_more is True and next_cursor is populated.
+    """
+    rows = [
+        _make_session_row(started_at=_NOW - timedelta(seconds=i)) for i in range(51)
+    ]  # limit(50) + 1
+    app = _make_app_with_sessions(rows)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/sessions?limit=50&offset=0")
+        resp = await client.get("/api/sessions?limit=50")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["meta"]["total"] == 300
+    assert body["meta"]["limit"] == 50
     assert body["meta"]["has_more"] is True
+    assert body["meta"]["next_cursor"] is not None
+    # Exactly limit rows are returned (the +1 sentinel is dropped).
+    assert len(body["data"]) == 50
+    # "total" / "offset" are gone from the keyset envelope.
+    assert "total" not in body["meta"]
+    assert "offset" not in body["meta"]
 
 
 async def test_sessions_has_more_false_on_last_page() -> None:
-    """PaginationMeta.has_more is False when offset + limit >= total."""
-    rows = [_make_session_row() for _ in range(10)]
-    app = _make_app_with_sessions(rows, total=10)
+    """KeysetMeta.has_more is False and next_cursor is null on the last page."""
+    rows = [_make_session_row(started_at=_NOW - timedelta(seconds=i)) for i in range(10)]
+    app = _make_app_with_sessions(rows)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/sessions?limit=50&offset=0")
+        resp = await client.get("/api/sessions?limit=50")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["meta"]["total"] == 10
     assert body["meta"]["has_more"] is False
+    assert body["meta"]["next_cursor"] is None
+    assert len(body["data"]) == 10
+
+
+async def test_sessions_next_cursor_points_to_last_returned_row() -> None:
+    """next_cursor decodes to the (started_at, id) of the last RETURNED row."""
+    rows = [_make_session_row(started_at=_NOW - timedelta(seconds=i)) for i in range(51)]
+    app = _make_app_with_sessions(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions?limit=50")
+    body = resp.json()
+    last_item = body["data"][-1]
+    cursor_started_at, cursor_id = decode_session_cursor(body["meta"]["next_cursor"])
+    assert str(cursor_id) == last_item["id"]
+    # Compare as instants — the JSON envelope serializes tz as 'Z' while the
+    # cursor encodes '+00:00'; both denote the same moment.
+    assert cursor_started_at == datetime.fromisoformat(last_item["started_at"])
+
+
+async def test_sessions_malformed_cursor_returns_422() -> None:
+    """A cursor that is not a valid base64url JSON keyset token -> 422."""
+    app = _make_app_with_sessions([])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions?cursor=not-a-valid-cursor")
+    assert resp.status_code == 422
+
+
+async def test_sessions_accepts_valid_cursor() -> None:
+    """A well-formed cursor is accepted and a second page is fetched (200)."""
+    from butlers.api.read_models.sessions_v1 import encode_session_cursor
+
+    cursor = encode_session_cursor(_NOW, uuid4())
+    app = _make_app_with_sessions([_make_session_row()])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions?limit=50&cursor={cursor}")
+    assert resp.status_code == 200
 
 
 async def test_sessions_rows_include_token_counts() -> None:
@@ -187,22 +243,6 @@ async def test_butler_sessions_rows_include_token_counts() -> None:
     item = resp.json()["data"][0]
     assert item["input_tokens"] == 1234
     assert item["output_tokens"] == 567
-
-
-async def test_sessions_offset_pagination() -> None:
-    """GET /api/sessions with offset returns correct meta fields."""
-    rows = [_make_session_row() for _ in range(50)]
-    app = _make_app_with_sessions(rows, total=250)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/sessions?limit=50&offset=200")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["meta"]["offset"] == 200
-    assert body["meta"]["limit"] == 50
-    # offset(200) + limit(50) == total(250) → has_more False
-    assert body["meta"]["has_more"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
-// session-stripe-pagination.test.ts — bu-51str
+// session-stripe-pagination.test.ts — bu-51str (keyset migration)
 //
-// Tests the single-request fetch logic in session-stripe-utils:
-// - A single request is issued with limit=SESSIONS_HARD_CAP
-// - truncated=true when backend has_more=true (total > SESSIONS_HARD_CAP)
+// Tests the single-request fetch logic in session-stripe-utils against the
+// keyset list contract (no offset/total):
+// - A single request is issued with limit=SESSIONS_HARD_CAP (no offset)
+// - truncated=true when keyset meta.has_more=true (rows beyond the cap)
 // - truncated=false when all sessions fit within SESSIONS_HARD_CAP
-// - truncated=false when total equals exactly SESSIONS_HARD_CAP (has_more=false)
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, beforeEach } from "vitest"
@@ -33,14 +33,12 @@ function makeSession(butler = "home") {
 
 function makePage(
   sessions: Array<{ butler: string; started_at: string }>,
-  total: number,
-  offset: number,
   limit: number,
+  has_more: boolean,
 ) {
-  const has_more = offset + limit < total
   return {
     data: sessions,
-    meta: { total, offset, limit, has_more },
+    meta: { limit, next_cursor: has_more ? "cursor-xyz" : null, has_more },
   }
 }
 
@@ -85,22 +83,22 @@ async function invokeQueryFn() {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("session-stripe fetch — single request semantics", () => {
-  it("issues exactly one request with limit=SESSIONS_HARD_CAP", async () => {
+describe("session-stripe fetch — single request semantics (keyset)", () => {
+  it("issues exactly one request with limit=SESSIONS_HARD_CAP and no offset", async () => {
     const sessions = Array.from({ length: 10 }, () => makeSession())
-    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 10, 0, SESSIONS_HARD_CAP))
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, SESSIONS_HARD_CAP, false))
 
     await invokeQueryFn()
 
     expect(mockGetSessions).toHaveBeenCalledTimes(1)
-    expect(mockGetSessions).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: SESSIONS_HARD_CAP, offset: 0 }),
-    )
+    const call = mockGetSessions.mock.calls[0][0]
+    expect(call).toMatchObject({ limit: SESSIONS_HARD_CAP })
+    expect(call.offset).toBeUndefined()
   })
 
-  it("returns all sessions and truncated=false when total < SESSIONS_HARD_CAP", async () => {
+  it("returns all sessions and truncated=false when there are no more rows", async () => {
     const sessions = Array.from({ length: 10 }, () => makeSession())
-    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 10, 0, SESSIONS_HARD_CAP))
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, SESSIONS_HARD_CAP, false))
 
     const result = await invokeQueryFn()
 
@@ -108,10 +106,9 @@ describe("session-stripe fetch — single request semantics", () => {
     expect(result.truncated).toBe(false)
   })
 
-  it("sets truncated=true when backend has_more=true (total > SESSIONS_HARD_CAP)", async () => {
-    // Simulate backend with 1200 total sessions; limit=1000 leaves 200 beyond the cap
+  it("sets truncated=true when keyset meta.has_more=true (rows beyond the cap)", async () => {
     const sessions = Array.from({ length: SESSIONS_HARD_CAP }, () => makeSession())
-    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 1200, 0, SESSIONS_HARD_CAP))
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, SESSIONS_HARD_CAP, true))
 
     const result = await invokeQueryFn()
 
@@ -119,10 +116,9 @@ describe("session-stripe fetch — single request semantics", () => {
     expect(result.truncated).toBe(true)
   })
 
-  it("does NOT set truncated when total equals exactly SESSIONS_HARD_CAP", async () => {
-    // Exactly 1000 sessions — has_more=false because offset(0)+limit(1000) == total(1000)
+  it("does NOT set truncated when has_more=false at exactly the cap", async () => {
     const sessions = Array.from({ length: SESSIONS_HARD_CAP }, () => makeSession())
-    mockGetSessions.mockResolvedValueOnce(makePage(sessions, SESSIONS_HARD_CAP, 0, SESSIONS_HARD_CAP))
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, SESSIONS_HARD_CAP, false))
 
     const result = await invokeQueryFn()
 
@@ -132,17 +128,15 @@ describe("session-stripe fetch — single request semantics", () => {
 })
 
 describe("session-stripe fetch — correct query parameters", () => {
-  it("passes since/until/limit/offset to getSessions correctly", async () => {
+  it("passes since/until/limit to getSessions correctly (no offset)", async () => {
     const sessions = Array.from({ length: 5 }, () => makeSession())
-    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 5, 0, SESSIONS_HARD_CAP))
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, SESSIONS_HARD_CAP, false))
 
     await invokeQueryFn()
 
     const call = mockGetSessions.mock.calls[0][0]
-    expect(call).toMatchObject({
-      limit: SESSIONS_HARD_CAP,
-      offset: 0,
-    })
+    expect(call).toMatchObject({ limit: SESSIONS_HARD_CAP })
+    expect(call.offset).toBeUndefined()
     expect(typeof call.since).toBe("string")
     expect(typeof call.until).toBe("string")
   })

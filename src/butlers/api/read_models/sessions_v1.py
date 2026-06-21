@@ -13,9 +13,15 @@ Column constants:
     DETAIL_COLUMNS
 
 Query functions (all async):
-    query_session_summaries_fan_out(db, where, args, butler_names) -> FanOutSummaryResult
+    query_session_summaries_keyset_fan_out(db, where, args, *, limit, cursor, butler_names)
+        -> FanOutKeysetResult
+    query_session_aggregate_fan_out(db, where, args, *, butler_names) -> FanOutAggregateResult
     query_session_detail_fan_out(db, session_id) -> FanOutDetailResult
     query_session_detail_single(pool, session_id) -> SingleDetailResult
+
+Cursor helpers:
+    encode_session_cursor(started_at, row_id) -> str
+    decode_session_cursor(cursor) -> (datetime, UUID)
 
 Row-to-DTO converters:
     row_to_summary(row, butler) -> SessionSummaryRow
@@ -24,6 +30,7 @@ Row-to-DTO converters:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass, field
@@ -118,11 +125,45 @@ class SessionDetailRow:
 
 
 @dataclass
-class FanOutSummaryResult:
-    """Result of a cross-butler session summary fan-out."""
+class FanOutKeysetResult:
+    """Result of a cross-butler keyset (cursor) session summary fan-out.
 
-    total: int
+    ``rows`` is the merged page of at most ``limit`` summary DTOs, already
+    sorted ``(started_at DESC, id DESC)``.  ``next_cursor`` encodes the keyset
+    position of the last returned row when more rows exist, else ``None``.
+    No ``total`` is computed — that is the keyset perf win.
+    """
+
     rows: list[SessionSummaryRow] = field(default_factory=list)
+    has_more: bool = False
+    next_cursor: str | None = None
+
+
+@dataclass
+class ButlerCount:
+    """A single butler's matching-session count (for aggregate ``by_butler``)."""
+
+    butler: str
+    count: int
+
+
+@dataclass
+class FanOutAggregateResult:
+    """Combined cross-butler session aggregate (scalars summed across butlers).
+
+    ``by_butler`` lists each butler's ``total`` (count > 0 only), sorted by
+    count descending.  ``success_rate`` is intentionally NOT computed here —
+    the router derives it (``success_count / (success_count + failed_count)``
+    or ``None`` when the denominator is 0).
+    """
+
+    total: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    running_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    by_butler: list[ButlerCount] = field(default_factory=list)
 
 
 @dataclass
@@ -215,14 +256,70 @@ def row_to_detail(row: asyncpg.Record, *, butler: str | None = None) -> SessionD
 # ---------------------------------------------------------------------------
 
 
-async def query_session_summaries_fan_out(
+def encode_session_cursor(started_at: datetime, row_id: UUID | str) -> str:
+    """Encode a keyset position into an opaque cursor string.
+
+    The cursor encodes the ``(started_at, id)`` tuple of the last row returned.
+    It is base64url-encoded JSON so it is safe to use as a query parameter.
+
+    Parameters
+    ----------
+    started_at:
+        Timestamp of the last row (``started_at`` column, tz-aware).
+    row_id:
+        Primary key (UUID) of the last row.
+    """
+    payload = {"t": started_at.isoformat(), "id": str(row_id)}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def decode_session_cursor(cursor: str) -> tuple[datetime, UUID]:
+    """Decode an opaque session cursor back to ``(started_at, id)``.
+
+    Parameters
+    ----------
+    cursor:
+        Opaque cursor string as returned by :func:`encode_session_cursor`.
+
+    Returns
+    -------
+    tuple[datetime, UUID]
+        The ``(started_at, id)`` keyset position.
+
+    Raises
+    ------
+    ValueError
+        If the cursor is malformed or cannot be decoded.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        started_at = datetime.fromisoformat(payload["t"])
+        row_id = UUID(str(payload["id"]))
+    except (KeyError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid session cursor: {exc}") from exc
+    return started_at, row_id
+
+
+async def query_session_summaries_keyset_fan_out(
     db: DatabaseManager,
     where_clause: str,
     args: tuple[Any, ...],
     *,
+    limit: int,
+    cursor: str | None = None,
     butler_names: list[str] | None = None,
-) -> FanOutSummaryResult:
-    """Fan out session summary queries across all (or a subset of) butlers.
+) -> FanOutKeysetResult:
+    """Fan out a keyset (cursor) session summary query across butlers.
+
+    Each per-butler query fetches ``limit + 1`` rows ordered
+    ``(started_at DESC, id DESC)`` after the cursor position, so no
+    ``count(*)`` is ever run.  Rows from all butlers are merged, re-sorted on
+    the same key, and truncated to ``limit``.
+
+    Cross-shard correctness: the globally (``limit + 1``)-th row is guaranteed
+    to be within some single butler's ``limit + 1`` fetch, so fetching
+    ``limit + 1`` per butler and merging yields an exact page boundary.
 
     Parameters
     ----------
@@ -231,7 +328,94 @@ async def query_session_summaries_fan_out(
     where_clause:
         A SQL WHERE clause fragment (including the leading ``WHERE`` keyword,
         or an empty string for no filter).  Must use positional placeholders
-        starting at ``$1`` matching the supplied *args*.
+        ``$1..$N`` matching the supplied *args*.
+    args:
+        Positional arguments for the WHERE clause parameters.
+    limit:
+        Maximum number of rows to return in the merged page.
+    cursor:
+        Opaque cursor from a prior page's ``next_cursor``.  ``None`` fetches
+        the first page.  Malformed cursors raise ``ValueError``.
+    butler_names:
+        Subset of butler names to query.  Defaults to all registered butlers.
+
+    Returns
+    -------
+    FanOutKeysetResult
+        The merged, sorted, truncated page plus ``has_more`` / ``next_cursor``.
+    """
+    keyset_clause = where_clause
+    keyset_args: list[Any] = list(args)
+    if cursor is not None:
+        started_at, row_id = decode_session_cursor(cursor)
+        idx = len(keyset_args) + 1
+        predicate = f"(started_at, id) < (${idx}, ${idx + 1})"
+        keyset_clause += (" AND " if keyset_clause else " WHERE ") + predicate
+        keyset_args.extend([started_at, row_id])
+
+    data_sql = (
+        f"SELECT {SUMMARY_COLUMNS} FROM sessions{keyset_clause} "
+        f"ORDER BY started_at DESC, id DESC LIMIT {limit + 1}"
+    )
+
+    data_results = await db.fan_out(data_sql, tuple(keyset_args), butler_names=butler_names)
+
+    merged: list[SessionSummaryRow] = []
+    for butler_name, db_rows in data_results.items():
+        for db_row in db_rows:
+            merged.append(row_to_summary(db_row, butler=butler_name))
+
+    merged.sort(key=lambda s: (s.started_at, s.id), reverse=True)
+
+    has_more = len(merged) > limit
+    page = merged[:limit]
+
+    next_cursor = (
+        encode_session_cursor(page[-1].started_at, page[-1].id) if has_more and page else None
+    )
+
+    return FanOutKeysetResult(rows=page, has_more=has_more, next_cursor=next_cursor)
+
+
+# Query-budget: one aggregate scan per butler over the filtered window — no row
+# materialization, no count(*) of a paged set.  Each butler runs a single pass
+# emitting six scalars (count + three FILTERed counts + two coalesced sums);
+# with ix_sessions_started_at (core_128) the time-range predicate is
+# index-backed.  Combined cost is O(rows_in_window) per butler, fanned out
+# concurrently.  Acceptable at current session volumes for a per-page KPI strip.
+_AGGREGATE_SQL_TEMPLATE = (
+    "SELECT "
+    "count(*) AS total, "
+    "count(*) FILTER (WHERE success IS TRUE) AS success_count, "
+    "count(*) FILTER (WHERE success IS FALSE) AS failed_count, "
+    "count(*) FILTER (WHERE success IS NULL) AS running_count, "
+    "coalesce(sum(input_tokens), 0) AS input_tokens, "
+    "coalesce(sum(output_tokens), 0) AS output_tokens "
+    "FROM sessions{where_clause}"
+)
+
+
+async def query_session_aggregate_fan_out(
+    db: DatabaseManager,
+    where_clause: str,
+    args: tuple[Any, ...],
+    *,
+    butler_names: list[str] | None = None,
+) -> FanOutAggregateResult:
+    """Fan out a filter-aware session aggregate across butlers.
+
+    Runs the per-butler aggregate (see :data:`_AGGREGATE_SQL_TEMPLATE`) on every
+    queried butler, then sums the scalar fields into a single combined result.
+    ``by_butler`` carries each butler's ``total`` (count > 0 only), sorted by
+    count descending, powering the "top butler" surface.
+
+    Parameters
+    ----------
+    db:
+        The DatabaseManager that manages per-butler pools.
+    where_clause:
+        A SQL WHERE clause fragment (including the leading ``WHERE`` keyword,
+        or an empty string).  Must use ``$1..$N`` matching *args*.
     args:
         Positional arguments for the WHERE clause parameters.
     butler_names:
@@ -239,25 +423,31 @@ async def query_session_summaries_fan_out(
 
     Returns
     -------
-    FanOutSummaryResult
-        Aggregated total row count and unordered list of typed summary DTOs
-        from all queried butlers.  Rows are *not* sorted — callers must sort
-        as needed.
+    FanOutAggregateResult
+        Combined scalar totals and per-butler counts.
     """
-    count_sql = f"SELECT count(*) FROM sessions{where_clause}"
-    data_sql = f"SELECT {SUMMARY_COLUMNS} FROM sessions{where_clause} ORDER BY started_at DESC"
+    sql = _AGGREGATE_SQL_TEMPLATE.format(where_clause=where_clause)
+    results = await db.fan_out(sql, args, butler_names=butler_names)
 
-    count_results = await db.fan_out(count_sql, args, butler_names=butler_names)
-    data_results = await db.fan_out(data_sql, args, butler_names=butler_names)
+    combined = FanOutAggregateResult()
+    by_butler: list[ButlerCount] = []
+    for butler_name, db_rows in results.items():
+        if not db_rows:
+            continue
+        row = db_rows[0]
+        total = int(row["total"] or 0)
+        combined.total += total
+        combined.success_count += int(row["success_count"] or 0)
+        combined.failed_count += int(row["failed_count"] or 0)
+        combined.running_count += int(row["running_count"] or 0)
+        combined.input_tokens += int(row["input_tokens"] or 0)
+        combined.output_tokens += int(row["output_tokens"] or 0)
+        if total > 0:
+            by_butler.append(ButlerCount(butler=butler_name, count=total))
 
-    total = sum(rows[0][0] if rows else 0 for rows in count_results.values())
-
-    rows: list[SessionSummaryRow] = []
-    for butler_name, db_rows in data_results.items():
-        for db_row in db_rows:
-            rows.append(row_to_summary(db_row, butler=butler_name))
-
-    return FanOutSummaryResult(total=total, rows=rows)
+    by_butler.sort(key=lambda b: b.count, reverse=True)
+    combined.by_butler = by_butler
+    return combined
 
 
 async def query_session_detail_fan_out(
