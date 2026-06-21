@@ -2174,6 +2174,14 @@ export default function CalendarWorkspacePage() {
   const [disabledSources, setDisabledSources] = useState<Set<string>>(
     new Set<string>(),
   );
+  // View-only hide/show set. This is a purely client-side concern: hiding a
+  // source removes its events from the grid WITHOUT touching the persisted
+  // ``sync_enabled`` sync toggle, so a still-syncing calendar can be hidden and
+  // a sync-disabled calendar's prior events stay visible. Never persisted to
+  // the server; resets on reload by design.
+  const [hiddenSources, setHiddenSources] = useState<Set<string>>(
+    new Set<string>(),
+  );
 
   useEffect(() => {
     if (toggleSourceMutation.isPending) return;
@@ -2182,6 +2190,16 @@ export default function CalendarWorkspacePage() {
       .map((source) => source.source_key);
     setDisabledSources(new Set(serverDisabled));
   }, [connectedSources, toggleSourceMutation.isPending]);
+
+  function toggleSourceHidden(source: CalendarWorkspaceSourceFreshness) {
+    const sourceKey = source.source_key;
+    setHiddenSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourceKey)) next.delete(sourceKey);
+      else next.add(sourceKey);
+      return next;
+    });
+  }
 
   function toggleSourceEnabled(source: CalendarWorkspaceSourceFreshness) {
     const sourceKey = source.source_key;
@@ -2241,17 +2259,20 @@ export default function CalendarWorkspacePage() {
   const sourcesForQuery = useMemo(() => {
     const hasCalendarFilter =
       selectedSourceKey !== "all" || selectedCalendarId !== "all";
-    const hasDisabled = disabledSources.size > 0;
+    // The read filter is driven by the view-only hidden set, NOT the persisted
+    // sync toggle: hiding a calendar removes it from the grid, while disabling
+    // its sync does not (its already-synced events remain visible).
+    const hasHidden = hiddenSources.size > 0;
 
-    if (view === "user" && (hasCalendarFilter || hasDisabled)) {
+    if (view === "user" && (hasCalendarFilter || hasHidden)) {
       const base = hasCalendarFilter
         ? sourceFilters
         : userSources.map((s) => s.source_key);
-      return base.filter((key) => !disabledSources.has(key));
+      return base.filter((key) => !hiddenSources.has(key));
     }
     return undefined;
   }, [
-    disabledSources,
+    hiddenSources,
     selectedCalendarId,
     selectedSourceKey,
     sourceFilters,
@@ -4031,9 +4052,9 @@ export default function CalendarWorkspacePage() {
             aria-label="Configure sources"
           >
             Sources
-            {disabledSources.size > 0 ? (
+            {hiddenSources.size > 0 ? (
               <span className="tabular-nums text-[var(--dim)]">
-                · {disabledSources.size} hidden
+                · {hiddenSources.size} hidden
               </span>
             ) : null}
           </PillButton>
@@ -5108,9 +5129,11 @@ export default function CalendarWorkspacePage() {
           <DialogHeader>
             <DialogTitle>Configure Sources</DialogTitle>
             <DialogDescription>
-              Connected Google accounts and their calendars. Toggle a calendar
-              to enable or disable it as a sync source; a disabled calendar is
-              skipped by sync and hidden from the view.
+              Connected Google accounts and their calendars. The checkbox
+              enables or disables a calendar as a sync source (persisted); a
+              disabled calendar is skipped by sync but its already-synced events
+              stay visible. Use Hide/Show to remove a calendar from the grid
+              without changing its sync — a view-only preference.
             </DialogDescription>
           </DialogHeader>
           {(() => {
@@ -5227,6 +5250,7 @@ export default function CalendarWorkspacePage() {
                     source.calendar_id !== primaryCalendarId &&
                     source.butler_name != null;
                   const isEnabled = !disabledSources.has(source.source_key);
+                  const isHidden = hiddenSources.has(source.source_key);
                   const acctEmail =
                     typeof source.metadata?.account_email === "string"
                       ? source.metadata.account_email
@@ -5249,7 +5273,7 @@ export default function CalendarWorkspacePage() {
                   return (
                     <Row
                       key={source.source_key}
-                      className={cn(!isEnabled && "opacity-50")}
+                      className={cn((!isEnabled || isHidden) && "opacity-50")}
                       mark={
                         <Checkbox
                           checked={isEnabled}
@@ -5259,6 +5283,18 @@ export default function CalendarWorkspacePage() {
                       }
                       meta={
                         <div className="flex items-center gap-1.5">
+                          <PillButton
+                            onClick={() => toggleSourceHidden(source)}
+                            aria-label={`${isHidden ? "Show" : "Hide"} ${sourceName(source)} in view`}
+                            aria-pressed={isHidden}
+                            title={
+                              isHidden
+                                ? "Hidden from the grid (view-only; sync unaffected)"
+                                : "Hide from the grid (view-only; sync unaffected)"
+                            }
+                          >
+                            {isHidden ? "Show" : "Hide"}
+                          </PillButton>
                           {canSetPrimary ? (
                             <PillButton
                               onClick={() => {

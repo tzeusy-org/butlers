@@ -2775,6 +2775,64 @@ describe("CalendarWorkspacePage", () => {
         expect.anything(),
       );
     });
+
+    it("Hide control removes a source from the read filter without toggling sync", async () => {
+      setButlerWorkspaceFixtures();
+      setSourceMeta("none", null);
+      setSyncState();
+      const toggleMutate = vi.fn();
+      vi.mocked(useToggleCalendarSource).mockReturnValue({
+        mutate: toggleMutate,
+        isPending: false,
+      } as unknown as ReturnType<typeof useToggleCalendarSource>);
+
+      await openSourcesDialog();
+
+      // Before hiding: no source filter is applied (all sources visible).
+      expect(latestWorkspaceParams()?.sources).toBeUndefined();
+
+      const hideButton = findButton("Hide");
+      expect(hideButton).toBeDefined();
+      await act(async () => {
+        hideButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      // The read filter now excludes the hidden source...
+      expect(latestWorkspaceParams()?.sources).toEqual([]);
+      // ...without persisting any change to the sync toggle.
+      expect(toggleMutate).not.toHaveBeenCalled();
+      // The control flips to "Show" so it can be un-hidden.
+      expect(findButton("Show")).toBeDefined();
+      // The masthead reflects the view-only hidden count.
+      expect(document.body.textContent).toContain("1 hidden");
+    });
+
+    it("disabling sync does not hide the source from the view", async () => {
+      setButlerWorkspaceFixtures();
+      setSourceMeta("none", null);
+      setSyncState();
+      vi.mocked(useToggleCalendarSource).mockReturnValue({
+        mutate: vi.fn(),
+        isPending: false,
+      } as unknown as ReturnType<typeof useToggleCalendarSource>);
+
+      await openSourcesDialog();
+
+      const checkbox = document.querySelector(
+        '[aria-label^="Toggle "]',
+      ) as HTMLElement | null;
+      expect(checkbox).not.toBeNull();
+      await act(async () => {
+        checkbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      // Toggling the persisted sync state must not affect the view read filter
+      // nor the hidden count — the two concerns are decoupled.
+      expect(latestWorkspaceParams()?.sources).toBeUndefined();
+      expect(document.body.textContent).not.toContain("1 hidden");
+    });
   });
 
   describe("recurring instance capping", () => {
