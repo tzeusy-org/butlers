@@ -196,6 +196,57 @@ class CalendarDayBriefingResponse(BaseModel):
     entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
 
 
+class CalendarPrepNote(BaseModel):
+    """A single durable relationship note surfaced on the meeting-prep rail."""
+
+    kind: str
+    text: str
+
+
+class CalendarPrepAttendee(BaseModel):
+    """Precomputed prep context for one resolved attendee of a selected event.
+
+    All fields are drawn from contribution-sourced cached data (the relationship
+    butler's deterministic prep job). ``dunbar_tier`` is the relationship
+    letter-mark source (the FE maps the integer tier to its letter); ``notes``
+    are durable CRM notes; ``last_met`` / ``last_met_event`` come from the most
+    recent prior co-attended event; ``message_context`` is reserved for the
+    email/message-owning butlers' contribution (empty until that lands).
+    """
+
+    entity_id: str
+    name: str
+    dunbar_tier: int | None = None
+    notes: list[CalendarPrepNote] = Field(default_factory=list)
+    last_met: str | None = None
+    last_met_event: str | None = None
+    message_context: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CalendarPrepResponse(BaseModel):
+    """Meeting-prep rail payload for GET /api/calendar/workspace/prep/{event_id}.
+
+    Assembled exclusively from the cached ``calendar.v_prep_contributions`` view —
+    NO direct ``relationship.*`` / ``health.*`` read and NO per-open LLM call.
+
+    Honest empty-state contract:
+    - ``has_prep_context=True`` when at least one contributing specialist wrote a
+      prep contribution for the event; ``attendees`` carries the merged context.
+    - ``has_prep_context=False`` when no prep contribution exists (co-attended /
+      contact-link coverage not yet populated, jobs not run, or the view is
+      absent) → the FE renders "No prep context yet" rather than an error. This
+      is the expected state for most events today.
+
+    Fail-open: a missing/unreadable view degrades to this empty-state (never
+    HTTP 500) and does NOT use the ``aggregates_available`` Prometheus envelope.
+    """
+
+    event_id: str
+    has_prep_context: bool = False
+    attendees: list[CalendarPrepAttendee] = Field(default_factory=list)
+    source_butlers: list[str] = Field(default_factory=list)
+
+
 class CalendarWorkspaceSearchResponse(BaseModel):
     """Read payload for GET /api/calendar/workspace/search.
 

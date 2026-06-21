@@ -326,6 +326,23 @@ class CalendarOverlayRow:
     value: Any  # raw asyncpg value (dict or None)
 
 
+@dataclass
+class CalendarPrepRow:
+    """Typed DTO for a ``calendar.v_prep_contributions`` row (v1).
+
+    Backs the meeting-prep rail (``GET /api/calendar/workspace/prep/{event_id}``).
+    Each row is one per-event prep envelope: ``butler`` is the view's
+    **hardcoded** source-schema literal (RFC 0010 Guardrail #2), ``key`` is the
+    ``calendar/prep/<event_id>`` state key, and ``value`` is the raw envelope
+    JSONB (``{butler, event_id, event_title, event_starts_at, has_context,
+    attendees:[...]}``).
+    """
+
+    butler: str | None
+    key: str | None
+    value: Any  # raw asyncpg value (dict or None)
+
+
 # ---------------------------------------------------------------------------
 # Row converters
 # ---------------------------------------------------------------------------
@@ -916,6 +933,66 @@ async def query_calendar_overlays(
         for row in raw_rows:
             rows.append(
                 CalendarOverlayRow(
+                    butler=row["butler"],
+                    key=row["key"],
+                    value=row["value"],
+                )
+            )
+    return rows
+
+
+async def query_calendar_prep(
+    db: DatabaseManager,
+    *,
+    event_id: UUID,
+    butlers: list[str] | None = None,
+) -> list[CalendarPrepRow]:
+    """Read precomputed prep contributions for one event from ``calendar.v_prep_contributions``.
+
+    Backs the meeting-prep rail (``GET /api/calendar/workspace/prep/{event_id}``).
+    Like :func:`query_calendar_overlays`, the view is a **single** cross-schema
+    UNION object in the ``calendar`` schema (migration ``core_142``), so it is
+    queried through exactly **one** deterministic butler pool rather than fanned
+    out across every calendar schema (fanning out would return the same view
+    rows once per schema, duplicating every contribution).
+
+    The query filters to the single ``calendar/prep/<event_id>`` key so the read
+    is bounded to the requested event — it does NOT scan the whole view and does
+    NOT touch ``relationship.*`` / ``health.*`` directly.
+
+    **Fail-open contract.** This read MUST NOT raise. A missing view
+    (pre-migration), a missing contributing specialist ``state`` table, or any
+    query failure degrades to an empty list (logged at WARNING). The caller maps
+    an empty list to a structured empty prep payload and never an HTTP 500.
+
+    Returns
+    -------
+    list[CalendarPrepRow]
+        Prep-contribution envelope rows for the event (one per contributing
+        specialist), or ``[]`` on any failure (fail-open).
+    """
+    candidates = butlers or db.butlers_with_module("calendar") or db.butler_names
+    if not candidates:
+        return []
+    # Read the shared view through a single deterministic pool — never fan out.
+    target = sorted(candidates)[0]
+
+    key = f"calendar/prep/{event_id}"
+    sql = "SELECT butler, key, value FROM calendar.v_prep_contributions WHERE key = $1"
+    try:
+        results = await db.fan_out(sql, (key,), butler_names=[target])
+    except Exception:
+        logger.warning(
+            "query_calendar_prep read failed; returning empty (fail-open)",
+            exc_info=True,
+        )
+        return []
+
+    rows: list[CalendarPrepRow] = []
+    for _butler, raw_rows in results.items():
+        for row in raw_rows:
+            rows.append(
+                CalendarPrepRow(
                     butler=row["butler"],
                     key=row["key"],
                     value=row["value"],

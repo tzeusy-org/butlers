@@ -35,6 +35,9 @@ from butlers.api.models.calendar_workspace import (
     CalendarButlerEventPreviewResponse,
     CalendarConflictEntry,
     CalendarDayBriefingResponse,
+    CalendarPrepAttendee,
+    CalendarPrepNote,
+    CalendarPrepResponse,
     CalendarProposalAcceptRequest,
     CalendarProposalActionResponse,
     CalendarSourceToggleRequest,
@@ -64,9 +67,11 @@ from butlers.api.models.calendar_workspace import (
 )
 from butlers.api.read_models.calendar_workspace_v1 import (
     CalendarOverlayRow,
+    CalendarPrepRow,
     CalendarProposalRow,
     query_calendar_event_search,
     query_calendar_overlays,
+    query_calendar_prep,
     query_calendar_proposal_by_id,
     query_calendar_proposals,
     query_calendar_sources,
@@ -910,6 +915,142 @@ def _group_overlay_entries_by_butler_kind(
             DayBriefingButlerGroup(source_butler=butler_name, count=count, kinds=kind_groups)
         )
     return groups
+
+
+def _parse_prep_attendee(raw: Mapping[str, Any]) -> CalendarPrepAttendee | None:
+    """Project one raw attendee object from a prep envelope into a typed model.
+
+    Returns ``None`` when the attendee is malformed (missing ``entity_id`` /
+    ``name``) so it is skipped rather than surfaced half-populated.
+    """
+    entity_id = raw.get("entity_id")
+    name = raw.get("name")
+    if not entity_id or not name:
+        return None
+
+    notes: list[CalendarPrepNote] = []
+    for raw_note in raw.get("notes") or []:
+        if not isinstance(raw_note, Mapping):
+            continue
+        kind = raw_note.get("kind")
+        text = raw_note.get("text")
+        if kind and text:
+            notes.append(CalendarPrepNote(kind=str(kind), text=str(text)))
+
+    message_context = [m for m in (raw.get("message_context") or []) if isinstance(m, Mapping)]
+
+    tier = raw.get("dunbar_tier")
+    return CalendarPrepAttendee(
+        entity_id=str(entity_id),
+        name=str(name),
+        dunbar_tier=tier if isinstance(tier, int) else None,
+        notes=notes,
+        last_met=str(raw["last_met"]) if raw.get("last_met") else None,
+        last_met_event=str(raw["last_met_event"]) if raw.get("last_met_event") else None,
+        message_context=[dict(m) for m in message_context],
+    )
+
+
+def _merge_prep_attendee(into: CalendarPrepAttendee, extra: CalendarPrepAttendee) -> None:
+    """Merge ``extra``'s context into ``into`` (same attendee from another butler).
+
+    Scalars (name, tier, last-met) keep the first non-empty value; list fields
+    (notes, message_context) are concatenated. This lets the email/message-owning
+    butlers contribute ``message_context`` for an attendee whose attendee/notes/
+    last-met came from the relationship butler.
+    """
+    into.dunbar_tier = into.dunbar_tier if into.dunbar_tier is not None else extra.dunbar_tier
+    if not into.last_met and extra.last_met:
+        into.last_met = extra.last_met
+        into.last_met_event = extra.last_met_event
+    into.notes.extend(extra.notes)
+    into.message_context.extend(extra.message_context)
+
+
+def _project_prep_contributions(
+    prep_rows: list[CalendarPrepRow],
+) -> tuple[list[CalendarPrepAttendee], list[str]]:
+    """Merge prep-contribution envelopes across butlers into one attendee list.
+
+    Returns ``(attendees, source_butlers)``. Envelopes whose payload ``butler``
+    disagrees with the view's hardcoded ``butler`` source column are skipped
+    (RFC 0010 guardrail #2). Attendees seen in more than one envelope are merged
+    by ``entity_id`` so a single attendee carries relationship context AND any
+    message context contributed by another butler.
+    """
+    by_entity: dict[str, CalendarPrepAttendee] = {}
+    order: list[str] = []
+    source_butlers: list[str] = []
+
+    for row in prep_rows:
+        value = _normalize_json_object(row.value)
+        envelope_butler = value.get("butler")
+        if row.butler is not None and envelope_butler != row.butler:
+            # RFC 0010 guardrail #2: skip an envelope whose payload butler
+            # disagrees with the view's hardcoded source column — including the
+            # malformed missing/null payload-butler case (None != literal).
+            logger.warning(
+                "prep contribution butler mismatch (column=%r payload=%r); skipping",
+                row.butler,
+                envelope_butler,
+            )
+            continue
+
+        butler_label = str(envelope_butler or row.butler or "unknown")
+        if butler_label not in source_butlers:
+            source_butlers.append(butler_label)
+
+        for raw_attendee in value.get("attendees") or []:
+            if not isinstance(raw_attendee, Mapping):
+                continue
+            attendee = _parse_prep_attendee(raw_attendee)
+            if attendee is None:
+                continue
+            existing = by_entity.get(attendee.entity_id)
+            if existing is None:
+                by_entity[attendee.entity_id] = attendee
+                order.append(attendee.entity_id)
+            else:
+                _merge_prep_attendee(existing, attendee)
+
+    attendees = [by_entity[eid] for eid in order]
+    return attendees, sorted(source_butlers)
+
+
+@router.get("/prep/{event_id}", response_model=ApiResponse[CalendarPrepResponse])
+async def get_meeting_prep(
+    event_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarPrepResponse]:
+    """Return the meeting-prep rail context for a selected calendar event.
+
+    Reads the precomputed ``calendar.v_prep_contributions`` view for the single
+    event and projects the cached prep envelopes (attendees + relationship notes
+    + last-met, merged across contributing butlers). This is a pure read of the
+    cached cross-schema view — **NO direct ``relationship.*`` / ``health.*``
+    SELECT and NO per-open LLM session** (RFC-0020 no-LLM variant). The prep
+    contributions are produced by deterministic scheduled jobs; any narrative
+    would come only from a deferred batched pre-render, never from here.
+
+    Honest empty-state: when no prep contribution exists for the event
+    (co-attended-edge / contact-link coverage not yet populated — the expected
+    state for most events today), ``has_prep_context`` is ``False`` with an empty
+    ``attendees`` list. The read is fail-open — a missing view / specialist
+    ``state`` table / query failure degrades to that empty-state, never an HTTP
+    500, and does NOT use the ``aggregates_available`` Prometheus envelope.
+    """
+    prep_rows = await query_calendar_prep(db, event_id=event_id)
+
+    attendees, source_butlers = _project_prep_contributions(prep_rows)
+    data = CalendarPrepResponse(
+        event_id=str(event_id),
+        # A contribution exists for this event when any (valid) envelope was read,
+        # even if it resolved zero attendees (honest empty-state vs "no job ran").
+        has_prep_context=bool(source_butlers),
+        attendees=attendees,
+        source_butlers=source_butlers,
+    )
+    return ApiResponse[CalendarPrepResponse](data=data)
 
 
 @router.get("/day-briefing", response_model=ApiResponse[CalendarDayBriefingResponse])
