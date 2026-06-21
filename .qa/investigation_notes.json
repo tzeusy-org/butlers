@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "headline": "OpenCode billing rejection surfaced as unknown runtime error",
+  "hypothesis": "OpenCode nested APIError payloads placed the actionable provider message under error.data.message, which the adapter did not parse; once surfaced, insufficient-balance wording was not classified as a quota-like pre-work failure.",
+  "blurb_segments": [
+    {
+      "claim": "c1",
+      "text": "The failing OpenCode path was a nonzero structured provider API error before any tool work."
+    },
+    " ",
+    {
+      "claim": "c2",
+      "text": "The adapter previously missed error.data.message and fell back to raw JSON diagnostics."
+    },
+    " ",
+    {
+      "claim": "c3",
+      "text": "The classifier did not recognize insufficient-balance wording as failover-eligible quota exhaustion."
+    }
+  ],
+  "claims": {
+    "c1": {
+      "evidence_ids": [
+        "e1"
+      ],
+      "note": "The QA finding came from the OpenCode runtime logger and contained a structured provider APIError with an insufficient-balance message."
+    },
+    "c2": {
+      "evidence_ids": [
+        "e2"
+      ],
+      "note": "The previous payload renderer inspected message/detail/error/code but not nested data payloads."
+    },
+    "c3": {
+      "evidence_ids": [
+        "e3"
+      ],
+      "note": "The prior failover marker list included quota and usage-limit wording but not billing balance or credit exhaustion."
+    }
+  },
+  "evidence_lines": [
+    {
+      "id": "e1",
+      "ts": "2026-06-21T10:42:00.481593Z",
+      "lvl": "ERROR",
+      "butler": "switchboard",
+      "msg": "OpenCode CLI exited with code 1: structured APIError stdout contained an insufficient-balance provider message."
+    },
+    {
+      "id": "e2",
+      "ts": "2026-06-21T10:42:00.481593Z",
+      "lvl": "INFO",
+      "butler": "switchboard",
+      "msg": "Adapter structured error selection did not recurse into the APIError data object."
+    },
+    {
+      "id": "e3",
+      "ts": "2026-06-21T10:42:00.481593Z",
+      "lvl": "INFO",
+      "butler": "switchboard",
+      "msg": "Failover classifier markers covered quota exceeded and usage limit but not insufficient balance."
+    }
+  ],
+  "counter_evidence": [
+    {
+      "hypothesis": "This is only an external provider billing issue and needs no code change.",
+      "verdict": "rejected",
+      "reason": "The provider account state is external, but the runtime should still surface the actionable nested message and classify the pre-work rejection for same-tier failover."
+    },
+    {
+      "hypothesis": "The adapter executed tools before the failure, so failover would be unsafe.",
+      "verdict": "rejected",
+      "reason": "The failing path is a nonzero CLI provider rejection and the adapter records it as pre-tool-call."
+    }
+  ],
+  "why_this_fix": "Parsing error.data.message preserves the actionable provider detail. Adding balance and credit markers lets the failover classifier handle the resulting RuntimeError as quota-like pre-work rejection.",
+  "diff_snapshot": [
+    {
+      "kind": "meta",
+      "text": "src/butlers/core/runtimes/opencode.py"
+    },
+    {
+      "kind": "-",
+      "text": "for key in (\"message\", \"detail\", \"details\", \"stderr\", \"error\", \"code\"):"
+    },
+    {
+      "kind": "+",
+      "text": "for key in (\"message\", \"detail\", \"details\", \"stderr\", \"error\", \"data\", \"code\"):"
+    },
+    {
+      "kind": "meta",
+      "text": "src/butlers/core/failover_classifier.py"
+    },
+    {
+      "kind": "+",
+      "text": "\"insufficient balance\", \"insufficient credits\", \"credit balance\""
+    },
+    {
+      "kind": "meta",
+      "text": "tests/adapters/test_opencode_adapter.py"
+    },
+    {
+      "kind": "+",
+      "text": "Regression coverage for nested APIError data.message extraction."
+    },
+    {
+      "kind": "meta",
+      "text": "tests/adapters/test_adapter_failover_signals.py"
+    },
+    {
+      "kind": "+",
+      "text": "Regression coverage for classifying OpenCode insufficient-balance failures."
+    }
+  ]
+}

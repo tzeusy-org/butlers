@@ -282,6 +282,24 @@ _MIGRATION_NOISE = (
             "APIError: 503",
             id="nested-apierror-scalar-status",
         ),
+        # Billing rejection messages under APIError.data are preserved for failover matching.
+        pytest.param(
+            "",
+            json.dumps(
+                {
+                    "type": "error",
+                    "timestamp": "2026-06-21T10:42:00.000Z",
+                    "sessionID": "session-123",
+                    "error": {
+                        "name": "APIError",
+                        "data": {"message": "Insufficient balance. Manage your balance settings."},
+                    },
+                }
+            ),
+            1,
+            "APIError: Insufficient balance. Manage your balance settings.",
+            id="nested-apierror-insufficient-balance-data-message",
+        ),
         # Migration banner alone is not a useful diagnostic → fall back to exit code.
         pytest.param(_MIGRATION_NOISE, "", 1, "exit code 1", id="migration-noise-only"),
     ],

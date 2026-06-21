@@ -130,6 +130,16 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
     # model (e.g. opencode) is the correct response.
     "usage limit",
     "hit your usage limit",
+    # Provider account billing / credit exhaustion. These are account-state
+    # rejections before any model work starts, equivalent to quota exhaustion
+    # for failover purposes.
+    "insufficient balance",
+    "insufficient credits",
+    "credit balance",
+    "out of credits",
+    "balance exhausted",
+    "billing limit reached",
+    "credit limit reached",
 )
 
 # Substrings matched (lowercased) against the exception message to detect a
@@ -320,6 +330,17 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 "failure before invocation",
             )
 
+        # Rate-limit / quota / billing exhaustion before work. Check this before
+        # generic provider/auth markers because structured OpenCode APIError
+        # messages can include both "APIError" and a more specific quota marker.
+        if _matches_any(exc_msg, _RATE_LIMIT_MARKERS):
+            logger.debug("Failover eligible: RuntimeError — rate-limit before work")
+            return FailoverDecision(
+                eligible=True,
+                reason="rate_limit_before_work: provider rate-limit rejection "
+                "before any tool call was executed",
+            )
+
         # Provider / auth failures
         if _matches_any(exc_msg, _PROVIDER_AUTH_MARKERS):
             logger.debug("Failover eligible: RuntimeError — provider/auth failure")
@@ -327,15 +348,6 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 eligible=True,
                 reason="provider_auth_error: provider or authentication failure "
                 "before session work started",
-            )
-
-        # Rate-limit before work
-        if _matches_any(exc_msg, _RATE_LIMIT_MARKERS):
-            logger.debug("Failover eligible: RuntimeError — rate-limit before work")
-            return FailoverDecision(
-                eligible=True,
-                reason="rate_limit_before_work: provider rate-limit rejection "
-                "before any tool call was executed",
             )
 
         # Empty runtime/provider response before work

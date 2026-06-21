@@ -318,6 +318,23 @@ class TestRateLimitAuthModelUnavailableTimeoutMapping:
         assert info.get("is_pre_tool_call") is True
 
     @pytest.mark.parametrize(
+        "message",
+        [
+            "Provider rejected request: out of credits",
+            "Provider rejected request: balance exhausted",
+            "Provider rejected request: billing limit reached",
+            "Provider rejected request: credit limit reached",
+        ],
+    )
+    def test_billing_credit_exhaustion_variants_are_classifiable(self, message: str) -> None:
+        decision = classify_failover_eligibility(
+            FailoverContext(exception=RuntimeError(message), tool_calls=[])
+        )
+
+        assert decision.eligible
+        assert "rate_limit" in decision.reason
+
+    @pytest.mark.parametrize(
         "stderr",
         [
             b"ProviderModelNotFoundError: gpt-9 not found",
@@ -357,6 +374,40 @@ class TestRateLimitAuthModelUnavailableTimeoutMapping:
         )
         assert decision.eligible
         assert "empty_runtime_response" in decision.reason
+
+    async def test_opencode_nested_api_error_insufficient_balance_is_classifiable(self) -> None:
+        """OpenCode structured APIError stdout should surface its nested billing message.
+
+        The provider rejects the request before model work starts, so the classifier
+        should treat the adapter RuntimeError as a same-tier failover signal.
+        """
+        stdout = (
+            b'{"type":"error","timestamp":"2026-06-21T10:42:00.000Z",'
+            b'"sessionID":"session-123","error":{"name":"APIError","data":'
+            b'{"message":"Insufficient balance. Manage your balance settings."}}}'
+        )
+        proc = _make_proc(1, stdout=stdout, stderr=b"")
+        with patch(_OPENCODE_EXEC, return_value=proc):
+            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+            with pytest.raises(RuntimeError) as exc_info:
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+
+        assert "APIError: Insufficient balance. Manage your balance settings." in str(
+            exc_info.value
+        )
+        assert '{"type":"error"' not in str(exc_info.value)
+        info = adapter.last_process_info
+        assert info is not None
+        assert info.get("is_pre_tool_call") is True
+        assert (
+            info.get("error_detail")
+            == "APIError: Insufficient balance. Manage your balance settings."
+        )
+        decision = classify_failover_eligibility(
+            FailoverContext(exception=exc_info.value, tool_calls=[], process_info=info)
+        )
+        assert decision.eligible
+        assert "rate_limit" in decision.reason
 
 
 # ---------------------------------------------------------------------------
