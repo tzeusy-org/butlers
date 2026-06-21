@@ -738,7 +738,7 @@ export interface CalendarPrepNote {
  * {@link tierLabel}); `notes` are durable CRM notes; `last_met` /
  * `last_met_event` come from the most recent prior co-attended event;
  * `message_context` is the email/message-owning butlers' per-attendee
- * contribution (empty until the message-context job — bu-tmtpb — lands).
+ * contribution (empty until a message-context job — bu-tmtpb — has run).
  */
 export interface CalendarPrepAttendee {
   entity_id: string;
@@ -747,9 +747,33 @@ export interface CalendarPrepAttendee {
   notes: CalendarPrepNote[];
   last_met: string | null;
   last_met_event: string | null;
-  /** Opaque per-attendee message/email context items; shape owned by the
-   * contributing butler (rendered defensively, gracefully empty if absent). */
-  message_context: Record<string, unknown>[];
+  /** Recent message/email threads each attendee wrote, contributed by the
+   * email-owning butlers' deterministic prep job (gracefully empty if absent). */
+  message_context: CalendarPrepMessageContext[];
+}
+
+/**
+ * One recent message/email thread surfaced in an attendee's prep panel.
+ *
+ * Concrete envelope written by the email-owning butlers' `calendar_prep`
+ * contribution job (bu-tmtpb) under `calendar/prep/<event_id>` and merged by
+ * the prep-rail read endpoint. `subject` always carries a value (the job falls
+ * back to a snippet prefix or `"(no subject)"`); `snippet` may be empty and
+ * `last_message_at` may be `null`.
+ */
+export interface CalendarPrepMessageContext {
+  /** Source channel for the thread (currently always `"email"`). */
+  channel: string;
+  /** Stable identifier for the message thread. */
+  thread_id: string;
+  /** Thread subject (non-empty: falls back to a snippet prefix / "(no subject)"). */
+  subject: string;
+  /** One-line preview of the most recent message body (may be empty). */
+  snippet: string;
+  /** ISO timestamp of the most recent message in the thread, or `null`. */
+  last_message_at: string | null;
+  /** Number of messages in the thread. */
+  message_count: number;
 }
 
 /**

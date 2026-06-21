@@ -28,7 +28,16 @@ function attendee(overrides: Partial<CalendarPrepAttendee> = {}): CalendarPrepAt
     notes: [{ kind: "context", text: "Leads the analytical-engine project." }],
     last_met: "2026-05-01",
     last_met_event: "Quarterly sync",
-    message_context: [{ subject: "Re: agenda", from: "ada@example.com" }],
+    message_context: [
+      {
+        channel: "email",
+        thread_id: "thread-1",
+        subject: "Re: agenda",
+        snippet: "Looping back on the agenda for our sync.",
+        last_message_at: "2026-05-02T09:30:00+00:00",
+        message_count: 3,
+      },
+    ],
     ...overrides,
   };
 }

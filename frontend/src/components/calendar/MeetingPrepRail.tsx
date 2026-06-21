@@ -20,7 +20,7 @@
  *   attendees; still rendered honestly as the empty-state.
  */
 
-import type { CalendarPrepAttendee } from "@/api/types.ts";
+import type { CalendarPrepAttendee, CalendarPrepMessageContext } from "@/api/types.ts";
 import { TierBadge, tierLabel } from "@/components/ui/TierBadge.tsx";
 import { useCalendarMeetingPrep } from "@/hooks/use-calendar-workspace.ts";
 
@@ -33,25 +33,24 @@ function titleizeToken(value: string): string {
 }
 
 /**
- * Best-effort extraction of a human label + secondary line from one opaque
- * message-context item. The contributing butler owns the shape (bu-tmtpb), so we
- * probe a small set of conventional keys and degrade gracefully when none match.
+ * Extract the display label + secondary line from one typed message-context
+ * thread (the {@link CalendarPrepMessageContext} envelope contributed by the
+ * email-owning butlers' prep job). Optional fields may be empty/`null`, so we
+ * trim and fall back gracefully rather than assuming presence.
  */
-function readMessageContext(item: Record<string, unknown>): {
+function readMessageContext(item: CalendarPrepMessageContext): {
   primary: string | null;
   secondary: string | null;
 } {
-  const str = (key: string): string | null => {
-    const v = item[key];
-    return typeof v === "string" && v.trim() ? v.trim() : null;
-  };
-  const primary = str("subject") ?? str("title") ?? str("snippet") ?? str("preview") ?? str("text");
-  const secondary = str("from") ?? str("sender") ?? str("channel") ?? str("date") ?? str("when");
+  const clean = (value: string | null | undefined): string | null =>
+    typeof value === "string" && value.trim() ? value.trim() : null;
+  const primary = clean(item.subject) ?? clean(item.snippet);
+  const secondary = clean(item.last_message_at) ?? clean(item.channel);
   return { primary, secondary };
 }
 
 /** One message-context item row inside an attendee's panel. */
-function MessageContextItem({ item }: { item: Record<string, unknown> }) {
+function MessageContextItem({ item }: { item: CalendarPrepMessageContext }) {
   const { primary, secondary } = readMessageContext(item);
   return (
     <div
