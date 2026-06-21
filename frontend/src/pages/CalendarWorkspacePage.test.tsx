@@ -836,6 +836,99 @@ describe("CalendarWorkspacePage", () => {
     );
   });
 
+  it("deletes a recurring occurrence with the chosen recurrence scope", async () => {
+    const recurringEntry = (suffix: string, start: string) => ({
+      entry_id: `rec-${suffix}`,
+      view: "user" as const,
+      source_type: "provider_event" as const,
+      source_key: "google:primary",
+      title: "Weekly standup",
+      start_at: start,
+      end_at: start.replace("T09:00", "T09:30"),
+      timezone: "UTC",
+      all_day: false,
+      calendar_id: "primary",
+      provider_event_id: "rec-evt",
+      butler_name: "general",
+      schedule_id: null,
+      reminder_id: null,
+      rrule: "RRULE:FREQ=WEEKLY;BYDAY=TU",
+      cron: null,
+      until_at: null,
+      status: "active",
+      sync_state: "fresh" as const,
+      editable: true,
+      metadata: {},
+    });
+    setWorkspaceState({
+      data: {
+        data: {
+          entries: [
+            recurringEntry("1", "2026-03-03T09:00:00Z"),
+            recurringEntry("2", "2026-03-10T09:00:00Z"),
+          ],
+          source_freshness: [],
+          lanes: [],
+        },
+        meta: {},
+      },
+    } as unknown as Partial<UseWorkspaceResult>);
+    const mutateAsync = vi.fn().mockResolvedValue({
+      data: {
+        action: "delete",
+        tool_name: "calendar_delete_event",
+        request_id: "req-delete",
+        result: { status: "deleted" },
+        projection_version: null,
+        staleness_ms: null,
+        projection_freshness: null,
+      },
+      meta: {},
+    });
+    setUserMutationState({ mutateAsync });
+
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+    const rowDeleteButton = findButton("Delete");
+    await act(async () => {
+      rowDeleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    // The three-option scope sheet renders for a recurring occurrence.
+    const scopeSheet = document.querySelector('[data-testid="delete-recurrence-scope"]');
+    expect(scopeSheet).not.toBeNull();
+    const followingRadio = document.querySelector(
+      '[data-testid="delete-scope-following"] input',
+    ) as HTMLInputElement;
+    expect(followingRadio).toBeDefined();
+
+    await act(async () => {
+      followingRadio.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const deleteDialog = findDialogByTitle("Delete Event");
+    const confirmDeleteButton = Array.from(deleteDialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Delete",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      confirmDeleteButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "delete",
+        payload: expect.objectContaining({
+          event_id: "rec-evt",
+          recurrence_scope: "following",
+          instance_start_at: "2026-03-03T09:00:00Z",
+        }),
+      }),
+    );
+  });
+
   it("shows an error toast (not success) when create user event hard-fails (status=error)", async () => {
     const mutateAsync = vi.fn().mockResolvedValue({
       data: {

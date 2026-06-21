@@ -60,6 +60,7 @@ from butlers.modules.calendar import (
     _coerce_expires_in_seconds,
     _extract_google_credential_value,
     _extract_google_private_metadata,
+    _format_ical_utc,
     _google_error_code,
     _google_event_to_calendar_event,
     _google_rfc3339,
@@ -67,6 +68,8 @@ from butlers.modules.calendar import (
     _GoogleOAuthCredentials,
     _GoogleProvider,
     _parse_google_datetime,
+    _recurrence_lines_append_exdate,
+    _recurrence_lines_bound_until,
     _safe_google_error_message,
 )
 
@@ -2553,3 +2556,321 @@ class TestSuggestedSlotsSchedulingPreferences:
             end = datetime.fromisoformat(slot["end_at"])
             # No overlap with [12:00, 13:00)
             assert not (start.time() < time(13, 0) and time(12, 0) < end.time())
+
+
+# ---------------------------------------------------------------------------
+# Recurrence-scoped occurrence mutation (this / following / series) — bu-9ez7bn
+# ---------------------------------------------------------------------------
+
+
+class _RecurringProviderDouble(_ProviderDouble):
+    """Provider double that supports occurrence-scoped recurrence edits."""
+
+    def __init__(self, *, event: CalendarEvent, recurrence: list[str]) -> None:
+        super().__init__(event=event)
+        self._recurrence = list(recurrence)
+        self.set_recurrence_calls: list[dict] = []
+        self.created_payloads: list[CalendarEventCreate] = []
+
+    async def get_recurrence(self, *, calendar_id, event_id):
+        return list(self._recurrence)
+
+    async def set_recurrence(self, *, calendar_id, event_id, recurrence, send_updates=None):
+        self.set_recurrence_calls.append(
+            {"event_id": event_id, "recurrence": list(recurrence), "send_updates": send_updates}
+        )
+        return self._event
+
+    async def create_event(self, *, calendar_id, payload):
+        self.created_payloads.append(payload)
+        return _make_event(
+            event_id="evt-detached",
+            title=payload.title,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+        )
+
+    async def delete_event(self, *, calendar_id, event_id, send_updates=None):
+        self.delete_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+
+
+class TestRecurrenceHelpers:
+    """Pure RRULE / EXDATE / UNTIL helpers."""
+
+    def test_format_ical_utc(self) -> None:
+        dt = datetime(2026, 3, 3, 14, 0, tzinfo=UTC)
+        assert _format_ical_utc(dt) == "20260303T140000Z"
+
+    def test_append_exdate_preserves_rrule(self) -> None:
+        lines = ["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        result = _recurrence_lines_append_exdate(lines, datetime(2026, 3, 3, 14, 0, tzinfo=UTC))
+        assert "RRULE:FREQ=WEEKLY;BYDAY=TU" in result
+        assert "EXDATE:20260303T140000Z" in result
+
+    def test_append_exdate_folds_into_existing_exdate(self) -> None:
+        lines = ["RRULE:FREQ=WEEKLY", "EXDATE:20260224T140000Z"]
+        result = _recurrence_lines_append_exdate(lines, datetime(2026, 3, 3, 14, 0, tzinfo=UTC))
+        exdate_lines = [line for line in result if line.startswith("EXDATE")]
+        assert len(exdate_lines) == 1
+        assert "20260224T140000Z" in exdate_lines[0]
+        assert "20260303T140000Z" in exdate_lines[0]
+
+    def test_append_exdate_is_idempotent(self) -> None:
+        lines = ["RRULE:FREQ=WEEKLY", "EXDATE:20260303T140000Z"]
+        result = _recurrence_lines_append_exdate(lines, datetime(2026, 3, 3, 14, 0, tzinfo=UTC))
+        assert result == lines
+
+    def test_bound_until_replaces_count(self) -> None:
+        lines = ["RRULE:FREQ=WEEKLY;COUNT=10"]
+        result = _recurrence_lines_bound_until(lines, datetime(2026, 3, 9, 23, 59, 59, tzinfo=UTC))
+        assert "COUNT" not in result[0]
+        assert "UNTIL=20260309T235959Z" in result[0]
+
+
+class TestRecurrenceScopeLiteral:
+    """Scope literal widening on the update payload model."""
+
+    def test_update_payload_accepts_each_scope(self) -> None:
+        for scope in ("this", "following", "series"):
+            payload = CalendarEventUpdate(recurrence_scope=scope)
+            assert payload.recurrence_scope == scope
+
+    def test_update_payload_rejects_unknown_scope(self) -> None:
+        with pytest.raises(ValidationError):
+            CalendarEventUpdate(recurrence_scope="bogus")
+
+    def test_update_payload_default_is_series(self) -> None:
+        assert CalendarEventUpdate().recurrence_scope == "series"
+
+
+class TestRecurrenceScopedMutation:
+    """Occurrence-scoped delete/update against calendar_event_instances.is_exception."""
+
+    @staticmethod
+    def _recurring_event() -> CalendarEvent:
+        return _make_event(
+            event_id="evt-1",
+            title="Standup",
+            start_at=datetime(2026, 2, 24, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 24, 14, 30, tzinfo=UTC),
+            recurrence_rule="FREQ=WEEKLY;BYDAY=TU",
+        )
+
+    async def _make_module(self, provider: _ProviderDouble) -> tuple[CalendarModule, _StubMCP]:
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        return mod, mcp
+
+    async def test_both_instance_tools_registered(self) -> None:
+        provider = _ProviderDouble(event=self._recurring_event())
+        _mod, mcp = await self._make_module(provider)
+        assert "calendar_update_event_instance" in mcp.tools
+        assert "calendar_delete_event_instance" in mcp.tools
+
+    async def test_delete_instance_appends_exdate(self) -> None:
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_mark_instances_exception", new_callable=AsyncMock) as mark,
+        ):
+            result = await mcp.tools["calendar_delete_event_instance"](
+                event_id="evt-1",
+                instance_start_at=datetime(2026, 3, 3, 14, 0, tzinfo=UTC),
+            )
+
+        assert result["status"] == "deleted"
+        assert result["impact"] == {"occurrences_touched": 1, "scope": "this"}
+        assert len(provider.set_recurrence_calls) == 1
+        recurrence = provider.set_recurrence_calls[0]["recurrence"]
+        assert "RRULE:FREQ=WEEKLY;BYDAY=TU" in recurrence
+        assert "EXDATE:20260303T140000Z" in recurrence
+        # Exactly the named occurrence is marked an exception (and cancelled).
+        mark.assert_awaited_once()
+        assert mark.await_args.kwargs["occurrence_start"] == datetime(2026, 3, 3, 14, 0, tzinfo=UTC)
+        assert mark.await_args.kwargs["cancel"] is True
+
+    async def test_delete_following_bounds_until(self) -> None:
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_mark_instances_exception", new_callable=AsyncMock) as mark,
+        ):
+            result = await mcp.tools["calendar_delete_event"](
+                event_id="evt-1",
+                recurrence_scope="following",
+                instance_start_at=datetime(2026, 3, 10, 14, 0, tzinfo=UTC),
+            )
+
+        assert result["status"] == "deleted"
+        recurrence = provider.set_recurrence_calls[0]["recurrence"]
+        # UNTIL is one second before the boundary occurrence.
+        assert "UNTIL=20260310T135959Z" in recurrence[0]
+        assert mark.await_args.kwargs["from_boundary"] == datetime(2026, 3, 10, 14, 0, tzinfo=UTC)
+
+    async def test_delete_series_uses_whole_event_path(self) -> None:
+        # recurrence_scope defaults to series → existing whole-series delete path,
+        # which calls provider.delete_event, not set_recurrence.
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+        ):
+            result = await mcp.tools["calendar_delete_event"](event_id="evt-1")
+
+        assert result["status"] == "deleted"
+        assert provider.set_recurrence_calls == []
+        assert len(provider.delete_calls) == 1
+
+    async def test_update_instance_detaches_occurrence(self) -> None:
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_mark_instances_exception", new_callable=AsyncMock) as mark,
+        ):
+            result = await mcp.tools["calendar_update_event_instance"](
+                event_id="evt-1",
+                instance_start_at=datetime(2026, 3, 3, 14, 0, tzinfo=UTC),
+                title="Special standup",
+            )
+
+        assert result["status"] == "updated"
+        # Original slot is EXDATE-d off the series.
+        recurrence = provider.set_recurrence_calls[0]["recurrence"]
+        assert "EXDATE:20260303T140000Z" in recurrence
+        # A standalone, non-recurring detached event carries the edit.
+        assert len(provider.created_payloads) == 1
+        detached = provider.created_payloads[0]
+        assert detached.title == "Special standup"
+        assert detached.recurrence_rule is None
+        assert detached.start_at == datetime(2026, 3, 3, 14, 0, tzinfo=UTC)
+        mark.assert_awaited_once()
+        assert mark.await_args.kwargs["occurrence_start"] == datetime(2026, 3, 3, 14, 0, tzinfo=UTC)
+
+    async def test_update_following_carries_recurrence(self) -> None:
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_mark_instances_exception", new_callable=AsyncMock),
+        ):
+            await mcp.tools["calendar_update_event"](
+                event_id="evt-1",
+                recurrence_scope="following",
+                instance_start_at=datetime(2026, 3, 10, 14, 0, tzinfo=UTC),
+                location="Room B",
+            )
+
+        # The remainder is a NEW recurring event carrying the original rule.
+        detached = provider.created_payloads[0]
+        assert detached.recurrence_rule == "RRULE:FREQ=WEEKLY;BYDAY=TU"
+        assert detached.location == "Room B"
+
+    async def test_delete_instance_missing_event_is_not_found(self) -> None:
+        provider = _RecurringProviderDouble(event=None, recurrence=[])
+        provider._event = None
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+        ):
+            result = await mcp.tools["calendar_delete_event_instance"](
+                event_id="missing",
+                instance_start_at=datetime(2026, 3, 3, 14, 0, tzinfo=UTC),
+            )
+        assert result["status"] == "not_found"
+        assert provider.set_recurrence_calls == []
+
+    async def test_impact_preview_counts_by_scope(self) -> None:
+        provider = _ProviderDouble(event=self._recurring_event())
+        mod, _mcp = await self._make_module(provider)
+        event = self._recurring_event()
+        boundary = datetime(2026, 3, 10, 14, 0, tzinfo=UTC)
+        assert (
+            mod._count_scope_occurrences(
+                event=event, recurrence_scope="this", occurrence_start=boundary
+            )
+            == 1
+        )
+        series_count = mod._count_scope_occurrences(
+            event=event, recurrence_scope="series", occurrence_start=boundary
+        )
+        following_count = mod._count_scope_occurrences(
+            event=event, recurrence_scope="following", occurrence_start=boundary
+        )
+        # ~13 weekly occurrences in the 90-day window; following is a strict subset.
+        assert series_count > following_count > 1
+        # Boundary is the 3rd Tuesday (24 Feb, 3 Mar, 10 Mar onward).
+        assert series_count - following_count == 2
+
+    async def test_delete_instance_requires_instance_start(self) -> None:
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            pytest.raises(ValueError, match="instance_start_at is required"),
+        ):
+            await mod._apply_occurrence_delete(
+                event_id="evt-1",
+                instance_start_at=None,
+                recurrence_scope="this",
+                calendar_id=None,
+                send_updates=None,
+                request_id=None,
+                tool_name="calendar_delete_event",
+            )

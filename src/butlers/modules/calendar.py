@@ -131,6 +131,11 @@ MUTATION_HIGH_IMPACT_ACTIONS = {
     "workspace_butler_delete",
     "workspace_butler_toggle",
 }
+# A recurrence-scoped mutation (``series`` / ``following``) that touches at least
+# this many occurrences is treated as high-impact and routed through the approval
+# gate when an approval enqueuer is wired.  A single-occurrence ``this`` mutation
+# is never gated on impact.
+RECURRENCE_HIGH_IMPACT_THRESHOLD = 10
 
 CalendarConflictPolicy = Literal["suggest", "fail", "allow_overlap"]
 
@@ -434,6 +439,64 @@ def _rrule_occurrences_in_window(
             ends = occ_utc + timedelta(minutes=duration_minutes)
             results.append((occ_utc, ends))
     return results
+
+
+def _format_ical_utc(dt: datetime) -> str:
+    """Format *dt* as an RFC-5545 UTC value (``YYYYMMDDTHHMMSSZ``).
+
+    Used to build EXDATE / RRULE UNTIL values for occurrence-scoped recurrence
+    edits.  Naive datetimes are assumed to already be UTC.
+    """
+    dt_utc = dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    return dt_utc.strftime("%Y%m%dT%H%M%SZ")
+
+
+def _recurrence_lines_append_exdate(
+    recurrence_lines: list[str], occurrence_start: datetime
+) -> list[str]:
+    """Append a UTC ``EXDATE`` for *occurrence_start* to a provider recurrence array.
+
+    The series RRULE (and any RDATE entries) are preserved.  When a UTC EXDATE
+    line already exists the new value is folded into it; an already-excluded
+    occurrence is a no-op so the call is idempotent.
+    """
+    exdate_value = _format_ical_utc(occurrence_start)
+    result = list(recurrence_lines)
+    for index, line in enumerate(result):
+        upper = line.upper()
+        if upper.startswith("EXDATE") and "TZID" not in upper and ":" in line:
+            prefix, _, values = line.partition(":")
+            existing = [value for value in values.split(",") if value]
+            if exdate_value in existing:
+                return result
+            existing.append(exdate_value)
+            result[index] = f"{prefix}:{','.join(existing)}"
+            return result
+    result.append(f"EXDATE:{exdate_value}")
+    return result
+
+
+def _recurrence_lines_bound_until(recurrence_lines: list[str], boundary: datetime) -> list[str]:
+    """Bound the series RRULE with an ``UNTIL`` at *boundary* (a this-and-following split).
+
+    Any pre-existing ``UNTIL`` / ``COUNT`` on the RRULE is replaced (they are
+    mutually exclusive with the new bound).  Non-RRULE lines are passed through.
+    """
+    until_value = _format_ical_utc(boundary)
+    result: list[str] = []
+    for line in recurrence_lines:
+        if not line.upper().startswith("RRULE"):
+            result.append(line)
+            continue
+        _, _, components = line.partition(":")
+        parts = [
+            part
+            for part in components.split(";")
+            if part and not part.upper().startswith(("UNTIL=", "COUNT="))
+        ]
+        parts.append(f"UNTIL={until_value}")
+        result.append("RRULE:" + ";".join(parts))
+    return result
 
 
 def _extract_google_credential_value(payload: dict[str, Any], key: str) -> Any:
@@ -1593,7 +1656,7 @@ class CalendarEventUpdate(BaseModel):
     location: str | None = None
     attendees: list[str] | None = None
     recurrence_rule: str | None = None
-    recurrence_scope: Literal["series"] = "series"
+    recurrence_scope: Literal["this", "following", "series"] = "series"
     color_id: str | None = None
     private_metadata: dict[str, str] | None = None
     entity_ids: list[uuid.UUID] | None = None
@@ -1757,6 +1820,26 @@ class CalendarProvider(abc.ABC):
     async def get_calendar_summary(self, calendar_id: str) -> str | None:
         """Return the human-readable summary/name for a calendar, or ``None``."""
         return None
+
+    async def get_recurrence(self, *, calendar_id: str, event_id: str) -> list[str]:
+        """Return the raw provider recurrence array (RRULE / EXDATE / RDATE lines).
+
+        Used by occurrence-scoped edits that must preserve existing exclusions.
+        Providers that do not support occurrence-scoped recurrence editing raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError("provider does not support occurrence-scoped recurrence editing")
+
+    async def set_recurrence(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        recurrence: list[str],
+        send_updates: str | None = None,
+    ) -> CalendarEvent:
+        """Replace the master event's recurrence array and return the updated event."""
+        raise NotImplementedError("provider does not support occurrence-scoped recurrence editing")
 
     @abc.abstractmethod
     async def shutdown(self) -> None:
@@ -2270,6 +2353,54 @@ class _GoogleProvider(CalendarProvider):
                 status_code=response.status_code,
                 message=_safe_google_error_message(response),
             )
+
+    async def get_recurrence(self, *, calendar_id: str, event_id: str) -> list[str]:
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+        normalized_calendar_id = quote(calendar_id, safe="")
+        encoded_event_id = quote(normalized_event_id, safe="")
+        payload = await self._request_google_json(
+            "GET",
+            f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
+        )
+        recurrence = payload.get("recurrence")
+        if not isinstance(recurrence, list):
+            return []
+        return [entry for entry in recurrence if isinstance(entry, str) and entry.strip()]
+
+    async def set_recurrence(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        recurrence: list[str],
+        send_updates: str | None = None,
+    ) -> CalendarEvent:
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+        normalized_calendar_id = quote(calendar_id, safe="")
+        encoded_event_id = quote(normalized_event_id, safe="")
+        params: dict[str, Any] | None = None
+        if send_updates is not None and send_updates.strip():
+            params = {"sendUpdates": send_updates.strip()}
+        response_payload = await self._request_google_json(
+            "PATCH",
+            f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
+            params=params,
+            json_body={"recurrence": list(recurrence)},
+        )
+        event = _google_event_to_calendar_event(
+            response_payload,
+            fallback_timezone=self._config.timezone,
+        )
+        if event is None:
+            raise CalendarRequestError(
+                status_code=200,
+                message="Google Calendar returned a cancelled event after recurrence update",
+            )
+        return event
 
     async def add_attendees(
         self,
@@ -3080,19 +3211,45 @@ class CalendarModule(Module):
             location: str | None = None,
             attendees: list[str] | None = None,
             recurrence_rule: str | None = None,
-            recurrence_scope: Literal["series"] = "series",
+            recurrence_scope: Literal["this", "following", "series"] = "series",
+            instance_start_at: datetime | None = None,
             color_id: str | None = None,
             calendar_id: str | None = None,
             conflict_policy: CalendarConflictPolicy | None = None,
             entity_ids: list[uuid.UUID] | None = None,
             request_id: str | None = None,
+            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Update an event and preserve Butler tags for Butler-generated entries.
 
-            Recurrence updates are series-scoped in v1.
+            ``recurrence_scope`` controls how a recurring event is mutated:
+            ``series`` (default) edits the whole series; ``this`` edits only the
+            occurrence named by ``instance_start_at``; ``following`` edits that
+            occurrence and every later one (splitting the series at the boundary).
+            ``this`` / ``following`` require ``instance_start_at``.
             Fail-closed: provider errors return a structured error dict rather than
             silently dropping the mutation (spec section 4.4 / 15.2).
             """
+            if recurrence_scope != "series":
+                return await module._apply_occurrence_update(
+                    event_id=event_id,
+                    instance_start_at=instance_start_at,
+                    recurrence_scope=recurrence_scope,
+                    title=title,
+                    start_at=start_at,
+                    end_at=end_at,
+                    timezone=timezone,
+                    description=description,
+                    body=body,
+                    location=location,
+                    recurrence_rule=recurrence_rule,
+                    color_id=color_id,
+                    calendar_id=calendar_id,
+                    entity_ids=entity_ids,
+                    request_id=request_id,
+                    tool_name="calendar_update_event",
+                    approval_bypass=_approval_bypass,
+                )
             await module._require_calendar_write_permission()
             normalized_event_id = event_id.strip()
             if not normalized_event_id:
@@ -3425,9 +3582,11 @@ class CalendarModule(Module):
         async def calendar_delete_event(
             event_id: str,
             calendar_id: str | None = None,
-            recurrence_scope: Literal["series"] = "series",
+            recurrence_scope: Literal["this", "following", "series"] = "series",
+            instance_start_at: datetime | None = None,
             send_updates: str | None = None,
             request_id: str | None = None,
+            _approval_bypass: bool = False,
         ) -> dict[str, Any]:
             """Delete or cancel a calendar event.
 
@@ -3435,13 +3594,27 @@ class CalendarModule(Module):
             cancellation notifications.  By default (send_updates=None),
             no notification emails are sent.
 
-            Recurring events: v1 supports series-scoped deletion only
-            (recurrence_scope="series").  Pass the base recurring-event ID,
-            not an individual occurrence ID.
+            ``recurrence_scope`` controls how a recurring event is deleted:
+            ``series`` (default) removes the whole series; ``this`` removes only
+            the occurrence named by ``instance_start_at`` (EXDATE); ``following``
+            removes that occurrence and every later one (UNTIL split). ``this`` /
+            ``following`` require ``instance_start_at`` and the base recurring
+            event ID — not an individual occurrence ID.
 
             Returns status="deleted" on success, or status="not_found" when
             the event did not exist (already deleted — treated as success).
             """
+            if recurrence_scope != "series":
+                return await module._apply_occurrence_delete(
+                    event_id=event_id,
+                    instance_start_at=instance_start_at,
+                    recurrence_scope=recurrence_scope,
+                    calendar_id=calendar_id,
+                    send_updates=send_updates,
+                    request_id=request_id,
+                    tool_name="calendar_delete_event",
+                    approval_bypass=_approval_bypass,
+                )
             await module._require_calendar_write_permission()
             normalized_event_id = event_id.strip()
             if not normalized_event_id:
@@ -3585,6 +3758,83 @@ class CalendarModule(Module):
                 origin_ref=normalized_event_id,
             )
             return result
+
+        @_tool("core")
+        async def calendar_update_event_instance(
+            event_id: str,
+            instance_start_at: datetime,
+            title: str | None = None,
+            start_at: datetime | None = None,
+            end_at: datetime | None = None,
+            timezone: str | None = None,
+            description: str | None = None,
+            body: str | None = None,
+            location: str | None = None,
+            recurrence_scope: Literal["this", "following"] = "this",
+            calendar_id: str | None = None,
+            entity_ids: list[uuid.UUID] | None = None,
+            request_id: str | None = None,
+            _approval_bypass: bool = False,
+        ) -> dict[str, Any]:
+            """Edit a single occurrence (or this-and-following) of a recurring event.
+
+            ``event_id`` is the base recurring event ID and ``instance_start_at``
+            is the occurrence's original start.  ``this`` detaches just that
+            occurrence as an exception (the original slot is EXDATE-d and the edit
+            is carried onto the detached occurrence); ``following`` splits the
+            series at the boundary and applies the edit to the remainder.  The
+            matching ``calendar_event_instances`` row is marked ``is_exception``.
+            """
+            return await module._apply_occurrence_update(
+                event_id=event_id,
+                instance_start_at=instance_start_at,
+                recurrence_scope=recurrence_scope,
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                timezone=timezone,
+                description=description,
+                body=body,
+                location=location,
+                recurrence_rule=None,
+                color_id=None,
+                calendar_id=calendar_id,
+                entity_ids=entity_ids,
+                request_id=request_id,
+                tool_name="calendar_update_event_instance",
+                approval_bypass=_approval_bypass,
+            )
+
+        @_tool("core")
+        async def calendar_delete_event_instance(
+            event_id: str,
+            instance_start_at: datetime,
+            recurrence_scope: Literal["this", "following"] = "this",
+            send_updates: str | None = None,
+            calendar_id: str | None = None,
+            request_id: str | None = None,
+            _approval_bypass: bool = False,
+        ) -> dict[str, Any]:
+            """Delete a single occurrence (or this-and-following) of a recurring event.
+
+            ``event_id`` is the base recurring event ID and ``instance_start_at``
+            is the occurrence's original start.  ``this`` appends a timezone-correct
+            ``EXDATE`` for that occurrence, leaving the rest of the series intact;
+            ``following`` bounds the series RRULE with ``UNTIL`` just before the
+            occurrence.  The matching ``calendar_event_instances`` row is marked
+            ``is_exception`` (status cancelled).  A non-existent base event surfaces
+            a fail-open not-found response.
+            """
+            return await module._apply_occurrence_delete(
+                event_id=event_id,
+                instance_start_at=instance_start_at,
+                recurrence_scope=recurrence_scope,
+                calendar_id=calendar_id,
+                send_updates=send_updates,
+                request_id=request_id,
+                tool_name="calendar_delete_event_instance",
+                approval_bypass=_approval_bypass,
+            )
 
         @_tool("butler_events")
         async def calendar_create_butler_event(
@@ -7549,6 +7799,553 @@ class CalendarModule(Module):
                 metadata={"projection": "reminders"},
             )
         return None
+
+    # ------------------------------------------------------------------
+    # Recurrence-scoped occurrence mutation (this / following)
+    # ------------------------------------------------------------------
+
+    def _count_scope_occurrences(
+        self,
+        *,
+        event: CalendarEvent,
+        recurrence_scope: str,
+        occurrence_start: datetime,
+    ) -> int:
+        """Number of occurrences a scope-aware mutation will touch (impact preview).
+
+        ``this`` always touches exactly one occurrence.  ``following`` counts the
+        boundary occurrence and every later one inside the rolling projection
+        window; ``series`` counts the whole expanded series in that window.
+        """
+        if recurrence_scope == "this":
+            return 1
+        recurrence_rule = event.recurrence_rule
+        if not recurrence_rule or event.start_at is None:
+            return 1
+        window_start = event.start_at
+        window_end = window_start + timedelta(days=RECURRENCE_PROJECTION_WINDOW_DAYS)
+        if event.end_at is not None:
+            duration_minutes = max(int((event.end_at - event.start_at).total_seconds() // 60), 1)
+        else:
+            duration_minutes = DEFAULT_SCHEDULED_TASK_DURATION_MINUTES
+        occurrences = _rrule_occurrences_in_window(
+            recurrence_rule,
+            event.start_at,
+            window_start,
+            window_end,
+            duration_minutes=duration_minutes,
+        )
+        if recurrence_scope == "following":
+            return sum(1 for (start, _end) in occurrences if start >= occurrence_start)
+        return len(occurrences)
+
+    async def _mark_instances_exception(
+        self,
+        *,
+        source_id: uuid.UUID | None,
+        origin_ref: str,
+        occurrence_start: datetime | None = None,
+        from_boundary: datetime | None = None,
+        cancel: bool = False,
+    ) -> None:
+        """Mark projected ``calendar_event_instances`` rows as exceptions (fail-open).
+
+        For ``this`` pass ``occurrence_start`` to stamp the single matching row;
+        for ``following`` pass ``from_boundary`` to stamp the boundary row and all
+        later ones.  ``cancel`` additionally flips status to ``cancelled`` (used by
+        the delete path).
+        """
+        if source_id is None:
+            return
+        try:
+            if not await self._projection_tables_available():
+                return
+            pool = getattr(self._db, "pool", None) if self._db is not None else None
+            if pool is None:
+                return
+            event_row = await pool.fetchrow(
+                "SELECT id FROM calendar_events WHERE source_id = $1 AND origin_ref = $2",
+                source_id,
+                origin_ref,
+            )
+            if event_row is None:
+                return
+            event_db_id = event_row["id"]
+            status_clause = ", status = 'cancelled'" if cancel else ""
+            if occurrence_start is not None:
+                await pool.execute(
+                    f"UPDATE calendar_event_instances "
+                    f"SET is_exception = true{status_clause}, updated_at = now() "
+                    f"WHERE event_id = $1 AND starts_at = $2",
+                    event_db_id,
+                    occurrence_start,
+                )
+            elif from_boundary is not None:
+                await pool.execute(
+                    f"UPDATE calendar_event_instances "
+                    f"SET is_exception = true{status_clause}, updated_at = now() "
+                    f"WHERE event_id = $1 AND starts_at >= $2",
+                    event_db_id,
+                    from_boundary,
+                )
+        except Exception as exc:  # noqa: BLE001 — fail-open projection hygiene
+            logger.warning(
+                "Marking instance exceptions failed (origin_ref=%s): %s", origin_ref, exc
+            )
+
+    async def _maybe_gate_recurrence_impact(
+        self,
+        *,
+        tool_name: str,
+        action_type: str,
+        tool_args: dict[str, Any],
+        request_id: str | None,
+        idempotency_key: str,
+        action_payload: dict[str, Any],
+        recurrence_scope: str,
+        occurrences_touched: int,
+        approval_bypass: bool,
+    ) -> dict[str, Any] | None:
+        """Route large ``series`` / ``following`` mutations through the approval gate.
+
+        Returns an ``approval_required`` response when gated, otherwise ``None``.
+        A single-occurrence ``this`` mutation is never gated on impact.
+        """
+        if approval_bypass or self._approval_enqueuer is None:
+            return None
+        if recurrence_scope == "this":
+            return None
+        if occurrences_touched < RECURRENCE_HIGH_IMPACT_THRESHOLD:
+            return None
+        gated_tool_args = dict(tool_args)
+        gated_tool_args["_approval_bypass"] = True
+        agent_summary = (
+            f"Calendar recurrence high-impact action: {tool_name} touches "
+            f"{occurrences_touched} occurrences (scope={recurrence_scope}, "
+            f"butler={self._butler_name})"
+        )
+        action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
+        response = {
+            "status": "approval_required",
+            "action_id": action_id,
+            "message": "This recurrence-scoped mutation has been queued for approval.",
+            "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
+        }
+        source_id = await self._resolve_action_source_id(
+            source_kind=SOURCE_KIND_PROVIDER, lane="user"
+        )
+        await self._finalize_workspace_mutation(
+            idempotency_key=idempotency_key,
+            action_type=action_type,
+            request_id=request_id,
+            action_status=MUTATION_STATUS_PENDING,
+            action_payload=action_payload,
+            action_result=response,
+            source_id=source_id,
+            origin_ref=None,
+            error=None,
+        )
+        return response
+
+    async def _apply_occurrence_delete(
+        self,
+        *,
+        event_id: str,
+        instance_start_at: datetime | None,
+        recurrence_scope: str,
+        calendar_id: str | None,
+        send_updates: str | None,
+        request_id: str | None,
+        tool_name: str,
+        approval_bypass: bool = False,
+    ) -> dict[str, Any]:
+        """Delete a single occurrence (``this``) or this-and-following of a series."""
+        await self._require_calendar_write_permission()
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+        if instance_start_at is None:
+            raise ValueError(
+                "instance_start_at is required for recurrence_scope 'this'/'following'"
+            )
+        if instance_start_at.tzinfo is None:
+            raise ValueError("instance_start_at must be timezone-aware")
+
+        provider = self._require_provider()
+        resolved_calendar_id = self._resolve_calendar_id(calendar_id)
+        normalized_request_id = self._normalize_request_id(request_id)
+        occurrence_start = instance_start_at.astimezone(UTC)
+        action_payload = {
+            "event_id": normalized_event_id,
+            "calendar_id": resolved_calendar_id,
+            "recurrence_scope": recurrence_scope,
+            "instance_start_at": occurrence_start.isoformat(),
+            "send_updates": send_updates,
+        }
+        idempotency_key, replay = await self._prepare_workspace_mutation(
+            action_type="workspace_user_delete",
+            request_id=normalized_request_id,
+            action_payload=action_payload,
+        )
+        if replay is not None:
+            return replay
+        source_id = await self._resolve_action_source_id(
+            source_kind=SOURCE_KIND_PROVIDER,
+            lane="user",
+            calendar_id=resolved_calendar_id,
+        )
+
+        existing_event = await provider.get_event(
+            calendar_id=resolved_calendar_id, event_id=normalized_event_id
+        )
+        if existing_event is None:
+            result = {
+                "status": "not_found",
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event_id": normalized_event_id,
+            }
+            await self._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_delete",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_NOOP,
+                action_payload=action_payload,
+                action_result=result,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
+            return result
+
+        # A non-recurring event has no occurrences to exclude — fall back to a
+        # whole-event delete so the scope argument degrades gracefully.
+        if not existing_event.recurrence_rule:
+            await provider.delete_event(
+                calendar_id=resolved_calendar_id,
+                event_id=normalized_event_id,
+                send_updates=send_updates,
+            )
+            await self._project_provider_mutation(
+                source_id=source_id,
+                calendar_id=resolved_calendar_id,
+                cancelled_ids=[normalized_event_id],
+            )
+            result = {
+                "status": "deleted",
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event_id": normalized_event_id,
+                "recurrence_scope": recurrence_scope,
+                "impact": {"occurrences_touched": 1, "scope": recurrence_scope},
+            }
+            result["projection_freshness"] = await self._refresh_user_projection(
+                resolved_calendar_id
+            )
+            await self._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_delete",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_APPLIED,
+                action_payload=action_payload,
+                action_result=result,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
+            return result
+
+        occurrences_touched = self._count_scope_occurrences(
+            event=existing_event,
+            recurrence_scope=recurrence_scope,
+            occurrence_start=occurrence_start,
+        )
+        gate = await self._maybe_gate_recurrence_impact(
+            tool_name=tool_name,
+            action_type="workspace_user_delete",
+            tool_args={
+                "event_id": normalized_event_id,
+                "calendar_id": resolved_calendar_id,
+                "recurrence_scope": recurrence_scope,
+                "instance_start_at": occurrence_start.isoformat(),
+                "send_updates": send_updates,
+            },
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope=recurrence_scope,
+            occurrences_touched=occurrences_touched,
+            approval_bypass=approval_bypass,
+        )
+        if gate is not None:
+            return gate
+
+        recurrence_lines = await provider.get_recurrence(
+            calendar_id=resolved_calendar_id, event_id=normalized_event_id
+        )
+        if not recurrence_lines:
+            recurrence_lines = [f"RRULE:{existing_event.recurrence_rule}"]
+        if recurrence_scope == "this":
+            new_recurrence = _recurrence_lines_append_exdate(recurrence_lines, occurrence_start)
+        else:  # following
+            new_recurrence = _recurrence_lines_bound_until(
+                recurrence_lines, occurrence_start - timedelta(seconds=1)
+            )
+
+        updated_master = await provider.set_recurrence(
+            calendar_id=resolved_calendar_id,
+            event_id=normalized_event_id,
+            recurrence=new_recurrence,
+            send_updates=send_updates,
+        )
+        await self._emit_calendar_audit("delete", existing_event.title, resolved_calendar_id)
+        await self._project_provider_mutation(
+            source_id=source_id,
+            calendar_id=resolved_calendar_id,
+            updated_events=[updated_master],
+        )
+        await self._mark_instances_exception(
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            occurrence_start=occurrence_start if recurrence_scope == "this" else None,
+            from_boundary=occurrence_start if recurrence_scope == "following" else None,
+            cancel=True,
+        )
+        result = {
+            "status": "deleted",
+            "provider": provider.name,
+            "calendar_id": resolved_calendar_id,
+            "event_id": normalized_event_id,
+            "recurrence_scope": recurrence_scope,
+            "recurrence": new_recurrence,
+            "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
+        }
+        result["projection_freshness"] = await self._refresh_user_projection(resolved_calendar_id)
+        await self._finalize_workspace_mutation(
+            idempotency_key=idempotency_key,
+            action_type="workspace_user_delete",
+            request_id=normalized_request_id,
+            action_status=MUTATION_STATUS_APPLIED,
+            action_payload=action_payload,
+            action_result=result,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+        )
+        return result
+
+    async def _apply_occurrence_update(
+        self,
+        *,
+        event_id: str,
+        instance_start_at: datetime | None,
+        recurrence_scope: str,
+        title: str | None,
+        start_at: datetime | None,
+        end_at: datetime | None,
+        timezone: str | None,
+        description: str | None,
+        body: str | None,
+        location: str | None,
+        recurrence_rule: str | None,
+        color_id: str | None,
+        calendar_id: str | None,
+        entity_ids: list[uuid.UUID] | None,
+        request_id: str | None,
+        tool_name: str,
+        approval_bypass: bool = False,
+    ) -> dict[str, Any]:
+        """Edit a single occurrence (``this``) or this-and-following of a series.
+
+        ``this`` detaches the named occurrence: the original slot is EXDATE-d from
+        the series and the edited fields are carried onto a standalone detached
+        event.  ``following`` bounds the original series with ``UNTIL`` and spins a
+        new recurring event (carrying the edits) from the boundary onward.
+        """
+        await self._require_calendar_write_permission()
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+        if instance_start_at is None:
+            raise ValueError(
+                "instance_start_at is required for recurrence_scope 'this'/'following'"
+            )
+        if instance_start_at.tzinfo is None:
+            raise ValueError("instance_start_at must be timezone-aware")
+
+        provider = self._require_provider()
+        resolved_calendar_id = self._resolve_calendar_id(calendar_id)
+        normalized_request_id = self._normalize_request_id(request_id)
+        occurrence_start = instance_start_at.astimezone(UTC)
+        action_payload = {
+            "event_id": normalized_event_id,
+            "calendar_id": resolved_calendar_id,
+            "recurrence_scope": recurrence_scope,
+            "instance_start_at": occurrence_start.isoformat(),
+            "title": title,
+            "start_at": start_at,
+            "end_at": end_at,
+            "timezone": timezone,
+            "location": location,
+        }
+        idempotency_key, replay = await self._prepare_workspace_mutation(
+            action_type="workspace_user_update",
+            request_id=normalized_request_id,
+            action_payload=action_payload,
+        )
+        if replay is not None:
+            return replay
+        source_id = await self._resolve_action_source_id(
+            source_kind=SOURCE_KIND_PROVIDER,
+            lane="user",
+            calendar_id=resolved_calendar_id,
+        )
+
+        existing_event = await provider.get_event(
+            calendar_id=resolved_calendar_id, event_id=normalized_event_id
+        )
+        if existing_event is None or not existing_event.recurrence_rule:
+            result = {
+                "status": "not_found",
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event_id": normalized_event_id,
+                "reason": (
+                    "event not found"
+                    if existing_event is None
+                    else "event is not recurring; use calendar_update_event (series scope)"
+                ),
+            }
+            await self._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_update",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_NOOP,
+                action_payload=action_payload,
+                action_result=result,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
+            return result
+
+        occurrences_touched = self._count_scope_occurrences(
+            event=existing_event,
+            recurrence_scope=recurrence_scope,
+            occurrence_start=occurrence_start,
+        )
+        gate = await self._maybe_gate_recurrence_impact(
+            tool_name=tool_name,
+            action_type="workspace_user_update",
+            tool_args={
+                "event_id": normalized_event_id,
+                "instance_start_at": occurrence_start.isoformat(),
+                "recurrence_scope": recurrence_scope,
+                "title": title,
+                "calendar_id": resolved_calendar_id,
+            },
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope=recurrence_scope,
+            occurrences_touched=occurrences_touched,
+            approval_bypass=approval_bypass,
+        )
+        if gate is not None:
+            return gate
+
+        recurrence_lines = await provider.get_recurrence(
+            calendar_id=resolved_calendar_id, event_id=normalized_event_id
+        )
+        if not recurrence_lines:
+            recurrence_lines = [f"RRULE:{existing_event.recurrence_rule}"]
+
+        duration = (
+            existing_event.end_at - existing_event.start_at
+            if existing_event.end_at and existing_event.start_at
+            else timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+        )
+        new_start = start_at if start_at is not None else occurrence_start
+        new_end = end_at if end_at is not None else new_start + duration
+        detached_recurrence: str | None = None
+        if recurrence_scope != "this":
+            carried_rule = recurrence_rule or existing_event.recurrence_rule
+            # CalendarEventCreate re-validates the rule and requires the RRULE:
+            # prefix; the stored form on a CalendarEvent is prefix-stripped.
+            if carried_rule:
+                detached_recurrence = (
+                    carried_rule
+                    if carried_rule.upper().startswith("RRULE:")
+                    else f"RRULE:{carried_rule}"
+                )
+        detached_payload = CalendarEventCreate(
+            title=title if title is not None else existing_event.title,
+            start_at=new_start,
+            end_at=new_end,
+            timezone=timezone or existing_event.timezone,
+            description=description if description is not None else existing_event.description,
+            body=body if body is not None else existing_event.body,
+            location=location if location is not None else existing_event.location,
+            attendees=[attendee.email for attendee in existing_event.attendees],
+            recurrence_rule=detached_recurrence,
+            color_id=color_id if color_id is not None else existing_event.color_id,
+        )
+
+        if recurrence_scope == "this":
+            new_recurrence = _recurrence_lines_append_exdate(recurrence_lines, occurrence_start)
+        else:  # following
+            new_recurrence = _recurrence_lines_bound_until(
+                recurrence_lines, occurrence_start - timedelta(seconds=1)
+            )
+        updated_master = await provider.set_recurrence(
+            calendar_id=resolved_calendar_id,
+            event_id=normalized_event_id,
+            recurrence=new_recurrence,
+        )
+        detached_event = await provider.create_event(
+            calendar_id=resolved_calendar_id, payload=detached_payload
+        )
+        session_id_str = _get_session_id()
+        detached_event = detached_event.model_copy(
+            update={
+                "source_butler": self._butler_name,
+                "source_session_id": session_id_str,
+                "entity_ids": entity_ids if entity_ids is not None else detached_event.entity_ids,
+            }
+        )
+        await self._emit_calendar_audit(
+            "update", detached_event.title or existing_event.title, resolved_calendar_id
+        )
+        await self._project_provider_mutation(
+            source_id=source_id,
+            calendar_id=resolved_calendar_id,
+            updated_events=[updated_master, detached_event],
+        )
+        await self._mark_instances_exception(
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            occurrence_start=occurrence_start if recurrence_scope == "this" else None,
+            from_boundary=occurrence_start if recurrence_scope == "following" else None,
+            cancel=True,
+        )
+        result = {
+            "status": "updated",
+            "provider": provider.name,
+            "calendar_id": resolved_calendar_id,
+            "event_id": normalized_event_id,
+            "recurrence_scope": recurrence_scope,
+            "recurrence": new_recurrence,
+            "event": self._event_to_payload(detached_event),
+            "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
+        }
+        result["projection_freshness"] = await self._refresh_user_projection(resolved_calendar_id)
+        await self._finalize_workspace_mutation(
+            idempotency_key=idempotency_key,
+            action_type="workspace_user_update",
+            request_id=normalized_request_id,
+            action_status=MUTATION_STATUS_APPLIED,
+            action_payload=action_payload,
+            action_result=result,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+        )
+        return result
 
     async def _gate_high_impact_mutation(
         self,

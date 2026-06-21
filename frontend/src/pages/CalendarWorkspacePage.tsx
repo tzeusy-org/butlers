@@ -469,6 +469,11 @@ function isPausedEntry(entry: UnifiedCalendarEntry): boolean {
   return normalized === "paused" || normalized === "inactive";
 }
 
+/** A cancelled occurrence (e.g. a recurring instance EXDATE-d off its series). */
+function isCancelledEntry(entry: UnifiedCalendarEntry): boolean {
+  return entry.status.toLowerCase() === "cancelled";
+}
+
 function newButlerRequestId(prefix: string): string {
   return `calendar-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -575,6 +580,18 @@ const RECURRING_INSTANCE_CAP = 10;
  */
 function recurringGroupKey(entry: UnifiedCalendarEntry): string {
   return entry.schedule_id ?? entry.reminder_id ?? entry.entry_id;
+}
+
+/** Recurrence-edit scope mirroring the backend `recurrence_scope` literal. */
+type RecurrenceScope = "this" | "following" | "series";
+
+/**
+ * A provider (user-lane) calendar entry is a recurring occurrence when it
+ * carries an RRULE. The `provider_event_id` is the shared base recurring event,
+ * and `start_at` is the occurrence's original start (the EXDATE/UNTIL anchor).
+ */
+function isRecurringUserEntry(entry: UnifiedCalendarEntry): boolean {
+  return Boolean(entry.rrule) && Boolean(entry.provider_event_id);
 }
 
 interface RecurringOverflowSentinel {
@@ -1481,6 +1498,10 @@ export default function CalendarWorkspacePage() {
   const [userEventDialogMode, setUserEventDialogMode] = useState<UserEventDialogMode>("create");
   const [activeUserEntry, setActiveUserEntry] = useState<UnifiedCalendarEntry | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<UnifiedCalendarEntry | null>(null);
+  // Recurrence scope for deleting a recurring occurrence: 'this' (just this
+  // occurrence, EXDATE), 'following' (this + later, UNTIL split), or 'series'
+  // (the whole recurring event). Reset to 'this' whenever a new candidate opens.
+  const [deleteScope, setDeleteScope] = useState<RecurrenceScope>("this");
   const [userEventForm, setUserEventForm] = useState<UserEventFormState | null>(null);
   // Conflict state: set when the server returns status='conflict' for a user-event mutation.
   // Holds the detected conflicts, suggested slots, and the pending mutation args so re-submission
@@ -2391,6 +2412,13 @@ export default function CalendarWorkspacePage() {
     };
     if (owner.calendarId) {
       payload.calendar_id = owner.calendarId;
+    }
+    // For a recurring occurrence, pass the chosen scope and the occurrence
+    // anchor so the backend can EXDATE ('this'), UNTIL-split ('following'), or
+    // delete the whole series ('series').
+    if (isRecurringUserEntry(deleteCandidate) && deleteScope !== "series") {
+      payload.recurrence_scope = deleteScope;
+      payload.instance_start_at = deleteCandidate.start_at;
     }
 
     try {
@@ -3304,7 +3332,10 @@ export default function CalendarWorkspacePage() {
                                 Detail
                               </PillButton>
                               <PillButton
-                                onClick={() => setDeleteCandidate(entry)}
+                                onClick={() => {
+                                  setDeleteScope(isRecurringUserEntry(entry) ? "this" : "series");
+                                  setDeleteCandidate(entry);
+                                }}
                                 disabled={!canMutate || userEventMutation.isPending}
                                 className="hover:border-[var(--red)] hover:text-[var(--red)]"
                               >
@@ -3315,7 +3346,22 @@ export default function CalendarWorkspacePage() {
                         >
                           <div className="flex min-w-0 items-center gap-2">
                             {entry.butler_name ? <ButlerMark name={entry.butler_name} /> : null}
-                            <span className="truncate text-sm text-[var(--fg)]">{entry.title}</span>
+                            <span
+                              className={cn(
+                                "truncate text-sm text-[var(--fg)]",
+                                isCancelledEntry(entry) && "text-[var(--mfg)] line-through",
+                              )}
+                            >
+                              {entry.title}
+                            </span>
+                            {isCancelledEntry(entry) ? (
+                              <KindTag
+                                data-testid="entry-cancelled-tag"
+                                className="text-[var(--red)]"
+                              >
+                                cancelled
+                              </KindTag>
+                            ) : null}
                             <Mono muted className="hidden truncate sm:inline">
                               {entry.butler_name ?? entry.source_key}
                             </Mono>
@@ -3342,6 +3388,7 @@ export default function CalendarWorkspacePage() {
             entry={selectedEntry}
             onClose={closeDetailPanel}
             onDelete={(entry) => {
+              setDeleteScope(isRecurringUserEntry(entry) ? "this" : "series");
               setDeleteCandidate(entry);
               closeDetailPanel();
             }}
@@ -4029,6 +4076,61 @@ export default function CalendarWorkspacePage() {
                 : "Delete this event?"}
             </DialogDescription>
           </DialogHeader>
+          {deleteCandidate && isRecurringUserEntry(deleteCandidate) ? (
+            <fieldset
+              data-testid="delete-recurrence-scope"
+              className="flex flex-col gap-2 border-t border-[var(--border)] pt-3"
+            >
+              <legend className="sr-only">Recurrence scope</legend>
+              {(
+                [
+                  {
+                    value: "this" as const,
+                    label: "This occurrence",
+                    impact: (() => {
+                      const loaded = entries.filter(
+                        (e) => e.provider_event_id === deleteCandidate.provider_event_id,
+                      ).length;
+                      return loaded > 1
+                        ? `Changes 1 of ~${loaded} loaded occurrences.`
+                        : "Changes only this occurrence.";
+                    })(),
+                  },
+                  {
+                    value: "following" as const,
+                    label: "This and following",
+                    impact: "Removes this occurrence and every later one.",
+                  },
+                  {
+                    value: "series" as const,
+                    label: "All events",
+                    impact: "Deletes the entire recurring series.",
+                  },
+                ] satisfies Array<{ value: RecurrenceScope; label: string; impact: string }>
+              ).map((option) => (
+                <label
+                  key={option.value}
+                  data-testid={`delete-scope-${option.value}`}
+                  className="flex cursor-pointer items-start gap-2 text-sm"
+                >
+                  <input
+                    type="radio"
+                    name="delete-recurrence-scope"
+                    value={option.value}
+                    checked={deleteScope === option.value}
+                    onChange={() => setDeleteScope(option.value)}
+                    className="mt-1"
+                  />
+                  <span className="flex flex-col">
+                    <span className="font-medium">{option.label}</span>
+                    <Mono muted className="text-xs">
+                      {option.impact}
+                    </Mono>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
           <DialogFooter>
             <PillButton onClick={() => setDeleteCandidate(null)} disabled={userEventMutation.isPending}>
               Cancel
