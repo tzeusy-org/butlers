@@ -109,6 +109,26 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   })),
+  useCalendarDuplicates: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: {
+      data: {
+        clusters: [],
+        rules: { match_strategy: "balanced", noisy_threshold: 2 },
+        available: true,
+      },
+    },
+  })),
+  usePatchCalendarDedupRules: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  })),
+  useSetCalendarKeepSeparate: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  })),
 }));
 
 vi.mock("sonner", () => ({

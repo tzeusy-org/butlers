@@ -13,13 +13,16 @@ import {
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
+  getCalendarWorkspaceDuplicates,
   getCalendarWorkspaceEntry,
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
   parseCalendarQuickAdd,
+  patchCalendarDedupRules,
   previewCalendarWorkspaceButlerEvent,
   searchCalendarWorkspace,
+  setCalendarKeepSeparate,
   setPrimaryCalendar,
   syncCalendarWorkspace,
   toggleCalendarSource,
@@ -27,6 +30,9 @@ import {
 import type {
   ApiResponse,
   CalendarAuditParams,
+  CalendarDedupRulesUpdateRequest,
+  CalendarDuplicatesParams,
+  CalendarKeepSeparateRequest,
   CalendarProposalAcceptRequest,
   CalendarSourceToggleRequest,
   CalendarWorkspaceButlerEventPreviewRequest,
@@ -369,6 +375,54 @@ export function useCalendarWorkspaceEntry(
     queryKey: ["calendar-workspace-entry", entryId],
     queryFn: () => getCalendarWorkspaceEntry(entryId!, options?.timezone),
     enabled: options?.enabled ?? !!entryId,
+  });
+}
+
+/**
+ * Fetch the cross-source duplicate clusters the read-model collapses, plus the
+ * active dedup rules. Fetched only when enabled (the review panel is open). The
+ * read is fail-open server-side (`available: false` on failure), never an error.
+ */
+export function useCalendarDuplicates(
+  params: CalendarDuplicatesParams,
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  return useQuery({
+    queryKey: ["calendar-duplicates", params],
+    queryFn: () => getCalendarWorkspaceDuplicates(params),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? false,
+  });
+}
+
+/** Invalidate the duplicate-review + main workspace caches after a dedup change. */
+function invalidateDuplicatesAndWorkspace(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ["calendar-duplicates"] });
+  queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+}
+
+/**
+ * Persist the cross-source dedup match-strategy / noisy-threshold settings.
+ * Changing the rules re-collapses the live workspace read, so both the
+ * duplicate-review and workspace caches are invalidated.
+ */
+export function usePatchCalendarDedupRules() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CalendarDedupRulesUpdateRequest) => patchCalendarDedupRules(body),
+    onSuccess: () => invalidateDuplicatesAndWorkspace(queryClient),
+  });
+}
+
+/**
+ * Pin or unpin a duplicate cluster as keep-separate. A keep-separate cluster is
+ * no longer collapsed by the workspace read, so both caches are invalidated.
+ */
+export function useSetCalendarKeepSeparate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CalendarKeepSeparateRequest) => setCalendarKeepSeparate(body),
+    onSuccess: () => invalidateDuplicatesAndWorkspace(queryClient),
   });
 }
 

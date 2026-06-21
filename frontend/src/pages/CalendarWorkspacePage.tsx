@@ -43,10 +43,13 @@ import {
   useCalendarAccounts,
   useAcceptCalendarProposal,
   useCalendarDayBriefing,
+  useCalendarDuplicates,
   useCalendarOverlays,
   useCalendarProposals,
   useCalendarWorkspace,
   useDismissCalendarProposal,
+  usePatchCalendarDedupRules,
+  useSetCalendarKeepSeparate,
   useCalendarWorkspaceAudit,
   useCalendarWorkspaceMeta,
   useCalendarWorkspaceSearch,
@@ -73,6 +76,7 @@ import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabi
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { MeetingPrepRailContainer } from "@/components/calendar/MeetingPrepRail";
 import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsPanel";
+import { CalendarDuplicatesPanel } from "@/components/calendar/CalendarDuplicatesPanel";
 import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -2360,6 +2364,23 @@ export default function CalendarWorkspacePage() {
   const acceptProposalMutation = useAcceptCalendarProposal();
   const dismissProposalMutation = useDismissCalendarProposal();
 
+  // Duplicate-review panel: the cross-source duplicate clusters the read collapses,
+  // a per-cluster keep-separate toggle, and the match-strategy/threshold control.
+  // Fetched only while the panel is open (duplicates supports user/butler views).
+  const [duplicatesPanelOpen, setDuplicatesPanelOpen] = useState(false);
+  const duplicatesQuery = useCalendarDuplicates(
+    {
+      view: view === "butler" ? "butler" : "user",
+      start: queryStart,
+      end: queryEnd,
+      timezone,
+      sources: sourcesForQuery,
+    },
+    { enabled: duplicatesPanelOpen },
+  );
+  const dedupRulesMutation = usePatchCalendarDedupRules();
+  const keepSeparateMutation = useSetCalendarKeepSeparate();
+
   // Closing the find-time panel must drop its grid overlays, so they never
   // linger over the calendar after the search UI is dismissed.
   useEffect(() => {
@@ -4196,6 +4217,7 @@ export default function CalendarWorkspacePage() {
             setActivityPanelOpen((prev) => !prev);
             setFindTimePanelOpen(false);
             setProposalsPanelOpen(false);
+            setDuplicatesPanelOpen(false);
             setAuditOffset(0);
           }}
         >
@@ -4209,6 +4231,7 @@ export default function CalendarWorkspacePage() {
             setFindTimePanelOpen((prev) => !prev);
             setActivityPanelOpen(false);
             setProposalsPanelOpen(false);
+            setDuplicatesPanelOpen(false);
           }}
         >
           Find time
@@ -4221,9 +4244,23 @@ export default function CalendarWorkspacePage() {
             setProposalsPanelOpen((prev) => !prev);
             setActivityPanelOpen(false);
             setFindTimePanelOpen(false);
+            setDuplicatesPanelOpen(false);
           }}
         >
           Proposals
+        </PillButton>
+
+        <PillButton
+          active={duplicatesPanelOpen}
+          aria-pressed={duplicatesPanelOpen}
+          onClick={() => {
+            setDuplicatesPanelOpen((prev) => !prev);
+            setActivityPanelOpen(false);
+            setFindTimePanelOpen(false);
+            setProposalsPanelOpen(false);
+          }}
+        >
+          Duplicates
         </PillButton>
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:ml-auto">
@@ -4430,12 +4467,31 @@ export default function CalendarWorkspacePage() {
         </div>
       ) : null}
 
+      {/* Duplicate-review panel — overlays the canvas when open */}
+      {duplicatesPanelOpen ? (
+        <div className="flex min-h-0 flex-1 flex-col pt-5">
+          <CalendarDuplicatesPanel
+            data={duplicatesQuery.data?.data}
+            isLoading={duplicatesQuery.isLoading}
+            isError={duplicatesQuery.isError}
+            error={
+              duplicatesQuery.error instanceof Error
+                ? duplicatesQuery.error
+                : null
+            }
+            rulesMutation={dedupRulesMutation}
+            keepSeparateMutation={keepSeparateMutation}
+            timezone={defaultTimezone}
+          />
+        </div>
+      ) : null}
+
       {/* Canvas + detail panel. The find-time panel does NOT hide the canvas —
           it stays visible so found slots can be drawn as ghost overlays on the
           week/day grid below the controls strip. */}
       <div
         className={
-          activityPanelOpen || proposalsPanelOpen
+          activityPanelOpen || proposalsPanelOpen || duplicatesPanelOpen
             ? "hidden"
             : "flex min-h-0 flex-1"
         }

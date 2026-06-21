@@ -38,6 +38,12 @@ import type {
   CalendarAuditParams,
   CalendarAuditResponse,
   CalendarDayBriefingResponse,
+  CalendarDedupRulesModel,
+  CalendarDedupRulesUpdateRequest,
+  CalendarDuplicatesParams,
+  CalendarDuplicatesResponse,
+  CalendarKeepSeparateRequest,
+  CalendarKeepSeparateResponse,
   CalendarPrepResponse,
   CalendarSourceToggleRequest,
   CalendarProposalAcceptRequest,
@@ -1116,6 +1122,53 @@ export function getCalendarWorkspace(
 /** Fetch calendar workspace metadata: capabilities, sources, and lanes. */
 export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspaceMetaResponse>> {
   return apiFetch<ApiResponse<CalendarWorkspaceMetaResponse>>("/calendar/workspace/meta");
+}
+
+/**
+ * Fetch the cross-source duplicate clusters the read-model collapses, plus the
+ * active dedup rules. Fail-open server-side: a read failure yields
+ * `available: false` with an empty cluster list, never an error.
+ */
+export function getCalendarWorkspaceDuplicates(
+  params: CalendarDuplicatesParams,
+): Promise<ApiResponse<CalendarDuplicatesResponse>> {
+  const sp = new URLSearchParams();
+  sp.set("view", params.view);
+  sp.set("start", params.start);
+  sp.set("end", params.end);
+  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+  params.butlers?.forEach((butler) => {
+    if (butler) sp.append("butlers", butler);
+  });
+  params.sources?.forEach((source) => {
+    if (source) sp.append("sources", source);
+  });
+  return apiFetch<ApiResponse<CalendarDuplicatesResponse>>(
+    `/calendar/workspace/duplicates?${sp.toString()}`,
+  );
+}
+
+/** Persist the cross-source dedup match-strategy / noisy-threshold settings. */
+export function patchCalendarDedupRules(
+  body: CalendarDedupRulesUpdateRequest,
+): Promise<ApiResponse<CalendarDedupRulesModel>> {
+  return apiFetch<ApiResponse<CalendarDedupRulesModel>>("/calendar/workspace/dedup-rules", {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Pin or unpin a duplicate cluster as keep-separate (per-cluster override). */
+export function setCalendarKeepSeparate(
+  body: CalendarKeepSeparateRequest,
+): Promise<ApiResponse<CalendarKeepSeparateResponse>> {
+  return apiFetch<ApiResponse<CalendarKeepSeparateResponse>>(
+    "/calendar/workspace/duplicates/keep-separate",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 /**

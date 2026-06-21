@@ -684,6 +684,79 @@ export interface CalendarWorkspaceReadResponse {
   has_domain_context?: boolean;
 }
 
+/** Cross-source dedup match strategy. Mirrors the backend `match_strategy` enum. */
+export type CalendarDedupMatchStrategy = "exact" | "balanced" | "aggressive";
+
+/**
+ * The active cross-source dedup rules (workspace-global).
+ *
+ * `match_strategy` selects which collapse passes run; `noisy_threshold` is the
+ * minimum cluster size for a cluster to be surfaced on the review panel.
+ */
+export interface CalendarDedupRulesModel {
+  match_strategy: CalendarDedupMatchStrategy;
+  noisy_threshold: number;
+}
+
+/** PATCH body for the dedup rules; omitted fields are left unchanged. */
+export interface CalendarDedupRulesUpdateRequest {
+  match_strategy?: CalendarDedupMatchStrategy;
+  noisy_threshold?: number;
+}
+
+/**
+ * One collapsed cross-source duplicate cluster surfaced for review.
+ *
+ * `kept_entry` is the survivor the read keeps; `duplicate_entries` are the
+ * copies the dedup collapses away. When `keep_separate` is true the user has
+ * pinned this cluster so the read does NOT collapse it.
+ */
+export interface CalendarDuplicateCluster {
+  cluster_key: string;
+  match_pass: "origin_ref" | "title";
+  member_count: number;
+  keep_separate: boolean;
+  kept_entry: UnifiedCalendarEntry;
+  duplicate_entries: UnifiedCalendarEntry[];
+}
+
+/**
+ * Response payload for GET /api/calendar/workspace/duplicates.
+ *
+ * `available` is `false` only when the underlying read could not run; an empty
+ * `clusters` list with `available=true` genuinely means no duplicates were
+ * collapsed in the window.
+ */
+export interface CalendarDuplicatesResponse {
+  clusters: CalendarDuplicateCluster[];
+  rules: CalendarDedupRulesModel;
+  available: boolean;
+}
+
+/** Query params for GET /api/calendar/workspace/duplicates. */
+export interface CalendarDuplicatesParams {
+  view: "user" | "butler";
+  start: string;
+  end: string;
+  timezone?: string;
+  butlers?: string[];
+  sources?: string[];
+}
+
+/** Body to pin/unpin a duplicate cluster as keep-separate. */
+export interface CalendarKeepSeparateRequest {
+  cluster_key: string;
+  keep_separate: boolean;
+  match_pass?: "origin_ref" | "title";
+  label?: string;
+}
+
+/** Result of a keep-separate toggle. */
+export interface CalendarKeepSeparateResponse {
+  cluster_key: string;
+  keep_separate: boolean;
+}
+
 /** One `kind` bucket inside a day-briefing butler group (e.g. `bill_due`). */
 export interface DayBriefingKindGroup {
   kind: string;
