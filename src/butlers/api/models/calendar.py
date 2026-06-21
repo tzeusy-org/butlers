@@ -40,7 +40,7 @@ class CalendarWorkspaceButlerMutationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     butler_name: str = Field(min_length=1)
-    action: Literal["create", "update", "delete", "toggle"]
+    action: Literal["create", "update", "delete", "toggle", "dismiss", "snooze"]
     request_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 

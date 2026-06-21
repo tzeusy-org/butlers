@@ -2021,6 +2021,177 @@ async def test_butler_event_preview_requires_exactly_one_recurrence(app):
 
 
 # ---------------------------------------------------------------------------
+# Butler-event snooze / dismiss actions (bu-ul4dgm)
+#
+# The butler-events mutation surface gains ``dismiss`` (wires ``reminder_dismiss``)
+# and ``snooze`` (reschedules ``due_at`` through ``calendar_update_butler_event``).
+# These exercise the router dispatch + 404 routing through the mocked MCP manager.
+# ---------------------------------------------------------------------------
+
+
+def _butler_events_app(app, *, call_tool):
+    """Wire a workspace app whose single MCP client uses ``call_tool``."""
+    app, mock_db, mock_mgr = _build_app(app)
+    mock_client = AsyncMock()
+    mock_client.call_tool = call_tool
+
+    async def _get_client(name: str):
+        return mock_client
+
+    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
+    return app, mock_client
+
+
+async def test_butler_event_dismiss_wires_reminder_dismiss(app):
+    """``action=dismiss`` dispatches ``reminder_dismiss`` and preserves the envelope."""
+    call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "dismissed", "event_id": "rem-1"})
+    )
+    app, mock_client = _butler_events_app(app, call_tool=call_tool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events",
+            json={
+                "butler_name": "general",
+                "action": "dismiss",
+                "request_id": "req-dismiss-1",
+                "payload": {"event_id": "rem-1"},
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["action"] == "dismiss"
+    assert data["tool_name"] == "reminder_dismiss"
+    assert data["result"]["status"] == "dismissed"
+
+    # reminder_dismiss only accepts event_id — no request_id / extra args forwarded.
+    tool_name, arguments = mock_client.call_tool.await_args_list[0].args
+    assert tool_name == "reminder_dismiss"
+    assert arguments == {"event_id": "rem-1"}
+
+
+async def test_butler_event_dismiss_requires_event_id(app):
+    """A dismiss with no event_id is a 422 and never touches the MCP layer."""
+    call_tool = AsyncMock()
+    app, mock_client = _butler_events_app(app, call_tool=call_tool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events",
+            json={"butler_name": "general", "action": "dismiss", "payload": {}},
+        )
+
+    assert resp.status_code == 422
+    mock_client.call_tool.assert_not_awaited()
+
+
+async def test_butler_event_dismiss_unknown_id_returns_404(app):
+    """An unknown dismiss target (tool raises) is remapped to a 404."""
+    call_tool = AsyncMock(side_effect=RuntimeError("Reminder event rem-x not found"))
+    app, _ = _butler_events_app(app, call_tool=call_tool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events",
+            json={
+                "butler_name": "general",
+                "action": "dismiss",
+                "payload": {"event_id": "rem-x"},
+            },
+        )
+
+    assert resp.status_code == 404
+
+
+async def test_butler_event_snooze_moves_due_at(app):
+    """``action=snooze`` reschedules via calendar_update_butler_event using due_at."""
+    call_tool = AsyncMock(
+        return_value=_mock_mcp_result(
+            {"status": "updated", "source_type": "butler_reminder", "reminder_id": "rem-2"}
+        )
+    )
+    app, mock_client = _butler_events_app(app, call_tool=call_tool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events",
+            json={
+                "butler_name": "general",
+                "action": "snooze",
+                "request_id": "req-snooze-1",
+                "payload": {"event_id": "rem-2", "due_at": "2026-06-23T09:00:00Z"},
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["action"] == "snooze"
+    assert data["tool_name"] == "calendar_update_butler_event"
+    assert data["result"]["status"] == "updated"
+
+    tool_name, arguments = mock_client.call_tool.await_args_list[0].args
+    assert tool_name == "calendar_update_butler_event"
+    assert arguments["event_id"] == "rem-2"
+    # due_at is normalized to the update tool's start_at parameter.
+    assert arguments["start_at"] == "2026-06-23T09:00:00Z"
+    assert "due_at" not in arguments
+    assert arguments["request_id"] == "req-snooze-1"
+
+
+async def test_butler_event_snooze_requires_new_time(app):
+    """A snooze with neither due_at nor start_at is a 422, no MCP dispatch."""
+    call_tool = AsyncMock()
+    app, mock_client = _butler_events_app(app, call_tool=call_tool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events",
+            json={
+                "butler_name": "general",
+                "action": "snooze",
+                "payload": {"event_id": "rem-2"},
+            },
+        )
+
+    assert resp.status_code == 422
+    mock_client.call_tool.assert_not_awaited()
+
+
+async def test_butler_event_snooze_unknown_id_returns_404(app):
+    """An unknown snooze target (tool returns an error envelope) is a 404."""
+    call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "error", "error": "Reminder rem-x not found"})
+    )
+    app, _ = _butler_events_app(app, call_tool=call_tool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/butler-events",
+            json={
+                "butler_name": "general",
+                "action": "snooze",
+                "payload": {"event_id": "rem-x", "due_at": "2026-06-23T09:00:00Z"},
+            },
+        )
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Proposals accept / dismiss (bu-88exay)
 #
 # These patch the read-model accessors at the router boundary so the endpoint

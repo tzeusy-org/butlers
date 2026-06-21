@@ -29,11 +29,11 @@ the existing recurrence engine; dismiss/snooze reuse the existing
 
 ## 3. Snooze / dismiss actions (bu-ul4dgm)
 
-- [ ] 3.1 Extend the workspace butler-events mutation handler with `action`
+- [x] 3.1 Extend the workspace butler-events mutation handler with `action`
   values `dismiss` and `snooze`
-- [ ] 3.2 `dismiss` dispatches the existing `reminder_dismiss` MCP tool; `snooze`
+- [x] 3.2 `dismiss` dispatches the existing `reminder_dismiss` MCP tool; `snooze`
   updates the reminder/butler-event `due_at` via the existing update path
-- [ ] 3.3 Unknown target id returns HTTP 404; the soft-mutation envelope
+- [x] 3.3 Unknown target id returns HTTP 404; the soft-mutation envelope
   (`status`/`persisted`) is preserved
-- [ ] 3.4 Test: dismiss marks the reminder dismissed; snooze moves `due_at`;
+- [x] 3.4 Test: dismiss marks the reminder dismissed; snooze moves `due_at`;
   unknown id returns 404

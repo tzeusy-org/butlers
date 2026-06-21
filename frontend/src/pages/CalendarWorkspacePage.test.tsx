@@ -1884,6 +1884,87 @@ describe("CalendarWorkspacePage", () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
+  it("snoozes a butler event to a preset time via the snooze menu", async () => {
+    setButlerWorkspaceFixtures();
+    mutateButlerEvent.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        data: {
+          action: "snooze",
+          tool_name: "calendar_update_butler_event",
+          request_id: "req-snooze",
+          result: { status: "updated" },
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      });
+    });
+
+    renderPage("/calendar?view=butler&range=list&anchor=2026-03-01");
+
+    const snoozeButton = document.querySelector(
+      '[data-testid="butler-snooze-button"]',
+    ) as HTMLButtonElement;
+    expect(snoozeButton).toBeTruthy();
+    await act(async () => {
+      snoozeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const preset = document.querySelector(
+      '[data-testid="butler-snooze-preset-1 hour"]',
+    ) as HTMLButtonElement;
+    expect(preset).toBeTruthy();
+    await act(async () => {
+      preset.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mutateButlerEvent).toHaveBeenCalled();
+    const [body] = mutateButlerEvent.mock.calls.at(-1) ?? [];
+    expect(body.action).toBe("snooze");
+    expect(typeof body.payload.due_at).toBe("string");
+    expect(body.payload.event_id).toBeTruthy();
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("Snoozed to"));
+  });
+
+  it("dismisses a due reminder from the grid", async () => {
+    setButlerWorkspaceFixtures();
+    mutateButlerEvent.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        data: {
+          action: "dismiss",
+          tool_name: "reminder_dismiss",
+          request_id: "req-dismiss",
+          result: { status: "dismissed" },
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      });
+    });
+
+    renderPage("/calendar?view=butler&range=list&anchor=2026-03-01");
+
+    const dismissButton = document.querySelector(
+      '[data-testid="butler-dismiss-button"]',
+    ) as HTMLButtonElement;
+    expect(dismissButton).toBeTruthy();
+    await act(async () => {
+      dismissButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mutateButlerEvent).toHaveBeenCalled();
+    const [body] = mutateButlerEvent.mock.calls.at(-1) ?? [];
+    expect(body.action).toBe("dismiss");
+    // reminder_dismiss targets the reminder id; no extra payload keys.
+    expect(body.payload).toEqual({ event_id: "rem-1" });
+    expect(toast.success).toHaveBeenCalledWith("Reminder dismissed");
+  });
+
   it("shows an error toast when set-primary returns persisted: false", async () => {
     setButlerWorkspaceFixtures();
     setWorkspaceMetaState({

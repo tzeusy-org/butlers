@@ -1878,24 +1878,72 @@ async def preview_butler_event_recurrence(
     return ApiResponse[CalendarButlerEventPreviewResponse](data=preview)
 
 
+def _result_indicates_not_found(result: dict[str, Any]) -> bool:
+    """Detect a "target id does not exist" signal in a soft-mutation result.
+
+    The reused MCP tools report a missing target differently:
+    ``calendar_update_butler_event`` (snooze) catches the error and returns
+    ``{"status": "error", "error": ...}``, while ``reminder_dismiss`` raises a
+    ``ValueError`` whose text is surfaced in the ``result`` envelope. Both encode
+    "not found" in the message, so we map that to a 404 for the snooze/dismiss
+    affordances.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "error":
+        return "not found" in str(result.get("error") or "").lower()
+    raw = result.get("result")
+    if isinstance(raw, str):
+        return "not found" in raw.lower()
+    return False
+
+
 @router.post("/butler-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])
 async def mutate_butler_event(
     body: CalendarWorkspaceButlerMutationRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[CalendarWorkspaceMutationResponse]:
-    """Create/update/delete/toggle butler-view events through calendar MCP tools."""
+    """Create/update/delete/toggle/dismiss/snooze butler-view events via calendar MCP tools.
+
+    ``dismiss`` consumes a due reminder/butler event through the existing
+    ``reminder_dismiss`` tool; ``snooze`` reschedules it to a new ``due_at`` time
+    through the existing ``calendar_update_butler_event`` update path. Both reuse
+    the soft-mutation envelope and 404 when the target id does not exist — no new
+    table and no new MCP tool.
+    """
     tool_name = {
         "create": "calendar_create_butler_event",
         "update": "calendar_update_butler_event",
         "delete": "calendar_delete_butler_event",
         "toggle": "calendar_toggle_butler_event",
+        "dismiss": "reminder_dismiss",
+        "snooze": "calendar_update_butler_event",
     }[body.action]
 
     arguments = dict(body.payload)
     if body.action == "create":
         arguments.setdefault("butler_name", body.butler_name)
-    if body.request_id is not None:
+    if body.action == "snooze":
+        # Snooze reschedules to a new due time. Accept it under ``due_at`` (the
+        # user-facing reminder field) or ``start_at`` and normalize to the update
+        # tool's ``start_at`` parameter, which drives both the reminder and the
+        # scheduled-task update paths.
+        due_at = arguments.pop("due_at", None)
+        if due_at is not None and not arguments.get("start_at"):
+            arguments["start_at"] = due_at
+        if not arguments.get("start_at"):
+            raise HTTPException(
+                status_code=422, detail="snooze requires a new due_at/start_at time"
+            )
+    if body.action == "dismiss":
+        # ``reminder_dismiss`` only accepts ``event_id`` — forward nothing else
+        # (no request_id) so the MCP call does not reject unexpected arguments.
+        event_id = arguments.get("event_id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise HTTPException(status_code=422, detail="dismiss requires an event_id")
+        arguments = {"event_id": event_id.strip()}
+    elif body.request_id is not None:
         arguments["request_id"] = body.request_id
 
     summary = {
@@ -1904,7 +1952,21 @@ async def mutate_butler_event(
         "request_id": body.request_id,
     }
     try:
-        mutation_result = await _call_mcp_tool(mgr, body.butler_name, tool_name, arguments)
+        try:
+            mutation_result = await _call_mcp_tool(mgr, body.butler_name, tool_name, arguments)
+        except HTTPException as exc:
+            # ``reminder_dismiss`` raises (rather than returns) on a missing id,
+            # surfacing as a 503 transport error — remap to a 404 for the
+            # dismiss/snooze affordances so unknown ids fail cleanly.
+            if (
+                body.action in {"dismiss", "snooze"}
+                and exc.status_code == 503
+                and "not found" in str(exc.detail).lower()
+            ):
+                raise HTTPException(status_code=404, detail="Target event was not found") from exc
+            raise
+        if body.action in {"dismiss", "snooze"} and _result_indicates_not_found(mutation_result):
+            raise HTTPException(status_code=404, detail="Target event was not found")
         freshness = await _projection_freshness_after_mutation(
             mgr=mgr,
             butler_name=body.butler_name,

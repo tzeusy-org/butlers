@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   addDays,
+  addHours,
   addMonths,
   addWeeks,
   differenceInMinutes,
@@ -814,6 +815,97 @@ function CommitButton({ className, ...props }: React.ButtonHTMLAttributes<HTMLBu
       )}
       {...props}
     />
+  );
+}
+
+/**
+ * Inline snooze affordance for a due reminder / butler event. Clicking "Snooze"
+ * reveals quick presets (+1h, +3h, tomorrow morning) plus a custom datetime so
+ * the user can reschedule the item's due time without leaving the grid. The
+ * chosen time is handed back as an ISO string; the parent fires the snooze
+ * mutation.
+ */
+function SnoozeMenu({
+  disabled,
+  onSnooze,
+}: {
+  disabled?: boolean;
+  onSnooze: (iso: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [custom, setCustom] = useState("");
+
+  function choose(date: Date) {
+    onSnooze(date.toISOString());
+    setOpen(false);
+    setCustom("");
+  }
+
+  function chooseCustom() {
+    const parsed = parseLocalDateTimeInput(custom);
+    if (!parsed) {
+      toast.error("Enter a valid snooze time");
+      return;
+    }
+    choose(parsed);
+  }
+
+  const now = new Date();
+  const tomorrowMorning = startOfDay(addDays(now, 1));
+  tomorrowMorning.setHours(9, 0, 0, 0);
+  const presets: Array<{ label: string; date: Date }> = [
+    { label: "1 hour", date: addHours(now, 1) },
+    { label: "3 hours", date: addHours(now, 3) },
+    { label: "Tomorrow 9am", date: tomorrowMorning },
+  ];
+
+  return (
+    <div className="relative inline-block">
+      <PillButton
+        data-testid="butler-snooze-button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        active={open}
+      >
+        Snooze
+      </PillButton>
+      {open ? (
+        <div
+          data-testid="butler-snooze-menu"
+          className="absolute right-0 z-20 mt-1 flex w-56 flex-col gap-2 rounded-[4px] border border-[var(--border-strong)] bg-[var(--bg)] p-2 shadow-md"
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {presets.map((preset) => (
+              <PillButton
+                key={preset.label}
+                data-testid={`butler-snooze-preset-${preset.label}`}
+                onClick={() => choose(preset.date)}
+                disabled={disabled}
+              >
+                {preset.label}
+              </PillButton>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="datetime-local"
+              data-testid="butler-snooze-custom-input"
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              disabled={disabled}
+              className="min-w-0 flex-1 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-1.5 py-1 text-xs text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+            />
+            <CommitButton
+              data-testid="butler-snooze-custom-confirm"
+              onClick={chooseCustom}
+              disabled={disabled || !custom.trim()}
+            >
+              Set
+            </CommitButton>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -3270,6 +3362,72 @@ export default function CalendarWorkspacePage() {
     );
   }
 
+  function handleButlerSnooze(entry: UnifiedCalendarEntry, iso: string) {
+    const target = resolveButlerEventTarget(entry);
+    if (!target || !entry.butler_name) {
+      toast.error("Missing butler event linkage for snooze");
+      return;
+    }
+
+    butlerMutation.mutate(
+      {
+        butler_name: entry.butler_name,
+        action: "snooze",
+        request_id: newButlerRequestId("snooze"),
+        payload: {
+          event_id: target.eventId,
+          source_hint: target.sourceHint,
+          due_at: iso,
+        },
+      },
+      {
+        onSuccess: (response) => {
+          const mutationResult = response.data.result;
+          if (!isCalendarMutationOk(mutationResult)) {
+            const detail = calendarMutationErrorMessage(mutationResult, "Snooze failed");
+            toast.error(`Snooze failed: ${detail}`);
+            return;
+          }
+          toast.success(`Snoozed to ${format(new Date(iso), "MMM d, HH:mm")}`);
+        },
+        onError: (error) => {
+          toast.error(error instanceof Error ? error.message : "Snooze failed");
+        },
+      },
+    );
+  }
+
+  function handleButlerDismiss(entry: UnifiedCalendarEntry) {
+    const target = resolveButlerEventTarget(entry);
+    if (!target || !entry.butler_name) {
+      toast.error("Missing butler event linkage for dismiss");
+      return;
+    }
+
+    butlerMutation.mutate(
+      {
+        butler_name: entry.butler_name,
+        action: "dismiss",
+        request_id: newButlerRequestId("dismiss"),
+        payload: { event_id: target.eventId },
+      },
+      {
+        onSuccess: (response) => {
+          const mutationResult = response.data.result;
+          if (!isCalendarMutationOk(mutationResult)) {
+            const detail = calendarMutationErrorMessage(mutationResult, "Dismiss failed");
+            toast.error(`Dismiss failed: ${detail}`);
+            return;
+          }
+          toast.success("Reminder dismissed");
+        },
+        onError: (error) => {
+          toast.error(error instanceof Error ? error.message : "Dismiss failed");
+        },
+      },
+    );
+  }
+
   function handleSaveButlerEvent() {
     if (!butlerEventDraft) {
       return;
@@ -3806,6 +3964,20 @@ export default function CalendarWorkspacePage() {
                                 >
                                   {isPausedEntry(item) ? "Resume" : "Pause"}
                                 </PillButton>
+                                <SnoozeMenu
+                                  disabled={butlerMutation.isPending}
+                                  onSnooze={(iso) => handleButlerSnooze(item, iso)}
+                                />
+                                {item.source_type === "butler_reminder" ? (
+                                  <PillButton
+                                    data-testid="butler-dismiss-button"
+                                    onClick={() => handleButlerDismiss(item)}
+                                    disabled={butlerMutation.isPending}
+                                    className="hover:border-[var(--red)] hover:text-[var(--red)]"
+                                  >
+                                    Dismiss
+                                  </PillButton>
+                                ) : null}
                                 <PillButton
                                   onClick={() => handleButlerDelete(item)}
                                   disabled={butlerMutation.isPending}

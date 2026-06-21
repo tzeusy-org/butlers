@@ -881,7 +881,9 @@ export type CalendarWorkspaceButlerMutationAction =
   | "create"
   | "update"
   | "delete"
-  | "toggle";
+  | "toggle"
+  | "dismiss"
+  | "snooze";
 
 /** Request payload for POST /api/calendar/workspace/user-events. */
 export interface CalendarWorkspaceUserMutationRequest {
