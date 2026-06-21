@@ -3017,7 +3017,7 @@ class CalendarModule(Module):
             """
             await module._require_calendar_write_permission()
             provider = module._require_provider()
-            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id, for_create=True)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
             normalized_request_id = module._normalize_request_id(request_id)
             resolved_entity_ids = entity_ids or []
@@ -7765,13 +7765,27 @@ class CalendarModule(Module):
             )
         raise ValueError(f"Unknown calendar role: {role!r}")
 
-    def _resolve_calendar_id(self, override_calendar_id: str | None) -> str:
+    def _resolve_calendar_id(
+        self, override_calendar_id: str | None, *, for_create: bool = False
+    ) -> str:
         if override_calendar_id is None:
-            # Resolve the user-facing DEFAULT-TARGET calendar: the user's chosen
-            # default target if set, else the discovered primary calendar, else
-            # the Butlers calendar.  The default-target selection is kept
-            # separate from the immutable Butlers calendar id.
-            target = self._resolve_role_calendar_id(CALENDAR_ROLE_DEFAULT_TARGET)
+            # Resolution of the no-override default depends on whether this is an
+            # event CREATE or any other (read/update/delete/sync) operation:
+            #
+            # * ``for_create=True``: butler-authored creates default to the
+            #   dedicated "Butlers" calendar (``_resolved_calendar_id``), NOT the
+            #   user's default-target/primary.  The explicit ``calendar_id``
+            #   override branch below is the documented opt-out for "put this on
+            #   my primary calendar".  The default-target selection
+            #   (``calendar_set_primary``) deliberately does not affect this
+            #   create default.
+            # * ``for_create=False`` (default): reads and other operations resolve
+            #   to the user-facing DEFAULT-TARGET calendar (the user's chosen
+            #   default target if set, else the discovered primary, else the
+            #   Butlers calendar).  Routing creates to the Butlers calendar must
+            #   never hide the user's primary-calendar events from reads.
+            role = CALENDAR_ROLE_BUTLERS if for_create else CALENDAR_ROLE_DEFAULT_TARGET
+            target = self._resolve_role_calendar_id(role)
             if target is None:
                 raise RuntimeError("Calendar ID not resolved; call on_startup first")
             return target
@@ -7813,7 +7827,7 @@ class CalendarModule(Module):
         if self._provider is None:
             return
         await self._require_calendar_write_permission()
-        calendar_id = self._resolve_calendar_id(None)
+        calendar_id = self._resolve_calendar_id(None, for_create=True)
         payload = CalendarEventCreate(
             title=title,
             start_at=start_at,

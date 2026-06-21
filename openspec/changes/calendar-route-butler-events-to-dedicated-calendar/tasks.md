@@ -6,9 +6,9 @@
 
 ## 2. Flip the create default to the Butlers calendar
 
-- [ ] 2.1 Change `_resolve_calendar_id(None)` no-override branch to return `_resolved_calendar_id` (Butlers calendar); keep the explicit-override path (validated against discovered calendars) unchanged
-- [ ] 2.2 Unit tests: no-override create resolves to the Butlers id; explicit `calendar_id` override (primary) resolves to primary; invalid override raises
-- [ ] 2.3 Integration test (fake provider): `calendar_create_event` with no `calendar_id` lands the event on the Butlers calendar id, branded `BUTLER:` + `butler_generated`
+- [x] 2.1 Change `_resolve_calendar_id(None)` no-override branch to return `_resolved_calendar_id` (Butlers calendar); keep the explicit-override path (validated against discovered calendars) unchanged
+- [x] 2.2 Unit tests: no-override create resolves to the Butlers id; explicit `calendar_id` override (primary) resolves to primary; invalid override raises
+- [x] 2.3 Integration test (fake provider): `calendar_create_event` with no `calendar_id` lands the event on the Butlers calendar id, branded `BUTLER:` + `butler_generated`
 
 ## 3. Home-calendar resolver for update/delete
 

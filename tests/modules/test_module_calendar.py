@@ -416,6 +416,70 @@ class TestCalendarWriteTools:
         assert payload.private_metadata[BUTLER_GENERATED_PRIVATE_KEY] == "true"
         assert result["event"]["butler_generated"] is True
 
+    async def test_create_event_no_override_lands_on_butlers_calendar(self):
+        """Butler-authored create with no calendar_id targets the Butlers calendar."""
+        created = _make_event(
+            title="BUTLER: Team Sync", butler_generated=True, butler_name="general"
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        # Distinct Butlers calendar id and a user primary; no explicit override.
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        mod._primary_calendar_id = "owner@example.com"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "butlers@group.calendar.google.com"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+        )
+
+        # Event is written to the Butlers calendar, NOT the user's primary.
+        assert provider.create_calls[0]["calendar_id"] == "butlers@group.calendar.google.com"
+        payload = provider.create_calls[0]["payload"]
+        assert payload.title == "BUTLER: Team Sync"
+        assert payload.private_metadata[BUTLER_GENERATED_PRIVATE_KEY] == "true"
+        assert result["event"]["butler_generated"] is True
+
+    async def test_create_event_explicit_primary_override_lands_on_primary(self):
+        """Explicit calendar_id override is the opt-out: write to the user's primary."""
+        created = _make_event(
+            title="BUTLER: Team Sync", butler_generated=True, butler_name="general"
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        mod._primary_calendar_id = "owner@example.com"
+        mod._all_provider_calendar_ids = [
+            "butlers@group.calendar.google.com",
+            "owner@example.com",
+        ]
+        mod._provider_calendar_discovery_completed = True
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "butlers@group.calendar.google.com"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+
+        await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            calendar_id="owner@example.com",
+        )
+
+        assert provider.create_calls[0]["calendar_id"] == "owner@example.com"
+
     async def test_create_event_rejects_unknown_calendar_id_before_provider_write(self):
         created = _make_event(
             title="BUTLER: Team Sync", butler_generated=True, butler_name="general"
@@ -1039,34 +1103,92 @@ class TestCalendarIdRoleSeparation:
         with pytest.raises(ValueError, match="Unknown calendar role"):
             mod._resolve_role_calendar_id("nonsense")
 
-    def test_resolve_calendar_id_no_override_honours_default_target(self):
+    def test_resolve_calendar_id_create_no_override_defaults_to_butlers_calendar(self):
         mod = CalendarModule()
         mod._resolved_calendar_id = "butlers@group.calendar.google.com"
         mod._primary_calendar_id = "owner@example.com"
 
-        # Without a chosen default target, the no-override default is the primary.
+        # Butler-authored creates with no explicit calendar_id default to the
+        # dedicated Butlers calendar, NOT the discovered primary.
+        assert (
+            mod._resolve_calendar_id(None, for_create=True) == "butlers@group.calendar.google.com"
+        )
+
+        # A chosen default-target selection does NOT redirect the no-override
+        # create default: it stays on the Butlers calendar.
+        mod._default_target_calendar_id = "chosen@example.com"
+        assert (
+            mod._resolve_calendar_id(None, for_create=True) == "butlers@group.calendar.google.com"
+        )
+
+    def test_resolve_calendar_id_read_no_override_uses_default_target_not_butlers(self):
+        """Regression guard: reads must resolve to the user's default-target/primary,
+        never the Butlers calendar.  Routing CREATES to Butlers must not hide the
+        user's primary-calendar events from read tools (list/get/sync_status)."""
+        mod = CalendarModule()
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        mod._primary_calendar_id = "owner@example.com"
+
+        # No override, not a create -> discovered primary (default target), NOT Butlers.
         assert mod._resolve_calendar_id(None) == "owner@example.com"
 
-        # A chosen default target overrides the implicit primary default.
+        # A chosen default-target selection wins for reads.
         mod._default_target_calendar_id = "chosen@example.com"
         assert mod._resolve_calendar_id(None) == "chosen@example.com"
 
-    async def test_set_primary_default_target_drives_no_override_resolution(self):
-        """End-to-end: selecting a default target redirects no-override mutations."""
+    def test_resolve_calendar_id_explicit_override_targets_primary(self):
+        mod = CalendarModule()
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        mod._primary_calendar_id = "owner@example.com"
+        mod._all_provider_calendar_ids = [
+            "butlers@group.calendar.google.com",
+            "owner@example.com",
+        ]
+        mod._provider_calendar_discovery_completed = True
+
+        # Explicit override is the opt-out: "put this on my primary calendar".
+        # It is honored identically for creates and reads.
+        assert mod._resolve_calendar_id("owner@example.com") == "owner@example.com"
+        assert mod._resolve_calendar_id("owner@example.com", for_create=True) == "owner@example.com"
+
+    def test_resolve_calendar_id_invalid_override_raises(self):
+        mod = CalendarModule()
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        mod._primary_calendar_id = "owner@example.com"
+        mod._all_provider_calendar_ids = [
+            "butlers@group.calendar.google.com",
+            "owner@example.com",
+        ]
+        mod._provider_calendar_discovery_completed = True
+
+        with pytest.raises(ValueError, match="discovered provider calendars"):
+            mod._resolve_calendar_id("__not_a_calendar__")
+
+    async def test_set_primary_does_not_redirect_no_override_create_default(self):
+        """Selecting a default target must NOT move butler-authored creates off Butlers."""
         mod, mcp, _store = await self._make_module_with_store()
 
-        # Default (no selection) lands on the discovered primary.
-        assert mod._resolve_calendar_id(None) == "owner@example.com"
+        # Butler-authored creates default to the Butlers calendar.
+        assert (
+            mod._resolve_calendar_id(None, for_create=True) == "butlers@group.calendar.google.com"
+        )
 
-        await mcp.tools["calendar_set_primary"](calendar_id="butlers@group.calendar.google.com")
+        await mcp.tools["calendar_set_primary"](calendar_id="owner@example.com")
 
-        # After selecting, no-override resolution follows the default-target field,
-        # while the Butlers calendar id is still intact and queryable via its role.
-        assert mod._resolve_calendar_id(None) == "butlers@group.calendar.google.com"
+        # After selecting a default target, the no-override create default still
+        # targets the Butlers calendar, while the default-target field tracks the
+        # user's choice for user-facing surfaces.
+        assert (
+            mod._resolve_calendar_id(None, for_create=True) == "butlers@group.calendar.google.com"
+        )
+        assert mod._default_target_calendar_id == "owner@example.com"
         assert (
             mod._resolve_role_calendar_id(CALENDAR_ROLE_BUTLERS)
             == "butlers@group.calendar.google.com"
         )
+
+        # Reads, by contrast, follow the chosen default target.
+        assert mod._resolve_calendar_id(None) == "owner@example.com"
 
     async def test_on_startup_restores_default_target_calendar_id(self):
         """on_startup must restore a saved default-target calendar ID from the credential store."""
