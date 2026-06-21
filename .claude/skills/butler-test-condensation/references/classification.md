@@ -7,8 +7,10 @@ Use this to decide keep/delete/rewrite for every test during condensation.
 For each `def test_*` function, walk this tree:
 
 ```
-1. Does it assert mock.called_with / call_count / call_args?
-   YES → DELETE (mock-wiring test, proves nothing)
+1. Does it assert mock.called_with / call_count / assert_(not_)called / assert_(not_)awaited?
+   → NOT auto-delete. Apply the plumbing-vs-contract test below (§1).
+     plumbing (call assertion duplicates an already-asserted result) → DELETE the assertion
+     contract (the call / no-call / count IS the only proof of an invariant) → KEEP
 
 2. Does it assert an error message STRING (not exception type)?
    YES → DELETE or REWRITE to assert exception type/error code
@@ -41,6 +43,47 @@ For each `def test_*` function, walk this tree:
 
 9. None of the above → DELETE
 ```
+
+## §1. Mock-call assertions — plumbing vs. contract
+
+**This is the single most error-prone classification node.** A 22-auditor pass
+found the old blanket "DELETE all mock-call assertions" rule produced many FALSE
+POSITIVES. `assert_called*`, `assert_not_called`, `assert_not_awaited`, and
+`call_count` frequently encode REAL behavior contracts. Distinguish:
+
+**call-assertion-as-PLUMBING → DELETE the assertion (keep the test):**
+The test already asserts the behavioral RESULT (returned value, DB row, envelope
+shape), and the call assertion just re-checks that an internal collaborator was
+invoked with exact positional args. It restates the implementation.
+```python
+# The result assertion already proves the fetch happened. The call assertion is plumbing.
+msgs = await connector.fetch_messages()
+assert len(msgs) == 2                                   # KEEP — behavioral result
+mock_gmail.users().messages().list.assert_called_once_with(
+    userId="me", maxResults=100, q="is:unread")         # DELETE — plumbing
+```
+
+**call-assertion-as-CONTRACT → KEEP (the call/no-call/count is the ONLY proof):**
+No other assertion can express the invariant. Common cases in this codebase:
+- **Idempotency / no-duplicate-INSERT** — `owner_bootstrap`, `route_inbox`:
+  `mock_insert.assert_called_once()` / `assert_not_called()` on the second run is
+  the only proof the op didn't double-write.
+- **Delivery / retry cadence** — `port_retry`, `interaction_sync`, liveness
+  heartbeat: `call_count == 3` proves the retry schedule; no return value shows it.
+- **Forced-channel resolver bypass** — a forced channel must SKIP identity
+  resolution: `resolver.assert_not_called()` is the bypass proof.
+- **Safety: email-not-sent-on-revoked** — `send.assert_not_awaited()` proves no
+  message left the system after a revoked token (a sent side-effect has no
+  inspectable return).
+- **Canonical-fact-store BOUNDARY (heart-and-soul layering)** —
+  `store_fact.assert_not_called()` proves identity/relational facts were
+  intercepted BEFORE delegation to the generic memory store. The no-call IS the
+  architectural boundary.
+
+**Litmus test:** *If I delete this call assertion, does any surviving assertion
+still fail when the invariant is violated?* If YES → it was plumbing, delete it.
+If NO (the call assertion is the only thing standing between green and a real
+regression) → it's a contract, KEEP it. When unsure, KEEP.
 
 ## Concrete Examples
 
@@ -93,16 +136,33 @@ async def test_store_and_recall_fact(memory_module):
     assert len(recalled["facts"]) >= 1  # structural assertion
 ```
 
-### DELETE — Mock Wiring
+### DELETE — Mock Wiring (plumbing only)
 
 ```python
-# BEFORE (delete this):
+# BEFORE (delete this — the call assertion is the WHOLE test, and it only
+# restates the implementation's call args; no behavioral result is checked):
 async def test_gmail_api_called_with_correct_params(mock_gmail):
     connector = GmailConnector(mock_gmail)
     await connector.fetch_messages()
     mock_gmail.users().messages().list.assert_called_once_with(
         userId="me", maxResults=100, q="is:unread"
     )
+```
+
+### KEEP — Call assertion as contract (do NOT delete)
+
+```python
+# Idempotency: bootstrapping the owner twice must NOT insert a second row.
+# The assert_called_once IS the only proof; deleting it hides a real regression.
+async def test_owner_bootstrap_idempotent(mock_pool):
+    await bootstrap_owner(mock_pool)
+    await bootstrap_owner(mock_pool)               # second call
+    assert mock_pool.execute.call_count == 1       # contract — KEEP
+
+# Boundary: identity facts are intercepted before the generic memory store.
+async def test_identity_fact_bypasses_memory_store(resolver, store_fact_mock):
+    await resolver.handle({"predicate": "telegram_id", ...})
+    store_fact_mock.assert_not_called()            # heart-and-soul layering — KEEP
 ```
 
 ### DELETE — Error Message String

@@ -1,30 +1,49 @@
 # Beads Epics: Test Suite Condensation
 
-## Phase 2 (active, opened 2026-05-03)
+> **DO NOT file Phase 3 beads casually.** Creating READY beads in `~/gt/butlers`
+> auto-triggers the autonomous fleet (opens + merges PRs within minutes). Keep
+> any proposed beads BLOCKED until a coordinated cycle is intentionally started.
 
-**Epic**: `bu-hg8rl` — Test suite maintenance, 3,704 → ~2,500 tests
+## Phase 3 (proposed, 2026-06-21) — NOT YET FILED
+
+Baseline **7,494 def-test / 8,107 collected, 657 files**. A 22-auditor pass found
+only **~1,050–1,250 SAFELY removable** — most growth is real coverage. Target a
+moderate, disciplined trim, NOT a fixed number. Proposed structure (text only):
 
 ```
-bu-hg8rl (P1) Phase 2: Test suite maintenance
-  ├── bu-9riic (P1) Backfill Tier 1 architectural-invariant tests (137 → ~200)
-  ├── bu-gg4y1 (P2) Condense tests/api/ (492 → ~160)
-  └── bu-m564i (P2) Condense tests/chronicler/ + promote 13 to contracts/
+bu-PHASE3 (P1) Phase 3: Test suite maintenance (7,494 → ~6,300; moderate)
+  ├── (P2) Migrations boilerplate: delete/parametrize tautological metadata
+  │        tests (48/52 files) into tests/migrations/conftest.py     ~769 → ~450
+  ├── (P2) tests/api/ regrowth (largest domain, 2264) — schema-validate,
+  │        parametrize, drop field-by-field asserts                  ~2264 → ~1900
+  ├── (P3) modules non-memory loose (706) — consolidate per-module    review
+  ├── (P3) core (1079) — duplicate-pair merges, helper-test pruning    review
+  └── (P2) Reconciliation gen-3: re-measure, confirm CI green, update skill counts
+```
+
+Sequencing: migrations boilerplate is the safest, highest-confidence lever — do
+it first. api is the biggest absolute lever but needs care (schema-validate, not
+delete). Each child MUST apply classification.md §1 (mock-wiring plumbing vs
+contract) and the shared-helper guard before any DELETE_FILE.
+
+## Phase 2 (CLOSED 2026-05-05, archive)
+
+**Epic**: `bu-hg8rl` — Test suite maintenance, 3,704 → ~2,500 tests. **CLOSED
+2026-05-05 ("all steps complete").** All children done.
+
+```
+bu-hg8rl (P1) Phase 2: Test suite maintenance               [CLOSED]
+  ├── bu-9riic (P1) Backfill Tier 1 architectural-invariant tests (137 → ~200) ✓
+  ├── bu-gg4y1 (P2) Condense tests/api/ (492 → ~160)                           ✓
+  └── bu-m564i (P2) Condense tests/chronicler/ + promote 13 to contracts/      ✓
                     (519 → ~250 in chronicler + 13 promoted)
 ```
 
-bu-9riic should land first or in parallel with the others — the chronicler
-bead promotes 13 tests into tests/contracts/ which collides with the
-backfill bead's structure if mis-coordinated. Workers should claim and
-serialize where edits overlap (e.g., test_chronicler_no_cross_schema.py).
-
-| Bead | Domain | Current | Target | Directory |
-|---|---|--:|--:|---|
-| bu-9riic | Tier 1 contracts | 137 | ~200 | tests/contracts/ |
-| bu-gg4y1 | API tests | 492 | ~160 | tests/api/ |
-| bu-m564i | Chronicler | 519 | ~250 + 13 promoted | tests/chronicler/ |
-
-**Baseline 2026-05-03**: 3,704 tests across 416 files. Always rediscover
-counts before starting work — see [discovery.md](discovery.md) staleness check.
+| Bead | Domain | Current | Target | Closed |
+|---|---|--:|--:|:-:|
+| bu-9riic | Tier 1 contracts | 137 | ~200 | ✓ |
+| bu-gg4y1 | API tests | 492 | ~160 | ✓ |
+| bu-m564i | Chronicler | 519 | ~250 + 13 promoted | ✓ |
 
 ## Phase 1 (closed, archive)
 
