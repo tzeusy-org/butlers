@@ -10,7 +10,15 @@
  * labels all agree on a single zone.
  */
 
-import { addDays, format as formatLocal } from "date-fns";
+import {
+  addDays,
+  addMonths,
+  addWeeks,
+  format as formatLocal,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+} from "date-fns";
 import { formatInTimeZone, fromZonedTime, toZonedTime } from "date-fns-tz";
 
 /** Height of each hour row in the time-axis grid (px). */
@@ -91,6 +99,92 @@ export function tzDayKey(value: string | number | Date, tz: string): string {
   const date = toDate(value);
   if (Number.isNaN(date.getTime())) return "";
   return formatInTimeZone(date, tz, "yyyy-MM-dd");
+}
+
+/** Calendar ranges the workspace can display. */
+export type CalendarRange = "month" | "week" | "day" | "list";
+
+/**
+ * Visible calendar window for `range`, anchored in the workspace timezone `tz`.
+ *
+ * The column-facing fields (`start`, `end`) are *browser-local midnights* on the
+ * workspace-tz calendar dates: `format(day, "yyyy-MM-dd")` on any day derived
+ * from them yields the same key that {@link tzDayKey} buckets events under, and
+ * the grid-drag helpers ({@link isoAtMinuteInTz}) — which read a day's local
+ * `yyyy-MM-dd` — stay correct.
+ *
+ * `queryStart` / `queryEnd` are the UTC instants at the workspace-tz midnight
+ * boundaries, so a backend fetch covers events that land on a visible workspace
+ * day even when the browser zone differs from `tz` (e.g. an event at workspace
+ * 00:30 Monday that is still Sunday in the browser's zone).
+ *
+ * When the browser zone equals `tz` (the common case) this is byte-for-byte the
+ * old browser-local behaviour.
+ */
+export interface CalendarWindow {
+  start: Date;
+  end: Date;
+  queryStart: string;
+  queryEnd: string;
+}
+
+/**
+ * The workspace-tz calendar date of `value`, returned as a browser-local
+ * midnight Date so plain date-fns arithmetic/formatting stays in calendar-date
+ * space (and matches {@link tzDayKey}). Falls back to the local start-of-day for
+ * unparseable input.
+ */
+function tzCalendarDate(value: Date, tz: string): Date {
+  const key = tzDayKey(value, tz);
+  if (!key) return startOfDay(value);
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+/** UTC ISO instant at workspace-tz midnight of the calendar date `day` names. */
+function zonedMidnightIso(day: Date, tz: string): string {
+  return fromZonedTime(`${formatLocal(day, "yyyy-MM-dd")}T00:00:00`, tz).toISOString();
+}
+
+/**
+ * Compute the visible {@link CalendarWindow} for `range`/`anchor` in workspace
+ * timezone `tz`. See {@link CalendarWindow} for the column-vs-query split.
+ */
+export function tzCalendarWindow(range: CalendarRange, anchor: Date, tz: string): CalendarWindow {
+  // Anchor on the workspace-tz calendar date of `anchor`, not the browser's, so
+  // the window lines up with how events are bucketed (tzDayKey).
+  const anchorCal = tzCalendarDate(anchor, tz);
+  let start: Date;
+  let end: Date;
+  switch (range) {
+    case "month": {
+      start = startOfMonth(anchorCal);
+      end = addMonths(start, 1);
+      break;
+    }
+    case "day": {
+      start = startOfDay(anchorCal);
+      end = addDays(start, 1);
+      break;
+    }
+    case "list": {
+      start = startOfDay(anchorCal);
+      end = addDays(start, 30);
+      break;
+    }
+    case "week":
+    default: {
+      start = startOfWeek(anchorCal, { weekStartsOn: 1 });
+      end = addWeeks(start, 1);
+      break;
+    }
+  }
+  return {
+    start,
+    end,
+    queryStart: zonedMidnightIso(start, tz),
+    queryEnd: zonedMidnightIso(end, tz),
+  };
 }
 
 /**

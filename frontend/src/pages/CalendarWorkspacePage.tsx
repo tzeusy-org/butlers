@@ -13,7 +13,6 @@ import {
   isValid,
   parseISO,
   startOfDay,
-  startOfMonth,
   startOfWeek,
 } from "date-fns";
 import { toast } from "sonner";
@@ -98,6 +97,7 @@ import {
   shiftWindow,
   SNAP_MINUTES,
   snapMinutes,
+  tzCalendarWindow,
   tzDateTimeLocalInput,
   tzDayKey,
 } from "@/lib/calendar-grid";
@@ -180,31 +180,6 @@ function parseAnchor(raw: string | null): Date {
 
 function serializeAnchor(value: Date): string {
   return format(value, "yyyy-MM-dd");
-}
-
-function computeWindow(
-  range: CalendarRange,
-  anchor: Date,
-): { start: Date; end: Date } {
-  switch (range) {
-    case "month": {
-      const start = startOfMonth(anchor);
-      return { start, end: addMonths(start, 1) };
-    }
-    case "day": {
-      const start = startOfDay(anchor);
-      return { start, end: addDays(start, 1) };
-    }
-    case "list": {
-      const start = startOfDay(anchor);
-      return { start, end: addDays(start, 30) };
-    }
-    case "week":
-    default: {
-      const start = startOfWeek(anchor, { weekStartsOn: 1 });
-      return { start, end: addWeeks(start, 1) };
-    }
-  }
 }
 
 function shiftAnchor(
@@ -2141,10 +2116,6 @@ export default function CalendarWorkspacePage() {
   const overlaysEnabled = searchParams.get("overlays") === "1";
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const { start, end } = useMemo(
-    () => computeWindow(range, anchor),
-    [range, anchor],
-  );
 
   const metaQuery = useCalendarWorkspaceMeta();
   const connectedSources = useMemo(
@@ -2165,6 +2136,17 @@ export default function CalendarWorkspacePage() {
   );
   const defaultTimezone = metaQuery.data?.data.default_timezone || timezone;
   const primaryCalendarId = metaQuery.data?.data.primary_calendar_id ?? null;
+
+  // Visible window: derive columns/labels and the backend query bounds in the
+  // *workspace* timezone so the day columns line up with how events are bucketed
+  // (tzDayKey). `start`/`end` are workspace-tz calendar dates (browser-local
+  // midnights of those dates); `queryStart`/`queryEnd` are the workspace-tz
+  // midnight instants the backend fetch spans. When the browser zone equals the
+  // workspace zone this is identical to the old browser-local behaviour.
+  const { start, end, queryStart, queryEnd } = useMemo(
+    () => tzCalendarWindow(range, anchor, defaultTimezone),
+    [range, anchor, defaultTimezone],
+  );
 
   // The butler the "Find time" panel queries: the selected writable source's
   // owner if one is chosen, otherwise the first writable calendar's owner.
@@ -2303,8 +2285,8 @@ export default function CalendarWorkspacePage() {
 
   const workspaceQuery = useCalendarWorkspace({
     view,
-    start: start.toISOString(),
-    end: end.toISOString(),
+    start: queryStart,
+    end: queryEnd,
     timezone,
     sources: sourcesForQuery,
     status:
@@ -2318,7 +2300,7 @@ export default function CalendarWorkspacePage() {
   });
 
   const overlaysQuery = useCalendarOverlays(
-    { start: start.toISOString(), end: end.toISOString(), timezone },
+    { start: queryStart, end: queryEnd, timezone },
     { enabled: overlaysEnabled },
   );
   const overlayEntries = useMemo(
@@ -2368,7 +2350,7 @@ export default function CalendarWorkspacePage() {
   // Fetched only while the panel is open; accept/dismiss mutations reconcile the
   // optimistic lane state inside the panel.
   const proposalsQuery = useCalendarProposals(
-    { start: start.toISOString(), end: end.toISOString(), timezone },
+    { start: queryStart, end: queryEnd, timezone },
     { enabled: proposalsPanelOpen },
   );
   const proposalEntries = useMemo(
@@ -5291,8 +5273,8 @@ export default function CalendarWorkspacePage() {
         onOpenChange={setPortabilityOpen}
         exportParams={{
           view: view === "butler" ? "butler" : "user",
-          start: start.toISOString(),
-          end: end.toISOString(),
+          start: queryStart,
+          end: queryEnd,
           sources: sourcesForQuery,
           status:
             selectedStatus === "all"
