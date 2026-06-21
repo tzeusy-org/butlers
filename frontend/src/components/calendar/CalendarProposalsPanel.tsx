@@ -28,7 +28,6 @@
  */
 
 import { useMemo, useState } from "react";
-import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/client.ts";
@@ -40,7 +39,12 @@ import type {
   useAcceptCalendarProposal,
   useDismissCalendarProposal,
 } from "@/hooks/use-calendar-workspace.ts";
-import { formatEventTime, tzDayKey } from "@/lib/calendar-grid.ts";
+import {
+  dateTimeLocalToIso,
+  formatEventTime,
+  tzDateTimeLocalInput,
+  tzDayKey,
+} from "@/lib/calendar-grid.ts";
 import { cn } from "@/lib/utils.ts";
 
 /** Format a confidence score (0..1 float) as a rounded percentage. */
@@ -55,31 +59,6 @@ function metaString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-/**
- * ISO → `yyyy-MM-dd'T'HH:mm` for a `datetime-local` input, rendered in the
- * workspace timezone (empty on parse failure).
- */
-function toLocalInput(iso: string, tz: string): string {
-  const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime())
-    ? ""
-    : formatInTimeZone(parsed, tz, "yyyy-MM-dd'T'HH:mm");
-}
-
-/**
- * `datetime-local` string (workspace-local wall clock) → UTC ISO, or null when
- * blank/invalid. The wall-clock value is interpreted in `tz`.
- */
-function localInputToIso(value: string, tz: string): string | null {
-  if (!value.trim()) return null;
-  try {
-    const instant = fromZonedTime(value, tz);
-    return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
-  } catch {
-    return null;
-  }
 }
 
 interface ProposalEditDraft {
@@ -205,8 +184,8 @@ export function CalendarProposalsPanel({
     setEditingId(entry.entry_id);
     setEditDraft({
       title: entry.title,
-      startLocal: toLocalInput(entry.start_at, timezone),
-      endLocal: toLocalInput(entry.end_at, timezone),
+      startLocal: tzDateTimeLocalInput(entry.start_at, timezone),
+      endLocal: tzDateTimeLocalInput(entry.end_at, timezone),
     });
   }
 
@@ -222,8 +201,8 @@ export function CalendarProposalsPanel({
     // proposal's current values). Guard against an inverted range before we
     // optimistically remove the row and hit the backend.
     const startIso =
-      localInputToIso(editDraft.startLocal, timezone) ?? entry.start_at;
-    const endIso = localInputToIso(editDraft.endLocal, timezone) ?? entry.end_at;
+      dateTimeLocalToIso(editDraft.startLocal, timezone) ?? entry.start_at;
+    const endIso = dateTimeLocalToIso(editDraft.endLocal, timezone) ?? entry.end_at;
     const startMs = startIso ? Date.parse(startIso) : NaN;
     const endMs = endIso ? Date.parse(endIso) : NaN;
     if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && startMs >= endMs) {
