@@ -594,6 +594,42 @@ class TestOwnerCarveOut:
         )
         assert count == 0
 
+    async def test_trusted_internal_source_about_owner_writes_directly(self, pool, owner_entity):
+        """Owner writes from a trusted internal-derivation job auto-apply.
+
+        interaction_sync / memory_curation / fact_retraction_curation derive facts
+        solely from the owner's own stored data, so owner-entity writes from these
+        sources bypass pending_actions (RFC 0017 §2.3 parks only UNtrusted sources).
+        """
+        from butlers.tools.relationship.relationship_assert_fact import (
+            _TRUSTED_INTERNAL_SOURCES,
+        )
+
+        assert "interaction_sync" in _TRUSTED_INTERNAL_SOURCES
+
+        result = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="interaction_sync"
+        )
+
+        assert result.outcome == AssertOutcome.inserted
+        assert result.fact_id is not None
+        assert result.action_id is None
+
+        count = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM relationship.entity_facts
+            WHERE subject = $1 AND validity = 'active'
+            """,
+            owner_entity,
+        )
+        assert count == 1
+
+        pa_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM pending_actions WHERE (tool_args->>'subject')::uuid = $1",
+            owner_entity,
+        )
+        assert pa_count == 0
+
 
 # ---------------------------------------------------------------------------
 # Tests: Transaction safety (caller-supplied conn)

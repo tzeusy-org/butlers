@@ -14,6 +14,25 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
+def _reject_trusted_internal_src(v: str) -> str:
+    """Reject ``src`` values that bypass the owner-entity approval gate.
+
+    The trusted auto-apply set (owner-self sources plus trusted
+    internal-derivation jobs) is reserved for internal daemon code paths; an
+    external HTTP caller must never be able to supply one (bu-vj46x). The
+    canonical set lives in the central writer so there is a single source of
+    truth. Imported lazily to avoid an import cycle at module load.
+    """
+    from butlers.tools.relationship.relationship_assert_fact import _OWNER_AUTO_APPLY_SOURCES
+
+    if v in _OWNER_AUTO_APPLY_SOURCES:
+        raise ValueError(
+            f"src={v!r} is a reserved internal source and cannot be set via the API. "
+            "Trusted internal sources are reachable only from internal daemon code paths."
+        )
+    return v
+
+
 class Label(BaseModel):
     """A label/tag that can be applied to contacts or groups."""
 
@@ -979,10 +998,11 @@ class AddContactRequest(BaseModel):
     ``primary`` is optional; used to mark one entry as the primary of its kind.
     ``conf`` defaults to 1.0.
 
-    Security: ``src`` values in the trusted owner-self set (``owner-self``,
-    ``owner-bootstrap``) are rejected with a validation error — those source
-    strings are reserved for internal daemon/bootstrap code paths and must not
-    be reachable from external HTTP callers (bu-vj46x).
+    Security: ``src`` values in the trusted auto-apply set (owner-self sources
+    plus trusted internal-derivation jobs such as ``interaction_sync``) are
+    rejected with a validation error — those source strings bypass the
+    owner-entity approval gate and are reserved for internal daemon code paths;
+    they must not be reachable from external HTTP callers (bu-vj46x).
     """
 
     predicate: str
@@ -1002,13 +1022,7 @@ class AddContactRequest(BaseModel):
     @field_validator("src")
     @classmethod
     def src_not_trusted_internal(cls, v: str) -> str:
-        _RESERVED_SOURCES = frozenset({"owner-self", "owner-bootstrap"})
-        if v in _RESERVED_SOURCES:
-            raise ValueError(
-                f"src={v!r} is a reserved internal source and cannot be set via the API. "
-                "Trusted owner-self sources are reachable only from internal daemon code paths."
-            )
-        return v
+        return _reject_trusted_internal_src(v)
 
 
 class AddContactResponse(BaseModel):
@@ -1091,10 +1105,11 @@ class UpdateContactRequest(BaseModel):
 
     The predicate is fixed by the URL path — the edit changes only the value.
 
-    Security: ``src`` values in the trusted owner-self set (``owner-self``,
-    ``owner-bootstrap``) are rejected with a validation error — those source
-    strings are reserved for internal daemon/bootstrap code paths and must not
-    be reachable from external HTTP callers (bu-vj46x).
+    Security: ``src`` values in the trusted auto-apply set (owner-self sources
+    plus trusted internal-derivation jobs such as ``interaction_sync``) are
+    rejected with a validation error — those source strings bypass the
+    owner-entity approval gate and are reserved for internal daemon code paths;
+    they must not be reachable from external HTTP callers (bu-vj46x).
     """
 
     new_value: str
@@ -1106,13 +1121,7 @@ class UpdateContactRequest(BaseModel):
     @field_validator("src")
     @classmethod
     def src_not_trusted_internal(cls, v: str) -> str:
-        _RESERVED_SOURCES = frozenset({"owner-self", "owner-bootstrap"})
-        if v in _RESERVED_SOURCES:
-            raise ValueError(
-                f"src={v!r} is a reserved internal source and cannot be set via the API. "
-                "Trusted owner-self sources are reachable only from internal daemon code paths."
-            )
-        return v
+        return _reject_trusted_internal_src(v)
 
 
 class UpdateContactResponse(BaseModel):

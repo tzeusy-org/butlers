@@ -233,3 +233,66 @@ class TestOwnerBootstrap:
             "ButlerDaemon must reference context sphere values (RFC 0004)"
         )
         assert len(valid_contexts) == 4, "RFC 0004 defines 3 context spheres + NULL (unclassified)"
+
+
+class TestResolveOwnerChannelViaDefiner:
+    """resolve_owner_channel_via_definer() — cross-schema owner lookup via the
+    public.resolve_owner_triple SECURITY DEFINER function (core_145)."""
+
+    async def test_telegram_match_returns_owner_and_primary(self):
+        from unittest.mock import AsyncMock
+
+        from butlers.identity import resolve_owner_channel_via_definer
+
+        entity_id = uuid.uuid4()
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"entity_id": entity_id, "is_primary": True})
+
+        result = await resolve_owner_channel_via_definer(pool, "telegram", "206570151")
+
+        assert result is not None
+        contact, is_primary = result
+        assert contact.roles == ["owner"]
+        assert contact.entity_id == entity_id
+        assert is_primary is True
+
+        # The candidate array must include both the verbatim and telegram-prefixed forms.
+        call = pool.fetchrow.await_args
+        predicate, candidates = call.args[1], call.args[2]
+        assert predicate == "has-handle"
+        assert "206570151" in candidates
+        assert "telegram:206570151" in candidates
+
+    async def test_no_match_returns_none(self):
+        from unittest.mock import AsyncMock
+
+        from butlers.identity import resolve_owner_channel_via_definer
+
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        result = await resolve_owner_channel_via_definer(pool, "email", "x@example.com")
+        assert result is None
+
+    async def test_unknown_channel_type_returns_none_without_query(self):
+        from unittest.mock import AsyncMock
+
+        from butlers.identity import resolve_owner_channel_via_definer
+
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        result = await resolve_owner_channel_via_definer(pool, "carrier-pigeon", "whatever")
+        assert result is None
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_db_error_returns_none(self):
+        from unittest.mock import AsyncMock
+
+        from butlers.identity import resolve_owner_channel_via_definer
+
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=RuntimeError("function does not exist"))
+
+        result = await resolve_owner_channel_via_definer(pool, "telegram", "206570151")
+        assert result is None

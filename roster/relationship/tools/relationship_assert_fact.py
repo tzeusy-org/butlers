@@ -196,6 +196,26 @@ _FAMILY_GATE_CONF: float = 0.8
 # pending_actions gate.
 _OWNER_SELF_SOURCES: frozenset[str] = frozenset({"owner-bootstrap", "owner-self"})
 
+# Trusted INTERNAL-DERIVATION sources.  Unlike _OWNER_SELF_SOURCES (the owner
+# registering their own identity handles), these are background jobs that derive
+# owner facts SOLELY from the owner's own STRUCTURED data — currently just
+# ``interaction_sync``, which mints ``knows`` edges from interaction *counts*.
+# Owner-entity writes from these sources auto-apply instead of parking (RFC 0017
+# §2.3 parks owner writes only from UNtrusted sources).
+#
+# Deliberately narrow: prose/text-extraction jobs (e.g. ``memory_curation``'s
+# edge promotion) are NOT trusted — a mis-extracted owner edge is exactly the
+# RFC 0017 incident class, so those keep parking for owner review.
+#
+# Same security guarantee as _OWNER_SELF_SOURCES: these source strings MUST be set
+# only by internal code paths.  The MCP tool wrapper hardcodes ``src="relationship"``
+# (an LLM session can never supply one) and the dashboard API models reject them.
+_TRUSTED_INTERNAL_SOURCES: frozenset[str] = frozenset({"interaction_sync"})
+
+# Source strings that bypass the owner-entity approval gate.  External callers
+# (LLM / HTTP) must never be able to supply any of these.
+_OWNER_AUTO_APPLY_SOURCES: frozenset[str] = _OWNER_SELF_SOURCES | _TRUSTED_INTERNAL_SOURCES
+
 
 def contact_info_type_to_predicate(ci_type: str) -> str | None:
     """Return the contact predicate for *ci_type*, or ``None`` when unmapped.
@@ -581,11 +601,14 @@ async def _assert_on_conn(
     await _validate_predicate(conn, predicate)
 
     # Owner carve-out (RFC 0017 §2.3).
-    # Exception: when *src* is a trusted owner-self source (e.g. "owner-bootstrap"
-    # or "owner-self"), the owner is registering their own identity handles.
-    # These writes bypass pending_actions and go directly to entity_facts.
-    # Third-party writes about the owner (any other src) still park for approval.
-    if await _is_owner_entity(conn, subject) and src not in _OWNER_SELF_SOURCES:
+    # Exception: when *src* is a trusted source — either an owner-self source
+    # (the owner registering their own identity handles) or a trusted
+    # internal-derivation job (interaction_sync, memory_curation,
+    # fact_retraction_curation) operating only on the owner's own data — the write
+    # bypasses pending_actions and goes directly to entity_facts.
+    # Third-party / message-extracted writes about the owner (any other src) still
+    # park for approval.
+    if await _is_owner_entity(conn, subject) and src not in _OWNER_AUTO_APPLY_SOURCES:
         tool_args: dict[str, Any] = {
             "subject": str(subject),
             "predicate": predicate,

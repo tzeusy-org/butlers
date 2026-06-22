@@ -31,7 +31,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from butlers.config import ApprovalConfig, ApprovalRiskTier
-from butlers.identity import ResolvedContact, resolve_contact_by_channel
+from butlers.identity import (
+    ResolvedContact,
+    resolve_contact_by_channel,
+    resolve_owner_channel_via_definer,
+)
 from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
@@ -440,6 +444,23 @@ def _make_gate_wrapper(
 
         # --- Role-based target resolution ---
         resolved_contact = await _resolve_target_contact(pool, tool_args)
+        identity = _extract_channel_identity(tool_args)
+
+        # Cross-schema owner fallback. resolve_contact_by_channel and
+        # is_primary_contact read relationship.entity_facts directly, which a
+        # non-relationship butler's role cannot (schema isolation via SET ROLE).
+        # So owner-directed sends from those butlers resolve to None and park as
+        # "unresolvable target". Recognize the owner — and its channel primacy — via
+        # the SECURITY DEFINER public.resolve_owner_triple() lookup (migration
+        # core_145), which runs as a role that can read the relationship schema.
+        # Only when normal resolution failed entirely: a resolved non-owner contact
+        # means the butler COULD read the relationship schema, so no owner fallback
+        # is needed (and the channel demonstrably belongs to a non-owner).
+        owner_primary_override: bool | None = None
+        if resolved_contact is None and identity is not None and identity[0] != "entity_id":
+            fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
+            if fallback is not None:
+                resolved_contact, owner_primary_override = fallback
 
         # Determine whether this is a channel-based or entity_id-based dispatch.
         # For channel-based dispatches (telegram, whatsapp, etc.) the owner bypass
@@ -448,8 +469,11 @@ def _make_gate_wrapper(
         # through the normal rules/parking flow.
         # entity_id dispatch has no specific address to check — skip primacy gate.
         owner_is_primary: bool
-        identity = _extract_channel_identity(tool_args)
-        if (
+        if owner_primary_override is not None:
+            # Owner identity and channel primacy already resolved by the
+            # cross-schema SECURITY DEFINER fallback above.
+            owner_is_primary = owner_primary_override
+        elif (
             resolved_contact is not None
             and "owner" in resolved_contact.roles
             and identity is not None

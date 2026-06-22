@@ -392,6 +392,82 @@ async def resolve_contact_by_channel(
     )
 
 
+async def resolve_owner_channel_via_definer(
+    pool: asyncpg.Pool,
+    channel_type: str,
+    channel_value: str,
+) -> tuple[ResolvedContact, bool] | None:
+    """Resolve an OWNER channel through the ``public.resolve_owner_triple`` function.
+
+    :func:`resolve_contact_by_channel` and :func:`is_primary_contact` read
+    ``relationship.entity_facts`` directly. A non-relationship butler runs under a
+    schema-isolated role (``SET ROLE butler_<schema>_rw``) that cannot read that
+    table, so those helpers return ``None`` even for owner-directed sends, and the
+    approval gate parks the message as "unresolvable target".
+
+    This helper instead calls the ``SECURITY DEFINER`` lookup added in migration
+    ``core_145``, which runs as its owner (a role with relationship-schema read
+    access) and returns only owner matches. The channel-type → predicate mapping
+    and value normalisation live here (mirroring
+    :func:`resolve_contact_by_channel`); the function receives the predicate plus
+    pre-normalised candidate object values.
+
+    Returns ``(owner_contact, is_primary)`` when *channel_value* is one of the
+    owner's registered handles for *channel_type*, else ``None`` (not an owner
+    channel, unknown channel type, or the function is unavailable).
+    """
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    if predicate is None:
+        return None
+
+    # Candidate object values: verbatim, plus telegram canonical-prefix and
+    # username variants — the same normalisation resolve_contact_by_channel applies.
+    candidates: list[str] = [channel_value]
+    if channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+        for variant in _telegram_username_candidates(channel_value):
+            if variant not in candidates:
+                candidates.append(variant)
+    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        for variant in list(candidates):
+            prefixed = _telegram_prefixed_value(variant)
+            if prefixed not in candidates:
+                candidates.append(prefixed)
+
+    try:
+        row = await pool.fetchrow(
+            "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
+            predicate,
+            candidates,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "resolve_owner_channel_via_definer: lookup failed "
+            "(function may not exist yet); returning None",
+            exc_info=True,
+        )
+        return None
+
+    if row is None:
+        return None
+
+    entity_id = row.get("entity_id")
+    if entity_id is None:
+        return None
+    if not isinstance(entity_id, UUID):
+        try:
+            entity_id = UUID(str(entity_id))
+        except (ValueError, AttributeError):
+            return None
+
+    owner_contact = ResolvedContact(
+        contact_id=None,
+        name=None,
+        roles=["owner"],
+        entity_id=entity_id,
+    )
+    return owner_contact, bool(row["is_primary"])
+
+
 async def create_temp_contact(
     pool: asyncpg.Pool,
     channel_type: str,

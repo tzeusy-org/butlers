@@ -392,20 +392,29 @@ def test_mcp_tool_wrapper_has_no_src_parameter() -> None:
         ),
         ("UpdateContactRequest", {"new_value": "attacker@evil.com"}, "owner-self"),
         ("UpdateContactRequest", {"new_value": "+10000000000"}, "owner-bootstrap"),
+        (
+            "AddContactRequest",
+            {"predicate": "has-email", "value": "attacker@evil.com"},
+            "interaction_sync",
+        ),
+        ("UpdateContactRequest", {"new_value": "attacker@evil.com"}, "interaction_sync"),
     ],
     ids=[
         "add-owner-self",
         "add-owner-bootstrap",
         "update-owner-self",
         "update-owner-bootstrap",
+        "add-interaction-sync",
+        "update-interaction-sync",
     ],
 )
 def test_contact_request_rejects_trusted_internal_src(
     model_name: str, kwargs: dict, trusted_src: str
 ) -> None:
-    """Add/UpdateContactRequest must reject reserved internal src values from HTTP
-    callers — the loc=('src',) error is the security gate (bu-vj46x). Both models
-    enumerate owner-self and owner-bootstrap."""
+    """Add/UpdateContactRequest must reject the trusted auto-apply src values from
+    HTTP callers — the loc=('src',) error is the security gate (bu-vj46x). Both
+    models reject owner-self/owner-bootstrap and the trusted internal-derivation
+    source interaction_sync (which bypasses the owner-entity approval gate)."""
     from pydantic import ValidationError
 
     models = _load_relationship_api_models()
