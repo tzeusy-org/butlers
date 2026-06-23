@@ -587,9 +587,7 @@ class TestOwnerCrossSchemaFallback:
             risk_tier=MagicMock(value="medium"),
             rule_precedence=("contact_role", "standing_rule"),
         )
-        exec_mock = AsyncMock(
-            return_value=ExecutionResult(success=True, result={"status": "sent"})
-        )
+        exec_mock = AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"}))
         with (
             patch(
                 "butlers.modules.approvals.gate._resolve_target_contact",
@@ -607,9 +605,7 @@ class TestOwnerCrossSchemaFallback:
 
     async def test_unresolvable_owner_primary_auto_approves(self) -> None:
         owner = _owner_contact()
-        result, pool, exec_mock = await self._run(
-            resolve_return=None, definer_return=(owner, True)
-        )
+        result, pool, exec_mock = await self._run(resolve_return=None, definer_return=(owner, True))
         assert result == {"status": "sent"}
         exec_mock.assert_awaited_once()
         inserts = [

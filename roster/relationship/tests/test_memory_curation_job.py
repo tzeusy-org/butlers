@@ -1738,9 +1738,7 @@ class TestFactRetractionCurationMultiValuedPredicates:
             await _setup_fact_retraction_schema(p)
             yield p
 
-    async def test_log_predicate_with_differing_content_not_flagged(
-        self, frc_pool: asyncpg.Pool
-    ):
+    async def test_log_predicate_with_differing_content_not_flagged(self, frc_pool: asyncpg.Pool):
         """Two 'activity' rows with differing content on the same entity are NOT a
         contradiction — 'activity' is multi-valued log data, not a functional fact."""
         entity = await _make_entity(frc_pool, name="Loggy")
