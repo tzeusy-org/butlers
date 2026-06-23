@@ -63,8 +63,9 @@ import { toast } from "sonner";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -92,7 +93,11 @@ function makeEmptyHistory() {
 }
 
 function makeEmptyPolicy() {
-  return makeApiResponse({ quiet_start_hour: null, quiet_end_hour: null, timezone: "UTC" });
+  return makeApiResponse({
+    quiet_start_hour: null,
+    quiet_end_hour: null,
+    timezone: "UTC",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -109,9 +114,12 @@ async function flush(rounds = 5): Promise<void> {
   }
 }
 
-function findButton(container: HTMLElement, label: string): HTMLButtonElement | undefined {
-  return Array.from(container.querySelectorAll("button")).find((btn) =>
-    btn.textContent?.trim() === label,
+function findButton(
+  container: HTMLElement,
+  label: string,
+): HTMLButtonElement | undefined {
+  return Array.from(container.querySelectorAll("button")).find(
+    (btn) => btn.textContent?.trim() === label,
   );
 }
 
@@ -141,7 +149,9 @@ describe("ApprovalsPage — load-more", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     // Default stubs for side-sections; override in individual tests.
-    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeEmptyHistory() as AnyMock,
+    );
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
 
     qc = new QueryClient({
@@ -177,11 +187,16 @@ describe("ApprovalsPage — load-more", () => {
 
   it("renders rail items returned by getApprovalsFlat", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
-      makeApiResponse([makeSummary("a1", "send_email"), makeSummary("a2", "delete_file")]) as AnyMock,
+      makeApiResponse([
+        makeSummary("a1", "send_email"),
+        makeSummary("a2", "delete_file"),
+      ]) as AnyMock,
     );
 
     renderPage();
-    await act(async () => { await flush(); });
+    await act(async () => {
+      await flush();
+    });
 
     expect(container.textContent).toContain("send email");
     expect(container.textContent).toContain("delete file");
@@ -190,10 +205,14 @@ describe("ApprovalsPage — load-more", () => {
   it("shows 'Load more' button when response length equals the current limit", async () => {
     // Build 100 summaries (= PENDING_PAGE_SIZE) to simulate a full page.
     const full = Array.from({ length: 100 }, (_, i) => makeSummary(`id-${i}`));
-    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse(full) as AnyMock);
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse(full) as AnyMock,
+    );
 
     renderPage();
-    await act(async () => { await flush(); });
+    await act(async () => {
+      await flush();
+    });
 
     expect(findButton(container, "Load more")).toBeDefined();
   });
@@ -201,10 +220,14 @@ describe("ApprovalsPage — load-more", () => {
   it("does NOT show 'Load more' when response is smaller than limit", async () => {
     // 3 results < 100 limit → no more pages.
     const partial = [makeSummary("a1"), makeSummary("a2"), makeSummary("a3")];
-    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse(partial) as AnyMock);
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse(partial) as AnyMock,
+    );
 
     renderPage();
-    await act(async () => { await flush(); });
+    await act(async () => {
+      await flush();
+    });
 
     expect(findButton(container, "Load more")).toBeUndefined();
   });
@@ -213,7 +236,9 @@ describe("ApprovalsPage — load-more", () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
 
     renderPage();
-    await act(async () => { await flush(); });
+    await act(async () => {
+      await flush();
+    });
 
     expect(container.textContent).toContain("No pending approvals");
     expect(findButton(container, "Load more")).toBeUndefined();
@@ -223,14 +248,18 @@ describe("ApprovalsPage — load-more", () => {
     // First call: full page of 100.
     const full = Array.from({ length: 100 }, (_, i) => makeSummary(`id-${i}`));
     // Second call (limit=200): still full → Load more persists.
-    const larger = Array.from({ length: 200 }, (_, i) => makeSummary(`id-${i}`));
+    const larger = Array.from({ length: 200 }, (_, i) =>
+      makeSummary(`id-${i}`),
+    );
 
     vi.mocked(getApprovalsFlat)
       .mockReturnValueOnce(makeApiResponse(full) as AnyMock)
       .mockReturnValueOnce(makeApiResponse(larger) as AnyMock);
 
     renderPage();
-    await act(async () => { await flush(); });
+    await act(async () => {
+      await flush();
+    });
 
     const btn = findButton(container, "Load more");
     expect(btn).toBeDefined();
@@ -270,7 +299,11 @@ function makePendingDetail(id: string) {
     expires_at: null,
     why: null,
     evidence: [],
-    proposed_action: { tool_name: "send_email", tool_args: {}, agent_summary: null },
+    proposed_action: {
+      tool_name: "send_email",
+      tool_args: {},
+      agent_summary: null,
+    },
     status: "pending",
     decided_by: null,
     decided_at: null,
@@ -285,18 +318,24 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeEmptyHistory() as AnyMock,
+    );
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
 
-    qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(() => {
-    act(() => { root.unmount(); });
+    act(() => {
+      root.unmount();
+    });
     container.remove();
     vi.restoreAllMocks();
   });
@@ -317,7 +356,9 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("a1")]) as AnyMock,
     );
-    vi.mocked(getApprovalDetail).mockReturnValue(makePendingDetail("a1") as AnyMock);
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("a1") as AnyMock,
+    );
     // Backend approved but could not dispatch: status stays "approved", dispatched=false.
     vi.mocked(approveApproval).mockReturnValue(
       makeApiResponse({
@@ -350,7 +391,9 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("a2")]) as AnyMock,
     );
-    vi.mocked(getApprovalDetail).mockReturnValue(makePendingDetail("a2") as AnyMock);
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("a2") as AnyMock,
+    );
     vi.mocked(approveApproval).mockReturnValue(
       makeApiResponse({
         id: "a2",
@@ -385,12 +428,14 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     );
 
     renderPage();
-    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+    await flushUntil(
+      () => findButton(container, "Retry dispatch") !== undefined,
+    );
 
     // Exactly one retry button — only the approved (un-run) row gets it.
-    const retryButtons = Array.from(container.querySelectorAll("button")).filter(
-      (b) => b.textContent?.trim() === "Retry dispatch",
-    );
+    const retryButtons = Array.from(
+      container.querySelectorAll("button"),
+    ).filter((b) => b.textContent?.trim() === "Retry dispatch");
     expect(retryButtons.length).toBe(1);
   });
 
@@ -411,7 +456,9 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     );
 
     renderPage();
-    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+    await flushUntil(
+      () => findButton(container, "Retry dispatch") !== undefined,
+    );
 
     const retryBtn = findButton(container, "Retry dispatch");
     expect(retryBtn).toBeDefined();
@@ -468,12 +515,70 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     vi.mocked(getApprovalDetail).mockReturnValue(detail as AnyMock);
 
     renderPage();
-    await flushUntil(() => container.textContent?.includes("Referenced Entities") ?? false);
+    await flushUntil(
+      () => container.textContent?.includes("Referenced Entities") ?? false,
+    );
 
     expect(container.textContent).toContain("Referenced Entities");
     expect(container.textContent).toContain("Acme Research & Technologies");
     expect(container.textContent).toContain("Tze How Lee");
     // Object UUID is no longer presented bare — the name resolves it.
     expect(container.textContent).toContain("organization");
+  });
+
+  it("renders a subject-predicate-object digest, mapping by id not array order", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a4")]) as AnyMock,
+    );
+    // referenced_entities are deliberately in OBJECT-first order (as the live
+    // resolver returns them) to prove the digest keys off the tool_args UUIDs,
+    // not the array position.
+    const detail = makeApiResponse({
+      id: "a4",
+      title: "Relationship Assert Fact (relationship)",
+      butler: "relationship",
+      created_at: "2026-05-17T10:00:00Z",
+      expires_at: null,
+      why: null,
+      evidence: [],
+      proposed_action: {
+        tool_name: "relationship_assert_fact",
+        tool_args: {
+          subject: "c64f5aed-9b1f-492e-bab2-86c986c31ebd",
+          predicate: "knows",
+          object: "2b4e034d-4138-4eef-a011-20eed5bedcab",
+        },
+        agent_summary: null,
+      },
+      status: "pending",
+      decided_by: null,
+      decided_at: null,
+      target_contact: null,
+      referenced_entities: [
+        {
+          id: "2b4e034d-4138-4eef-a011-20eed5bedcab",
+          name: "Yustynn Panicker",
+          entity_type: "person",
+          roles: [],
+        },
+        {
+          id: "c64f5aed-9b1f-492e-bab2-86c986c31ebd",
+          name: "Tze How Lee",
+          entity_type: "person",
+          roles: ["owner"],
+        },
+      ],
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(detail as AnyMock);
+
+    renderPage();
+    await flushUntil(
+      () => container.textContent?.includes("Approve:") ?? false,
+    );
+
+    // Subject (Tze) precedes object (Yustynn), regardless of array order.
+    expect(container.textContent).toContain(
+      "Approve: Tze How Lee knows Yustynn Panicker",
+    );
   });
 });
