@@ -206,8 +206,13 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     chronicler_episode_participants_resolved_total.labels(schema=schema).inc(
                         len(participant_ids)
                     )
+                # NOTE: we intentionally do NOT increment result.episodes_closed here.
+                # A past calendar block (ends_at <= now) means the appointment was
+                # scheduled for that time — it does NOT confirm the user attended.
+                # episodes_closed would falsely signal "completed/attended" and cause
+                # downstream LLM sessions to assert attendance (see bu-gnoi0).
+                # rows_projected is the correct counter for this adapter.
                 result.rows_projected += 1
-                result.episodes_closed += 1
 
                 candidate = row["ends_at"]
                 if candidate is not None and (
