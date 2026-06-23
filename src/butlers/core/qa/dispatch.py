@@ -45,7 +45,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.healing.anonymizer import anonymize, validate_anonymized
+from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
 from butlers.core.healing.dispatch import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
     UNFIXABLE_SENTINEL_FILENAME,
@@ -1427,9 +1427,41 @@ async def _create_qa_pr(
             _anonymization_failure_error("raw evidence marker detected in PR body"),
         )
 
+    # Step 4c: Sanitize + validate labels — labels are externally visible on the
+    # public destination and must clear the same gate as the title/body.
+    sanitized_labels, label_violations = sanitize_labels(labels, repo_root)
+    if label_violations:
+        validator_detail = _format_anonymization_validator_detail(label_violations)
+        _record_qa_anonymization_failed()
+        logger.warning(
+            "Anonymization validation failed for QA investigation PR labels (attempt=%s): "
+            "%d violation(s): %s",
+            attempt_id,
+            len(label_violations),
+            label_violations[:3],
+        )
+        delete_error = await _delete_remote_branch_with_gh_auth(
+            repo_root, branch_name, owner_repo, env
+        )
+        if delete_error is not None:
+            logger.warning(
+                "Failed to delete remote branch %s after label anonymization failure: %s",
+                branch_name,
+                delete_error,
+            )
+        return None, None, None, _anonymization_failure_error(validator_detail)
+
+    # Gate passed across every externally-visible field. Record that the gate ran
+    # (pass) for audit without persisting any sanitized/raw field content.
+    logger.info(
+        "QA publication sanitization gate PASSED (attempt=%s): title, body, and %d label(s) clean",
+        attempt_id,
+        len(sanitized_labels),
+    )
+
     # Step 5: gh pr create
     label_args: list[str] = []
-    for label in labels:
+    for label in sanitized_labels:
         label_args.extend(["--label", label])
 
     gh_cmd = [

@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from butlers.core.healing.anonymizer import anonymize, validate_anonymized
+from butlers.core.healing import anonymizer
+from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
 
 pytestmark = pytest.mark.unit
 
@@ -122,3 +123,44 @@ def test_validation_detects_residual_patterns():
     is_clean2, violations2 = validate_anonymized(bad_text)
     assert is_clean2 is False
     assert len(violations2) >= 3
+
+
+# ---------------------------------------------------------------------------
+# Label sanitization gate (externally-visible GitHub PR/issue field)
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_labels_passes_clean_labels_unchanged():
+    """Clean labels are returned unchanged with no violations."""
+    sanitized, violations = sanitize_labels(["self-healing", "automated", "bug"], REPO_ROOT)
+    assert sanitized == ["self-healing", "automated", "bug"]
+    assert violations == []
+
+
+def test_sanitize_labels_empty_input_is_clean():
+    """No labels => nothing to sanitize, no violations (gate trivially passes)."""
+    assert sanitize_labels([], REPO_ROOT) == ([], [])
+
+
+def test_sanitize_labels_redacts_embedded_sensitive_value():
+    """A label carrying a synthetic email is scrubbed; the raw value never survives."""
+    # Synthetic placeholder — NOT real PII.
+    sanitized, violations = sanitize_labels(["owner-tester@synthetic.example"], REPO_ROOT)
+    assert violations == []
+    assert "tester@synthetic.example" not in sanitized[0]
+    assert "REDACTED" in sanitized[0]
+
+
+def test_sanitize_labels_blocks_residual_sensitive_content(monkeypatch: pytest.MonkeyPatch):
+    """Fail-closed: if a label still trips validation after scrubbing, report a violation
+    WITHOUT echoing the raw sensitive value in the violation text."""
+    # Force the scrub step to be a no-op so the synthetic secret reaches the
+    # validation backstop unchanged (models a pattern the scrubber missed).
+    monkeypatch.setattr(anonymizer, "anonymize", lambda text, _repo: text)
+
+    secret_label = "leak-tester@synthetic.example"
+    sanitized, violations = sanitize_labels([secret_label], REPO_ROOT)
+
+    assert violations, "expected the validation backstop to flag residual sensitive content"
+    # Audit/log safety: the raw sensitive value must not appear in the violation text.
+    assert all("tester@synthetic.example" not in v for v in violations)

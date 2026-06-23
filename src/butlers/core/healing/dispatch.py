@@ -39,7 +39,7 @@ from pathlib import Path
 
 import asyncpg
 
-from butlers.core.healing.anonymizer import anonymize, validate_anonymized
+from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
 from butlers.core.healing.fingerprint import (
     FingerprintResult,
     compute_fingerprint,
@@ -481,8 +481,10 @@ async def _create_pr(
             len(violations),
             violations[:3],  # log first 3 for diagnosis without revealing PII
         )
-        # Delete the remote branch that was just pushed
-        await asyncio.create_subprocess_exec(
+        # Delete the remote branch that was just pushed. Await completion so the
+        # branch is actually gone before we return and so the subprocess transport
+        # is closed (avoids ResourceWarning on unawaited processes).
+        delete_proc = await asyncio.create_subprocess_exec(
             "git",
             "push",
             "origin",
@@ -493,11 +495,48 @@ async def _create_pr(
             stderr=asyncio.subprocess.DEVNULL,
             env=env,
         )
+        await delete_proc.communicate()
         return None, None, "anonymization_failed"
+
+    # Step 3b: Sanitize + validate labels — labels are externally visible on the
+    # public destination and must clear the same gate as the title/body.
+    sanitized_labels, label_violations = sanitize_labels(labels, repo_root)
+    if label_violations:
+        logger.warning(
+            "Anonymization validation failed for healing PR labels (attempt=%s): "
+            "%d violation(s): %s",
+            attempt_id,
+            len(label_violations),
+            label_violations[:3],
+        )
+        # Await completion so the branch is actually deleted before returning and
+        # the subprocess transport is closed (avoids ResourceWarning).
+        delete_proc = await asyncio.create_subprocess_exec(
+            "git",
+            "push",
+            "origin",
+            "--delete",
+            branch_name,
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+        await delete_proc.communicate()
+        return None, None, "anonymization_failed"
+
+    # Gate passed across every externally-visible field. Record that the gate ran
+    # (pass) for audit without persisting any sanitized/raw field content.
+    logger.info(
+        "Healing publication sanitization gate PASSED (attempt=%s): "
+        "title, body, and %d label(s) clean",
+        attempt_id,
+        len(sanitized_labels),
+    )
 
     # Step 4: gh pr create
     label_args: list[str] = []
-    for label in labels:
+    for label in sanitized_labels:
         label_args.extend(["--label", label])
 
     gh_cmd = [

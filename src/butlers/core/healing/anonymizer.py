@@ -8,6 +8,7 @@ Public API::
 
     anonymize(text: str, repo_root: Path) -> str
     validate_anonymized(text: str) -> tuple[bool, list[str]]
+    sanitize_labels(labels: list[str], repo_root: Path) -> tuple[list[str], list[str]]
 """
 
 from __future__ import annotations
@@ -465,3 +466,37 @@ def validate_anonymized(text: str) -> tuple[bool, list[str]]:
 
     is_clean = len(violations) == 0
     return is_clean, violations
+
+
+def sanitize_labels(labels: list[str], repo_root: Path) -> tuple[list[str], list[str]]:
+    """Run the fail-closed sanitization gate over externally-visible GitHub labels.
+
+    Labels are posted verbatim to a public destination (``gh pr create --label``
+    / ``gh issue create --label``) and must be scrubbed exactly like the PR/issue
+    title and body.  Each label is passed through ``anonymize()`` and then through
+    the ``validate_anonymized()`` backstop.
+
+    Parameters
+    ----------
+    labels:
+        Raw label strings destined for a public GitHub PR/issue.
+    repo_root:
+        Absolute path to the repository root (forwarded to ``anonymize()``).
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        ``(sanitized_labels, violations)``.  ``violations`` is empty when every
+        sanitized label is clean; otherwise it lists residual-pattern
+        descriptions (which never include the raw matched value).  A non-empty
+        ``violations`` list means the caller MUST block publication (fail-closed).
+    """
+    sanitized: list[str] = []
+    violations: list[str] = []
+    for label in labels:
+        clean_label = anonymize(label, repo_root)
+        is_clean, label_violations = validate_anonymized(clean_label)
+        if not is_clean:
+            violations.extend(label_violations)
+        sanitized.append(clean_label)
+    return sanitized, violations
