@@ -214,6 +214,100 @@ function Dossier({
 
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      {/* Floating decision cluster — sticky to the top-right of the dossier so
+          Approve / Deny / Defer stay reachable without scrolling (§8.4). Sits
+          in normal flow (reserves a row) and sticks on scroll; the transparent
+          wrapper is click-through so content beneath stays interactive. */}
+      {isPending && (
+        <div className="sticky top-0 z-20 -mb-2 flex flex-col items-end gap-2 pointer-events-none">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
+            <button
+              onClick={() => approveMut.mutate()}
+              disabled={approveMut.isPending}
+              className={[
+                "py-1.5 px-4 rounded font-medium text-sm",
+                "bg-foreground text-background",
+                "hover:opacity-90 disabled:opacity-50 transition-opacity",
+              ].join(" ")}
+            >
+              {approveMut.isPending ? "Approving…" : "Approve"}
+            </button>
+            <button
+              onClick={() => { setShowDeny(!showDeny); setShowDefer(false); }}
+              className={[
+                "py-1.5 px-3 rounded text-sm border transition-colors",
+                "border-border text-foreground hover:border-foreground/40",
+                showDeny ? "border-foreground/40 bg-foreground/5" : "",
+              ].join(" ")}
+            >
+              Deny
+            </button>
+            <button
+              onClick={() => { setShowDefer(!showDefer); setShowDeny(false); }}
+              className={[
+                "py-1.5 px-3 rounded text-sm border transition-colors",
+                "border-border text-foreground hover:border-foreground/40",
+                showDefer ? "border-foreground/40 bg-foreground/5" : "",
+              ].join(" ")}
+            >
+              Defer
+            </button>
+          </div>
+
+          {/* Deny expansion — drops down under the cluster */}
+          {showDeny && (
+            <div className="pointer-events-auto w-72 space-y-2 p-3 rounded-lg border border-border bg-background shadow-md">
+              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                Reason (optional)
+              </label>
+              <input
+                value={denyReason}
+                onChange={(e) => setDenyReason(e.target.value)}
+                placeholder="No reason given"
+                className={[
+                  "w-full px-2 py-1.5 text-sm border border-border rounded",
+                  "bg-background focus:outline-none focus:border-foreground/40",
+                ].join(" ")}
+              />
+              <button
+                onClick={() => denyMut.mutate()}
+                disabled={denyMut.isPending}
+                className="w-full py-1.5 px-3 rounded text-sm bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {denyMut.isPending ? "Denying…" : "Confirm Deny"}
+              </button>
+            </div>
+          )}
+
+          {/* Defer expansion — drops down under the cluster */}
+          {showDefer && (
+            <div className="pointer-events-auto w-72 space-y-2 p-3 rounded-lg border border-border bg-background shadow-md">
+              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                Hours to defer (1–168)
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={168}
+                value={deferHours}
+                onChange={(e) => setDeferHours(e.target.value)}
+                className={[
+                  "w-full px-2 py-1.5 text-sm border border-border rounded",
+                  "bg-background focus:outline-none focus:border-foreground/40",
+                ].join(" ")}
+              />
+              <button
+                onClick={() => deferMut.mutate()}
+                disabled={deferMut.isPending}
+                className="w-full py-1.5 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors"
+              >
+                {deferMut.isPending ? "Deferring…" : "Confirm Defer"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Title */}
       <div>
         <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
@@ -344,99 +438,6 @@ function Dossier({
         </div>
       )}
 
-      {/* Decision buttons (only for pending) */}
-      {isPending && (
-        <div className="border-t border-border pt-4 space-y-3">
-          {/* Primary approve */}
-          <button
-            onClick={() => approveMut.mutate()}
-            disabled={approveMut.isPending}
-            className={[
-              "w-full py-2.5 px-4 rounded font-medium text-sm",
-              "bg-foreground text-background",
-              "hover:opacity-90 disabled:opacity-50 transition-opacity",
-            ].join(" ")}
-          >
-            {approveMut.isPending ? "Approving…" : "Approve"}
-          </button>
-
-          {/* Secondary deny / defer row */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => { setShowDeny(!showDeny); setShowDefer(false); }}
-              className={[
-                "flex-1 py-1.5 px-3 rounded text-sm border transition-colors",
-                "border-border text-foreground hover:border-foreground/40",
-                showDeny ? "border-foreground/40" : "",
-              ].join(" ")}
-            >
-              Deny
-            </button>
-            <button
-              onClick={() => { setShowDefer(!showDefer); setShowDeny(false); }}
-              className={[
-                "flex-1 py-1.5 px-3 rounded text-sm border transition-colors",
-                "border-border text-foreground hover:border-foreground/40",
-                showDefer ? "border-foreground/40" : "",
-              ].join(" ")}
-            >
-              Defer
-            </button>
-          </div>
-
-          {/* Deny expansion */}
-          {showDeny && (
-            <div className="space-y-2 p-3 rounded border border-border">
-              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-                Reason (optional)
-              </label>
-              <input
-                value={denyReason}
-                onChange={(e) => setDenyReason(e.target.value)}
-                placeholder="No reason given"
-                className={[
-                  "w-full px-2 py-1.5 text-sm border border-border rounded",
-                  "bg-background focus:outline-none focus:border-foreground/40",
-                ].join(" ")}
-              />
-              <button
-                onClick={() => denyMut.mutate()}
-                disabled={denyMut.isPending}
-                className="w-full py-1.5 px-3 rounded text-sm bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {denyMut.isPending ? "Denying…" : "Confirm Deny"}
-              </button>
-            </div>
-          )}
-
-          {/* Defer expansion */}
-          {showDefer && (
-            <div className="space-y-2 p-3 rounded border border-border">
-              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-                Hours to defer (1–168)
-              </label>
-              <input
-                type="number"
-                min={1}
-                max={168}
-                value={deferHours}
-                onChange={(e) => setDeferHours(e.target.value)}
-                className={[
-                  "w-full px-2 py-1.5 text-sm border border-border rounded",
-                  "bg-background focus:outline-none focus:border-foreground/40",
-                ].join(" ")}
-              />
-              <button
-                onClick={() => deferMut.mutate()}
-                disabled={deferMut.isPending}
-                className="w-full py-1.5 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors"
-              >
-                {deferMut.isPending ? "Deferring…" : "Confirm Defer"}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
