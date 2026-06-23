@@ -556,3 +556,75 @@ class TestGateEmitsCreatedEvent:
 
         # Must succeed even when emit raises
         assert result == {"status": "sent"}
+
+
+# ---------------------------------------------------------------------------
+# Cross-schema owner fallback (public.resolve_owner_triple SECURITY DEFINER)
+# ---------------------------------------------------------------------------
+
+
+class TestOwnerCrossSchemaFallback:
+    """Owner-directed sends auto-approve via the SECURITY DEFINER fallback even when
+    the butler role cannot read relationship.entity_facts (resolve returns None).
+
+    [core_145] messenger/home/etc. are schema-isolated from the relationship
+    schema, so resolve_contact_by_channel returns None for owner sends; the gate
+    recognizes the owner via resolve_owner_channel_via_definer().
+    """
+
+    async def _run(self, *, resolve_return, definer_return, fetch_return=None):
+        from butlers.modules.approvals.executor import ExecutionResult
+
+        pool = _make_pool()
+        if fetch_return is not None:
+            pool.fetch = AsyncMock(return_value=fetch_return)
+        original_fn = _make_original_fn()
+        wrapper = _make_gate_wrapper(
+            tool_name="telegram_send_message",
+            original_fn=original_fn,
+            pool=pool,
+            expiry_hours=72,
+            risk_tier=MagicMock(value="medium"),
+            rule_precedence=("contact_role", "standing_rule"),
+        )
+        exec_mock = AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"}))
+        with (
+            patch(
+                "butlers.modules.approvals.gate._resolve_target_contact",
+                new=AsyncMock(return_value=resolve_return),
+            ),
+            patch(
+                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=definer_return),
+            ),
+            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
+            patch("butlers.modules.approvals.gate.execute_approved_action", new=exec_mock),
+        ):
+            result = await wrapper(chat_id="206570151", text="hi")
+        return result, pool, exec_mock
+
+    async def test_unresolvable_owner_primary_auto_approves(self) -> None:
+        owner = _owner_contact()
+        result, pool, exec_mock = await self._run(resolve_return=None, definer_return=(owner, True))
+        assert result == {"status": "sent"}
+        exec_mock.assert_awaited_once()
+        inserts = [
+            c for c in pool.execute.await_args_list if "INSERT INTO pending_actions" in c.args[0]
+        ]
+        assert inserts, "expected an owner auto-approve pending_actions insert"
+        assert "role:owner" in inserts[0].args
+
+    async def test_non_primary_owner_parks(self) -> None:
+        owner = _owner_contact()
+        result, _pool, exec_mock = await self._run(
+            resolve_return=None, definer_return=(owner, False), fetch_return=[]
+        )
+        assert result["status"] == "pending_approval"
+        exec_mock.assert_not_awaited()
+
+    async def test_definer_no_match_keeps_parking(self) -> None:
+        result, _pool, exec_mock = await self._run(
+            resolve_return=None, definer_return=None, fetch_return=[]
+        )
+        assert result["status"] == "pending_approval"
+        exec_mock.assert_not_awaited()

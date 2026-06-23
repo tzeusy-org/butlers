@@ -1432,6 +1432,11 @@ async def _insert_fact(
     )
 
 
+async def _fact_validity(pool: asyncpg.Pool, fact_id: uuid.UUID) -> str | None:
+    """Return the validity of a facts row (e.g. 'active', 'retracted')."""
+    return await pool.fetchval("SELECT validity FROM facts WHERE id = $1", fact_id)
+
+
 async def _count_pending_for_fact(pool: asyncpg.Pool, fact_id: uuid.UUID) -> int:
     """Count pending_actions rows targeting the given fact id.
 
@@ -1516,10 +1521,10 @@ class TestFactRetractionCurationContradictions:
         are a contradiction — both should be flagged for owner review."""
         entity = await _make_entity(frc_pool, name="Alice")
         fact_a = await _insert_fact(
-            frc_pool, entity_id=entity, predicate="works_at", content="Company A"
+            frc_pool, entity_id=entity, predicate="workplace", content="Company A"
         )
         fact_b = await _insert_fact(
-            frc_pool, entity_id=entity, predicate="works_at", content="Company B"
+            frc_pool, entity_id=entity, predicate="workplace", content="Company B"
         )
 
         result = await run_fact_retraction_curation(frc_pool)
@@ -1534,8 +1539,8 @@ class TestFactRetractionCurationContradictions:
     async def test_contradiction_creates_insight_candidates(self, frc_pool: asyncpg.Pool):
         """Contradicted facts produce insight candidates for owner notification."""
         entity = await _make_entity(frc_pool, name="Bob")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="city", content="London")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="city", content="Paris")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="home_city", content="London")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="home_city", content="Paris")
 
         await run_fact_retraction_curation(frc_pool)
 
@@ -1547,8 +1552,8 @@ class TestFactRetractionCurationContradictions:
         by the contradiction scan.  They may be low-confidence, but with default
         confidence=1.0 they should produce zero flags."""
         entity = await _make_entity(frc_pool, name="Carol")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="job", content="Engineer")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="job", content="Engineer")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="workplace", content="Engineer")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="workplace", content="Engineer")
 
         result = await run_fact_retraction_curation(frc_pool)
 
@@ -1558,8 +1563,8 @@ class TestFactRetractionCurationContradictions:
     async def test_contradiction_null_entity_id_not_flagged(self, frc_pool: asyncpg.Pool):
         """Facts without entity_id cannot be correlated — contradiction scan requires
         entity_id IS NOT NULL so they are silently excluded."""
-        await _insert_fact(frc_pool, entity_id=None, predicate="works_at", content="Company A")
-        await _insert_fact(frc_pool, entity_id=None, predicate="works_at", content="Company B")
+        await _insert_fact(frc_pool, entity_id=None, predicate="workplace", content="Company A")
+        await _insert_fact(frc_pool, entity_id=None, predicate="workplace", content="Company B")
 
         result = await run_fact_retraction_curation(frc_pool)
 
@@ -1568,8 +1573,8 @@ class TestFactRetractionCurationContradictions:
     async def test_different_predicates_not_a_contradiction(self, frc_pool: asyncpg.Pool):
         """Two facts on the same entity with DIFFERENT predicates are not contradictions."""
         entity = await _make_entity(frc_pool, name="Dave")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="works_at", content="Acme")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="lives_in", content="London")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="workplace", content="Acme")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="home_city", content="London")
 
         result = await run_fact_retraction_curation(frc_pool)
 
@@ -1581,8 +1586,8 @@ class TestFactRetractionCurationContradictions:
         """Same predicate on DIFFERENT entities is not a contradiction."""
         alice = await _make_entity(frc_pool, name="Alice")
         bob = await _make_entity(frc_pool, name="Bob")
-        await _insert_fact(frc_pool, entity_id=alice, predicate="city", content="London")
-        await _insert_fact(frc_pool, entity_id=bob, predicate="city", content="Paris")
+        await _insert_fact(frc_pool, entity_id=alice, predicate="home_city", content="London")
+        await _insert_fact(frc_pool, entity_id=bob, predicate="home_city", content="Paris")
 
         result = await run_fact_retraction_curation(frc_pool)
 
@@ -1665,7 +1670,14 @@ class TestFactRetractionCurationLowConfidence:
 
 
 class TestFactRetractionCurationOwnerFacts:
-    """Owner-entity facts go through pending_actions too (conservative policy)."""
+    """Owner-entity facts are AUTO-RESOLVED by this trusted-internal job.
+
+    Unlike non-owner facts (which park for approval), the owner's own facts are
+    soft-retracted directly: contradiction losers are retracted while the
+    highest-confidence row is kept, and low-confidence owner facts are retracted.
+    No pending_actions rows are created. (RFC 0017 §2.3 parks owner writes only
+    from UNtrusted sources; this curation job is a trusted internal source.)
+    """
 
     @pytest.fixture
     async def frc_pool(self, provisioned_postgres_pool):
@@ -1673,32 +1685,32 @@ class TestFactRetractionCurationOwnerFacts:
             await _setup_fact_retraction_schema(p)
             yield p
 
-    async def test_owner_entity_contradicted_fact_flagged_via_pending_actions(
+    async def test_owner_contradiction_loser_auto_retracted_winner_kept(
         self, frc_pool: asyncpg.Pool
     ):
-        """Owner-entity contradicted facts use the SAME pending_actions path —
-        they are never silently dropped and never auto-retracted."""
+        """Owner contradiction: keep the highest-confidence row, retract the loser,
+        no pending_actions."""
         owner = await _make_entity(frc_pool, name="Owner", roles=["owner"])
-        fact_a = await _insert_fact(
-            frc_pool, entity_id=owner, predicate="works_at", content="Company A"
+        loser = await _insert_fact(
+            frc_pool, entity_id=owner, predicate="workplace", content="Company A", confidence=0.5
         )
-        fact_b = await _insert_fact(
-            frc_pool, entity_id=owner, predicate="works_at", content="Company B"
+        winner = await _insert_fact(
+            frc_pool, entity_id=owner, predicate="workplace", content="Company B", confidence=0.9
         )
 
         result = await run_fact_retraction_curation(frc_pool)
 
-        # Both contradiction facts flagged.
         assert result["contradictions_found"] == 2
-        assert result["flagged_new"] == 2
-        # Pending_actions created (not auto-retracted).
-        assert await _count_pending_for_fact(frc_pool, fact_a) == 1
-        assert await _count_pending_for_fact(frc_pool, fact_b) == 1
+        assert result["owner_auto_retracted"] == 1
+        assert result["flagged_new"] == 0
+        # No pending_actions for either fact — auto-resolved.
+        assert await _count_pending_actions(frc_pool) == 0
+        # Loser retracted, winner still active.
+        assert await _fact_validity(frc_pool, loser) == "retracted"
+        assert await _fact_validity(frc_pool, winner) == "active"
 
-    async def test_owner_entity_low_conf_fact_flagged_via_pending_actions(
-        self, frc_pool: asyncpg.Pool
-    ):
-        """Owner-entity low-confidence facts are also flagged via pending_actions."""
+    async def test_owner_low_conf_fact_auto_retracted(self, frc_pool: asyncpg.Pool):
+        """Owner-entity low-confidence facts are auto-retracted, not parked."""
         owner = await _make_entity(frc_pool, name="Owner", roles=["owner"])
         low_conf = await _insert_fact(
             frc_pool,
@@ -1711,8 +1723,44 @@ class TestFactRetractionCurationOwnerFacts:
         result = await run_fact_retraction_curation(frc_pool)
 
         assert result["low_conf_found"] == 1
-        assert result["flagged_new"] == 1
-        assert await _count_pending_for_fact(frc_pool, low_conf) == 1
+        assert result["owner_auto_retracted"] == 1
+        assert result["flagged_new"] == 0
+        assert await _count_pending_for_fact(frc_pool, low_conf) == 0
+        assert await _fact_validity(frc_pool, low_conf) == "retracted"
+
+
+class TestFactRetractionCurationMultiValuedPredicates:
+    """Multi-valued / log predicates are never treated as contradictions."""
+
+    @pytest.fixture
+    async def frc_pool(self, provisioned_postgres_pool):
+        async with provisioned_postgres_pool() as p:
+            await _setup_fact_retraction_schema(p)
+            yield p
+
+    async def test_log_predicate_with_differing_content_not_flagged(self, frc_pool: asyncpg.Pool):
+        """Two 'activity' rows with differing content on the same entity are NOT a
+        contradiction — 'activity' is multi-valued log data, not a functional fact."""
+        entity = await _make_entity(frc_pool, name="Loggy")
+        await _insert_fact(
+            frc_pool, entity_id=entity, predicate="activity", content="Created contact Dian"
+        )
+        await _insert_fact(
+            frc_pool, entity_id=entity, predicate="activity", content="Logged a call"
+        )
+        # An interaction_* predicate is likewise multi-valued.
+        await _insert_fact(
+            frc_pool, entity_id=entity, predicate="interaction_email", content="Email 1"
+        )
+        await _insert_fact(
+            frc_pool, entity_id=entity, predicate="interaction_email", content="Email 2"
+        )
+
+        result = await run_fact_retraction_curation(frc_pool)
+
+        assert result["contradictions_found"] == 0
+        assert result["flagged_new"] == 0
+        assert await _count_pending_actions(frc_pool) == 0
 
 
 class TestFactRetractionCurationDedup:
@@ -1728,8 +1776,8 @@ class TestFactRetractionCurationDedup:
         """Running the job twice does NOT create a second pending_actions row for
         the same fact (JSONB containment dedup check prevents it)."""
         entity = await _make_entity(frc_pool, name="Harry")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="city", content="Oslo")
-        await _insert_fact(frc_pool, entity_id=entity, predicate="city", content="Bergen")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="home_city", content="Oslo")
+        await _insert_fact(frc_pool, entity_id=entity, predicate="home_city", content="Bergen")
 
         first = await run_fact_retraction_curation(frc_pool)
         second = await run_fact_retraction_curation(frc_pool)
@@ -1751,7 +1799,7 @@ class TestFactRetractionCurationDedup:
         fact_a = await _insert_fact(
             frc_pool,
             entity_id=entity,
-            predicate="city",
+            predicate="home_city",
             content="City A",
             confidence=0.2,
         )
@@ -1759,7 +1807,7 @@ class TestFactRetractionCurationDedup:
         await _insert_fact(
             frc_pool,
             entity_id=entity,
-            predicate="city",
+            predicate="home_city",
             content="City B",
             confidence=0.9,
         )

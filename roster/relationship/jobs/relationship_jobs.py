@@ -2293,6 +2293,36 @@ async def run_pending_actions_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
 # Deliberately conservative (0.6) — genuine uncertainty, not "needs cleanup".
 _RETRACTION_LOW_CONF_THRESHOLD: float = 0.6
 
+# The ``relationship.facts`` store is predominantly an APPEND-ONLY, multi-valued
+# memory/log store: predicates such as ``activity`` and ``interaction_*`` carry
+# many active rows per (entity, predicate) by design (a person has many
+# interactions; an entity accumulates many activity-log entries). "Contradiction"
+# — two active rows on the same (entity, predicate) with differing content — is
+# only meaningful for FUNCTIONAL (single-valued) predicates, where at most one
+# value can be true at a time.
+#
+# Treating multi-valued predicates as contradictions produced thousands of false
+# retraction proposals overnight (one ``pending_actions`` row per log entry).
+# Contradiction detection is therefore GATED to this explicit allowlist of
+# functional property predicates. Any predicate NOT listed here (logs,
+# interactions, notes, and every unregistered predicate) is never treated as a
+# contradiction. Add a predicate here ONLY when it holds at most one true value
+# per entity at a time.
+_CONTRADICTION_FUNCTIONAL_PREDICATES: frozenset[str] = frozenset(
+    {
+        "workplace",
+        "employer",
+        "job_title",
+        "current_role",
+        "relationship_status",
+        "marital_status",
+        "birthday",
+        "home_city",
+        "home_location",
+        "nationality",
+    }
+)
+
 # State key for the checkpoint timestamp (observability; job is idempotent via
 # pending_actions dedup — re-running is safe).
 _RETRACTION_CURATION_STATE_KEY = "memory_curation.last_retraction_curation_at"
@@ -2312,8 +2342,11 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     Scans ``relationship.facts`` (the prose-fact / property-fact store) for:
 
     **Contradictions:** Two or more active rows for the same ``(entity_id,
-    predicate)`` pair but with differing ``content``.  When multiple active
-    facts disagree on what is true, one or more of them should be retracted.
+    predicate)`` pair but with differing ``content`` — restricted to FUNCTIONAL
+    (single-valued) predicates in :data:`_CONTRADICTION_FUNCTIONAL_PREDICATES`.
+    The ``facts`` store is predominantly multi-valued log data (``activity``,
+    ``interaction_*``), where many active rows per (entity, predicate) is normal;
+    those predicates are never treated as contradictions.
 
     **Low confidence:** Active rows whose ``confidence`` column is below
     :data:`_RETRACTION_LOW_CONF_THRESHOLD` (0.6 by default).  Such facts
@@ -2321,23 +2354,19 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     mis-extractions (the live example: 'has a son' inferred as a parent-of
     edge when the owner has no son).
 
-    **Mutation policy — conservative and owner-approved:**
+    **Mutation policy:**
 
-    * For EVERY flagged fact (contradiction candidate or low-confidence),
-      this job creates a ``pending_actions`` row with
-      ``tool_name='memory_forget'`` and the ``fact_id`` as the argument.  The
-      owner must explicitly approve the retraction; nothing is auto-retracted.
-    * Owner-entity facts receive the same treatment as any other fact — they
-      are NEVER silently dropped.  The owner-approval loop is the *only* path
-      to retraction.
-    * Dedup: before inserting a new ``pending_actions`` row the writer checks
-      whether a ``status='pending'`` row already exists for the same
-      ``fact_id``.  If one exists the flagging is skipped (the first proposal
-      is still outstanding).
-    * Alongside each ``pending_actions`` row, an insight candidate is
-      submitted via :func:`~butlers.tools.switchboard.insight.broker.propose_insight_candidate`
-      so the owner receives a Telegram notification prompting them to
-      act.
+    * NON-owner flagged facts park a ``pending_actions`` row
+      (``tool_name='memory_forget'``, ``fact_id`` as the argument) plus an
+      insight candidate; the owner explicitly approves each retraction. Dedup:
+      a new row is skipped when a ``status='pending'`` row already exists for the
+      same ``fact_id``.
+    * OWNER-entity flagged facts are auto-resolved by soft retraction
+      (``validity='retracted'``) without parking — this job is a trusted
+      internal source operating only on the owner's own stored data (RFC 0017
+      §2.3 parks owner writes only from UNtrusted sources). For contradiction
+      groups the highest-confidence row is kept and the losers retracted; a
+      single summary insight is surfaced. Retraction is reversible.
 
     Args:
         db_pool: Database connection pool (relationship butler schema context).
@@ -2345,8 +2374,7 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     Returns:
         Dictionary with keys: facts_scanned_contradiction, facts_scanned_low_conf,
         contradictions_found, low_conf_found, flagged_new, skipped_already_pending,
-        skipped_owner_no_auto_retract (always 0 — owner facts go through the
-        same pending_actions path), errors.
+        owner_auto_retracted, errors.
     """
     from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
@@ -2363,11 +2391,28 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "low_conf_found": 0,
         "flagged_new": 0,
         "skipped_already_pending": 0,
+        "owner_auto_retracted": 0,
         "errors": 0,
     }
 
     now_utc = datetime.now(UTC)
     expires_at = now_utc + timedelta(days=_RETRACTION_INSIGHT_EXPIRES_DAYS)
+
+    # The owner's own facts are auto-resolved by this trusted-internal job rather
+    # than parked (see _RETRACTION_CURATION_SOURCE). Resolve the owner entity once;
+    # on any error treat as "no owner" so every flag falls back to the safe
+    # park-for-approval path.
+    owner_entity_id: uuid.UUID | None = None
+    try:
+        owner_entity_id = await db_pool.fetchval(
+            "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+        )
+    except Exception:
+        logger.warning(
+            "fact_retraction_curation: owner-entity lookup failed; "
+            "owner facts will park for approval instead of auto-resolving",
+            exc_info=True,
+        )
 
     # -----------------------------------------------------------------------
     # Step 1: Detect contradictions.
@@ -2394,6 +2439,7 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
             WHERE f.validity  = 'active'
               AND f.scope     = 'relationship'
               AND f.entity_id IS NOT NULL
+              AND f.predicate = ANY($1::text[])
               AND EXISTS (
                   SELECT 1 FROM facts f2
                   WHERE f2.entity_id  = f.entity_id
@@ -2404,7 +2450,8 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     AND f2.id        <> f.id
               )
             ORDER BY f.entity_id, f.predicate, f.confidence ASC NULLS LAST
-            """
+            """,
+            sorted(_CONTRADICTION_FUNCTIONAL_PREDICATES),
         )
     except Exception:
         logger.exception("fact_retraction_curation: failed to query contradiction facts")
@@ -2464,15 +2511,37 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     )
 
     # -----------------------------------------------------------------------
-    # Step 3: For each flagged fact, create a pending_actions row (deduped)
-    # and submit an insight candidate.
+    # Step 3: Resolve each flagged fact.
     #
-    # CRITICAL POLICY: NEVER auto-retract.  All paths go through pending_actions
-    # for owner approval — including owner-entity facts.
+    # POLICY:
+    #   • NON-owner facts: park a pending_actions row (deduped) + surface an
+    #     insight candidate. The owner decides which (if any) to retract.
+    #   • OWNER-entity facts: auto-resolve (soft, reversible retraction) without
+    #     parking — this job is a trusted internal source operating only on the
+    #     owner's own stored data (RFC 0017 §2.3 parks owner writes only from
+    #     UNtrusted sources). For contradiction groups we keep the
+    #     highest-confidence row and retract the losers; for low-confidence we
+    #     retract the flagged row.
     # -----------------------------------------------------------------------
     all_flagged = [("contradiction", row) for row in contradiction_rows] + [
         ("low_confidence", row) for row in low_conf_rows
     ]
+
+    # Per contradiction group, pick the row to KEEP (highest confidence, then
+    # highest fact_id for determinism). Only used for owner-entity auto-resolution.
+    contradiction_winners: dict[tuple[Any, str], uuid.UUID] = {}
+    _winner_conf: dict[tuple[Any, str], float] = {}
+    for row in contradiction_rows:
+        key = (row["entity_id"], row["predicate"])
+        conf = row["confidence"] if row["confidence"] is not None else -1.0
+        cur = _winner_conf.get(key)
+        if (
+            cur is None
+            or conf > cur
+            or (conf == cur and str(row["fact_id"]) > str(contradiction_winners[key]))
+        ):
+            _winner_conf[key] = conf
+            contradiction_winners[key] = row["fact_id"]
 
     async def _ensure_pending_action(
         fact_id: uuid.UUID,
@@ -2550,12 +2619,46 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
             )
             return "error"
 
+    async def _auto_retract_owner_fact(fact_id: uuid.UUID) -> bool:
+        """Soft-retract an owner-entity fact (mark validity='retracted').
+
+        Mirrors the memory_forget tool's retraction SQL. Idempotent: only flips
+        rows still 'active'. Returns True on success, False on DB error.
+        """
+        try:
+            await db_pool.execute(
+                "UPDATE facts SET validity = 'retracted' WHERE id = $1 AND validity = 'active'",
+                fact_id,
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "fact_retraction_curation: owner auto-retract failed for fact %s",
+                fact_id,
+            )
+            return False
+
     for flag_reason, row in all_flagged:
         fact_id: uuid.UUID = row["fact_id"]
         entity_id: uuid.UUID | None = row.get("entity_id")
         predicate: str = row["predicate"]
         content: str = row["content"] or ""
         confidence: float | None = row["confidence"]
+
+        # Owner-entity carve-out: this trusted-internal job auto-resolves the
+        # owner's own facts instead of parking them for approval.
+        if owner_entity_id is not None and entity_id == owner_entity_id:
+            if (
+                flag_reason == "contradiction"
+                and contradiction_winners.get((entity_id, predicate)) == fact_id
+            ):
+                # Keep the winning row in the contradiction group.
+                continue
+            if await _auto_retract_owner_fact(fact_id):
+                stats["owner_auto_retracted"] += 1
+            else:
+                stats["errors"] += 1
+            continue
 
         outcome = await _ensure_pending_action(
             fact_id=fact_id,
@@ -2635,6 +2738,30 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
             )
             stats["errors"] += 1
 
+    # One transparency note when owner facts were auto-resolved (reversible).
+    if stats["owner_auto_retracted"] > 0:
+        try:
+            await propose_insight_candidate(
+                db_pool,
+                origin_butler="relationship",
+                priority=_RETRACTION_PRIORITY_LOW_CONF,
+                category="fact-retraction-owner-auto",
+                dedup_key=f"relationship:fact-owner-auto:{now_utc.date().isoformat()}",
+                message=(
+                    f"Memory curation auto-cleaned {stats['owner_auto_retracted']} "
+                    "conflicting/low-confidence fact(s) on your own entity "
+                    "(trusted internal cleanup; soft-retracted and reversible). "
+                    "No action needed."
+                ),
+                expires_at=expires_at,
+                cooldown_days=1,
+            )
+        except Exception:
+            logger.warning(
+                "fact_retraction_curation: owner auto-retract summary insight failed",
+                exc_info=True,
+            )
+
     # Persist checkpoint timestamp (best-effort).
     try:
         await state_set(db_pool, _RETRACTION_CURATION_STATE_KEY, now_utc.isoformat())
@@ -2648,11 +2775,12 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info(
         "fact_retraction_curation complete: "
         "contradiction_rows=%d low_conf_rows=%d flagged_new=%d "
-        "skipped_already_pending=%d errors=%d",
+        "skipped_already_pending=%d owner_auto_retracted=%d errors=%d",
         stats["contradictions_found"],
         stats["low_conf_found"],
         stats["flagged_new"],
         stats["skipped_already_pending"],
+        stats["owner_auto_retracted"],
         stats["errors"],
     )
     return stats
