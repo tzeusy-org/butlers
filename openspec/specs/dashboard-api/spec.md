@@ -676,13 +676,42 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** errors in audit logging are silently swallowed (never break the primary operation)
 
 ### Requirement: Calendar Workspace
-`src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, metadata endpoint, sync trigger, and mutation endpoints for both user-view and butler-view events.
+`src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, a full-text search endpoint, a metadata endpoint, a sync trigger, and mutation endpoints for both user-view and butler-view events. The read endpoint SHALL support server-side `status`, `source_type`, and `editable` facets and keyset (cursor) pagination; the search endpoint SHALL match a free-text query against event title, description, and location.
 
 #### Scenario: Workspace read
 - **WHEN** `GET /api/calendar/workspace?view=user&start=...&end=...` is called
 - **THEN** calendar entries are fan-out queried across butler DBs (joining `calendar_event_instances`, `calendar_events`, `calendar_sources`, and `calendar_sync_cursors`)
 - **AND** entries are normalized into `UnifiedCalendarEntry` objects with computed `source_type`, `status`, and `sync_state`
 - **AND** optional `timezone` parameter converts all timestamps to the requested display timezone
+
+#### Scenario: Workspace read applies status, source_type, and editable facets server-side
+- **WHEN** `GET /api/calendar/workspace` is called with any of the optional `status`, `source_type`, or `editable` query params
+- **THEN** the corresponding predicate is applied in the fan-out query (`status` over the instance/event status, `source_type` over the computed entry kind, `editable` over the source's `writable` flag) rather than returning all entries for the window and filtering client-side
+- **AND** multiple supplied facets are combined with AND
+- **AND** omitting a facet leaves that dimension unfiltered (the prior behavior)
+- **AND** an unknown `status` or `source_type` value yields a 400 validation error
+
+#### Scenario: Workspace read paginates with a keyset cursor
+- **WHEN** `GET /api/calendar/workspace` is called with `limit` (bounded, with a default) and no `cursor`
+- **THEN** at most `limit` entries are returned ordered by the workspace keyset `(starts_at, id)`
+- **AND** the response includes `has_more: true` and an opaque `next_cursor` encoding the last `(starts_at, id)` seen when more rows remain for the window
+- **AND** the response does NOT include a `total` field, per the repo's keyset pagination convention
+
+#### Scenario: Workspace read follows the cursor to the next page
+- **WHEN** `GET /api/calendar/workspace` is called with `cursor=<next_cursor>` from the prior page
+- **THEN** the next page of entries strictly after the encoded keyset position is returned with no overlap with the prior page
+- **AND** when no further rows remain the response has `has_more: false` and a null `next_cursor`
+- **AND** a malformed or unparseable `cursor` yields a 400 validation error
+
+#### Scenario: Workspace search by free text
+- **WHEN** `GET /api/calendar/workspace/search?q=dentist&view=user` is called with a non-empty `q`
+- **THEN** matches are fan-out queried across butler DBs over `calendar_events` `title`, `description`, and `location`
+- **AND** matches are returned as `UnifiedCalendarEntry`-shaped rows carrying each match's date(s), ranked by trigram relevance, so the UI can group by day and jump-to the event
+- **AND** results respect the same lane (`view`) and optional `butlers`/`sources` scoping as the read endpoint
+
+#### Scenario: Workspace search with an empty query
+- **WHEN** `GET /api/calendar/workspace/search` is called with a missing or blank `q`
+- **THEN** an empty match list is returned (the whole calendar is NOT returned) and no error is raised
 
 #### Scenario: Workspace mutations
 - **WHEN** user-event or butler-event mutation endpoints are called
@@ -885,3 +914,110 @@ TanStack Query hooks for the Timeline tab on the Ingestion page, following the s
 - **AND** the sessions cache key is `["ingestion", "events", requestId, "sessions"]`
 - **AND** the rollup cache key is `["ingestion", "events", requestId, "rollup"]`
 - **AND** both use a 30s stale time (no auto-refresh interval; use staleTime only, same as session detail)
+
+### Requirement: Calendar Overlay Projection
+
+The dashboard API SHALL extend the calendar workspace read endpoint so `GET /api/calendar/workspace?view=overlays` projects cached overlay contributions from `calendar.v_overlay_contributions` into `UnifiedCalendarEntry` rows tagged with a new `source_type` value `"overlay_contribution"`. The projection MUST be a pure read of the precomputed view — no LLM session and no cross-schema fan-out at request time — and MUST be fail-open: a missing view, a missing contributing specialist `state` table, or a projection-query failure returns `entries: []` with `has_domain_context: false` rather than HTTP 500.
+
+#### Scenario: Overlays view projects cached entries
+- **WHEN** `GET /api/calendar/workspace?view=overlays` is called with a `start`/`end` range
+- **THEN** each overlay contribution entry whose target date falls within `[start, end]` is returned as a `UnifiedCalendarEntry` with `source_type="overlay_contribution"`, `editable=false`, `start_at` set to the entry's target date, `title` set to the entry's `label`, and `metadata` carrying `kind`, `priority`, `source_butler` (from the view's hardcoded `butler` column), and the entry's `meta`
+- **AND** the response includes `has_domain_context: true`
+- **AND** no LLM session is invoked while serving the request
+
+#### Scenario: Overlay entries never appear in user or butler views
+- **WHEN** `GET /api/calendar/workspace?view=user` or `view=butler` is called
+- **THEN** no entries with `source_type="overlay_contribution"` appear in the response
+- **BECAUSE** overlays are a read-only domain-context layer, not user-owned or butler-owned calendar events
+
+#### Scenario: Overlays view is fail-open and empty when none
+- **WHEN** `calendar.v_overlay_contributions` is absent (pre-migration), a contributing specialist's `state` table is missing, or the projection query fails
+- **THEN** the endpoint returns `entries: []` with `has_domain_context: false` rather than HTTP 500
+- **AND** the failure is logged at WARNING level
+
+#### Scenario: Malformed contribution skipped
+- **WHEN** a row read from the view has a `value->>'butler'` that does not match the view's hardcoded `butler` source column, or is missing required envelope fields (`butler`, `date`, `has_entries`)
+- **THEN** that contribution is skipped with a warning log and excluded from `entries`
+- **AND** `has_domain_context` reflects only the valid contributions
+
+### Requirement: Day-Briefing Card Read
+
+The dashboard API SHALL expose a structured day-briefing ("tomorrow at a glance") card read assembled from the cached overlay view for a target date. The response MUST be structured (grouped overlay entries, not generated prose), MUST be served with NO per-open LLM call, and MUST carry an honest empty-state via a `has_domain_context` boolean so the frontend can distinguish "nothing for this day" from "context unavailable".
+
+#### Scenario: Day-card assembled from the cached view
+- **WHEN** the day-briefing card read is called for a target date for which at least one specialist has written a contribution (even with `has_entries=false`)
+- **THEN** the response is a structured payload grouping the date's overlay entries by butler/kind with `has_domain_context: true`
+- **AND** no LLM session is invoked while serving the request
+
+#### Scenario: Day-card honest empty-state
+- **WHEN** no specialist has written any contribution for the target date (jobs have not run, or the view is absent)
+- **THEN** the response has `entries: []` and `has_domain_context: false`
+- **AND** the frontend renders "No domain context for this day" rather than silently omitting the card section
+
+#### Scenario: Day-card is degraded fail-open, not Prometheus-degraded
+- **WHEN** the underlying overlay view query fails or the view is absent
+- **THEN** the endpoint returns the honest empty-state (`entries: []`, `has_domain_context: false`) rather than HTTP 500
+- **AND** the response does NOT use the `aggregates_available` Prometheus degraded-envelope (the day-card reads no Prometheus metrics)
+
+### Requirement: Calendar Quick-Add Parse Endpoint
+
+`src/butlers/api/routers/calendar_workspace.py` SHALL expose a parse-only endpoint `POST /api/calendar/workspace/parse-quick-add` that turns a natural-language string into a **draft** calendar event for confirmation. The endpoint SHALL perform no provider or projection write and SHALL NOT create a calendar event. Event creation continues to flow exclusively through the existing `POST /api/calendar/workspace/user-events` create path (the `calendar_create_event` MCP tool) with a `request_id`; the parse-quick-add response is advisory only.
+
+#### Scenario: Natural-language string parsed into a draft event
+
+- **WHEN** `POST /api/calendar/workspace/parse-quick-add` is called with a free-text `text` (e.g. `"lunch with Sarah Fri 1pm at Tartine"`) and an optional display `timezone`
+- **THEN** the text is parsed by an LLM resolved via `resolve_model(pool, butler_name, Complexity.CHEAP)` (the simple/cheap complexity tier — one cheap parse per submit)
+- **AND** the response has HTTP 200 with `parse_available=true` and a `draft` object containing the proposed `title`, `start_at`, `end_at`, and optional `location` and `description`
+- **AND** no Google event is created and no projection row is written (the parse is read-only)
+
+#### Scenario: Draft is confirmed via the existing create path
+
+- **WHEN** the user accepts (and optionally edits) the returned `draft`
+- **THEN** confirmation is submitted to the existing `POST /api/calendar/workspace/user-events` endpoint with `action="create"` and a `request_id`
+- **AND** no separate confirm/write endpoint is introduced — the structured create path and its `request_id` idempotency are reused unchanged
+
+#### Scenario: LLM unavailable returns a degraded parse with no fabricated event
+
+- **WHEN** `resolve_model(pool, butler_name, Complexity.CHEAP)` returns `None` (no enabled model qualifies in any tier) or the LLM parse otherwise cannot be produced
+- **THEN** the response has HTTP 200 with `parse_available=false` and a human-readable `reason`
+- **AND** the response contains no `draft` object (the field is absent or null)
+- **AND** the endpoint does not fabricate an event or fall back to a heuristic guess
+- **BECAUSE** silently materializing a guessed event on a single-owner calendar would risk writing an unintended event on confirm
+
+#### Scenario: Empty or unparseable input is rejected without a write
+
+- **WHEN** the endpoint is called with empty/blank `text`, or the LLM returns a response that cannot be interpreted as a single event draft
+- **THEN** the response indicates the input could not be parsed (`parse_available=false` with a `reason`, or a 422 validation error for blank input) and contains no `draft`
+- **AND** no provider or projection write occurs
+
+### Requirement: Meeting-Prep Rail Endpoint
+
+The dashboard API SHALL expose `GET /api/calendar/workspace/prep/{event_id}` returning the meeting-prep context (resolved attendees with relationship letter-marks, relationship notes, and last-met) for a selected calendar event. The endpoint MUST be sourced exclusively from the precomputed `calendar.v_prep_contributions` cached view: it MUST NOT issue a direct cross-schema query (e.g. `SELECT ... FROM relationship.*` / `health.*`) at request time and MUST NOT spawn an LLM session. It MUST merge contributions across contributing butlers by attendee `entity_id` (so a single attendee carries relationship context plus any future message context), skip envelopes whose payload `butler` disagrees with the view's hardcoded source column, and fail open to a structured empty payload (never HTTP 500) when no prep contribution exists.
+
+#### Scenario: Prep rail returns precomputed context
+- **WHEN** `GET /api/calendar/workspace/prep/{event_id}` is called for an event that has precomputed prep contributions
+- **THEN** the response carries the event's attendees (each with `entity_id`, `name`, `dunbar_tier`, `notes`, `last_met`/`last_met_event`), `has_prep_context: true`, and `source_butlers` listing the contributing schemas
+- **AND** no direct cross-butler read and no LLM session occur while serving the request
+
+#### Scenario: Prep rail honest empty-state
+- **WHEN** the prep rail read is called for an event with no precomputed prep contribution (co-attended-edge / contact-link coverage not yet populated)
+- **THEN** the endpoint returns `has_prep_context: false` with an empty `attendees` list and empty `source_butlers`, not HTTP 500
+- **BECAUSE** the prep rail renders "no prep context yet" for events lacking coverage rather than fabricating context or reading sibling schemas live
+
+#### Scenario: Prep rail never reads sibling schemas on demand
+- **WHEN** the prep rail read is served
+- **THEN** it reads only `calendar.v_prep_contributions` (contribution-sourced cached data) and issues no on-demand `SELECT` against `relationship.*`, `health.*`, or any other sibling schema, and opens no MCP/LLM session
+- **BECAUSE** RFC-0020 rejected the on-demand cross-schema read and the per-open LLM synthesis paths
+
+#### Scenario: Prep rail fail-open on missing view
+- **WHEN** `calendar.v_prep_contributions` is absent (pre-migration), a contributing specialist's `state` table is missing, or the projection query fails
+- **THEN** the endpoint returns `has_prep_context: false` with an empty `attendees` list rather than HTTP 500
+- **AND** the failure is logged at WARNING level
+
+#### Scenario: Prep rail merges attendees across butlers
+- **WHEN** more than one contributing butler has written a prep envelope for the event with the same attendee `entity_id`
+- **THEN** the response merges them into a single attendee carrying the union of their notes and message context, and `source_butlers` lists every contributing schema
+
+#### Scenario: Prep rail skips butler-mismatched envelope
+- **WHEN** a row read from the view has a `value->>'butler'` that does not match the view's hardcoded `butler` source column
+- **THEN** that contribution is skipped with a warning log and excluded from the response

@@ -198,12 +198,13 @@ The module supports both RFC-5545 RRULE recurrence and cron expressions for even
 
 ### Requirement: Conflict Detection and Resolution
 
-The module enforces conflict detection policies when creating or rescheduling events.
+The module enforces conflict detection policies when creating or rescheduling events. When the policy is `suggest`, suggested alternative slots SHALL respect the owner's scheduling-availability preferences so that no suggestion falls outside the owner's allowed hours/days or inside a no-meeting block.
 
 #### Scenario: Suggest conflict resolution
 
 - **WHEN** an event creation conflicts with existing events and policy is `suggest`
 - **THEN** up to 3 alternative time slots are suggested (default `DEFAULT_CONFLICT_SUGGESTION_COUNT = 3`)
+- **AND** each suggested slot lies within the owner's scheduling-availability preferences when such preferences are configured
 
 #### Scenario: Fail on conflict
 
@@ -215,6 +216,16 @@ The module enforces conflict detection policies when creating or rescheduling ev
 - **WHEN** an event creation conflicts and policy is `allow_overlap`
 - **THEN** the event is created if no approval enqueuer is set
 - **AND** if an approval enqueuer is wired, high-impact overlaps produce `status=approval_required`
+
+#### Scenario: Suggestions respect owner scheduling preferences
+
+- **WHEN** suggested slots are built and owner scheduling-availability preferences are configured (earliest/latest meeting time, allowed days, no-meeting blocks)
+- **THEN** `_build_suggested_slots` SHALL NOT emit a slot that starts before the earliest meeting time, ends after the latest meeting time, falls on a disallowed weekday, or overlaps a no-meeting block
+
+#### Scenario: Suggestions with no owner preferences configured
+
+- **WHEN** suggested slots are built and no owner scheduling-availability preferences row exists
+- **THEN** slot suggestion behaves as before (forward-stepping from the last conflict), applying no life-availability filtering
 
 ### Requirement: Butler Event Management Tools
 
@@ -478,6 +489,95 @@ A dashboard page at `/butlers/calendar` with a view toggle between user events a
 
 - **WHEN** the projection is queried
 - **THEN** a staleness status is returned: `fresh`, `stale` (exceeds 2x sync interval), or `failed`
+
+### Requirement: Calendar Event Full-Text Search Index
+
+The calendar projection SHALL support index-backed substring search over the human-readable event text. A core Alembic migration (next in the `core_*` chain) SHALL ensure the `pg_trgm` extension and create a GIN trigram index over `calendar_events(title, description, location)` in each butler schema, so free-text lookups do not require a sequential scan of the projection.
+
+#### Scenario: Trigram index migration is idempotent and reversible
+- **WHEN** the search-index core migration runs against a butler schema
+- **THEN** it executes `CREATE EXTENSION IF NOT EXISTS pg_trgm` and creates a GIN trigram index (`gin_trgm_ops`) over `calendar_events(title, description, location)` with `IF NOT EXISTS`
+- **AND** re-running the migration is a no-op (no duplicate index, no error)
+- **AND** the migration `downgrade()` drops the index (`DROP INDEX IF EXISTS`) while leaving the shared `pg_trgm` extension installed
+
+#### Scenario: Search index covers the searchable projection columns
+- **WHEN** the projection stores a `calendar_events` row with `title`, optional `description`, and optional `location`
+- **THEN** all three columns are covered by the trigram index so a substring query against any of them is index-eligible
+- **AND** the index is per-schema, consistent with the projection's per-butler-schema layout
+
+### Requirement: Calendar Event Full-Text Search Query
+
+The module SHALL expose a fan-out search over the `calendar_events` projection that matches a free-text query against `title`, `description`, and `location`, returns matches ranked by trigram relevance with each match's date(s), and degrades fail-open when the trigram index or extension is unavailable. This is the contract behind the `GET /api/calendar/workspace/search` endpoint (see `dashboard-api`).
+
+#### Scenario: Ranked match across title, description, and location
+- **WHEN** a non-empty query is searched against the projection
+- **THEN** `calendar_events` rows whose `title`, `description`, or `location` match the query (trigram similarity / substring) are returned
+- **AND** results are ranked by trigram relevance and carry each match's event date(s) so callers can group by day and jump-to
+- **AND** the search is fanned out across butler schemas and honors lane (`view`) and `butlers`/`sources` scoping
+
+#### Scenario: Empty query returns no matches
+- **WHEN** the search is invoked with a missing or blank query string
+- **THEN** an empty result set is returned (the search SHALL NOT return the entire projection)
+- **AND** no error is raised
+
+#### Scenario: Degraded search when the trigram index is unavailable
+- **WHEN** a probed butler schema lacks the `pg_trgm` extension or the trigram index
+- **THEN** the search degrades fail-open — it falls back to a substring (`ILIKE`) match for that schema or skips it — rather than raising a 500
+- **AND** results from schemas where the index is present are still returned
+
+### Requirement: Free/Busy Availability Query
+
+The `CalendarProvider` interface SHALL expose a windowed, multi-calendar free/busy query `get_free_busy(calendar_ids, start_at, end_at)` that returns merged busy windows. This generalizes the existing single-calendar, candidate-window free/busy lookup that previously lived only inside conflict detection. `find_conflicts` SHALL be implemented in terms of `get_free_busy` so the provider's `/freeBusy` request/response handling exists in exactly one place.
+
+#### Scenario: Free/busy across multiple calendars over an arbitrary window
+
+- **WHEN** `get_free_busy` is called with a list of `calendar_ids` and a `start_at`/`end_at` window
+- **THEN** the provider returns the busy windows for all requested calendars merged into a single list bounded by the requested window
+- **AND** for the Google provider this reuses the existing `/freeBusy` request body (`timeMin`, `timeMax`, `timeZone`, `items`) and the existing `calendars` → `busy[]` parsing, with `items` carrying every requested calendar id
+
+#### Scenario: Empty result when no busy windows
+
+- **WHEN** `get_free_busy` is called and no calendar reports any busy window in the requested range
+- **THEN** an empty list of busy windows is returned
+
+#### Scenario: find_conflicts delegates to get_free_busy
+
+- **WHEN** `find_conflicts` is called for a candidate event on a single calendar
+- **THEN** it resolves conflicts via `get_free_busy(calendar_ids=[calendar_id], start_at=candidate.start_at, end_at=candidate.end_at)`
+- **AND** its return shape (a list of synthetic `(busy)` `CalendarEvent`s) and signature are unchanged from before the refactor
+
+#### Scenario: Free/busy uses the existing calendar OAuth scope
+
+- **WHEN** the Google provider issues a free/busy query
+- **THEN** it authorizes the request with the already-granted `calendar` scope and requires no additional OAuth scope
+
+### Requirement: Find Free Slots Tool
+
+The module SHALL register an MCP tool `calendar_find_free_slots` that turns free/busy data into ranked open time slots. It is a read-only availability tool: it proposes slots and never creates, updates, or deletes an event.
+
+#### Scenario: Rank open slots over a search window
+
+- **WHEN** `calendar_find_free_slots` is called with a `duration_minutes`, a `search_start`/`search_end` window, optional `calendar_ids`, and optional structured `constraints`
+- **THEN** it queries `get_free_busy` over the window, subtracts the busy windows to obtain free gaps, splits each gap into `duration_minutes`-sized candidate slots, and returns them ranked earliest-first (constraint-matching slots preferred)
+- **AND** at most `limit` slots are returned
+- **AND** no event is created, updated, or deleted as a side effect
+
+#### Scenario: Slots respect owner scheduling preferences
+
+- **WHEN** `calendar_find_free_slots` runs and owner scheduling-availability preferences are configured
+- **THEN** returned slots lie within the owner's allowed meeting hours and days and do not overlap any no-meeting block
+- **AND** when no owner preferences row exists, only busy-window subtraction and the search window constrain the results
+
+#### Scenario: Natural-language constraints are pre-parsed into structured form
+
+- **WHEN** a caller wants constraints like "mornings only" or "avoid Fridays"
+- **THEN** the caller passes them as structured `constraints` (e.g. part-of-day, avoided weekdays) and the deterministic finder applies them
+- **AND** the finder itself performs no LLM call
+
+#### Scenario: Fully busy window returns no slots
+
+- **WHEN** `calendar_find_free_slots` is called and the search window contains no gap long enough for `duration_minutes`
+- **THEN** an empty slots list is returned (fail-open, not an error)
 
 ## Source References
 
