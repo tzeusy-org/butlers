@@ -337,7 +337,9 @@ async def test_project_user_lane_rows_are_still_projected() -> None:
         )
 
     assert result.rows_projected == 1
-    assert result.episodes_closed == 1
+    # episodes_closed must remain 0: a past calendar block is not evidence of
+    # attendance.  Only rows_projected should be incremented (see bu-gnoi0).
+    assert result.episodes_closed == 0
     assert len(captured) == 1
     assert captured[0].title == "Dentist appointment"
 
@@ -762,4 +764,91 @@ async def test_episode_entities_role_precedence_collapse_owner_beats_participant
     # Only 2 unique entities (no duplicate row for owner_id).
     assert len(rows_inserted) == 2, (
         f"Expected 2 rows (owner + other_participant), got {len(rows_inserted)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Attendance-semantics guard (bu-gnoi0)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_calendar_adapter_never_increments_episodes_closed() -> None:
+    """CalendarCompletedAdapter must NOT increment episodes_closed for any row.
+
+    A past calendar block (ends_at <= now) only proves the appointment was on
+    the calendar — it is NOT evidence the user attended.  Incrementing
+    episodes_closed would signal "completed/attended" to downstream LLM
+    sessions, causing false attendance assertions in day-close routing.
+
+    rows_projected is the only counter that should increase.
+    """
+    rows = [
+        _make_row(event_title="Morning standup"),
+        _make_row(event_title="Dr Ng heart followup"),
+        _make_row(event_title="Team retro"),
+    ]
+    # Give each row a unique origin_instance_ref so they aren't deduped.
+    for i, row in enumerate(rows):
+        row["origin_instance_ref"] = f"evt:test:{i}"
+
+    adapter = CalendarCompletedAdapter(butler_schemas=("schema_a",))
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        return episode
+
+    with (
+        patch.object(
+            adapter,
+            "_fetch_instances",
+            new=AsyncMock(return_value=rows),
+        ),
+        patch(
+            "butlers.chronicler.adapters.calendar.upsert_episode",
+            side_effect=_fake_upsert,
+        ),
+    ):
+        result = await adapter.project(
+            MagicMock(),
+            chronicler_pool=_chronicler_pool(),
+            since=None,
+        )
+
+    assert result.rows_projected == 3, "All three calendar rows must be projected"
+    assert result.episodes_closed == 0, (
+        "episodes_closed must stay 0 for calendar adapter — past calendar blocks "
+        "are scheduled appointments, not confirmed attendances (bu-gnoi0)"
+    )
+
+
+@pytest.mark.unit
+def test_day_close_prompt_prohibits_attendance_assertions() -> None:
+    """The chronicler day-close prompt must explicitly prohibit attendance assertions.
+
+    The butler.toml prompt drives the LLM session that generates the day-close
+    routing text.  It must contain the explicit 'CALENDAR ATTENDANCE RULE'
+    guard so the LLM does not infer attendance from a scheduled_block episode.
+    """
+    import tomllib
+    from pathlib import Path
+
+    toml_path = Path(__file__).parents[2] / "roster" / "chronicler" / "butler.toml"
+    with toml_path.open("rb") as fh:
+        cfg = tomllib.load(fh)
+
+    day_close = next(
+        (s for s in cfg["butler"]["schedule"] if s["name"] == "chronicler_day_close"),
+        None,
+    )
+    assert day_close is not None, "chronicler_day_close schedule entry not found"
+    prompt: str = day_close.get("prompt", "")
+
+    assert "CALENDAR ATTENDANCE RULE" in prompt, (
+        "Day-close prompt must contain 'CALENDAR ATTENDANCE RULE' guard (bu-gnoi0)"
+    )
+    assert "NOT evidence of attendance" in prompt, (
+        "Day-close prompt must state that a past calendar block is NOT evidence of attendance"
+    )
+    assert "Calendar had X scheduled" in prompt, (
+        "Day-close prompt must specify the correct 'Calendar had X scheduled' phrasing"
     )

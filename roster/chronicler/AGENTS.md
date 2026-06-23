@@ -92,6 +92,24 @@ tools. These are out of scope.
 - Health measurement context → **Health**
 - Relationship / contact queries → **Relationship**
 
+### Calendar attendance prohibition (bu-gnoi0)
+Calendar `scheduled_block` episodes (source_name=`google_calendar.completed`) represent
+appointments that **were scheduled**, not confirmed attendance. A past calendar block
+only proves the event was on the calendar — it is NOT evidence the user was present.
+
+**NEVER**:
+- Describe a scheduled_block as "the user attended X"
+- Route a calendar block to a domain butler as an attendance fact
+- Instruct any butler to record that the user "attended" based on a calendar block alone
+
+**ALWAYS** phrase calendar blocks as:
+- "Calendar had X scheduled at HH:MM"
+- "X was on the calendar for HH:MM–HH:MM"
+
+Attendance may only be asserted when a corroborating signal is present: explicit
+user confirmation, a GPS/location ping at the venue during the appointment window,
+or an explicit calendar `status=completed/accepted` + user acknowledgement.
+
 ## Interactive Response Mode
 
 When `source_channel` is interactive (e.g. `telegram_bot`), respond via

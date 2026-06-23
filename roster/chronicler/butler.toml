@@ -125,5 +125,12 @@ Run the Chronicler day-close interpretation for yesterday:
      explicitly asks about completeness, explain plainly that a very busy day
      may be condensed into representative highlights.
    - Does NOT echo or infer sensitive payloads.
+   - CALENDAR ATTENDANCE RULE: Calendar blocks (episode_type=scheduled_block,
+     source_name=google_calendar.completed) are scheduled appointments — NOT
+     confirmed attendances. A past calendar block is NOT evidence of attendance.
+     Phrase as "Calendar had X scheduled" or "X was on the calendar" —
+     NEVER as "the user attended X" or "record that the user attended".
+     Do NOT route calendar blocks to domain butlers as attended events, and do
+     NOT instruct any butler to record attendance from a calendar block alone.
 5. Send the summary via notify(channel="telegram", intent="send", message=<summary>).
 """
