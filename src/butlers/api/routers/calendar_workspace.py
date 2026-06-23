@@ -3684,6 +3684,14 @@ _ICS_IMPORT_MAX_EVENTS = 1000
 # unchanged, only the per-query span is bounded.
 _ICS_DEDUP_PREFETCH_WINDOW = timedelta(days=90)
 
+# Non-terminal windows are extended by this amount so a zero-duration existing
+# workspace event (ends_at == starts_at == T) that lands exactly on an internal
+# boundary is caught by the preceding window.  The DB overlap filter is
+# ``ends_at > window_start AND starts_at < window_end`` (strict inequalities),
+# so without the extension such an event satisfies neither ``T < T`` (window
+# ending at T) nor ``T > T`` (window starting at T) and would fall through both.
+_ICS_DEDUP_WINDOW_OVERLAP = timedelta(milliseconds=1)
+
 
 def _ics_dedup_windows(
     range_start: datetime,
@@ -3691,7 +3699,7 @@ def _ics_dedup_windows(
     *,
     width: timedelta = _ICS_DEDUP_PREFETCH_WINDOW,
 ) -> list[tuple[datetime, datetime]]:
-    """Tile ``[range_start, range_end)`` into contiguous fixed-width windows.
+    """Tile ``[range_start, range_end)`` into fixed-width windows.
 
     Each window is fetched separately so a very wide ``.ics`` span does not issue
     one giant range query against the workspace. The windows tile the span
@@ -3700,6 +3708,12 @@ def _ics_dedup_windows(
     starts_at < end``), so the union of per-window collapse keys is identical to
     a single full-span fetch (an event straddling a boundary appears in both
     adjacent windows but contributes the same key, which a set collapses).
+
+    Non-terminal window ends are extended by ``_ICS_DEDUP_WINDOW_OVERLAP`` (1 ms)
+    so that a zero-duration existing workspace event (``ends_at == starts_at == T``)
+    that lands exactly on an internal boundary is caught by the preceding window
+    instead of being dropped by both adjacent windows.  Window *starts* always
+    advance by exactly ``width``, so the extension never shifts later boundaries.
     """
     if width <= timedelta(0):
         raise ValueError("dedup window width must be positive")
@@ -3709,7 +3723,11 @@ def _ics_dedup_windows(
     cursor = range_start
     while cursor < range_end:
         nxt = min(cursor + width, range_end)
-        windows.append((cursor, nxt))
+        # Extend every non-terminal window end by 1 ms so a zero-duration event
+        # at exactly an internal boundary is caught by the preceding window.
+        # The terminal window keeps its exact range_end; callers rely on it.
+        win_end = nxt + _ICS_DEDUP_WINDOW_OVERLAP if nxt < range_end else nxt
+        windows.append((cursor, win_end))
         cursor = nxt
     return windows
 

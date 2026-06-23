@@ -507,15 +507,20 @@ async def test_import_wide_span_chunks_dedup_prefetch(app):
     windows = _collect_dedup_windows(mock_db)
     # Wide span is bucketed into >1 bounded window — never one unbounded query.
     assert len(windows) > 1
-    assert all((end - start) <= _DEDUP_WINDOW for start, end in windows)
-    # Windows tile the full span contiguously: no gaps, no overlap.
+    # Non-terminal windows are extended by 1 ms to cover zero-duration boundary events;
+    # the terminal window keeps its exact end so the cap still holds.
+    assert all((end - start) <= _DEDUP_WINDOW + timedelta(milliseconds=1) for start, end in windows)
+    # Window *starts* tile the full span: no gaps between starts.
     windows.sort()
     range_start = min(s for _, s, _ in specs)
     range_end = max(e for _, _, e in specs) + timedelta(seconds=1)
     assert windows[0][0] == range_start
     assert windows[-1][1] == range_end
-    for (_, prev_end), (next_start, _) in zip(windows, windows[1:]):
-        assert prev_end == next_start
+    for i, ((_, prev_end), (next_start, _)) in enumerate(zip(windows, windows[1:])):
+        # prev_end is either exactly next_start (terminal-adjacent) or 1 ms past it.
+        assert prev_end - next_start <= timedelta(milliseconds=1), (
+            f"gap/overlap at window {i}: prev_end={prev_end} next_start={next_start}"
+        )
 
 
 async def test_import_wide_span_reimport_is_noop_with_windowed_fetch(app):
@@ -617,18 +622,61 @@ async def test_import_wide_span_partial_dedup_with_windowed_fetch(app):
 
 
 def test_ics_dedup_windows_tiles_contiguously_and_bounds_width():
-    """Unit-level guard on the windowing helper: contiguous tiling + bounded width."""
-    from butlers.api.routers.calendar_workspace import _ics_dedup_windows
+    """Unit-level guard on the windowing helper: start/end bounds, width cap, start spacing."""
+    from butlers.api.routers.calendar_workspace import (
+        _ICS_DEDUP_WINDOW_OVERLAP,
+        _ics_dedup_windows,
+    )
 
     start = datetime(2026, 1, 1, tzinfo=UTC)
     end = start + timedelta(days=400)
-    windows = _ics_dedup_windows(start, end, width=timedelta(days=90))
+    width = timedelta(days=90)
+    windows = _ics_dedup_windows(start, end, width=width)
 
+    # Outer bounds are preserved.
     assert windows[0][0] == start
     assert windows[-1][1] == end
-    assert all((w_end - w_start) <= timedelta(days=90) for w_start, w_end in windows)
-    for (_, prev_end), (next_start, _) in zip(windows, windows[1:]):
-        assert prev_end == next_start
-    # A narrow span stays a single window.
+
+    # Non-terminal windows are extended by the overlap constant; terminal keeps exact end.
+    for i, (w_start, w_end) in enumerate(windows):
+        is_terminal = i == len(windows) - 1
+        max_width = width if is_terminal else width + _ICS_DEDUP_WINDOW_OVERLAP
+        assert w_end - w_start <= max_width, f"window {i} too wide: {w_end - w_start}"
+
+    # Window *starts* advance by exactly ``width`` — the overlap never shifts later starts.
+    for i, (w_start, _) in enumerate(windows):
+        assert w_start == start + i * width, f"window {i} start drifted"
+
+    # A narrow span stays a single (terminal) window with no overlap extension.
     narrow = _ics_dedup_windows(start, start + timedelta(days=5))
     assert narrow == [(start, start + timedelta(days=5))]
+
+
+def test_ics_dedup_windows_zero_duration_event_on_internal_boundary():
+    """A zero-duration existing event exactly on an internal 90-day boundary is
+    covered by the preceding window rather than dropped by both adjacent windows.
+
+    The DB overlap filter is ``ends_at > window_start AND starts_at < window_end``
+    (strict inequalities).  Without a 1 ms extension a zero-duration event at
+    exactly the boundary T satisfies neither ``T < T`` (window ending at T) nor
+    ``T > T`` (window starting at T), so a matching imported event would be created
+    instead of skipped.
+    """
+    from butlers.api.routers.calendar_workspace import _ics_dedup_windows
+
+    range_start = datetime(2026, 1, 1, tzinfo=UTC)
+    range_end = range_start + timedelta(days=200)  # forces at least two windows
+    width = timedelta(days=90)
+    windows = _ics_dedup_windows(range_start, range_end, width=width)
+
+    # The first internal boundary is range_start + 90 days.
+    boundary = range_start + width
+    # A zero-duration event: starts_at == ends_at == boundary.
+    zero_dur_t = boundary
+
+    # The event must be caught by at least one window via the strict-inequality filter.
+    covered = any(zero_dur_t > w_start and zero_dur_t < w_end for w_start, w_end in windows)
+    assert covered, (
+        f"Zero-duration event at boundary {boundary} not covered by any dedup window. "
+        f"Windows: {windows}"
+    )
