@@ -2020,14 +2020,20 @@ async def refresh_day_close(
 
     # ── Write the fresh cache row ─────────────────────────────────────────────
     # Anchor run_at to the requested date so _compute_day_window targets body.date.
-    # _compute_day_window returns yesterday = run_at.date() - 1, so we pass
-    # midnight of body.date + 1 day to ensure the computed window covers body.date.
-    run_at = datetime.combine(body.date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    # _compute_day_window closes yesterday-in-tz, so we pass local noon of
+    # body.date + 1 day (in body.tz) to ensure the computed local window covers
+    # body.date regardless of the timezone's UTC offset (#2681).
+    run_at = datetime.combine(
+        body.date + timedelta(days=1),
+        datetime.min.time().replace(hour=12),
+        tzinfo=zoneinfo.ZoneInfo(body.tz),
+    ).astimezone(UTC)
     await write_day_close_cache(
         pool,
         task_name=DAY_CLOSE_TASK_NAME,
         result=result,
         run_at=run_at,
+        tz=body.tz,
     )
 
     # Fetch the freshly-written row to return the authoritative cache_built_at.

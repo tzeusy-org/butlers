@@ -999,14 +999,6 @@ class ButlerDaemon:
             logger.warning("Scheduler loop: DB or spawner not ready, loop will not run")
             return
 
-        # Build butler-specific completion hooks.
-        # The chronicler day-close hook persists the prose output to tier2_cache.
-        completion_hooks = None
-        if self.config.name == "chronicler":
-            from butlers.chronicler.day_close_writer import build_day_close_completion_hooks
-
-            completion_hooks = build_day_close_completion_hooks(self.db.pool)
-
         # Resolve the owner's general timezone so hour-pinned crons fire at the
         # intended local time, failing open to UTC.  Resolved once at loop
         # start; a timezone change takes effect after the next daemon restart,
@@ -1017,6 +1009,18 @@ class ButlerDaemon:
             self._credential_store.shared_pool if self._credential_store is not None else None
         )
         default_timezone = await resolve_general_timezone(shared_pool)
+
+        # Build butler-specific completion hooks.
+        # The chronicler day-close hook persists the prose output to tier2_cache.
+        # It must close the day in the owner's timezone — the cron fires at 01:05
+        # local, so a UTC-based window would be off by a local day (#2681).
+        completion_hooks = None
+        if self.config.name == "chronicler":
+            from butlers.chronicler.day_close_writer import build_day_close_completion_hooks
+
+            completion_hooks = build_day_close_completion_hooks(
+                self.db.pool, timezone=default_timezone
+            )
 
         daemon = self
         await _background.scheduler_loop(

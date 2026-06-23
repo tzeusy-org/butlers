@@ -10,15 +10,24 @@ an error, the hook is a no-op so that stale cache is not replaced with silence.
 
 Window computation
 ------------------
-``chronicler_day_close`` runs at ``05:01 UTC`` for the *previous* day.  The
-hook computes the day window from the run timestamp:
+``chronicler_day_close`` runs at ``01:05`` **in the owner's general timezone**
+for the *previous local* day.  The scheduler evaluates the cron's hour field in
+the owner timezone (``_effective_schedule_timezone``), so for an Asia/Singapore
+owner the job fires at 01:05 SGT — which is 17:05 UTC on the *previous* UTC
+calendar day.
 
-    yesterday = run_at.date() - timedelta(days=1)
-    start_at  = midnight UTC of yesterday
-    end_at    = midnight UTC of today (exclusive upper bound)
+The closed day therefore MUST be computed in the owner's timezone, not UTC.
+Computing "yesterday" off the UTC date double-counts the offset and yields the
+day *two* local days before delivery (the bug behind issue #2681: a day-close
+for D surfacing on D+2 SGT instead of D+1).  The hook computes:
 
-``cache_key`` is ``day_close:{YYYY-MM-DD}`` where ``{YYYY-MM-DD}`` is
-yesterday's ISO date.
+    today_local = run_at.astimezone(owner_tz).date()
+    yesterday   = today_local - timedelta(days=1)
+    start_at    = midnight(yesterday) in owner_tz, converted to UTC
+    end_at      = midnight(today_local) in owner_tz, converted to UTC (exclusive)
+
+``cache_key`` is ``day_close:{YYYY-MM-DD}`` where ``{YYYY-MM-DD}`` is the closed
+*local* day's ISO date.
 
 Provenance extraction
 ---------------------
@@ -37,6 +46,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
@@ -46,6 +56,24 @@ logger = logging.getLogger(__name__)
 
 # Name of the scheduled task this writer handles.
 DAY_CLOSE_TASK_NAME = "chronicler_day_close"
+
+
+def _coerce_zone(tz: str | ZoneInfo | None) -> ZoneInfo:
+    """Resolve a timezone to a ``ZoneInfo``, failing open to UTC.
+
+    Mirrors the scheduler's fail-open behaviour: an unknown/typo'd IANA name is
+    logged and treated as UTC so a bad timezone never wedges the day-close hook.
+    """
+    if isinstance(tz, ZoneInfo):
+        return tz
+    candidate = (tz or "").strip()
+    if not candidate or candidate.upper() == "UTC":
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(candidate)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning("day_close_writer: unknown timezone %r; closing day in UTC", tz)
+        return ZoneInfo("UTC")
 
 
 def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
@@ -99,18 +127,31 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
     return refs
 
 
-def _compute_day_window(run_at: datetime) -> tuple[date, datetime, datetime]:
+def _compute_day_window(
+    run_at: datetime, tz: str | ZoneInfo = "UTC"
+) -> tuple[date, datetime, datetime]:
     """Return (day_date, start_at, end_at) for the day closed by run_at.
 
-    ``chronicler_day_close`` targets *yesterday* relative to its run time.
-    The window is [yesterday 00:00 UTC, today 00:00 UTC).
+    ``chronicler_day_close`` targets *yesterday* relative to its run time, where
+    "day" means a calendar day in the owner's timezone *tz* — NOT a UTC day.
+    The cron fires at 01:05 local, so the closed day is the local calendar day
+    immediately before the fire's local date; a day-close for D is delivered on
+    D+1 local (issue #2681).
+
+    The returned window is ``[midnight(yesterday), midnight(today))`` expressed
+    in *tz* and converted to UTC for storage / querying.
     """
-    utc_run = run_at.astimezone(UTC) if run_at.tzinfo else run_at.replace(tzinfo=UTC)
-    today_utc = utc_run.date()
-    yesterday_utc = today_utc - timedelta(days=1)
-    start_at = datetime(yesterday_utc.year, yesterday_utc.month, yesterday_utc.day, tzinfo=UTC)
-    end_at = datetime(today_utc.year, today_utc.month, today_utc.day, tzinfo=UTC)
-    return yesterday_utc, start_at, end_at
+    zone = _coerce_zone(tz)
+    aware_run = run_at if run_at.tzinfo else run_at.replace(tzinfo=UTC)
+    today_local = aware_run.astimezone(zone).date()
+    yesterday_local = today_local - timedelta(days=1)
+    start_at = datetime(
+        yesterday_local.year, yesterday_local.month, yesterday_local.day, tzinfo=zone
+    ).astimezone(UTC)
+    end_at = datetime(today_local.year, today_local.month, today_local.day, tzinfo=zone).astimezone(
+        UTC
+    )
+    return yesterday_local, start_at, end_at
 
 
 async def write_day_close_cache(
@@ -119,6 +160,7 @@ async def write_day_close_cache(
     task_name: str,
     result: Any,
     run_at: datetime,
+    tz: str | ZoneInfo = "UTC",
 ) -> None:
     """Post-execution hook: persist day-close prose to tier2_cache.
 
@@ -132,6 +174,9 @@ async def write_day_close_cache(
         task_name: Scheduled task name (must be ``DAY_CLOSE_TASK_NAME``).
         result: SpawnerResult (or None) returned by the dispatch.
         run_at: Wall-clock time the tick fired (used to compute the day window).
+        tz: Owner timezone the closed day is computed in (default ``UTC``).  The
+            daemon binds the owner's general timezone so the closed day matches
+            the local SGT calendar day (issue #2681).
     """
     if task_name != DAY_CLOSE_TASK_NAME:
         return
@@ -161,7 +206,7 @@ async def write_day_close_cache(
         logger.debug("day_close_writer: output is empty, skipping cache write")
         return
 
-    day_date, start_at, end_at = _compute_day_window(run_at)
+    day_date, start_at, end_at = _compute_day_window(run_at, tz)
     cache_key = f"day_close:{day_date.isoformat()}"
     provenance_refs = _extract_provenance_refs(tool_calls)
 
@@ -188,19 +233,25 @@ async def write_day_close_cache(
 
 def build_day_close_completion_hooks(
     pool: asyncpg.Pool,
+    *,
+    timezone: str | ZoneInfo = "UTC",
 ) -> dict[str, Callable[..., Any]]:
     """Return the completion_hooks dict for the chronicler scheduler loop.
 
     The returned dict maps ``chronicler_day_close`` to a partial of
-    :func:`write_day_close_cache` with the pool pre-bound.
+    :func:`write_day_close_cache` with the pool and owner *timezone* pre-bound.
+    The daemon passes the owner's resolved general timezone so the closed day is
+    the local calendar day, matching the timezone the cron fires in (#2681).
 
     Usage::
 
-        hooks = build_day_close_completion_hooks(db.pool)
+        hooks = build_day_close_completion_hooks(db.pool, timezone=owner_tz)
         await scheduler_loop(..., completion_hooks=hooks)
     """
 
     async def _hook(*, task_name: str, result: Any, run_at: datetime) -> None:
-        await write_day_close_cache(pool, task_name=task_name, result=result, run_at=run_at)
+        await write_day_close_cache(
+            pool, task_name=task_name, result=result, run_at=run_at, tz=timezone
+        )
 
     return {DAY_CLOSE_TASK_NAME: _hook}
