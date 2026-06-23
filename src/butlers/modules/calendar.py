@@ -5860,10 +5860,16 @@ class CalendarModule(Module):
             if "calendar_event_id" not in cols:
                 logger.debug("reminders table lacks calendar_event_id column; skipping push")
             else:
+                # Include description and location if the reminders table has them.
+                extra_select = ""
+                if "description" in cols:
+                    extra_select += ", description"
+                if "location" in cols:
+                    extra_select += ", location"
                 rows = await pool.fetch(
-                    """
+                    f"""
                     SELECT id, label, message, next_trigger_at, timezone, cron,
-                           calendar_event_id, dismissed, updated_at
+                           calendar_event_id, dismissed, updated_at{extra_select}
                     FROM reminders
                     """
                 )
@@ -5875,6 +5881,8 @@ class CalendarModule(Module):
                     title = str(record.get("label") or record.get("message") or "Reminder")
                     timezone = str(record.get("timezone") or "UTC")
                     remind_at = self._coerce_datetime(record.get("next_trigger_at"))
+                    reminder_description = _normalize_optional_text(record.get("description"))
+                    reminder_location = _normalize_optional_text(record.get("location"))
 
                     if remind_at is None:
                         continue
@@ -5911,6 +5919,8 @@ class CalendarModule(Module):
                                     start_at=remind_at,
                                     end_at=remind_end,
                                     timezone=timezone,
+                                    description=reminder_description,
+                                    location=reminder_location,
                                     private_metadata={
                                         "butler_generated": "true",
                                         "butler_name": self._butler_name,
@@ -5940,6 +5950,8 @@ class CalendarModule(Module):
                                     start_at=remind_at,
                                     end_at=remind_end,
                                     timezone=timezone,
+                                    description=reminder_description,
+                                    location=reminder_location,
                                 ),
                             )
                             updated += 1

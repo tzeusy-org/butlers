@@ -3918,3 +3918,236 @@ class TestSourceSyncEnabled:
         mod._sync_states["c1"] = CalendarSyncState()
         # full=False (background loop): a disabled source is skipped → returns False.
         assert await mod._sync_calendar("c1", full=False) is False
+
+
+# ---------------------------------------------------------------------------
+# Reminder push: description + location survive into CalendarEventCreate/Update
+# [bu-nacgn]
+# ---------------------------------------------------------------------------
+
+
+class TestReminderPushDescriptionLocation:
+    """_push_internal_events_to_provider threads description+location from reminders rows.
+
+    The reminder path is currently unreachable in production (reminders table
+    was dropped by relationship migrations 007+020), but the projection code
+    should be correct if the path is ever revived.
+    """
+
+    def _make_module(self, provider: _ProviderDouble, pool: MagicMock) -> CalendarModule:
+        mod = CalendarModule()
+        db = MagicMock()
+        db.pool = pool
+        mod._db = db
+        mod._provider = provider
+        mod._resolved_calendar_id = "cal-butlers"
+        mod._butler_name = "health"
+        return mod
+
+    async def test_create_event_carries_description_and_location(self) -> None:
+        """When a reminder lacks a calendar_event_id, create_event receives description+location."""
+        reminder_id = uuid.uuid4()
+        remind_at = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+
+        pool = MagicMock()
+        pool.execute = AsyncMock()
+
+        # Reminder row without a google event_id → will trigger create_event
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": reminder_id,
+                    "label": "Doctor visit",
+                    "message": None,
+                    "next_trigger_at": remind_at,
+                    "timezone": "UTC",
+                    "cron": None,
+                    "calendar_event_id": None,
+                    "dismissed": False,
+                    "updated_at": remind_at,
+                    "description": "Annual checkup with Dr. Smith",
+                    "location": "123 Medical Center Dr",
+                }
+            ]
+        )
+
+        created_event = _make_event(event_id="new-google-id", title="Doctor visit")
+        provider = _ProviderDouble(event=created_event)
+
+        mod = self._make_module(provider, pool)
+
+        # Patch _table_exists and _table_columns to simulate a reminders table with all columns
+        with (
+            patch.object(
+                mod,
+                "_table_exists",
+                AsyncMock(
+                    side_effect=lambda t: {
+                        "reminders": True,
+                        "scheduled_tasks": False,
+                    }.get(t, False)
+                ),
+            ),
+            patch.object(
+                mod,
+                "_table_columns",
+                AsyncMock(
+                    return_value={
+                        "id",
+                        "label",
+                        "message",
+                        "next_trigger_at",
+                        "timezone",
+                        "cron",
+                        "calendar_event_id",
+                        "dismissed",
+                        "updated_at",
+                        "description",
+                        "location",
+                    }
+                ),
+            ),
+        ):
+            await mod._push_internal_events_to_provider()
+
+        assert len(provider.create_calls) == 1
+        payload: CalendarEventCreate = provider.create_calls[0]["payload"]
+        assert payload.description == "Annual checkup with Dr. Smith"
+        assert payload.location == "123 Medical Center Dr"
+
+    async def test_update_event_carries_description_and_location(self) -> None:
+        """When a reminder has a calendar_event_id, update_event receives description+location."""
+        reminder_id = uuid.uuid4()
+        remind_at = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+
+        pool = MagicMock()
+        pool.execute = AsyncMock()
+
+        # Reminder row with an existing google event_id → will trigger update_event
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": reminder_id,
+                    "label": "Yoga class",
+                    "message": None,
+                    "next_trigger_at": remind_at,
+                    "timezone": "Europe/London",
+                    "cron": None,
+                    "calendar_event_id": "existing-google-id",
+                    "dismissed": False,
+                    "updated_at": remind_at,
+                    "description": "Bring a mat and water bottle",
+                    "location": "Studio B, Wellness Centre",
+                }
+            ]
+        )
+
+        existing_event = _make_event(event_id="existing-google-id", title="Yoga class")
+        provider = _ProviderDouble(event=existing_event)
+
+        mod = self._make_module(provider, pool)
+
+        with (
+            patch.object(
+                mod,
+                "_table_exists",
+                AsyncMock(
+                    side_effect=lambda t: {
+                        "reminders": True,
+                        "scheduled_tasks": False,
+                    }.get(t, False)
+                ),
+            ),
+            patch.object(
+                mod,
+                "_table_columns",
+                AsyncMock(
+                    return_value={
+                        "id",
+                        "label",
+                        "message",
+                        "next_trigger_at",
+                        "timezone",
+                        "cron",
+                        "calendar_event_id",
+                        "dismissed",
+                        "updated_at",
+                        "description",
+                        "location",
+                    }
+                ),
+            ),
+        ):
+            await mod._push_internal_events_to_provider()
+
+        assert len(provider.update_calls) == 1
+        patch_payload: CalendarEventUpdate = provider.update_calls[0]["patch"]
+        assert patch_payload.description == "Bring a mat and water bottle"
+        assert patch_payload.location == "Studio B, Wellness Centre"
+
+    async def test_push_without_description_location_columns_omits_them(self) -> None:
+        """When the reminders table lacks description/location columns, create_event gets None."""
+        reminder_id = uuid.uuid4()
+        remind_at = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+
+        pool = MagicMock()
+        pool.execute = AsyncMock()
+
+        # Row without description or location keys (old schema)
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": reminder_id,
+                    "label": "Old schema reminder",
+                    "message": None,
+                    "next_trigger_at": remind_at,
+                    "timezone": "UTC",
+                    "cron": None,
+                    "calendar_event_id": None,
+                    "dismissed": False,
+                    "updated_at": remind_at,
+                }
+            ]
+        )
+
+        created_event = _make_event(event_id="new-id", title="Old schema reminder")
+        provider = _ProviderDouble(event=created_event)
+
+        mod = self._make_module(provider, pool)
+
+        # Columns without description/location
+        with (
+            patch.object(
+                mod,
+                "_table_exists",
+                AsyncMock(
+                    side_effect=lambda t: {
+                        "reminders": True,
+                        "scheduled_tasks": False,
+                    }.get(t, False)
+                ),
+            ),
+            patch.object(
+                mod,
+                "_table_columns",
+                AsyncMock(
+                    return_value={
+                        "id",
+                        "label",
+                        "message",
+                        "next_trigger_at",
+                        "timezone",
+                        "cron",
+                        "calendar_event_id",
+                        "dismissed",
+                        "updated_at",
+                    }
+                ),
+            ),
+        ):
+            await mod._push_internal_events_to_provider()
+
+        assert len(provider.create_calls) == 1
+        payload: CalendarEventCreate = provider.create_calls[0]["payload"]
+        assert payload.description is None
+        assert payload.location is None

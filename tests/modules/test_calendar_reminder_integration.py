@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS reminders (
     until_at TIMESTAMPTZ,
     recurrence_rule TEXT,
     cron TEXT,
+    description TEXT,
+    location TEXT,
     dismissed BOOLEAN NOT NULL DEFAULT false,
     calendar_event_id TEXT,
     contact_id UUID,
@@ -215,6 +217,8 @@ async def _create_reminder(
     recurrence_rule: str | None = None,
     cron: str | None = None,
     action_args: dict | None = None,
+    description: str | None = None,
+    location: str | None = None,
 ) -> dict:
     if start_at is None:
         start_at = datetime.now(UTC) + timedelta(days=1)
@@ -228,6 +232,8 @@ async def _create_reminder(
         action="test action",
         action_args=action_args,
         calendar_event_id=str(uuid.uuid4()),
+        description=description,
+        location=location,
     )
 
 
@@ -475,3 +481,52 @@ async def test_create_reminder_no_db_raises(reminder_pool):
             action_args=None,
             calendar_event_id=str(uuid.uuid4()),
         )
+
+
+# ===========================================================================
+# 5. description and location survive _create_reminder_event
+# ===========================================================================
+
+
+async def test_create_reminder_stores_description_and_location(reminder_pool):
+    """_create_reminder_event persists description and location when the schema has those columns.
+
+    Covers bu-nacgn: reminder-branch butler events must carry description and
+    location through creation so the Google push projection can include them.
+    """
+    pool = reminder_pool
+    mod = _make_module(pool)
+
+    start_at = datetime(2026, 8, 1, 10, 0, tzinfo=UTC)
+    reminder = await _create_reminder(
+        mod,
+        title="Doctor visit",
+        start_at=start_at,
+        description="Annual checkup with Dr. Smith",
+        location="123 Medical Center Dr",
+    )
+
+    assert reminder.get("description") == "Annual checkup with Dr. Smith"
+    assert reminder.get("location") == "123 Medical Center Dr"
+
+    row = await pool.fetchrow(
+        "SELECT description, location FROM reminders WHERE id = $1", reminder["id"]
+    )
+    assert row is not None
+    assert row["description"] == "Annual checkup with Dr. Smith"
+    assert row["location"] == "123 Medical Center Dr"
+
+
+async def test_create_reminder_without_description_location_is_null(reminder_pool):
+    """_create_reminder_event stores NULL for description and location when omitted."""
+    pool = reminder_pool
+    mod = _make_module(pool)
+
+    reminder = await _create_reminder(mod, title="Plain reminder")
+
+    row = await pool.fetchrow(
+        "SELECT description, location FROM reminders WHERE id = $1", reminder["id"]
+    )
+    assert row is not None
+    assert row["description"] is None
+    assert row["location"] is None
