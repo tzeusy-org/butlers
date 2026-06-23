@@ -29,6 +29,51 @@ _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "telegram_chat_id entity_info entry on the owner entity via the dashboard"
 )
 
+_REQUEST_CONTEXT_KEYS_HINT = (
+    "Pass request_context as a JSON object (not a string) with keys "
+    "request_id, source_channel, source_endpoint_identity, "
+    "source_sender_identity (plus source_thread_identity for telegram "
+    "reply/react)."
+)
+
+
+def _coerce_request_context(value: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Normalize a request_context argument into a dict.
+
+    Models (especially non-Claude runtimes) sometimes pass request_context as a
+    JSON-encoded *string* rather than an object. The dict-only schema would
+    otherwise reject the call at the MCP boundary with an opaque type error the
+    model cannot recover from, silently dropping the reply. Accept the string
+    here and parse it instead.
+
+    Returns ``(context_dict_or_none, error_message_or_none)``. When the error
+    element is non-None the caller should return it as an actionable
+    ``{"status": "error", ...}`` so the model can correct the shape.
+    """
+    if value is None or isinstance(value, dict):
+        return value, None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None, None
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return None, (
+                "request_context must be an object/dict, but a string that is "
+                f"not valid JSON was received. {_REQUEST_CONTEXT_KEYS_HINT}"
+            )
+        if isinstance(parsed, dict):
+            return parsed, None
+        return None, (
+            "request_context must be an object/dict, but a JSON "
+            f"{type(parsed).__name__} was received. {_REQUEST_CONTEXT_KEYS_HINT}"
+        )
+    return None, (
+        f"request_context must be an object/dict, got {type(value).__name__}. "
+        f"{_REQUEST_CONTEXT_KEYS_HINT}"
+    )
+
 
 def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
     """Register notifications group tools: remind and notify."""
@@ -72,11 +117,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             ),
         ] = None,
         request_context: Annotated[
-            NotifyRequestContextInput | None,
+            NotifyRequestContextInput | str | None,
             Field(
                 description=(
                     "Optional request context passed through to notify(). "
-                    "Must be a dict/object — do NOT pass as a JSON string."
+                    "Pass a dict/object (a JSON-string is tolerated and parsed)."
                 )
             ),
         ] = None,
@@ -93,6 +138,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
         event-based reminders — it sets the reminder relative to *now*, not
         relative to the event.
         """
+        # --- normalize request_context (tolerate a stringified JSON object) ---
+        request_context, _rc_err = _coerce_request_context(request_context)
+        if _rc_err is not None:
+            return {"status": "error", "error": _rc_err}
+
         # --- validate inputs ---
         if delay_minutes is not None and remind_at is not None:
             return {
@@ -208,11 +258,12 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 Field(description="Required when intent=react."),
             ] = None,
             request_context: Annotated[
-                NotifyRequestContextInput | None,
+                NotifyRequestContextInput | str | None,
                 Field(
                     description=(
-                        "Context lineage for reply/react targeting. Must be a "
-                        "dict/object — do NOT pass as a JSON string. Required keys "
+                        "Context lineage for reply/react targeting. Pass a "
+                        "dict/object (a JSON-string is tolerated and parsed, but "
+                        "an object is preferred). Required keys "
                         "for reply/react: request_id, source_channel, "
                         "source_endpoint_identity, source_sender_identity. For "
                         "telegram reply/react include source_thread_identity. "
@@ -305,6 +356,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               }
             }
             """
+            # --- Normalize request_context (tolerate a stringified JSON object) ---
+            # A model may pass request_context as a JSON string; coerce it to a
+            # dict here so reply/react targeting still works instead of failing
+            # at the schema boundary with an unrecoverable type error.
+            request_context, _rc_err = _coerce_request_context(request_context)
+            if _rc_err is not None:
+                return {"status": "error", "error": _rc_err}
+
             # --- Permissions-matrix enforcement (public.permissions: notify) ---
             # The Settings → Permissions matrix governs whether this butler may
             # send owner-facing notifications. A cell flipped to granted=false

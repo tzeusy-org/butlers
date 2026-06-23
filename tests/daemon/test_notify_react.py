@@ -323,6 +323,159 @@ class TestNotifyReactIntent:
         assert result["status"] == "ok"
         daemon.switchboard_client.call_tool.assert_called_once()
 
+    async def test_notify_coerces_stringified_request_context(self, butler_dir: Path) -> None:
+        """A JSON-string request_context is parsed to a dict and forwarded.
+
+        Non-Claude runtimes sometimes pass request_context as a JSON string.
+        Pre-fix this was rejected at the schema boundary (the model could not
+        recover and the reply was silently dropped). It must now be coerced and
+        delivered.
+        """
+        import json as _json
+
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = self._mock_ok_client()
+
+        ctx = {
+            "request_id": "019ef580-de73-7ae4-8c14-c3ccc8a9bf21",
+            "source_channel": "telegram_bot",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "206570151",
+            "source_thread_identity": "206570151:1311",
+        }
+        result = await notify_fn(
+            channel="telegram",
+            message="The Dr Ng followup was on June 4, not today.",
+            intent="reply",
+            request_context=_json.dumps(ctx),
+        )
+
+        assert result["status"] == "ok"
+        forwarded = daemon.switchboard_client.call_tool.call_args[0][1]["notify_request"][
+            "request_context"
+        ]
+        assert forwarded == ctx
+
+    async def test_notify_rejects_unparseable_request_context_string(
+        self, butler_dir: Path
+    ) -> None:
+        """A non-JSON request_context string returns an actionable error, not a drop."""
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = self._mock_ok_client()
+
+        result = await notify_fn(
+            channel="telegram",
+            message="hi",
+            intent="reply",
+            request_context="not-json {",
+        )
+
+        assert result["status"] == "error"
+        assert "object/dict" in result["error"]
+        daemon.switchboard_client.call_tool.assert_not_called()
+
+    async def test_notify_rejects_json_array_request_context(self, butler_dir: Path) -> None:
+        """A request_context string that parses to a non-dict (JSON array) errors.
+
+        Guards the `isinstance(parsed, dict)` branch: json.loads succeeds here,
+        so without the dict check a list would be forwarded and break downstream
+        `.get()` access.
+        """
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = self._mock_ok_client()
+
+        result = await notify_fn(
+            channel="telegram",
+            message="hi",
+            intent="reply",
+            request_context="[1, 2]",
+        )
+
+        assert result["status"] == "error"
+        assert "object/dict" in result["error"]
+        daemon.switchboard_client.call_tool.assert_not_called()
+
+    async def _start_daemon_with_remind(
+        self, butler_dir: Path, patches: dict[str, Any]
+    ) -> tuple[ButlerDaemon, Any]:
+        """Start daemon and extract the remind tool function."""
+        remind_fn = None
+        mock_mcp = MagicMock()
+
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
+            def decorator(fn):
+                nonlocal remind_fn
+                if fn.__name__ == "remind":
+                    remind_fn = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["configure_logging"],
+            patches["sync_schedules"],
+            patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+            patches["create_audit_pool"],
+            patches["recover_route_inbox"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+            return daemon, remind_fn
+
+    async def test_remind_coerces_stringified_request_context(self, butler_dir: Path) -> None:
+        """remind() coerces a JSON-string request_context before embedding it.
+
+        The reminder schedules a prompt that calls notify() with notify_args
+        serialized via json.dumps. If the string were not coerced first, the
+        embedded request_context would be a double-encoded JSON blob.
+        """
+        import json as _json
+
+        patches = _patch_infra()
+        daemon, remind_fn = await self._start_daemon_with_remind(butler_dir, patches)
+        assert remind_fn is not None
+
+        ctx = {
+            "request_id": "019ef580-de73-7ae4-8c14-c3ccc8a9bf21",
+            "source_channel": "telegram_bot",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "206570151",
+        }
+        with patch(
+            "butlers.core_tools._notifications._schedule_create",
+            new_callable=AsyncMock,
+            return_value="task-123",
+        ) as mock_schedule:
+            result = await remind_fn(
+                message="Take your meds",
+                channel="telegram",
+                delay_minutes=30,
+                request_context=_json.dumps(ctx),
+            )
+
+        assert result.get("status") != "error"
+        prompt = mock_schedule.call_args[0][3]
+        embedded = _json.loads(prompt.split("arguments: ", 1)[1])
+        assert embedded["request_context"] == ctx
+
 
 class TestNotifyReactContract:
     """Test suite for notify.v1 contract validation of react intent."""
