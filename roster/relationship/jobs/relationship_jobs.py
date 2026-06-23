@@ -2308,6 +2308,17 @@ _RETRACTION_LOW_CONF_THRESHOLD: float = 0.6
 # interactions, notes, and every unregistered predicate) is never treated as a
 # contradiction. Add a predicate here ONLY when it holds at most one true value
 # per entity at a time.
+#
+# IMPORTANT — scope of this fail-safe:
+# This allowlist guards CONTRADICTION DETECTION only (the "two active rows with
+# differing content" check).  The LOW-CONFIDENCE scan in
+# ``run_fact_retraction_curation()`` is entirely predicate-agnostic: it flags any
+# active fact whose ``confidence`` is below ``_RETRACTION_LOW_CONF_THRESHOLD``
+# (0.6) regardless of predicate.  A connector that writes many low-confidence
+# multi-valued rows (e.g. log rows extracted with low certainty) could refill the
+# pending_actions queue even though those predicates are not listed here.  The
+# two scans are independent; this allowlist does not protect against the
+# low-confidence path.
 _CONTRADICTION_FUNCTIONAL_PREDICATES: frozenset[str] = frozenset(
     {
         "workplace",
