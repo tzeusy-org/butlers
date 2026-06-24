@@ -866,6 +866,8 @@ class ButlerDaemon:
         - No matching ``entity_facts`` row exists.
         - The ``relationship.entity_facts`` table does not exist (graceful
           schema-not-ready guard).
+        - The executing role cannot read ``relationship.entity_facts`` due to
+          schema isolation.
         """
         from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE
 
@@ -946,10 +948,14 @@ class ButlerDaemon:
                 _is_missing_table_error,
             )
 
-            if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
+            if (
+                _is_missing_table_error(exc)
+                or _is_missing_column_or_schema_error(exc)
+                or isinstance(exc, asyncpg.InsufficientPrivilegeError)
+            ):
                 logger.debug(
                     "_resolve_entity_channel_identifier skipped for entity_id=%s channel=%r; "
-                    "table/column not available: %s",
+                    "relationship entity facts unavailable: %s",
                     entity_id,
                     channel,
                     exc,

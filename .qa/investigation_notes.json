@@ -1,115 +1,82 @@
 {
   "schema_version": 1,
-  "headline": "OpenCode billing rejection surfaced as unknown runtime error",
-  "hypothesis": "OpenCode nested APIError payloads placed the actionable provider message under error.data.message, which the adapter did not parse; once surfaced, insufficient-balance wording was not classified as a quota-like pre-work failure.",
+  "headline": "Health notify entity lookup failed on relationship schema privilege boundary",
+  "hypothesis": "The notify entity-channel resolver treated schema-isolation privilege denial as an unexpected exception instead of an unavailable relationship lookup.",
   "blurb_segments": [
     {
       "claim": "c1",
-      "text": "The failing OpenCode path was a nonzero structured provider API error before any tool work."
+      "text": "The failing MCP tool was health/core notify and the database rejected access to the relationship schema."
     },
     " ",
     {
       "claim": "c2",
-      "text": "The adapter previously missed error.data.message and fell back to raw JSON diagnostics."
+      "text": "The resolver already degraded missing relationship tables to unresolved identifiers, but did not include insufficient privilege errors."
     },
-    " ",
-    {
-      "claim": "c3",
-      "text": "The classifier did not recognize insufficient-balance wording as failover-eligible quota exhaustion."
-    }
+    " Handling that privilege boundary returns the workflow to notify's existing pending-missing-identifier path."
   ],
   "claims": {
     "c1": {
       "evidence_ids": [
         "e1"
       ],
-      "note": "The QA finding came from the OpenCode runtime logger and contained a structured provider APIError with an insufficient-balance message."
+      "note": "The patrol fingerprint identifies the failing butler, tool, and database privilege error."
     },
     "c2": {
       "evidence_ids": [
         "e2"
       ],
-      "note": "The previous payload renderer inspected message/detail/error/code but not nested data payloads."
-    },
-    "c3": {
-      "evidence_ids": [
-        "e3"
-      ],
-      "note": "The prior failover marker list included quota and usage-limit wording but not billing balance or credit exhaustion."
+      "note": "The touched resolver reads relationship entity facts and previously only caught missing table/schema/column compatibility errors."
     }
   },
   "evidence_lines": [
     {
       "id": "e1",
-      "ts": "2026-06-21T10:42:00.481593Z",
+      "ts": "2026-06-24T06:44:08Z",
       "lvl": "ERROR",
-      "butler": "switchboard",
-      "msg": "OpenCode CLI exited with code 1: structured APIError stdout contained an insufficient-balance provider message."
+      "butler": "health",
+      "msg": "MCP tool call failed (butler=health module=core tool=notify): InsufficientPrivilegeError: permission denied for schema relationship"
     },
     {
       "id": "e2",
-      "ts": "2026-06-21T10:42:00.481593Z",
+      "ts": "2026-06-24T00:00:00Z",
       "lvl": "INFO",
-      "butler": "switchboard",
-      "msg": "Adapter structured error selection did not recurse into the APIError data object."
-    },
-    {
-      "id": "e3",
-      "ts": "2026-06-21T10:42:00.481593Z",
-      "lvl": "INFO",
-      "butler": "switchboard",
-      "msg": "Failover classifier markers covered quota exceeded and usage limit but not insufficient balance."
+      "butler": "qa",
+      "msg": "Code inspection: notify entity_id path calls ButlerDaemon._resolve_entity_channel_identifier, which queries relationship.entity_facts and re-raised errors outside missing table/schema/column guards."
     }
   ],
   "counter_evidence": [
     {
-      "hypothesis": "This is only an external provider billing issue and needs no code change.",
+      "hypothesis": "The relationship schema ACL should be widened for health.",
       "verdict": "rejected",
-      "reason": "The provider account state is external, but the runtime should still surface the actionable nested message and classify the pre-work rejection for same-tier failover."
+      "reason": "Project doctrine treats schema isolation as intentional; the fix should not grant domain butlers direct cross-schema reads."
     },
     {
-      "hypothesis": "The adapter executed tools before the failure, so failover would be unsafe.",
+      "hypothesis": "The error came from Switchboard delivery.",
       "verdict": "rejected",
-      "reason": "The failing path is a nonzero CLI provider rejection and the adapter records it as pre-tool-call."
+      "reason": "The exception is a direct database schema privilege error before delivery result handling."
     }
   ],
-  "why_this_fix": "Parsing error.data.message preserves the actionable provider detail. Adding balance and credit markers lets the failover classifier handle the resulting RuntimeError as quota-like pre-work rejection.",
+  "why_this_fix": "Catching `asyncpg.InsufficientPrivilegeError` at the entity-facts resolver keeps notify from crashing when schema isolation blocks the lookup, while preserving the existing unresolved-identifier behavior.",
   "diff_snapshot": [
     {
       "kind": "meta",
-      "text": "src/butlers/core/runtimes/opencode.py"
+      "text": "src/butlers/daemon.py"
     },
     {
       "kind": "-",
-      "text": "for key in (\"message\", \"detail\", \"details\", \"stderr\", \"error\", \"code\"):"
+      "text": "if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):"
     },
     {
       "kind": "+",
-      "text": "for key in (\"message\", \"detail\", \"details\", \"stderr\", \"error\", \"data\", \"code\"):"
+      "text": "or isinstance(exc, asyncpg.InsufficientPrivilegeError)"
     },
     {
       "kind": "meta",
-      "text": "src/butlers/core/failover_classifier.py"
+      "text": "tests/daemon/test_notify_msg_context.py"
     },
     {
       "kind": "+",
-      "text": "\"insufficient balance\", \"insufficient credits\", \"credit balance\""
-    },
-    {
-      "kind": "meta",
-      "text": "tests/adapters/test_opencode_adapter.py"
-    },
-    {
-      "kind": "+",
-      "text": "Regression coverage for nested APIError data.message extraction."
-    },
-    {
-      "kind": "meta",
-      "text": "tests/adapters/test_adapter_failover_signals.py"
-    },
-    {
-      "kind": "+",
-      "text": "Regression coverage for classifying OpenCode insufficient-balance failures."
+      "text": "test_returns_none_on_relationship_schema_privilege_error"
     }
   ]
 }
