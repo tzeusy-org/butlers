@@ -76,9 +76,7 @@ async def test_relationship_episodic_predicate_curation_handler_dispatches_roste
     )
 
     pool = object()
-    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["relationship"][
-        "episodic_predicate_curation"
-    ]
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["relationship"]["episodic_predicate_curation"]
 
     result = await handler(pool, {"ignored": True})
 
