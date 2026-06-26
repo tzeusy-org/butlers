@@ -190,6 +190,25 @@ class TestResolveEntityChannelIdentifierEntityFacts:
         )
         assert result is None
 
+    async def test_returns_none_on_relationship_schema_privilege_error(self) -> None:
+        """Schema-isolated butlers do not fail notify() when relationship reads are blocked."""
+        import asyncpg
+
+        from butlers.daemon import ButlerDaemon
+
+        mock_pool, _ = _make_mock_pool_with_entity_facts(
+            fetchrow_error=asyncpg.InsufficientPrivilegeError(
+                "permission denied for schema relationship"
+            )
+        )
+        daemon = _make_daemon_with_pool(mock_pool)
+
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=uuid.uuid4(), channel="email", msg_context="personal"
+        )
+
+        assert result is None
+
     async def test_returns_none_when_no_fact_exists(self) -> None:
         """Returns None when no active entity_facts row exists for the entity/channel."""
         from butlers.daemon import ButlerDaemon
