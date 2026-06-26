@@ -48,11 +48,8 @@ _RESERVED_INTERACTION_TYPES: frozenset[str] = frozenset({"note"})
 _embedding_engine: Any = None
 
 
-def _normalize_direction(direction: str | None) -> str | None:
+def _normalize_direction(direction: str) -> str:
     """Normalize common channel-direction aliases to interaction directions."""
-    if direction is None:
-        return None
-
     normalized = _DIRECTION_ALIASES.get(direction, direction)
     if normalized not in _VALID_DIRECTIONS:
         accepted = (*_VALID_DIRECTIONS, *_DIRECTION_ALIASES)
@@ -156,7 +153,8 @@ async def interaction_log(
         duration_minutes: Duration of the interaction in minutes.
         metadata: Arbitrary extra metadata dict.
     """
-    direction = _normalize_direction(direction)
+    if direction is not None:
+        direction = _normalize_direction(direction)
     if type in _RESERVED_INTERACTION_TYPES:
         raise ValueError(
             f"interaction_log type '{type}' is reserved: 'interaction_{type}' is an episodic "
@@ -277,12 +275,18 @@ async def interaction_log_group(
     Members whose contact has no linked entity_id (data integrity issue) are
     skipped with a warning; they are not counted in either logged or skipped.
 
+    ``direction`` is one of 'incoming', 'outgoing', 'mutual'. The common channel
+    aliases 'inbound' and 'outbound' are accepted and stored as their canonical
+    interaction values.
+
     Returns:
         {"logged": N, "skipped": M, "group_size": G, "status": "ok"} on success.
         {"logged": 0, "skipped": 0, "group_size": G, "status": "group_too_large"} if >20 members.
         {"logged": 0, "skipped": 0, "group_size": 0, "status": "ok"} if the group is empty.
     """
     direction = _normalize_direction(direction)
+    # ``direction`` is non-optional here (defaults to "mutual"), so the helper is
+    # called directly and always returns a canonical ``str``.
 
     # Fetch up to 21 rows so we can detect oversized groups without reading unbounded rows.
     # LEFT JOIN contact_entity_map to resolve entity_id without reading public.contacts.
@@ -362,6 +366,9 @@ async def interaction_list(
         entity_id: The entity UUID to list interactions for.  For backward
             compatibility, a contact UUID is also accepted and resolved to its
             linked entity UUID before querying.
+        direction: Optional filter, one of 'incoming', 'outgoing', 'mutual'. The
+            common channel aliases 'inbound' and 'outbound' are accepted and
+            normalized to their canonical interaction values.
     """
     entity_id, contact_id = await _resolve_interaction_target(pool, entity_id)
     conditions = [
@@ -373,8 +380,8 @@ async def interaction_list(
     params: list[Any] = [f"entity:{entity_id}"]
     idx = 2
 
-    direction = _normalize_direction(direction)
     if direction is not None:
+        direction = _normalize_direction(direction)
         conditions.append(f"metadata->>'direction' = ${idx}")
         params.append(direction)
         idx += 1
