@@ -1,15 +1,17 @@
 ---
 name: eod-tomorrow-prep
-description: Daily end-of-day briefing — review tomorrow's calendar and send a structured preparation summary via Telegram
+description: Daily tomorrow-prep briefing — review tomorrow's calendar and send a structured preparation summary via Telegram (sent in the afternoon to prepare for the day ahead)
 trigger_patterns:
   - eod-tomorrow-prep
   - scheduled daily at 15:00 SGT
 ---
 
-# End-of-Day Tomorrow Prep
+# Tomorrow Prep
 
 This skill runs every day at 15:00 SGT (UTC+8) as a scheduled task. It reviews tomorrow's
-calendar and sends a structured preparation summary to the user via Telegram.
+calendar and sends a structured preparation summary to the user via Telegram. The message is
+sent in the afternoon to prepare the user for the day ahead — frame it as "Tomorrow Prep",
+not an "end-of-day briefing", and title it with tomorrow's date so the future date is expected.
 
 ## When to Use
 

@@ -49,8 +49,9 @@ job_name = "memory_episode_cleanup"
 name = "eod-tomorrow-prep"
 cron = "0 15 * * *"
 prompt = """
-End-of-day briefing: review tomorrow's calendar and incorporate today's specialist highlights into a
-multi-domain preparation summary. Target under 500 words total.
+Tomorrow prep: review tomorrow's calendar and incorporate today's specialist highlights into a
+multi-domain preparation summary you send this afternoon to get the user ready for the day ahead.
+Target under 500 words total.
 
 Steps:
 1. Determine today's and tomorrow's dates in SGT (UTC+8). Today's date string format: YYYY-MM-DD.
@@ -62,7 +63,11 @@ Steps:
 
 3. Use calendar_list_events to fetch all events for tomorrow (00:00 to 23:59 SGT).
 
-4. Compose the briefing message as follows:
+4. Compose the briefing message as follows. Open with a title line that makes clear this previews
+   the day ahead, using TOMORROW's weekday and date so the future date reads as intentional:
+
+   **🌅 Tomorrow Prep — [Tomorrow's Weekday, Date]**
+   (Do NOT call this an "end-of-day briefing" — it is sent this afternoon to prepare for tomorrow.)
 
    **Calendar — [Day, Date]**
    List tomorrow's events in chronological order (times in SGT). For each event: title, time,
