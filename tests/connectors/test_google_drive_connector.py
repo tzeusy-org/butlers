@@ -198,3 +198,81 @@ def test_parse_changes_list_missing_key_returns_empty() -> None:
     """Missing 'changes' key treated gracefully."""
     changes, _, _ = parse_changes_list_response({})
     assert changes == []
+
+
+# ---------------------------------------------------------------------------
+# Health-port / heartbeat override wiring [bu-v7qu5]
+# ---------------------------------------------------------------------------
+
+
+def test_process_config_parses_health_and_heartbeat_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """from_env honors CONNECTOR_HEALTH_PORT / CONNECTOR_HEARTBEAT_INTERVAL_S."""
+    from butlers.connectors.google_drive import GDriveProcessConfig
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.local/mcp")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "45123")
+    monkeypatch.setenv("CONNECTOR_HEARTBEAT_INTERVAL_S", "47")
+
+    cfg = GDriveProcessConfig.from_env()
+
+    assert cfg.health_port == 45123
+    assert cfg.heartbeat_interval_s == 47
+
+
+async def test_run_connector_threads_health_overrides_into_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_google_drive_connector must pass the parsed health-port + heartbeat
+    overrides through to GDriveConnectorManager (regression guard for bu-v7qu5:
+    the construction call previously omitted them, so the health server always
+    bound the default 40088 and CONNECTOR_HEARTBEAT_INTERVAL_S was dropped)."""
+    import asyncpg
+
+    import butlers.connectors.google_drive as gd
+    from butlers import credential_store, db
+    from butlers.connectors import cursor_store
+
+    captured: dict[str, Any] = {}
+
+    class _StubPool:
+        async def close(self) -> None:
+            return None
+
+    class _StubManager:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    async def _fake_create_pool(**_kwargs: Any) -> _StubPool:
+        return _StubPool()
+
+    async def _fake_cursor_pool() -> None:
+        return None
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.local/mcp")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "45321")
+    monkeypatch.setenv("CONNECTOR_HEARTBEAT_INTERVAL_S", "53")
+
+    monkeypatch.setattr(gd, "GDriveConnectorManager", _StubManager)
+    monkeypatch.setattr(asyncpg, "create_pool", _fake_create_pool)
+    monkeypatch.setattr(cursor_store, "create_cursor_pool_from_env", _fake_cursor_pool)
+    monkeypatch.setattr(credential_store, "shared_db_name_from_env", lambda: "butlers")
+    monkeypatch.setattr(
+        db,
+        "db_params_from_env",
+        lambda: {"host": "localhost", "port": 5432, "user": "u", "password": "p"},
+    )
+    monkeypatch.setattr(db, "register_jsonb_codec", lambda *a, **k: None)
+    monkeypatch.setattr(db, "should_retry_with_ssl_disable", lambda *a, **k: False)
+
+    await gd.run_google_drive_connector()
+
+    assert captured["health_port"] == 45321
+    assert captured["heartbeat_interval_s"] == 53

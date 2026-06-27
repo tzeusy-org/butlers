@@ -2298,6 +2298,8 @@ async def run_google_drive_connector() -> None:
         poll_interval_s=process_config.poll_interval_s,
         account_rescan_interval_s=process_config.account_rescan_interval_s,
         cursor_pool=cursor_pool,
+        health_port=process_config.health_port,
+        heartbeat_interval_s=process_config.heartbeat_interval_s,
     )
     try:
         # manager.start() handles: health server, SIGHUP, account sync,
