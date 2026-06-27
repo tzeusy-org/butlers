@@ -4,7 +4,7 @@ Revision ID: core_103
 Revises: core_102
 Create Date: 2026-05-19 00:00:00.000000
 
-Decision: Option A (docs/decisions/2026-05-19-contacts-listed-flag-migration.md, PR #1794).
+Decision: Option A (docs/archive/decisions/2026-05-19-contacts-listed-flag-migration.md, PR #1794).
 
 Adds ``listed BOOLEAN NOT NULL DEFAULT true`` to ``public.entities`` — the
 canonical entity registry — so that entity-level read paths can gate on the

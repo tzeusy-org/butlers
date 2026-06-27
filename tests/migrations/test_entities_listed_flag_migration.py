@@ -8,7 +8,7 @@ Covers:
 5. Default value: new entities get listed=true without explicit INSERT.
 6. Downgrade is reversible (re-upgrade succeeds after downgrade).
 
-Decision: Option A — docs/decisions/2026-05-19-contacts-listed-flag-migration.md (PR #1794)
+Decision: Option A — docs/archive/decisions/2026-05-19-contacts-listed-flag-migration.md (PR #1794)
 Bead: bu-69zp9 (discovered-from bu-gpc2u)
 """
 
