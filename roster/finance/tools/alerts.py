@@ -251,6 +251,82 @@ async def alert_list(pool: asyncpg.Pool) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Large transaction alert evaluation
+# ---------------------------------------------------------------------------
+
+
+async def get_large_transaction_alert_config(pool: asyncpg.Pool) -> dict[str, Any] | None:
+    """Return the active+enabled ``large_transaction`` alert config, or None.
+
+    Reuses the same ``alert_config`` fact lookup contract as ``alert_list`` /
+    ``alert_configure`` (predicate=``alert_config``, content=``large_transaction``)
+    so that the threshold surfaced to transaction recording is the single source
+    of truth set via ``alert_configure``.
+
+    Returns the parsed config dict (``{type, threshold, currency, enabled,
+    fact_id}``) only when a large_transaction alert_config fact exists, is the
+    active (non-superseded) row, is enabled, and carries a numeric threshold.
+    Otherwise returns ``None`` so callers skip the flag.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT id, subject, content, metadata
+        FROM facts
+        WHERE predicate = $1
+          AND content = 'large_transaction'
+          AND validity = 'active'
+          AND valid_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        _PREDICATE_ALERT_CONFIG,
+    )
+    if row is None:
+        return None
+
+    config = _parse_alert_fact(row)
+    if not config.get("enabled", True):
+        return None
+    if config.get("threshold") is None:
+        return None
+    return config
+
+
+def evaluate_large_transaction_alert(
+    amount: Decimal | float | int,
+    merchant: str,
+    config: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build the ``large_transaction_alert`` flag for a recorded transaction.
+
+    Compares the transaction's absolute amount against the configured
+    ``large_transaction`` threshold. Returns the flag dict required by the
+    finance-alerts spec (``threshold``, ``amount``, ``merchant``, ``exceeds_by``)
+    when the amount exceeds the threshold, otherwise ``None``.
+
+    ``config`` is the dict returned by :func:`get_large_transaction_alert_config`
+    (or ``None`` when no enabled large_transaction alert is configured).
+    """
+    if not config:
+        return None
+    threshold = config.get("threshold")
+    if threshold is None:
+        return None
+
+    amount_abs = abs(Decimal(str(amount)))
+    threshold_dec = Decimal(str(threshold))
+    if amount_abs <= threshold_dec:
+        return None
+
+    return {
+        "threshold": float(threshold_dec),
+        "amount": float(amount_abs),
+        "merchant": merchant,
+        "exceeds_by": float(amount_abs - threshold_dec),
+    }
+
+
+# ---------------------------------------------------------------------------
 # detect_price_changes
 # ---------------------------------------------------------------------------
 

@@ -104,6 +104,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         metadata: JSON string — dict of additional context for future enrichment.
 
         Returns: {id, posted_at, merchant, amount, currency, category, direction, ...}
+          When an enabled "large_transaction" alert is configured (via alert_configure)
+          and the recorded amount exceeds its threshold, the response also includes a
+          "large_transaction_alert": {threshold, amount, merchant, exceeds_by} flag.
         """
         return await _transactions.record_transaction(
             module._get_pool(),
@@ -647,7 +650,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         source: Stored as import_source in fact metadata for all rows.
           Use e.g. "csv-import" to tag the ingestion origin.
 
-        Returns: {total, imported, skipped, errors, error_details}
+        Returns: {total, imported, skipped, errors, error_details, large_transaction_alerts}
+          large_transaction_alerts lists rows exceeding the configured
+          "large_transaction" alert threshold: [{index, threshold, amount, merchant, exceeds_by}].
         error_details entries: [{index, reason}]
           reason: "duplicate" (dedup skip), "cross_source_match" (fuzzy dedup skip),
           "invalid_date", "invalid_amount", "missing_merchant", or "db_error: ..."

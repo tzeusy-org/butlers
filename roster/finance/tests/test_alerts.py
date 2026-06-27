@@ -601,3 +601,136 @@ class TestDetectPriceChanges:
         result = await detect_price_changes(pool)
         assert result["total"] == 1
         assert result["changes"][0]["currency"] == "GBP"
+
+
+# ---------------------------------------------------------------------------
+# Large transaction alert flag on record_transaction / bulk_record_transactions
+# ---------------------------------------------------------------------------
+
+
+class TestLargeTransactionAlertFlag:
+    """The recording response surfaces a large_transaction_alert flag.
+
+    Exercises the real record_transaction / bulk_record_transactions paths
+    against the real alert_configure threshold lookup (finance-alerts spec
+    'Large Transaction Alerts > Transaction exceeds threshold').
+    """
+
+    async def test_flag_emitted_when_amount_exceeds_threshold(self, pool):
+        from butlers.tools.finance.alerts import alert_configure
+        from butlers.tools.finance.transactions import record_transaction
+
+        await alert_configure(pool, alert_type="large_transaction", threshold=500.0)
+
+        result = await record_transaction(
+            pool,
+            posted_at=datetime.now(UTC),
+            merchant="Best Buy",
+            amount=-600.0,
+            currency="USD",
+            category="electronics",
+        )
+
+        alert = result["large_transaction_alert"]
+        assert alert["threshold"] == 500.0
+        assert alert["amount"] == 600.0
+        assert alert["merchant"] == "Best Buy"
+        assert alert["exceeds_by"] == 100.0
+
+    async def test_flag_absent_when_amount_below_threshold(self, pool):
+        from butlers.tools.finance.alerts import alert_configure
+        from butlers.tools.finance.transactions import record_transaction
+
+        await alert_configure(pool, alert_type="large_transaction", threshold=500.0)
+
+        result = await record_transaction(
+            pool,
+            posted_at=datetime.now(UTC),
+            merchant="Cafe",
+            amount=-300.0,
+            currency="USD",
+            category="dining",
+        )
+
+        assert "large_transaction_alert" not in result
+
+    async def test_flag_absent_when_amount_equals_threshold(self, pool):
+        from butlers.tools.finance.alerts import alert_configure
+        from butlers.tools.finance.transactions import record_transaction
+
+        await alert_configure(pool, alert_type="large_transaction", threshold=500.0)
+
+        result = await record_transaction(
+            pool,
+            posted_at=datetime.now(UTC),
+            merchant="Exactly Five Hundred",
+            amount=-500.0,
+            currency="USD",
+            category="misc",
+        )
+
+        assert "large_transaction_alert" not in result
+
+    async def test_flag_absent_when_no_alert_configured(self, pool):
+        from butlers.tools.finance.transactions import record_transaction
+
+        result = await record_transaction(
+            pool,
+            posted_at=datetime.now(UTC),
+            merchant="Big Spend",
+            amount=-5000.0,
+            currency="USD",
+            category="misc",
+        )
+
+        assert "large_transaction_alert" not in result
+
+    async def test_flag_absent_when_alert_disabled(self, pool):
+        from butlers.tools.finance.alerts import alert_configure
+        from butlers.tools.finance.transactions import record_transaction
+
+        await alert_configure(pool, alert_type="large_transaction", threshold=500.0, enabled=False)
+
+        result = await record_transaction(
+            pool,
+            posted_at=datetime.now(UTC),
+            merchant="Big Spend",
+            amount=-5000.0,
+            currency="USD",
+            category="misc",
+        )
+
+        assert "large_transaction_alert" not in result
+
+    async def test_bulk_record_surfaces_large_transaction_alerts(self, pool):
+        from butlers.tools.finance.alerts import alert_configure
+        from butlers.tools.finance.transactions import bulk_record_transactions
+
+        await alert_configure(pool, alert_type="large_transaction", threshold=500.0)
+
+        now = datetime.now(UTC)
+        result = await bulk_record_transactions(
+            pool,
+            transactions=[
+                {
+                    "posted_at": now.isoformat(),
+                    "merchant": "Cafe",
+                    "amount": "-12.00",
+                    "category": "dining",
+                },
+                {
+                    "posted_at": now.isoformat(),
+                    "merchant": "Best Buy",
+                    "amount": "-750.00",
+                    "category": "electronics",
+                },
+            ],
+        )
+
+        alerts = result["large_transaction_alerts"]
+        assert len(alerts) == 1
+        assert alerts[0]["index"] == 1
+        assert alerts[0]["merchant"] == "Best Buy"
+        assert alerts[0]["threshold"] == 500.0
+        assert alerts[0]["amount"] == 750.0
+        assert alerts[0]["exceeds_by"] == 250.0

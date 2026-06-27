@@ -496,7 +496,10 @@ async def record_transaction(
     Returns
     -------
     dict
-        Full TransactionRecord dict.
+        Full TransactionRecord dict. When an enabled ``large_transaction`` alert
+        is configured (via ``alert_configure``) and the recorded amount exceeds
+        its threshold, the dict additionally carries a ``large_transaction_alert``
+        key: ``{threshold, amount, merchant, exceeds_by}``.
     """
     # Resolve human-readable account identifiers to UUID.
     account_id = await _resolve_account_id(pool, account_id)
@@ -766,6 +769,31 @@ async def record_transaction(
                 merchant,
                 exc_info=True,
             )
+
+    # --- Large transaction alert flag (finance-alerts spec) ---
+    # If an enabled `large_transaction` alert is configured and the recorded
+    # amount exceeds its threshold, surface a `large_transaction_alert` flag in
+    # the response. Best-effort: the threshold lookup queries the facts table,
+    # which is not present in every caller's schema, so any failure is swallowed
+    # and never affects the primary insert.
+    try:
+        from butlers.tools.finance.alerts import (  # noqa: PLC0415
+            evaluate_large_transaction_alert,
+            get_large_transaction_alert_config,
+        )
+
+        _alert_config = await get_large_transaction_alert_config(pool)
+        _alert = evaluate_large_transaction_alert(stored_amount, merchant, _alert_config)
+        if _alert is not None:
+            result["large_transaction_alert"] = _alert
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "record_transaction: large_transaction alert evaluation failed for txn %s "
+            "merchant=%r; primary insert is unaffected",
+            row["id"],
+            merchant,
+            exc_info=True,
+        )
 
     return result
 
@@ -1746,10 +1774,13 @@ async def bulk_record_transactions(
         source: Stored as import_source in each row's metadata.
 
     Returns:
-        {total, imported, skipped, errors, error_details}
+        {total, imported, skipped, errors, error_details, large_transaction_alerts}
         error_details items have: {index, reason}
         reason is "duplicate" for dedup skips, "invalid_date" for
         unparseable dates, "invalid_amount" for non-numeric amounts.
+        large_transaction_alerts lists rows whose amount exceeded the configured
+        `large_transaction` alert threshold, each as
+        {index, threshold, amount, merchant, exceeds_by}.
     """
     if len(transactions) > _MAX_BULK_TRANSACTIONS:
         raise ValueError(
@@ -1762,6 +1793,7 @@ async def bulk_record_transactions(
     skipped = 0
     errors = 0
     error_details: list[dict[str, Any]] = []
+    large_transaction_alerts: list[dict[str, Any]] = []
 
     for idx, txn in enumerate(transactions):
         # ------------------------------------------------------------------
@@ -1819,7 +1851,7 @@ async def bulk_record_transactions(
         # 3. Route through record_transaction for dedup + SPO mirror
         # ------------------------------------------------------------------
         try:
-            await record_transaction(
+            _recorded = await record_transaction(
                 pool=pool,
                 posted_at=posted_at,
                 merchant=merchant,
@@ -1837,6 +1869,9 @@ async def bulk_record_transactions(
                 metadata=extra_metadata if extra_metadata else None,
             )
             imported += 1
+            _lta = _recorded.get("large_transaction_alert")
+            if _lta is not None:
+                large_transaction_alerts.append({"index": idx, **_lta})
         except asyncpg.UniqueViolationError:
             skipped += 1
             error_details.append({"index": idx, "reason": "duplicate"})
@@ -1851,4 +1886,5 @@ async def bulk_record_transactions(
         "skipped": skipped,
         "errors": errors,
         "error_details": error_details,
+        "large_transaction_alerts": large_transaction_alerts,
     }
