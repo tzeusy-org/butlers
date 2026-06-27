@@ -825,6 +825,56 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "pending_action_id": str(_decision.action_id),
                         }
 
+            # Channel-general role-based approval gating for non-email channels
+            # (telegram, and any future channel).  Owner-directed sends auto-approve
+            # on any active verified owner channel; non-owner recipients require a
+            # standing rule or are parked (fail-closed).  Email is gated above by
+            # check_email_recipient, which additionally enforces the email-only
+            # channel-primacy / context-conflict incident behaviour.
+            if (
+                channel != "email"
+                and resolved_recipient is not None
+                and intent in {"send", "insight"}
+            ):
+                pool = daemon.db.pool if daemon.db is not None else None
+                if pool is not None:
+                    from butlers.core.approvals_hooks import check_recipient
+
+                    _notify_args = {
+                        "channel": channel,
+                        "message": message,
+                        "recipient": resolved_recipient,
+                        "intent": intent,
+                    }
+                    _decision = await check_recipient(
+                        pool,
+                        channel=channel,
+                        target=resolved_recipient,
+                        rule_tool_name="notify",
+                        rule_match_args=_notify_args,
+                        park_tool_name="notify",
+                        park_tool_args=_notify_args,
+                        park_summary=(
+                            f"notify() rejected: {channel} message to "
+                            f"{resolved_recipient!r}. Message: {message!r}"
+                        ),
+                        session_id=get_current_runtime_session_id(),
+                        butler_name=butler_name,
+                    )
+                    if not _decision.allowed:
+                        return {
+                            "status": "pending_approval",
+                            "error": (
+                                f"Delivery blocked: {channel} target "
+                                f"'{resolved_recipient}' is a "
+                                f"{_decision.contact_desc} "
+                                f"and no standing approval rule matches. "
+                                f"Create a standing rule or approve via the "
+                                f"approval dashboard."
+                            ),
+                            "pending_action_id": str(_decision.action_id),
+                        }
+
             delivery_message = message if message is not None else ""
             notify_request: dict[str, Any] = {
                 "schema_version": "notify.v1",

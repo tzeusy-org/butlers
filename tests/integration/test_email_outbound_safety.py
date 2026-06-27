@@ -48,6 +48,10 @@ KNOWN_NON_OWNER_EMAIL = "friend@known.com"
 HALLUCINATED_EMAIL = "jo@reallylesson.com"
 UNKNOWN_EMAIL = "unknown@evil.com"
 
+OWNER_TELEGRAM = "100200300"
+KNOWN_NON_OWNER_TELEGRAM = "900800700"
+UNKNOWN_TELEGRAM = "555555555"
+
 
 def _owner_contact() -> ResolvedContact:
     return ResolvedContact(
@@ -644,6 +648,236 @@ class TestNotifyRecipientValidation:
 
         assert result["status"] == "ok"
         mock_resolve.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Layer 2b: notify() channel-general (telegram) recipient gating  [bu-nsml2]
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=False)
+def register_recipient_guard_hook():
+    """Register the real channel-general recipient guard for notify() gating.
+
+    Mirrors :func:`register_email_guard_hook` but for the channel-general guard
+    that gates telegram (and any non-email channel).  The butler.toml fixture
+    does not enable the approvals module, so ``on_startup`` never registers it;
+    this fixture wires the real implementation directly against the hook slot.
+    """
+    import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.email_guard import check_recipient as _real_check
+
+    orig = _hooks._recipient_guard_hook
+    _hooks._recipient_guard_hook = _real_check
+    yield
+    _hooks._recipient_guard_hook = orig
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("register_email_guard_hook", "register_recipient_guard_hook")
+class TestNotifyTelegramRecipientValidation:
+    """notify(channel='telegram') MUST apply the same role-based gating as email.
+
+    Owner-directed telegram sends auto-approve on any active verified owner
+    channel; non-owner recipients require a standing rule or are parked.  This is
+    the channel-general completion of the Role-Based Approval Gating requirement
+    (bu-nsml2) — owner-bypass and the non-owner standing-rule check now cover all
+    supported channels, not just email.
+    """
+
+    async def test_owner_telegram_is_allowed(self, butler_dir: Path) -> None:
+        """Owner's telegram channel MUST pass through without parking."""
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        with patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=_owner_contact()),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Your weekly report",
+                recipient=OWNER_TELEGRAM,
+            )
+
+        assert result["status"] == "ok", (
+            f"Owner telegram '{OWNER_TELEGRAM}' MUST be allowed through, "
+            f"got status={result.get('status')}"
+        )
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+
+    async def test_owner_telegram_via_definer_fallback_is_allowed(self, butler_dir: Path) -> None:
+        """Owner telegram resolved only via the SECURITY DEFINER fallback MUST be allowed.
+
+        A non-relationship butler's role cannot read relationship.entity_facts, so
+        resolve_contact_by_channel returns None; the owner is recognised via the
+        cross-schema definer lookup.  Per bu-nd5me, a non-primary owner channel
+        (is_primary=False) still auto-approves on the OUTBOUND path.
+        """
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(_owner_contact(), False)),
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Owner reminder",
+                recipient=OWNER_TELEGRAM,
+            )
+
+        assert result["status"] == "ok", (
+            f"Owner telegram via definer fallback MUST be allowed, "
+            f"got status={result.get('status')}"
+        )
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+
+    async def test_known_non_owner_telegram_is_blocked_without_rule(self, butler_dir: Path) -> None:
+        """A known non-owner telegram contact WITHOUT a standing rule MUST be blocked."""
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Hello friend",
+                recipient=KNOWN_NON_OWNER_TELEGRAM,
+            )
+
+        assert result["status"] == "pending_approval", (
+            f"Known non-owner telegram '{KNOWN_NON_OWNER_TELEGRAM}' MUST be blocked "
+            f"without a standing rule, got status={result.get('status')}"
+        )
+        assert "pending_action_id" in result
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+
+    async def test_standing_rule_permits_known_non_owner_telegram(self, butler_dir: Path) -> None:
+        """A known non-owner telegram contact WITH a matching standing rule MUST be allowed."""
+        from butlers.modules.approvals.models import ApprovalRule
+
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        rule = ApprovalRule(
+            id=uuid.uuid4(),
+            tool_name="notify",
+            arg_constraints={
+                "recipient": {"type": "exact", "value": KNOWN_NON_OWNER_TELEGRAM},
+                "channel": {"type": "any"},
+                "message": {"type": "any"},
+                "intent": {"type": "any"},
+            },
+            description="Allow telegram to known non-owner",
+            created_at=datetime.now(UTC),
+        )
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=rule),
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Hello friend",
+                recipient=KNOWN_NON_OWNER_TELEGRAM,
+            )
+
+        assert result["status"] == "ok", (
+            f"Known non-owner telegram WITH standing rule MUST be allowed, "
+            f"got status={result.get('status')}"
+        )
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+
+    async def test_unknown_telegram_is_parked(self, butler_dir: Path) -> None:
+        """An unresolvable telegram target WITHOUT a rule MUST be parked (fail-closed)."""
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Who are you",
+                recipient=UNKNOWN_TELEGRAM,
+            )
+
+        assert result["status"] == "pending_approval"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+
+    async def test_owner_directed_notify_auto_approves_across_channels(
+        self, butler_dir: Path
+    ) -> None:
+        """ACCEPTANCE: owner-directed notify() auto-approves on BOTH telegram and email.
+
+        The same owner contact resolves on either channel and is delivered without
+        approval, proving the owner-bypass is channel-general — not email-only.
+        """
+        daemon, notify_fn = await _boot_daemon_with_notify(butler_dir)
+        assert notify_fn is not None
+
+        daemon.switchboard_client = _mock_switchboard_client()
+
+        with patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=_owner_contact()),
+        ):
+            tg_result = await notify_fn(
+                channel="telegram",
+                message="Owner alert via telegram",
+                recipient=OWNER_TELEGRAM,
+            )
+            email_result = await notify_fn(
+                channel="email",
+                message="Owner alert via email",
+                recipient=OWNER_EMAIL,
+            )
+
+        assert tg_result["status"] == "ok", f"telegram owner send: {tg_result}"
+        assert email_result["status"] == "ok", f"email owner send: {email_result}"
+        assert daemon.switchboard_client.call_tool.await_count == 2
 
 
 # ---------------------------------------------------------------------------

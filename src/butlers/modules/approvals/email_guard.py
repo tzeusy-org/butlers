@@ -327,3 +327,162 @@ async def check_email_recipient(
         action_id=action_id,
         contact_desc=contact_desc,
     )
+
+
+async def check_recipient(
+    pool: asyncpg.Pool,
+    *,
+    channel: str,
+    target: str,
+    rule_tool_name: str,
+    rule_match_args: dict[str, Any],
+    park_tool_name: str,
+    park_tool_args: dict[str, Any],
+    park_summary: str,
+    session_id: str | uuid.UUID | None = None,
+    expiry_hours: int = 72,
+    butler_name: str | None = None,
+) -> EmailGuardDecision:
+    """Channel-general outbound recipient guard (telegram, etc.).
+
+    Applies the same role-based policy the approval gate wrapper enforces
+    (post bu-nd5me) so that the ``notify()`` MCP tool gates every supported
+    channel, not just email:
+
+    1. Resolve the contact by ``(channel, target)``.  An ``'owner'`` role match
+       auto-approves on ANY active, verified owner channel — channel resolution
+       only returns a row for an *active* ``relationship.entity_facts`` triple,
+       so an owner-role match is by definition a verified owner channel.  No
+       channel-primacy check is applied (owner self-notification is low-risk).
+    2. Cross-schema owner fallback: a non-relationship butler runs under a
+       schema-isolated role that cannot read ``relationship.entity_facts``
+       directly, so :func:`resolve_contact_by_channel` returns ``None`` even for
+       owner-directed sends.  Recognise the owner via the ``SECURITY DEFINER``
+       :func:`resolve_owner_channel_via_definer` lookup (the reported primacy
+       flag is intentionally discarded — bu-nd5me).
+    3. Non-owner / unresolvable target: check standing approval rules.  A
+       matching rule auto-approves (and bumps ``use_count``); otherwise the
+       send is parked as a ``pending_action`` for human review (fail-closed).
+
+    Unlike :func:`check_email_recipient`, this guard does NOT apply the
+    email-specific channel-primacy / context-conflict incident behaviour
+    (bu-jwby9 / bu-axdie); that nuance is intentionally email-only.
+    """
+    from butlers.identity import (
+        resolve_contact_by_channel,
+        resolve_owner_channel_via_definer,
+    )
+
+    contact = await resolve_contact_by_channel(pool, channel, target)
+
+    # Cross-schema owner fallback when direct resolution failed entirely.  A
+    # resolved (non-owner) contact means the butler COULD read the relationship
+    # schema, so the channel demonstrably belongs to a non-owner — no fallback.
+    if contact is None:
+        try:
+            fallback = await resolve_owner_channel_via_definer(pool, channel, target)
+        except Exception:  # noqa: BLE001
+            fallback = None
+        if fallback is not None:
+            contact, _owner_is_primary = fallback
+
+    # Owner-directed outbound: auto-approve on any active, verified owner channel.
+    if contact is not None and "owner" in contact.roles:
+        return EmailGuardDecision(allowed=True, reason="owner")
+
+    contact_desc = "known non-owner contact" if contact is not None else "unknown contact"
+
+    def _emit_created(action_id: uuid.UUID, status: str) -> None:
+        """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
+        try:
+            from butlers.api.routers.approvals import emit_approvals_event
+
+            emit_approvals_event(
+                "created",
+                str(action_id),
+                butler=butler_name,
+                tool_name=park_tool_name,
+                status=status,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "recipient guard: emit_approvals_event('created') failed; ignoring",
+                exc_info=True,
+            )
+
+    # Non-owner / unresolvable: check standing approval rules.
+    rule = None
+    try:
+        from butlers.modules.approvals.rules import match_rules
+
+        rule = await match_rules(pool, rule_tool_name, rule_match_args)
+    except Exception:  # noqa: BLE001
+        # Table may not exist in this schema — that's fine.
+        pass
+
+    if rule is not None:
+        logger.info(
+            "recipient guard: standing rule %s permits %s send to %r — allowing delivery",
+            rule.id,
+            contact_desc,
+            target,
+        )
+        try:
+            await pool.execute(
+                "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
+                rule.id,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return EmailGuardDecision(
+            allowed=True,
+            reason="rule",
+            rule_id=rule.id,
+            contact_desc=contact_desc,
+        )
+
+    # No rule → park for human review.
+    from butlers.modules.approvals.models import ActionStatus
+
+    action_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(hours=expiry_hours)
+    normalized_session_id = _normalize_session_id(session_id)
+
+    try:
+        await pool.execute(
+            "INSERT INTO pending_actions "
+            "(id, tool_name, tool_args, agent_summary, session_id, status, "
+            "requested_at, expires_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            action_id,
+            park_tool_name,
+            json.dumps(park_tool_args),
+            park_summary,
+            normalized_session_id,
+            ActionStatus.PENDING.value,
+            now,
+            expires_at,
+        )
+        _emit_created(action_id, ActionStatus.PENDING.value)
+        logger.warning(
+            "recipient guard: blocked %s send to %s %r — parked as pending_action %s",
+            channel,
+            contact_desc,
+            target,
+            action_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "recipient guard: failed to park pending_action for %s %r",
+            channel,
+            target,
+            exc_info=True,
+        )
+
+    return EmailGuardDecision(
+        allowed=False,
+        reason="parked",
+        action_id=action_id,
+        contact_desc=contact_desc,
+    )

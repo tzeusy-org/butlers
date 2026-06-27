@@ -149,6 +149,34 @@ def _fake_embedding_engine(monkeypatch):
     _helpers._embedding_engines.update(saved_cache)
 
 
+@pytest.fixture(autouse=True)
+def _restore_approvals_guard_hooks():
+    """Snapshot and restore the process-global approvals guard hooks per test.
+
+    ``butlers.core.approvals_hooks`` holds two module-level hook slots
+    (``_email_guard_hook`` and ``_recipient_guard_hook``) that the approvals
+    module registers during ``on_startup`` — a process-global that is never torn
+    down (a daemon lives forever in production, so unregistering on shutdown is
+    pointless there). In the test suite, however, any test that starts a real
+    daemon with the approvals module enabled (e.g. the messenger route.execute
+    integration tests) leaves these globals registered for the rest of the xdist
+    worker process. That flips the otherwise fail-open ``check_recipient`` /
+    ``check_email_recipient`` core stubs into fail-closed mode for unrelated
+    later tests that mock an empty pool, parking owner/default sends they expect
+    to deliver. Snapshot-and-restore here makes every test independent of
+    whichever earlier test happened to register a hook.
+    """
+    import butlers.core.approvals_hooks as _hooks
+
+    saved_email = _hooks._email_guard_hook
+    saved_recipient = _hooks._recipient_guard_hook
+    try:
+        yield
+    finally:
+        _hooks._email_guard_hook = saved_email
+        _hooks._recipient_guard_hook = saved_recipient
+
+
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
     from testcontainers.postgres import PostgresContainer

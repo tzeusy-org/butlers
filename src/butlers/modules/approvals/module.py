@@ -515,12 +515,21 @@ class ApprovalsModule(Module):
         )
         self._db = db
 
-        # Register the email-guard hook so core_tools can call it without
-        # importing the approvals module directly (dependency inversion).
-        from butlers.core.approvals_hooks import register_email_guard
-        from butlers.modules.approvals.email_guard import check_email_recipient
+        # Register the recipient-guard hooks so core_tools can call them without
+        # importing the approvals module directly (dependency inversion).  The
+        # email guard keeps its channel-primacy / context-conflict nuance; the
+        # channel-general guard gates telegram (and any other channel).
+        from butlers.core.approvals_hooks import (
+            register_email_guard,
+            register_recipient_guard,
+        )
+        from butlers.modules.approvals.email_guard import (
+            check_email_recipient,
+            check_recipient,
+        )
 
         register_email_guard(check_email_recipient)
+        register_recipient_guard(check_recipient)
 
     async def on_shutdown(self) -> None:
         """No persistent resources to clean up."""

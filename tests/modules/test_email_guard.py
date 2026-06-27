@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
-from butlers.modules.approvals.email_guard import check_email_recipient
+from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
 
 
 def _owner_contact():
@@ -325,3 +325,110 @@ class TestEmailGuardEmitsCreatedEvent:
         assert decision.allowed is False
         assert decision.reason == "parked"
         assert decision.action_id is not None
+
+
+_TELEGRAM_KWARGS = {
+    "channel": "telegram",
+    "target": "900800700",
+    "rule_tool_name": "notify",
+    "rule_match_args": {"recipient": "900800700", "channel": "telegram"},
+    "park_tool_name": "notify",
+    "park_tool_args": {"recipient": "900800700", "channel": "telegram"},
+    "park_summary": "test park summary",
+}
+
+
+class TestCheckRecipient:
+    """Channel-general recipient guard used by notify() for non-email channels."""
+
+    async def test_owner_telegram_auto_approves_without_primacy(self) -> None:
+        """Owner-role telegram target auto-approves on any active channel (no primacy)."""
+        pool = AsyncMock()
+        with patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=_owner_contact()),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is True
+        assert decision.reason == "owner"
+        # Owner bypass must not park or check standing rules.
+        pool.execute.assert_not_awaited()
+
+    async def test_owner_via_definer_fallback_auto_approves(self) -> None:
+        """When direct resolution fails, the SECURITY DEFINER owner fallback still approves."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(_owner_contact(), False)),
+            ),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is True
+        assert decision.reason == "owner"
+
+    async def test_non_owner_without_rule_parks(self) -> None:
+        """Known non-owner telegram target without a standing rule is parked (fail-closed)."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
+        assert decision.action_id is not None
+        pool.execute.assert_awaited()
+
+    async def test_standing_rule_permits_non_owner(self) -> None:
+        """A matching standing rule auto-approves a non-owner telegram send."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=_standing_rule()),
+            ),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is True
+        assert decision.reason == "rule"
+
+    async def test_unresolvable_target_parks(self) -> None:
+        """An unresolvable target (no contact, no owner fallback, no rule) is parked."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
