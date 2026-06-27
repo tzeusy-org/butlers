@@ -167,7 +167,8 @@ This project uses `bd` (beads, v1.0.x) for issue tracking. The backend is the
 
 **Data flow:** `bd create/update/close` write directly to Dolt and auto-commit to
 its history — there is **no `bd sync` step** (that subcommand does not exist in
-this bd version). To refresh the git-tracked JSONL mirror, run
+this bd version). Dolt is the source of truth; the `.beads/` JSONL is a local,
+gitignored mirror; never commit it. To refresh that local mirror, run
 `bd export -o .beads/issues.export.jsonl`. **Never create `.beads/issues.jsonl`** —
 on bd 1.0.4 server mode its presence triggers a full-file re-import on every write
 that can wedge bd town-wide; the mirror lives at `.beads/issues.export.jsonl`
