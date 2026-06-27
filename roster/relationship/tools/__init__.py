@@ -49,6 +49,9 @@ from butlers.tools.relationship.facts import (
     fact_list,
     fact_set,
 )
+from butlers.tools.relationship.feed import (
+    feed_get,
+)
 from butlers.tools.relationship.gifts import (
     _GIFT_STATUS_ORDER,
     gift_add,
@@ -170,6 +173,7 @@ __all__ = [
     "retract_prefers_channel",
     "fact_list",
     "fact_set",
+    "feed_get",
     "relationship_assert_fact",
     "relationship_lookup",
     "get_contact_dunbar",

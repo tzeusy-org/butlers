@@ -897,3 +897,120 @@ async def test_gift_update_status_no_entity_raises_value_error(pool):
 
     with pytest.raises(ValueError, match="no linked entity_id"):
         await gift_update_status(pool, gift_id, "purchased")
+
+
+# ===========================================================================
+# Feed (unified temporal activity feed)
+# ===========================================================================
+
+
+async def test_feed_get_aggregates_temporal_facts_ordered_desc(pool):
+    """feed_get returns interaction_*, life_event, contact_note, and activity
+    facts for a contact entity ordered by valid_at DESC, via the real fact store.
+    """
+    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.tools import get_embedding_engine
+    from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
+    from butlers.tools.relationship.feed import feed_get
+    from butlers.tools.relationship.interactions import interaction_log
+    from butlers.tools.relationship.life_events import life_event_log
+    from butlers.tools.relationship.notes import note_create
+
+    contact = await _make_contact(pool, "FeedAlice")
+    cid = contact["id"]
+    entity_id = await resolve_contact_entity_id(pool, cid)
+    assert entity_id is not None
+
+    # Distinct valid_at across the four temporal families.
+    life_at = datetime(2025, 1, 1, tzinfo=UTC)
+    activity_at = datetime(2025, 2, 1, tzinfo=UTC)
+    interaction_at = datetime(2025, 3, 1, tzinfo=UTC)
+
+    # life_event (valid_at = happened_at)
+    await life_event_log(pool, cid, "promotion", summary="Made partner", occurred_at=life_at)
+    # activity (no dedicated tool — write directly through the real fact store)
+    await store_fact(
+        pool,
+        subject=f"entity:{entity_id}",
+        predicate="activity",
+        content="Joined a book club",
+        embedding_engine=get_embedding_engine(),
+        permanence="stable",
+        scope="relationship",
+        entity_id=entity_id,
+        valid_at=activity_at,
+    )
+    # interaction (valid_at = occurred_at); pass contact_id (resolved internally)
+    await interaction_log(
+        pool, cid, type="call", summary="Quarterly catch-up", occurred_at=interaction_at
+    )
+    # contact_note (valid_at = now, newest)
+    await note_create(pool, cid, content="Loves hiking")
+
+    feed = await feed_get(pool, entity_id)
+
+    kinds = [item["kind"] for item in feed]
+    assert "interaction" in kinds
+    assert "life_event" in kinds
+    assert "contact_note" in kinds
+    assert "activity" in kinds
+    assert len(feed) == 4
+
+    # Ordered by valid_at DESC: note (now) > interaction (Mar) > activity (Feb) > life_event (Jan)
+    valid_ats = [item["valid_at"] for item in feed]
+    assert valid_ats == sorted(valid_ats, reverse=True)
+    assert feed[0]["kind"] == "contact_note"
+    assert feed[1]["kind"] == "interaction"
+    assert feed[2]["kind"] == "activity"
+    assert feed[3]["kind"] == "life_event"
+
+
+async def test_feed_get_registered_tool_resolves_contact(pool):
+    """The registered feed_get MCP tool accepts a contact_id, resolves it to the
+    entity, and returns the contact's temporal feed from the real fact store.
+    """
+    import importlib
+
+    from butlers.tools.relationship.interactions import interaction_log
+    from butlers.tools.relationship.notes import note_create
+
+    # Roster modules are loaded under a synthetic package name by the registry
+    # (see butlers.modules.registry._register_roster_modules); conftest triggers
+    # discovery so the submodule is importable here.
+    register_tools = importlib.import_module(
+        "butlers.modules._roster_relationship.tools"
+    ).register_tools
+
+    contact = await _make_contact(pool, "FeedBob")
+    cid = contact["id"]
+
+    await interaction_log(
+        pool, cid, type="meeting", summary="Lunch", occurred_at=datetime(2025, 5, 1, tzinfo=UTC)
+    )
+    await note_create(pool, cid, content="Allergic to peanuts")
+
+    class _CapturingMcp:
+        def __init__(self) -> None:
+            self.tools: dict = {}
+
+        def tool(self):
+            def deco(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+
+            return deco
+
+    class _StubModule:
+        def _get_pool(self):
+            return pool
+
+    mcp = _CapturingMcp()
+    register_tools(mcp, _StubModule(), config=None)
+    assert "feed_get" in mcp.tools
+
+    feed = await mcp.tools["feed_get"](contact_id=cid)
+    kinds = {item["kind"] for item in feed}
+    assert kinds == {"interaction", "contact_note"}
+    assert len(feed) == 2
+    # Newest first: the note (created now) precedes the May interaction.
+    assert feed[0]["kind"] == "contact_note"

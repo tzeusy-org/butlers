@@ -30,6 +30,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import dates as _dates
     from butlers.tools.relationship import dunbar as _dunbar
     from butlers.tools.relationship import facts as _facts
+    from butlers.tools.relationship import feed as _feed
     from butlers.tools.relationship import gifts as _gifts
     from butlers.tools.relationship import groups as _groups
     from butlers.tools.relationship import interactions as _inter
@@ -500,6 +501,24 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             duration_minutes=duration_minutes,
             metadata=metadata,
         )
+
+    @_tool("interactions")
+    async def feed_get(
+        contact_id: uuid.UUID,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Unified temporal activity feed for a contact, most recent first.
+
+        Aggregates the contact's interactions (interaction_*), life events,
+        notes, and activity facts into a single stream ordered by when each
+        event occurred (valid_at descending). Resolves the contact's entity_id
+        internally before querying.
+        """
+        from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
+
+        pool = module._get_pool()
+        entity_id = await resolve_contact_entity_id(pool, contact_id)
+        return await _feed.feed_get(pool, entity_id, limit=limit)
 
     # =================================================================
     # Label tools (group: notes)
