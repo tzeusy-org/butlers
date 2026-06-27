@@ -57,7 +57,13 @@ a catalog candidate is selected but cannot safely complete the invocation.
 
 ### Requirement: Failover Attempt Provenance
 The system SHALL persist enough provenance for operators to audit model failover behavior
-for a logical session.
+for a logical session. As built, attempt provenance is written best-effort to the
+`public.model_dispatch_attempts` table (migration `core_104`): one row per attempt or skip,
+carrying `outcome` (`quota_skip` / `runtime_failure` / `suppressed` / `success` / `exhausted`),
+`catalog_entry_id`, `attempt_index`, `failure_reason`, `error_code`, `error_message`,
+`tool_call_count`, and a `logical_session_id` that ties all attempts of one logical session
+together. Operators read it via `GET /api/dispatch/attempts` and
+`GET /api/settings/models/{entry_id}/attempts`.
 
 #### Scenario: Failed primary then successful fallback
 - **WHEN** the primary model fails with a failover-eligible systemic error

@@ -7,15 +7,20 @@ Defines the complexity classification system used for dynamic model routing. Com
 ## ADDED Requirements
 
 ### Requirement: Complexity Enum
-The system SHALL define a complexity classification enum with four tiers representing task difficulty and resource requirements.
+The system SHALL define a complexity classification enum with six canonical tiers representing model capability and resource requirements. The legacy four-tier vocabulary (`trivial`, `medium`, `high`, `extra_high`) plus `discretion` and `self_healing` was retired in migration `core_093`. Callers that still emit a legacy value are remapped with a loud deprecation warning by `_check_deprecated_tier()` in `src/butlers/core/model_routing.py`.
 
 #### Scenario: Enum values
 - **WHEN** a complexity classification is assigned
-- **THEN** it MUST be one of: `trivial`, `medium`, `high`, `extra_high`
+- **THEN** it MUST be one of: `reasoning`, `workhorse`, `cheap`, `specialty`, `local`, `legacy`
 
 #### Scenario: Enum ordering
-- **WHEN** complexity tiers are compared
-- **THEN** the ordering is: `trivial` < `medium` < `high` < `extra_high`
+- **WHEN** complexity tiers are compared for tier fallthrough during model resolution
+- **THEN** the canonical order (highest to lowest capability) is: `reasoning` > `workhorse` > `cheap` > `specialty` > `local` > `legacy`
+
+#### Scenario: Legacy vocabulary remapping
+- **WHEN** a caller supplies a retired tier value
+- **THEN** it is remapped as follows: `trivial` to `cheap`, `medium` to `workhorse`, `high` to `reasoning`, `extra_high` to `reasoning`, `discretion` to `specialty`, `self_healing` to `specialty`
+- **AND** a deprecation warning is logged naming the offending caller
 
 ### Requirement: Switchboard Complexity Classification
 The Switchboard SHALL classify the complexity of each inbound request as part of its existing LLM-driven routing decision. Classification piggybacks on the routing LLM call — no additional LLM invocation is required.
@@ -34,14 +39,14 @@ The Switchboard SHALL classify the complexity of each inbound request as part of
 - **THEN** each segment has an independent `complexity` classification
 - **AND** different segments of the same message MAY have different complexity levels
 
-#### Scenario: Classification failure defaults to medium
+#### Scenario: Classification failure defaults to workhorse
 - **WHEN** the LLM output omits the `complexity` field or returns an invalid value
-- **THEN** the complexity defaults to `medium`
+- **THEN** the complexity defaults to `workhorse`
 - **AND** a warning is logged noting the classification failure
 
 #### Scenario: Deterministic triage bypass preserves complexity default
 - **WHEN** a message is routed via deterministic pre-classification triage (rule-based, thread affinity) without LLM classification
-- **THEN** the complexity defaults to `medium`
+- **THEN** the complexity defaults to `workhorse`
 
 ### Requirement: Complexity Propagation Through Route Dispatch
 The Switchboard SHALL propagate the classified complexity to the target butler when dispatching routed requests.
@@ -63,11 +68,11 @@ The manual trigger API SHALL accept an optional complexity parameter for operato
 
 #### Scenario: TriggerRequest without complexity
 - **WHEN** a `POST /api/butlers/{name}/trigger` request omits the `complexity` field
-- **THEN** the complexity defaults to `medium`
+- **THEN** the complexity defaults to `workhorse`
 
 ### Requirement: Tick Trigger Complexity
-Internal tick-triggered sessions SHALL use a fixed trivial complexity.
+Internal tick-triggered sessions SHALL use a fixed low-cost complexity tier (`cheap`, the canonical successor to the retired `trivial` tier).
 
-#### Scenario: Tick uses trivial complexity
+#### Scenario: Tick uses cheap complexity
 - **WHEN** a butler session is triggered by the tick handler
-- **THEN** the complexity is set to `trivial`
+- **THEN** the complexity is set to `cheap`

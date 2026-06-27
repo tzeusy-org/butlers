@@ -22,7 +22,8 @@ Scope: v1-mandatory
 
 #### Scenario: Field tiers included in response
 - **WHEN** a GET response is returned
-- **THEN** it SHALL include `field_tiers` mapping each config field to `"hot"` or `"cold"` (e.g., `{"core_groups": "cold", "model": "hot", "session_timeout_s": "hot", "max_concurrent": "cold", ...}`)
+- **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`. As built, all three managed fields are cold: `{"core_groups": "cold", "max_concurrent": "cold", "max_queued": "cold"}`
+- **AND** `model` and `session_timeout_s` are NOT part of this map; migration `core_073` moved them onto `public.model_catalog`, edited via the model-settings API
 
 ### Requirement: PATCH runtime config endpoint
 
@@ -31,17 +32,17 @@ The dashboard API SHALL expose `PATCH /api/butlers/{name}/runtime-config` accept
 Source: RFC 0007 §Dashboard API Surface
 Scope: v1-mandatory
 
-#### Scenario: Update hot field
-- **WHEN** a PATCH request updates `session_timeout_s`
-- **THEN** the DB row SHALL be updated, `updated_at` SHALL be set to now, and the response SHALL include `restart_required: []`
+#### Scenario: Accepted fields
+- **WHEN** a PATCH request is processed
+- **THEN** only `core_groups`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
 
 #### Scenario: Update cold field
 - **WHEN** a PATCH request updates `core_groups`
 - **THEN** the DB row SHALL be updated, `updated_at` SHALL be set to now, and the response SHALL include `restart_required: ["core_groups"]`
 
-#### Scenario: Update mixed hot and cold fields
-- **WHEN** a PATCH request updates both `model` and `max_concurrent`
-- **THEN** the response SHALL include `restart_required: ["max_concurrent"]` listing only the cold fields that changed
+#### Scenario: All managed fields are cold
+- **WHEN** a PATCH request updates any of `core_groups`, `max_concurrent`, or `max_queued`
+- **THEN** the response SHALL include `restart_required` listing exactly the changed fields, because all three require a daemon restart to take effect (there are no hot fields on this surface)
 
 #### Scenario: Invalid field value — negative concurrency
 - **WHEN** a PATCH request sets `max_concurrent` to a negative number or zero

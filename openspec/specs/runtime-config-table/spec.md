@@ -1,7 +1,7 @@
 # Runtime Config Table
 
 ## Purpose
-Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor` that provides TTL-cached read/seed access. The table is the runtime source of truth for operational tuning (model, runtime_type, args, core_groups, concurrency, timeouts), seeded once from `[butler.runtime_seed]` in `butler.toml` on first boot, and managed thereafter via the dashboard.
+Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor` that provides TTL-cached read/seed access. The table is the runtime source of truth for operational tuning (`core_groups`, concurrency, queue depth), seeded once from `[butler.runtime_seed]` in `butler.toml` on first boot, and managed thereafter via the dashboard. NOTE: migration `core_073` moved `model`, `runtime_type`, `args`, and `session_timeout_s` OFF this table onto `public.model_catalog`; those fields are now resolved per complexity tier by `resolve_model()` and edited via the model-settings surface, not here.
 
 ## Requirements
 
@@ -12,17 +12,15 @@ Each butler schema SHALL contain a `runtime_config` table with typed columns for
 Source: RFC 0006 §Database Schema, RFC 0001 §Startup Phases
 Scope: v1-mandatory
 
-Schema:
+Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and `session_timeout_s`):
 - `butler_name text PRIMARY KEY`
-- `core_groups text[]` (nullable — NULL means all groups enabled)
-- `model text` (nullable — NULL means use catalog/default)
-- `runtime_type text NOT NULL DEFAULT 'codex'`
-- `args jsonb NOT NULL DEFAULT '[]'::jsonb`
+- `core_groups text[]` (nullable; NULL means all groups enabled)
 - `max_concurrent int NOT NULL DEFAULT 3`
 - `max_queued int NOT NULL DEFAULT 10`
-- `session_timeout_s int NOT NULL DEFAULT 900`
 - `seeded_at timestamptz NOT NULL DEFAULT now()`
 - `updated_at timestamptz NOT NULL DEFAULT now()`
+
+The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns: `butler_name`, `core_groups`, `max_concurrent`, `max_queued`, `seeded_at`, `updated_at`.
 
 #### Scenario: Table creation via migration
 - **WHEN** the Alembic migration runs against a butler database
