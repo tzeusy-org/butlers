@@ -700,18 +700,22 @@ async def _insert_batch(
     batch: list[dict[str, Any]],
     account_id: str | None,
     import_batch_id: str,
-) -> tuple[int, int, list[dict[str, Any]]]:
+) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]]]:
     """Insert a batch of normalised transactions.
 
     Performs a single batch deduplication query instead of N per-row checks,
     reducing the database roundtrips from N+1 to 2 (one batch check query,
     one insert transaction).
 
-    Returns (imported_count, skipped_count, error_details).
+    Returns (imported_count, skipped_count, error_details, imported_txns).
+    ``imported_txns`` is the list of transaction dicts that were inserted,
+    used by the caller to summarise the import (date range, categories) without
+    a second pass over the data.
     """
     imported = 0
     skipped = 0
     errors: list[dict[str, Any]] = []
+    imported_txns: list[dict[str, Any]] = []
 
     # Single batch deduplication check (replaces per-row _check_duplicate calls).
     try:
@@ -765,6 +769,7 @@ async def _insert_batch(
                 },
             )
             imported += 1
+            imported_txns.append(txn)
         except asyncpg.UniqueViolationError:
             skipped += 1
         except Exception as exc:
@@ -775,7 +780,43 @@ async def _insert_batch(
                 }
             )
 
-    return imported, skipped, errors
+    return imported, skipped, errors, imported_txns
+
+
+def _summarize_import(
+    imported_txns: list[dict[str, Any]], batches_processed: int
+) -> dict[str, Any]:
+    """Build the date_range / categories_used / batches_processed summary.
+
+    Computed from the transactions actually imported, using data already
+    threaded out of the batch loop — no extra pass over the CSV.
+
+    - ``date_range``: ``{"start", "end"}`` ISO timestamps spanning the earliest
+      and latest ``posted_at`` among imported rows (``None`` when nothing was
+      imported).
+    - ``categories_used``: sorted, de-duplicated list of non-empty categories
+      assigned to imported rows.
+    - ``batches_processed``: number of batches the import ran in.
+    """
+    date_range: dict[str, str] | None = None
+    if imported_txns:
+        dates = [txn["posted_at"] for txn in imported_txns]
+        date_range = {
+            "start": min(dates).isoformat(),
+            "end": max(dates).isoformat(),
+        }
+    categories_used = sorted(
+        {
+            (txn.get("category") or "").strip()
+            for txn in imported_txns
+            if (txn.get("category") or "").strip()
+        }
+    )
+    return {
+        "date_range": date_range,
+        "categories_used": categories_used,
+        "batches_processed": batches_processed,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -913,15 +954,19 @@ async def import_transactions(
     total_imported = 0
     total_skipped = 0
     all_errors: list[dict[str, Any]] = list(parse_errors)
+    imported_txns: list[dict[str, Any]] = []
+    batches_processed = 0
 
     for batch_start in range(0, len(parsed), _BATCH_SIZE):
         batch = parsed[batch_start : batch_start + _BATCH_SIZE]
-        batch_imported, batch_skipped, batch_errors = await _insert_batch(
+        batch_imported, batch_skipped, batch_errors, batch_txns = await _insert_batch(
             pool, batch, account_id, import_batch_id
         )
         total_imported += batch_imported
         total_skipped += batch_skipped
         all_errors.extend(batch_errors)
+        imported_txns.extend(batch_txns)
+        batches_processed += 1
 
         logger.info(
             "import_transactions: batch %d-%d — imported=%d skipped=%d errors=%d",
@@ -950,6 +995,7 @@ async def import_transactions(
         "date_format_detected": date_fmt,
         "dry_run": False,
         "categories_learned": categories_learned,
+        **_summarize_import(imported_txns, batches_processed),
         "error_details": all_errors[:50],  # cap to first 50 for response size
     }
 
@@ -1336,15 +1382,19 @@ async def import_transactions_from_file(
     total_imported = 0
     total_skipped = 0
     all_errors: list[dict[str, Any]] = list(parse_errors)
+    imported_txns: list[dict[str, Any]] = []
+    batches_processed = 0
 
     for batch_start in range(0, len(parsed), _BATCH_SIZE):
         batch = parsed[batch_start : batch_start + _BATCH_SIZE]
-        batch_imported, batch_skipped, batch_errors = await _insert_batch(
+        batch_imported, batch_skipped, batch_errors, batch_txns = await _insert_batch(
             pool, batch, account_id, import_batch_id
         )
         total_imported += batch_imported
         total_skipped += batch_skipped
         all_errors.extend(batch_errors)
+        imported_txns.extend(batch_txns)
+        batches_processed += 1
 
         logger.info(
             "import_from_file: batch %d-%d — imported=%d skipped=%d errors=%d",
@@ -1380,5 +1430,6 @@ async def import_transactions_from_file(
         "mv_refreshed": mv_refreshed,
         "baselines_triggered": baselines_triggered,
         "categories_learned": categories_learned,
+        **_summarize_import(imported_txns, batches_processed),
         "error_details": all_errors[:50],  # cap to first 50 for response size
     }

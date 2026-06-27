@@ -1104,3 +1104,54 @@ class TestReturnShape:
         learn_spy.assert_awaited_once()
         assert learn_spy.await_args.args[0] is pool
         assert result["categories_learned"] == 3
+
+    async def test_import_summary_fields(self):
+        """A real import returns date_range, categories_used, and
+        batches_processed computed from the rows actually imported.
+
+        Spec: finance-data-import — "Import response with dedup summary"
+        (date_range + categories_used) and "Batch processing" (batches_processed).
+        """
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)  # 4 rows, distinct dates/categories
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetchval = AsyncMock(return_value=False)
+        pool.fetch = AsyncMock(return_value=[])  # no duplicates → all 4 imported
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/chase.csv",
+        )
+
+        assert result["imported"] == 4
+
+        # batches_processed: 4 rows fit in a single batch (_BATCH_SIZE == 500).
+        assert result["batches_processed"] == 1
+
+        # categories_used: lowercased, de-duplicated, sorted categories assigned.
+        assert result["categories_used"] == [
+            "entertainment",
+            "food & drink",
+            "income",
+            "travel",
+        ]
+
+        # date_range: earliest .. latest transaction date among imported rows.
+        # CHASE_CSV transaction dates span 01/15/2024 .. 01/20/2024.
+        assert result["date_range"]["start"].startswith("2024-01-15")
+        assert result["date_range"]["end"].startswith("2024-01-20")
+
+    def test_summary_empty_when_nothing_imported(self):
+        """date_range is None and categories_used empty when no rows import,
+        but batches_processed still reflects the batches scanned."""
+        from butlers.tools.finance.data_import import _summarize_import
+
+        summary = _summarize_import([], batches_processed=2)
+
+        assert summary["date_range"] is None
+        assert summary["categories_used"] == []
+        assert summary["batches_processed"] == 2
