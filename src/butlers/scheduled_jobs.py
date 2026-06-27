@@ -866,13 +866,16 @@ async def _run_home_maintenance_schedule_check_job(
     """Run the home maintenance schedule check deterministic job.
 
     Queries home.maintenance_items for due/overdue/upcoming items, classifies
-    by severity, and returns a structured summary.  Notification delivery
-    requires a notify_fn to be wired in; the daemon passes None until the
-    switchboard notify path is integrated.
+    by severity, and delivers a Telegram reminder to the owner via the shared
+    ``_notify_owner_telegram`` helper when any items require attention (mirrors
+    the device_health_check / environment_report / energy_digest siblings).
     """
-    from butlers.jobs.home import run_maintenance_schedule_check
+    from butlers.jobs.home import _notify_owner_telegram, run_maintenance_schedule_check
 
-    return await run_maintenance_schedule_check(pool, job_args)
+    async def _notify(message: str) -> None:
+        await _notify_owner_telegram(pool, message)
+
+    return await run_maintenance_schedule_check(pool, job_args, notify_fn=_notify)
 
 
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {

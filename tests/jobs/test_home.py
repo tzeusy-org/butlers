@@ -254,6 +254,40 @@ async def test_maintenance_check_error_propagation_and_notify_failure():
 
 
 # ---------------------------------------------------------------------------
+# _run_home_maintenance_schedule_check_job (daemon wrapper — delivery wiring)
+# ---------------------------------------------------------------------------
+
+
+async def test_maintenance_wrapper_delivers_when_items_due():
+    """The scheduled wrapper routes through _notify_owner_telegram and DELIVERS
+    a Telegram reminder when items are due/overdue/upcoming (mirrors siblings)."""
+    from butlers.scheduled_jobs import _run_home_maintenance_schedule_check_job
+
+    pool = _make_pool(fetch_rows=[_make_db_row(next_due_at=datetime.now(UTC) - timedelta(days=5))])
+    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock) as mock_notify:
+        result = await _run_home_maintenance_schedule_check_job(pool, None)
+
+    mock_notify.assert_awaited_once()
+    # The owner pool and composed notification text are forwarded to the helper.
+    sent_pool, sent_text = mock_notify.await_args.args
+    assert sent_pool is pool
+    assert isinstance(sent_text, str) and sent_text
+    assert result["reminders_sent"] == 1 and result["due_count"] == 1
+
+
+async def test_maintenance_wrapper_no_notify_when_nothing_due():
+    """The wrapper does NOT notify when no items require attention."""
+    from butlers.scheduled_jobs import _run_home_maintenance_schedule_check_job
+
+    pool = _make_pool(fetch_rows=[])
+    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock) as mock_notify:
+        result = await _run_home_maintenance_schedule_check_job(pool, None)
+
+    mock_notify.assert_not_awaited()
+    assert result["reminders_sent"] == 0 and result["items_checked"] == 0
+
+
+# ---------------------------------------------------------------------------
 # classify_battery / classify_offline
 # ---------------------------------------------------------------------------
 
