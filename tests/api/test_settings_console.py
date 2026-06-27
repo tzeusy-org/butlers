@@ -165,6 +165,12 @@ async def test_console_spend_near_ceiling_generates_amber():
             "_get_spend_mtd",
             new=AsyncMock(return_value=(95.0, 100.0, None)),  # 95% of $100
         ),
+        # Force a normal-confidence projection so the gate stays open regardless
+        # of the calendar day the test runs on.
+        patch(
+            "butlers.api.routers.spend.projection_confidence_for",
+            new=lambda days_elapsed: "normal",
+        ),
         patch.object(console_mod, "_count_open_approvals", new=AsyncMock(return_value=(0, None))),
         patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(2, 2, None))),
         patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
@@ -180,6 +186,42 @@ async def test_console_spend_near_ceiling_generates_amber():
     ceiling_items = [a for a in amber if a["kind"] == "spend_ceiling"]
     assert len(ceiling_items) == 1, f"Expected one spend_ceiling item, got {ceiling_items}"
     assert "/settings/spend" in ceiling_items[0]["action_route"]
+
+
+@pytest.mark.asyncio
+async def test_console_near_ceiling_suppressed_when_projection_low_confidence():
+    """A low-confidence projection (days_elapsed < 3) gates the near-ceiling item.
+
+    dashboard-spend-dashboard §5.2: projection_confidence='low' signals the Console
+    aggregator NOT to raise a "spend near ceiling" attention item, since the naive
+    early-month projection swings wildly.
+    """
+    app = _make_app(db=None)
+
+    with (
+        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(1, None))),
+        patch.object(
+            console_mod,
+            "_get_spend_mtd",
+            new=AsyncMock(return_value=(95.0, 100.0, None)),  # 95% of $100 → would normally fire
+        ),
+        patch(
+            "butlers.api.routers.spend.projection_confidence_for",
+            new=lambda days_elapsed: "low",
+        ),
+        patch.object(console_mod, "_count_open_approvals", new=AsyncMock(return_value=(0, None))),
+        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(2, 2, None))),
+        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/settings/console")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    ceiling_items = [a for a in body["attention"] if a["kind"] == "spend_ceiling"]
+    assert ceiling_items == [], "Near-ceiling item must be suppressed on low-confidence projection"
 
 
 @pytest.mark.asyncio

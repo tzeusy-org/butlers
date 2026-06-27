@@ -956,6 +956,17 @@ class ForecastDay(BaseModel):
     projected: bool  # True for extrapolated days after today
 
 
+def projection_confidence_for(days_elapsed: int) -> Literal["low", "normal"]:
+    """Confidence of the naive month-end projection (§5.2).
+
+    The linear estimator divides MTD spend by very few elapsed days early in the
+    month, so the projection swings wildly until a few days of actuals exist.
+    ``"low"`` (``days_elapsed < 3``) signals the Console aggregator NOT to raise a
+    "spend near ceiling" attention item from a low-confidence projection.
+    """
+    return "low" if days_elapsed < 3 else "normal"
+
+
 class ForecastResponse(BaseModel):
     days: list[ForecastDay]
     projected_eom_usd: float
@@ -963,6 +974,7 @@ class ForecastResponse(BaseModel):
     days_elapsed: int
     mtd_usd: float
     ceiling_usd: float | None
+    projection_confidence: Literal["low", "normal"]
 
 
 @router.get("/forecast", response_model=ApiResponse[ForecastResponse])
@@ -1058,6 +1070,7 @@ async def get_spend_forecast(
             days_elapsed=days_elapsed,
             mtd_usd=round(mtd_usd, 6),
             ceiling_usd=ceiling_usd,
+            projection_confidence=projection_confidence_for(days_elapsed),
         )
     )
 

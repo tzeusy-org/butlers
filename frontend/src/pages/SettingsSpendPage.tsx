@@ -47,6 +47,7 @@ interface ForecastData {
   days_elapsed: number
   mtd_usd: number
   ceiling_usd: number | null
+  projection_confidence: "low" | "normal"
 }
 
 interface SpendRule {

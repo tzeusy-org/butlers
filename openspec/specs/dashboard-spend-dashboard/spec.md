@@ -33,7 +33,7 @@ The dashboard SHALL expose the spend endpoints.
 
 #### Scenario: Spend forecast (naive estimator v1)
 - **WHEN** `GET /api/spend/forecast` is called
-- **THEN** the response is `{days: {date, cost_usd, projected}[], projected_eom_usd: float, days_in_month: int, days_elapsed: int, mtd_usd: float, ceiling_usd: float | null}` (the field is `days` not `daily`, and per-day cost is `cost_usd` not `usd`; `projection_confidence` is specified below but is not yet implemented)
+- **THEN** the response is `{days: {date, cost_usd, projected}[], projected_eom_usd: float, days_in_month: int, days_elapsed: int, mtd_usd: float, ceiling_usd: float | null, projection_confidence: "low" | "normal"}` (the field is `days` not `daily`, and per-day cost is `cost_usd` not `usd`)
 - **AND** `projected_eom_usd = mtd_total_usd / max(days_elapsed, 1) × days_in_month`
 - **AND** `projection_confidence = "low"` when `days_elapsed < 3`, else `"normal"`. This signals to the Console aggregator NOT to fire a "spend near ceiling" attention item from a low-confidence projection.
 - **AND** a code-level TODO marks the location of the smarter estimator for a future change.

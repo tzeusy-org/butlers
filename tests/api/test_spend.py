@@ -897,6 +897,45 @@ async def test_forecast_endpoint_returns_correct_shape(app):
     assert len(actual_days) + len(projected_days) == days_in_month
 
 
+def test_projection_confidence_low_below_three_days():
+    """projection_confidence == 'low' when days_elapsed < 3 (dashboard-spend-dashboard §5.2)."""
+    from butlers.api.routers.spend import projection_confidence_for
+
+    assert projection_confidence_for(1) == "low"
+    assert projection_confidence_for(2) == "low"
+
+
+def test_projection_confidence_normal_from_three_days():
+    """projection_confidence == 'normal' when days_elapsed >= 3."""
+    from butlers.api.routers.spend import projection_confidence_for
+
+    assert projection_confidence_for(3) == "normal"
+    assert projection_confidence_for(15) == "normal"
+
+
+async def test_forecast_endpoint_exposes_projection_confidence(app):
+    """GET /api/spend/forecast includes projection_confidence matching days_elapsed."""
+    from datetime import date
+
+    from butlers.api.routers.spend import projection_confidence_for
+
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    mgr = _mock_mgr({"sw": _make_tool_result({"days": []})})
+    _wire(app, mgr, configs, _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/forecast")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert "projection_confidence" in data
+    expected = projection_confidence_for(date.today().day)
+    assert data["projection_confidence"] == expected
+    assert data["projection_confidence"] in ("low", "normal")
+
+
 # ---------------------------------------------------------------------------
 # §5.2 Spend rules — position reshuffle on insert/delete [bu-dvb7i]
 # ---------------------------------------------------------------------------

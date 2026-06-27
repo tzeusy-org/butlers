@@ -440,8 +440,16 @@ async def _build_console_payload(
     # Model errors → red
     red_items.extend(model_error_items)
 
-    # Spend near ceiling → amber
-    if ceiling is not None and ceiling > 0:
+    # Spend near ceiling → amber.  Suppressed while the month-end projection is
+    # low-confidence (days_elapsed < 3) so an early-month spike does not raise a
+    # false alarm (dashboard-spend-dashboard §5.2 projection_confidence gate).
+    from datetime import date
+
+    from butlers.api.routers.spend import projection_confidence_for
+
+    days_elapsed = date.today().day  # 1-based, inclusive of today
+    projection_confidence = projection_confidence_for(days_elapsed)
+    if ceiling is not None and ceiling > 0 and projection_confidence != "low":
         ratio = spend_mtd / ceiling
         if ratio >= 0.90:
             pct = int(ratio * 100)
