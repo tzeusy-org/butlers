@@ -196,3 +196,51 @@ async def test_blocked_event_buffered_not_ingested(
 
     assert not ingested
     assert len(runtime._filtered_event_buffer) == 1
+
+
+async def test_live_ingest_envelope_carries_canonical_idempotency_key(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """The real _process_event path must emit control.idempotency_key + ingestion_tier.
+
+    Regression for bu-42f1i: the live envelope previously omitted these control
+    fields, weakening Switchboard dedup to payload-hash bucketing. The key must be
+    the canonical event-ID + Google ``updated`` timestamp derived value so two
+    ingests of the same event revision dedup deterministically.
+    """
+    runtime = CalendarConnectorRuntime(account_config)
+    event = {
+        "id": "evt-live-1",
+        "status": "confirmed",
+        "summary": "Sync",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "org@example.com"},
+    }
+
+    captured: list[dict] = []
+
+    async def _capture(envelope: dict) -> None:
+        captured.append(envelope)
+
+    # Policy allows (None decision == allowed) so the success path runs.
+    with (
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime._global_ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture),
+    ):
+        assert await runtime._process_event(event) is True
+        assert await runtime._process_event(dict(event)) is True
+
+    assert len(captured) == 2
+    control = captured[0]["control"]
+    assert control["ingestion_tier"] == "full"
+    # Canonical, event-ID + updated-timestamp derived (NOT a payload hash).
+    expected_key = f"gcal:{_ENDPOINT}:evt-live-1:2026-01-02T00:00:00Z"
+    assert control["idempotency_key"] == expected_key
+    # Two ingests of the same event revision dedup to the same key.
+    assert captured[0]["control"]["idempotency_key"] == captured[1]["control"]["idempotency_key"]
+    # External thread id mirrors the event id per spec.
+    assert captured[0]["event"]["external_thread_id"] == "evt-live-1"

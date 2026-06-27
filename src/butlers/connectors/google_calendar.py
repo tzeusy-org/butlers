@@ -2234,7 +2234,17 @@ def _build_ingest_envelope(
     organizer_email: str,
     normalized_text: str,
 ) -> dict[str, Any]:
-    """Build an ingest.v1 envelope for a calendar event."""
+    """Build an ingest.v1 envelope for a calendar event.
+
+    Per spec connector-google-calendar §ingest.v1 Field Mapping:
+    - ``control.idempotency_key`` = ``"gcal:<endpoint_identity>:<event_id>:<updated>"``
+      (canonical, event-ID + Google ``updated`` timestamp derived) so re-ingesting
+      the same event revision dedups deterministically rather than by payload hash.
+    - ``control.ingestion_tier`` = ``"full"``.
+    - ``event.external_thread_id`` = the event ID (events are their own thread).
+    """
+    updated = event.get("updated") or observed_at
+    idempotency_key = f"gcal:{endpoint_identity}:{event_id}:{updated}"
     return {
         "schema_version": "ingest.v1",
         "source": {
@@ -2244,7 +2254,7 @@ def _build_ingest_envelope(
         },
         "event": {
             "external_event_id": event_id,
-            "external_thread_id": None,
+            "external_thread_id": event_id,
             "observed_at": observed_at,
         },
         "sender": {
@@ -2255,6 +2265,8 @@ def _build_ingest_envelope(
             "normalized_text": normalized_text,
         },
         "control": {
+            "idempotency_key": idempotency_key,
+            "ingestion_tier": "full",
             "policy_tier": "default",
         },
     }
