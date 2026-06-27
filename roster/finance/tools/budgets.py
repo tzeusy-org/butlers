@@ -65,6 +65,50 @@ def _period_trunc(period: str) -> str:
     return mapping[period]
 
 
+def _period_bounds(period: str, anchor: date) -> tuple[date, date]:
+    """Return the inclusive (start, end) date bounds of the current budget period.
+
+    Alignment mirrors the ``DATE_TRUNC`` semantics used by ``budget_status`` for
+    spending aggregation (weekly from Monday, monthly from the 1st, quarterly
+    from the quarter start, yearly from Jan 1).
+
+    Parameters
+    ----------
+    period:
+        Budget period: ``weekly``, ``monthly``, ``quarterly``, or ``yearly``.
+    anchor:
+        The date whose containing period is computed (typically "today").
+
+    Returns
+    -------
+    tuple[date, date]
+        ``(period_start, period_end)`` — both inclusive.
+    """
+    if period == "weekly":
+        # ISO weekday: Monday == 1 ... Sunday == 7; align week start to Monday.
+        from datetime import timedelta
+
+        start = anchor - timedelta(days=anchor.isoweekday() - 1)
+        end = start + timedelta(days=6)
+        return start, end
+    if period == "monthly":
+        start = anchor.replace(day=1)
+        end = anchor.replace(day=calendar.monthrange(anchor.year, anchor.month)[1])
+        return start, end
+    if period == "quarterly":
+        quarter_index = (anchor.month - 1) // 3  # 0..3
+        start_month = quarter_index * 3 + 1
+        end_month = start_month + 2
+        start = date(anchor.year, start_month, 1)
+        end = date(anchor.year, end_month, calendar.monthrange(anchor.year, end_month)[1])
+        return start, end
+    if period == "yearly":
+        return date(anchor.year, 1, 1), date(anchor.year, 12, 31)
+    raise ValueError(
+        f"Unsupported period: {period!r}. Must be one of: {', '.join(sorted(VALID_PERIODS))}"
+    )
+
+
 def _budget_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     """Convert a budgets table row to a serializable dict."""
     import uuid
@@ -346,6 +390,8 @@ async def budget_status(
         - ``remaining`` -- string-encoded remaining budget (may be negative if exceeded)
         - ``utilization_pct`` -- float, spending / budget_amount as a percentage (0-100+)
         - ``status`` -- ``on_track``, ``warning``, or ``exceeded``
+        - ``period_start`` -- ISO date (inclusive) of the current period's start
+        - ``period_end`` -- ISO date (inclusive) of the current period's end
         - ``warn_threshold`` -- configured warning threshold fraction
         - ``alert_threshold`` -- configured alert threshold fraction
     """
@@ -384,6 +430,7 @@ async def budget_status(
         alert_threshold: Decimal = budget["alert_threshold"]
 
         trunc_unit = _period_trunc(period)
+        period_start, period_end = _period_bounds(period, now.date())
 
         # Aggregate debit spending for this category and currency in the current period window.
         # Filter by currency to avoid incorrect cross-currency aggregation.
@@ -429,6 +476,8 @@ async def budget_status(
                 "remaining": str(remaining),
                 "utilization_pct": float(utilization * 100),
                 "status": status,
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
                 "warn_threshold": str(warn_threshold),
                 "alert_threshold": str(alert_threshold),
             }

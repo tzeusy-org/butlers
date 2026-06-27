@@ -1243,10 +1243,65 @@ class TestBudgetStatus:
             "remaining",
             "utilization_pct",
             "status",
+            "period_start",
+            "period_end",
             "warn_threshold",
             "alert_threshold",
         }
         assert expected_keys == set(item.keys())
+
+    async def test_monthly_period_bounds(self, budget_pool):
+        """A monthly budget reports the first and last day of the current month."""
+        import calendar as _calendar
+
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="groceries", amount=500.0, period="monthly")
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+
+        today = datetime.now(UTC).date()
+        expected_start = today.replace(day=1)
+        expected_end = today.replace(day=_calendar.monthrange(today.year, today.month)[1])
+        assert item["period_start"] == expected_start.isoformat()
+        assert item["period_end"] == expected_end.isoformat()
+
+    async def test_weekly_period_bounds(self, budget_pool):
+        """A weekly budget reports Monday..Sunday of the current week."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="dining", amount=200.0, period="weekly")
+        result = await budget_status(budget_pool)
+        item = result["items"][0]
+
+        today = datetime.now(UTC).date()
+        expected_start = today - timedelta(days=today.isoweekday() - 1)
+        expected_end = expected_start + timedelta(days=6)
+        assert item["period_start"] == expected_start.isoformat()
+        assert item["period_end"] == expected_end.isoformat()
+        # Spec invariant: start is a Monday, end is a Sunday.
+        assert date.fromisoformat(item["period_start"]).isoweekday() == 1
+        assert date.fromisoformat(item["period_end"]).isoweekday() == 7
+
+    async def test_quarterly_and_yearly_period_bounds(self, budget_pool):
+        """Quarterly bounds align to the quarter; yearly bounds span Jan 1..Dec 31."""
+        from butlers.tools.finance.budgets import budget_set, budget_status
+
+        await budget_set(budget_pool, category="travel", amount=1000.0, period="quarterly")
+        await budget_set(budget_pool, category="gifts", amount=600.0, period="yearly")
+        result = await budget_status(budget_pool)
+        by_category = {item["category"]: item for item in result["items"]}
+
+        today = datetime.now(UTC).date()
+
+        q_start_month = ((today.month - 1) // 3) * 3 + 1
+        expected_q_start = date(today.year, q_start_month, 1)
+        assert by_category["travel"]["period_start"] == expected_q_start.isoformat()
+        # Quarter start month is one of Jan/Apr/Jul/Oct.
+        assert date.fromisoformat(by_category["travel"]["period_start"]).month in {1, 4, 7, 10}
+
+        assert by_category["gifts"]["period_start"] == date(today.year, 1, 1).isoformat()
+        assert by_category["gifts"]["period_end"] == date(today.year, 12, 31).isoformat()
 
     async def test_excludes_inactive_budgets_from_status(self, budget_pool):
         """Deactivated budgets are not included in budget_status."""
