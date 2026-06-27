@@ -182,6 +182,27 @@ def _wrap_routed_message(prompt: str) -> str:
     return f"<routed_message>\n{prompt}\n</routed_message>"
 
 
+def _parse_telegram_thread_identity(thread_identity: str | None) -> tuple[str, int] | None:
+    """Parse a Telegram ``source_thread_identity`` of the form ``chat_id:message_id``.
+
+    Returns ``(chat_id, message_id)`` when the value is a well-formed Telegram
+    reply target, or ``None`` when it is missing/malformed (in which case a reply
+    intent falls back to a plain send).  Used by BOTH the route.execute approval
+    gate and the telegram delivery block so the gate always evaluates the SAME
+    endpoint the delivery will actually use — a fallback send must never reach an
+    ungated recipient.
+    """
+    if not thread_identity:
+        return None
+    chat_id, separator, message_id_raw = thread_identity.partition(":")
+    if not (chat_id and separator and message_id_raw):
+        return None
+    try:
+        return chat_id, int(message_id_raw)
+    except ValueError:
+        return None
+
+
 def _format_validation_error(prefix: str, exc: ValidationError) -> str:
     """Build a deterministic single-line validation error summary."""
     errors = exc.errors()
@@ -660,6 +681,84 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         modules_by_name = {module.name: module for module in daemon._modules}
 
         try:
+            # Channel-general role-based approval gating for NON-email channels
+            # (telegram, whatsapp, and any future channel).  route.execute calls
+            # module delivery methods directly (not MCP tools), so the MCP-level
+            # approval wrappers are not in this path.  Mirror what notify() does
+            # via check_recipient (bu-nsml2 / #2722) so a non-owner recipient on
+            # any non-email channel is gated/parked exactly as on email:
+            # owner-directed sends auto-approve on any active verified owner
+            # channel, while non-owner recipients require a standing rule or are
+            # parked (fail-closed).  Email is gated separately in its own block
+            # below via check_email_recipient, which additionally enforces the
+            # email-only channel-primacy / context-conflict incident behaviour.
+            if channel != "email" and intent in {"send", "reply"}:
+                # Resolve the gate target to the SAME endpoint the delivery block
+                # below will actually use, so the gate can never validate a
+                # different recipient than the one that receives the message.
+                gate_intent = intent
+                if intent == "send":
+                    gate_target = notify_request.delivery.recipient
+                elif channel == "telegram" and (
+                    _parse_telegram_thread_identity(
+                        notify_context.source_thread_identity if notify_context else None
+                    )
+                    is None
+                ):
+                    # Telegram reply with a missing/invalid thread identity falls
+                    # back to a plain send to delivery.recipient (or the resolved
+                    # default) — see the telegram reply block below.  Gate THAT
+                    # recipient as a send; otherwise the fallback send would reach
+                    # an ungated non-owner target even when the source sender is
+                    # the owner (auto-approve) or unset (gate skipped).
+                    gate_intent = "send"
+                    gate_target = notify_request.delivery.recipient
+                    if not gate_target:
+                        gate_target = await daemon._resolve_default_notify_recipient(
+                            channel="telegram",
+                            intent="send",
+                            recipient=None,
+                            request_context=(
+                                notify_context.model_dump() if notify_context is not None else None
+                            ),
+                        )
+                else:  # reply delivered into the source thread — gate the sender
+                    gate_target = notify_context.source_sender_identity if notify_context else None
+
+                if gate_target:
+                    approval_pool = daemon.db.pool if daemon.db is not None else None
+                    if approval_pool is not None:
+                        from butlers.core.approvals_hooks import check_recipient
+
+                        decision = await check_recipient(
+                            approval_pool,
+                            channel=channel,
+                            target=gate_target,
+                            rule_tool_name="route.execute",
+                            rule_match_args={"to": gate_target, "channel": channel},
+                            park_tool_name="route.execute",
+                            park_tool_args={
+                                "to": gate_target,
+                                "channel": channel,
+                                "intent": gate_intent,
+                                "message": message_text,
+                                "origin_butler": origin,
+                            },
+                            park_summary=(
+                                f"route.execute blocked: {channel} to {gate_target!r}. "
+                                f"Message: {message_text!r}"
+                            ),
+                            session_id=get_current_runtime_session_id(),
+                            butler_name=origin,
+                        )
+                        if not decision.allowed:
+                            raise ValueError(
+                                f"Delivery blocked: {channel} target '{gate_target}' is a "
+                                f"{decision.contact_desc} and no standing approval rule "
+                                f"matches. Parked for owner review on the approval "
+                                f"dashboard (action_id={decision.action_id})."
+                            )
+
             if channel == "telegram":
                 telegram_module = modules_by_name.get("telegram")
                 if telegram_module is None:
@@ -684,17 +783,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     thread_identity = (
                         notify_context.source_thread_identity if notify_context else None
                     )
-                    _tg_reply_ok = False
-                    if thread_identity:
-                        chat_id, separator, message_id_raw = thread_identity.partition(":")
-                        if chat_id and separator and message_id_raw:
-                            try:
-                                reply_message_id = int(message_id_raw)
-                                _tg_reply_ok = True
-                            except ValueError:
-                                pass
+                    parsed_thread = _parse_telegram_thread_identity(thread_identity)
 
-                    if _tg_reply_ok:
+                    if parsed_thread is not None:
+                        chat_id, reply_message_id = parsed_thread
                         adapter_result = await telegram_module._reply_to_message(
                             chat_id, reply_message_id, rendered_text
                         )
@@ -729,17 +821,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     thread_identity = (
                         notify_context.source_thread_identity if notify_context else None
                     )
-                    _tg_react_ok = False
-                    if thread_identity:
-                        chat_id, separator, message_id_raw = thread_identity.partition(":")
-                        if chat_id and separator and message_id_raw:
-                            try:
-                                target_message_id = int(message_id_raw)
-                                _tg_react_ok = True
-                            except ValueError:
-                                pass
+                    parsed_thread = _parse_telegram_thread_identity(thread_identity)
 
-                    if not _tg_react_ok:
+                    if parsed_thread is None:
                         logger.info(
                             "notify react: source_thread_identity %r is not a valid "
                             "Telegram chat_id:message_id — skipping react.",
@@ -750,6 +834,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             "reason": "source_thread_identity is not valid Telegram format",
                         }
                     else:
+                        chat_id, target_message_id = parsed_thread
                         emoji = notify_request.delivery.emoji
                         if not emoji:
                             raise ValueError("React intent requires delivery.emoji.")

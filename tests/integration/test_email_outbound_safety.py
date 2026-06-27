@@ -30,6 +30,7 @@ from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.email import EmailConfig, EmailModule
+from butlers.modules.telegram import TelegramModule
 
 pytestmark = pytest.mark.unit
 
@@ -1434,6 +1435,196 @@ class TestRouteExecuteApprovalGate:
         assert result.get("status") == "error", (
             f"route.execute send to non-owner without standing rule MUST be blocked, got: {result}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Channel parity (bu-pz5ly): route.execute must gate NON-email channels too.
+#
+# Pre-fix, route.execute gated EMAIL only via check_email_recipient; the
+# synchronous telegram/whatsapp delivery path was ungated (the async notify()
+# path already gated all channels via check_recipient, shipped in #2722).  This
+# class proves route.execute now applies the SAME channel-general gate
+# (check_recipient) to a non-email channel, mirroring the email behaviour:
+# non-owner telegram recipients are parked/blocked while owner sends auto-approve.
+# ---------------------------------------------------------------------------
+
+
+def _telegram_messenger_dir(tmp_path: Path) -> Path:
+    """Create a messenger butler directory with telegram + approvals enabled."""
+    d = tmp_path / "messenger"
+    d.mkdir()
+    (d / "butler.toml").write_text(
+        '[butler]\nname = "messenger"\nport = 41105\n'
+        'description = "Outbound delivery"\n\n'
+        '[butler.db]\nname = "butlers"\nschema = "messenger"\n\n'
+        "[[butler.schedule]]\n"
+        'name = "health"\ncron = "0 * * * *"\n'
+        'prompt = "Check"\n\n'
+        "[modules.telegram]\n\n"
+        "[modules.approvals]\nenabled = true\n"
+    )
+    (d / "MANIFESTO.md").write_text("# Messenger")
+    (d / "CLAUDE.md").write_text("Messenger.")
+    return d
+
+
+@pytest.mark.asyncio
+class TestRouteExecuteTelegramApprovalGate:
+    """Bug fix (bu-pz5ly): route.execute MUST gate non-email channels too.
+
+    route.execute calls telegram_module._send_message() directly (not via MCP
+    tools), so the MCP-level approval wrappers are not in the path.  The inline
+    gate must re-enforce role-based gating for telegram exactly as it does for
+    email — owner sends auto-approve, non-owner sends without a standing rule are
+    parked/blocked (fail-closed).
+    """
+
+    async def test_send_to_non_owner_telegram_is_blocked(self, tmp_path: Path) -> None:
+        """route.execute send to a known non-owner telegram chat → MUST be blocked."""
+        messenger_dir = _telegram_messenger_dir(tmp_path)
+        daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None, "route_execute tool must be registered"
+
+        envelope = _make_route_envelope(
+            channel="telegram",
+            intent="send",
+            recipient=KNOWN_NON_OWNER_TELEGRAM,
+            message="Hello friend",
+            origin_butler="relationship",
+        )
+
+        # Spy on the real delivery method to prove it is NEVER reached when blocked.
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(TelegramModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "error", (
+            f"route.execute send to non-owner telegram without a standing rule MUST be "
+            f"blocked, got: {result}"
+        )
+        error_obj = result.get("error", {})
+        error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
+        assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
+        send_spy.assert_not_awaited()
+
+    async def test_send_to_owner_telegram_is_allowed(self, tmp_path: Path) -> None:
+        """route.execute send to the owner's telegram chat → MUST be allowed through."""
+        messenger_dir = _telegram_messenger_dir(tmp_path)
+        daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        envelope = _make_route_envelope(
+            channel="telegram",
+            intent="send",
+            recipient=OWNER_TELEGRAM,
+            message="Your weekly report",
+            origin_butler="finance",
+        )
+
+        send_spy = AsyncMock(return_value={"status": "sent", "message_id": 1})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_owner_contact()),
+            ),
+            patch.object(TelegramModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "ok", (
+            f"route.execute send to owner telegram MUST succeed, got: {result}"
+        )
+        send_spy.assert_awaited_once()
+
+    async def test_reply_fallback_send_to_non_owner_is_gated(self, tmp_path: Path) -> None:
+        """Telegram reply whose thread is invalid falls back to a SEND — gate the real target.
+
+        Regression for the gemini-flagged bypass (PR #2736): a telegram ``reply``
+        with a missing/invalid ``source_thread_identity`` falls back to a plain
+        send to ``delivery.recipient``.  The gate must validate THAT fallback
+        recipient, not ``source_sender_identity`` — otherwise an owner (or unset)
+        source sender would auto-approve/skip the gate while the fallback send
+        reaches an ungated non-owner recipient.
+        """
+        from butlers.core.utils import generate_uuid7_string
+
+        messenger_dir = _telegram_messenger_dir(tmp_path)
+        daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        request_id = generate_uuid7_string()
+        route_request_id = generate_uuid7_string()
+        envelope = {
+            "schema_version": "route.v1",
+            "request_context": {
+                "request_id": route_request_id,
+                "received_at": datetime.now(UTC).isoformat(),
+                "source_channel": "telegram_bot",
+                "source_endpoint_identity": "switchboard",
+                "source_sender_identity": "relationship",
+            },
+            "input": {
+                "prompt": "Deliver notification via telegram",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "relationship",
+                        "delivery": {
+                            "intent": "reply",
+                            "channel": "telegram",
+                            "message": "Hello friend",
+                            # Fallback target: a non-owner chat.
+                            "recipient": KNOWN_NON_OWNER_TELEGRAM,
+                        },
+                        "request_context": {
+                            "request_id": request_id,
+                            "source_channel": "telegram_bot",
+                            "source_endpoint_identity": f"telegram:{OWNER_TELEGRAM}",
+                            # Owner sender would auto-approve the OLD gate target...
+                            "source_sender_identity": OWNER_TELEGRAM,
+                            # ...but the thread is invalid → delivery falls back to send.
+                            "source_thread_identity": "not-a-valid-thread",
+                        },
+                    },
+                },
+            },
+        }
+
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(TelegramModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "error", (
+            f"Fallback send to a non-owner recipient MUST be blocked even when the "
+            f"source sender is the owner, got: {result}"
+        )
+        error_obj = result.get("error", {})
+        error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
+        assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
+        send_spy.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
