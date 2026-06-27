@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useMindMaps, usePendingReviews } from "@/hooks/use-education";
+import { useAllPendingReviews, useMindMaps } from "@/hooks/use-education";
 import type { PendingReviewNode } from "@/api/index.ts";
 
 interface ReviewEntry extends PendingReviewNode {
@@ -58,28 +58,22 @@ function ReviewEntryRow({ entry }: { entry: ReviewEntry }) {
   );
 }
 
-/** Aggregate pending reviews for a single mind map. */
-function useMindMapReviews(mindMapId: string | null) {
-  return usePendingReviews(mindMapId);
-}
-
 export default function ReviewTimeline() {
   const { data: mindMapsResponse } = useMindMaps({ status: "active" });
-  const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse]);
+  // Stable reference for the data array so the inner useMemo doesn't refire on
+  // every render (TanStack Query returns a fresh response object each render).
+  const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse?.data]);
+  const mapIds = useMemo(() => mindMaps.map((m) => m.id), [mindMaps]);
 
-  // Fetch pending reviews for each active mind map
-  // We use the first 10 maps to avoid too many queries
-  const map0 = useMindMapReviews(mindMaps[0]?.id ?? null);
-  const map1 = useMindMapReviews(mindMaps[1]?.id ?? null);
-  const map2 = useMindMapReviews(mindMaps[2]?.id ?? null);
-  const map3 = useMindMapReviews(mindMaps[3]?.id ?? null);
-  const map4 = useMindMapReviews(mindMaps[4]?.id ?? null);
+  // Fetch pending reviews for EVERY active mind map. useAllPendingReviews wraps
+  // useQueries so the query count tracks the live map list without violating
+  // React's rules of hooks — no arbitrary cap, no map silently dropped.
+  const reviewResults = useAllPendingReviews(mapIds);
 
   const allEntries = useMemo(() => {
     const entries: ReviewEntry[] = [];
-    const results = [map0, map1, map2, map3, map4];
-    for (let i = 0; i < Math.min(mindMaps.length, 5); i++) {
-      const nodes = results[i]?.data ?? [];
+    for (let i = 0; i < mindMaps.length; i++) {
+      const nodes = reviewResults[i]?.data ?? [];
       for (const node of nodes) {
         entries.push({
           ...node,
@@ -93,7 +87,7 @@ export default function ReviewTimeline() {
         new Date(a.next_review_at).getTime() - new Date(b.next_review_at).getTime(),
     );
     return entries;
-  }, [mindMaps, map0, map1, map2, map3, map4]);
+  }, [mindMaps, reviewResults]);
 
   const groups = useMemo(() => groupByTimePeriod(allEntries), [allEntries]);
 
