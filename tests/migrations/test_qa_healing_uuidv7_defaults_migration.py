@@ -1,6 +1,6 @@
 """Regression tests for the qa_findings / healing_attempts UUIDv7 PK defaults.
 
-core_147 repoints ``public.qa_findings.id`` and ``public.healing_attempts.id``
+core_148 repoints ``public.qa_findings.id`` and ``public.healing_attempts.id``
 from ``gen_random_uuid()`` (v4) to ``public.uuid_generate_v7()`` (v7), matching
 the documented intent and the sibling QA journal convention.
 """
@@ -25,12 +25,12 @@ _MIGRATION_PATH = (
     / "alembic"
     / "versions"
     / "core"
-    / "core_147_qa_healing_uuidv7_defaults.py"
+    / "core_148_qa_healing_uuidv7_defaults.py"
 )
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_147", _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_148", _MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -39,8 +39,8 @@ def _load_migration():
 
 def test_migration_revision_chain() -> None:
     mod = _load_migration()
-    assert mod.revision == "core_147"
-    assert mod.down_revision == "core_146"
+    assert mod.revision == "core_148"
+    assert mod.down_revision == "core_147"
 
 
 @pytest.fixture(scope="module")
