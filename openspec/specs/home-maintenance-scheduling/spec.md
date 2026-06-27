@@ -24,11 +24,12 @@ Recurring maintenance items are stored in the `home.maintenance_items` database 
   - `created_at` (TIMESTAMPTZ, NOT NULL, default `now()`)
   - `updated_at` (TIMESTAMPTZ, NOT NULL, default `now()`)
 
-#### Scenario: Migration branch label
+#### Scenario: Migration revision
 
-- **WHEN** the migration revision is created
-- **THEN** it SHALL use branch label `"home_maintenance"`
+- **WHEN** the `maintenance_items` table is created
+- **THEN** its DDL SHALL live in the consolidated home schema migration `roster/home/migrations/001_home_tables.py` (branch label `"home"`), alongside `ha_entity_snapshot` and `ha_command_log`
 - **AND** it SHALL depend on the existing home schema migration chain
+- **NOTE** the table was originally specified under a separate `home_maintenance` branch label; the shipped migration folded it into the single `"home"` branch (see the `from home_maintenance_001` marker comment in `001_home_tables.py`), so `"home"` is now authoritative.
 
 ### Requirement: Maintenance Schedule Check Job
 
@@ -56,6 +57,8 @@ The `maintenance_schedule_check` deterministic job checks all maintenance items 
 
 #### Scenario: Reminder notification
 
+> **SPEC-CODE DIVERGENCE**: `run_maintenance_schedule_check` (`src/butlers/jobs/home.py`) takes an optional `notify_fn` and only notifies when one is supplied, but the daemon wrapper `_run_home_maintenance_schedule_check_job` (`src/butlers/scheduled_jobs.py`) calls it without a `notify_fn`, so scheduled runs compose `notification_text` and log it but send no Telegram message. The three sibling home jobs (`device_health_check`, `environment_report`, `energy_digest`) call the shared `_notify_owner_telegram` helper directly and do deliver. This scenario is the intended contract; a remediation follow-up tracks wiring maintenance onto the same helper.
+
 - **WHEN** one or more items are due, overdue, or upcoming
 - **THEN** the job SHALL send a Telegram notification via the notify helper with `intent="send"`
 - **AND** the message SHALL list items grouped by status (critical overdue first, then overdue, then due, then upcoming)
@@ -70,7 +73,8 @@ The `maintenance_schedule_check` deterministic job checks all maintenance items 
 #### Scenario: Job return value
 
 - **WHEN** the job completes
-- **THEN** it SHALL return a dict with keys `items_checked` (int), `due_count` (int), `overdue_count` (int), `upcoming_count` (int), `reminders_sent` (0 or 1)
+- **THEN** it SHALL return a dict with keys `items_checked` (int), `due_count` (int), `overdue_count` (int), `critical_count` (int), `upcoming_count` (int), `never_completed_count` (int), `reminders_sent` (0 or 1), and `notification_text` (str or None)
+- **NOTE** `critical_count` (overdue more than 30 days), `never_completed_count` (items with no `last_completed_at`), and `notification_text` (the composed message, or None when nothing was due) are returned in addition to the originally specified subset.
 
 ### Requirement: Maintenance Item Management via MCP Tools
 

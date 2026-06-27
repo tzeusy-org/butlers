@@ -162,7 +162,7 @@ A migration-tracked read-only SQL view `calendar.v_prep_contributions` SHALL UNI
 
 #### Scenario: Prep view created and queryable
 - **WHEN** the `calendar.v_prep_contributions` migration is applied
-- **THEN** the view exists and is queryable from the calendar schema, UNIONs the contributing specialists' `state` rows filtered to `key LIKE 'calendar/prep/%'` with a hardcoded `butler` literal per term, and returns zero rows before any prep job runs
+- **THEN** the view exists and is queryable from the calendar schema, UNIONs the contributing specialists' (`messenger`, `relationship`, `travel`) `state` rows filtered to `key LIKE 'calendar/prep/%'` with a hardcoded `butler` literal per term, and returns zero rows before any prep job runs
 
 #### Scenario: Prep view is read-only and absent-schema-safe
 - **WHEN** an INSERT/UPDATE/DELETE is attempted on the view, OR a contributing specialist's `state` table is absent at migration time
@@ -172,11 +172,12 @@ A migration-tracked read-only SQL view `calendar.v_prep_contributions` SHALL UNI
 - **WHEN** the migration is reverted
 - **THEN** the view is dropped AND the cross-schema SELECT grants are revoked
 
-### Requirement: Relationship Prep Contribution Job Registration
+### Requirement: Prep Contribution Job Registration (relationship, messenger, travel)
 
-The relationship butler SHALL register a `calendar_prep_contribution` deterministic (`dispatch_mode="job"`, zero-LLM) job in the existing `_DETERMINISTIC_SCHEDULE_JOB_REGISTRY` and schedule it via its `butler.toml`. No parallel scheduler or dispatch mechanism may be introduced.
+The relationship butler SHALL register a `calendar_prep_contribution` deterministic (`dispatch_mode="job"`, zero-LLM) job in the existing `_DETERMINISTIC_SCHEDULE_JOB_REGISTRY` and schedule it via its `butler.toml`. The messenger and travel butlers SHALL likewise register and schedule a `calendar_prep_contribution` job so they can populate the `message_context` panel reserved for email/message-owning butlers, matching the three contributing schemas (`messenger`, `relationship`, `travel`) that migration `core_142` UNIONs into `calendar.v_prep_contributions`. No parallel scheduler or dispatch mechanism may be introduced.
 
-#### Scenario: Prep job registered and scheduled deterministically
+#### Scenario: Prep jobs registered and scheduled deterministically
 - **WHEN** the daemon loads the scheduled-job registry
-- **THEN** `calendar_prep_contribution` is registered under `relationship` in the existing `_DETERMINISTIC_SCHEDULE_JOB_REGISTRY` and is scheduled from `roster/relationship/butler.toml` with `dispatch_mode="job"`
-- **AND** the job handler takes only `(pool, job_args)` and spawns no LLM session
+- **THEN** `calendar_prep_contribution` is registered under `relationship`, `messenger`, and `travel` in the existing `_DETERMINISTIC_SCHEDULE_JOB_REGISTRY` and is scheduled from each of `roster/relationship/butler.toml`, `roster/messenger/butler.toml`, and `roster/travel/butler.toml` with `dispatch_mode="job"`
+- **AND** each job handler takes only `(pool, job_args)` and spawns no LLM session
+- **AND** relationship contributes attendee context (entities, notes, Dunbar tier, last-met) while messenger and travel contribute the message-context panel
