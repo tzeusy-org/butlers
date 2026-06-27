@@ -2,7 +2,9 @@
 
 ## Purpose
 
-The memory events enrichment spec defines additional columns on the `memory_events` table for structured audit completeness, and an `embedding_versions` tracking table to support future embedding model migrations.
+The memory events enrichment spec defines additional columns on the `memory_events` table for structured audit completeness, and per-entity embedding model version tracking to support future embedding model migrations.
+
+Note (reality sync, code authoritative): the standalone `embedding_versions` tracking table was created by migration `mem_001` but later removed by migration `mem_005_drop_embedding_versions` after it was verified to have zero runtime references. Model-version tracking now lives on an `embedding_model_version` TEXT column added to the `episodes`, `facts`, and `rules` tables by migration `mem_004_embedding_model_version`. The `embedding_versions` requirement below is retained for historical context and is superseded by the per-entity column.
 
 ## Requirements
 
@@ -21,10 +23,14 @@ The `memory_events` table SHALL have additional columns to support structured au
 - **WHEN** a consolidation success or failure event is emitted
 - **THEN** the INSERT MUST populate `actor_butler` with the consolidation butler name
 - **AND** the INSERT MUST populate `tenant_id` from the episode group
+- **AND** the INSERT MUST populate `memory_type='episode'` and `memory_id` with the affected episode
+- **AND** the `request_id` column is left NULL by consolidation events (consolidation is scheduler-driven and carries no inbound request id)
 
 ---
 
-### Requirement: embedding_versions tracking table
+### Requirement: embedding_versions tracking table (SUPERSEDED)
+
+Status: superseded by migration `mem_005_drop_embedding_versions`. The table described below was dropped after it was found to have zero runtime references. Active model-version tracking is the `embedding_model_version` TEXT column on `episodes`, `facts`, and `rules` (migration `mem_004`). This requirement is retained for historical context and MUST NOT be treated as a build target.
 
 The memory module SHALL maintain an `embedding_versions` table to track which embedding model is active. This enables future model migrations where all embeddings need re-computation.
 

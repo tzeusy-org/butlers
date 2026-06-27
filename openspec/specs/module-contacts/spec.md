@@ -2,7 +2,9 @@
 
 ## Purpose
 
-The Contacts module synchronizes external address-book sources into a canonical contact model and backfills the Relationship Butler's CRM schema with provider-agnostic upsert logic, provenance tracking, and conflict-aware field resolution. The module supports multiple concurrent providers (e.g., Google Contacts and Telegram) through a pluggable `ContactsProvider` interface.
+The Contacts module synchronizes external address-book sources into the entity-graph identity model and backfills the Relationship Butler's CRM with provider-agnostic upsert logic, provenance tracking, and conflict-aware field resolution. The module supports multiple concurrent providers (e.g., Google Contacts and Telegram) through a pluggable `ContactsProvider` interface.
+
+Note (reality sync, code authoritative): after bead `bu-tzyuh`, the backfill writer and resolver no longer touch `public.contacts` or `public.contact_info` (both retired by `core_115` / `core_134`). The writer creates/updates `public.entities` and stores channel identifiers as `relationship.entity_facts` triples; identity matching routes through `public.entities` and `relationship.entity_facts` (`src/butlers/modules/contacts/backfill.py:16-17`, `:86-91`, `:235-236`, `:311-312`). In this module's scenarios below, `local_id` is the entity UUID (`public.entities.id`), and any scenario phrased as writing to `public.contacts` / `public.contact_info` is SUPERSEDED by entity / `entity_facts` writes.
 
 ## ADDED Requirements
 

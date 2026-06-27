@@ -1,3 +1,46 @@
+## Current Reality (code authoritative, supersedes the table-based requirements below)
+
+The `public.contacts` and `public.contact_info` tables described throughout this
+spec have been RETIRED. The system migrated to an entity-graph identity model:
+
+- `public.contact_info` was dropped by migration `core_115_drop_contact_info`.
+- `public.contacts` was dropped by migration `core_134_drop_public_contacts`.
+- The contract test `tests/contracts/test_contacts_schema_retired.py` enforces
+  that no live code reads or writes either table, and that resolution paths read
+  `relationship.entity_facts`, never `contact_info`.
+
+Authoritative identity model as built (see `src/butlers/identity.py`):
+
+- The canonical identity key is `public.entities.id` (`entity_id`). The
+  `ResolvedContact.contact_id` field still exists in the resolver return type but
+  is ALWAYS `None` (`src/butlers/identity.py:388`, `:463`, `:565`); `entity_id`
+  is authoritative (bead 7, `bu-akads`).
+- Non-secret channel identifiers (email, phone, Telegram handle/chat id) are
+  stored as `relationship.entity_facts` triples with kebab-case predicates
+  (`has-email`, `has-phone`, `has-handle`). Telegram handles are stored prefixed
+  `telegram:<id>` under `has-handle` (`src/butlers/identity.py:95-113`).
+- Secrets only (OAuth tokens, API keys, session strings) live in
+  `public.entity_info` with `secured=true`. This is the seam law from RFC 0004
+  Amendment 3 (`src/butlers/identity.py:100-104`): non-secret routing handles go
+  to `entity_facts`, never `entity_info`.
+- `resolve_contact_by_channel(type, value)` resolves an entity by querying
+  `relationship.entity_facts` joined to `public.entities`
+  (`src/butlers/identity.py:229-258`, `:260-392`). It returns `entity_id`,
+  roles (from `public.entities.roles`), and `contact_id=None`.
+- Roles remain sourced from `public.entities.roles`, modifiable only via the
+  dashboard API (the "Roles sourced from entity" and "Role modification" sections
+  below are still accurate).
+
+Active OpenSpec changes touching this capability (do not re-file as new work):
+`contacts-search-endpoint` (GET /api/contacts/search typeahead reading
+`entity_facts`) and `entity-keyed-preferred-channel`.
+
+The requirements that follow are RETAINED for historical context. Every
+requirement that names `public.contacts`, `public.contact_info`, or
+`resolve_contact_by_channel` returning a `contact_id` is SUPERSEDED by the
+entity-graph model above. The `entity-identity` and `relationship-facts` specs
+are the authoritative contracts for the live model.
+
 ## ADDED Requirements
 
 ### Requirement: Contacts table in public schema

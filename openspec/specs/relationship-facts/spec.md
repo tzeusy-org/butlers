@@ -35,6 +35,7 @@ resolves the Phase 1 Amendment 1.1 open question.
 | `src` | TEXT NOT NULL | Authoring butler |
 | `conf` | FLOAT NOT NULL DEFAULT 1.0 | 0..1 |
 | `last_seen` | TIMESTAMPTZ NULL | |
+| `observed_at` | TIMESTAMPTZ NULL | When the fact was actually observed, distinct from assertion time (`created_at`). Added by migration `rel_021_entity_v3_lifecycle`; backfilled by `scripts/backfill_entity_fact_observed_at.py`. Immutable on supersession. |
 | `weight` | INT NULL | Relational aggregation weight |
 | `verified` | BOOL NOT NULL DEFAULT false | Owner-confirmed |
 | `primary` | BOOL NULL | Primary-of-kind for multi-valued contact preds |
@@ -132,6 +133,17 @@ emit a `pending_action` for owner approval, mirroring the existing pattern in
 approves the pending action via the existing approval ceremony; only after approval does
 the triple land as `validity='active'`. Non-owner subjects are written directly without
 the approval hop.
+
+**Owner-gate trusted-source exemption (as built):** the owner gate has a
+trusted-source carve-out (`roster/relationship/tools/relationship_assert_fact.py:179-217`).
+When `src` is an owner-self source (`"owner-bootstrap"` from daemon startup, or
+`"owner-self"` from owner-setup tools) or a trusted internal-derivation source
+(`"interaction_sync"`), an owner-subject write is auto-applied directly instead of being
+parked for approval (`_OWNER_AUTO_APPLY_SOURCES`). These source strings are server-set: the
+MCP tool wrapper hardcodes `src` and the dashboard API rejects the trusted values via a
+Pydantic validator, so external callers (LLM sessions, HTTP) cannot spoof them. This lets
+the daemon self-register owner identity handles and lets structured-data jobs derive owner
+facts without a human approval hop.
 
 This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
 
@@ -374,6 +386,8 @@ The `fact-extraction` skill SHALL emit a registry-relational edge whenever extra
 ### Requirement: Inferred relationship facts pass a confidence gate
 
 An inferred relationship fact MUST carry a confidence value and provenance, and an inferred **family** relationship below the confidence bar MUST be proposed for confirmation rather than written as an active fact. ("Inferred" means derived by the system rather than stated directly by the owner.)
+
+As built (`roster/relationship/tools/relationship_assert_fact.py:163-164`, `:690`), the gated family predicates are `parent-of`, `child-of`, and `family-of` (`_FAMILY_GATE_PREDICATES`), and the confidence bar is `_FAMILY_GATE_CONF = 0.8`. A call asserting one of those predicates with `conf < 0.8` is routed to `pending_approval` rather than written active.
 
 #### Scenario: Low-confidence inferred family fact is not written active
 - **WHEN** extraction infers a family relationship (e.g. "has a son") without direct owner confirmation and below the confidence bar

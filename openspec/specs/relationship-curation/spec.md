@@ -2,31 +2,43 @@
 
 ## Purpose
 
-The Relationship Curation capability provides autonomous weekly maintenance of the
-relationship butler's entity graph: a scheduled pass groups four curation jobs
-(prose→edge proposal, entity dedup, contradiction sweep, and approval-expiry
-surfacing) into one session, applies safe high-confidence changes automatically,
-and routes uncertain or owner-touching changes through the approval system.
-Owner notification is via `notify()` with a consolidated digest.
+The Relationship Curation capability provides autonomous maintenance of the
+relationship butler's entity graph: a set of scheduled curation jobs
+(prose→edge proposal, entity dedup, contradiction sweep, approval-expiry
+surfacing, and episodic-predicate cleanup) applies safe high-confidence changes
+automatically and routes uncertain or owner-touching changes through the approval
+system. Each job notifies the owner via `notify()` when it produces actionable
+results.
+
+Note (reality sync, code authoritative): the jobs run as five independent
+`dispatch_mode="job"` scheduled tasks on staggered crons, not as a single weekly
+`dispatch_mode="prompt"` session with a consolidated digest. As configured in
+`roster/relationship/butler.toml`: `memory-curation` (prose→edge, Sundays 03:00),
+`pending-actions-curation` (approval-expiry, daily 04:00),
+`fact-retraction-curation` (contradiction sweep, Mondays 05:00),
+`entity-dedup-curation` (Tuesdays 06:00), and `episodic-predicate-curation`
+(Wednesdays 05:00). The autonomy boundary, high-confidence, reversibility, and
+per-job behavior requirements below are accurate; the single-session framing is
+historical.
 
 ## Requirements
 
-### Requirement: Weekly curation pass
+### Requirement: Scheduled curation jobs
 
-The relationship butler SHALL run a weekly `dispatch_mode="prompt"` scheduled
-task that performs four curation jobs in one session — prose→edge proposal,
-entity dedup, contradiction sweep, and approval-expiry surfacing — and emits a
-single owner-facing digest. The session is headless; it MUST communicate results
-via `notify()`.
+The relationship butler SHALL run its curation work as independent
+`dispatch_mode="job"` scheduled tasks on staggered crons: prose→edge proposal,
+entity dedup, contradiction sweep (fact retraction), approval-expiry surfacing,
+and episodic-predicate cleanup. Each job is headless; a job that produces
+proposals or auto-applied changes MUST communicate its results via `notify()`.
 
-#### Scenario: Scheduled pass runs all four jobs
-- **WHEN** the curation schedule fires
-- **THEN** the session MUST attempt all four jobs (prose→edges, dedup, contradiction sweep, approval surfacing) in one run
-- **AND** it MUST end by calling `notify()` with a consolidated digest
-- **AND** if no job produced any proposal, auto-action, or expiring approval, the session MAY exit without notifying
+#### Scenario: Each scheduled job runs on its own cron
+- **WHEN** a curation job's cron fires (for example `fact-retraction-curation` on Mondays 05:00)
+- **THEN** that job MUST run its task independently of the other curation jobs
+- **AND** a job that produced any proposal or auto-action MUST call `notify()` with its own results
+- **AND** a job that produced nothing actionable MAY exit without notifying
 
 #### Scenario: Headless output reaches the owner only via notify
-- **WHEN** the pass produces proposals or auto-applied changes
+- **WHEN** a job produces proposals or auto-applied changes
 - **THEN** the summary MUST be delivered through `notify()` (not session text, which is discarded in a headless run)
 
 ### Requirement: Curation autonomy boundary
