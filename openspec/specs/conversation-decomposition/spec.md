@@ -24,20 +24,19 @@ The switchboard pipeline SHALL decompose conversation history batches into per-b
 - **AND** decomposition runs in the background pipeline processing task, not in `ingest_v1()`
 
 ### Requirement: Signal Extraction for Decomposition
-The decomposition step SHALL invoke signal-extraction logic programmatically (direct LLM API call with the signal-extraction prompt template) to produce per-butler conceptual messages.
+The decomposition step SHALL invoke signal-extraction to produce per-butler conceptual messages. As built (`src/butlers/modules/pipeline.py`), the decomposition branch dispatches through the Spawner (`_dispatch_fn`, the same path used for routing) with the routing prompt and `complexity=CHEAP`, rather than calling the LLM API directly. When the dispatched runtime returns JSON that parses as a list, those objects are treated as decomposition signals; each is routed by reading `target_butler` (or `butler`), `tool_name` (default `route.execute`), and `tool_args`.
+
+Note (intended-but-unbuilt): the original design called for a dedicated signal-extraction invocation that calls the LLM API directly with a signal-extraction prompt template loaded from a signal-extraction skill directory, and for strict enforcement of the full signal schema (including `signal_type`, `excerpts`, and `confidence`). Neither the dedicated direct-API path nor the schema/excerpt enforcement is implemented today; this remains intent and is tracked as a remediation follow-up, not current behavior.
 
 #### Scenario: Signal extraction produces conceptual messages
 - **WHEN** the decomposition step processes a conversation history batch
-- **THEN** it invokes the signal-extraction prompt with the conversation content and registered butler schemas
-- **AND** receives a JSON array of extraction objects, each containing `type`, `confidence`, `tool_name`, `tool_args`, `target_butler`
-
-#### Scenario: Signal extraction invoked via direct API call
-- **WHEN** the decomposition step runs
-- **THEN** it calls the LLM API directly with the signal-extraction prompt template (not via Claude Code skill framework)
-- **AND** the prompt template and butler schemas are loaded from the signal-extraction skill directory
+- **THEN** it dispatches the conversation content (as untrusted-data context in the routing prompt) through the Spawner
+- **AND** when the runtime returns a JSON array, each object is treated as a signal carrying at least `target_butler`, `tool_name`, and `tool_args`
 
 ### Requirement: Cherry-Picked Message Excerpts
 Each conceptual message SHALL contain only the conversation messages relevant to that concept, cherry-picked from the full conversation window.
+
+Note (intended-but-unbuilt): excerpt cherry-picking and the full conceptual-message structure (`signal_type`, `excerpts`, `confidence`) are not extracted or enforced by the pipeline today. The pipeline reads only `target_butler`, `tool_name`, and `tool_args` from each signal; any per-excerpt selection is left to the runtime's output and is not validated. This requirement is intent, tracked as a remediation follow-up.
 
 #### Scenario: Relevant messages cherry-picked per concept
 - **WHEN** signal extraction identifies a concept (e.g., "finance: shared expense discussion")

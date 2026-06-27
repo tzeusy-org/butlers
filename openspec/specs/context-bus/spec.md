@@ -5,6 +5,8 @@ Provides shared situational awareness across butlers via a `public.user_context`
 
 ## ADDED Requirements
 
+Note on signatures: every context-bus function that takes a connection `pool` (`get_active_context`, `is_user_in_context`, `set_context`, `clear_context`) is implemented as an `async def` and must be awaited (`src/butlers/context_bus.py`). The function-call notation in the scenarios below omits the `async`/`await` keywords for brevity.
+
 ### Requirement: User Context Table Schema
 The system SHALL maintain a `public.user_context` table in the shared PostgreSQL schema with the following columns: `id` (UUID PK), `signal_type` (TEXT NOT NULL), `value` (TEXT, nullable), `set_by_butler` (TEXT NOT NULL), `set_at` (TIMESTAMPTZ NOT NULL, default now()), `expires_at` (TIMESTAMPTZ NOT NULL), `confidence` (REAL NOT NULL, default 1.0, range 0.0-1.0), `metadata` (JSONB, nullable), and `superseded_at` (TIMESTAMPTZ, nullable). A UNIQUE constraint on `(signal_type, set_by_butler)` SHALL ensure each butler maintains at most one active signal per type. A partial index on `signal_type` WHERE `superseded_at IS NULL AND expires_at > now()` SHALL optimize active-signal queries.
 

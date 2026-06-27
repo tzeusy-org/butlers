@@ -6,13 +6,15 @@ Defines the `notify` MCP tool and its versioned envelope contract (`notify.v1`) 
 ## ADDED Requirements
 
 ### Requirement: Notify Tool Registration
-Every butler daemon SHALL register a `notify(channel, message, contact_id?, recipient?, subject?, intent?, emoji?, request_context?, priority?)` MCP tool during startup. Runtime instances MUST be able to call this tool to send outbound notifications. The tool MUST be available in every butler's MCP tool surface regardless of which modules are enabled.
+Every butler daemon SHALL register a `notify(channel, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?, priority?)` MCP tool during startup. Runtime instances MUST be able to call this tool to send outbound notifications. The tool MUST be available in every butler's MCP tool surface regardless of which modules are enabled.
+
+Note: target resolution is keyed on `entity_id` (a `public.entities` UUID), resolved against `relationship.entity_facts`. An earlier design used a `contact_id` keyed on `public.contacts` / `public.contact_info`; that identity path was retired in favor of the entity graph. The requirements below reflect the entity-graph reality.
 
 The `priority` parameter (enum: `high`, `medium`, `low`, default `medium`) is added to support time-aware delivery. Priority determines quiet-hours behavior: high-priority notifications always deliver immediately; medium and low-priority notifications are subject to quiet-hours deferral when delivery preferences are configured.
 
 #### Scenario: Tool available to runtime instance
 - **WHEN** a runtime instance spawned by a butler lists available MCP tools
-- **THEN** the `notify` tool MUST appear in the tool list with parameters `channel` (required string), `message` (required string), `contact_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object), and `priority` (optional string, default `medium`)
+- **THEN** the `notify` tool MUST appear in the tool list with parameters `channel` (required string), `message` (required string), `entity_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object), and `priority` (optional string, default `medium`)
 
 #### Scenario: Tool registered at startup
 - **WHEN** a butler daemon starts up
@@ -120,37 +122,36 @@ The `request_context` parameter follows the `NotifyRequestContextInput` TypedDic
 - **THEN** the tool returns a validation error
 
 ### Requirement: Default Recipient Resolution
-The `notify` tool accepts `contact_id` (UUID) and `recipient` (string) as optional parameters for specifying the target. Resolution priority SHALL be: (1) if `contact_id` is provided, resolve the target's channel identifier from `public.contact_info`; (2) if `recipient` string is provided, use it as-is; (3) if neither is provided, resolve the owner contact's channel identifier from `public.contact_info`.
+The `notify` tool accepts `entity_id` (UUID) and `recipient` (string) as optional parameters for specifying the target. Resolution priority SHALL be: (1) if `entity_id` is provided, resolve the target's channel identifier from `relationship.entity_facts` (active triple preferred) for the channel predicate (e.g. a `telegram:<id>` fact for the telegram channel); (2) if `recipient` string is provided, use it as-is; (3) if neither is provided, default to the owner and the channel's default order (telegram, then email).
 
-#### Scenario: Contact-based recipient resolution
-- **WHEN** a runtime instance calls `notify(channel='telegram', message='Your dental appointment is tomorrow', contact_id='abc-123')`
-- **AND** contact `abc-123` has a `contact_info` entry with `type='telegram'`, `value='12345'`, `is_primary=true`
+#### Scenario: Entity-based recipient resolution
+- **WHEN** a runtime instance calls `notify(channel='telegram', message='Your dental appointment is tomorrow', entity_id='abc-123')`
+- **AND** entity `abc-123` has an active `relationship.entity_facts` triple for the telegram channel with value `12345`
 - **THEN** the butler daemon MUST resolve the Telegram chat ID to `12345` and deliver to that recipient
 
-#### Scenario: Contact-based resolution with multiple entries
-- **WHEN** a contact has two `contact_info` entries of `type='email'`: one with `is_primary=true` and one with `is_primary=false`
-- **AND** `notify(channel='email', message='...', contact_id=...)` is called
-- **THEN** the daemon MUST use the `is_primary=true` entry's value
-- **AND** if no primary entry exists, the daemon MUST use the first entry of matching type
+#### Scenario: Entity-based resolution prefers the active triple
+- **WHEN** an entity has multiple `relationship.entity_facts` triples for the email channel
+- **AND** `notify(channel='email', message='...', entity_id=...)` is called
+- **THEN** the daemon MUST use the active triple's value
+- **AND** if no active triple exists for the channel, the notify call MUST follow the Missing Channel Identifier Fallback below
 
-#### Scenario: Omitted contact_id and recipient defaults to system owner
-- **WHEN** a runtime instance calls `notify(channel='telegram', message='Alert')` without `contact_id` or `recipient`
-- **THEN** the butler daemon MUST resolve the owner contact (the contact with `'owner' = ANY(roles)`)
-- **AND** MUST look up the owner's `contact_info` entry of the matching channel type
+#### Scenario: Omitted entity_id and recipient defaults to system owner
+- **WHEN** a runtime instance calls `notify(channel='telegram', message='Alert')` without `entity_id` or `recipient`
+- **THEN** the butler daemon MUST resolve the owner's channel identifier from the owner entity's `relationship.entity_facts`
 - **AND** MUST deliver to that resolved identifier
 
 #### Scenario: Explicit recipient string provided
 - **WHEN** a runtime instance calls `notify(channel='email', message='Report', recipient='user@example.com')`
 - **THEN** the butler daemon MUST forward the call to the Switchboard with `recipient='user@example.com'`
-- **AND** `contact_id`-based resolution MUST NOT be attempted
+- **AND** `entity_id`-based resolution MUST NOT be attempted
 
 ### Requirement: Missing Channel Identifier Fallback
-When `contact_id` is provided but the contact has no `contact_info` entry for the requested channel, the `notify` tool MUST NOT silently fail. Instead, it MUST park the notification as a `pending_action` in the approval system and notify the owner to provide the missing channel identifier.
+When `entity_id` is provided but the entity has no `relationship.entity_facts` triple for the requested channel, the `notify` tool MUST NOT silently fail. Instead, it MUST park the notification as a `pending_action` in the approval system and notify the owner to provide the missing channel identifier.
 
-#### Scenario: Contact missing Telegram identifier
-- **WHEN** a runtime instance calls `notify(channel='telegram', message='Reminder', contact_id='abc-123')`
-- **AND** contact `abc-123` has no `contact_info` entry with `type='telegram'`
-- **THEN** the notify tool MUST create a `pending_action` with `tool_name='notify'`, `status='pending'`, and `agent_summary` explaining that the contact has no Telegram identifier on file
+#### Scenario: Entity missing Telegram identifier
+- **WHEN** a runtime instance calls `notify(channel='telegram', message='Reminder', entity_id='abc-123')`
+- **AND** entity `abc-123` has no `relationship.entity_facts` triple for the telegram channel
+- **THEN** the notify tool MUST create a `pending_action` with `tool_name='notify'`, `status='pending'`, and `agent_summary` explaining that the entity has no Telegram identifier on file
 - **AND** the tool MUST return `{"status": "pending_missing_identifier", "action_id": "...", "message": "Cannot deliver telegram notification -- no telegram identifier on file."}`
 
 #### Scenario: Owner notified of missing identifier
@@ -158,21 +159,21 @@ When `contact_id` is provided but the contact has no `contact_info` entry for th
 - **THEN** the owner MUST be notified via their preferred channel with the missing identifier details and a link to the contact's page
 
 ### Requirement: Role-Based Approval Gating for Notify
-The `notify` tool SHALL apply approval gating based on the target contact's roles. Notifications to contacts with `'owner'` in their roles MUST bypass the approval gate. Notifications to contacts without the `'owner'` role MUST be subject to the approval gate (checking standing rules, else pending).
+The `notify` tool SHALL apply approval gating based on whether the target is the owner. Notifications to the owner MUST bypass the approval gate. Notifications to a non-owner entity MUST be subject to the approval gate (checking standing rules, else pending).
 
 #### Scenario: Notification to owner bypasses approval
-- **WHEN** `notify(channel='telegram', message='Alert')` is called with no contact_id (defaults to owner)
+- **WHEN** `notify(channel='telegram', message='Alert')` is called with no entity_id (defaults to owner)
 - **THEN** the notification MUST be delivered without requiring approval
 
 #### Scenario: Notification to non-owner requires approval
-- **WHEN** `notify(channel='telegram', message='Reminder', contact_id='abc-123')` is called
-- **AND** contact `abc-123` has `roles = []` (non-owner)
+- **WHEN** `notify(channel='telegram', message='Reminder', entity_id='abc-123')` is called
+- **AND** entity `abc-123` is not the owner
 - **THEN** the notification MUST be checked against standing approval rules
 - **AND** if no rule matches, it MUST be parked as a pending action
 
 #### Scenario: Standing rule auto-approves non-owner notification
-- **WHEN** a standing approval rule exists matching `tool_name='notify'` with constraint `contact_id='abc-123'`
-- **AND** `notify(channel='telegram', message='Hi', contact_id='abc-123')` is called
+- **WHEN** a standing approval rule exists matching `tool_name='notify'` with constraint `entity_id='abc-123'`
+- **AND** `notify(channel='telegram', message='Hi', entity_id='abc-123')` is called
 - **THEN** the notification MUST be auto-approved and delivered immediately
 
 #### Scenario: Unresolvable target requires approval

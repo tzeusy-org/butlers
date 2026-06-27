@@ -62,7 +62,7 @@ The system SHALL provide a `cleanup()` function that deletes all rows where `exp
 - **THEN** no rows are deleted and the function returns 0
 
 ### Requirement: Adapter process info capture
-Each subprocess-based runtime adapter (Codex, Gemini, OpenCode) SHALL expose a `last_process_info` property returning a dict with keys: `pid`, `exit_code`, `command`, `stderr`, `runtime_type`. The property SHALL be populated after every `invoke()` call (success, failure, or timeout). The base `RuntimeAdapter` ABC SHALL return None by default.
+Each subprocess-based runtime adapter SHALL expose a `last_process_info` property returning a dict with keys: `pid`, `exit_code`, `command`, `stderr`, `runtime_type`. The property SHALL be populated after every `invoke()` call (success, failure, or timeout). The base `RuntimeAdapter` ABC SHALL return None by default. Note: all current adapters (ClaudeCode, Codex, Gemini, OpenCode) are subprocess-based and populate `last_process_info`. The `ClaudeCodeAdapter` invokes the `claude` binary via `asyncio.create_subprocess_exec` (`src/butlers/core/runtimes/claude_code.py`), so it is NOT a pure-SDK adapter: it populates process info like the others.
 
 #### Scenario: Process info after successful invocation
 - **WHEN** a Codex adapter `invoke()` completes successfully with exit code 0
@@ -72,9 +72,13 @@ Each subprocess-based runtime adapter (Codex, Gemini, OpenCode) SHALL expose a `
 - **WHEN** a Codex adapter `invoke()` times out
 - **THEN** `adapter.last_process_info` returns a dict with exit_code=-1, stderr indicating timeout, and the PID (if available)
 
-#### Scenario: Process info on SDK-based adapter
-- **WHEN** `last_process_info` is accessed on a ClaudeCodeAdapter
-- **THEN** None is returned (inherited default from ABC)
+#### Scenario: Process info on the ClaudeCode adapter
+- **WHEN** `last_process_info` is accessed on a `ClaudeCodeAdapter` after `invoke()`
+- **THEN** a dict with the process PID, exit_code, command string, stderr content, and runtime_type is returned (the adapter is subprocess-based, so it populates process info)
+
+#### Scenario: Base ABC default
+- **WHEN** `last_process_info` is accessed on an adapter that never overrides it
+- **THEN** None is returned (inherited default from the `RuntimeAdapter` ABC)
 
 ### Requirement: Spawner writes process log
 The spawner SHALL write process log data to the database after every runtime invocation that has a session_id and a database pool, on both success and error paths. The write SHALL be best-effort: failures are logged at DEBUG level and never propagate to the caller or affect the session result.
@@ -91,6 +95,6 @@ The spawner SHALL write process log data to the database after every runtime inv
 - **WHEN** `session_process_log_write()` raises an exception
 - **THEN** the exception is caught, logged at DEBUG, and the spawner returns normally
 
-#### Scenario: No process log for SDK-based sessions
-- **WHEN** a ClaudeCodeAdapter invocation completes and `runtime.last_process_info` is None
+#### Scenario: No process log when process info is absent
+- **WHEN** a runtime invocation completes and `runtime.last_process_info` is None (e.g. an adapter that does not override the ABC default)
 - **THEN** no process log write is attempted

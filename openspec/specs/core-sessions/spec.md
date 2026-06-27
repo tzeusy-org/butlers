@@ -9,11 +9,11 @@ Records the lifecycle of every butler runtime invocation — creation, completio
 The session system SHALL support querying which corrections were performed by a given session and which corrections target a given session. This linkage is stored entirely in the `corrections` table (FK references to `sessions.id`) and does NOT require schema changes to the `sessions` table itself.
 
 #### Scenario: Query corrections performed by a session
-- **WHEN** `corrections_by_session(pool, correcting_session_id)` is called
+- **WHEN** `corrections_for_session(pool, correcting_session_id=...)` is called
 - **THEN** all correction records where `correcting_session_id` matches SHALL be returned, ordered by `created_at`
 
 #### Scenario: Query corrections targeting a session
-- **WHEN** `corrections_for_session(pool, target_session_id)` is called
+- **WHEN** `corrections_by_session(pool, target_session_id=...)` is called
 - **THEN** all correction records where `target_session_id` matches SHALL be returned, ordered by `created_at`
 
 #### Scenario: Session detail includes correction count

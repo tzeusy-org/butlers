@@ -398,27 +398,30 @@ The spawner SHALL support healing-related configuration that the self-healing mo
 - **THEN** it reads the self-healing module's config for gate thresholds
 - **AND** if the module is not loaded, the fallback is also disabled (no separate `[healing]` section needed)
 
-### Requirement: Spawner reads hot config fields per-spawn
-The Spawner SHALL accept a `RuntimeConfigAccessor` and read hot fields (model, runtime_type, args, session_timeout_s) from it on every `trigger()` call instead of from the static `ButlerConfig`.
+### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
+The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. As of migration `core_073` these fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
 
-Source: RFC 0001 §Trigger Pipeline, RFC 0002 §Core Tools
+Note: an earlier design sourced these hot fields from `RuntimeConfigAccessor.get()`. That path was superseded by the catalog (core_073). The scenarios below reflect the catalog-based reality.
+
+Source: RFC 0001 §Trigger Pipeline, RFC 0002 §Core Tools, migration core_073
 Scope: v1-mandatory
 
-#### Scenario: Model resolved from accessor fallback
-- **WHEN** `trigger()` is called and catalog model resolution fails or returns no result
-- **THEN** the Spawner SHALL use `accessor.get().model` as the fallback (not the toml config)
-
-#### Scenario: Runtime type from accessor
+#### Scenario: Model resolved from the catalog with a constant fallback
 - **WHEN** `trigger()` is called
-- **THEN** the Spawner SHALL use `accessor.get().runtime_type` to select the runtime adapter
+- **THEN** the Spawner SHALL resolve the model from `public.model_catalog` via `resolve_model_with_effective_tier()`
+- **AND** if catalog resolution fails or returns no result, the Spawner SHALL fall back to the module-level `_FALLBACK_MODEL_ID` constant (`src/butlers/core/spawner.py`), not the toml config
 
-#### Scenario: Args from accessor
+#### Scenario: Runtime type from the catalog
 - **WHEN** `trigger()` is called
-- **THEN** the Spawner SHALL merge `accessor.get().args` with any per-trigger args
+- **THEN** the Spawner SHALL use the catalog entry's `runtime_type` to select the runtime adapter
 
-#### Scenario: Session timeout from accessor
+#### Scenario: Args from the catalog
 - **WHEN** `trigger()` is called
-- **THEN** the Spawner SHALL use `accessor.get().session_timeout_s` for the `asyncio.wait_for` timeout
+- **THEN** the Spawner SHALL merge the catalog entry's `args` with any per-trigger args
+
+#### Scenario: Session timeout from the catalog
+- **WHEN** `trigger()` is called
+- **THEN** the Spawner SHALL use the catalog entry's `session_timeout_s` for the `asyncio.wait_for` timeout
 - **AND** the Spawner SHALL forward that same timeout value into `runtime.invoke(...)`
 
 #### Scenario: Session timeout is per invocation only
@@ -426,9 +429,9 @@ Scope: v1-mandatory
 - **THEN** `session_timeout_s` limits only that spawned runtime session
 - **AND** any broader workflow deadline is enforced by the caller, not by the Spawner
 
-#### Scenario: Dashboard model change takes effect within 30s
-- **WHEN** a user changes `model` via the dashboard PATCH endpoint
-- **THEN** new sessions spawned after the accessor TTL expires (≤30s) SHALL use the updated model
+#### Scenario: Dashboard model change takes effect on the next spawn
+- **WHEN** a user changes the model for a complexity tier via the Models tab (`PATCH /api/model-settings`, backed by `public.model_catalog`)
+- **THEN** new sessions spawned afterward SHALL use the updated catalog entry, since the model is resolved from the catalog per `trigger()`
 
 #### Scenario: Accessor DB failure during trigger — use stale cache
 - **WHEN** `accessor.get()` is called during `trigger()` but the DB query fails
