@@ -29,7 +29,7 @@ The `finance.transactions` table SHALL include columns for intelligence features
 #### Scenario: Category source tracking
 - **WHEN** a transaction's category is set
 - **THEN** the `category_source TEXT` column SHALL record how the category was determined
-- **AND** it SHALL accept values: `'auto'`, `'manual'`, `'rule'`, `'import'`
+- **AND** it SHALL accept values: `'auto'`, `'manual'`, `'ml'`, `'rule'` (enforced by the `transactions_category_source_check` CHECK constraint in `finance_006`)
 - **AND** it SHALL default to `'auto'`
 
 #### Scenario: Category lock on manual override
@@ -59,7 +59,7 @@ The `finance.transactions` table SHALL include columns for intelligence features
 - **WHEN** a transaction is created via a bulk import
 - **THEN** the row's `metadata` JSONB SHALL carry the import run's ephemeral `import_batch_id` correlator (there is no `finance.import_batches` table to reference; it was dropped by `finance_007`)
 - **AND** a legacy `import_batch_id UUID` column SHALL remain on the table (created by `finance_006`) but SHALL no longer be FK-linked or populated by the importer
-- **AND** `source TEXT` SHALL record the ingestion channel: `'manual'`, `'email'`, `'csv_import'`, `'api'`, `'bulk'`
+- **AND** `source TEXT` SHALL record the ingestion channel: `'manual'`, `'csv_import'`, `'email'`, `'api'`, `'bank_sync'` (enforced by the `transactions_source_check` CHECK constraint in `finance_006`)
 - **AND** `source` SHALL default to `'manual'`
 - **AND** `raw_data JSONB` SHALL preserve the original import row for audit purposes
 - **AND** `raw_data` SHALL default to `'{}'::jsonb`

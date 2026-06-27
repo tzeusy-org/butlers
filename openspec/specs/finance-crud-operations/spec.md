@@ -21,6 +21,13 @@ Creating a single transaction SHALL check for duplicates, apply merchant mapping
 - **THEN** a background task SHALL mirror the transaction to `public.facts` with the appropriate predicate (`'transaction_debit'` or `'transaction_credit'`)
 - **AND** the mirror write SHALL be fire-and-forget (failure does not roll back the primary insert)
 
+#### Scenario: Inline bill reconciliation hook on debit insert
+- **WHEN** a fresh debit transaction is inserted, the system SHALL call `match_transaction_to_bills()` (Track C inline matcher in `roster/finance/tools/reconciliation.py`) against open bills
+- **THEN** if the match tier is `'auto_settle'` (single in-window candidate with an exact payee match), the system SHALL call `_settle_bill()` and include `bill_reconciliation.auto_settled` (with `bill_id`, `payee`, `amount`, `paid_at`, `txn_id`) in the `record_transaction` response
+- **AND** if the match tier is `'confirm'` (multiple candidates), the response SHALL include `bill_reconciliation.candidates` (a list of `{bill_id, payee, due_date, amount}`) for user confirmation
+- **AND** the hook SHALL be best-effort: any reconciliation failure is logged but never rolls back or fails the primary insert
+- **AND** the batch counterpart is the `reconcile_bills()` MCP sweep tool, used as a backstop by the weekly `upcoming-bills-check` task
+
 ### Requirement: Bulk transaction import with batch correlation
 Bulk imports SHALL generate an ephemeral `import_batch_id` correlator, process rows in batches, stamp the correlator onto each inserted transaction, and trigger post-import analytics. There is no persisted import-batch record; the correlator and result counts exist only in memory and in the returned result.
 

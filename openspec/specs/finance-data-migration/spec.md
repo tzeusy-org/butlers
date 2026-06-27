@@ -16,13 +16,13 @@ The migration from SPO fact storage to dedicated table storage SHALL follow four
 
 #### Scenario: Phase 2 -- Backfill from SPO facts
 - **WHEN** Phase 1 is complete
-- **THEN** a backfill query SHALL insert existing transaction facts from `public.facts` into `finance.transactions`
+- **THEN** the backfill SHALL run as the runtime tool `backfill_spo_transactions(pool, scope='finance')` in `roster/finance/tools/backfill.py` (a separate on-demand task, NOT Alembic migration SQL), inserting existing transaction facts from `public.facts` into `finance.transactions`
 - **AND** it SHALL filter facts by `predicate IN ('transaction_debit', 'transaction_credit')`, `validity = 'active'`, and `scope = 'finance'`
-- **AND** it SHALL extract `merchant`, `amount`, `currency`, `direction`, `category`, `description`, `payment_method`, `account_id`, `source_message_id` from JSONB metadata
-- **AND** it SHALL use `COALESCE` for optional fields and defensive casts for numeric/uuid fields
-- **AND** it SHALL deduplicate against existing rows using `NOT EXISTS` on `(posted_at, merchant, amount)`
-- **AND** rows that fail JSONB extraction or casting SHALL be logged and skipped, not treated as hard errors
-- **AND** backfilled rows SHALL have `source = 'bulk'` for identification
+- **AND** it SHALL extract `merchant`, `amount`, `currency`, `direction`, `category`, `description`, `payment_method`, `account_id`, `source_message_id`, `external_ref`, and `receipt_url` from JSONB metadata
+- **AND** it SHALL defensively parse/cast numeric and uuid fields, deriving `direction` from metadata or the predicate name when absent
+- **AND** it SHALL deduplicate against existing rows via a tiered `NOT EXISTS` check (Priority 1: `source_message_id`; Priority 2: composite `(posted_at, merchant, amount, account_id)`)
+- **AND** rows that fail extraction or casting SHALL be recorded as `SkippedRow` entries and skipped, not treated as hard errors
+- **AND** the backfill INSERT SHALL NOT set the `source` column, so backfilled rows inherit the table default `'manual'`
 
 #### Scenario: Phase 3 -- Dual-write transition
 - **WHEN** Phase 2 is complete and the backfilled data is validated

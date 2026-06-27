@@ -38,7 +38,7 @@ The `finance.categories` table SHALL provide a consistent hierarchical category 
 
 #### Scenario: Default category seeding
 - **WHEN** the migration runs
-- **THEN** it SHALL seed default categories: `groceries`, `dining`, `transport`, `subscriptions`, `utilities`, `housing`, `healthcare`, `entertainment`, `shopping`, `travel`, `education` (tax: education), `medical` (tax: medical), `charitable` (tax: charitable), `home_office` (tax: home_office), `business_expense` (tax: business_expense), `insurance`, `personal_care`, `gifts`, `income`, `transfer`, `fees`, `uncategorized`
+- **THEN** it SHALL seed default categories: `groceries`, `dining`, `transport`, `subscriptions`, `utilities`, `housing`, `healthcare` (tax: medical), `entertainment`, `shopping`, `travel`, `education` (tax: education), `medical` (tax: medical), `charitable` (tax: charitable), `fees`, `income`, `transfer`, `uncategorized` (17 system categories seeded by `finance_006`)
 - **AND** seeding SHALL be idempotent (`ON CONFLICT DO NOTHING`)
 
 ### Requirement: Merchant-to-category mapping table
@@ -55,7 +55,7 @@ The `finance.merchant_mappings` table SHALL store learned and manual merchant-to
 
 #### Scenario: Merchant mapping source tracking
 - **WHEN** a merchant mapping is created
-- **THEN** `source TEXT` SHALL record how the mapping was established: `'learned'` (from transaction history), `'manual'` (user-defined), or `'import'` (from external mapping file)
+- **THEN** `source TEXT` SHALL record how the mapping was established: `'manual'` (user-defined) or `'learned'` (from transaction history), enforced by the `merchant_mappings_source_check` CHECK constraint in `finance_006`
 
 ### Requirement: Recurring charge group tracking
 The `finance.recurring_groups` table SHALL track detected recurring charge patterns and link them to individual transactions.
@@ -106,7 +106,7 @@ The `finance.budgets` table SHALL store budget targets with configurable thresho
 
 #### Scenario: Budget structure
 - **WHEN** a budget is created
-- **THEN** it SHALL include `category TEXT`, `amount NUMERIC(14,2)`, `currency CHAR(3)` (default `'USD'`), `period TEXT` (one of `'weekly'`, `'monthly'`, `'quarterly'`, `'annual'`), `warn_threshold FLOAT` (default `0.8`), and `alert_threshold FLOAT` (default `1.0`)
+- **THEN** it SHALL include `category TEXT`, `amount NUMERIC(14,2)`, `currency CHAR(3)` (default `'USD'`), `period TEXT` (one of `'weekly'`, `'monthly'`, `'yearly'`, `'daily'`, enforced by the `budgets_period_check` CHECK constraint in `finance_006`), `warn_threshold FLOAT` (default `0.8`), and `alert_threshold FLOAT` (default `1.0`)
 
 #### Scenario: Budget uniqueness
 - **WHEN** a budget is created for a category and period

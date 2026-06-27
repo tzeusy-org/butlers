@@ -17,7 +17,8 @@ The system SHALL allow configuring financial alert preferences stored as memory 
 - **WHEN** `alert_list()` is called
 - **THEN** the system SHALL return all active alert_config facts
 - **AND** each alert SHALL include: `type`, configuration parameters, and `enabled` status
-- **AND** supported alert types SHALL be: `large_transaction`, `subscription_price_change`, `bill_reminder`, `budget_warning`, `anomaly_digest`
+- **AND** the alert types accepted by `alert_configure` (validated against `_VALID_ALERT_TYPES`) SHALL be: `large_transaction`, `budget_exceeded`, `new_merchant`, `price_change`
+- **AND** subscription price-change detection, bill reminders, and anomaly digests are delivered through dedicated tools (`detect_price_changes`, `predict_bills`, `anomaly_scan`) and scheduled tasks rather than as configurable `alert_configure` types
 
 #### Scenario: Disabling an alert
 - **WHEN** `alert_configure(type="large_transaction", enabled=false)` is called
@@ -43,7 +44,7 @@ The system SHALL detect when a recurring charge changes amount compared to the t
 #### Scenario: Price increase detection
 - **WHEN** `detect_price_changes(days_back=30)` is called or during the scheduled subscription renewal alert
 - **THEN** the system SHALL compare recent transaction amounts for tracked subscription merchants against the subscription's recorded amount
-- **AND** if the transaction amount differs from the tracked amount by more than 1% (to account for tax variance), it SHALL flag a price change
+- **AND** if the transaction amount differs from the tracked amount by more than the `_PRICE_CHANGE_THRESHOLD` (5%), it SHALL flag a price change
 - **AND** the flag SHALL include: `service`, `previous_amount`, `new_amount`, `change_pct`, `change_direction` (one of `increase`, `decrease`)
 
 #### Scenario: Price change notification
@@ -56,7 +57,7 @@ The system SHALL generate bill reminders based on historical payment patterns, s
 
 #### Scenario: Historical bill reminder
 - **WHEN** the scheduled `upcoming-bills-check` task runs
-- **THEN** in addition to querying tracked bill facts, it SHALL call `predict_bills(days_ahead=14)` to identify predicted bills from historical patterns
+- **THEN** in addition to querying tracked bill facts, it SHALL call `predict_bills(days_ahead=30)` (the tool default) to identify predicted bills from historical patterns
 - **AND** predicted bills not already tracked SHALL be included in the reminder with a `source="predicted"` flag
 
 #### Scenario: Predicted bill accuracy feedback
