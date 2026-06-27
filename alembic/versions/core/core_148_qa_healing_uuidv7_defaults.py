@@ -1,7 +1,7 @@
 """qa/self-healing: switch id PK defaults from UUIDv4 to UUIDv7.
 
-Revision ID: core_147
-Revises: core_146
+Revision ID: core_148
+Revises: core_147
 Create Date: 2026-06-28 00:00:00.000000
 
 ``public.qa_findings.id`` and ``public.healing_attempts.id`` were created with a
@@ -33,8 +33,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_147"
-down_revision = "core_146"
+revision = "core_148"
+down_revision = "core_147"
 branch_labels = None
 depends_on = None
 
