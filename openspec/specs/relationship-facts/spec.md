@@ -293,6 +293,24 @@ already, per `roster/relationship/butler.toml:106-114`.
 
 ### Requirement: Orphan contact handling
 
+**Current reality (as built, code-authoritative):** the orphan resolver here MUST NOT
+be resurrected, because it was a one-time migration tool whose work has completed and
+whose source tables have been dropped. The contacts to triples cut-over is finished:
+`public.contacts` was dropped (migration `core_134`), `public.contact_info` was dropped
+(migration `core_115`), and the `public.contacts_pre_migration_<YYYYMMDD>` snapshot the
+resolver read from was dropped (migration `core_118`). Identity now lives in
+`relationship.entity_facts` and the entity graph. The named resolver
+`src/butlers/scripts/contact_orphan_resolver.py` and its snapshot companion
+`contact_migration_snapshot.py` were built (PR #1767, bead bu-yxdzq), enhanced with a
+`--force-nameless` flag (PR #1861), executed during the migration, and then deliberately
+deleted as superseded one-shot scripts (PR #2504, bead bu-oluyt.6) once the source tables
+were gone. Re-creating the script would only read three dropped tables. The historical
+contract below is retained as the record of how orphan resolution was performed. (A
+separately scoped script `scripts/dedupe_orphan_contacts.py` exists for a different concern,
+deduping duplicate contacts that share one entity rather than resolving `entity_id IS NULL`
+orphans, and likewise predates the `public.contacts` drop.)
+
+**Historical contract (executed during the contacts to triples migration, no longer active).**
 `public.contact_info` rows whose `public.contacts.entity_id IS NULL` (orphan contacts) MUST
 be resolved before backfill. Resolution policy (Phase 2 decision, resolves Amendment 1.1.A.3
 as updated 2026-05-18 by Phase 1 R-pass):
