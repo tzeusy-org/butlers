@@ -75,7 +75,10 @@ class TestCatalogSensitivityFilteringIntegration:
                     summary       TEXT,
                     search_text   TEXT,
                     search_vector tsvector,
-                    sensitivity   TEXT
+                    sensitivity   TEXT,
+                    -- Mirrors the real public.memory_catalog schema (core_009):
+                    -- the catalog search excludes stale rows via invalid_at IS NULL.
+                    invalid_at    TIMESTAMPTZ
                 )
                 """
             )
