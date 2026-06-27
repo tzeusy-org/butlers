@@ -302,7 +302,7 @@ docs/
     grafana-monitoring.md
     connector-scaling.md
     troubleshooting.md
-    backup-and-restore.md
+    backup-restore.md
   testing/
     index.md
     testing-strategy.md

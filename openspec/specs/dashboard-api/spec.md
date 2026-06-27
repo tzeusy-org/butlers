@@ -304,14 +304,14 @@ The following is the complete endpoint inventory grouped by domain.
 | GET | `/api/approvals/actions` | Pending action queue |
 | GET | `/api/approvals/actions/executed` | Executed actions audit |
 | GET | `/api/approvals/actions/{id}` | Action detail |
-| POST | `/api/approvals/actions/{id}/approve` | Approve action (stub: 501) |
-| POST | `/api/approvals/actions/{id}/reject` | Reject action (stub: 501) |
+| POST | `/api/approvals/actions/{id}/approve` | Approve action and dispatch for execution |
+| POST | `/api/approvals/actions/{id}/reject` | Reject action with optional reason |
 | POST | `/api/approvals/actions/expire-stale` | Expire stale actions |
 | GET | `/api/approvals/rules` | Standing rule list |
 | GET | `/api/approvals/rules/{id}` | Rule detail |
-| POST | `/api/approvals/rules` | Create rule (stub: 501) |
-| POST | `/api/approvals/rules/from-action` | Create rule from action (stub: 501) |
-| POST | `/api/approvals/rules/{id}/revoke` | Revoke rule (stub: 501) |
+| POST | `/api/approvals/rules` | Create standing approval rule |
+| POST | `/api/approvals/rules/from-action` | Create rule from a pending action |
+| POST | `/api/approvals/rules/{id}/revoke` | Revoke (deactivate) rule |
 | GET | `/api/approvals/rules/suggestions/{actionId}` | Constraint suggestions |
 | GET | `/api/approvals/metrics` | Aggregate approval metrics |
 

@@ -115,7 +115,7 @@ The shell SHALL implement a responsive sidebar + main content layout that fills 
 
 - **WHEN** the viewport width is at or above the `md` Tailwind breakpoint (768px)
 - **THEN** the desktop sidebar renders as a persistent `<aside>` element with a right border
-- **AND** the sidebar width is fixed at 56px (`w-14`); it is not collapsible
+- **AND** the sidebar renders expanded at 240px (`md:w-60`) by default and is collapsible to a 56px (`md:w-14`) icon rail; the collapsed state is persisted to `localStorage` under `butlers.sidebar-collapsed`
 - **AND** the main content area is `flex-1` (flex sibling of the aside; no margin offset needed)
 - **AND** the mobile drawer is not visible
 
@@ -141,8 +141,8 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 #### Scenario: Rail geometry
 
 - **WHEN** the desktop sidebar renders
-- **THEN** the `<aside>` element is exactly 56px wide (`w-14`), full viewport height, with a right border
-- **AND** the rail is not collapsible; there is no collapse toggle
+- **THEN** the `<aside>` element renders expanded at 240px (`md:w-60`) by default and collapses to a 56px icon rail (`md:w-14`), full viewport height, with a right border
+- **AND** a collapse toggle switches between the two widths, persisting the collapsed state to `localStorage` under `butlers.sidebar-collapsed`
 
 #### Scenario: Brand mark
 

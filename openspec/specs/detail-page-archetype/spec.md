@@ -12,7 +12,7 @@ This spec is the authoritative reference for all seven detail-page-archetype ado
 
 ### Requirement: Detail-page archetype shell
 
-Every dashboard page that renders a single domain record SHALL use the `<Page archetype="detail">` shell exported from `frontend/src/components/ui/page.tsx`. Pages (one fact, one rule, one episode, one contact, one butler) own body slots only; the shell owns all chrome and state management.
+Every dashboard page that renders a single domain record SHALL use the `<Page archetype="detail">` shell exported from `frontend/src/components/ui/page.tsx`. Pages (one fact, one rule, one episode, one butler, one entity, one connector) own body slots only; the shell owns all chrome and state management. (Contacts are no longer a distinct detail page; they are rendered through the entity detail page.)
 
 **Design source:** `about/lay-and-land/detail-page-audit.md` §5 "Proposed
 `<DetailPage>` Contract" and §3.2 "The justifying lines". The shell is the
@@ -148,11 +148,10 @@ session reference, the subject line — truncated to 80 characters if needed.
 
 Meaningful status, type, or ownership indicators on a detail page SHALL be rendered adjacent to the title on the same row via the `status` prop on `<Page>`, not in a separate metadata card below the title.
 
-**Implementation note:** `PageProps` in `frontend/src/components/ui/page.tsx` does not
-yet include a `status` slot. Adding `status?: React.ReactNode` to `PageProps` and
-rendering it inline with the `<h1>` in `HeadingBlock` is a required implementation step
-for any bead that adopts this requirement. This is a narrow, additive change to the
-`<Page>` API.
+**Implementation note:** `PageProps` in `frontend/src/components/ui/page.tsx` already
+includes a `status?: React.ReactNode` slot, rendered inline with the `<h1>` in
+`HeadingBlock`. The shell-side support for this requirement is shipped; an adopting page
+needs only to pass the `status` prop.
 
 The convention for ordering pills: ownership first (e.g., "Owner"), severity /
 state second (e.g., "Established", "Fading"), tertiary chips last.

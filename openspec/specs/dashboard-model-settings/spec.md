@@ -12,7 +12,7 @@ The dashboard SHALL expose REST endpoints for full CRUD management of the global
 #### Scenario: List catalog entries (server-sorted)
 - **WHEN** `GET /api/settings/models` is called
 - **THEN** all model catalog entries are returned in the canonical sort order `(complexity_tier ASC under tier order [reasoning, workhorse, cheap, specialty, local, legacy], priority DESC, enabled DESC, alias ASC)`
-- **AND** each entry includes `id`, `alias`, `runtime_type`, `model_id`, `extra_args`, `complexity_tier`, `enabled`, `priority`, `state`, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, `usage_24h_calls`, `usage_30d_calls`, `spend_7d_usd`, `used_by` (butlers list), `failures_7d`, `created_at`, `updated_at`
+- **AND** each entry includes `id`, `alias`, `runtime_type`, `model_id`, `extra_args`, `complexity_tier`, `enabled`, `priority`, `session_timeout_s`, `usage_24h`, `usage_30d`, `limit_24h`, `limit_30d`, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`
 - **AND** the frontend MUST NOT re-sort the response; it MAY only filter.
 
 #### Scenario: Create catalog entry
@@ -55,11 +55,11 @@ The dashboard settings page SHALL include a model catalog management section wit
 #### Scenario: Catalog table display
 - **WHEN** the settings page loads the model catalog section
 - **THEN** a table displays all catalog entries grouped by complexity tier with columns: Alias, Runtime, Model ID, Extra Args (formatted), Tier (badge), Priority, Enabled (toggle), and Actions (Edit, Delete)
-- **AND** the `discretion` tier group is displayed under a "Discretion" heading, visually separated from session tiers, with a subtitle explaining these models are used for connector noise filtering
+- **AND** sections are rendered in the canonical six-tier order [reasoning, workhorse, cheap, specialty, local, legacy]; there is no separate `discretion` group (the discretion vocabulary was retired in migration core_092)
 
 #### Scenario: Create model alias dialog
 - **WHEN** the operator clicks "Add Model"
-- **THEN** a dialog opens with fields: Alias (text input), Runtime Type (dropdown of registered adapters: `claude`, `codex`, `gemini`, `opencode`), Model ID (text input), Extra Args (key-value editor with "Add arg" button, or raw JSON toggle), Complexity Tier (dropdown: trivial, medium, high, extra_high, discretion), Priority (numeric input, default 0), Enabled (toggle, default true)
+- **THEN** a dialog opens with fields: Alias (text input), Runtime Type (dropdown of registered adapters: `claude`, `codex`, `gemini`, `opencode`), Model ID (text input), Extra Args (key-value editor with "Add arg" button, or raw JSON toggle), Complexity Tier (dropdown: reasoning, workhorse, cheap, specialty, local, legacy), Priority (numeric input, default 0), Enabled (toggle, default true)
 
 #### Scenario: Extra args key-value editor
 - **WHEN** the operator edits extra args in key-value mode
@@ -109,13 +109,13 @@ The manual trigger UI on each butler's detail page SHALL include a complexity se
 
 #### Scenario: Complexity dropdown in trigger tab
 - **WHEN** the operator uses the trigger tab to manually spawn a session
-- **THEN** a complexity dropdown is shown with options: Trivial, Medium (default), High, Extra High
-- **AND** the `discretion` tier is excluded from this dropdown (it is not user-selectable for session triggers)
+- **THEN** a complexity dropdown is shown with the six canonical tier options: Reasoning, Workhorse, Cheap, Specialty, Local, Legacy
+- **AND** all six canonical tiers are user-selectable for session triggers
 - **AND** the selected complexity is passed to the trigger API
 
 #### Scenario: Resolved model preview
 - **WHEN** the operator selects a complexity level
-- **THEN** the UI shows which model will be used (e.g. "Will use: claude-sonnet (medium tier)") based on the current catalog and overrides
+- **THEN** the UI shows which model will be used (e.g. "Will use: claude-sonnet (workhorse tier)") based on the current catalog and overrides
 
 ### Requirement: Catalog Priority Stepper API
 The dashboard SHALL expose `PUT /api/settings/models/{id}/priority {delta: int}` to adjust a model's priority idempotently.
@@ -153,17 +153,17 @@ The runtime SHALL select a model for a butler-requested complexity tier `T` as f
 
 #### Scenario: Tier match with multiple candidates
 - **WHEN** a butler requests a model in tier `T`
-- **THEN** the runtime selects the highest-priority enabled model in `T` whose `state ∈ {verified, untested}`
+- **THEN** the runtime selects the highest-priority enabled model in `T` whose `last_verified_ok` is `true` or `NULL` (verified or untested; there is no separate `state` column)
 - **AND** if no such model exists in `T`, the runtime falls through to the next tier in the canonical order `reasoning → workhorse → cheap → specialty → local → legacy`
-- **AND** if no tier yields a candidate, the runtime raises a `NoEligibleModel` error.
+- **AND** if no tier yields a candidate, `resolve_model()` returns `None` (no exception is raised; the spawner surfaces the no-eligible-model condition to its caller).
 
 #### Scenario: Disabled models are skipped
 - **WHEN** the runtime selects within a tier
 - **THEN** models with `enabled = false` MUST NOT be selected even if their priority is highest.
 
-#### Scenario: Models in error state are skipped
+#### Scenario: Models with a failed verification are skipped
 - **WHEN** the runtime selects within a tier
-- **THEN** models with `state ∈ {error, offline, deprecated, rate-limited, anomaly}` MUST NOT be selected.
+- **THEN** models whose `last_verified_ok = false` MUST NOT be selected (verification status is the single boolean `last_verified_ok`; there is no multi-valued `state` column).
 
 ### Requirement: Models Page Dispatch Language
 The `/settings/models` page SHALL render the catalog in the Dispatch design language with tier-grouped sections.
@@ -173,7 +173,7 @@ The `/settings/models` page SHALL render the catalog in the Dispatch design lang
 - **THEN** the catalog is rendered as six tier sections in the canonical order
 - **AND** each section contains rule-separated rows for its models
 - **AND** each row exposes: model name, role, priority stepper (↑/↓), enable toggle, `Test →`, `Edit →`, `Delete →`
-- **AND** filter chips (provider, state) constrain the visible rows but do not re-order them.
+- **AND** filter chips (tier, state) constrain the visible rows but do not re-order them.
 
 #### Scenario: Empty tier
 - **WHEN** a tier section has no models

@@ -34,7 +34,7 @@ A paginated endpoint listing all known HA devices with their current state, area
 #### Scenario: Pagination
 
 - **WHEN** `GET /api/home/devices?page=2&page_size=50` is called
-- **THEN** the response SHALL follow the standard `PaginatedResponse` format with `meta` containing `page`, `page_size`, `total_count`, and `total_pages`
+- **THEN** the response SHALL be a page-based paginated wrapper (`DeviceInventoryResponse`) with `meta` (`DevicePaginationMeta`) containing `page`, `page_size`, `total_count`, and `total_pages`
 
 ### Requirement: Energy Consumption Endpoint
 
@@ -44,7 +44,7 @@ An endpoint returning energy consumption time-series data for dashboard charts.
 
 - **WHEN** `GET /api/home/energy?period=day&start=2026-03-01&end=2026-03-25` is called
 - **THEN** it SHALL proxy the request to the HA REST API `recorder/get_statistics_during_period` with `period="day"`
-- **AND** it SHALL return a list of daily data points with `date`, `total_kwh`, and per-device breakdown
+- **AND** it SHALL return a list of daily data points with `timestamp`, `total_kwh`, and per-device breakdown (`devices`)
 
 #### Scenario: Hourly energy consumption
 

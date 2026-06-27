@@ -68,7 +68,8 @@ consumes it.
 
 - **WHEN** the briefing query succeeds
 - **THEN** the page renders `greet`, `headline`, `elaboration`, `source`,
-  `state_class`, and `generated_at` from `GET /api/dashboard/briefing`
+  and `generated_at` from `GET /api/dashboard/briefing` (the `state_class`
+  field is a server-side classifier input and is not rendered by the page)
 - **AND** the page does not require or render additional machine provenance
   fields from that endpoint
 
@@ -133,7 +134,7 @@ tabular-numeric, and visually calm.
 - **WHEN** the runtime KPI strip renders
 - **THEN** it includes exactly these four cells:
   - `Total butlers`: count of `GET /api/butlers` rows where `type` is `"butler"`
-  - `Healthy`: count of butler rows whose `status` is `"ok"` or `"online"`
+  - `Healthy`: count of butler rows whose `status` is `"ok"`, `"online"`, or `"healthy"`
   - `Sessions · 24h`: sum of `sessions_24h` across butler rows
   - `Pending approvals`: `total_pending` from `GET /api/approvals/metrics`
 - **AND** every numeric value uses tabular numerals

@@ -223,11 +223,10 @@ The generalised OAuth callback handler (specified in `redesign-secrets-passport 
    is `ingestion` (callback routing table is defined in `redesign-secrets-passport
    §dashboard-api`; no duplication required here).
 
-**Implementation gate:** this requirement depends on `redesign-secrets-passport`
-landing the generalised `/api/oauth/<provider>/start` endpoint. Until then, the
-reauth callout MAY initiate the existing Google-only begin endpoint, but MUST still
-pass `page_of_origin=ingestion` and MUST be updated when the generalised endpoint
-lands.
+**Implementation gate:** SATISFIED. The generalised `GET /api/oauth/<provider>/start`
+endpoint has landed (`src/butlers/api/routers/oauth.py`) and accepts `page_of_origin`.
+The ingestion reauth callout calls it with `page_of_origin=ingestion`; no Google-only
+fallback remains.
 
 #### Scenario: Ingestion reauth stamps page_of_origin
 

@@ -79,7 +79,7 @@ The response MUST be a `PaginatedResponse<ApprovalAction>` where each `ApprovalA
 
 - **WHEN** `GET /api/approvals/actions` is called
 - **THEN** the API MUST return at most 50 actions (default limit)
-- **AND** the response MUST include `offset`, `limit`, and `total_count` fields
+- **AND** the response MUST include a `meta` object with `total`, `offset`, and `limit` fields
 
 #### Scenario: Pagination with custom offset
 
@@ -199,8 +199,9 @@ The dashboard SHALL expose `GET/PUT /api/approvals/policy` to manage notificatio
 
 #### Scenario: Quiet hours suppress paging
 
-- **WHEN** the notification dispatcher is about to page the owner for a new approval
-- **THEN** if the current time in `timezone` falls within `[quiet_start_hour, quiet_end_hour)`, the page is deferred until `quiet_end_hour`
+- **WHEN** the notification dispatcher is about to page the owner for a new approval via the owner-default path (no explicit `entity_id` or `recipient`), with intent `send` or `insight` and priority not `high`
+- **THEN** if the current hour in `timezone` falls within the inclusive window `[quiet_start_hour, quiet_end_hour]`, the page is suppressed (dropped silently, returning status `suppressed_quiet_hours`); it is NOT deferred or re-presented later
+- **AND** high-priority pages and pages with an explicit `entity_id`/`recipient` are always delivered immediately
 - **AND** the approval is still created and visible in the dashboard immediately.
 
 ### Requirement: Approvals Live Stream

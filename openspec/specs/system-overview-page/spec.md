@@ -156,13 +156,14 @@ the "your data has been seen by these endpoints" surface.
 #### Scenario: Egress catalog is derived from the audit log
 
 - **WHEN** the egress catalog is assembled
-- **THEN** it reads exclusively from the existing audit log table
-  (`switchboard.dashboard_audit_log`) -- no new write path is introduced. There is no
-  `audit.events` table in the current codebase; all audit records go to
-  `switchboard.dashboard_audit_log`. Actor identity is derived from the `operation`
-  field via the server-side actor registry. (`request_summary` JSONB is not used for
-  actor derivation in v1; the registry maps `operation` strings directly to actor
-  identifiers and display names.)
+- **THEN** it reads exclusively from the canonical audit log table
+  (`public.audit_log`) -- no new write path is introduced. The legacy
+  `switchboard.dashboard_audit_log` rows were backfilled into `public.audit_log` by
+  migration `core_124` and the UNION arm was removed; there is no
+  `audit.events` table. Actor identity is derived from the `action` column (aliased
+  `operation`, with `ts` aliased `created_at`) via the server-side actor registry.
+  (`request_summary` JSONB is not used for actor derivation in v1; the registry maps
+  `operation` strings directly to actor identifiers and display names.)
 - **AND** only records whose `operation` value maps to an external actor in the
   actor registry are included (e.g., `"llm_api_call"`, `"telegram_send"`,
   `"google_calendar_write"`, `"gmail_send"`); the implementation bead MUST define

@@ -24,7 +24,7 @@ The dashboard SHALL expose REST endpoints for managing connected Steam accounts,
 - **AND** on success, create the account row, companion entity, and entity_info per the steam-account-registry spec
 - **AND** populate `display_name`, `profile_url`, `avatar_url` from the validation response
 - **AND** return the created account object (without API key)
-- **AND** on validation failure (403 or empty response), return `400` with `{"error": "invalid_key", "message": "API key validation failed. Verify the key at https://steamcommunity.com/dev/apikey", "hint": "Ensure the SteamID matches the account that registered the key."}`
+- **AND** on validation failure, return an error status (`400` for a 401/403 key rejection; `429`/`502` for other upstream failures) with FastAPI's standard `{"detail": "<message>"}` envelope and failure category `invalid_api_key`
 
 #### Scenario: Set primary account
 
@@ -73,8 +73,8 @@ CREATE TABLE connectors.steam_play_history (
 ```
 
 Indexes:
-- `ix_steam_play_history_account_date` on `(steam_account_id, date DESC)` — supports recent activity queries
-- `ix_steam_play_history_app_date` on `(app_id, date DESC)` — supports per-game queries
+- `ix_steam_play_history_steam_account_id` on `(steam_account_id)` (supports per-account lookup)
+- `ix_steam_play_history_app_id` on `(app_id)` (supports per-game queries)
 
 #### Scenario: Connector writes daily playtime
 
@@ -93,7 +93,7 @@ The dashboard SHALL expose endpoints for querying playtime data.
 
 #### Scenario: Get playtime summary for a period
 
-- **WHEN** `GET /api/steam/playtime?days=7` is called (default 7, max 90)
+- **WHEN** `GET /api/steam/playtime?days=30` is called (default 30, max 3650)
 - **THEN** the response SHALL return:
   - `total_minutes`: total playtime across all games in the period
   - `games`: array of `{app_id, app_name, total_minutes}` sorted by total_minutes DESC
@@ -105,8 +105,7 @@ The dashboard SHALL expose endpoints for querying playtime data.
 - **THEN** the response SHALL return:
   - `app_id`, `app_name`
   - `total_minutes`: total for the period
-  - `daily`: array of `{date, playtime_minutes}` for the period
-  - `average_daily_minutes`: computed average
+  - `history`: array of `{date, playtime_minutes, recorded_at}` for the period
 
 #### Scenario: Playtime scoped to primary account by default
 

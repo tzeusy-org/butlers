@@ -16,14 +16,14 @@ The `public.dashboard_conversations` table stores conversation thread metadata. 
 - **THEN** the table SHALL contain the following columns:
   - `id` (UUID7, primary key) — time-ordered unique identifier
   - `butler_name` (TEXT, NOT NULL) — the butler this conversation belongs to
-  - `title` (TEXT, NOT NULL, default `'New conversation'`) — auto-generated or user-edited title
+  - `title` (TEXT, nullable): auto-generated or user-edited title; the API always populates it from the first user message (no DB-level default)
   - `status` (TEXT, NOT NULL, default `'active'`) — one of `active`, `archived`
   - `created_at` (TIMESTAMPTZ, NOT NULL, default `now()`) — when the conversation was started
   - `updated_at` (TIMESTAMPTZ, NOT NULL, default `now()`) — when the last message was added
   - `message_count` (INTEGER, NOT NULL, default `0`) — denormalized count of messages
-  - `total_input_tokens` (INTEGER, NOT NULL, default `0`) — aggregate input tokens across all assistant responses
-  - `total_output_tokens` (INTEGER, NOT NULL, default `0`) — aggregate output tokens across all assistant responses
-  - `total_duration_ms` (INTEGER, NOT NULL, default `0`) — aggregate response duration across all assistant responses
+  - `total_input_tokens` (BIGINT, NOT NULL, default `0`): aggregate input tokens across all assistant responses
+  - `total_output_tokens` (BIGINT, NOT NULL, default `0`): aggregate output tokens across all assistant responses
+  - `total_duration_ms` (BIGINT, NOT NULL, default `0`): aggregate response duration across all assistant responses
 
 #### Scenario: Conversation table indexes
 
@@ -167,7 +167,7 @@ Search across conversation history for a butler.
 
 - **WHEN** `GET /api/butlers/{name}/conversations/search?q=keyword&limit=20` is called
 - **THEN** conversations whose messages contain the search term are returned, ordered by relevance (most recent match first)
-- **AND** each result includes the conversation metadata plus a `snippet` field with the matching message content (truncated to 200 characters with the match highlighted)
+- **AND** each result includes the conversation metadata plus a `snippet` field with the matching message content (the first 200 characters of the matching message)
 
 #### Scenario: Empty search query
 

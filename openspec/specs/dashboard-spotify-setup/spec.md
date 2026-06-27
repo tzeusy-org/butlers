@@ -27,15 +27,15 @@ The dashboard SHALL implement the Spotify OAuth 2.0 Authorization Code with PKCE
 - **AND** it SHALL redirect the user's browser to `https://accounts.spotify.com/authorize` with parameters:
   - `client_id` = stored client_id
   - `response_type` = `code`
-  - `redirect_uri` = `https://<tailnet-host>/butlers/api/spotify/oauth/callback`
-  - `scope` = `user-read-playback-state user-read-recently-played user-top-read`
+  - `redirect_uri` = `https://<tailnet-host>/api/connectors/spotify/oauth/callback` (default `http://localhost:41200/...`, overridable via `SPOTIFY_OAUTH_REDIRECT_URI`)
+  - `scope` = the full required scope set (see Requirement: Required Spotify API Scopes, all 10 scopes)
   - `code_challenge_method` = `S256`
   - `code_challenge` = computed challenge
   - `state` = CSRF protection token (stored in session)
 
 #### Scenario: OAuth callback and token exchange
 
-- **WHEN** Spotify redirects back to `/butlers/api/spotify/oauth/callback` with an authorization code
+- **WHEN** Spotify redirects back to `/api/connectors/spotify/oauth/callback` with an authorization code
 - **THEN** the dashboard backend SHALL verify the `state` parameter matches the stored CSRF token
 - **AND** it SHALL exchange the authorization code for tokens via `POST https://accounts.spotify.com/api/token` with:
   - `grant_type` = `authorization_code`
@@ -133,29 +133,29 @@ The dashboard SHALL expose REST API endpoints for Spotify account management.
 
 #### Scenario: Status endpoint
 
-- **WHEN** `GET /api/spotify/status` is called
+- **WHEN** `GET /api/connectors/spotify/status` is called
 - **THEN** it SHALL return JSON with: `connected` (bool), `spotify_user_id` (string or null), `display_name` (string or null), `account_type` (string or null), `last_sync_at` (ISO timestamp or null), `error` (string or null)
 
 #### Scenario: OAuth start endpoint
 
-- **WHEN** `POST /api/spotify/oauth/start` is called
+- **WHEN** `POST /api/connectors/spotify/oauth/start` is called
 - **THEN** it SHALL return JSON with: `authorization_url` (string) — the full Spotify authorization URL with PKCE parameters
 - **AND** the code verifier and CSRF state SHALL be stored server-side
 
 #### Scenario: OAuth callback endpoint
 
-- **WHEN** `GET /api/spotify/oauth/callback` is called with valid `code` and `state` parameters
+- **WHEN** `GET /api/connectors/spotify/oauth/callback` is called with valid `code` and `state` parameters
 - **THEN** it SHALL perform the token exchange and redirect to the settings page
 
 #### Scenario: Disconnect endpoint
 
-- **WHEN** `POST /api/spotify/disconnect` is called
+- **WHEN** `POST /api/connectors/spotify/disconnect` is called
 - **THEN** it SHALL delete `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, `SPOTIFY_TOKEN_EXPIRES_AT`, and `SPOTIFY_CLIENT_ID` from `CredentialStore`
 - **AND** it SHALL return `{"disconnected": true}`
 
 #### Scenario: Client ID configuration endpoint
 
-- **WHEN** `POST /api/spotify/config` is called with `{"client_id": "<value>"}`
+- **WHEN** `POST /api/connectors/spotify/config` is called with `{"client_id": "<value>"}`
 - **THEN** it SHALL store the client_id in `CredentialStore` under key `SPOTIFY_CLIENT_ID`
 - **AND** it SHALL validate that the client_id is a 32-character hexadecimal string
 - **AND** it SHALL return `{"configured": true}`

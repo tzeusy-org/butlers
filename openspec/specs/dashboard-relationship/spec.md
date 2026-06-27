@@ -6,44 +6,35 @@ Defines the dashboard surfaces for the Relationship butler: the contact detail A
 ## Requirements
 ### Requirement: Contact detail API
 
-The dashboard API SHALL expose `GET /api/relationship/contacts/:id` which returns a single contact's full record with joined data from related tables via a direct database read. The query MUST read from `public.contacts` (not `relationship.contacts`).
+The retired `public.contacts` / `public.contact_info` tables were dropped (core_134 / core_115) and there is no `GET /api/relationship/contacts/:id` endpoint. The canonical single-record read is `GET /api/relationship/entities/:id` (roster/relationship/api/router.py), which joins `public.entities` with contact-fact triples from `relationship.entity_facts` and secured rows from `public.entity_info`.
 
 The response MUST include:
-- All columns from the `public.contacts` table (`id`, `first_name`, `last_name`, `nickname`, `company`, `job_title`, `gender`, `pronouns`, `avatar_url`, `listed`, `metadata`, `roles`, `entity_id`, `created_at`, `updated_at`)
-- `info` (array) -- all rows from `public.contact_info` for this contact, each containing `id`, `type`, `value` (masked as `"********"` if `secured = true`), `label`, `secured`, `created_at`
-- `addresses` (array) -- all rows from `addresses` for this contact, each containing `id`, `type`, `line_1`, `line_2`, `city`, `province`, `postal_code`, `country`, `is_current`, `created_at`
-- `important_dates` (array) -- all rows from `important_dates` for this contact, each containing `id`, `label`, `day`, `month`, `year`, `created_at`
-- `quick_facts` (array) -- all rows from `quick_facts` for this contact, each containing `id`, `category`, `content`, `created_at`
-- `relationships` (array) -- all rows from `relationships` where `contact_id` matches, each containing `id`, `related_contact_id`, `group_type`, `type`, `reverse_type`, `created_at`, and a nested `related_contact` object with `id`, `first_name`, `last_name`, `company`
-- `labels` (array) -- all labels assigned to this contact via `contact_labels`, each containing `id`, `name`, `color`
+- The core entity record from `public.entities` (`id`, `canonical_name`, `entity_type`, `aliases`, `roles`, `metadata`, `state`, `created_at`, `updated_at`)
+- `entity_info` (array) -- contact-channel entries projected from `relationship.entity_facts` contact-fact triples and the backing `public.entity_info` rows, each containing `id`, `type`, `value` (masked as `"********"` when the backing row has `secured = true`), `label`, `secured`, `created_at`
+- Activity, gifts, loans, life events, and related-entity data are NOT inlined on this read. They are served by the entity-level tab and aggregator endpoints (see Requirement: Entity-level tab APIs and Requirement: Entity activity aggregator).
 
-#### Scenario: Fetch an existing contact with full detail
+#### Scenario: Fetch an existing entity with full detail
 
-- **WHEN** `GET /api/relationship/contacts/abc-123-uuid` is called and the contact exists
-- **THEN** the API MUST return the complete contact record including `roles` and `entity_id` fields
-- **AND** the `info` array MUST contain all `contact_info` rows with secured values masked
+- **WHEN** `GET /api/relationship/entities/ent-456-uuid` is called and the entity exists
+- **THEN** the API MUST return the complete entity record including `roles` and `aliases` fields
+- **AND** the `entity_info` array MUST contain the entity's contact-channel entries with secured values masked
 - **AND** the response status MUST be 200
 
-#### Scenario: Secured contact_info values are masked
+#### Scenario: Secured entity_info values are masked
 
-- **WHEN** a contact has a `contact_info` entry with `secured = true` and `value = 'secret-token-123'`
-- **THEN** the `info` array entry MUST have `value = "********"` and `secured = true`
+- **WHEN** an entity has an `entity_info` entry with `secured = true` and `value = 'secret-token-123'`
+- **THEN** the `entity_info` array entry MUST have `value = "********"` and `secured = true`
 
-#### Scenario: Contact does not exist
+#### Scenario: Entity does not exist
 
-- **WHEN** `GET /api/relationship/contacts/nonexistent-uuid` is called and no contact with that ID exists
-- **THEN** the API MUST return a 404 response with an error message indicating the contact was not found
+- **WHEN** `GET /api/relationship/entities/nonexistent-uuid` is called and no entity with that ID exists
+- **THEN** the API MUST return a 404 response with an error message indicating the entity was not found
 
-#### Scenario: Contact with no related data
+#### Scenario: Entity with no contact data
 
-- **WHEN** `GET /api/relationship/contacts/abc-123-uuid` is called for a contact that has no contact_info, addresses, important_dates, quick_facts, relationships, or labels
-- **THEN** the API MUST return the contact record with all joined arrays as empty arrays (`[]`)
+- **WHEN** `GET /api/relationship/entities/ent-456-uuid` is called for an entity that has no contact-channel entries
+- **THEN** the API MUST return the entity record with `entity_info` as an empty array (`[]`)
 - **AND** the response status MUST be 200
-
-#### Scenario: Relationships include related contact details
-
-- **WHEN** a contact has a relationship of type `"parent"` with another contact named "Bob Smith" at "Acme Corp"
-- **THEN** the relationship entry in the `relationships` array MUST include a `related_contact` object with `id`, `first_name` set to `"Bob"`, `last_name` set to `"Smith"`, and `company` set to `"Acme Corp"`
 
 ---
 
@@ -200,28 +191,28 @@ defined in the `detail-page-archetype` spec.
 
 ### Requirement: Secured contact info reveal API
 
-The dashboard API SHALL expose `GET /api/contacts/{id}/secrets/{info_id}` which returns the unmasked value of a secured `contact_info` entry.
+The dashboard API SHALL expose `GET /api/relationship/entities/{entity_id}/secrets/{info_id}` which returns the unmasked value of a secured `public.entity_info` entry (rejecting non-secured rows with HTTP 400).
 
 #### Scenario: Reveal a secured value
 
-- **WHEN** `GET /api/contacts/abc-123/secrets/info-456` is called for a `contact_info` entry with `secured = true`
+- **WHEN** `GET /api/relationship/entities/ent-456/secrets/info-456` is called for an `entity_info` entry with `secured = true`
 - **THEN** the API MUST return the actual `value` of the entry
 - **AND** the response status MUST be 200
 
-#### Scenario: Non-secured entry returns normally
+#### Scenario: Non-secured entry is rejected
 
-- **WHEN** `GET /api/contacts/abc-123/secrets/info-456` is called for a `contact_info` entry with `secured = false`
-- **THEN** the API MUST return the `value` as-is
-- **AND** the response status MUST be 200
+- **WHEN** `GET /api/relationship/entities/ent-456/secrets/info-456` is called for an `entity_info` entry with `secured = false`
+- **THEN** the API MUST return a 400 response
+- **AND** the response MUST NOT include the unmasked `value`
 
 #### Scenario: Entry does not exist
 
-- **WHEN** `GET /api/contacts/abc-123/secrets/nonexistent-id` is called
+- **WHEN** `GET /api/relationship/entities/ent-456/secrets/nonexistent-id` is called
 - **THEN** the API MUST return a 404 response
 
-#### Scenario: Entry belongs to different contact
+#### Scenario: Entry belongs to different entity
 
-- **WHEN** `GET /api/contacts/abc-123/secrets/info-456` is called but `info-456` belongs to contact `def-789`
+- **WHEN** `GET /api/relationship/entities/ent-456/secrets/info-456` is called but `info-456` belongs to entity `ent-789`
 - **THEN** the API MUST return a 404 response
 
 ---
@@ -370,25 +361,20 @@ main entity table when pending contacts exist.
 
 ### Requirement: Dashboard roles management API
 
-The dashboard API SHALL expose `PATCH /api/contacts/{id}` which allows updating contact fields including `roles`. This is the sole endpoint through which `roles` can be modified.
+Roles live on the `public.entities.roles` column and are managed through the entity surface, not a contacts endpoint. The retired `public.contacts` table was dropped in core_134, so there is no `PATCH /api/contacts/{id}` endpoint.
 
-#### Scenario: Update contact roles
+#### Scenario: Update entity roles
 
-- **WHEN** `PATCH /api/contacts/abc-123` is called with `{"roles": ["owner"]}`
-- **THEN** the contact's `roles` column MUST be updated to `['owner']`
-- **AND** the response MUST include the updated contact with the new roles
+- **WHEN** `POST /api/relationship/entities` is called with `{"id": "ent-456", "roles": ["owner"]}` for an existing entity
+- **THEN** the entity's `roles` column MUST be updated to `['owner']`
+- **AND** the response MUST include the updated entity with the new roles
 - **AND** the response status MUST be 200
 
-#### Scenario: Update non-role fields
+#### Scenario: Roles update is owner-gated
 
-- **WHEN** `PATCH /api/contacts/abc-123` is called with `{"first_name": "Alice"}`
-- **THEN** the contact's `first_name` MUST be updated
+- **WHEN** the caller does not resolve to an owner-role entity and `POST /api/relationship/entities` is called with a `roles` change
+- **THEN** the API MUST return a 403 response with `{ code: 'owner_required' }`
 - **AND** the `roles` column MUST NOT be modified
-
-#### Scenario: Contact does not exist
-
-- **WHEN** `PATCH /api/contacts/nonexistent-uuid` is called
-- **THEN** the API MUST return a 404 response
 
 ---
 

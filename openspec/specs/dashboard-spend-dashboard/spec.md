@@ -12,28 +12,28 @@ The dashboard SHALL have a page at `/settings/spend` rendered in the Dispatch de
 #### Scenario: Spend page layout
 - **WHEN** a user navigates to `/settings/spend`
 - **THEN** the page renders, in vertical order:
-  - **Page header**: title "Spend", mono eyebrow "system · cost", clock (mono, tabular nums).
-  - **4-cell KPI strip**: `mtd usd`, `today usd`, `forecast eom usd`, `ceiling usd`. Mega-number in sans 500 tabular-nums, mono sub-label with delta vs. prior period.
+  - **Page header**: title "Spend" rendered via the shared `Page` overview shell. The page does not render a mono eyebrow "system · cost" or a clock.
+  - **4-cell KPI strip**: `MTD Spend`, `Projected EOM`, `Monthly Ceiling`, `Days in Month`. Mega-number in sans 500 tabular-nums, mono sub-label. There is no `today` cell, and sub-labels show context such as days elapsed/remaining, not a delta vs. prior period.
   - **Forecast chart**: hand-rolled SVG. Solid line for MTD daily series, dashed line for projection from today to month end, hairline horizontal at the ceiling. No charting library.
   - **Breakdown section**: bars by `butler`, `model`, `feature` via tabbed picker. Each bar is plain CSS (≤ 8 lines per bar), no library.
   - **Routing rules table**: rule rows in evaluation order with drag-to-reorder; columns `condition · action · saved 7d`. Order is top-to-bottom; first match wins at runtime.
-  - **Anomaly section**: placeholder copy "Anomaly detection — TODO. See spend forecast.".
+  - **Anomaly section**: deferred. The page carries only a source-code TODO comment in the forecast section; no anomaly copy is rendered to the user.
 - **AND** no recharts or other chart library is loaded for this page.
 
 ### Requirement: Spend API
 The dashboard SHALL expose the spend endpoints.
 
 #### Scenario: Spend totals
-- **WHEN** `GET /api/spend?period=24h|7d|30d|90d|ytd|all` is called
-- **THEN** the response includes `total_usd`, `period_start`, `period_end`.
+- **WHEN** `GET /api/spend?period=today|7d|30d` is called (or a custom range via `from`/`to` ISO date params)
+- **THEN** the response is `ApiResponse[SpendSummary]` where `SpendSummary = {period, total_cost_usd, total_sessions, total_input_tokens, total_output_tokens, by_butler, by_model}`. There are no `total_usd`, `period_start`, or `period_end` fields.
 
 #### Scenario: Spend breakdown
 - **WHEN** `GET /api/spend/breakdown?by=butler|model|feature` is called
-- **THEN** the response is `ApiResponse[BreakdownRow[]]` where `BreakdownRow = {key: str, total_usd: float, share: float}` ordered by `total_usd DESC`.
+- **THEN** the response is `ApiResponse[{by: str, breakdown: {key: cost_usd}}]`, a flat key-to-cost map for the current month (MTD). The client sorts descending and renders the bars; the API returns no `share` field and no guaranteed order.
 
 #### Scenario: Spend forecast (naive estimator v1)
 - **WHEN** `GET /api/spend/forecast` is called
-- **THEN** the response is `{daily: {date, usd}[], projected_eom_usd: float, ceiling_usd: float | null, projection_confidence: "low" | "normal"}`
+- **THEN** the response is `{days: {date, cost_usd, projected}[], projected_eom_usd: float, days_in_month: int, days_elapsed: int, mtd_usd: float, ceiling_usd: float | null}` (the field is `days` not `daily`, and per-day cost is `cost_usd` not `usd`; `projection_confidence` is specified below but is not yet implemented)
 - **AND** `projected_eom_usd = mtd_total_usd / max(days_elapsed, 1) × days_in_month`
 - **AND** `projection_confidence = "low"` when `days_elapsed < 3`, else `"normal"`. This signals to the Console aggregator NOT to fire a "spend near ceiling" attention item from a low-confidence projection.
 - **AND** a code-level TODO marks the location of the smarter estimator for a future change.
@@ -59,7 +59,7 @@ The dashboard SHALL emit per-call spend events over `WS /api/spend/stream`.
 
 #### Scenario: Stream event shape
 - **WHEN** the runtime records a completed LLM call
-- **THEN** an event `{ts, butler, model, input_tokens, output_tokens, cost_cents}` is broadcast to `WS /api/spend/stream` subscribers
+- **THEN** an event `{kind: "call", ts, butler, model, tokens_in, tokens_out, cost_usd, session_id, extra}` is broadcast to `WS /api/spend/stream` subscribers (token fields are `tokens_in`/`tokens_out`, and cost is `cost_usd` in dollars, not `cost_cents`)
 - **AND** the frontend appends events to the forecast chart series without re-fetching.
 
 ### Requirement: Spend Rules Savings Job

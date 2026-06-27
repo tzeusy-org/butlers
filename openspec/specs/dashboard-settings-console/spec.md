@@ -33,7 +33,7 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 #### Scenario: Console aggregator response
 - **WHEN** `GET /api/settings/console` is called
 - **THEN** the response is `ApiResponse[SettingsConsole]` where `SettingsConsole` contains:
-  - `header: {active_butlers: int, spend_mtd_usd: float, open_approvals: int, models_verified: int, models_total: int}`
+  - `header_counts: {active_butlers: int, spend_mtd_usd: float, open_approvals: int, models_verified: int, models_total: int}`
   - `attention: AttentionItem[]` where `AttentionItem = {tone: "red"|"amber", kind: str, text: str, action_route: str}`
   - `attention_truncated_count: int` — items beyond the cap (0 if `attention.length <= 5`)
 - **AND** the server caps `attention[]` at 5 items; items beyond 5 are surfaced via `attention_truncated_count` so the UI can render a `"...N more →"` indicator linking to `/audit-log`.

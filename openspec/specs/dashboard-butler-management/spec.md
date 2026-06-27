@@ -211,7 +211,7 @@ The `/butlers/:name` page SHALL be a tabbed detail view where each butler is tre
 
 #### Scenario: Conditionally shown tabs -- health
 - **WHEN** the butler name is `health`
-- **THEN** one additional tab is shown: "Health"
+- **THEN** one additional tab is shown, labeled "Measurements"
 
 #### Scenario: Conditionally shown tabs -- general
 - **WHEN** the butler name is `general`
@@ -1432,16 +1432,17 @@ Switchboard is absent from this table because it carries no resident bespoke tab
   `Measurements` to match the registry
 
 ### Requirement: Health Tab (Butler-Specific)
-The health tab SHALL show navigation to health management sub-pages, available only for the health butler.
+The health butler's bespoke tab SHALL be labeled "Measurements" and render a
+panel-grid health data surface, appended only for the `health` butler.
 
 #### Scenario: Health butler context
-- **WHEN** the Health tab is viewed for the `health` butler
-- **THEN** a card grid shows links to six health sub-pages: Measurements, Medications, Conditions, Symptoms, Meals, and Research
-- **AND** each card has a title, description, and a "View" link button
+- **WHEN** the "Measurements" tab is viewed for the `health` butler
+- **THEN** a panel grid renders health KPIs and trend panels (glucose, heart rate, HRV, weight, sleep) plus active medications and recent conditions
+- **AND** a drilldown link to `/health/measurements` is preserved
 
 #### Scenario: Non-health butler
-- **WHEN** the Health tab is viewed for any butler other than `health`
-- **THEN** a centered message states "Health features are only available for the health butler."
+- **WHEN** any butler other than `health` is viewed
+- **THEN** no "Measurements" tab is appended (the tab is conditionally rendered only for `health`); no placeholder message is shown
 
 ### Requirement: Switchboard Registry Tab
 The registry tab (switchboard-only) SHALL show the authoritative butler registry with liveness information.

@@ -123,7 +123,7 @@ The `SessionDetailDrawer` is a slide-over sheet that provides full session conte
 
 #### Scenario: Trace ID link
 - **WHEN** the session has a `trace_id`
-- **THEN** the drawer displays the trace ID as a clickable link navigating to `/traces/{trace_id}`
+- **THEN** the drawer displays the trace ID as a clickable link navigating to `/ingestion?tab=timeline`
 - **AND** a copy-to-clipboard button is adjacent to the link (using `navigator.clipboard.writeText`)
 
 #### Scenario: Copyable text feedback
@@ -302,7 +302,7 @@ The Notifications page (`/notifications`) provides a complete audit trail of eve
 - **WHEN** a notification has a `session_id`
 - **THEN** a "Session {shortId}" link is displayed below the message, navigating to `/sessions/{session_id}?butler={source_butler}`
 - **WHEN** a notification has a `trace_id`
-- **THEN** a "Trace {shortId}" link is displayed below the message, navigating to `/traces/{trace_id}`
+- **THEN** a "Trace {shortId}" link is displayed below the message, navigating to `/ingestion?tab=timeline`
 - **AND** both links are styled as primary-colored underlined text
 
 #### Scenario: Notification status badges
@@ -320,7 +320,7 @@ The Notifications page (`/notifications`) provides a complete audit trail of eve
 - **THEN** the empty state reads "Notifications will appear here as butlers send messages via Telegram, email, and other channels."
 
 ### Requirement: Audit Log
-The Audit Log page (`/audit`) provides a tamper-evident record of every operation performed by every butler. It captures triggers, ticks, session lifecycle events, schedule mutations, and state mutations -- the authoritative record of "who did what, when, and what happened."
+The Audit Log page (`/audit-log`) provides a tamper-evident record of every operation performed by every butler. It captures triggers, ticks, session lifecycle events, schedule mutations, and state mutations -- the authoritative record of "who did what, when, and what happened."
 
 #### Scenario: Audit log filter bar
 - **WHEN** the operator interacts with the audit log filter bar
@@ -356,9 +356,8 @@ The Issues page (`/issues`) and `IssuesPanel` component provide automated detect
 #### Scenario: Issue dismissal persistence
 - **WHEN** the operator clicks "Dismiss" on an issue
 - **THEN** the issue is removed from the visible list
-- **AND** the dismissal is persisted to `localStorage` under the key `butlers-dismissed-issues`
-- **AND** the issue key for dismissal is computed as `{issue.type}:{issue.error_message ?? issue.description}`
-- **AND** dismissed issues remain hidden across page refreshes until localStorage is cleared
+- **AND** the dismissal is persisted server-side via POST to the dismiss-issue endpoint, keyed by the server-computed `issue_key`
+- **AND** dismissed issues remain hidden across refreshes and across browsers until the issue is undismissed server-side
 
 #### Scenario: Issue link navigation
 - **WHEN** an issue has a non-null `link` field
@@ -433,7 +432,7 @@ All visibility surfaces use TanStack Query (React Query) for data fetching with 
 
 #### Scenario: Default polling intervals per surface
 - **WHEN** the Sessions page is active
-- **THEN** sessions list data refetches every 30 seconds by default (overridable by auto-refresh control)
+- **THEN** sessions list data refetches every 10 seconds by default (overridable by auto-refresh control)
 - **WHEN** the Timeline page is active
 - **THEN** timeline data refetches at the user-selected interval (default 10 seconds)
 - **WHEN** the Traces list is active
@@ -482,7 +481,7 @@ The visibility surfaces are interconnected through contextual links that allow o
 
 #### Scenario: Session to trace navigation
 - **WHEN** a session detail drawer displays a `trace_id`
-- **THEN** it is a clickable link to `/traces/{trace_id}`
+- **THEN** it is a clickable link to `/ingestion?tab=timeline`
 
 #### Scenario: Notification to session navigation
 - **WHEN** a notification row has a `session_id`
@@ -490,7 +489,7 @@ The visibility surfaces are interconnected through contextual links that allow o
 
 #### Scenario: Notification to trace navigation
 - **WHEN** a notification row has a `trace_id`
-- **THEN** a "Trace {shortId}" link navigates to `/traces/{trace_id}`
+- **THEN** a "Trace {shortId}" link navigates to `/ingestion?tab=timeline`
 
 #### Scenario: Trace detail to butler navigation
 - **WHEN** a trace detail page shows the root butler
@@ -599,7 +598,7 @@ The frontend TypeScript interfaces define the data contracts that all visibility
 - **THEN** each issue conforms to: `severity` (string), `type` (string), `butler` (string), `description` (string), `link` (string | null), `error_message` (optional string | null), `occurrences` (optional number), `first_seen_at` (optional string | null), `last_seen_at` (optional string | null), `butlers` (optional string array for multi-butler issues)
 
 ### Requirement: Ingestion Timeline Status Column
-The ingestion timeline table at `/butlers/ingestion?tab=timeline` SHALL display a Status column indicating the outcome of each event.
+The ingestion timeline ledger at `/ingestion` SHALL display a Status column indicating the outcome of each event.
 
 #### Scenario: Status column rendering
 - **WHEN** the timeline table renders
@@ -656,8 +655,8 @@ The ingestion timeline filter bar SHALL include a Status filter dropdown.
 
 #### Scenario: Status filter options
 - **WHEN** the operator interacts with the Status filter
-- **THEN** the dropdown SHALL contain options: All (default), Ingested, Filtered, Error, Replay Pending, Replay Complete, Replay Failed
-- **AND** selecting a status SHALL pass `status=<value>` to the API query and reset pagination
+- **THEN** the filter SHALL render as multi-select toggle chips covering: Ingested, Skipped, Filtered, Error, Replay Pending, Replay Complete, Replay Failed
+- **AND** toggling chips SHALL pass a comma-separated `statuses=<csv>` param (single `status=<value>` is also accepted) and reset pagination
 
 ### Requirement: Ingestion Timeline Unified Data Source
 The timeline table SHALL display events from both `public.ingestion_events` and `connectors.filtered_events` in a single merged view.

@@ -25,9 +25,9 @@ The chat interface renders as a slide-out panel on the butler detail page (`/but
 
 #### Scenario: Chat panel responsive behavior
 
-- **WHEN** the viewport width is below the `md` breakpoint (768px)
-- **THEN** the chat panel opens as a full-width overlay instead of a side panel
-- **AND** a back button replaces the close button for mobile navigation
+- **WHEN** the viewport width is below the `sm` breakpoint (640px)
+- **THEN** the chat panel opens as a full-width overlay instead of a side panel (`w-full sm:max-w-[480px]`)
+- **AND** the standard Sheet close button is retained for navigation
 
 ### Requirement: Conversation List Sidebar
 
@@ -68,7 +68,7 @@ The active conversation renders as a scrollable message thread with user and ass
 
 - **WHEN** an assistant message is displayed in the thread
 - **THEN** it renders left-aligned with `bg-muted` styling
-- **AND** the content is rendered as markdown (via a markdown renderer supporting code blocks, links, lists, tables)
+- **AND** the content is rendered as markdown (via the `SimpleMarkdown` renderer supporting fenced code blocks and newline-preserving paragraphs; links, lists, and tables are not yet parsed)
 - **AND** below the content: model name badge, token count (`{input}+{output} tokens`), and duration (`{N}ms`) render in `text-xs text-muted-foreground`
 
 #### Scenario: Auto-scroll to latest message
@@ -106,7 +106,7 @@ The message input area occupies the bottom of the chat panel with a text input a
 
 - **WHEN** the textarea has non-empty content
 - **THEN** a send button (arrow-up icon) renders at the right edge of the input area
-- **AND** the button uses `default` variant at `icon-sm` size
+- **AND** the button uses `default` variant at `icon` size (size-9)
 - **AND** clicking the button sends the message and clears the input
 
 #### Scenario: Input disabled during streaming
@@ -129,7 +129,7 @@ A typing indicator provides visual feedback while the butler is processing a res
 
 - **WHEN** a user message has been sent and the assistant response has not started streaming
 - **THEN** a typing indicator renders at the bottom of the message thread, left-aligned (assistant position)
-- **AND** the indicator shows three animated dots with a pulsing opacity animation
+- **AND** the indicator shows three animated dots with a bounce animation (staggered `animation-delay`)
 
 #### Scenario: Typing indicator during streaming
 
@@ -144,7 +144,7 @@ Each conversation and message displays cost-related metrics for operator awarene
 
 - **WHEN** an assistant message has `input_tokens` and `output_tokens`
 - **THEN** a cost estimate is displayed alongside the token counts using the dashboard's existing `PricingConfig` model-to-price mapping
-- **AND** the format is e.g., `~$0.03` in `text-xs text-muted-foreground`
+- **AND** the format is e.g., `~$0.0400` in `text-xs text-muted-foreground`
 
 #### Scenario: Conversation total cost
 
@@ -215,7 +215,7 @@ TanStack Query hooks manage conversation data fetching and caching.
 #### Scenario: useConversations hook
 
 - **WHEN** `useConversations(butlerName, status)` is called
-- **THEN** it returns a paginated list of conversations using `useQuery` with key `["conversations", butlerName, status]`
+- **THEN** it returns a paginated list of conversations using `useQuery` with key `["conversations", butlerName, "list", params]`
 - **AND** `staleTime` is 10 seconds (conversations update frequently during active chat)
 
 #### Scenario: useConversationMessages hook
