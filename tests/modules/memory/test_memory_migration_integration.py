@@ -379,6 +379,106 @@ def test_fact_supersession_marks_catalog_entry_stale(memory_migrated_db: str) ->
     assert new_id in result["after_ids"]
 
 
+async def _forget_fact_via_correction_and_read_event(db_url: str) -> dict:
+    """Store a fact, retract it via a correction, and return the audit event + fact.
+
+    Exercises the correction-driven retraction path end to end against the real
+    schema: store_fact -> forget_memory(correction_id=...) -> the fact is marked
+    ``retracted`` with correction provenance in metadata AND a ``memory_events``
+    row is inserted linking the correction_id for audit traceability.
+    """
+    import uuid
+
+    from butlers.modules.memory.storage import forget_memory, store_fact
+
+    correction_id = str(uuid.uuid4())
+    correction_reason = "user says this fact is wrong"
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        embedding_engine = _fake_embedding_engine()
+
+        result = await store_fact(
+            pool,
+            subject="audit_user",
+            predicate="preference",
+            content="prefers light mode",
+            embedding_engine=embedding_engine,
+            importance=5.0,
+            permanence="standard",
+            scope="global",
+            tenant_id="shared",
+        )
+        fact_id = result["id"]
+
+        forgotten = await forget_memory(
+            pool,
+            "fact",
+            fact_id,
+            correction_id=correction_id,
+            correction_reason=correction_reason,
+        )
+
+        fact_row = await pool.fetchrow(
+            "SELECT validity, metadata FROM facts WHERE id = $1",
+            fact_id,
+        )
+        event_row = await pool.fetchrow(
+            "SELECT event_type, actor, memory_type, memory_id, payload"
+            " FROM memory_events"
+            " WHERE event_type = 'correction_driven_retraction' AND memory_id = $1",
+            fact_id,
+        )
+        return {
+            "correction_id": correction_id,
+            "correction_reason": correction_reason,
+            "fact_id": fact_id,
+            "forgotten": forgotten,
+            "fact": dict(fact_row) if fact_row else {},
+            "event": dict(event_row) if event_row else {},
+        }
+    finally:
+        await pool.close()
+
+
+def test_correction_driven_forget_emits_memory_event(memory_migrated_db: str) -> None:
+    """A correction-driven forget_memory inserts an auditable memory_events row.
+
+    Per the module-memory ``correction-provenance`` spec scenario "Correction
+    provenance in memory events": retracting a fact via a correction SHALL
+    insert a ``memory_events`` row whose event type indicates correction-driven
+    retraction and whose payload carries the ``correction_id`` for audit linkage.
+    Without this row, correction-driven retractions are invisible in the audit
+    log. This guards that the audit event is actually emitted.
+    """
+    out = asyncio.run(_forget_fact_via_correction_and_read_event(memory_migrated_db))
+
+    assert out["forgotten"] is True
+
+    # The fact itself is retracted and carries correction provenance in metadata.
+    fact = out["fact"]
+    assert fact, "Expected the fact row to still exist after retraction"
+    assert fact["validity"] == "retracted"
+    metadata = fact["metadata"] or {}
+    assert metadata.get("correction_id") == out["correction_id"]
+    assert metadata.get("correction_reason") == out["correction_reason"]
+
+    # The audit event exists, is the right type, and links the correction_id.
+    event = out["event"]
+    assert event, "Expected a memory_events row for the correction-driven retraction"
+    assert event["event_type"] == "correction_driven_retraction"
+    assert event["memory_type"] == "fact"
+    assert event["memory_id"] == out["fact_id"]
+    payload = event["payload"] or {}
+    assert payload.get("correction_id") == out["correction_id"]
+    assert payload.get("correction_reason") == out["correction_reason"]
+
+
 def test_migration_is_idempotent(postgres_container) -> None:
     """Running the memory migration chain twice on the same DB does not fail."""
     db_name = migration_db_name()
