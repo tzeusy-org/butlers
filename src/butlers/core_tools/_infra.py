@@ -97,11 +97,13 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         if complexity is not None:
             spawn_kwargs["complexity"] = Complexity(complexity)
         result = await spawner.trigger(**spawn_kwargs)
+        session_id = getattr(result, "session_id", None)
         return {
             "output": result.output,
             "success": result.success,
             "error": result.error,
             "duration_ms": result.duration_ms,
+            "session_id": str(session_id) if session_id else None,
         }
 
     @_core_tool("infra")

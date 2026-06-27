@@ -747,6 +747,83 @@ class TestCorrectRouteSuccess:
         assert result["success"] is True
 
 
+class TestCorrectRouteNewSessionId:
+    """Tests for new_session_id propagation (butler-switchboard spec).
+
+    Per spec.md, a successful re-dispatch SHALL return ``new_session_id`` — the
+    UUID of the session created by the re-dispatch on the correct butler. The
+    real path routes through ``route()`` to the target butler's ``trigger``
+    tool, whose return surfaces the spawned session UUID as ``session_id``.
+    """
+
+    async def test_success_returns_new_session_id_from_re_dispatch(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """The real session id from the re-dispatch is surfaced as new_session_id."""
+        request_id = _make_request_id()
+        correction_id = _make_correction_id()
+        new_session_id = uuid.uuid4()
+
+        await _seed_ingestion_event(pool, request_id=request_id)
+        await _seed_message_inbox(pool, request_id=request_id)
+
+        await pool.execute(
+            "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
+            " VALUES ('personal_assistant', 'http://localhost:8001/mcp/sse', now())"
+            " ON CONFLICT (name) DO NOTHING"
+        )
+
+        # call_fn returns the real `trigger` tool shape, which includes the
+        # spawned session's UUID under "session_id".
+        async def _trigger_call_fn(endpoint_url: str, tool_name: str, args: dict[str, Any]) -> Any:
+            assert tool_name == "trigger"
+            return {
+                "output": "handled",
+                "success": True,
+                "error": None,
+                "duration_ms": 42,
+                "session_id": str(new_session_id),
+            }
+
+        result = await correct_route(
+            pool,
+            request_id=request_id,
+            correct_butler="personal_assistant",
+            correction_id=correction_id,
+            call_fn=_trigger_call_fn,
+        )
+
+        assert result["success"] is True
+        assert result["new_session_id"] == str(new_session_id)
+
+    async def test_success_new_session_id_none_when_absent(self, pool: asyncpg.Pool) -> None:
+        """new_session_id is None when the re-dispatch return omits session_id."""
+        request_id = _make_request_id()
+        correction_id = _make_correction_id()
+
+        await _seed_ingestion_event(pool, request_id=request_id)
+        await _seed_message_inbox(pool, request_id=request_id)
+
+        await pool.execute(
+            "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
+            " VALUES ('personal_assistant', 'http://localhost:8001/mcp/sse', now())"
+            " ON CONFLICT (name) DO NOTHING"
+        )
+
+        call_fn = AsyncMock(return_value={"output": "ok", "success": True})
+
+        result = await correct_route(
+            pool,
+            request_id=request_id,
+            correct_butler="personal_assistant",
+            correction_id=correction_id,
+            call_fn=call_fn,
+        )
+
+        assert result["success"] is True
+        assert result["new_session_id"] is None
+
+
 class TestCorrectRouteRetentionWindow:
     """Tests for the retention window boundary logic."""
 

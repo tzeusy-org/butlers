@@ -86,9 +86,12 @@ async def correct_route(
     Returns
     -------
     dict
-        ``{"success": True, "new_request_id": "<uuid>", ...}`` on success, or
-        ``{"success": False, "error": "<code>", "message": "<human text>"}``
-        on failure.
+        On success, ``{"success": True, "request_id": "<uuid>",
+        "correction_id": "<uuid>", "correct_butler": "<name>",
+        "lifecycle_state": "corrected", "new_session_id": "<uuid>"}`` where
+        ``new_session_id`` is the UUID of the session created by the re-dispatch
+        on the correct butler (per the butler-switchboard spec). On failure,
+        ``{"success": False, "error": "<code>", "message": "<human text>"}``.
     """
     if isinstance(request_id, str):
         request_id = UUID(request_id)
@@ -350,6 +353,18 @@ async def correct_route(
             ),
         }
 
+    # Extract the new session id created by the re-dispatch on the correct
+    # butler. route() wraps the target butler's `trigger` tool return under
+    # "result"; the trigger tool surfaces the spawned session's UUID as
+    # "session_id". We propagate it as "new_session_id" per the spec so the
+    # calling butler's `correct` tool can record traceability.
+    inner_result = route_result.get("result")
+    new_session_id: str | None = None
+    if isinstance(inner_result, dict):
+        raw_session_id = inner_result.get("session_id")
+        if raw_session_id:
+            new_session_id = str(raw_session_id)
+
     # 7. Update the original message_inbox record to reflect the correction
     correction_metadata: dict[str, Any] = {
         "correction_id": str(correction_id),
@@ -423,4 +438,5 @@ async def correct_route(
         "correction_id": str(correction_id),
         "correct_butler": correct_butler,
         "lifecycle_state": "corrected",
+        "new_session_id": new_session_id,
     }

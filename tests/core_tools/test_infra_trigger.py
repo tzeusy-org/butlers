@@ -8,6 +8,7 @@ the call. These tests pin the accepted kwargs and the forwarding behavior.
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -18,15 +19,22 @@ from butlers.core_tools._infra import register_infra_tools
 
 
 class _FakeSpawner:
-    def __init__(self) -> None:
+    def __init__(self, session_id: uuid.UUID | None = None) -> None:
         self.calls: list[dict] = []
+        self.session_id = session_id
 
     async def trigger(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(output="ok", success=True, error=None, duration_ms=1)
+        return SimpleNamespace(
+            output="ok",
+            success=True,
+            error=None,
+            duration_ms=1,
+            session_id=self.session_id,
+        )
 
 
-def _register_and_grab_trigger():
+def _register_and_grab_trigger(session_id: uuid.UUID | None = None):
     registered: dict[str, callable] = {}
 
     def _core_tool(_group: str, **_kwargs):
@@ -37,7 +45,7 @@ def _register_and_grab_trigger():
         return decorator
 
     mcp = SimpleNamespace()
-    spawner = _FakeSpawner()
+    spawner = _FakeSpawner(session_id=session_id)
     ctx = ToolContext(
         daemon=SimpleNamespace(
             _started_at=0.0,
@@ -78,3 +86,22 @@ async def test_trigger_rejects_unknown_complexity():
     trigger, _spawner = _register_and_grab_trigger()
     with pytest.raises(ValueError):
         await trigger(prompt="hello", complexity="galactic")
+
+
+async def test_trigger_returns_session_id():
+    """The trigger tool surfaces the spawned session UUID for traceability.
+
+    Switchboard ``correct_route`` relies on this to return ``new_session_id``
+    per the butler-switchboard spec.
+    """
+    session_id = uuid.uuid4()
+    trigger, _spawner = _register_and_grab_trigger(session_id=session_id)
+    result = await trigger(prompt="hello")
+    assert result["session_id"] == str(session_id)
+
+
+async def test_trigger_session_id_none_when_unset():
+    """session_id is None when the spawner produced no session."""
+    trigger, _spawner = _register_and_grab_trigger(session_id=None)
+    result = await trigger(prompt="hello")
+    assert result["session_id"] is None
