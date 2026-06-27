@@ -1,6 +1,6 @@
 ## Why
 
-The Butlers review (`docs/butlers-review-improvement-cycles.md`, Cycle 3) asks for
+The Butlers review (`docs/archive/butlers-review-improvement-cycles.md`, Cycle 3) asks for
 operational proof that the system can **start, migrate, run, recover, and expose
 health** — not just that isolated units pass. Today there is rich E2E coverage
 (real LLM ecosystem) and good migration coverage, but no fast, LLM-free,
