@@ -5,10 +5,14 @@
 // Covers:
 //   a. Status card renders with granted health scopes.
 //   b. Status card is HIDDEN when primary lacks health scopes.
-//   c. Banner shows for test-mode near-expiry (token >= 6 days old).
-//   d. Banner absent for non-test-mode or fresh token.
+//   c. Banner is PERSISTENT orange whenever test_mode=true (even fresh token);
+//      elevates to red once refresh age crosses 5d6h; carries a scope_set=health
+//      re-consent link. [bu-bxu50]
+//   d. Banner absent only when test_mode=false.
 //
 // Spec: bu-hh875 — Google Health connector status card in owner passport view
+//       bu-bxu50 — reconcile banner to dashboard-google-accounts spec:
+//                  §Test-Mode Pre-Verification Warning
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi } from "vitest";
@@ -128,7 +132,10 @@ import * as useSecretsModule from "@/hooks/use-secrets.ts";
 import * as useGoogleHealthModule from "@/hooks/use-google-health.ts";
 import { GOOGLE_HEALTH_SCOPES } from "@/api/client.ts";
 import { PageGoogleAccounts } from "./pages.tsx";
-import { isTestModeTokenNearExpiry } from "@/lib/google-health-utils.ts";
+import {
+  computeTestModeBannerVariant,
+  TEST_MODE_RED_THRESHOLD_MS,
+} from "@/lib/google-health-test-mode.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -276,170 +283,174 @@ describe("GoogleHealthPassportStatusCard: hidden without health scopes [bu-hh875
   });
 });
 
-// ── c. Banner shows for test-mode near/after expiry ─────────────────────────
+// ── Shared helper: wire a primary account that has health scopes ────────────
 
-describe("TestModeExpiryBanner: shows for test-mode near-expiry [bu-hh875]", () => {
-  /** Create a last_token_refresh_at that is `daysAgo` days in the past. */
-  function refreshedDaysAgo(daysAgo: number): string {
-    const d = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
-    return d.toISOString();
-  }
+function mockPrimaryWithHealth(): void {
+  vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
+    data: [
+      {
+        id: "acc-1",
+        email: "owner@example.com",
+        display_name: "Owner",
+        is_primary: true,
+        status: "active" as const,
+        granted_scopes: [...GOOGLE_HEALTH_SCOPES],
+        connected_at: "2026-01-01T00:00:00Z",
+        last_token_refresh_at: null,
+      },
+    ],
+    isLoading: false,
+    error: null,
+  } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
+}
 
-  it("shows the expiry banner when test_mode=true and token is 6+ days old", () => {
-    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
-      data: [
-        {
-          id: "acc-1",
-          email: "owner@example.com",
-          display_name: "Owner",
-          is_primary: true,
-          status: "active" as const,
-          granted_scopes: [...GOOGLE_HEALTH_SCOPES],
-          connected_at: "2026-01-01T00:00:00Z",
-          last_token_refresh_at: null,
-        },
-      ],
-      isLoading: false,
-      error: null,
-    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
-    vi.mocked(useGoogleHealthModule.useGoogleHealthStatus).mockReturnValueOnce({
-      data: makeHealthStatus({
+function mockHealthStatus(status: GoogleHealthStatusResponse): void {
+  vi.mocked(useGoogleHealthModule.useGoogleHealthStatus).mockReturnValueOnce({
+    data: status,
+    isLoading: false,
+    error: null,
+    isSuccess: true,
+  } as unknown as ReturnType<typeof useGoogleHealthModule.useGoogleHealthStatus>);
+}
+
+/** Return an ISO timestamp `ms` milliseconds in the past. */
+function refreshedMsAgo(ms: number): string {
+  return new Date(Date.now() - ms).toISOString();
+}
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+// ── c. Banner is PERSISTENT orange whenever test_mode=true [bu-bxu50] ─────────
+
+describe("TestModeExpiryBanner: persistent orange whenever test_mode=true [bu-bxu50]", () => {
+  it("(a) shows the ORANGE banner when test_mode=true even with a FRESH token", () => {
+    // Spec: the banner is persistent — it shows whenever test_mode=true,
+    // regardless of how recently the token was refreshed.
+    mockPrimaryWithHealth();
+    mockHealthStatus(
+      makeHealthStatus({
         test_mode: true,
-        last_token_refresh_at: refreshedDaysAgo(6.5),
+        // Only 2 days old — well inside the 5d6h red threshold.
+        last_token_refresh_at: refreshedMsAgo(2 * ONE_DAY_MS),
       }),
-      isLoading: false,
-      error: null,
-      isSuccess: true,
-    } as unknown as ReturnType<typeof useGoogleHealthModule.useGoogleHealthStatus>);
+    );
 
     const html = renderInRouter(<PageGoogleAccounts />);
 
     expect(html).toContain('data-testid="test-mode-expiry-banner"');
+    expect(html).toContain('data-variant="orange"');
+    expect(html).toContain('data-expired="false"');
   });
 
-  it("shows the expiry banner when test_mode=true and token is past 7 days (expired)", () => {
-    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
-      data: [
-        {
-          id: "acc-1",
-          email: "owner@example.com",
-          display_name: "Owner",
-          is_primary: true,
-          status: "active" as const,
-          granted_scopes: [...GOOGLE_HEALTH_SCOPES],
-          connected_at: "2026-01-01T00:00:00Z",
-          last_token_refresh_at: null,
-        },
-      ],
-      isLoading: false,
-      error: null,
-    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
-    vi.mocked(useGoogleHealthModule.useGoogleHealthStatus).mockReturnValueOnce({
-      data: makeHealthStatus({
-        test_mode: true,
-        last_token_refresh_at: refreshedDaysAgo(8),
-      }),
-      isLoading: false,
-      error: null,
-      isSuccess: true,
-    } as unknown as ReturnType<typeof useGoogleHealthModule.useGoogleHealthStatus>);
+  it("(a) shows the ORANGE banner when test_mode=true and last_token_refresh_at is null", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(
+      makeHealthStatus({ test_mode: true, last_token_refresh_at: null }),
+    );
 
     const html = renderInRouter(<PageGoogleAccounts />);
 
     expect(html).toContain('data-testid="test-mode-expiry-banner"');
-    expect(html).toContain('data-expired="true"');
+    expect(html).toContain('data-variant="orange"');
   });
 
-  // Unit-test the helper directly
-  it("isTestModeTokenNearExpiry returns true when token is 6+ days old", () => {
-    const sixDaysAgo = new Date(Date.now() - 6.1 * 24 * 60 * 60 * 1000).toISOString();
-    expect(isTestModeTokenNearExpiry(sixDaysAgo)).toBe(true);
-  });
+  it("(c) the banner carries a re-consent link targeting scope_set=health", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(
+      makeHealthStatus({
+        test_mode: true,
+        last_token_refresh_at: refreshedMsAgo(2 * ONE_DAY_MS),
+      }),
+    );
 
-  it("isTestModeTokenNearExpiry returns true when token is 7+ days old", () => {
-    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
-    expect(isTestModeTokenNearExpiry(eightDaysAgo)).toBe(true);
+    const html = renderInRouter(<PageGoogleAccounts />);
+
+    expect(html).toContain('data-testid="test-mode-reconsent-link"');
+    expect(html).toContain("scope_set=health");
+    // Re-consent forces the Google consent screen and pre-selects the primary.
+    expect(html).toContain("force_consent=true");
+    expect(html).toContain("account_hint=owner%40example.com");
   });
 });
 
-// ── d. Banner absent for non-test-mode or fresh token ───────────────────────
+// ── d. Banner elevates to RED past the 5d6h refresh-age threshold [bu-bxu50] ──
 
-describe("TestModeExpiryBanner: absent for non-test-mode or fresh token [bu-hh875]", () => {
-  function refreshedDaysAgo(daysAgo: number): string {
-    return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
-  }
-
-  it("does NOT show the banner when test_mode=false (even if token is old)", () => {
-    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
-      data: [
-        {
-          id: "acc-1",
-          email: "owner@example.com",
-          display_name: "Owner",
-          is_primary: true,
-          status: "active" as const,
-          granted_scopes: [...GOOGLE_HEALTH_SCOPES],
-          connected_at: "2026-01-01T00:00:00Z",
-          last_token_refresh_at: null,
-        },
-      ],
-      isLoading: false,
-      error: null,
-    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
-    vi.mocked(useGoogleHealthModule.useGoogleHealthStatus).mockReturnValueOnce({
-      data: makeHealthStatus({
-        test_mode: false,
-        last_token_refresh_at: refreshedDaysAgo(8),
-      }),
-      isLoading: false,
-      error: null,
-      isSuccess: true,
-    } as unknown as ReturnType<typeof useGoogleHealthModule.useGoogleHealthStatus>);
-
-    const html = renderInRouter(<PageGoogleAccounts />);
-
-    expect(html).not.toContain('data-testid="test-mode-expiry-banner"');
-  });
-
-  it("does NOT show the banner when test_mode=true but token is fresh (< 6 days old)", () => {
-    vi.mocked(useSecretsModule.useGoogleAccounts).mockReturnValueOnce({
-      data: [
-        {
-          id: "acc-1",
-          email: "owner@example.com",
-          display_name: "Owner",
-          is_primary: true,
-          status: "active" as const,
-          granted_scopes: [...GOOGLE_HEALTH_SCOPES],
-          connected_at: "2026-01-01T00:00:00Z",
-          last_token_refresh_at: null,
-        },
-      ],
-      isLoading: false,
-      error: null,
-    } as unknown as ReturnType<typeof useSecretsModule.useGoogleAccounts>);
-    vi.mocked(useGoogleHealthModule.useGoogleHealthStatus).mockReturnValueOnce({
-      data: makeHealthStatus({
+describe("TestModeExpiryBanner: red variant past 5d6h refresh age [bu-bxu50]", () => {
+  it("(b) elevates to RED when refresh age is just OVER 5d6h", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(
+      makeHealthStatus({
         test_mode: true,
-        // Token is only 2 days old — well within the 7-day limit
-        last_token_refresh_at: refreshedDaysAgo(2),
+        last_token_refresh_at: refreshedMsAgo(TEST_MODE_RED_THRESHOLD_MS + 60_000),
       }),
-      isLoading: false,
-      error: null,
-      isSuccess: true,
-    } as unknown as ReturnType<typeof useGoogleHealthModule.useGoogleHealthStatus>);
+    );
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+
+    expect(html).toContain('data-testid="test-mode-expiry-banner"');
+    expect(html).toContain('data-variant="red"');
+    expect(html).toContain('data-expired="true"');
+    // Red variant still links to the scope_set=health re-consent flow.
+    expect(html).toContain('data-testid="test-mode-reconsent-link"');
+    expect(html).toContain("scope_set=health");
+  });
+
+  it("(b) stays ORANGE when refresh age is just UNDER 5d6h", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(
+      makeHealthStatus({
+        test_mode: true,
+        last_token_refresh_at: refreshedMsAgo(TEST_MODE_RED_THRESHOLD_MS - 60_000),
+      }),
+    );
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+
+    expect(html).toContain('data-testid="test-mode-expiry-banner"');
+    expect(html).toContain('data-variant="orange"');
+    expect(html).toContain('data-expired="false"');
+  });
+});
+
+// ── e. Banner absent only when test_mode=false ───────────────────────────────
+
+describe("TestModeExpiryBanner: absent when test_mode=false [bu-bxu50]", () => {
+  it("does NOT show the banner when test_mode=false (even if token is old)", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(
+      makeHealthStatus({
+        test_mode: false,
+        last_token_refresh_at: refreshedMsAgo(8 * ONE_DAY_MS),
+      }),
+    );
 
     const html = renderInRouter(<PageGoogleAccounts />);
 
     expect(html).not.toContain('data-testid="test-mode-expiry-banner"');
   });
+});
 
-  it("isTestModeTokenNearExpiry returns false for a fresh token (< 6 days old)", () => {
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
-    expect(isTestModeTokenNearExpiry(twoDaysAgo)).toBe(false);
+// ── f. computeTestModeBannerVariant unit boundary tests [bu-bxu50] ────────────
+
+describe("computeTestModeBannerVariant: 5d6h red boundary [bu-bxu50]", () => {
+  const now = new Date("2026-06-27T00:00:00.000Z");
+
+  it("returns 'red' exactly AT the 5d6h threshold", () => {
+    const at = new Date(now.getTime() - TEST_MODE_RED_THRESHOLD_MS).toISOString();
+    expect(computeTestModeBannerVariant(at, now)).toBe("red");
   });
 
-  it("isTestModeTokenNearExpiry returns false when last_token_refresh_at is null", () => {
-    expect(isTestModeTokenNearExpiry(null)).toBe(false);
+  it("returns 'red' just OVER the 5d6h threshold", () => {
+    const over = new Date(now.getTime() - (TEST_MODE_RED_THRESHOLD_MS + 60_000)).toISOString();
+    expect(computeTestModeBannerVariant(over, now)).toBe("red");
+  });
+
+  it("returns 'orange' just UNDER the 5d6h threshold", () => {
+    const under = new Date(now.getTime() - (TEST_MODE_RED_THRESHOLD_MS - 60_000)).toISOString();
+    expect(computeTestModeBannerVariant(under, now)).toBe("orange");
+  });
+
+  it("returns 'orange' (conservative default) when last_token_refresh_at is null", () => {
+    expect(computeTestModeBannerVariant(null, now)).toBe("orange");
   });
 });

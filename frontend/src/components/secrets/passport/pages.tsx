@@ -89,10 +89,7 @@ import {
   WhatsAppDrawer,
 } from "./ProviderConfigDrawer.tsx";
 import { GoogleAppCredentials } from "./GoogleAppCredentials.tsx";
-import {
-  isTestModeTokenNearExpiry,
-  isTestModeTokenExpired,
-} from "@/lib/google-health-utils.ts";
+import { computeTestModeBannerVariant } from "@/lib/google-health-test-mode.ts";
 
 // ── Shared-credential-store helpers ───────────────────────────────────────────
 
@@ -641,50 +638,91 @@ function ScopeSetPicker({
  */
 function computeHealthBannerFlags(status: GoogleHealthStatusResponse): {
   showBanner: boolean;
-  isExpired: boolean;
+  isExpiring: boolean;
 } {
-  const nowMs = Date.now();
-  const showBanner =
-    status.test_mode && isTestModeTokenNearExpiry(status.last_token_refresh_at, nowMs);
-  const isExpired =
-    status.test_mode && isTestModeTokenExpired(status.last_token_refresh_at, nowMs);
-  return { showBanner, isExpired };
+  // Spec dashboard-google-accounts §Test-Mode Pre-Verification Warning:
+  //   - The orange banner is PERSISTENT — it shows whenever test_mode=true,
+  //     regardless of token age (test-mode consent expires every 7 days).
+  //   - It elevates to the RED variant once last_token_refresh_at is older than
+  //     5 days 6 hours (computeTestModeBannerVariant's threshold).
+  const now = new Date(Date.now());
+  const showBanner = status.test_mode;
+  const isExpiring =
+    status.test_mode &&
+    computeTestModeBannerVariant(status.last_token_refresh_at, now) === "red";
+  return { showBanner, isExpiring };
 }
 
 /**
- * TestModeExpiryBanner — shown when the primary account is in test mode AND
- * the token is within 24 h of (or past) the 7-day test-mode expiry.
+ * TestModeExpiryBanner — PERSISTENT warning shown whenever the primary account
+ * is in Google Health test mode. Test-mode consent expires every 7 days until
+ * production-mode verification completes.
+ *
+ * Variants (spec dashboard-google-accounts §Test-Mode Pre-Verification Warning):
+ *   - orange (default): consent expires every 7 days; informational.
+ *   - red (`isExpiring`): last_token_refresh_at is older than 5d6h — consent is
+ *     about to expire.
+ * Both variants surface a re-consent link to the scope_set=health OAuth flow so
+ * the owner can re-grant before access lapses.
  *
  * Derives entirely from existing status endpoint signals: test_mode +
  * last_token_refresh_at. Does NOT require new backend persistence.
  *
- * Accepts pre-computed `isExpired` boolean from the parent so the component
+ * Accepts pre-computed `isExpiring` boolean from the parent so the component
  * stays pure (no impure Date.now() in render).
  *
- * [bu-hh875]
+ * [bu-hh875][bu-bxu50]
  */
-function TestModeExpiryBanner({ isExpired }: { isExpired: boolean }) {
-  const tone = isExpired ? "var(--red)" : "var(--amber)";
-  const label = isExpired
-    ? "test-mode token expired — re-run OAuth to refresh"
-    : "test-mode token expires within 24 h — re-run OAuth soon";
+function TestModeExpiryBanner({
+  isExpiring,
+  primaryAccountEmail,
+}: {
+  isExpiring: boolean;
+  primaryAccountEmail: string | null;
+}) {
+  const tone = isExpiring ? "var(--red)" : "var(--amber)";
+  const label = isExpiring
+    ? "test-mode consent about to expire — re-consent to keep Google Health connected"
+    : "test mode: consent expires every 7 days until production verification completes";
+
+  // Re-consent link → OAuth start scoped to Google Health, forcing the consent
+  // screen and pre-selecting the primary account. Spec requires the (red)
+  // banner to link directly to the scope_set=health re-consent flow.
+  const reconsentUrl = getGoogleOAuthStartUrl({
+    scopeSet: "health",
+    forceConsent: true,
+    accountHint: primaryAccountEmail ?? undefined,
+    pageOfOrigin: "secrets",
+  });
 
   return (
     <div
       className="flex items-start gap-2 p-2.5 rounded-sm"
       style={{
         border: `1px solid ${tone}`,
-        background: isExpired ? "color-mix(in oklch, var(--red) 8%, transparent)" : "color-mix(in oklch, var(--amber) 8%, transparent)",
+        background: isExpiring
+          ? "color-mix(in oklch, var(--red) 8%, transparent)"
+          : "color-mix(in oklch, var(--amber) 8%, transparent)",
       }}
       data-testid="test-mode-expiry-banner"
-      data-expired={isExpired ? "true" : "false"}
+      data-expired={isExpiring ? "true" : "false"}
+      data-variant={isExpiring ? "red" : "orange"}
     >
       <span
         className="inline-block shrink-0 rounded-full mt-1"
         style={{ width: 6, height: 6, backgroundColor: tone }}
         aria-hidden="true"
       />
-      <Mono size={10} color={tone}>{label}</Mono>
+      <div className="flex flex-col gap-1 min-w-0">
+        <Mono size={10} color={tone}>{label}</Mono>
+        <a
+          href={reconsentUrl}
+          data-testid="test-mode-reconsent-link"
+          className="underline underline-offset-2 w-fit"
+        >
+          <Mono size={9} color={tone}>re-consent (Google Health)</Mono>
+        </a>
+      </div>
     </div>
   );
 }
@@ -696,7 +734,7 @@ function TestModeExpiryBanner({ isExpired }: { isExpired: boolean }) {
  * Acceptance rules:
  * - HIDDEN when the primary account has no health scopes granted.
  * - Shows: state + last ingest + 7d sleep/daily counts.
- * - Shows TestModeExpiryBanner when test_mode=true AND token near/after 7d expiry.
+ * - Shows TestModeExpiryBanner persistently when test_mode=true (red past 5d6h).
  *
  * Only the PRIMARY-account view is shown (per dashboard-google-accounts spec).
  * Polls every 30 s via useGoogleHealthStatus (same cadence as butler-detail tab).
@@ -713,7 +751,7 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
 
   // Compute banner flags via a module-level helper so Date.now() is not called
   // directly during render (required by the react-hooks/purity ESLint rule).
-  const { showBanner, isExpired } = computeHealthBannerFlags(status);
+  const { showBanner, isExpiring } = computeHealthBannerFlags(status);
 
   return (
     <div
@@ -725,7 +763,10 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
       </Mono>
 
       {showBanner && (
-        <TestModeExpiryBanner isExpired={isExpired} />
+        <TestModeExpiryBanner
+          isExpiring={isExpiring}
+          primaryAccountEmail={status.primary_account_email}
+        />
       )}
 
       <div className="flex flex-col gap-1.5">
