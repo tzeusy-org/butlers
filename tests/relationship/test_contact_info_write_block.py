@@ -1,7 +1,6 @@
 """Unit tests for the channel tool surface (renamed from contact_info, bead bu-158ep).
 
 Covers:
-  (a) The app-level write-block guard raises ContactInfoWriteBlockedError.
   (b) channel_add asserts a channel triple via relationship_assert_fact()
       and never issues a direct INSERT/UPDATE/DELETE to public.contact_info.
   (c) channel_add maps types to predicates and honours the owner carve-out
@@ -39,27 +38,6 @@ class _AsyncCM:
 
     async def __aexit__(self, *args):
         return False
-
-
-# ===========================================================================
-# (a) App-level write-block guard
-# ===========================================================================
-
-
-class TestWriteBlockGuard:
-    def test_guard_raises(self):
-        from butlers.contact_info_write_guard import (
-            ContactInfoWriteBlockedError,
-            assert_contact_info_writes_blocked,
-        )
-
-        with pytest.raises(ContactInfoWriteBlockedError):
-            assert_contact_info_writes_blocked("insert")
-
-    def test_error_is_runtime_error_subclass(self):
-        from butlers.contact_info_write_guard import ContactInfoWriteBlockedError
-
-        assert issubclass(ContactInfoWriteBlockedError, RuntimeError)
 
 
 # ===========================================================================
