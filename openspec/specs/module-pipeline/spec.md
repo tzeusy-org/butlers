@@ -149,11 +149,16 @@ When decomposition returns no signals, the pipeline SHALL log the result and ter
 - **WHEN** decomposition returns empty
 - **THEN** a counter metric `butlers.pipeline.decomposition_empty` is incremented with labels `source_channel` and `connector_type`
 
-### Requirement: Deprecated — Direct Module-to-Pipeline Wiring
-The legacy pattern where input modules (Email, Telegram) call `set_pipeline()` to wire themselves directly to the classification pipeline is deprecated.
+### Requirement: Daemon-to-PipelineModule Injection
+The daemon SHALL construct the `MessagePipeline` and inject it into the `PipelineModule` via `set_pipeline()`. This is the canonical mechanism by which the runtime pipeline becomes available to the `pipeline.process` MCP tool; there is no alternative attachment path.
 
-#### Scenario: Legacy set_pipeline() method
-- **WHEN** a module calls `set_pipeline()` on the pipeline instance
-- **THEN** the call is accepted for backward compatibility but the path is deprecated
-- **AND** new ingestion must use the connector → Switchboard → pipeline flow
-- **AND** the email module's `email_check_and_route_inbox` tool has been removed; email ingestion uses the Gmail connector
+#### Scenario: Daemon injects the constructed pipeline
+- **WHEN** the daemon wires pipelines during startup (`wire_pipelines`)
+- **THEN** it calls `set_pipeline(pipeline)` on each active module that exposes the method
+- **AND** the `PipelineModule` stores the injected `MessagePipeline` for use by `pipeline.process`
+- **AND** modules that do not expose `set_pipeline()` are skipped without error
+
+#### Scenario: Module self-wiring removed
+- **WHEN** an input module (Email, Telegram) ingests a message
+- **THEN** it routes through the connector → Switchboard → pipeline flow rather than wiring itself to the pipeline
+- **AND** the legacy self-wiring path has been removed (the email module's `email_check_and_route_inbox` tool is gone; email ingestion uses the Gmail connector)
