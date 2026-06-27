@@ -16,7 +16,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, cleanup, screen, act } from "@testing-library/react";
+import { render, cleanup, screen, act, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -328,5 +328,253 @@ describe("SettingsPermissionsPage — audit reel filters operational noise [bu-9
     });
 
     expect(screen.getByText("No recent audit entries.")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Webhooks edit + enable/disable [bu-9q1dx.7]
+// ---------------------------------------------------------------------------
+// Spec dashboard-permissions "Webhooks Registry API": the table must surface
+// the enabled flag (a disabled webhook must be distinguishable from active) and
+// expose a per-row edit affordance that persists via PUT /api/webhooks/{id}.
+
+const WEBHOOK_ID = "11111111-1111-1111-1111-111111111111";
+
+function webhookRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: WEBHOOK_ID,
+    endpoint: "https://example.com/hook",
+    events: ["permission.set"],
+    enabled: true,
+    secret_prefix: "abc123…",
+    last_test_at: null,
+    last_test_ok: null,
+    retry_policy: { max_attempts: 3, backoff_seconds: 2 },
+    created_at: "2026-06-01T00:00:00Z",
+    updated_at: "2026-06-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+/**
+ * Fetch mock seeded with a single webhook. PUT requests are recorded into
+ * `putCalls` so tests can assert the exact body persisted to the backend.
+ */
+function webhooksFetch(
+  putCalls: Array<{ url: string; body: Record<string, unknown> }>,
+  rowOverrides: Record<string, unknown> = {},
+) {
+  return (url: string, init?: RequestInit) => {
+    if (url.includes("/api/permissions")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ data: { butlers: [], permissions: [], cells: {} } }),
+      });
+    }
+    if (url.includes("/api/webhooks/") && init?.method === "PUT") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      putCalls.push({ url, body });
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: { ...webhookRow(rowOverrides), ...body, secret: null } }),
+      });
+    }
+    if (url.includes("/api/webhooks")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ data: [webhookRow(rowOverrides)] }),
+      });
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+  };
+}
+
+describe("SettingsPermissionsPage — webhook enabled state [bu-9q1dx.7]", () => {
+  let putCalls: Array<{ url: string; body: Record<string, unknown> }>;
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("renders the enabled state so a disabled webhook is distinguishable", async () => {
+    putCalls = [];
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(webhooksFetch(putCalls, { enabled: false }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await act(async () => {
+      renderPage();
+    });
+
+    const statusCell = await screen.findByTestId(`webhook-enabled-${WEBHOOK_ID}`);
+    expect(statusCell.getAttribute("data-enabled")).toBe("false");
+    expect(statusCell.textContent).toContain("Disabled");
+    expect(screen.getByTestId("webhook-enabled-off")).toBeTruthy();
+  });
+
+  it("toggles enabled via PUT and reflects the new state", async () => {
+    putCalls = [];
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(webhooksFetch(putCalls, { enabled: false }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await act(async () => {
+      renderPage();
+    });
+
+    const toggle = await screen.findByTestId(`webhook-toggle-${WEBHOOK_ID}`);
+    expect(toggle.textContent).toContain("Enable");
+
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    await waitFor(() => expect(putCalls).toHaveLength(1));
+    expect(putCalls[0].url).toContain(`/api/webhooks/${WEBHOOK_ID}`);
+    expect(putCalls[0].body).toEqual({ enabled: true });
+
+    // The row state flips to active after the successful PUT.
+    await waitFor(() => {
+      const cell = screen.getByTestId(`webhook-enabled-${WEBHOOK_ID}`);
+      expect(cell.getAttribute("data-enabled")).toBe("true");
+    });
+  });
+});
+
+describe("SettingsPermissionsPage — webhook edit modal [bu-9q1dx.7]", () => {
+  let putCalls: Array<{ url: string; body: Record<string, unknown> }>;
+
+  beforeEach(() => {
+    putCalls = [];
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(webhooksFetch(putCalls));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("edit persists endpoint, events, enabled and retry policy via PUT", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    const editBtn = await screen.findByTestId(`webhook-edit-${WEBHOOK_ID}`);
+    await act(async () => {
+      fireEvent.click(editBtn);
+    });
+
+    // Form seeded from the existing row.
+    const endpointInput = (await screen.findByTestId(
+      "webhook-edit-endpoint",
+    )) as HTMLInputElement;
+    expect(endpointInput.value).toBe("https://example.com/hook");
+
+    fireEvent.change(endpointInput, {
+      target: { value: "https://new.example.com/hook" },
+    });
+    fireEvent.change(screen.getByTestId("webhook-edit-events"), {
+      target: { value: "permission.set, data.export" },
+    });
+    // Flip the enabled switch off.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("webhook-edit-enabled"));
+    });
+    fireEvent.change(screen.getByTestId("webhook-edit-max-attempts"), {
+      target: { value: "5" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("webhook-edit-save"));
+    });
+
+    await waitFor(() => expect(putCalls).toHaveLength(1));
+    expect(putCalls[0].url).toContain(`/api/webhooks/${WEBHOOK_ID}`);
+    expect(putCalls[0].body).toEqual({
+      endpoint: "https://new.example.com/hook",
+      events: ["permission.set", "data.export"],
+      enabled: false,
+      retry_policy: { max_attempts: 5, backoff_seconds: 2 },
+    });
+  });
+
+  it("rounds and clamps retry policy to positive integers before PUT", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    const editBtn = await screen.findByTestId(`webhook-edit-${WEBHOOK_ID}`);
+    await act(async () => {
+      fireEvent.click(editBtn);
+    });
+    await screen.findByTestId("webhook-edit-endpoint");
+
+    // Decimal / negative inputs must be sanitized to valid integers.
+    fireEvent.change(screen.getByTestId("webhook-edit-max-attempts"), {
+      target: { value: "2.7" },
+    });
+    fireEvent.change(screen.getByTestId("webhook-edit-backoff"), {
+      target: { value: "-4" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("webhook-edit-save"));
+    });
+
+    await waitFor(() => expect(putCalls).toHaveLength(1));
+    expect(putCalls[0].body).toMatchObject({
+      retry_policy: { max_attempts: 3, backoff_seconds: 0 },
+    });
+  });
+
+  it("regenerate secret sends regenerate_secret and reveals the new secret once", async () => {
+    // Override PUT to return a one-time secret on regenerate.
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/api/permissions")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { butlers: [], permissions: [], cells: {} } }),
+        });
+      }
+      if (url.includes("/api/webhooks/") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        putCalls.push({ url, body });
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ data: { ...webhookRow(), secret: "whsec_brand_new_value" } }),
+        });
+      }
+      if (url.includes("/api/webhooks")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [webhookRow()] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`webhook-edit-${WEBHOOK_ID}`));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("webhook-regenerate-secret"));
+    });
+
+    await waitFor(() => expect(putCalls).toHaveLength(1));
+    expect(putCalls[0].body).toEqual({ regenerate_secret: true });
+
+    const revealed = (await screen.findByTestId(
+      "webhook-regenerated-secret",
+    )) as HTMLInputElement;
+    expect(revealed.value).toBe("whsec_brand_new_value");
   });
 });

@@ -41,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -194,6 +195,36 @@ async function createWebhook(
     body: JSON.stringify({ endpoint, events }),
   });
   if (!resp.ok) throw new Error(`POST /api/webhooks failed: ${resp.status}`);
+  const body = await resp.json();
+  return body.data as WebhookWithSecret;
+}
+
+// PUT /api/webhooks/{id} — partial update. Only the supplied fields change.
+// Pass regenerate_secret:true to rotate the signing secret; the new plaintext
+// secret is then returned ONCE in `secret` (null on every other update).
+interface WebhookUpdatePayload {
+  endpoint?: string;
+  events?: string[];
+  enabled?: boolean;
+  retry_policy?: { max_attempts: number; backoff_seconds: number };
+  regenerate_secret?: boolean;
+}
+
+async function updateWebhook(
+  id: string,
+  payload: WebhookUpdatePayload,
+): Promise<WebhookWithSecret> {
+  const resp = await fetch(`/api/webhooks/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(
+      body?.detail?.error ?? body?.detail ?? `PUT /api/webhooks/${id} failed: ${resp.status}`,
+    );
+  }
   const body = await resp.json();
   return body.data as WebhookWithSecret;
 }
@@ -658,11 +689,240 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
   );
 }
 
+interface EditWebhookModalProps {
+  webhook: WebhookRow | null;
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+/**
+ * Per-row edit modal wired to PUT /api/webhooks/{id}.
+ *
+ * Edits endpoint, events, the `enabled` flag, and retry policy in one atomic
+ * PUT. Secret rotation is a distinct action: it sends `{regenerate_secret:true}`
+ * alone and switches to the F6 one-time reveal view (the new plaintext secret is
+ * never recoverable afterwards).
+ */
+function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) {
+  const [endpoint, setEndpoint] = useState("");
+  const [events, setEvents] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [maxAttempts, setMaxAttempts] = useState("3");
+  const [backoffSeconds, setBackoffSeconds] = useState("2");
+  const [submitting, setSubmitting] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  // One-time plaintext secret from a regenerate. While set, the modal shows the
+  // reveal view instead of the form — it is never recoverable afterwards.
+  const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
+
+  // Seed form fields each time a webhook is opened for editing.
+  useEffect(() => {
+    if (webhook) {
+      setEndpoint(webhook.endpoint);
+      setEvents(webhook.events.join(", "));
+      setEnabled(webhook.enabled);
+      setMaxAttempts(String(webhook.retry_policy.max_attempts));
+      setBackoffSeconds(String(webhook.retry_policy.backoff_seconds));
+      setRevealedSecret(null);
+    }
+  }, [webhook]);
+
+  async function handleSave() {
+    if (!webhook || !endpoint.trim()) return;
+    setSubmitting(true);
+    try {
+      const evtList = events
+        .split(",")
+        .map((e) => e.trim())
+        .filter(Boolean);
+      await updateWebhook(webhook.id, {
+        endpoint: endpoint.trim(),
+        events: evtList,
+        enabled,
+        retry_policy: {
+          // Backend expects positive integers; round + clamp the form strings so
+          // NaN/negative/decimal inputs never reach the API.
+          max_attempts: Math.max(1, Math.round(Number(maxAttempts)) || 1),
+          backoff_seconds: Math.max(0, Math.round(Number(backoffSeconds)) || 0),
+        },
+      });
+      toast.success("Webhook updated");
+      onSaved();
+      onClose();
+    } catch (err) {
+      toast.error(`Update failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleRegenerate() {
+    if (!webhook) return;
+    setRegenerating(true);
+    try {
+      const updated = await updateWebhook(webhook.id, { regenerate_secret: true });
+      toast.success("Signing secret regenerated");
+      onSaved();
+      if (updated.secret) {
+        setRevealedSecret(updated.secret);
+      }
+    } catch (err) {
+      toast.error(`Regenerate failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  async function handleCopy() {
+    if (!revealedSecret) return;
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("Clipboard API not available");
+      }
+      await navigator.clipboard.writeText(revealedSecret);
+      toast.success("Secret copied to clipboard");
+    } catch {
+      toast.error("Copy failed — select and copy the secret manually");
+    }
+  }
+
+  return (
+    <Dialog open={webhook !== null} onOpenChange={onClose}>
+      <DialogContent>
+        {revealedSecret ? (
+          <>
+            <DialogHeader>
+              <DialogTitle className="font-medium">Copy your new signing secret</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                This secret is shown <strong>once</strong> and cannot be retrieved later.
+                Store it now — use it to verify the <code>X-Butler-Signature</code> HMAC.
+              </p>
+              <div className="space-y-1">
+                <Label htmlFor="wh-regenerated-secret">Signing secret</Label>
+                <Input
+                  id="wh-regenerated-secret"
+                  data-testid="webhook-regenerated-secret"
+                  readOnly
+                  value={revealedSecret}
+                  className="font-mono text-xs"
+                  onFocus={(e) => e.target.select()}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={handleCopy}>
+                Copy secret
+              </Button>
+              <Button onClick={onClose}>Done</Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle className="font-medium">Edit webhook</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <div className="space-y-1">
+                <Label htmlFor="wh-edit-endpoint">Endpoint URL</Label>
+                <Input
+                  id="wh-edit-endpoint"
+                  data-testid="webhook-edit-endpoint"
+                  placeholder="https://example.com/webhook"
+                  value={endpoint}
+                  onChange={(e) => setEndpoint(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="wh-edit-events">Events (comma-separated)</Label>
+                <Input
+                  id="wh-edit-events"
+                  data-testid="webhook-edit-events"
+                  placeholder="permission.set, data.export"
+                  value={events}
+                  onChange={(e) => setEvents(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="wh-edit-enabled" className="cursor-pointer">
+                  Enabled
+                </Label>
+                <Switch
+                  id="wh-edit-enabled"
+                  data-testid="webhook-edit-enabled"
+                  checked={enabled}
+                  onCheckedChange={setEnabled}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="wh-edit-max-attempts">Max attempts</Label>
+                  <Input
+                    id="wh-edit-max-attempts"
+                    data-testid="webhook-edit-max-attempts"
+                    type="number"
+                    min={1}
+                    value={maxAttempts}
+                    onChange={(e) => setMaxAttempts(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="wh-edit-backoff">Backoff (s)</Label>
+                  <Input
+                    id="wh-edit-backoff"
+                    data-testid="webhook-edit-backoff"
+                    type="number"
+                    min={0}
+                    value={backoffSeconds}
+                    onChange={(e) => setBackoffSeconds(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between border-t border-border/60 pt-3">
+                <p className="text-xs text-muted-foreground">
+                  Rotating replaces the signing secret. It is shown once.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  data-testid="webhook-regenerate-secret"
+                  disabled={regenerating || submitting}
+                  onClick={handleRegenerate}
+                >
+                  {regenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Regenerate secret
+                </Button>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose} disabled={submitting}>
+                Cancel
+              </Button>
+              <Button
+                data-testid="webhook-edit-save"
+                disabled={!endpoint.trim() || submitting}
+                onClick={handleSave}
+              >
+                {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Save
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function WebhooksSection() {
   const [webhooks, setWebhooks] = useState<WebhookRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<WebhookRow | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   async function reload() {
@@ -696,6 +956,22 @@ function WebhooksSection() {
       toast.error(`Test error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setTestingId(null);
+    }
+  }
+
+  async function handleToggle(wh: WebhookRow) {
+    setTogglingId(wh.id);
+    try {
+      const next = !wh.enabled;
+      await updateWebhook(wh.id, { enabled: next });
+      toast.success(next ? "Webhook enabled" : "Webhook disabled");
+      setWebhooks((prev) =>
+        prev.map((w) => (w.id === wh.id ? { ...w, enabled: next } : w)),
+      );
+    } catch (err) {
+      toast.error(`Toggle failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setTogglingId(null);
     }
   }
 
@@ -747,6 +1023,9 @@ function WebhooksSection() {
                   Events
                 </th>
                 <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                  Status
+                </th>
+                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Secret
                 </th>
                 <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
@@ -765,6 +1044,27 @@ function WebhooksSection() {
                   </td>
                   <td className="text-xs px-4 py-2 border-r border-b border-border/60">
                     {wh.events.length > 0 ? wh.events.join(", ") : "—"}
+                  </td>
+                  <td
+                    className="text-xs px-4 py-2 border-r border-b border-border/60"
+                    data-testid={`webhook-enabled-${wh.id}`}
+                    data-enabled={wh.enabled ? "true" : "false"}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 rounded-full shrink-0",
+                          wh.enabled ? "bg-[var(--green)]" : "bg-muted-foreground/40",
+                        )}
+                        data-testid={
+                          wh.enabled ? "webhook-enabled-on" : "webhook-enabled-off"
+                        }
+                        aria-hidden
+                      />
+                      <span className="font-mono tabular-nums text-muted-foreground">
+                        {wh.enabled ? "Active" : "Disabled"}
+                      </span>
+                    </span>
                   </td>
                   <td
                     className="font-mono text-xs px-4 py-2 border-r border-b border-border/60"
@@ -806,6 +1106,27 @@ function WebhooksSection() {
                   <td className="text-right px-4 py-2 border-r border-b border-border/60">
                     <div className="flex justify-end gap-3">
                       <button
+                        onClick={() => setEditing(wh)}
+                        title="Edit webhook"
+                        data-testid={`webhook-edit-${wh.id}`}
+                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap"
+                      >
+                        Edit →
+                      </button>
+                      <button
+                        onClick={() => handleToggle(wh)}
+                        disabled={togglingId === wh.id}
+                        title={wh.enabled ? "Disable webhook" : "Enable webhook"}
+                        data-testid={`webhook-toggle-${wh.id}`}
+                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 whitespace-nowrap"
+                      >
+                        {togglingId === wh.id
+                          ? "Saving…"
+                          : wh.enabled
+                            ? "Disable →"
+                            : "Enable →"}
+                      </button>
+                      <button
                         onClick={() => handleTest(wh.id)}
                         disabled={testingId === wh.id}
                         title="Test webhook"
@@ -836,6 +1157,12 @@ function WebhooksSection() {
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onCreated={reload}
+      />
+
+      <EditWebhookModal
+        webhook={editing}
+        onClose={() => setEditing(null)}
+        onSaved={reload}
       />
     </div>
   );
