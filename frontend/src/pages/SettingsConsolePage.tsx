@@ -29,6 +29,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { useSettingsConsoleStream } from "@/hooks/use-settings-console-stream";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -509,10 +510,26 @@ export default function SettingsConsolePage() {
     queryKey: ["settings-console"],
     queryFn: fetchConsole,
     staleTime: 10_000,
-    refetchInterval: 30_000,
+    // The WS /api/settings/stream ticker drives live updates; this poll is only
+    // a slow cold-start / reconnect safety net, not the primary update path.
+    refetchInterval: 5 * 60_000,
   });
 
-  const consoleData = consoleResp?.data;
+  // Live console state: the WS sends a full snapshot on connect, then applies
+  // header_delta / attention_add / attention_remove events incrementally
+  // (spec: dashboard-settings-console — Settings Console Live Stream). Until the
+  // first snapshot arrives (or if the socket is down) we fall back to the GET
+  // fetch above.
+  const { data: liveConsoleData, status: streamStatus } = useSettingsConsoleStream();
+
+  // Prefer the live stream while it is connecting/open. If the socket is down
+  // (e.g. a proxy/firewall blocks the WS permanently), `liveConsoleData` would
+  // otherwise stay frozen at its last value forever; in that case fall back to
+  // the periodic GET poll so the safety net actually refreshes the view.
+  const consoleData =
+    streamStatus === "closed"
+      ? (consoleResp?.data ?? liveConsoleData)
+      : (liveConsoleData ?? consoleResp?.data);
 
   function handleNavigate(route: string) {
     navigate(route);
