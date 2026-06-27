@@ -3176,11 +3176,10 @@ async def reset_circuit_breaker(
     await pool.execute(
         """
         INSERT INTO public.healing_attempts (
-            id, fingerprint, butler_name, status, severity,
+            fingerprint, butler_name, status, severity,
             exception_type, call_site, created_at, updated_at, closed_at,
             error_detail, qa_patrol_id
         ) VALUES (
-            gen_random_uuid(),
             'circuit-breaker-reset-' || gen_random_uuid()::text,
             'dashboard',
             'manual_reset',
