@@ -36,4 +36,4 @@
 - [x] 6.1 Apply this change's `module-calendar` spec delta (tool count 16 → 18; update/delete scope scenarios; retire "series-scoped in v1"; new occurrence-scoped requirement)
 - [x] 6.2 Update/replace any regression test that asserts the old `Literal["series"]`-only or series-only-deletion behavior
 - [x] 6.3 Run `openspec validate calendar-recurrence-scope-editing --strict`
-- [ ] 6.4 Quality gate: `ruff check`/`format --check` + targeted calendar test suite, then full `pytest` (excluding e2e) before merge
+- [x] 6.4 Quality gate: `ruff check`/`format --check` + targeted calendar test suite, then full `pytest` (excluding e2e) before merge

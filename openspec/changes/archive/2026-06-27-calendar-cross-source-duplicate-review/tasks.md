@@ -43,5 +43,6 @@ full FE review panel is a discovered follow-up (spec-exempt pure-FE surface).
 
 ## 5. Follow-up (not in this change)
 
-- [ ] 5.1 Frontend duplicate-review panel (cluster list, keep-separate toggles,
+- [x] 5.1 Frontend duplicate-review panel (cluster list, keep-separate toggles,
   strategy/threshold control) over these contracts — pure-FE, spec-exempt
+  (shipped: PR #2678)

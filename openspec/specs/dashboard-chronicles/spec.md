@@ -15,18 +15,22 @@ a page component at `frontend/src/pages/ChroniclesPage.tsx`. The route
 SHALL render inside the standard dashboard shell (sidebar + header +
 error boundary) and SHALL adopt the **editorial archetype** as defined
 in `about/heart-and-soul/design-language.md` for its landing surface.
+The landing SHALL be a date-navigable retrospective archive: the owner
+SHALL be able to view any settled past day, not only the most recent one.
 
 #### Scenario: Editorial archetype landing
 
 - **WHEN** a user navigates to `/chronicles`
 - **THEN** the dashboard shell SHALL render with the sidebar present
 - **AND** the page content SHALL render the editorial archetype layout: a
-  serif Voice column on the left (DateEyebrow, status pill, Display
-  headline, Voice paragraph) and an index rail on the right (KPI strip,
-  attention list, and recent-days index)
+  serif Voice column on the left (a date eyebrow carrying a prev/next day
+  stepper, a stale-only briefing indicator, Display headline, Voice
+  paragraph) and an index rail on the right (attention list, KPI strip,
+  and a navigable recent-days index)
 - **AND** the existing workspace components (Gantt, Map, Scrubber,
   Aggregations, Drawer) SHALL be reachable via a `<ChroniclesDrilldownPanel>`
-  mounted below the editorial fold and lazy-loaded on first interaction
+  mounted below the editorial fold, disclosed on demand, and lazy-loaded on
+  first interaction
 - **AND** the route SHALL be wrapped in the dashboard's standard
   `ErrorBoundary`
 
@@ -91,7 +95,10 @@ or cross-schema reads beyond what Chronicler already owns.
 The chronicler API SHALL expose `GET /api/chronicler/briefing?date=YYYY-MM-DD`
 returning a `ChroniclesBriefing` object whose `voice_paragraph` is sourced
 from the existing day-close Tier-2 cache or from a deterministic
-templated fallback. The endpoint SHALL NOT initiate an LLM call.
+templated fallback. The endpoint SHALL NOT initiate an LLM call. The
+endpoint SHALL serve any historical date deterministically; when `date`
+is omitted it SHALL default to the most recent settled day (yesterday in
+the owner timezone).
 
 #### Scenario: Response shape
 
@@ -99,7 +106,9 @@ templated fallback. The endpoint SHALL NOT initiate an LLM call.
 - **THEN** the response body contains: `date`, `state_class` (one of
   `urgent`, `busy`, `mild`, `quiet`), `headline` (string), `voice_paragraph`
   (string), `voice_source` (one of `llm·cached`, `templated`, `stale`),
-  `kpi` (object), `attention_items` (array), `recent_days` (array)
+  `kpi` (object), `attention_items` (array), `recent_days` (array), and
+  `earliest_date` (the earliest chronicled calendar day in the owner
+  timezone as `YYYY-MM-DD`, or `null` when no episodes exist)
 - **AND** every numeric field is `tabular-nums` safe (integer or fixed
   decimal)
 
@@ -138,7 +147,9 @@ templated fallback. The endpoint SHALL NOT initiate an LLM call.
 ### Requirement: Editorial Attention Endpoint
 
 The chronicler API SHALL expose `GET /api/chronicler/attention` returning
-the list of attention items the briefing surfaces.
+the list of attention items the briefing surfaces. The endpoint SHALL
+accept the same `date` and `tz` parameters as the briefing and SHALL scope
+its items to the requested day.
 
 #### Scenario: Anomaly source: short sleep
 
@@ -159,9 +170,18 @@ the list of attention items the briefing surfaces.
 
 - **WHEN** any chronicler source-state row carries a non-null `last_error`
   in the last twenty-four hours OR a non-null `inactive_reason`
+- **AND** the requested date is the most recent settled day or today
 - **THEN** an attention item with `kind = source_health` is included,
   severity `high` for `last_error`, severity `medium` for
   `inactive_reason`, and an `action_href` pointing to the connector page
+
+#### Scenario: Source health excluded for older archive dates
+
+- **WHEN** the requested date is older than the most recent settled day
+- **THEN** no `source_health` attention item is included regardless of
+  current connector state
+- **AND** the day's `state_class` SHALL NOT be driven to `urgent` by
+  present-day connector health
 
 #### Scenario: Open corrections
 
@@ -435,23 +455,22 @@ in the cached window changes after the cache was built.
 
 ### Requirement: Auto-Refresh Adoption
 
-The page SHALL adopt the existing `useAutoRefresh` hook for its
-"today" window and SHALL coin no new auto-refresh defaults.
+The Chronicles archive SHALL render only settled past days and SHALL NOT
+auto-refresh. The page SHALL coin no new auto-refresh defaults and SHALL
+provide a manual refresh control for the selected day's drilldown.
 
-#### Scenario: Today window polling
+#### Scenario: Settled days are static
 
-- **WHEN** the time-window picker selects a window whose `end_at` is
-  within the current day
-- **THEN** the page SHALL enable auto-refresh at 30 seconds by default
-- **AND** the user SHALL be able to override to 10 / 30 / 60 seconds
-  via the existing `AutoRefreshToggle` component, or pause refresh
-
-#### Scenario: Older windows are static
-
-- **WHEN** the time-window picker selects a window whose `end_at` is
-  before the current day
+- **WHEN** the archive renders any selected day
 - **THEN** the page SHALL NOT enable auto-refresh
-- **AND** the page SHALL provide a manual refresh button
+- **AND** the page SHALL NOT mount a time-window picker or an
+  auto-refresh toggle on this surface
+
+#### Scenario: Manual refresh re-fetches the selected day
+
+- **WHEN** the owner activates the manual refresh control
+- **THEN** the drilldown queries for the selected day's window SHALL be
+  invalidated and re-fetched
 
 ### Requirement: MapLibre Dependency Justification
 
@@ -516,6 +535,48 @@ Backend handlers serving the page SHALL emit OTel spans for the new endpoints so
   `chronicler.aggregate.day_close`, or `chronicler.source_state`
 - **AND** the span SHALL record query latency and the resulting bucket
   count (or, for source-state and day-close, the row / cache state)
+
+### Requirement: Archive Date Navigation
+
+The Chronicles landing SHALL let the owner navigate between settled past
+days. The selected day SHALL be URL state so a day view is deep-linkable,
+and the selected day SHALL drive both the editorial briefing and the
+drilldown. Navigation SHALL NOT initiate an LLM call; viewing any past
+date reuses the existing cached or templated `voice_paragraph` path.
+
+#### Scenario: Default landing day
+
+- **WHEN** the owner opens `/chronicles` with no `date` query parameter
+- **THEN** the page SHALL show the most recent settled day (yesterday in
+  the owner timezone)
+
+#### Scenario: Day selection is URL state
+
+- **WHEN** the owner opens `/chronicles?date=YYYY-MM-DD` for a settled day
+- **THEN** the briefing, attention, KPI, recent-days index, and drilldown
+  SHALL all reconstruct that day
+- **AND** changing the selected day SHALL update the `date` query parameter
+
+#### Scenario: Stepper clamps to available range
+
+- **WHEN** the owner steps forward
+- **THEN** the page SHALL NOT advance past the most recent settled day
+  (today is incomplete and not shown)
+- **WHEN** the owner steps backward
+- **THEN** the page SHALL NOT step before `earliest_date` from the
+  briefing response
+
+#### Scenario: Recent-days rows navigate
+
+- **WHEN** the owner activates a row in the recent-days index
+- **THEN** the page SHALL select that row's day and reconstruct it
+
+#### Scenario: No new LLM call on navigation
+
+- **WHEN** the owner navigates to any settled past day
+- **THEN** the briefing handler SHALL NOT initiate an LLM call
+- **AND** `voice_paragraph` SHALL come from the day-close Tier-2 cache
+  (fresh or stale) or from the deterministic templated fallback
 
 ## Source References
 

@@ -2,9 +2,7 @@
 
 ## Purpose
 Defines the complete data access layer connecting the Butlers dashboard frontend to backend infrastructure. This covers the FastAPI application factory, REST endpoint inventory across all domains, cross-butler database fan-out, MCP client proxy, butler-specific route auto-discovery, TanStack Query refresh patterns, SSE real-time streaming, OAuth bootstrap flow, generic secrets management, response envelope standards, and the pricing/cost estimation model. Together these form the single-pane-of-glass contract between the React frontend and the Python backend.
-
 ## Requirements
-
 ### Requirement: FastAPI Application Factory
 The `create_app()` function in `src/butlers/api/app.py` builds the FastAPI application with CORS middleware, lifespan handler, error handlers, static file serving, and router registration. The lifespan handler initializes `MCPClientManager`, `PricingConfig`, and `DatabaseManager` singletons on startup and tears them down on shutdown.
 
@@ -676,7 +674,7 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** errors in audit logging are silently swallowed (never break the primary operation)
 
 ### Requirement: Calendar Workspace
-`src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, a full-text search endpoint, a metadata endpoint, a sync trigger, and mutation endpoints for both user-view and butler-view events. The read endpoint SHALL support server-side `status`, `source_type`, and `editable` facets and keyset (cursor) pagination; the search endpoint SHALL match a free-text query against event title, description, and location.
+`src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, metadata endpoint, sync trigger, and mutation endpoints for both user-view and butler-view events. It SHALL additionally expose a read-only accounts surface (`GET /api/calendar/accounts`) and a per-calendar source enable/disable mutation (`POST /api/calendar/sources`); the sync trigger SHALL accept a `full` recovery flag and the metadata endpoint SHALL carry a per-source `error_kind` so the workspace can render the correct Recover/Reconnect CTA. No new table is introduced — source enable/disable reuses the existing `calendar_sources` projection rows, and the accounts surface reuses `public.google_accounts` plus the Google Calendar connector health.
 
 #### Scenario: Workspace read
 - **WHEN** `GET /api/calendar/workspace?view=user&start=...&end=...` is called
@@ -684,39 +682,33 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** entries are normalized into `UnifiedCalendarEntry` objects with computed `source_type`, `status`, and `sync_state`
 - **AND** optional `timezone` parameter converts all timestamps to the requested display timezone
 
-#### Scenario: Workspace read applies status, source_type, and editable facets server-side
-- **WHEN** `GET /api/calendar/workspace` is called with any of the optional `status`, `source_type`, or `editable` query params
-- **THEN** the corresponding predicate is applied in the fan-out query (`status` over the instance/event status, `source_type` over the computed entry kind, `editable` over the source's `writable` flag) rather than returning all entries for the window and filtering client-side
-- **AND** multiple supplied facets are combined with AND
-- **AND** omitting a facet leaves that dimension unfiltered (the prior behavior)
-- **AND** an unknown `status` or `source_type` value yields a 400 validation error
-
-#### Scenario: Workspace read paginates with a keyset cursor
-- **WHEN** `GET /api/calendar/workspace` is called with `limit` (bounded, with a default) and no `cursor`
-- **THEN** at most `limit` entries are returned ordered by the workspace keyset `(starts_at, id)`
-- **AND** the response includes `has_more: true` and an opaque `next_cursor` encoding the last `(starts_at, id)` seen when more rows remain for the window
-- **AND** the response does NOT include a `total` field, per the repo's keyset pagination convention
-
-#### Scenario: Workspace read follows the cursor to the next page
-- **WHEN** `GET /api/calendar/workspace` is called with `cursor=<next_cursor>` from the prior page
-- **THEN** the next page of entries strictly after the encoded keyset position is returned with no overlap with the prior page
-- **AND** when no further rows remain the response has `has_more: false` and a null `next_cursor`
-- **AND** a malformed or unparseable `cursor` yields a 400 validation error
-
-#### Scenario: Workspace search by free text
-- **WHEN** `GET /api/calendar/workspace/search?q=dentist&view=user` is called with a non-empty `q`
-- **THEN** matches are fan-out queried across butler DBs over `calendar_events` `title`, `description`, and `location`
-- **AND** matches are returned as `UnifiedCalendarEntry`-shaped rows carrying each match's date(s), ranked by trigram relevance, so the UI can group by day and jump-to the event
-- **AND** results respect the same lane (`view`) and optional `butlers`/`sources` scoping as the read endpoint
-
-#### Scenario: Workspace search with an empty query
-- **WHEN** `GET /api/calendar/workspace/search` is called with a missing or blank `q`
-- **THEN** an empty match list is returned (the whole calendar is NOT returned) and no error is raised
-
 #### Scenario: Workspace mutations
 - **WHEN** user-event or butler-event mutation endpoints are called
 - **THEN** the request is proxied to the owning butler via MCP tool calls (`calendar_create_event`, `calendar_update_event`, etc.)
 - **AND** projection freshness metadata is fetched after mutation and included in the response
+
+#### Scenario: Meta carries per-source error_kind
+- **WHEN** `GET /api/calendar/workspace/meta` is called
+- **THEN** each `connected_sources` entry includes an `error_kind` field classifying a failed/stale source as one of `none`, `token_expired`, `auth`, `not_found`, or `transient`
+- **AND** a client that ignores `error_kind` observes the pre-change meta shape otherwise unchanged
+
+#### Scenario: Sync trigger forwards full recovery flag
+- **WHEN** `POST /api/calendar/workspace/sync` is called with `full=true` (optionally scoped to a `source_key`/`source_id`)
+- **THEN** the request is forwarded to `calendar_force_sync(full=true)` for the targeted source(s), running a full re-sync that ignores the stored cursor
+- **AND** the response reports per-target whether a full recovery ran
+- **AND** `full=false` (or omitting `full`) preserves the existing incremental sync behavior
+
+#### Scenario: List connected calendar accounts with health
+- **WHEN** `GET /api/calendar/accounts` is called
+- **THEN** the connected `public.google_accounts` rows are returned, each joined with the Google Calendar connector's per-account health (status, `error_kind`, last ingest)
+- **AND** when connector health is unavailable, accounts are still returned with a degraded/unknown health indicator rather than the endpoint failing
+- **AND** the endpoint is read-only — it does not connect or disconnect accounts (account lifecycle stays in the Google accounts surface)
+
+#### Scenario: Enable or disable a calendar source
+- **WHEN** `POST /api/calendar/sources` is called to enable or disable a single calendar as a sync source
+- **THEN** the enabled/disabled state is toggled on the existing `calendar_sources` row (no new table)
+- **AND** a disabled source is skipped by the sync loop on subsequent syncs
+- **AND** a disabled source is surfaced as off (not failed) in the workspace meta so its staleness is not read as an error
 
 ### Requirement: Memory Endpoints (Cross-Butler Fan-Out)
 The memory endpoint surface (`src/butlers/api/routers/memory.py`) SHALL probe
@@ -1021,3 +1013,227 @@ The dashboard API SHALL expose `GET /api/calendar/workspace/prep/{event_id}` ret
 #### Scenario: Prep rail skips butler-mismatched envelope
 - **WHEN** a row read from the view has a `value->>'butler'` that does not match the view's hardcoded `butler` source column
 - **THEN** that contribution is skipped with a warning log and excluded from the response
+
+### Requirement: Calendar ICS Export
+
+The dashboard API SHALL expose `GET /api/calendar/export/ics`, a read-only
+data-portability export that streams the calendar workspace entries for a date
+range as a `text/calendar` (iCalendar / VCALENDAR) file generated with the
+`icalendar` library. The export SHALL reuse the existing workspace
+read/projection and accept the same `view`, `butlers`, `sources`, `status`, and
+`source_type` filters as `GET /api/calendar/workspace`, so the exported set
+matches what the workspace read returns for the same inputs. Each entry SHALL
+become a VEVENT whose `SUMMARY` is the entry title verbatim — the `BUTLER:`
+prefix on butler-authored events MUST be preserved. The endpoint MUST perform no
+provider write, MUST NOT spawn an LLM session, and MUST NOT require a database
+migration. ICS subscribe (`webcal`) and `.ics` import are out of scope.
+
+#### Scenario: Range exported as valid VCALENDAR
+
+- **WHEN** `GET /api/calendar/export/ics` is called with a valid `view`, `start`,
+  and `end`
+- **THEN** the response is `text/calendar` with a `Content-Disposition: attachment`
+  header and a body that parses as a valid VCALENDAR containing one VEVENT per
+  workspace entry in the range, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
+
+#### Scenario: Butler title prefix preserved
+
+- **WHEN** the exported range includes a butler-authored event whose title begins
+  with the `BUTLER:` prefix
+- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
+
+#### Scenario: Empty range yields an empty calendar
+
+- **WHEN** the requested range contains no entries
+- **THEN** the endpoint returns HTTP 200 with a valid VCALENDAR that contains no
+  VEVENT components, rather than an error
+
+#### Scenario: Invalid range rejected
+
+- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum,
+  or a `status`/`source_type` facet value is unknown
+- **THEN** the endpoint returns HTTP 400 and writes nothing; a request missing
+  the required `start`/`end` parameters returns HTTP 422
+
+### Requirement: Calendar ICS Subscribe Feed
+
+The dashboard API SHALL expose `GET /api/calendar/subscribe.ics`, a read-only
+live ICS feed an external calendar application can subscribe to (for example via
+`webcal://`). On each fetch the endpoint SHALL re-render the **current** calendar
+workspace entries — over a rolling window relative to the request time (the
+default window is `now − 30 days … now + 60 days`, within the 90-day workspace
+range cap) — as a `text/calendar` (iCalendar / VCALENDAR) body generated with the
+`icalendar` library, reusing the same projection, the `view` / `butlers` /
+`sources` / `status` / `source_type` filters, and the `BUTLER:` title-prefix
+preservation as `GET /api/calendar/export/ics`. The response SHALL use
+`Content-Disposition: inline` so clients treat it as a subscription feed rather
+than a one-shot download. The endpoint MUST perform no provider write, MUST NOT
+spawn an LLM session, MUST NOT require a database migration, and MUST be served
+behind the same network boundary as the other dashboard/calendar endpoints (no
+new unauthenticated surface, no per-feed token).
+
+#### Scenario: Feed re-renders current workspace entries
+
+- **WHEN** `GET /api/calendar/subscribe.ics` is fetched
+- **THEN** the response is HTTP 200 `text/calendar` with a
+  `Content-Disposition: inline` header and a body that parses as a valid
+  VCALENDAR containing one VEVENT per current workspace entry in the rolling
+  window, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
+
+#### Scenario: Butler title prefix preserved
+
+- **WHEN** the feed window includes a butler-authored event whose title begins
+  with the `BUTLER:` prefix
+- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
+
+#### Scenario: Unknown facet rejected
+
+- **WHEN** a `status` or `source_type` facet value is unknown
+- **THEN** the endpoint returns HTTP 400 and writes nothing
+
+### Requirement: Calendar ICS Import With Dedup
+
+The dashboard API SHALL expose `POST /api/calendar/import/ics`, which accepts an
+uploaded `.ics` file plus a target `butler_name` (and optional `calendar_id`),
+parses its VEVENT components, and creates the events in the user calendar through
+the existing `calendar_create_event` MCP path. The import SHALL be **deduplicated
+against existing workspace entries** using the read-model's existing
+`(title, starts_epoch)` collapse key: an event whose collapse key matches an
+existing workspace entry — including every event when the same `.ics` is imported
+again — MUST be skipped rather than creating a duplicate. Duplicate VEVENTs within
+the uploaded file itself MUST also be collapsed. The endpoint SHALL return the
+`parsed`, `imported`, and `skipped_duplicates` counts, where
+`imported + skipped_duplicates == parsed`. The endpoint MUST require no database
+migration.
+
+#### Scenario: New events imported
+
+- **WHEN** a `.ics` containing events not present in the workspace is imported
+- **THEN** each such event is created via `calendar_create_event` and the
+  response reports `imported` equal to the number of new events with
+  `skipped_duplicates` of 0
+
+#### Scenario: Re-importing the same file is a no-op
+
+- **WHEN** a `.ics` whose events already exist in the workspace (the
+  `(title, starts_epoch)` collapse key matches existing entries) is imported
+- **THEN** no `calendar_create_event` call is made for those events and the
+  response reports `imported` of 0 with `skipped_duplicates` equal to the parsed
+  event count
+
+#### Scenario: Empty or invalid payload rejected
+
+- **WHEN** the uploaded file is empty or is not parseable as iCalendar
+- **THEN** the endpoint returns HTTP 400 and creates nothing
+
+### Requirement: Prep Rail Surfaces Merged Message Context
+
+The meeting-prep rail read `GET /api/calendar/workspace/prep/{event_id}` SHALL
+surface a populated `message_context` for an attendee when an email/message-owning
+butler has contributed one. The endpoint MUST union the relationship-sourced
+envelope (attendee + notes + last-met) with the email-sourced envelope (message
+context) by attendee `entity_id`, reading both exclusively from the precomputed
+`calendar.v_prep_contributions` cached view. It MUST NOT issue a direct cross-schema
+query and MUST NOT spawn an LLM session at request time, and MUST continue to fail
+open to a structured empty payload when no contribution exists.
+
+#### Scenario: Message context merges into the relationship attendee
+- **WHEN** both the relationship butler and an email-owning butler (messenger/travel) have written a prep envelope for the same event with the same attendee `entity_id`
+- **THEN** the response carries a single merged attendee whose `notes`/`last_met` come from the relationship envelope and whose `message_context` carries the email envelope's recent threads, and `source_butlers` lists both contributing schemas
+
+#### Scenario: Message context surfaced without request-time cross-butler read
+- **WHEN** the prep rail read serves an event with email message context
+- **THEN** the `message_context` is read only from `calendar.v_prep_contributions` (the precomputed cached view), with no on-demand `SELECT` against any sibling schema and no LLM/Gmail session opened while serving the request
+
+### Requirement: Calendar Duplicate-Cluster Review
+
+The dashboard API SHALL expose `GET /api/calendar/workspace/duplicates`, a
+read-only surface that exposes the cross-source duplicate clusters the workspace
+read-model collapses. For a `view` + `start` + `end` range it SHALL re-run the
+same two-pass dedup over the un-collapsed workspace rows and return every cluster
+of more than one member the dedup would collapse: the kept survivor (lowest
+keyset), the collapsed-away `duplicate_entries`, the `match_pass`
+(`origin_ref` | `title`) that grouped them, the `member_count`, and a
+`keep_separate` flag. Clusters with fewer members than the active
+`noisy_threshold` SHALL be omitted. The endpoint MUST be fail-open: any read
+failure SHALL yield HTTP 200 with `available=false` and an empty `clusters` list,
+never an HTTP 500. It MUST perform no provider write and MUST NOT spawn an LLM
+session.
+
+#### Scenario: Collapsed cluster exposed
+
+- **WHEN** the same event is synced into multiple butler schemas (identical
+  `origin_ref` + start) and `GET /api/calendar/workspace/duplicates` is called
+  for a range covering it
+- **THEN** the response contains one cluster with `match_pass="origin_ref"`,
+  `member_count` equal to the number of copies, a `kept_entry`, and the remaining
+  copies as `duplicate_entries`, and `available=true`
+
+#### Scenario: Below-threshold clusters omitted
+
+- **WHEN** a cluster's member count is less than the active `noisy_threshold`
+- **THEN** that cluster is not included in the returned `clusters` list
+
+#### Scenario: Fail-open on read failure
+
+- **WHEN** the underlying workspace read fails
+- **THEN** the endpoint returns HTTP 200 with `available=false` and an empty
+  `clusters` list rather than an error
+
+#### Scenario: Invalid range rejected
+
+- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum
+- **THEN** the endpoint returns HTTP 400; a request missing the required
+  `start`/`end` parameters returns HTTP 422
+
+### Requirement: Calendar Dedup Rules
+
+The dashboard API SHALL expose `PATCH /api/calendar/workspace/dedup-rules` to
+persist the workspace-global cross-source dedup rules: a `match_strategy` of
+`exact` (origin-ref identity pass only), `balanced` (origin-ref + title/start
+collapse; the default), or `aggressive` (as `balanced` but normalising titles by
+stripping non-alphanumerics), and a `noisy_threshold` (minimum cluster size for
+the review surface to report a cluster, at least 2). Omitted fields SHALL be left
+unchanged. An unknown `match_strategy` SHALL be rejected without persisting. The
+live workspace read SHALL honor the persisted rules so that changing the strategy
+changes what the read collapses. The rules SHALL persist across requests.
+
+#### Scenario: Strategy and threshold persisted
+
+- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a valid
+  `match_strategy` and `noisy_threshold`
+- **THEN** the endpoint returns HTTP 200 with the new rules and a subsequent read
+  of the rules returns the persisted values
+
+#### Scenario: Unknown strategy rejected
+
+- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a
+  `match_strategy` outside `exact`/`balanced`/`aggressive`
+- **THEN** the endpoint rejects the request (HTTP 400 or 422) and does not change
+  the persisted rules
+
+### Requirement: Calendar Keep-Separate Override
+
+The dashboard API SHALL expose `POST /api/calendar/workspace/duplicates/keep-separate`
+to pin or unpin a duplicate cluster (identified by its `cluster_key`) so the
+dedup does not collapse it. When pinned (`keep_separate=true`) the workspace read
+SHALL keep all members of that cluster as distinct entries, and the review
+surface SHALL still report the cluster with its `keep_separate` flag set. When
+unpinned (`keep_separate=false`) the override SHALL be removed and the cluster
+SHALL collapse again under the active rules. Overrides SHALL persist across
+requests.
+
+#### Scenario: Pinned cluster is not collapsed
+
+- **WHEN** a cluster is pinned via `POST /api/calendar/workspace/duplicates/keep-separate`
+  with `keep_separate=true`
+- **THEN** the workspace read keeps every member of that cluster as a distinct
+  entry, and the duplicates surface still lists the cluster with
+  `keep_separate=true`
+
+#### Scenario: Unpin restores collapse
+
+- **WHEN** a previously-pinned cluster is unpinned with `keep_separate=false`
+- **THEN** the override is removed and the cluster collapses again under the
+  active dedup rules
+

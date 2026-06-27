@@ -44,4 +44,4 @@
 - [x] 7.1 Apply the `module-calendar` delta (modified `Calendar Event CRUD Tools` + `Calendar Sync Tools`; new `Calendar Source Listing Tool`)
 - [x] 7.2 Apply the `dashboard-api` delta (modified `Calendar Workspace` for new endpoints/fields)
 - [x] 7.3 Run `openspec validate calendar-sources-and-sync-control --strict`
-- [ ] 7.4 Quality gate: `ruff check`/`format --check` + targeted calendar test suite, then full `pytest` (excluding e2e) before merge
+- [x] 7.4 Quality gate: `ruff check`/`format --check` + targeted calendar test suite, then full `pytest` (excluding e2e) before merge

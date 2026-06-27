@@ -11,4 +11,4 @@
 ## 3. Validate and archive
 
 - [x] 3.1 Run `openspec validate calendar-availability-degraded-envelope --strict` and fix any errors
-- [ ] 3.2 PR merged → run `openspec archive calendar-availability-degraded-envelope` to sync deltas into canonical specs
+- [x] 3.2 PR merged → run `openspec archive calendar-availability-degraded-envelope` to sync deltas into canonical specs

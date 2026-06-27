@@ -3,9 +3,7 @@
 ## Purpose
 
 The Calendar module is a provider-agnostic module that reads and writes calendar events, manages event lifecycle (create, update, reschedule, cancel), enforces conflict detection policies, supports timezone-aware scheduling with all-day and timed event semantics, and projects scheduled tasks and reminders into a unified calendar view.
-
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Provider-Agnostic Architecture
 
 The module defines an abstract `CalendarProvider` interface with concrete implementations per provider. Currently only Google Calendar is implemented via `_GoogleProvider`. The module SHALL track the dedicated "Butlers" calendar id and the user's primary calendar id as distinct roles, and SHALL NOT overwrite the Butlers calendar id when the user changes the default target.
@@ -67,7 +65,7 @@ Configuration is declared under `[modules.calendar]` in `butler.toml` with field
 
 ### Requirement: Calendar Event CRUD Tools
 
-The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Attendee Management Tools (2: `calendar_add_attendees`, `calendar_remove_attendees`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id.
+The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Attendee Management Tools (2: `calendar_add_attendees`, `calendar_remove_attendees`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id. A caller MAY pass an explicit `calendar_id` to target a specific calendar; the available `calendar_id` values SHALL be enumerated by the read-only `calendar_list_calendars` source-listing tool (see the Calendar Source Listing Tool requirement).
 
 #### Scenario: List events with time window
 
@@ -81,17 +79,16 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 - **THEN** the full event is returned from the provider
 - **AND** a 404 response returns `{"status": "not_found", "event": null}`
 
-#### Scenario: Create butler-authored event defaults to the Butlers calendar
+#### Scenario: Create butler-generated event
 
-- **WHEN** `calendar_create_event` is called with title, start_at, end_at, and optional fields, and **no** explicit `calendar_id`
-- **THEN** the event is created on the dedicated "Butlers" calendar (`_resolved_calendar_id`), NOT the user's primary calendar
-- **AND** the event is stamped with butler-generated metadata in `extendedProperties.private` (`butler_generated=true`, `butler_name`) and `BUTLER:` title branding
+- **WHEN** `calendar_create_event` is called with title, start_at, end_at, and optional fields
+- **THEN** the event is created on the provider with butler-generated metadata in `extendedProperties.private`
 - **AND** conflict detection runs according to the configured policy (suggest alternatives, fail, or allow with approval gate)
 - **AND** the event payload is normalized (timezone, all-day inference, notification defaults)
 
-#### Scenario: Create on the user's primary calendar via explicit override
+#### Scenario: Create event on an explicitly selected calendar
 
-- **WHEN** `calendar_create_event` is called with an explicit `calendar_id` equal to the user's primary calendar (or any discovered calendar)
+- **WHEN** `calendar_create_event` is called with an explicit `calendar_id` chosen from the `calendar_list_calendars` result
 - **THEN** the event is created on that calendar
 - **AND** the `calendar_id` must be one of the discovered provider calendars, else a validation error is raised
 
@@ -103,19 +100,16 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 - **AND** failures in eager projection are logged but do not block the mutation response (fail-open)
 - **BECAUSE** Google's incremental sync API has indexing latency (1-5s) after writes, and relying on a sync round-trip to project the mutation creates a race condition where the event may never reach the projection tables
 
-#### Scenario: Update event resolves the event's home calendar
+#### Scenario: Update event with partial patch
 
-- **WHEN** `calendar_update_event` is called with an `event_id` and partial fields and **no** explicit `calendar_id`
-- **THEN** the calendar the event lives on is resolved via the home-calendar resolver (projection lookup, then bounded search, then primary fallback) and the PATCH is sent to that calendar
-- **AND** only non-None fields are sent to the provider's PATCH endpoint
+- **WHEN** `calendar_update_event` is called with an event_id and partial fields
+- **THEN** only non-None fields are sent to the provider's PATCH endpoint
 - **AND** timezone changes re-emit start/end boundaries with the new timezone
-- **AND** a butler-authored event living on the Butlers calendar is patched on the Butlers calendar, and a user's own event on the primary calendar is patched in place on the primary calendar
 
-#### Scenario: Delete event resolves the event's home calendar
+#### Scenario: Delete event
 
-- **WHEN** `calendar_delete_event` is called with an `event_id` and **no** explicit `calendar_id`
-- **THEN** the calendar the event lives on is resolved via the home-calendar resolver and the delete is issued against that calendar
-- **AND** an explicit `calendar_id` override, when supplied, takes precedence over the resolver
+- **WHEN** `calendar_delete_event` is called with an event_id
+- **THEN** the event is deleted from the provider calendar
 
 ### Requirement: CalendarEvent Model
 
@@ -229,7 +223,7 @@ The module enforces conflict detection policies when creating or rescheduling ev
 
 ### Requirement: Butler Event Management Tools
 
-The module registers MCP tools for managing butler-owned workspace events (scheduled tasks and reminders projected as calendar entries): `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`.
+The module registers MCP tools for managing butler-owned workspace events (scheduled tasks and reminders projected as calendar entries): `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`. Deletion of a butler workspace event SHALL be scope-aware (`this`, `following`, or the default `series`) rather than series-only.
 
 #### Scenario: Create butler event
 
@@ -245,7 +239,7 @@ The module registers MCP tools for managing butler-owned workspace events (sched
 #### Scenario: Delete butler event
 
 - **WHEN** `calendar_delete_butler_event` is called with an event ID
-- **THEN** the butler event is deleted (series-scoped in v1)
+- **THEN** the butler event is deleted with scope-aware semantics (`this`, `following`, or the default `series`)
 - **AND** high-impact mutations require approval gate
 
 #### Scenario: Toggle butler event
@@ -365,7 +359,7 @@ The module exposes an async `tick(source_butler, notify_fn=None)` method that th
 
 ### Requirement: Calendar Sync Tools
 
-The module registers MCP tools for sync observability and target selection: `calendar_sync_status`, `calendar_force_sync`, and `calendar_set_primary`. `calendar_set_primary` SHALL update only the user's default-target selection and MUST NOT mutate the dedicated "Butlers" calendar id.
+The module registers MCP tools for sync observability and manual triggering: `calendar_sync_status`, `calendar_force_sync`, and `calendar_set_primary`. `calendar_force_sync` SHALL support an operator-driven full re-sync (cursor recovery) in addition to the default incremental sync, and `calendar_sync_status` SHALL expose a per-source `error_kind` classification so the dashboard can distinguish a stale source that needs **Recover** (full re-sync) from one that needs **Reconnect** (re-authorization).
 
 #### Scenario: Query sync status
 
@@ -373,19 +367,38 @@ The module registers MCP tools for sync observability and target selection: `cal
 - **THEN** it returns the current sync state: last sync time, sync token validity, pending changes count, and last error
 - **AND** if sync is not configured, returns `sync_enabled=False` (fail-open)
 
-#### Scenario: Force immediate sync
+#### Scenario: Sync status carries per-source error_kind
 
-- **WHEN** `calendar_force_sync` is called
-- **THEN** an immediate sync is triggered outside the normal polling schedule
+- **WHEN** `calendar_sync_status` is called and a source has a recorded error
+- **THEN** the per-source freshness includes an `error_kind` classifying the failure as one of `none`, `token_expired`, `auth`, `not_found`, or `transient`
+- **AND** a healthy source reports `error_kind = "none"`
+- **AND** the raw `last_error` string remains available alongside `error_kind`
+
+#### Scenario: Force incremental sync (default)
+
+- **WHEN** `calendar_force_sync` is called without `full` (or with `full=false`)
+- **THEN** an immediate sync is triggered outside the normal polling schedule using the stored incremental sync token
 - **AND** if a background poller is running, it is signaled; otherwise an inline one-off sync runs
 - **AND** provider errors are recorded in `last_sync_error` rather than raised (fail-open)
 
-#### Scenario: Set primary calendar does not clobber the Butlers calendar
+#### Scenario: Force full re-sync for cursor recovery
+
+- **WHEN** `calendar_force_sync` is called with `full=true`
+- **THEN** the sync runs against `sync_token=None` (a full re-sync over the configured `full_sync_window_days` window) instead of the stored incremental token
+- **AND** the recovery is logged so operators can see that a full re-sync ran
+- **AND** the response indicates that a full recovery was performed
+
+#### Scenario: Token-expiry recovery is logged
+
+- **WHEN** an incremental sync fails because the sync token expired (Google `410 Gone`) and the module falls back to a full re-sync
+- **THEN** the token-expiry recovery is logged
+- **AND** the source's `error_kind` is classified as `token_expired`
+
+#### Scenario: Set primary calendar
 
 - **WHEN** `calendar_set_primary` is called with a `calendar_id`
-- **THEN** the in-memory primary/default-target selection (`_primary_calendar_id`) is updated to the specified calendar
-- **AND** the dedicated "Butlers" calendar id (`_resolved_calendar_id`) is left unchanged, so butler-authored creates continue to target the Butlers calendar
-- **AND** the choice is persisted so it survives restarts under a credential key distinct from `GOOGLE_CALENDAR_ID`
+- **THEN** the in-memory default `_primary_calendar_id` is updated to the specified calendar
+- **AND** the choice is persisted to the credential store so it survives restarts
 - **AND** the `calendar_id` must be one of the discovered provider calendars
 
 ### Requirement: Event Home-Calendar Resolution
@@ -507,7 +520,7 @@ The calendar projection SHALL support index-backed substring search over the hum
 
 ### Requirement: Calendar Event Full-Text Search Query
 
-The module SHALL expose a fan-out search over the `calendar_events` projection that matches a free-text query against `title`, `description`, and `location`, returns matches ranked by trigram relevance with each match's date(s), and degrades fail-open when the trigram index or extension is unavailable. This is the contract behind the `GET /api/calendar/workspace/search` endpoint (see `dashboard-api`).
+The module SHALL expose a fan-out search over the `calendar_events` projection that matches a free-text query against `title`, `description`, and `location`, returns matches ranked by trigram relevance with each match's date(s), and degrades fail-open when the trigram index or extension is unavailable. This is the contract behind the `GET /api/calendar/workspace/search` endpoint (see `dashboard-api`). The result envelope SHALL carry an `available` boolean that is `false` only when EVERY targeted schema fails to respond, so callers can distinguish "nothing matched" from "search could not run".
 
 #### Scenario: Ranked match across title, description, and location
 - **WHEN** a non-empty query is searched against the projection
@@ -524,6 +537,12 @@ The module SHALL expose a fan-out search over the `calendar_events` projection t
 - **WHEN** a probed butler schema lacks the `pg_trgm` extension or the trigram index
 - **THEN** the search degrades fail-open — it falls back to a substring (`ILIKE`) match for that schema or skips it — rather than raising a 500
 - **AND** results from schemas where the index is present are still returned
+
+#### Scenario: available signal is false only when all targeted schemas fail
+- **WHEN** the search fan-out completes across all targeted butler schemas
+- **THEN** the result envelope's `available` flag is `false` if and only if every targeted schema failed to respond (pool error, or both trigram and ILIKE queries raised for that schema)
+- **AND** `available` is `true` whenever at least one schema responded successfully — even if it returned an empty match set or fell back to ILIKE
+- **BECAUSE** `available=false` means "the search could not run" (caller should show "search unavailable"), whereas an empty `matches` with `available=true` means "the search ran and found nothing"
 
 ### Requirement: Free/Busy Availability Query
 
@@ -578,6 +597,51 @@ The module SHALL register an MCP tool `calendar_find_free_slots` that turns free
 
 - **WHEN** `calendar_find_free_slots` is called and the search window contains no gap long enough for `duration_minutes`
 - **THEN** an empty slots list is returned (fail-open, not an error)
+
+### Requirement: Recurrence-Scoped Occurrence Mutation
+
+When a mutation targets a recurring event, the module SHALL support operating on a single occurrence (`this`) or the occurrence-and-onward remainder (`following`) in addition to the whole series (`series`), via the `recurrence_scope` argument on `calendar_update_event` / `calendar_delete_event` and the dedicated `calendar_update_event_instance` / `calendar_delete_event_instance` tools. Occurrence-scoped mutations SHALL persist provider EXDATE/RDATE recurrence entries and mark the affected `calendar_event_instances` rows `is_exception = true`.
+
+#### Scenario: Single occurrence detached as an exception
+
+- **WHEN** an occurrence-scoped mutation (`recurrence_scope="this"` or `calendar_*_event_instance`) is applied to a base recurring `event_id` and an `instance_start_at`
+- **THEN** the original occurrence slot is EXDATE-d from the series recurrence array on the provider
+- **AND** the matching `calendar_event_instances` row (keyed by `event_id` + occurrence start) is marked `is_exception = true`
+- **AND** occurrences other than the named one are unaffected
+
+#### Scenario: This-and-following split at the boundary
+
+- **WHEN** a mutation is applied with `recurrence_scope="following"` for a base recurring `event_id` and an `instance_start_at`
+- **THEN** the original series RRULE is bounded with an `UNTIL` just before `instance_start_at`
+- **AND** the mutation applies to the named occurrence and every later occurrence
+- **AND** occurrences before the boundary remain unchanged
+
+#### Scenario: Impact preview reports occurrences touched
+
+- **WHEN** a recurrence-scoped mutation is evaluated before the provider write
+- **THEN** an impact preview reports the number of occurrences the mutation will touch: 1 for `this`, the remaining-from-boundary count for `following`, and the whole-series occurrence count for `series`
+- **AND** the count feeds the high-impact approval gate so large `series` / `following` mutations are gated while a single-occurrence `this` mutation is not
+
+#### Scenario: Unknown recurrence scope rejected
+
+- **WHEN** `calendar_update_event` or `calendar_delete_event` is called with a `recurrence_scope` other than `this`, `following`, or `series`
+- **THEN** the call is rejected with a validation error and no provider mutation is issued
+
+### Requirement: Calendar Source Listing Tool
+
+The module SHALL register a read-only `calendar_list_calendars` MCP tool that wraps `provider.list_calendars()` and returns the calendars available on the connected account in a normalized, butler-aware shape. This backs the dashboard's per-event calendar selector and the sources drawer; it is the source of the `calendar_id` values a caller may pass as an explicit target to `calendar_create_event`.
+
+#### Scenario: List calendars on the connected account
+
+- **WHEN** `calendar_list_calendars` is called
+- **THEN** each calendar is returned with `calendar_id`, `summary` (display name), `primary`, `access_role`, `is_butlers_calendar`, and `selectable`
+- **AND** the dedicated "Butlers" calendar (`_resolved_calendar_id`) is flagged with `is_butlers_calendar = true`
+- **AND** a calendar whose access role is not `writer` or `owner` is marked `selectable = false` so it cannot be offered as a write target
+
+#### Scenario: Provider failure fails open
+
+- **WHEN** `calendar_list_calendars` is called and the provider raises an error
+- **THEN** an empty calendar list is returned with error metadata rather than the call raising
 
 ## Source References
 
