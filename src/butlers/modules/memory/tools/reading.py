@@ -118,10 +118,15 @@ async def memory_catalog_search(
     memory_type: str | None = None,
     limit: int = 10,
     mode: str = "hybrid",
+    max_sensitivity: str = "normal",
 ) -> list[dict[str, Any]]:
     """Search the shared memory catalog for cross-butler memory discovery.
 
     Delegates to _search.search_catalog() and serializes results for JSON output.
+
+    ``max_sensitivity`` is the highest sensitivity level the caller is authorized
+    to view; results above it are excluded and the default ('normal') returns
+    only non-sensitive entries.
     """
     results = await _search.search_catalog(
         pool,
@@ -130,6 +135,7 @@ async def memory_catalog_search(
         memory_type=memory_type,
         limit=limit,
         mode=mode,
+        max_sensitivity=max_sensitivity,
     )
     return [_serialize_row(r) for r in results]
 

@@ -777,6 +777,37 @@ async def search(
 _CATALOG_TS_CONFIG = "english"
 _CATALOG_RRF_K = 60
 
+# Cross-butler catalog sensitivity / authorization model.
+#
+# Sensitivity values are ordered from least to most sensitive. A caller's
+# authorization is expressed as the *highest* level it may view; it receives
+# every level up to and including that ceiling. The default ceiling is
+# ``normal`` so a caller that does not explicitly request a higher level (or
+# whose authorization is unknown) only ever sees ``normal`` entries.
+#
+# Fail-closed semantics:
+#   * an unrecognized authorization ceiling collapses to ``normal``-only;
+#   * catalog rows whose ``sensitivity`` is NULL are treated as ``normal``
+#     (the canonical source tables default to ``normal``);
+#   * catalog rows carrying a value outside this hierarchy are never returned,
+#     because they cannot be proven to sit at or below the caller's ceiling.
+CATALOG_SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
+DEFAULT_CATALOG_SENSITIVITY = "normal"
+
+
+def resolve_allowed_sensitivities(max_sensitivity: str) -> list[str]:
+    """Return the sensitivity levels a caller authorized up to ``max_sensitivity`` may view.
+
+    The result always includes ``normal`` and every level up to and including
+    ``max_sensitivity``. Unknown ceilings fail closed to ``["normal"]``.
+    """
+    try:
+        ceiling = CATALOG_SENSITIVITY_LEVELS.index(max_sensitivity)
+    except ValueError:
+        # Unknown level requested — fail closed to the most restrictive set.
+        return [DEFAULT_CATALOG_SENSITIVITY]
+    return list(CATALOG_SENSITIVITY_LEVELS[: ceiling + 1])
+
 
 async def _catalog_semantic_search(
     pool: Pool,
@@ -784,6 +815,7 @@ async def _catalog_semantic_search(
     *,
     tenant_id: str,
     memory_type: str | None,
+    allowed_sensitivities: list[str],
     limit: int,
 ) -> list[dict]:
     """Semantic search on public.memory_catalog via pgvector."""
@@ -794,6 +826,10 @@ async def _catalog_semantic_search(
     if memory_type is not None:
         params.append(memory_type)
         conditions.append(f"memory_type = ${len(params)}")
+    params.append(allowed_sensitivities)
+    conditions.append(
+        f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${len(params)})"
+    )
     params.append(limit)
     limit_idx = len(params)
 
@@ -815,6 +851,7 @@ async def _catalog_keyword_search(
     *,
     tenant_id: str,
     memory_type: str | None,
+    allowed_sensitivities: list[str],
     limit: int,
 ) -> list[dict]:
     """Full-text search on public.memory_catalog via tsvector."""
@@ -831,6 +868,10 @@ async def _catalog_keyword_search(
     if memory_type is not None:
         params.append(memory_type)
         conditions.append(f"memory_type = ${len(params)}")
+    params.append(allowed_sensitivities)
+    conditions.append(
+        f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${len(params)})"
+    )
     params.append(limit)
     limit_idx = len(params)
 
@@ -857,6 +898,7 @@ async def search_catalog(
     memory_type: str | None = None,
     limit: int = 10,
     mode: str = "hybrid",
+    max_sensitivity: str = DEFAULT_CATALOG_SENSITIVITY,
 ) -> list[dict]:
     """Search ``public.memory_catalog`` for cross-butler memory discovery.
 
@@ -874,6 +916,11 @@ async def search_catalog(
             both types.
         limit: Maximum results to return (default 10).
         mode: Search mode — 'semantic', 'keyword', or 'hybrid' (default).
+        max_sensitivity: Highest sensitivity level the caller is authorized to
+            view. Results above this ceiling are excluded. Defaults to
+            ``'normal'`` (the most restrictive level); unknown values fail
+            closed to ``'normal'``-only. See ``CATALOG_SENSITIVITY_LEVELS``
+            for the ordered hierarchy.
 
     Returns:
         List of dicts with catalog row fields plus ``similarity`` (semantic),
@@ -886,6 +933,8 @@ async def search_catalog(
     if mode not in _VALID_SEARCH_MODES:
         raise ValueError(f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}")
 
+    allowed_sensitivities = resolve_allowed_sensitivities(max_sensitivity)
+
     semantic_results: list[dict] = []
     keyword_results: list[dict] = []
 
@@ -896,6 +945,7 @@ async def search_catalog(
             query_embedding,
             tenant_id=tenant_id,
             memory_type=memory_type,
+            allowed_sensitivities=allowed_sensitivities,
             limit=limit,
         )
 
@@ -905,6 +955,7 @@ async def search_catalog(
             query,
             tenant_id=tenant_id,
             memory_type=memory_type,
+            allowed_sensitivities=allowed_sensitivities,
             limit=limit,
         )
 

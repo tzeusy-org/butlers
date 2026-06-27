@@ -1368,6 +1368,17 @@ class MemoryModule(Module):
                 str,
                 Field(description="Search mode: 'hybrid' (default), 'semantic', or 'keyword'."),
             ] = "hybrid",
+            max_sensitivity: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Highest sensitivity level the caller is authorized to view. "
+                        "Ordered low-to-high: 'normal', 'pii', 'confidential'. "
+                        "Defaults to 'normal' (excludes anything more sensitive); "
+                        "unknown values fail closed to 'normal'-only."
+                    )
+                ),
+            ] = "normal",
         ) -> list[dict[str, Any]]:
             """Search the shared memory catalog for cross-butler memory discovery.
 
@@ -1386,6 +1397,11 @@ class MemoryModule(Module):
             - ``memory_type``: 'fact' | 'rule' (omit to search both)
             - ``limit`` (int)
             - ``mode``: 'hybrid' | 'semantic' | 'keyword'
+            - ``max_sensitivity``: 'normal' (default) | 'pii' | 'confidential'
+
+            Sensitivity filtering: results above ``max_sensitivity`` are
+            excluded. The default ('normal') returns only non-sensitive
+            entries; request a higher level only when authorized.
             """
             return await _reading.memory_catalog_search(
                 module._get_pool(),
@@ -1394,6 +1410,7 @@ class MemoryModule(Module):
                 memory_type=memory_type,
                 limit=limit,
                 mode=mode,
+                max_sensitivity=max_sensitivity,
             )
 
         # --- Preference tools ---
