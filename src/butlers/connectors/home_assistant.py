@@ -61,10 +61,10 @@ import logging
 import os
 import random
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import Thread
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.parse import urlparse
 
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
@@ -102,6 +102,10 @@ _DEFAULT_DISCRETION_TIMEOUT_S = 5
 _DEFAULT_EVENT_QUEUE_MAX = 100
 _DEFAULT_WS_RECONNECT_INITIAL_S = 1.0
 _DEFAULT_WS_RECONNECT_MAX_S = 60.0
+
+# Number of consecutive failed WS reconnect attempts before the connector
+# activates the REST polling fallback (spec: REST API Polling Fallback).
+_WS_FALLBACK_FAILURE_THRESHOLD = 3
 _DEFAULT_WS_RECONNECT_JITTER = 0.5
 
 _DEFAULT_DOMAIN_ALLOWLIST = frozenset(
@@ -135,9 +139,18 @@ _WS_EVENT_SUBSCRIPTIONS = (
 # HAWebSocketClient (tasks 3.1–3.6)
 # ---------------------------------------------------------------------------
 
-# Type alias for the event dispatch callback:
-#   async def dispatch(event_type: str, event: dict) -> None
-_EventDispatch = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
+
+# Structural type for the event dispatch callback. A Protocol (rather than a
+# Callable alias) so the optional ``transport`` override is part of the
+# statically-checkable signature:
+#   async def dispatch(event_type, event, transport=None) -> None
+class _EventDispatch(Protocol):
+    async def __call__(
+        self,
+        event_type: str,
+        event: dict[str, Any],
+        transport: str | None = None,
+    ) -> None: ...
 
 
 class HAWebSocketClient:
@@ -187,6 +200,7 @@ class HAWebSocketClient:
         reconnect_jitter: float = _DEFAULT_WS_RECONNECT_JITTER,
         on_connected: Callable[[], None] | None = None,
         on_disconnected: Callable[[], None] | None = None,
+        on_reconnect_failed: Callable[[], None] | None = None,
         verify_ssl: bool = False,
     ) -> None:
         self._ha_base_url = ha_base_url.rstrip("/")
@@ -199,6 +213,7 @@ class HAWebSocketClient:
         self._reconnect_jitter = reconnect_jitter
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
+        self._on_reconnect_failed = on_reconnect_failed
         self._verify_ssl = verify_ssl
 
         # Internal state
@@ -600,6 +615,19 @@ class HAWebSocketClient:
                     attempt + 1,
                     exc,
                 )
+                # Signal the failed reconnect attempt so the connector can count
+                # consecutive failures and activate the REST fallback per spec.
+                # Guard the callback: this loop runs as a fire-and-forget task,
+                # so an unhandled callback error (e.g. while starting the REST
+                # poller) would otherwise kill reconnection entirely.
+                if self._on_reconnect_failed is not None:
+                    try:
+                        self._on_reconnect_failed()
+                    except Exception as callback_exc:
+                        logger.exception(
+                            "HAWebSocketClient: error in on_reconnect_failed callback: %s",
+                            callback_exc,
+                        )
                 delay = min(delay * 2, self._reconnect_max_s)
                 attempt += 1
                 continue
@@ -1534,17 +1562,7 @@ async def _main() -> None:
     """
     import asyncpg
 
-    from butlers.connectors.home_assistant_checkpoint import (
-        HACheckpoint,
-        load_ha_checkpoint,
-        save_ha_checkpoint,
-    )
-    from butlers.connectors.home_assistant_envelope import (
-        build_automation_triggered_envelope,
-        build_state_changed_envelope,
-        build_state_changed_normalized_text,
-        parse_time_fired,
-    )
+    from butlers.connectors.home_assistant_checkpoint import load_ha_checkpoint
     from butlers.connectors.home_assistant_filter import HAFilterPersistence
     from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
     from butlers.core.logging import configure_logging
@@ -1645,17 +1663,16 @@ async def _main() -> None:
         denylist=config.wellness_entity_denylist,
     )
 
-    # Load checkpoint (fail-open: empty checkpoint on any error)
-    checkpoint: HACheckpoint
+    # Load checkpoint resume timestamp (fail-open: None when no DB or no prior
+    # checkpoint). The dispatcher advances the checkpoint as events are
+    # submitted, tagged with the active transport.
     resume_ts = None
     if db_pool is not None:
-        checkpoint, resume_ts = await load_ha_checkpoint(
+        _checkpoint, resume_ts = await load_ha_checkpoint(
             db_pool,
             endpoint_identity=endpoint_identity,
             overlap_seconds=config.checkpoint_overlap_s,
         )
-    else:
-        checkpoint = HACheckpoint.empty()
 
     # Filter persistence (for recording dropped events)
     async def _submit_envelope_for_replay(envelope: dict[str, Any]) -> None:
@@ -1667,20 +1684,124 @@ async def _main() -> None:
         submit_fn=_submit_envelope_for_replay,
     )
 
+    # ------------------------------------------------------------------
+    # Tasks 3.1–3.6 + 5–9: Real event dispatch (WS + REST fallback share it)
+    # ------------------------------------------------------------------
+
+    dispatch = _make_event_dispatcher(
+        connector=connector,
+        config=config,
+        db_pool=db_pool,
+        pipeline=pipeline,
+        wellness_classifier=wellness_classifier,
+        endpoint_identity=endpoint_identity,
+        resume_ts=resume_ts,
+        ha_filter_persistence=ha_filter_persistence,
+    )
+
+    # ------------------------------------------------------------------
+    # Build and wire the transport supervisor: WebSocket client with REST
+    # polling fallback after _WS_FALLBACK_FAILURE_THRESHOLD failed reconnects.
+    # ------------------------------------------------------------------
+
+    ws_client, rest_poller, _fallback_controller = _build_transport_supervisor(
+        connector=connector,
+        config=config,
+        ha_base_url=ha_base_url,
+        ha_access_token=ha_access_token,
+        dispatch=dispatch,
+    )
+
+    # Set up graceful shutdown via OS signals
+    stop_event = asyncio.Event()
+
+    def _handle_signal() -> None:
+        stop_event.set()
+
+    try:
+        import signal
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _handle_signal)
+            except (NotImplementedError, RuntimeError):
+                pass
+    except Exception:
+        pass
+
+    # Run the WS client; stop when a signal arrives
+    ws_task = asyncio.create_task(ws_client.run())
+    await stop_event.wait()
+
+    logger.info("HAConnector: shutting down")
+    rest_poller.stop()
+    ws_task.cancel()
+    try:
+        await ws_task
+    except (asyncio.CancelledError, Exception):
+        pass
+    await connector.stop_heartbeat()
+
+    if db_pool is not None:
+        await db_pool.close()
+
+
+def _make_event_dispatcher(
+    *,
+    connector: HAConnector,
+    config: HAConnectorConfig,
+    db_pool: Any | None,
+    pipeline: Any,
+    wellness_classifier: WellnessClassifier,
+    endpoint_identity: str,
+    resume_ts: Any,
+    ha_filter_persistence: Any,
+) -> _EventDispatch:
+    """Build the HA event dispatcher shared by the WS client and REST poller.
+
+    The returned coroutine routes each HA event (real WebSocket event or a
+    synthetic ``state_changed`` event produced by the REST poller) through the
+    three-layer filter pipeline, submits surviving events to the Switchboard,
+    and advances the checkpoint with the transport currently in use
+    (``"websocket"`` or ``"rest_fallback"``).
+    """
+    from butlers.connectors.home_assistant_checkpoint import save_ha_checkpoint
+    from butlers.connectors.home_assistant_envelope import (
+        build_automation_triggered_envelope,
+        build_state_changed_envelope,
+        build_state_changed_normalized_text,
+        parse_time_fired,
+    )
+
     # Tracked entity count for metrics
     _tracked_entities: set[str] = set()
 
-    # ------------------------------------------------------------------
-    # Tasks 3.1–3.6 + 5–9: Real event dispatch
-    # ------------------------------------------------------------------
+    def _resolve_transport(transport: str | None) -> str:
+        """Checkpoint transport literal for this dispatch.
 
-    async def _dispatch(event_type: str, event: dict[str, Any]) -> None:
+        An explicit ``transport`` (passed by the REST poller) wins; otherwise
+        fall back to the connector's current transport. Resolving once per
+        dispatch — rather than re-reading ``_rest_fallback_active`` at each
+        checkpoint-save ``await`` — keeps the literal stable even if the WS
+        client reconnects mid-dispatch.
+        """
+        if transport is not None:
+            return transport
+        return "rest_fallback" if connector._rest_fallback_active else "websocket"
+
+    async def _dispatch(
+        event_type: str, event: dict[str, Any], transport: str | None = None
+    ) -> None:
         """Route a HA event through the filter pipeline and persist.
 
         Only ``state_changed`` and ``automation_triggered`` events are
         processed.  ``call_service`` events are counted but not forwarded.
+        ``transport`` lets the caller pin the checkpoint transport literal
+        (the REST poller passes ``"rest_fallback"``); when omitted it is
+        inferred from the connector's active transport.
         """
-        nonlocal checkpoint
+        active_transport = _resolve_transport(transport)
 
         if event_type == "call_service":
             # call_service events are not persisted; count as not-forwarded.
@@ -1767,7 +1888,7 @@ async def _main() -> None:
             connector.on_event_received(passed_all_filters=True)
             if db_pool is not None:
                 await save_ha_checkpoint(
-                    db_pool, endpoint_identity, event_ts, entity_id, "websocket"
+                    db_pool, endpoint_identity, event_ts, entity_id, active_transport
                 )
             return
 
@@ -1908,56 +2029,99 @@ async def _main() -> None:
 
         # Update checkpoint after successful Switchboard submission
         if db_pool is not None:
-            await save_ha_checkpoint(db_pool, endpoint_identity, event_ts, entity_id, "websocket")
+            await save_ha_checkpoint(
+                db_pool, endpoint_identity, event_ts, entity_id, active_transport
+            )
 
         # Flush filtered event buffer and drain replay queue
         await ha_filter_persistence.flush()
         await ha_filter_persistence.drain_replay()
 
+    return _dispatch
+
+
+def _build_transport_supervisor(
+    *,
+    connector: HAConnector,
+    config: HAConnectorConfig,
+    ha_base_url: str,
+    ha_access_token: str,
+    dispatch: _EventDispatch,
+) -> tuple[HAWebSocketClient, Any, Any]:
+    """Build and wire the WebSocket client with its REST polling fallback.
+
+    Returns ``(ws_client, rest_poller, fallback_controller)``.  The controller
+    counts consecutive failed WS reconnect attempts and, once
+    ``_WS_FALLBACK_FAILURE_THRESHOLD`` is reached, starts the REST poller so HA
+    ingestion continues via ``GET /api/states`` while WebSocket reconnection
+    keeps retrying.  A successful WS reconnect stops the poller and restores the
+    WebSocket as the active transport.
+    """
+    from butlers.connectors.home_assistant_rest import (
+        HAFallbackController,
+        HARestPoller,
+        HAStateCache,
+    )
+
+    # REST poller shares the same dispatch path as the WS client so polled
+    # state changes flow through the identical filter/envelope/checkpoint code.
+    state_cache = HAStateCache()
+
+    async def _on_rest_state_changed(
+        _old_snap: Any, _new_snap: Any, event_dict: dict[str, Any]
+    ) -> None:
+        # Pin the checkpoint transport: events polled via REST must record
+        # ``rest_fallback`` even if the WS client reconnects mid-dispatch.
+        await dispatch("state_changed", event_dict, "rest_fallback")
+
+    rest_poller = HARestPoller(
+        base_url=ha_base_url,
+        access_token=ha_access_token,
+        state_cache=state_cache,
+        poll_interval_s=config.poll_interval_s,
+        on_state_changed=_on_rest_state_changed,
+        on_poll_success=connector.on_rest_poll_success,
+        on_poll_error=lambda _exc: connector.on_rest_poll_error(),
+    )
+
+    def _start_fallback() -> None:
+        connector.on_rest_fallback_started()
+        rest_poller.start()
+
+    def _stop_fallback() -> None:
+        rest_poller.stop()
+        connector.on_rest_fallback_stopped()
+
+    fallback_controller = HAFallbackController(
+        ws_failure_threshold=_WS_FALLBACK_FAILURE_THRESHOLD,
+        on_fallback_start=_start_fallback,
+        on_fallback_stop=_stop_fallback,
+    )
+
+    def _on_ws_connected() -> None:
+        connector.on_ws_connected()
+        fallback_controller.on_ws_success()
+
+    def _on_ws_disconnected() -> None:
+        connector.on_ws_disconnected()
+
+    def _on_reconnect_failed() -> None:
+        fallback_controller.on_ws_failure()
+
     ws_client = HAWebSocketClient(
         ha_base_url=ha_base_url,
         ha_access_token=ha_access_token,
-        dispatch=_dispatch,
+        dispatch=dispatch,
         ping_interval_s=config.ws_ping_interval_s,
         pong_timeout_s=config.ws_pong_timeout_s,
         reconnect_initial_s=_DEFAULT_WS_RECONNECT_INITIAL_S,
         reconnect_max_s=_DEFAULT_WS_RECONNECT_MAX_S,
-        on_connected=connector.on_ws_connected,
-        on_disconnected=connector.on_ws_disconnected,
+        on_connected=_on_ws_connected,
+        on_disconnected=_on_ws_disconnected,
+        on_reconnect_failed=_on_reconnect_failed,
     )
 
-    # Set up graceful shutdown via OS signals
-    stop_event = asyncio.Event()
-
-    def _handle_signal() -> None:
-        stop_event.set()
-
-    try:
-        import signal
-
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(sig, _handle_signal)
-            except (NotImplementedError, RuntimeError):
-                pass
-    except Exception:
-        pass
-
-    # Run the WS client; stop when a signal arrives
-    ws_task = asyncio.create_task(ws_client.run())
-    await stop_event.wait()
-
-    logger.info("HAConnector: shutting down")
-    ws_task.cancel()
-    try:
-        await ws_task
-    except (asyncio.CancelledError, Exception):
-        pass
-    await connector.stop_heartbeat()
-
-    if db_pool is not None:
-        await db_pool.close()
+    return ws_client, rest_poller, fallback_controller
 
 
 if __name__ == "__main__":
