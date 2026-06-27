@@ -48,14 +48,22 @@ vi.mock("@/api/index.ts", () => ({
   deferApproval: vi.fn(),
   retryApproval: vi.fn(),
   updateApprovalsPolicy: vi.fn(),
+  // Autonomy suggestions banner data + verbs (wired into ApprovalsPage via
+  // the use-approvals hooks).
+  getAutonomySuggestions: vi.fn(),
+  confirmAutonomySuggestion: vi.fn(),
+  dismissAutonomySuggestion: vi.fn(),
 }));
 
 import {
   approveApproval,
+  confirmAutonomySuggestion,
+  dismissAutonomySuggestion,
   getApprovalDetail,
   getApprovalsFlat,
   getApprovalsHistory,
   getApprovalsPolicy,
+  getAutonomySuggestions,
   retryApproval,
 } from "@/api/index.ts";
 import { toast } from "sonner";
@@ -153,6 +161,9 @@ describe("ApprovalsPage — load-more", () => {
       makeEmptyHistory() as AnyMock,
     );
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeApiResponse([]) as AnyMock,
+    );
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -323,6 +334,9 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     );
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeApiResponse([]) as AnyMock,
+    );
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -580,5 +594,176 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(container.textContent).toContain(
       "Approve: Tze How Lee knows Yustynn Panicker",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Autonomy Suggestions banner on /approvals (bu-phy21)
+//
+// The AutonomySuggestionsBanner was fully built (component + hook + client) but
+// imported by no page. These tests prove it now renders on the approvals
+// surface when pending suggestions exist, is absent when none exist, and that
+// its action buttons are wired to the confirm/dismiss client fns (no dead
+// onClick).
+// ---------------------------------------------------------------------------
+
+function makePromotionSuggestion(id: string, toolName = "send_telegram") {
+  return {
+    id,
+    suggestion_type: "promotion",
+    pattern_fingerprint: `fp-${id}`,
+    tool_name: toolName,
+    representative_args: { chat_id: "mom_123" },
+    scope_description: `Auto-approve ${toolName} when chat_id = 'mom_123'`,
+    status: "pending",
+    approval_count_at_creation: 5,
+    created_at: "2026-05-17T10:00:00Z",
+    decided_at: null,
+    decided_by: null,
+    resulting_rule_id: null,
+    velocity: { avg_seconds: 12, sample_count: 5, fast_approval: true },
+  };
+}
+
+function makeSuggestionsResponse<T>(data: T[]) {
+  // PaginatedResponse<AutonomySuggestion> shape: { data, meta }.
+  return Promise.resolve({ data, meta: {} });
+}
+
+describe("ApprovalsPage — autonomy suggestions banner (bu-phy21)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeEmptyHistory() as AnyMock,
+    );
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    // Default: no suggestions; individual tests override.
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeSuggestionsResponse([]) as AnyMock,
+    );
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage() {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <ApprovalsPage />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("renders the Autonomy Suggestions banner when pending suggestions exist", async () => {
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeSuggestionsResponse([makePromotionSuggestion("s1")]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () =>
+        container.querySelector(
+          '[data-testid="autonomy-suggestions-banner"]',
+        ) !== null,
+    );
+
+    expect(
+      container.querySelector('[data-testid="autonomy-suggestions-banner"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("Autonomy Suggestions");
+    expect(container.textContent).toContain("Promote to standing rule");
+    expect(container.textContent).toContain(
+      "Auto-approve send_telegram when chat_id = 'mom_123'",
+    );
+  });
+
+  it("does NOT render the banner when no pending suggestions exist", async () => {
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeSuggestionsResponse([]) as AnyMock,
+    );
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    expect(
+      container.querySelector('[data-testid="autonomy-suggestions-banner"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("Autonomy Suggestions");
+  });
+
+  it("calls confirmAutonomySuggestion when 'Confirm rule' is clicked (no dead onClick)", async () => {
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeSuggestionsResponse([makePromotionSuggestion("s1")]) as AnyMock,
+    );
+    vi.mocked(confirmAutonomySuggestion).mockReturnValue(
+      makeApiResponse({
+        ...makePromotionSuggestion("s1"),
+        status: "confirmed",
+        resulting_rule_id: "rule-1",
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => findButton(container, "Confirm rule") !== undefined,
+    );
+
+    const confirmBtn = findButton(container, "Confirm rule");
+    expect(confirmBtn).toBeDefined();
+
+    await act(async () => {
+      confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(confirmAutonomySuggestion).toHaveBeenCalledWith("s1");
+  });
+
+  it("calls dismissAutonomySuggestion when 'Dismiss' is clicked (no dead onClick)", async () => {
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeSuggestionsResponse([makePromotionSuggestion("s1")]) as AnyMock,
+    );
+    vi.mocked(dismissAutonomySuggestion).mockReturnValue(
+      makeApiResponse({
+        ...makePromotionSuggestion("s1"),
+        status: "dismissed",
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Dismiss") !== undefined);
+
+    const dismissBtn = findButton(container, "Dismiss");
+    expect(dismissBtn).toBeDefined();
+
+    await act(async () => {
+      dismissBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(dismissAutonomySuggestion).toHaveBeenCalledWith("s1", undefined);
   });
 });

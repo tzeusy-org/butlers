@@ -39,6 +39,12 @@ import type {
   ApprovalsPolicy,
 } from "@/api/index.ts";
 import { useApprovalsStream } from "@/hooks/use-approvals-stream.ts";
+import {
+  useAutonomySuggestions,
+  useConfirmAutonomySuggestion,
+  useDismissAutonomySuggestion,
+} from "@/hooks/use-approvals.ts";
+import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -878,6 +884,63 @@ function HistorySection() {
 }
 
 // ---------------------------------------------------------------------------
+// Autonomy suggestions section
+//
+// Surfaces pending promotion/demotion suggestions above the two-pane dossier
+// body (spec dashboard-approvals: "Autonomy Suggestions section displayed above
+// the existing actions table when pending suggestions exist"). The legacy
+// actions table has graduated to the Dispatch dossier layout, so the banner now
+// sits between the page header and the two-pane body. The banner renders null
+// when no pending suggestions exist; this wrapper also returns null so its
+// padding and border do not reserve empty space on the page.
+// ---------------------------------------------------------------------------
+
+function AutonomySuggestionsSection() {
+  const { data } = useAutonomySuggestions({ status: "pending" });
+  const confirmMut = useConfirmAutonomySuggestion();
+  const dismissMut = useDismissAutonomySuggestion();
+
+  const suggestions = data?.data ?? [];
+
+  // Mark in-flight suggestions so their card buttons disable while the mutation
+  // resolves (the banner reads pendingIds to set per-card disabled state).
+  const pendingIds = new Set<string>();
+  if (confirmMut.isPending && typeof confirmMut.variables === "string") {
+    pendingIds.add(confirmMut.variables);
+  }
+  if (dismissMut.isPending && dismissMut.variables?.suggestionId) {
+    pendingIds.add(dismissMut.variables.suggestionId);
+  }
+
+  if (suggestions.length === 0) return null;
+
+  return (
+    <div className="px-6 pt-4 pb-2 border-b border-border shrink-0">
+      <AutonomySuggestionsBanner
+        suggestions={suggestions}
+        pendingIds={pendingIds}
+        onConfirm={(id) =>
+          confirmMut.mutate(id, {
+            onSuccess: () => toast.success("Standing rule created"),
+            onError: (e: Error) => toast.error(`Confirm failed: ${e.message}`),
+          })
+        }
+        onDismiss={(id) =>
+          dismissMut.mutate(
+            { suggestionId: id },
+            {
+              onSuccess: () => toast.success("Suggestion dismissed"),
+              onError: (e: Error) =>
+                toast.error(`Dismiss failed: ${e.message}`),
+            },
+          )
+        }
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -922,6 +985,10 @@ export default function ApprovalsPage() {
         </div>
         <h1 className="text-2xl font-medium">Approvals</h1>
       </div>
+
+      {/* Autonomy suggestions — rendered above the two-pane body when pending
+          promotion/demotion suggestions exist (returns null otherwise). */}
+      <AutonomySuggestionsSection />
 
       {/* Two-pane body */}
       <div className="flex flex-1 min-h-0 overflow-hidden">

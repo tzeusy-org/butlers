@@ -291,7 +291,7 @@ The dashboard API SHALL expose `POST /api/approvals/suggestions/{suggestionId}/d
 
 ### Requirement: Autonomy Suggestions Dashboard Section
 
-The approvals dashboard page at `/approvals` SHALL include a new "Autonomy Suggestions" section displayed above the existing actions table when pending suggestions exist.
+The approvals dashboard page at `/approvals` SHALL include an "Autonomy Suggestions" section displayed above the two-pane approvals body (the pending-approvals rail and dossier) when pending suggestions exist. The prior "actions table" layout referenced here has graduated to the Dispatch two-pane dossier, so the section sits between the page header and that body.
 
 #### Scenario: Promotion suggestion card displayed
 
