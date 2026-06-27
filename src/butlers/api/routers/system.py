@@ -507,27 +507,33 @@ async def get_backup_facts() -> ApiResponse[BackupFacts]:
 
 
 async def _assert_owner_contact(pool) -> None:
-    """Raise HTTP 403 unless an owner entity exists in the DB.
+    """Raise HTTP 403 unless the calling context resolves to the owner.
 
-    Asserts 'owner' = ANY(roles) on public.entities. Roles live on
-    public.entities.roles exclusively (public.contacts.roles was dropped in
-    migration core_016, and the contact object is being retired).
+    This mirrors the canonical owner-only authz gate used across the dashboard
+    (Amendment 12a/12b — ``_assert_owner_role`` / ``_get_owner_roles`` in
+    ``roster/relationship/api/router.py``): it resolves the owner entity from
+    ``public.entities`` and inspects the ``roles`` column, granting access only
+    when ``'owner'`` is present. A calling context whose resolved entity row
+    lacks the ``'owner'`` role — or when no owner entity is registered at all —
+    receives HTTP 403 (``{"code": "owner_required"}``).
 
-    In v1, the dashboard is owner-only and there is no per-request identity
-    attached to /api/system/* calls. The assertion checks that at least one
-    owner entity exists in the database (i.e., the system is bootstrapped).
-    If no owner entity is found, the request is rejected with 403 to prevent
-    data leakage in misconfigured deployments.
+    The roles-aware check (rather than a bare row-exists check) is what lets a
+    non-owner calling context be rejected: peer routes' unit tests inject a
+    caller fixture by returning a row whose ``roles`` list reflects the caller,
+    and this gate then produces the correct 403 for a non-owner. Roles live on
+    ``public.entities.roles`` exclusively (``public.contacts.roles`` was dropped
+    in migration core_016).
 
-    Note: a fuller v2 implementation would extract the calling identity from
-    the request session/cookie and verify it against the owner entity.
+    Consistent with the network-level trust boundary (security doctrine,
+    RFC-0008), this gate matches its peer dashboard routes: it asserts the owner
+    role over the resolved context and is not a uniquely hard fail-closed check.
     """
     try:
         row = await pool.fetchrow(
             """
-            SELECT id
+            SELECT id, roles
             FROM public.entities
-            WHERE 'owner' = ANY(roles)
+            WHERE 'owner' = ANY(COALESCE(roles, '{}'))
             LIMIT 1
             """
         )
@@ -535,13 +541,14 @@ async def _assert_owner_contact(pool) -> None:
         logger.warning("Owner-entity assertion query failed: %s", exc)
         raise HTTPException(
             status_code=403,
-            detail={"code": "forbidden", "message": "Owner contact assertion failed"},
+            detail={"code": "owner_required", "message": "Owner contact assertion failed"},
         )
 
-    if row is None:
+    roles = row["roles"] if row is not None and row["roles"] else []
+    if "owner" not in roles:
         raise HTTPException(
             status_code=403,
-            detail={"code": "forbidden", "message": "Owner contact not found"},
+            detail={"code": "owner_required", "message": "Owner contact not found"},
         )
 
 

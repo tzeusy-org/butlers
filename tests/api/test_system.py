@@ -233,7 +233,22 @@ def test_read_backup_facts_ignores_non_matching_files(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def _make_egress_db(*, has_owner=True, audit_rows=None, owner_fails=False, audit_fails=False):
+def _make_egress_db(
+    *,
+    has_owner=True,
+    audit_rows=None,
+    owner_fails=False,
+    audit_fails=False,
+    caller_roles=None,
+):
+    """Build a mock DatabaseManager for the egress endpoint.
+
+    ``caller_roles`` models the *calling context's* resolved entity roles for
+    the roles-aware owner gate (mirrors the relationship router's owner-only
+    authz convention, Amendment 12a/12b). When ``has_owner`` is True and
+    ``caller_roles`` is None, the caller is the owner (``['owner']``); pass a
+    non-owner list (e.g. ``['member']``) to model a non-owner calling context.
+    """
     if audit_rows is None and has_owner:
         audit_rows = [
             {
@@ -246,17 +261,22 @@ def _make_egress_db(*, has_owner=True, audit_rows=None, owner_fails=False, audit
     elif audit_rows is None:
         audit_rows = []
 
+    if caller_roles is None and has_owner:
+        caller_roles = ["owner"]
+
     pool = AsyncMock()
 
     async def _fetchrow(sql, *args):
         if owner_fails:
             raise RuntimeError("DB error")
-        # Owner-assertion query now reads public.entities directly (bu-jnaa3):
-        # WHERE 'owner' = ANY(roles) — no contacts join, no 'e.' alias.
-        if "ANY(roles)" in sql:
+        # Owner-assertion query reads public.entities directly (bu-jnaa3) and is
+        # now roles-aware (bu-7oquu): the gate inspects the resolved row's
+        # ``roles`` column, so a non-owner calling context is rejected.
+        if "ANY(COALESCE(roles" in sql or "ANY(roles)" in sql:
             if has_owner:
+                row_data = {"id": "fake-uuid", "roles": caller_roles}
                 rec = MagicMock()
-                rec.__getitem__ = MagicMock(return_value="fake-uuid")
+                rec.__getitem__ = MagicMock(side_effect=lambda key: row_data[key])
                 return rec
             return None
         return None
@@ -281,6 +301,34 @@ async def test_egress_403_when_no_owner():
         resp = await client.get("/api/system/egress")
     assert resp.status_code == 403
     assert "actors" not in resp.json()  # no partial data leak
+
+
+async def test_egress_403_when_caller_not_owner():
+    """A non-owner calling context (resolved entity lacks the 'owner' role) → 403.
+
+    Exercises the roles-aware owner gate (bu-7oquu): the owner-entity row is
+    returned, but its ``roles`` do not contain ``'owner'``, modelling a
+    non-owner caller. This must be rejected with no partial data leak, matching
+    the relationship router's owner-only authz convention.
+    """
+    mock_db = _make_egress_db(has_owner=True, caller_roles=["member"])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/egress")
+    assert resp.status_code == 403
+    assert "actors" not in resp.json()  # no partial data leak
+
+
+async def test_egress_200_when_caller_is_owner():
+    """The owner calling context (resolved entity has the 'owner' role) → 200."""
+    mock_db = _make_egress_db(has_owner=True, caller_roles=["owner"])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/egress")
+    assert resp.status_code == 200
+    assert "actors" in resp.json()["data"]
 
 
 async def test_egress_403_when_owner_query_fails():
@@ -627,10 +675,13 @@ class TestEgressSpan:
         pool = AsyncMock()
 
         async def _fetchrow(sql, *args):
-            # Owner-assertion query now reads public.entities directly (bu-jnaa3).
-            if "ANY(roles)" in sql:
+            # Owner-assertion query reads public.entities directly (bu-jnaa3) and
+            # is roles-aware (bu-7oquu): the gate inspects the resolved row's
+            # ``roles`` column, so the owner fixture must carry the 'owner' role.
+            if "ANY(COALESCE(roles" in sql or "ANY(roles)" in sql:
+                row_data = {"id": "fake-uuid", "roles": ["owner"]}
                 rec = MagicMock()
-                rec.__getitem__ = MagicMock(return_value="fake-uuid")
+                rec.__getitem__ = MagicMock(side_effect=lambda key: row_data[key])
                 return rec
             return None
 
