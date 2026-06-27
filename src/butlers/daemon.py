@@ -88,6 +88,7 @@ from butlers.daemon_utils import (
     _format_validation_error,
 )
 from butlers.db import Database, schema_search_path
+from butlers.exceptions import ChannelEgressOwnershipError
 from butlers.guards import _McpRuntimeSessionGuard, _McpSseDisconnectGuard
 from butlers.mcp_patches import apply_streamable_http_disconnect_patch
 from butlers.mcp_wrappers import _SpanWrappingMCP, _ToolCallLoggingMCP
@@ -1288,6 +1289,7 @@ class ButlerDaemon:
                     self.config.name,
                     module_name=mod.name,
                     module_runtime_states=self._module_runtime_states,
+                    is_messenger=self.config.name == "messenger",
                 )
                 validated_config = self._module_configs.get(mod.name)
                 await mod.register_tools(
@@ -1296,6 +1298,10 @@ class ButlerDaemon:
                 # Record tool → module mapping for introspection and gating.
                 for tool_name in wrapped_mcp._registered_tool_names:
                     self._tool_module_map[tool_name] = mod.name
+            except ChannelEgressOwnershipError:
+                # Security guard: a non-messenger butler tried to grab channel
+                # egress. Fail loud — do not silently disable and continue.
+                raise
             except Exception as exc:
                 error_msg = str(exc)
                 self._module_statuses[mod.name] = ModuleStartupStatus(

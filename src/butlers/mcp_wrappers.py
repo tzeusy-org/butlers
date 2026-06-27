@@ -20,6 +20,7 @@ from fastmcp import FastMCP
 
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import capture_tool_call, fingerprint_tool_call_payload
+from butlers.exceptions import ChannelEgressOwnershipError, is_channel_egress_tool
 from butlers.module_state import ModuleRuntimeState
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,23 @@ _VISIBLE_CAPTURE_INPUT_FIELDS = frozenset(
 def _visible_capture_input(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Return the small raw-input allowlist that is safe to persist."""
     return {k: kwargs.get(k) for k in _VISIBLE_CAPTURE_INPUT_FIELDS if k in kwargs}
+
+
+def _declared_tool_name(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+    """Resolve the tool name explicitly declared at registration, if any.
+
+    FastMCP's ``tool(name_or_fn=None, *, name=None, ...)`` accepts an overriding
+    tool name either as the keyword ``name=`` or as the first positional argument
+    (e.g. ``@mcp.tool("telegram_send_message")``). A bare ``@mcp.tool`` passes the
+    function itself positionally, so only treat a *string* first positional as a
+    declared name. Resolving both forms here keeps the channel-egress ownership
+    guard fail-closed: a positionally-named egress tool must not slip through by
+    falling back to the (unmatched) function name.
+    """
+    declared = kwargs.get("name")
+    if declared is None and args and isinstance(args[0], str):
+        declared = args[0]
+    return declared
 
 
 def _log_tool_call_failure(
@@ -110,10 +128,15 @@ class _SpanWrappingMCP:
         *,
         module_name: str | None = None,
         module_runtime_states: dict[str, ModuleRuntimeState] | None = None,
+        is_messenger: bool = False,
     ) -> None:
         self._mcp = mcp
         self._butler_name = butler_name
         self._module_name = module_name or "unknown"
+        # Only the messenger butler is permitted to register channel-egress
+        # (outbound send/reply) tools. Defaults to ``False`` so the guard fails
+        # closed: a butler must be explicitly marked messenger to own egress.
+        self._is_messenger = is_messenger
         self._registered_tool_names: set[str] = set()
         # Shared reference to the daemon's live runtime states dict.
         # Used for call-time module enabled/disabled gating.
@@ -130,11 +153,18 @@ class _SpanWrappingMCP:
 
     def tool(self, *args, **kwargs):
         """Return a decorator that wraps the handler with tool_span."""
-        declared_name = kwargs.get("name")
+        declared_name = _declared_tool_name(args, kwargs)
         original_decorator = self._mcp.tool(*args, **kwargs)
 
         def wrapper(fn):  # noqa: ANN001, ANN202
             resolved_tool_name = declared_name or fn.__name__
+            # Fail closed: non-messenger butlers may not own channel egress.
+            if not self._is_messenger and is_channel_egress_tool(resolved_tool_name):
+                raise ChannelEgressOwnershipError(
+                    butler_name=self._butler_name,
+                    tool_name=resolved_tool_name,
+                    module_name=self._module_name,
+                )
             self._registered_tool_names.add(resolved_tool_name)
 
             module_name_for_gate = self._module_name
@@ -229,7 +259,7 @@ class _ToolCallLoggingMCP:
 
     def tool(self, *args, **kwargs):
         """Return a decorator that logs each call into a registered tool."""
-        declared_name = kwargs.get("name")
+        declared_name = _declared_tool_name(args, kwargs)
         original_decorator = self._mcp.tool(*args, **kwargs)
 
         def wrapper(fn):  # noqa: ANN001, ANN202
