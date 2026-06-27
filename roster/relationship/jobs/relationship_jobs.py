@@ -2084,6 +2084,16 @@ _PENDING_ACTIONS_CURATION_STATE_KEY = "memory_curation.last_pending_actions_surf
 _PENDING_ACTIONS_PRIORITY = 85
 
 
+def _pending_action_tool_args_for_display(value: Any) -> Any:
+    """Normalize pending_actions.tool_args JSONB for operator-facing display."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
 async def run_pending_actions_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Surface owner carve-out pending_actions approaching expiry to the owner.
 
@@ -2201,22 +2211,25 @@ async def run_pending_actions_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         else:
             time_remaining = f"{minutes_left}m"
 
-        why_text = row["why"] or row["agent_summary"] or "(no reason recorded)"
-        tool_args_display = json.dumps(dict(row["tool_args"]), ensure_ascii=False)
-
-        message = (
-            f"Pending action expiring soon ({time_remaining} remaining):\n"
-            f"Tool: {tool_name}\n"
-            f"Args: {tool_args_display}\n"
-            f"Reason: {why_text}\n"
-            f"Action ID: {action_id}\n\n"
-            "This was queued for your review (RFC-0017 owner carve-out). "
-            "Approve or reject it before it expires."
-        )
-
-        dedup_key = f"relationship:pending-action-expiry:{action_id}"
-
         try:
+            why_text = row["why"] or row["agent_summary"] or "(no reason recorded)"
+            tool_args_display = json.dumps(
+                _pending_action_tool_args_for_display(row["tool_args"]),
+                ensure_ascii=False,
+            )
+
+            message = (
+                f"Pending action expiring soon ({time_remaining} remaining):\n"
+                f"Tool: {tool_name}\n"
+                f"Args: {tool_args_display}\n"
+                f"Reason: {why_text}\n"
+                f"Action ID: {action_id}\n\n"
+                "This was queued for your review (RFC-0017 owner carve-out). "
+                "Approve or reject it before it expires."
+            )
+
+            dedup_key = f"relationship:pending-action-expiry:{action_id}"
+
             result = await propose_insight_candidate(
                 db_pool,
                 origin_butler="relationship",

@@ -21,6 +21,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import asyncpg
 import pytest
@@ -1108,7 +1109,7 @@ async def _insert_pending_action(
     pool: asyncpg.Pool,
     *,
     tool_name: str = "channel_add",
-    tool_args: dict | None = None,
+    tool_args: Any = None,
     why: str | None = "Owner carve-out: adding email for owner",
     status: str = "pending",
     expires_at: datetime | None = None,
@@ -1358,6 +1359,40 @@ class TestPendingActionsCurationMessageContent:
 
         candidates = await _fetch_insight_candidates(pa_pool)
         assert candidates[0]["origin_butler"] == "relationship"
+
+    async def test_json_string_tool_args_does_not_abort_job(self, pa_pool: asyncpg.Pool):
+        """String-returned JSONB tool_args are decoded for display instead of crashing."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(
+            pa_pool,
+            tool_args='{"contact_id":"contact-1","type":"email","value":"owner@example.com"}',
+            expires_at=now + timedelta(hours=10),
+        )
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["errors"] == 0
+        assert result["surfaced"] == 1
+        candidates = await _fetch_insight_candidates(pa_pool)
+        assert len(candidates) == 1
+        assert '"contact_id": "contact-1"' in candidates[0]["message"]
+
+    async def test_scalar_tool_args_does_not_abort_job(self, pa_pool: asyncpg.Pool):
+        """Unexpected non-object tool_args values do not fail the scheduled job."""
+        now = datetime.now(UTC)
+        await _insert_pending_action(
+            pa_pool,
+            tool_args=["unexpected"],
+            expires_at=now + timedelta(hours=10),
+        )
+
+        result = await run_pending_actions_curation(pa_pool)
+
+        assert result["errors"] == 0
+        assert result["surfaced"] == 1
+        candidates = await _fetch_insight_candidates(pa_pool)
+        assert len(candidates) == 1
+        assert 'Args: ["unexpected"]' in candidates[0]["message"]
 
 
 class TestPendingActionsCurationDedup:
