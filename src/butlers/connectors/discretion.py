@@ -377,6 +377,7 @@ class DiscretionEvaluator:
         *,
         timestamp: float | None = None,
         weight: float = 1.0,
+        channel: str | None = None,
     ) -> DiscretionResult:
         """Evaluate a new message against the sliding context window.
 
@@ -395,6 +396,13 @@ class DiscretionEvaluator:
                   errors → FORWARD (fail-open).
                 - ``< weight_fail_open``: call LLM, errors → IGNORE
                   (fail-closed).
+            channel: Originating channel name (e.g. ``"telegram"``,
+                ``"dashboard"``).  Messages from a channel in
+                :data:`DISCRETION_BYPASS_CHANNELS` skip the LLM entirely and
+                always FORWARD — they are operator-intentional by definition.
+                ``None`` (the default) means "no channel-level bypass" and
+                preserves full discretion evaluation for all callers that do
+                not supply a channel.
 
         Returns:
             :class:`DiscretionResult` — always succeeds.
@@ -408,6 +416,23 @@ class DiscretionEvaluator:
 
         # Always append so the window stays complete for future evaluations.
         self._window.append(entry)
+
+        # Channel bypass: messages from trusted operator-only surfaces (e.g. the
+        # dashboard, submitted directly by the owner) skip the LLM entirely and
+        # must never be filtered.  This must stay strictly limited to channels
+        # in DISCRETION_BYPASS_CHANNELS so the security gate remains intact for
+        # every other channel (telegram, email, etc.).
+        if channel is not None and channel in DISCRETION_BYPASS_CHANNELS:
+            discretion_evaluations_total.labels(
+                source=self._source,
+                verdict="FORWARD",
+                outcome="bypass",
+            ).inc()
+            return DiscretionResult(
+                verdict="FORWARD",
+                reason="channel-bypass",
+                is_fail_open=False,
+            )
 
         # Weight bypass: high-trust senders skip the LLM entirely.
         if weight >= self._weight_bypass:
