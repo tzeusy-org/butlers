@@ -484,76 +484,93 @@ test.describe("entity-redesign: entity detail page", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test suite: contact detail page
+// Test suite: legacy /contacts compatibility redirect
 //
-// The /contacts/:contactId route now uses ContactEntityRedirect (PR #2000).
-// It calls GET /api/relationship/contacts/:id/entity (the entity-resolver
-// sub-endpoint, NOT the full contact detail endpoint) and either:
-//   - redirects to /entities/:entityId when entity_id is set, or
-//   - shows a "Contact not linked to an entity" recovery state when unlinked.
-// The old ContactDetailPage (with tabs) is no longer rendered.
+// public.contacts was dropped (core_134) and the per-contact entity-resolver
+// endpoint no longer exists. PR #2713 removed the old ContactEntityRedirect
+// (and its resolveContactEntity client fn); both `/contacts` and
+// `/contacts/:contactId` are now STATIC compatibility redirects to the entity
+// index filtered by `has=contact`:
+//
+//   { path: '/contacts/:contactId',
+//     element: <Navigate to="/entities?has=contact" replace /> }
+//
+// There is no per-contact entity lookup, no `/entities/:id` redirect, and no
+// "Contact not linked to an entity" recovery state any more — a legacy
+// contact bookmark simply lands on the entities index. See router-config.tsx.
 // ---------------------------------------------------------------------------
 
-test.describe("entity-redesign: contact detail page", () => {
+/**
+ * Stub the entities-index list + curation-queue endpoints so the redirect
+ * destination (`/entities?has=contact`) renders cleanly without a real backend.
+ */
+async function installEntitiesIndexStubs(page: Page) {
+  const emptyList = { items: [], total: 0, limit: 50, offset: 0 };
 
-  // -------------------------------------------------------------------------
-  // Test 5: Unlinked contact shows recovery state (no tab block)
-  //
-  // When a contact has no entity_id, ContactEntityRedirect renders an empty
-  // state ("Contact not linked to an entity") — the old tabbed layout is gone.
-  // -------------------------------------------------------------------------
-
-  test("contact detail page does not render a tab block", async ({ page }) => {
-    // Stub the entity-resolver sub-endpoint (unlinked: no entity_id)
-    await page.route(`**/api/relationship/contacts/${CONTACT_ID}/entity**`, (route) => {
+  // Matches both the entity list (/api/relationship/entities?…) and the
+  // curation queue (/api/relationship/entities/queue?…) — both return an empty
+  // paginated payload so the index renders cleanly without a real backend.
+  await page.route(
+    (url) => url.pathname.startsWith("/api/relationship/entities"),
+    (route) => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ entity_id: null, status: "unlinked" }),
+        body: JSON.stringify(emptyList),
       });
-    });
+    },
+  );
+}
+
+test.describe("entity-redesign: legacy /contacts redirect", () => {
+
+  // -------------------------------------------------------------------------
+  // Test 5: /contacts/:contactId redirects to the entity index (no tab block)
+  //
+  // The old tabbed ContactDetailPage is gone — a legacy per-contact URL now
+  // forwards straight to /entities?has=contact, and no tablist is rendered.
+  // -------------------------------------------------------------------------
+
+  test("contact detail page redirects to the entity index without a tab block", async ({
+    page,
+  }) => {
+    await installEntitiesIndexStubs(page);
 
     await page.goto(`/contacts/${CONTACT_ID}`, { timeout: TIMEOUT_MS });
 
-    // Recovery state must be shown (contact not linked to entity)
-    await expect(
-      page.getByText("Contact not linked to an entity"),
-    ).toBeVisible({ timeout: TIMEOUT_MS });
+    // The compatibility redirect lands on the entities index filtered to
+    // contact-bearing entities (NOT an individual /entities/:id page).
+    await page.waitForURL(/\/entities\?has=contact/, { timeout: TIMEOUT_MS });
+    expect(page.url()).toContain("/entities?has=contact");
 
-    // No tablist must be present anywhere on the page
+    // The "Has contact" filter chip on the index toolbar confirms we landed on
+    // the entity index, and no old tabbed contact-detail layout is present.
+    await expect(
+      page.getByRole("button", { name: "Has contact" }),
+    ).toBeVisible({ timeout: TIMEOUT_MS });
     await expect(page.locator('[role="tablist"]')).not.toBeAttached();
   });
 
   // -------------------------------------------------------------------------
-  // Test 6: Linked contact redirects directly to /entities/:id
+  // Test 6: the redirect targets the index, not an individual entity
   //
-  // When the entity-resolver returns an entity_id, ContactEntityRedirect
-  // performs a client-side navigate() to /entities/:entityId immediately.
+  // The removed resolver used to navigate to /entities/:entityId; the static
+  // compat redirect instead always forwards to the index filter. Guard against
+  // a regression that resolves a per-contact entity id.
   // -------------------------------------------------------------------------
 
-  test("entity link in contact header navigates to /entities/:id", async ({ page }) => {
-    // Stub the entity-resolver sub-endpoint (linked: has entity_id)
-    await page.route(`**/api/relationship/contacts/${CONTACT_ID}/entity**`, (route) => {
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ entity_id: ENTITY_ID, status: "linked" }),
-      });
-    });
-
-    // Stub the entity detail endpoints so the redirect destination renders
-    await installEntityStubs(page);
+  test("legacy contact URL does not resolve to an individual entity page", async ({
+    page,
+  }) => {
+    await installEntitiesIndexStubs(page);
 
     await page.goto(`/contacts/${CONTACT_ID}`, { timeout: TIMEOUT_MS });
 
-    // ContactEntityRedirect navigates to /entities/:entityId immediately.
-    await page.waitForURL(new RegExp(`/entities/${ENTITY_ID}`), { timeout: TIMEOUT_MS });
-    expect(page.url()).toContain(`/entities/${ENTITY_ID}`);
+    await page.waitForURL(/\/entities\?has=contact/, { timeout: TIMEOUT_MS });
 
-    // The entity detail page renders the entity name
-    await expect(
-      page.getByRole("heading", { name: "Alice Fixture" }).first(),
-    ).toBeVisible({ timeout: TIMEOUT_MS });
+    // Must NOT have resolved to a specific entity detail route.
+    expect(page.url()).not.toMatch(/\/entities\/[^?]/);
+    expect(page.url()).toContain("/entities?has=contact");
   });
 
 });
