@@ -343,11 +343,10 @@ class HomeAssistantModule(Module):
         )
 
         # --- Connect WebSocket and seed entity cache ---
+        # ``_ws_connect_and_seed`` also starts the periodic snapshot task that
+        # persists the in-memory entity cache to ``ha_entity_snapshot`` so the
+        # dashboard API and home jobs can read live entity state.
         await self._ws_connect_and_seed()
-
-        # Snapshot persistence disabled — HA state is always available in
-        # real-time via ha_get_entity_state / ha_list_entities.  Storing it
-        # as facts created ~210k superseded rows in 3 days.
 
     async def on_shutdown(self) -> None:
         """Clean up: close WebSocket, stop background tasks, close HTTP client.
@@ -357,7 +356,15 @@ class HomeAssistantModule(Module):
         """
         self._shutdown = True
 
-        # Snapshot persistence disabled — HA state queried live, not cached.
+        # Persist a final snapshot so the last-known entity state survives the
+        # restart window (the periodic task may not have run since the most
+        # recent state change).  Best-effort: never block teardown on it — bound
+        # the persist with a timeout so a hung/slow DB call cannot stall the
+        # whole shutdown/restart sequence.
+        try:
+            await asyncio.wait_for(self._persist_entity_snapshot(), timeout=5.0)
+        except Exception as exc:  # pragma: no cover - best-effort on teardown
+            logger.warning("HomeAssistantModule: final snapshot persist failed: %s", exc)
 
         # Cancel background tasks and await them with a short timeout to avoid
         # hanging shutdown if a task ignores CancelledError.
@@ -728,6 +735,11 @@ class HomeAssistantModule(Module):
         On failure the module remains operational in REST-only mode; auto-reconnect
         will retry in the background.
         """
+        # Start periodic persistence of the entity cache to ``ha_entity_snapshot``.
+        # Started unconditionally (not gated on WS success) so the REST-only
+        # fallback path also keeps the dashboard/jobs live-state reads populated.
+        self._start_snapshot_task()
+
         try:
             await self._ws_connect()
         except Exception as exc:
@@ -751,6 +763,13 @@ class HomeAssistantModule(Module):
 
         # Seed entity cache from REST (faster than WS for initial bulk load)
         await self._seed_entity_cache_from_rest()
+
+        # Persist the freshly-seeded cache immediately so dashboard/job reads
+        # are populated without waiting a full snapshot interval.
+        try:
+            await self._persist_entity_snapshot()
+        except Exception as exc:
+            logger.warning("HomeAssistantModule: initial snapshot persist failed: %s", exc)
 
         # Fetch registries via WebSocket
         await self._fetch_area_registry()
@@ -2003,22 +2022,23 @@ class HomeAssistantModule(Module):
             return
 
     async def _persist_entity_snapshot(self) -> None:
-        """Persist the current entity cache as SPO facts in the memory subsystem.
+        """UPSERT the in-memory entity cache into the ``ha_entity_snapshot`` table.
 
-        Each HA entity is stored as a property fact with predicate ``ha_state``,
-        anchored to a ``public.entities`` row of type ``other``.  Each snapshot
-        cycle supersedes the previous fact for the same entity so the facts table
-        always contains exactly one active ``ha_state`` fact per HA entity.
+        This table is the live-state cache read by the dashboard API
+        (``roster/home/api/router.py``) and the home scheduled jobs
+        (``src/butlers/jobs/home.py``).  This module is its only writer, so
+        without this the reads always return an empty snapshot.
 
-        Entity resolution (create-or-reuse) is handled inline via an UPSERT on
-        ``public.entities (canonical_name, entity_type)`` so no
-        external helper is needed.
+        One row per HA entity, keyed on ``entity_id``; each cycle overwrites the
+        prior row (``ON CONFLICT (entity_id) DO UPDATE``) so the table stays
+        bounded at one row per entity rather than growing unboundedly.  Registry
+        derived ``area_id`` / ``area_name`` are merged into the ``attributes``
+        JSONB so the area filters in the reads (``attributes->>'area_id'`` /
+        ``attributes->>'area_name'``) resolve.
 
         Silently skips when no DB pool is available or the entity cache is empty.
-        Errors from individual entities are logged but do not abort the cycle.
         """
-        from butlers.modules.memory.embedding import EmbeddingEngine
-        from butlers.modules.memory.storage import store_fact
+        import json as _json
 
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -2029,80 +2049,47 @@ class HomeAssistantModule(Module):
             logger.debug("HomeAssistantModule: entity cache empty; skipping snapshot.")
             return
 
-        # Lazy-load a no-op embedding engine so we avoid heavyweight model
-        # initialisation in the background snapshot loop.  Snapshots are
-        # machine-generated, high-volume facts; semantic search over them is
-        # not a primary use-case.  If a real engine is available it will be
-        # picked up naturally; otherwise we fall back to a zero-vector stub.
-        try:
-            from butlers.modules.memory.tools import get_embedding_engine
-
-            embedding_engine = get_embedding_engine()
-        except Exception as exc:
-            logger.warning(
-                "HomeAssistantModule: failed to get embedding engine, falling back to no-op: %s",
-                exc,
-            )
-            embedding_engine = EmbeddingEngine()
-
-        persisted = 0
-        errors = 0
-
+        rows: list[tuple[str, str, str, str | None]] = []
         for e in entities:
-            try:
-                # 1. Resolve or create the shared entity for this HA device.
-                #    canonical_name = HA entity ID (e.g. "sensor.living_room_temp")
-                #    entity_type = 'other' (HA entities are devices, not people/places)
-                entity_uuid = await pool.fetchval(
-                    """
-                    INSERT INTO public.entities
-                        (canonical_name, entity_type, metadata)
-                    VALUES ($1, 'other', $2::jsonb)
-                    ON CONFLICT (canonical_name, entity_type) DO UPDATE
-                        SET updated_at = now()
-                    RETURNING id
-                    """,
+            # Merge registry-derived area data into the persisted attributes so
+            # the dashboard/job area filters work against the snapshot table.
+            attrs = dict(e.attributes or {})
+            if e.area_id:
+                attrs.setdefault("area_id", e.area_id)
+                area = self._area_cache.get(e.area_id)
+                if area is not None:
+                    attrs.setdefault("area_name", area.name)
+            rows.append(
+                (
                     e.entity_id,
-                    '{"source": "home_assistant"}',
+                    e.state,
+                    _json.dumps(attrs),
+                    e.last_updated or None,
                 )
+            )
 
-                # 2. Store as a property fact (valid_at=None) so each new snapshot
-                #    supersedes the previous active ha_state fact for this entity.
-                #    HA's last_updated timestamp is preserved in metadata for
-                #    provenance; it is NOT passed as valid_at because temporal
-                #    facts (valid_at IS NOT NULL) never trigger supersession and
-                #    would accumulate unboundedly in the facts table.
-                await store_fact(
-                    pool,
-                    subject=e.entity_id,
-                    predicate="ha_state",
-                    content=e.state,
-                    embedding_engine=embedding_engine,
-                    permanence="volatile",
-                    scope="home",
-                    tags=["ha_device", e.entity_id.split(".")[0]],
-                    source_butler="home",
-                    metadata={
-                        "attributes": e.attributes,
-                        "entity_id_ha": e.entity_id,
-                        "last_updated": e.last_updated or None,
-                    },
-                    entity_id=entity_uuid,
-                    valid_at=None,
-                )
-                persisted += 1
-            except Exception as exc:
-                errors += 1
-                logger.warning(
-                    "HomeAssistantModule: failed to persist snapshot for %s: %s",
-                    e.entity_id,
-                    exc,
-                )
+        await pool.executemany(
+            """
+            INSERT INTO ha_entity_snapshot
+                (entity_id, state, attributes, last_updated, captured_at)
+            -- $3/$4 are bound as text and cast in-SQL.  ``attributes`` is sent as
+            -- a JSON string and cast text->jsonb (binding it as jsonb would route
+            -- through the connection's jsonb codec and double-encode the string).
+            -- ``last_updated`` is an ISO 8601 string; binding it as timestamptz
+            -- would make asyncpg's executemany reject the str.
+            VALUES ($1, $2, $3::text::jsonb, $4::text::timestamptz, now())
+            ON CONFLICT (entity_id) DO UPDATE SET
+                state        = EXCLUDED.state,
+                attributes   = EXCLUDED.attributes,
+                last_updated = EXCLUDED.last_updated,
+                captured_at  = now()
+            """,
+            rows,
+        )
 
         logger.debug(
-            "HomeAssistantModule: persisted snapshot of %d entities (%d errors).",
-            persisted,
-            errors,
+            "HomeAssistantModule: persisted snapshot of %d entities to ha_entity_snapshot.",
+            len(rows),
         )
 
     # ------------------------------------------------------------------

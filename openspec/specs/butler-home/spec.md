@@ -110,25 +110,19 @@ The home butler uses a home-automation memory taxonomy for learning owner prefer
 - **WHEN** the home butler extracts facts
 - **THEN** it SHALL use subjects like area names (e.g. "kitchen", "bedroom"), device names, or "owner"; predicates like `comfort_preference`, `scene_preference`, `schedule_pattern`, `device_issue`, `energy_baseline`; permanence `stable` for long-term preferences (e.g. "owner prefers 21°C at bedtime"), `standard` for seasonal patterns and device configurations, `volatile` for transient issues and one-off adjustments
 
-### Requirement: CRUD-to-SPO migration — home domain (bu-ddb.5)
-The home butler migrates the `ha_entity_snapshot` table to temporal SPO facts. HA device entities use `entity_type='other'` with `metadata.entity_class='ha_device'` and `scope='home'`. Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
+### Requirement: HA entity live-state cache (ha_entity_snapshot)
+The home butler keeps the current state of every Home Assistant entity in the `ha_entity_snapshot` table. The `home_assistant` module is the sole writer: a periodic snapshot task persists its in-memory entity cache to the table, and the dashboard API plus the home scheduled jobs read live entity state from it. An earlier attempt to migrate this state to temporal `ha_state` SPO facts was reverted because it produced unbounded superseded-fact growth; any residual `ha_state` facts are purged by memory maintenance.
 
-#### Scenario: HA device entity resolution
-- **WHEN** the home butler processes an HA entity snapshot for a given HA entity ID string (e.g. `"sensor.bedroom_temp"`)
-- **THEN** it MUST look up an existing entity with `canonical_name = ha_entity_id` and `entity_type = 'other'`
-- **AND** if no entity exists, it MUST call `memory_entity_create(entity_type='other', name=ha_entity_id, metadata={"entity_class": "ha_device"})` and cache the UUID
-- **AND** the resolved UUID MUST be used as `entity_id` for all `ha_state` facts for that device
+#### Scenario: Module persists the entity cache to ha_entity_snapshot
+- **WHEN** the home `home_assistant` module has a populated in-memory entity cache (seeded over REST and updated by WebSocket `state_changed` events)
+- **THEN** it MUST UPSERT one row per entity into `ha_entity_snapshot` keyed on `entity_id`, setting `state`, `attributes` (JSONB, with registry-derived `area_id` and `area_name` merged in), `last_updated`, and `captured_at`
+- **AND** a later state update for the same entity MUST overwrite its row in place so the table holds exactly one row per entity
+- **AND** persistence runs on a fixed cadence (`snapshot_interval_seconds`), once immediately after the initial cache seed, and once more on shutdown
 
-#### Scenario: ha_entity_snapshot as ha_state property fact with supersession
-- **WHEN** the home butler module persists an HA entity state snapshot
-- **THEN** it MUST call `store_fact` with `predicate='ha_state'`, `valid_at=last_updated` (from HA), `entity_id=ha_device_entity_id`, `scope='home'`, `content=state_value`, and `metadata={attributes, entity_id_ha}`
-- **AND** supersession MUST replace the previous active `ha_state` fact for the same HA device entity
-- **AND** the deprecated `ha_entity_snapshot` table MUST NOT be written to
-
-#### Scenario: HA entity state read replaces snapshot table query
-- **WHEN** the home butler or a tool needs the current HA entity state
-- **THEN** it MUST query facts with `predicate='ha_state'`, `entity_id=ha_device_entity_id`, `validity='active'`, `scope='home'` ordered by `created_at DESC LIMIT 1`
-- **AND** the `content` field provides the state value and `metadata->>'attributes'` provides the attributes JSON
+#### Scenario: Live-state reads query ha_entity_snapshot
+- **WHEN** the home butler jobs (`device-health-check`, `environment-report`, `weekly-energy-digest`) or the dashboard API need current HA entity state
+- **THEN** they MUST read from `ha_entity_snapshot` (for example `SELECT entity_id, state, attributes, last_updated FROM ha_entity_snapshot`), optionally filtered by entity-ID domain prefix or `attributes->>'area_id'`
+- **AND** an empty result signals that the module has not yet populated state, not a permanent condition
 
 ### Requirement: Switchboard Registration
 
