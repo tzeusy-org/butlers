@@ -1536,24 +1536,6 @@ export interface ContactPatchRequest {
   roles?: string[] | null;
 }
 
-/**
- * Response for GET /contacts/{id}/entity.
- *
- * Used by the /contacts/:contactId redirect route to resolve the linked
- * entity before redirecting to /entities/:entityId.  This is a minimal
- * resolver payload — do NOT use it as a substitute for full entity detail.
- *
- * status:
- *   "linked"   — contact exists and is linked to an entity.
- *   "unlinked" — contact exists but has no entity link yet.
- *
- * HTTP 404 is returned (not this type) when the contact does not exist.
- */
-export interface ContactEntityResolverResponse {
-  entity_id: string | null;
-  status: "linked" | "unlinked";
-}
-
 /** Response for GET /owner/setup-status. */
 export interface OwnerSetupStatus {
   entity_id: string | null;
@@ -1699,19 +1681,6 @@ export interface CreateAndLinkEntityResponse {
   contact_id: string;
   entity_id: string;
   canonical_name: string;
-}
-
-/** Response payload for a manual contacts sync trigger. */
-export interface ContactsSyncTriggerResponse {
-  provider: string;
-  mode: "incremental" | "full";
-  fetched: number | null;
-  applied: number | null;
-  skipped: number | null;
-  deleted: number | null;
-  provider_total: number | null;
-  summary: Record<string, unknown>;
-  message: string | null;
 }
 
 /** Paginated group list response. */

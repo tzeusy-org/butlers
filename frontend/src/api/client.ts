@@ -73,7 +73,6 @@ import type {
   ContactDetail,
   ContactListResponse,
   ContactParams,
-  ContactsSyncTriggerResponse,
   SpendSummary,
   DailySpend,
   ErrorResponse,
@@ -406,7 +405,6 @@ import type {
   KillResponse,
   EntityFactsResponse,
   EntityFactsParams,
-  ContactEntityResolverResponse,
   AddEntityContactRequest,
   AddEntityContactResponse,
   DeleteEntityContactResponse,
@@ -1560,42 +1558,10 @@ export function getContacts(params?: ContactParams): Promise<ContactListResponse
   return apiFetch<ContactListResponse>(path);
 }
 
-/** Trigger a manual contacts sync for a specific provider. */
-export function triggerContactsSync(
-  mode: "incremental" | "full" = "incremental",
-  provider: "google" | "telegram" = "google",
-): Promise<ContactsSyncTriggerResponse> {
-  const sp = new URLSearchParams({ mode, provider });
-  return apiFetch<ContactsSyncTriggerResponse>(
-    `/relationship/contacts/sync?${sp.toString()}`,
-    { method: "POST" },
-  );
-}
-
 /** Fetch a single contact by ID. */
 export function getContact(contactId: string): Promise<ContactDetail> {
   return apiFetch<ContactDetail>(
     `/relationship/contacts/${encodeURIComponent(contactId)}`,
-  );
-}
-
-/**
- * Resolve a contact_id to its linked entity_id.
- *
- * Used by the /contacts/:contactId redirect route to locate the target entity
- * before redirecting to /entities/:entityId.  Returns a minimal payload —
- * do NOT use this as a substitute for full entity detail.
- *
- * Resolves to:
- *   - { entity_id: string, status: "linked" }   when linked
- *   - { entity_id: null,   status: "unlinked" } when contact exists but has no entity
- *   - throws ApiError with status 404            when contact does not exist
- */
-export function resolveContactEntity(
-  contactId: string,
-): Promise<ContactEntityResolverResponse> {
-  return apiFetch<ContactEntityResolverResponse>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/entity`,
   );
 }
 

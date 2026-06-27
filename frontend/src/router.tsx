@@ -1,8 +1,5 @@
-import { Link, Navigate, useParams, useSearchParams } from 'react-router'
-import { useQuery } from '@tanstack/react-query'
+import { Navigate, useParams, useSearchParams } from 'react-router'
 import IngestionTimelinePage from './pages/IngestionTimelinePage.tsx'
-import { resolveContactEntity } from './api/client.ts'
-import { EmptyState } from './components/ui/empty-state.tsx'
 
 // ---------------------------------------------------------------------------
 // Private redirect helpers
@@ -32,49 +29,10 @@ export function RelationshipEntityRedirect() {
 
 // Redirect /butlers/relationship/contacts/:id → /contacts/:contactId
 // The legacy relationship-scoped contact path has been superseded by the
-// canonical contact detail page per the detail-page-archetype spec.
+// canonical contact compatibility redirect (which forwards to the entity index).
 export function RelationshipContactRedirect() {
   const { id } = useParams()
   return <Navigate to={`/contacts/${id ?? ''}`} replace />
-}
-
-// Redirect /contacts/:contactId → /entities/:entityId when the contact has a
-// linked entity.  When the contact exists but has no entity_id, renders a
-// recovery state pointing users to the entities index.  When the contact does
-// not exist (API 404) or any other error occurs, renders the same recovery
-// state so the user is never left at a broken URL.
-//
-// Spec: openspec/changes/decommission-contact-detail-page/tasks.md §4
-export function ContactEntityRedirect() {
-  const { contactId } = useParams<{ contactId: string }>()
-  const { data, isPending, isError } = useQuery({
-    queryKey: ['contact-entity-resolve', contactId],
-    queryFn: () => resolveContactEntity(contactId!),
-    enabled: !!contactId,
-    retry: false,
-  })
-
-  if (isPending) return null
-
-  if (!isError && data?.entity_id) {
-    return <Navigate to={`/entities/${data.entity_id}`} replace />
-  }
-
-  // Either unlinked (no entity_id) or contact not found (ApiError 404).
-  return (
-    <EmptyState
-      title="Contact not linked to an entity"
-      description="This contact has not been migrated to an entity yet."
-      action={
-        <Link
-          to="/entities?has=contact"
-          className="text-sm text-primary hover:underline"
-        >
-          Browse entities
-        </Link>
-      }
-    />
-  )
 }
 
 // ---------------------------------------------------------------------------

@@ -62,7 +62,6 @@ import ChroniclesPage from './pages/ChroniclesPage.tsx'
 import SystemPage from './pages/SystemPage.tsx'
 import {
   ConnectorDetailRedirect,
-  ContactEntityRedirect,
   IngestionTabRedirect,
   RelationshipContactRedirect,
   RelationshipEntityRedirect,
@@ -90,10 +89,14 @@ export const router = createBrowserRouter(
         { path: '/calendar', element: <CalendarWorkspacePage /> },
         // /contacts → /entities?has=contact (§8.10 entity-redesign redirect)
         { path: '/contacts', element: <Navigate to="/entities?has=contact" replace /> },
-        // /contacts/:contactId → /entities/:entityId via entity-id lookup.
-        // Renders a recovery state for unlinked or missing contacts.
-        // Spec: openspec/changes/decommission-contact-detail-page/tasks.md §4
-        { path: '/contacts/:contactId', element: <ContactEntityRedirect /> },
+        // /contacts/:contactId → /entities?has=contact compatibility redirect.
+        // public.contacts was dropped (core_134) and the per-contact resolver
+        // endpoint no longer exists, so legacy contact bookmarks forward to the
+        // entity index filter instead of resolving an individual entity.
+        {
+          path: '/contacts/:contactId',
+          element: <Navigate to="/entities?has=contact" replace />,
+        },
         { path: '/groups', element: <GroupsPage /> },
         { path: '/health', element: <HealthOverviewPage /> },
         { path: '/health/measurements', element: <MeasurementsPage /> },

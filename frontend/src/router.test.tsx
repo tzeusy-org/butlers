@@ -1,25 +1,10 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest'
+import { describe, expect, it, afterEach, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Navigate, MemoryRouter, Route, Routes, useParams, useSearchParams } from 'react-router'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { navSections } from './components/layout/nav-config'
-
-// ---------------------------------------------------------------------------
-// Mock resolveContactEntity for ContactEntityRedirect tests
-// ---------------------------------------------------------------------------
-
-vi.mock('./api/client.ts', async (importOriginal) => {
-  const original = await importOriginal<typeof import('./api/client.ts')>()
-  return {
-    ...original,
-    resolveContactEntity: vi.fn(),
-  }
-})
-
-import { resolveContactEntity } from './api/client.ts'
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -160,15 +145,57 @@ describe('/contacts → /entities?has=contact redirect', () => {
 })
 
 // ---------------------------------------------------------------------------
-// /contacts/:contactId → /entities/:entityId redirect (bu-m8gb6.5)
+// /contacts/:contactId → /entities?has=contact compatibility redirect
 //
-// Uses @testing-library/react + waitFor because ContactEntityRedirect is
-// async: it calls resolveContactEntity via useQuery and only renders its
-// Navigate / EmptyState after the promise resolves.
+// public.contacts was dropped (core_134) and the per-contact entity resolver
+// endpoint no longer exists, so legacy contact bookmarks forward to the entity
+// index filter rather than resolving an individual entity.
 // ---------------------------------------------------------------------------
 
-import { render as tlRender, waitFor, cleanup as tlCleanup } from '@testing-library/react'
-import { ContactEntityRedirect } from './router.tsx'
+function ContactIdRedirect() {
+  return <Navigate to="/entities?has=contact" replace />
+}
+
+describe('/contacts/:contactId → /entities?has=contact redirect', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+    document.body.innerHTML = ''
+  })
+
+  it('redirects a legacy contact id to the entity index filter', () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={['/contacts/contact-001']}>
+          <Routes>
+            <Route path="/contacts/:contactId" element={<ContactIdRedirect />} />
+            <Route path="/entities" element={<EntitiesIndexStub />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+    })
+    const el = container.querySelector('[data-testid="entities-index-page"]')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-has')).toBe('contact')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// /butlers/relationship/entities/:entityId → /entities/:entityId (legacy)
+// ---------------------------------------------------------------------------
+
+import { RelationshipEntityRedirect } from './router.tsx'
 
 function EntityDetailStub() {
   const { entityId } = useParams()
@@ -178,77 +205,6 @@ function EntityDetailStub() {
     </div>
   )
 }
-
-function ContactEntityRedirectHarness({ initialPath }: { initialPath: string }) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="/contacts/:contactId" element={<ContactEntityRedirect />} />
-          <Route path="/entities/:entityId" element={<EntityDetailStub />} />
-          <Route path="/entities" element={<EntitiesIndexStub />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  )
-}
-
-describe('/contacts/:contactId → /entities/:entityId redirect', () => {
-  beforeEach(() => {
-    vi.resetAllMocks()
-  })
-
-  afterEach(() => {
-    tlCleanup()
-  })
-
-  it('redirects to /entities/:entityId when contact has a linked entity', async () => {
-    vi.mocked(resolveContactEntity).mockResolvedValue({
-      entity_id: 'ent-abc-123',
-      status: 'linked',
-    })
-    const { container } = tlRender(
-      <ContactEntityRedirectHarness initialPath="/contacts/contact-001" />,
-    )
-    await waitFor(() => {
-      const el = container.querySelector('[data-testid="entity-detail-page"]')
-      expect(el).not.toBeNull()
-      expect(el?.getAttribute('data-entity-id')).toBe('ent-abc-123')
-    })
-  })
-
-  it('renders recovery state when contact exists but has no entity_id', async () => {
-    vi.mocked(resolveContactEntity).mockResolvedValue({
-      entity_id: null,
-      status: 'unlinked',
-    })
-    const { container } = tlRender(
-      <ContactEntityRedirectHarness initialPath="/contacts/contact-002" />,
-    )
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="entity-detail-page"]')).toBeNull()
-      expect(container.textContent).toContain('Browse entities')
-    })
-  })
-
-  it('renders recovery state when contact does not exist (API error)', async () => {
-    vi.mocked(resolveContactEntity).mockRejectedValue(new Error('404 Not Found'))
-    const { container } = tlRender(
-      <ContactEntityRedirectHarness initialPath="/contacts/missing-contact" />,
-    )
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="entity-detail-page"]')).toBeNull()
-      expect(container.textContent).toContain('Browse entities')
-    })
-  })
-})
-
-// ---------------------------------------------------------------------------
-// /butlers/relationship/entities/:entityId → /entities/:entityId (legacy)
-// ---------------------------------------------------------------------------
-
-import { RelationshipEntityRedirect } from './router.tsx'
 
 function RelationshipEntityRedirectHarness({ initialPath }: { initialPath: string }) {
   return (
