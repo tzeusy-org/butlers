@@ -13,6 +13,7 @@ from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
 from butlers.core.mcp_urls import canonical_runtime_mcp_url
+from butlers.core.model_routing import Complexity
 from butlers.core.telemetry import inject_trace_context
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
@@ -221,7 +222,7 @@ async def route(
         attempt = int(attempt_raw)
     except (TypeError, ValueError):
         attempt = 1
-    complexity = str(route_args.get("complexity") or "medium")
+    complexity = str(route_args.get("complexity") or Complexity.WORKHORSE.value)
 
     source = str(
         route_args.get("source_channel") or route_args.get("source") or source_butler or "unknown"
