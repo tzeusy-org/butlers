@@ -335,7 +335,7 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
           y1={scaleY(ceiling_usd)}
           x2={CHART_W - CHART_PAD.right}
           y2={scaleY(ceiling_usd)}
-          stroke="var(--red, #ef4444)"
+          stroke="var(--red)"
           strokeOpacity={0.6}
           strokeWidth={1}
           strokeDasharray="4 2"
@@ -347,7 +347,7 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
         <polyline
           points={toPoints(actualDays, 0)}
           fill="none"
-          stroke="var(--primary, #3b82f6)"
+          stroke="var(--primary)"
           strokeWidth={2}
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -364,7 +364,7 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
               : toPoints(projectedDays, firstProjIdx)
           }
           fill="none"
-          stroke="var(--primary, #3b82f6)"
+          stroke="var(--primary)"
           strokeOpacity={0.5}
           strokeWidth={2}
           strokeDasharray="6 4"

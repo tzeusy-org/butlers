@@ -5879,12 +5879,12 @@ export default function CalendarWorkspacePage() {
               {/* Conflict card — rendered when the backend returns status='conflict' */}
               {userEventConflict ? (
                 <div
-                  className="rounded-md border border-[var(--amber,#f59e0b)] bg-[color-mix(in_srgb,var(--amber,#f59e0b)_8%,transparent)] p-3 space-y-3"
+                  className="rounded-md border border-[var(--amber)] bg-[color-mix(in_srgb,var(--amber)_8%,transparent)] p-3 space-y-3"
                   data-testid="conflict-card"
                 >
                   {/* Amber chip */}
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center rounded-full bg-[var(--amber,#f59e0b)] px-2.5 py-0.5 text-xs font-medium text-white">
+                    <span className="inline-flex items-center rounded-full bg-[var(--amber)] px-2.5 py-0.5 text-xs font-medium text-white">
                       Overlaps {userEventConflict.conflicts.length} event
                       {userEventConflict.conflicts.length !== 1 ? "s" : ""}
                     </span>
@@ -5944,7 +5944,7 @@ export default function CalendarWorkspacePage() {
                                 data-testid="conflict-slot-pill"
                                 onClick={() => submitConflictSlot(slot)}
                                 disabled={userEventMutation.isPending}
-                                className="rounded-full border border-[var(--amber,#f59e0b)] px-3 py-1 text-xs font-medium hover:bg-[color-mix(in_srgb,var(--amber,#f59e0b)_15%,transparent)] transition-colors disabled:opacity-40"
+                                className="rounded-full border border-[var(--amber)] px-3 py-1 text-xs font-medium hover:bg-[color-mix(in_srgb,var(--amber)_15%,transparent)] transition-colors disabled:opacity-40"
                               >
                                 {isDifferentDay
                                   ? `${formatEventTime(slot.start_at, defaultTimezone, "MMM d, h:mm a")} – ${formatEventTime(slot.end_at, defaultTimezone, "h:mm a")}`
