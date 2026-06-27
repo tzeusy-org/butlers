@@ -4,12 +4,13 @@ Wraps gated tools at MCP registration time so that:
 1. When a gated tool is called, the call is serialized into a PendingAction.
 2. Target contact resolution: extract channel identifier from tool_args and
    resolve via ``resolve_contact_by_channel()``.  If the target has the
-   ``'owner'`` role AND the targeted channel address is the primary entry for
-   that channel type in ``relationship.entity_facts``, the action is auto-approved
-   with no standing rule required.  Non-primary owner addresses (e.g. a work
-   Telegram chat ID) fall through to the rules/parking flow.
-   ``entity_id`` dispatch is exempt from the primacy check — the system
-   already resolves to the primary address downstream.
+   ``'owner'`` role, the action is auto-approved with no standing rule required.
+   Owner self-notification is low-risk, so this auto-approve applies to ANY
+   active, verified owner channel — not only the primary one (bu-nd5me).  Channel
+   resolution only returns a row for an *active* ``relationship.entity_facts``
+   triple, so any owner-role match here is by definition a verified owner channel.
+   NOTE: this relaxes only the OUTBOUND gate.  Inbound identity resolution /
+   ingress routing keeps its ``is_primary`` requirement (RFC 0017 §2.1).
 3. For non-owner targets, standing approval rules are checked — if a rule
    matches, the tool is auto-approved and executed immediately.
 4. If no rule matches (or the target is unresolvable), the PendingAction is
@@ -36,7 +37,6 @@ from butlers.identity import (
     resolve_contact_by_channel,
     resolve_owner_channel_via_definer,
 )
-from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
@@ -340,14 +340,13 @@ def _make_gate_wrapper(
 
     1. Resolves the target contact from tool_args using channel identity
        extraction and ``resolve_contact_by_channel()``.
-    2. If the target has the ``'owner'`` role AND the targeted channel address
-       is the primary entry for that channel type in ``relationship.entity_facts``:
-       auto-approve immediately (no standing rule required).
-       Non-primary owner addresses (e.g. a work Telegram chat ID alongside the
-       personal one) fall through to the rules/parking flow so they appear in
-       the approval queue.
-       ``entity_id`` dispatch is exempt from the primacy check because no
-       specific address is targeted — the system already resolves to primary.
+    2. If the target has the ``'owner'`` role: auto-approve immediately (no
+       standing rule required).  Owner self-notification is low-risk, so this
+       applies to ANY active, verified owner channel — not only the primary one
+       (bu-nd5me).  Resolution only returns a row for an active
+       ``relationship.entity_facts`` triple, so an owner-role match is always a
+       verified owner channel.  This relaxes the OUTBOUND gate only; inbound
+       identity resolution keeps its ``is_primary`` requirement.
     3. If the target is a known non-owner contact: check standing rules;
        auto-approve if a rule matches, otherwise pend.
     4. If the target is unresolvable: require approval (conservative default).
@@ -446,58 +445,31 @@ def _make_gate_wrapper(
         resolved_contact = await _resolve_target_contact(pool, tool_args)
         identity = _extract_channel_identity(tool_args)
 
-        # Cross-schema owner fallback. resolve_contact_by_channel and
-        # is_primary_contact read relationship.entity_facts directly, which a
-        # non-relationship butler's role cannot (schema isolation via SET ROLE).
-        # So owner-directed sends from those butlers resolve to None and park as
-        # "unresolvable target". Recognize the owner — and its channel primacy — via
-        # the SECURITY DEFINER public.resolve_owner_triple() lookup (migration
-        # core_145), which runs as a role that can read the relationship schema.
-        # Only when normal resolution failed entirely: a resolved non-owner contact
-        # means the butler COULD read the relationship schema, so no owner fallback
-        # is needed (and the channel demonstrably belongs to a non-owner).
-        owner_primary_override: bool | None = None
+        # Cross-schema owner fallback. resolve_contact_by_channel reads
+        # relationship.entity_facts directly, which a non-relationship butler's
+        # role cannot (schema isolation via SET ROLE). So owner-directed sends from
+        # those butlers resolve to None and would park as "unresolvable target".
+        # Recognize the owner via the SECURITY DEFINER public.resolve_owner_triple()
+        # lookup (migration core_145), which runs as a role that can read the
+        # relationship schema and returns only owner matches (active triples on an
+        # entity where 'owner'=ANY(roles)).  Only when normal resolution failed
+        # entirely: a resolved non-owner contact means the butler COULD read the
+        # relationship schema, so no owner fallback is needed (and the channel
+        # demonstrably belongs to a non-owner).
         if resolved_contact is None and identity is not None and identity[0] != "entity_id":
             fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
             if fallback is not None:
-                resolved_contact, owner_primary_override = fallback
+                # The definer also reports channel primacy, but owner-directed
+                # OUTBOUND sends auto-approve on ANY active owner channel, so the
+                # is_primary flag is intentionally discarded here (bu-nd5me).
+                resolved_contact, _ = fallback
 
-        # Determine whether this is a channel-based or entity_id-based dispatch.
-        # For channel-based dispatches (telegram, whatsapp, etc.) the owner bypass
-        # requires that the targeted address is the *primary* entry for that channel
-        # type.  Non-primary addresses (e.g. a work Telegram chat ID) must go
-        # through the normal rules/parking flow.
-        # entity_id dispatch has no specific address to check — skip primacy gate.
-        owner_is_primary: bool
-        if owner_primary_override is not None:
-            # Owner identity and channel primacy already resolved by the
-            # cross-schema SECURITY DEFINER fallback above.
-            owner_is_primary = owner_primary_override
-        elif (
-            resolved_contact is not None
-            and "owner" in resolved_contact.roles
-            and identity is not None
-            and identity[0] != "entity_id"
-        ):
-            channel_type, channel_value = identity
-            if resolved_contact.entity_id is None:
-                # No entity_id — cannot check primacy; treat as non-primary so
-                # the action falls through to the rules/parking flow.
-                owner_is_primary = False
-            else:
-                owner_is_primary = await is_primary_contact(
-                    pool,
-                    resolved_contact.entity_id,
-                    channel_type,
-                    channel_value,
-                )
-        else:
-            # entity_id dispatch or unresolvable: treat as primary (no specific
-            # address to gate against; entity_id resolution already prefers primary).
-            owner_is_primary = True
-
-        if resolved_contact is not None and "owner" in resolved_contact.roles and owner_is_primary:
-            # Owner-targeted primary channel: auto-approve without any standing rule
+        if resolved_contact is not None and "owner" in resolved_contact.roles:
+            # Owner-directed outbound: auto-approve without any standing rule.
+            # Owner self-notification is low-risk, and resolution above only
+            # returns a row for an active, verified owner channel — so this
+            # covers ANY such channel, not just the primary one (bu-nd5me).
+            # entity_id dispatch and non-primary owner channels all land here.
             await pool.execute(
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "

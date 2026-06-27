@@ -1,10 +1,12 @@
-"""Unit tests for the approval gate owner-bypass is_primary guard.
+"""Unit tests for the approval gate owner-bypass policy.
 
-Covers bu-axdie: gate.py owner bypass now requires is_primary=True for the
-targeted channel address.  Mirrors the shape of test_email_guard.py::test_owner_non_primary_email_parks
-but for the non-email MCP tool gating path (telegram, whatsapp, etc.).
+Covers bu-nd5me: for owner-directed OUTBOUND sends, gate.py auto-approves to ANY
+active, verified owner channel — not only the primary one.  This deliberately
+relaxes the earlier bu-axdie outbound primacy requirement (owner self-notification
+is low-risk).  The shared ``is_primary_contact`` helper is unchanged and still
+governs inbound identity resolution and the email guard.
 
-[bu-axdie]
+[bu-nd5me]
 """
 
 from __future__ import annotations
@@ -207,8 +209,15 @@ class TestIsPrimaryContact:
 # ---------------------------------------------------------------------------
 
 
-class TestGateOwnerPrimaryRequirement:
-    """gate.py owner bypass must require is_primary=True for channel-based dispatches."""
+class TestGateOwnerOutboundAutoApprove:
+    """gate.py auto-approves owner-directed OUTBOUND sends to any active owner channel.
+
+    bu-nd5me reverses the earlier bu-axdie outbound primacy requirement: owner
+    self-notification is low-risk, so a send to a verified (active) owner channel
+    auto-approves regardless of whether it is the primary entry for that channel
+    type.  Channel resolution only returns an owner for an active entity_facts
+    triple, so reaching the owner branch already implies a verified owner channel.
+    """
 
     async def test_owner_primary_telegram_auto_approves(self) -> None:
         """Owner send to primary telegram chat_id is auto-approved."""
@@ -223,63 +232,36 @@ class TestGateOwnerPrimaryRequirement:
         )
         assert result == {"status": "sent"}
 
-    async def test_owner_non_primary_telegram_parks(self) -> None:
-        """Owner send to a non-primary telegram chat_id is parked for approval.
+    async def test_owner_non_primary_telegram_auto_approves(self) -> None:
+        """Owner send to a non-primary (but active/verified) telegram chat_id auto-approves.
 
-        This is the regression test for bu-axdie: an owner with both a personal
-        (primary) and a work (non-primary) Telegram chat ID must NOT auto-approve
-        sends to the work chat ID.
+        bu-nd5me: an owner with both a personal (primary) and a secondary
+        (non-primary) Telegram chat ID may receive auto-approved self-notifications
+        on EITHER, because messaging oneself is low-risk.  The gate must no longer
+        consult primacy for owner-directed outbound sends.
         """
         owner = _owner_contact()
-        # Targeted chat_id is NOT the primary one
+        # Even with a non-primary row, the owner channel must auto-approve.
         pool = _make_pool(fetchrow_return={"primary": False})
 
-        with patch(
-            "butlers.modules.approvals.gate._resolve_target_contact",
-            new=AsyncMock(return_value=owner),
-        ):
-            with patch(
-                "butlers.modules.approvals.gate.record_approval_event",
-                new=AsyncMock(),
-            ):
-                wrapper = _make_gate_wrapper(
-                    tool_name="telegram_send_message",
-                    original_fn=_make_original_fn(),
-                    pool=pool,
-                    expiry_hours=72,
-                    risk_tier=MagicMock(value="medium"),
-                    rule_precedence=("contact_role", "standing_rule"),
-                )
-                result = await wrapper(chat_id="99999", message="hello from non-primary")
+        result = await _call_gate(
+            {"chat_id": "99999", "message": "hello from secondary"},
+            resolved_contact=owner,
+            pool=pool,
+        )
+        assert result == {"status": "sent"}
 
-        assert result.get("status") == "pending_approval"
-        assert "action_id" in result
-
-    async def test_owner_non_primary_whatsapp_parks(self) -> None:
-        """Owner send to a non-primary whatsapp_jid is parked for approval."""
+    async def test_owner_non_primary_whatsapp_auto_approves(self) -> None:
+        """Owner send to a non-primary whatsapp_jid auto-approves (bu-nd5me)."""
         owner = _owner_contact()
         pool = _make_pool(fetchrow_return={"primary": False})
 
-        with patch(
-            "butlers.modules.approvals.gate._resolve_target_contact",
-            new=AsyncMock(return_value=owner),
-        ):
-            with patch(
-                "butlers.modules.approvals.gate.record_approval_event",
-                new=AsyncMock(),
-            ):
-                wrapper = _make_gate_wrapper(
-                    tool_name="whatsapp_send_message",
-                    original_fn=_make_original_fn(),
-                    pool=pool,
-                    expiry_hours=72,
-                    risk_tier=MagicMock(value="medium"),
-                    rule_precedence=("contact_role", "standing_rule"),
-                )
-                result = await wrapper(recipient="+15550001111", message="hi from non-primary jid")
-
-        assert result.get("status") == "pending_approval"
-        assert "action_id" in result
+        result = await _call_gate(
+            {"recipient": "+15550001111", "message": "hi from secondary jid"},
+            resolved_contact=owner,
+            pool=pool,
+        )
+        assert result == {"status": "sent"}
 
     async def test_owner_entity_id_dispatch_auto_approves_without_primacy_check(self) -> None:
         """entity_id dispatch is exempt from the primacy check.
@@ -331,80 +313,25 @@ class TestGateOwnerPrimaryRequirement:
         # No matching rule → parked (fetch returns [])
         assert result.get("status") == "pending_approval"
 
-    async def test_owner_with_two_telegram_chat_ids_parks_non_primary(self) -> None:
-        """Scenario: owner has two Telegram chat IDs; send to non-primary one is parked.
+    async def test_owner_with_two_telegram_chat_ids_both_auto_approve(self) -> None:
+        """Scenario: owner has two Telegram chat IDs; sends to EITHER auto-approve.
 
-        This is the acceptance scenario from bu-axdie: two contact_info rows for
-        the same channel type (telegram), one primary and one not.  Sending to the
-        non-primary chat_id must park the action even though the contact is owner.
+        bu-nd5me acceptance: two entity_facts rows for the same channel type
+        (telegram), one primary and one not.  Both are verified owner channels, so
+        an owner self-notification to either must auto-approve — primacy is no
+        longer consulted for outbound owner sends.
         """
         owner = _owner_contact()
         primary_chat_id = "11111111"
         secondary_chat_id = "22222222"
 
-        async def _fetchrow_with_primacy(query: str, *args: Any) -> dict | None:
-            """Return primary based on which chat_id is queried (bead 7: entity_facts)."""
-            if "entity_facts" in query and "primary" in query:
-                # args: (entity_id, predicate, channel_value)
-                queried_value = args[2] if len(args) > 2 else None
-                if queried_value == primary_chat_id:
-                    return {"primary": True}
-                if queried_value == secondary_chat_id:
-                    return {"primary": False}
-            return None
-
-        pool = _make_pool(fetchrow_side_effect=_fetchrow_with_primacy)
-
-        # Send to primary → auto-approve
-        with (
-            patch(
-                "butlers.modules.approvals.gate._resolve_target_contact",
-                new=AsyncMock(return_value=owner),
-            ),
-            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
-            patch(
-                "butlers.modules.approvals.gate.execute_approved_action",
-                new=AsyncMock(
-                    return_value=__import__(
-                        "butlers.modules.approvals.executor",
-                        fromlist=["ExecutionResult"],
-                    ).ExecutionResult(success=True, result={"status": "sent"})
-                ),
-            ),
-        ):
-            wrapper = _make_gate_wrapper(
-                tool_name="telegram_send_message",
-                original_fn=_make_original_fn(),
-                pool=pool,
-                expiry_hours=72,
-                risk_tier=MagicMock(value="medium"),
-                rule_precedence=("contact_role", "standing_rule"),
+        for chat_id in (primary_chat_id, secondary_chat_id):
+            result = await _call_gate(
+                {"chat_id": chat_id, "message": "hi"},
+                resolved_contact=owner,
+                pool=_make_pool(fetchrow_return={"primary": chat_id == primary_chat_id}),
             )
-            result_primary = await wrapper(chat_id=primary_chat_id, message="hi primary")
-
-        assert result_primary == {"status": "sent"}
-
-        # Send to secondary (non-primary) → parked
-        pool2 = _make_pool(fetchrow_side_effect=_fetchrow_with_primacy)
-        with (
-            patch(
-                "butlers.modules.approvals.gate._resolve_target_contact",
-                new=AsyncMock(return_value=owner),
-            ),
-            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
-        ):
-            wrapper2 = _make_gate_wrapper(
-                tool_name="telegram_send_message",
-                original_fn=_make_original_fn(),
-                pool=pool2,
-                expiry_hours=72,
-                risk_tier=MagicMock(value="medium"),
-                rule_precedence=("contact_role", "standing_rule"),
-            )
-            result_secondary = await wrapper2(chat_id=secondary_chat_id, message="hi secondary")
-
-        assert result_secondary.get("status") == "pending_approval"
-        assert "action_id" in result_secondary
+            assert result == {"status": "sent"}, f"send to {chat_id} should auto-approve"
 
 
 # ---------------------------------------------------------------------------
@@ -486,15 +413,17 @@ class TestGateEmitsCreatedEvent:
         assert call_kwargs.kwargs.get("status") == "approved"
 
     async def test_park_pending_emits_created(self) -> None:
-        """No-rule path: gate emits kind='created' with status='pending'."""
-        owner = _owner_contact()
-        # Non-primary → falls through to park
-        pool = _make_pool(fetchrow_return={"primary": False})
+        """No-rule path: gate emits kind='created' with status='pending'.
+
+        A non-owner contact with no matching standing rule parks for approval.
+        """
+        non_owner = _non_owner_contact()
+        pool = _make_pool(fetchrow_return=None)
 
         with (
             patch(
                 "butlers.modules.approvals.gate._resolve_target_contact",
-                new=AsyncMock(return_value=owner),
+                new=AsyncMock(return_value=non_owner),
             ),
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
         ):
@@ -509,7 +438,7 @@ class TestGateEmitsCreatedEvent:
                     rule_precedence=("contact_role", "standing_rule"),
                     butler_name="home",
                 )
-                result = await wrapper(chat_id="99999", message="hi non-primary")
+                result = await wrapper(chat_id="99999", message="hi non-owner")
 
         assert result.get("status") == "pending_approval"
         mock_emit.assert_called_once()
@@ -614,13 +543,20 @@ class TestOwnerCrossSchemaFallback:
         assert inserts, "expected an owner auto-approve pending_actions insert"
         assert "role:owner" in inserts[0].args
 
-    async def test_non_primary_owner_parks(self) -> None:
+    async def test_non_primary_owner_auto_approves(self) -> None:
+        """bu-nd5me: a non-primary but active owner channel resolved via the
+        SECURITY DEFINER fallback auto-approves for owner-directed outbound."""
         owner = _owner_contact()
-        result, _pool, exec_mock = await self._run(
-            resolve_return=None, definer_return=(owner, False), fetch_return=[]
+        result, pool, exec_mock = await self._run(
+            resolve_return=None, definer_return=(owner, False)
         )
-        assert result["status"] == "pending_approval"
-        exec_mock.assert_not_awaited()
+        assert result == {"status": "sent"}
+        exec_mock.assert_awaited_once()
+        inserts = [
+            c for c in pool.execute.await_args_list if "INSERT INTO pending_actions" in c.args[0]
+        ]
+        assert inserts, "expected an owner auto-approve pending_actions insert"
+        assert "role:owner" in inserts[0].args
 
     async def test_definer_no_match_keeps_parking(self) -> None:
         result, _pool, exec_mock = await self._run(
@@ -628,3 +564,111 @@ class TestOwnerCrossSchemaFallback:
         )
         assert result["status"] == "pending_approval"
         exec_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# bu-nd5me acceptance: notify() to a verified-but-secondary owner channel
+# ---------------------------------------------------------------------------
+
+
+class TestNotifySecondaryOwnerChannel:
+    """Acceptance for bu-nd5me using the notify() channel+recipient arg shape.
+
+    The reported regression: notify(channel="email", recipient="tzeuse@gmail.com")
+    parked even though tzeuse@ is a registered, active (non-primary) owner email.
+    These tests assert the owner-self-notification path now auto-approves while a
+    send to a non-owner recipient still parks.
+    """
+
+    _SECONDARY_OWNER_EMAIL = "tzeuse@gmail.com"
+    _NON_OWNER_EMAIL = "stranger@example.com"
+
+    async def test_notify_secondary_owner_email_auto_approves(self) -> None:
+        """notify() to a non-primary but active owner email auto-approves."""
+        owner = _owner_contact()
+        # is_primary would be False for the secondary address — must not matter now.
+        pool = _make_pool(fetchrow_return={"primary": False})
+
+        result = await _call_gate(
+            {
+                "channel": "email",
+                "recipient": self._SECONDARY_OWNER_EMAIL,
+                "message": "time-sensitive reminder",
+            },
+            resolved_contact=owner,
+            pool=pool,
+        )
+        assert result == {"status": "sent"}
+
+    async def test_notify_secondary_owner_email_auto_approves_cross_schema(self) -> None:
+        """The messenger scenario: the butler role cannot read relationship schema,
+        so resolve_contact_by_channel returns None and the owner is recognized via
+        the SECURITY DEFINER fallback reporting a non-primary owner channel."""
+        from butlers.modules.approvals.executor import ExecutionResult
+
+        owner = _owner_contact()
+        pool = _make_pool()
+        exec_mock = AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"}))
+        wrapper = _make_gate_wrapper(
+            tool_name="notify",
+            original_fn=_make_original_fn(),
+            pool=pool,
+            expiry_hours=72,
+            risk_tier=MagicMock(value="medium"),
+            rule_precedence=("contact_role", "standing_rule"),
+        )
+        with (
+            patch(
+                "butlers.modules.approvals.gate._resolve_target_contact",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
+            ),
+            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
+            patch("butlers.modules.approvals.gate.execute_approved_action", new=exec_mock),
+        ):
+            result = await wrapper(
+                channel="email",
+                recipient=self._SECONDARY_OWNER_EMAIL,
+                message="time-sensitive reminder",
+            )
+        assert result == {"status": "sent"}
+        exec_mock.assert_awaited_once()
+        inserts = [
+            c for c in pool.execute.await_args_list if "INSERT INTO pending_actions" in c.args[0]
+        ]
+        assert inserts and "role:owner" in inserts[0].args
+
+    async def test_notify_non_owner_email_still_parks(self) -> None:
+        """notify() to a non-owner recipient with no standing rule still parks.
+
+        Guardrail: relaxing the owner primacy gate must NOT auto-approve sends to
+        non-owner recipients.
+        """
+        non_owner = _non_owner_contact()
+        pool = _make_pool(fetchrow_return=None)  # no standing rules (fetch → [])
+
+        with (
+            patch(
+                "butlers.modules.approvals.gate._resolve_target_contact",
+                new=AsyncMock(return_value=non_owner),
+            ),
+            patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
+        ):
+            wrapper = _make_gate_wrapper(
+                tool_name="notify",
+                original_fn=_make_original_fn(),
+                pool=pool,
+                expiry_hours=72,
+                risk_tier=MagicMock(value="medium"),
+                rule_precedence=("contact_role", "standing_rule"),
+            )
+            result = await wrapper(
+                channel="email",
+                recipient=self._NON_OWNER_EMAIL,
+                message="hello stranger",
+            )
+        assert result.get("status") == "pending_approval"
+        assert "action_id" in result
