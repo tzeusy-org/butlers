@@ -13,6 +13,7 @@ import {
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
+  getCalendarWorkspaceConflicts,
   getCalendarWorkspaceDuplicates,
   getCalendarWorkspaceEntry,
   getCalendarWorkspaceMeta,
@@ -32,6 +33,7 @@ import type {
   CalendarAuditParams,
   CalendarDedupRulesUpdateRequest,
   CalendarDuplicatesParams,
+  ConflictScanParams,
   CalendarKeepSeparateRequest,
   CalendarProposalAcceptRequest,
   CalendarSourceToggleRequest,
@@ -390,6 +392,24 @@ export function useCalendarDuplicates(
   return useQuery({
     queryKey: ["calendar-duplicates", params],
     queryFn: () => getCalendarWorkspaceDuplicates(params),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? false,
+  });
+}
+
+/**
+ * Scan the visible window for conflicts / overcommitment (the radar banner).
+ *
+ * Read-only and fail-open server-side (`issues_available: false` on failure),
+ * never an error. Intended to be enabled only on the week/day views.
+ */
+export function useCalendarConflicts(
+  params: ConflictScanParams,
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  return useQuery({
+    queryKey: ["calendar-conflicts", params],
+    queryFn: () => getCalendarWorkspaceConflicts(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? false,
   });

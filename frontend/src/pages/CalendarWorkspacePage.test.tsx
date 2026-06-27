@@ -121,6 +121,18 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
       },
     },
   })),
+  useCalendarConflicts: vi.fn(() => ({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: {
+      data: {
+        issues: [],
+        scan_window: { start: "2026-07-01T00:00:00Z", end: "2026-07-08T00:00:00Z" },
+        issues_available: true,
+      },
+    },
+  })),
   usePatchCalendarDedupRules: vi.fn(() => ({
     mutateAsync: vi.fn(),
     isPending: false,

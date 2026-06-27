@@ -469,6 +469,66 @@ class CalendarWorkspaceFindTimeResponse(BaseModel):
     reason: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
+# ---------------------------------------------------------------------------
+
+ConflictKind = Literal["overlap", "back_to_back", "overloaded_day"]
+ConflictSeverity = Literal["info", "warning"]
+
+
+class ConflictEventRef(BaseModel):
+    """An event contributing to a detected conflict/overcommitment issue."""
+
+    entry_id: str
+    title: str
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    status: str  # "confirmed" | "tentative"
+
+
+class ConflictIssue(BaseModel):
+    """A single scheduling problem detected in the scanned window."""
+
+    kind: ConflictKind
+    #: Calendar date (YYYY-MM-DD) the issue falls on, in the display timezone.
+    date: str
+    summary: str
+    severity: ConflictSeverity
+    events: list[ConflictEventRef] = Field(default_factory=list)
+    #: UUIDs of any ``pending`` fix proposals matching this issue (empty until
+    #: the LLM fix-proposal session has run for the window).
+    proposal_ids: list[str] = Field(default_factory=list)
+
+
+class ConflictScanWindow(BaseModel):
+    """The requested scan window echoed back in the response."""
+
+    start: datetime
+    end: datetime
+
+
+class ConflictScanResponse(BaseModel):
+    """Response payload for GET /api/calendar/workspace/conflicts.
+
+    Honest degraded contract (fail-open, never HTTP 500): the radar reads the
+    synced ``calendar_event_instances`` / ``calendar_events`` tables via a
+    cross-schema fan-out that may fail.
+
+    - ``issues_available=True`` — the scan ran. An empty ``issues`` list then
+      means the window genuinely had no overlaps, dense chains, or overloaded
+      days.
+    - ``issues_available=False`` — the scan could not run (DB fan-out failure);
+      ``issues`` is empty because nothing was checked. The FE renders no banner
+      and adds no amber edges in this silent degraded mode.
+    """
+
+    issues: list[ConflictIssue] = Field(default_factory=list)
+    scan_window: ConflictScanWindow
+    issues_available: bool = True
+
+
 class CalendarButlerEventPreviewRequest(BaseModel):
     """Request payload for POST /api/calendar/workspace/butler-events/preview.
 

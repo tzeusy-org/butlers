@@ -42,6 +42,7 @@ import type {
 import {
   useCalendarAccounts,
   useAcceptCalendarProposal,
+  useCalendarConflicts,
   useCalendarDayBriefing,
   useCalendarDuplicates,
   useCalendarOverlays,
@@ -72,6 +73,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
+import { ConflictRadarBanner } from "@/components/calendar/ConflictRadarBanner";
 import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabilityDialog";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { MeetingPrepRailContainer } from "@/components/calendar/MeetingPrepRail";
@@ -2302,6 +2304,31 @@ export default function CalendarWorkspacePage() {
         ? undefined
         : (selectedSourceType as UnifiedCalendarSourceType),
   });
+
+  // Conflict & overcommitment radar (bu-q8o90x): scan the visible window for
+  // overlaps / dense days only on the time-grid views. Fail-open server-side, so
+  // a degraded scan (`issues_available: false`) leaves the banner silent.
+  const radarEnabled = range === "week" || range === "day";
+  const conflictsQuery = useCalendarConflicts(
+    { start: queryStart, end: queryEnd, timezone },
+    { enabled: radarEnabled },
+  );
+  const conflictScan = conflictsQuery.data?.data;
+  const conflictIssues = useMemo(
+    () => (radarEnabled ? (conflictScan?.issues ?? []) : []),
+    [radarEnabled, conflictScan?.issues],
+  );
+  const conflictsAvailable = radarEnabled && (conflictScan?.issues_available ?? false);
+  // entry_ids appearing in any overlap issue get the amber grid edge.
+  const overlapEntryIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!conflictsAvailable) return ids;
+    for (const issue of conflictIssues) {
+      if (issue.kind !== "overlap") continue;
+      for (const event of issue.events) ids.add(event.entry_id);
+    }
+    return ids;
+  }, [conflictsAvailable, conflictIssues]);
 
   const overlaysQuery = useCalendarOverlays(
     { start: queryStart, end: queryEnd, timezone },
@@ -4765,6 +4792,30 @@ export default function CalendarWorkspacePage() {
           ) : range === "week" || range === "day" ? (
             /* ---- Time grid — mono gutter, no hour rules (Design Language: Calendar) ---- */
             <div className="flex min-h-0 flex-1 flex-col">
+              {/* Conflict & overcommitment radar — only when issues exist in range. */}
+              <ConflictRadarBanner
+                issues={conflictIssues}
+                available={conflictsAvailable}
+                className="mb-2"
+                onAcceptProposal={(proposalId) => {
+                  acceptProposalMutation.mutate(
+                    { proposalId },
+                    {
+                      onSettled: () =>
+                        queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] }),
+                    },
+                  );
+                }}
+                onDismissProposal={(proposalId) => {
+                  dismissProposalMutation.mutate(
+                    { proposalId },
+                    {
+                      onSettled: () =>
+                        queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] }),
+                    },
+                  );
+                }}
+              />
               {/* Column headers */}
               <div
                 className="mb-2 grid"
@@ -5071,8 +5122,16 @@ export default function CalendarWorkspacePage() {
                               key={entry.entry_id}
                               type="button"
                               data-calendar-entry-id={entry.entry_id}
+                              data-conflict-overlap={
+                                overlapEntryIds.has(entry.entry_id)
+                                  ? "true"
+                                  : undefined
+                              }
                               className={cn(
                                 "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                                // Amber left edge marks an event caught in an overlap.
+                                overlapEntryIds.has(entry.entry_id) &&
+                                  "border-l-2 border-l-amber-500",
                                 paused && "opacity-50",
                                 draggable &&
                                   "cursor-grab touch-none active:cursor-grabbing",

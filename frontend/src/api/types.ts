@@ -743,6 +743,57 @@ export interface CalendarDuplicatesParams {
   sources?: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
+// ---------------------------------------------------------------------------
+
+export type ConflictKind = "overlap" | "back_to_back" | "overloaded_day";
+export type ConflictSeverity = "info" | "warning";
+
+/** An event contributing to a detected conflict/overcommitment issue. */
+export interface ConflictEventRef {
+  entry_id: string;
+  title: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  status: string;
+}
+
+/** A single scheduling problem detected in the scanned window. */
+export interface ConflictIssue {
+  kind: ConflictKind;
+  date: string; // YYYY-MM-DD in the display timezone
+  summary: string;
+  severity: ConflictSeverity;
+  events: ConflictEventRef[];
+  /** UUIDs of pending fix proposals (empty until the fix-proposal session runs). */
+  proposal_ids: string[];
+}
+
+/**
+ * Response payload for GET /api/calendar/workspace/conflicts.
+ *
+ * `issues_available` is `false` only in degraded mode (the scan could not run);
+ * the FE renders no banner and adds no amber edges in that silent mode. An empty
+ * `issues` list with `issues_available=true` genuinely means a clean window.
+ */
+export interface ConflictScanResponse {
+  issues: ConflictIssue[];
+  scan_window: { start: string; end: string };
+  issues_available: boolean;
+}
+
+/** Query params for GET /api/calendar/workspace/conflicts. */
+export interface ConflictScanParams {
+  start: string;
+  end: string;
+  timezone?: string;
+  butler_name?: string;
+  back_to_back_gap_minutes?: number;
+  overloaded_day_hours?: number;
+}
+
 /** Body to pin/unpin a duplicate cluster as keep-separate. */
 export interface CalendarKeepSeparateRequest {
   cluster_key: string;

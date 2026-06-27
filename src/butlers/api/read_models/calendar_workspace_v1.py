@@ -35,10 +35,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.core.temporal.conflicts import (
+    ConflictCandidate,
+    DetectedIssue,
+    detect_conflict_issues,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -826,6 +832,89 @@ async def query_calendar_proposals(
         for row in raw_rows:
             rows.append(row_to_proposal(row, db_butler=butler_name))
     return rows
+
+
+@dataclass
+class CalendarConflictScan:
+    """Result envelope for :func:`query_calendar_conflicts`.
+
+    ``issues`` carries the detected, proposal-joined issues; ``available`` is the
+    honest degraded signal (``False`` only when the fan-out scan failed), letting
+    the endpoint follow the repo's fail-open + explicit-degraded convention.
+    """
+
+    issues: list[DetectedIssue]
+    available: bool = True
+
+
+async def query_calendar_conflicts(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None = None,
+    display_tz: ZoneInfo | None = None,
+    back_to_back_gap_minutes: int = 15,
+    overloaded_day_hours: float = 6.0,
+) -> CalendarConflictScan:
+    """Scan the user-lane events in ``[start, end)`` for scheduling issues.
+
+    Reads the synced ``calendar_event_instances`` / ``calendar_events`` tables
+    via the windowed fan-out (served by the GIST(tstzrange) index), runs the pure
+    :func:`~butlers.core.temporal.conflicts.detect_conflict_issues` detector, and
+    joins any ``pending`` ``calendar_event_proposals`` whose ``source_event_id``
+    equals an overlap issue's canonical pair id.
+
+    **Fail-open contract.** Any fan-out failure degrades to
+    ``CalendarConflictScan(issues=[], available=False)`` rather than raising — the
+    endpoint must never return HTTP 500.
+    """
+    try:
+        rows = await query_calendar_workspace(
+            db,
+            view="user",
+            start=start,
+            end=end,
+            butlers=butlers,
+        )
+    except Exception:
+        logger.warning("query_calendar_conflicts workspace fan-out failed", exc_info=True)
+        return CalendarConflictScan(issues=[], available=False)
+
+    candidates = [
+        ConflictCandidate(
+            entry_id=str(row.instance_id),
+            title=row.title or "Untitled",
+            start_at=row.instance_starts_at,
+            end_at=row.instance_ends_at,
+            timezone=row.instance_timezone or row.event_timezone or "UTC",
+            status=str(row.instance_status or row.event_status or "confirmed"),
+            all_day=bool(row.all_day),
+        )
+        for row in rows
+    ]
+
+    issues = detect_conflict_issues(
+        candidates,
+        display_tz=display_tz,
+        back_to_back_gap_minutes=back_to_back_gap_minutes,
+        overloaded_day_hours=overloaded_day_hours,
+    )
+
+    # Join pending proposals by the canonical overlap-pair id. query_calendar_proposals
+    # is itself fail-open (returns [] on failure), so a missing proposals table
+    # leaves proposal_ids empty rather than degrading the whole scan.
+    pending = await query_calendar_proposals(db, start=start, end=end, butlers=butlers)
+    by_source: dict[str, list[str]] = {}
+    for proposal in pending:
+        if proposal.source_event_id:
+            by_source.setdefault(proposal.source_event_id, []).append(str(proposal.proposal_id))
+    if by_source:
+        for issue in issues:
+            if issue.pair_id is not None:
+                issue.proposal_ids = by_source.get(str(issue.pair_id), [])
+
+    return CalendarConflictScan(issues=issues, available=True)
 
 
 async def query_calendar_proposal_by_id(

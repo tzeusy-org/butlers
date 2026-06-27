@@ -67,6 +67,10 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceSyncResponse,
     CalendarWorkspaceSyncTarget,
     CalendarWorkspaceWritableCalendar,
+    ConflictEventRef,
+    ConflictIssue,
+    ConflictScanResponse,
+    ConflictScanWindow,
     DayBriefingButlerGroup,
     DayBriefingKindGroup,
     QuickAddDraft,
@@ -85,6 +89,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     CalendarProposalRow,
     load_dedup_rules,
     load_keep_separate_keys,
+    query_calendar_conflicts,
     query_calendar_event_search,
     query_calendar_overlays,
     query_calendar_prep,
@@ -1468,6 +1473,96 @@ async def get_workspace(
         has_more=has_more,
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
+
+
+# ---------------------------------------------------------------------------
+# Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/conflicts", response_model=ApiResponse[ConflictScanResponse])
+async def get_workspace_conflicts(
+    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
+    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
+    timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
+    butler_name: str | None = Query(None, description="Optional single butler-schema filter"),
+    back_to_back_gap_minutes: int = Query(
+        15, ge=0, le=240, description="Gap below which adjacent events are 'back-to-back'"
+    ),
+    overloaded_day_hours: float = Query(
+        6.0, gt=0, le=24, description="Daily meeting-hours budget before a day is 'overloaded'"
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConflictScanResponse]:
+    """Proactively scan the forward window for scheduling problems.
+
+    Deterministic and read-only: queries the synced ``calendar_event_instances``
+    / ``calendar_events`` tables (GIST(tstzrange)-served window) for overlaps,
+    back-to-back density, and overloaded days — no provider API call, no LLM call
+    at request time. ``proposal_ids`` lists any ``pending`` fix proposals already
+    emitted for an overlap (empty until the fix-proposal session has run).
+
+    Fails open: a DB fan-out failure yields ``issues_available=false`` with an
+    empty issue list, never an HTTP 500. The window must satisfy
+    ``end > start`` and ``end - start <= 90 days`` (HTTP 400 otherwise).
+    """
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+
+    display_tz: ZoneInfo | None = None
+    if timezone is not None:
+        try:
+            display_tz = ZoneInfo(timezone.strip())
+        except ZoneInfoNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+
+    window = ConflictScanWindow(start=start, end=end)
+    butlers = [butler_name] if butler_name else None
+
+    try:
+        scan = await query_calendar_conflicts(
+            db,
+            start=start,
+            end=end,
+            butlers=butlers,
+            display_tz=display_tz,
+            back_to_back_gap_minutes=back_to_back_gap_minutes,
+            overloaded_day_hours=overloaded_day_hours,
+        )
+    except Exception:
+        logger.warning("get_workspace_conflicts scan failed; degrading", exc_info=True)
+        return ApiResponse[ConflictScanResponse](
+            data=ConflictScanResponse(issues=[], scan_window=window, issues_available=False)
+        )
+
+    issues = [
+        ConflictIssue(
+            kind=issue.kind,  # type: ignore[arg-type]
+            date=issue.date,
+            summary=issue.summary,
+            severity=issue.severity,  # type: ignore[arg-type]
+            events=[
+                ConflictEventRef(
+                    entry_id=ref.entry_id,
+                    title=ref.title,
+                    start_at=ref.start_at,
+                    end_at=ref.end_at,
+                    timezone=ref.timezone,
+                    status=ref.status,
+                )
+                for ref in issue.events
+            ],
+            proposal_ids=list(issue.proposal_ids),
+        )
+        for issue in scan.issues
+    ]
+    return ApiResponse[ConflictScanResponse](
+        data=ConflictScanResponse(
+            issues=issues, scan_window=window, issues_available=scan.available
+        )
+    )
 
 
 def _rules_to_model(rules: CalendarDedupRules) -> CalendarDedupRulesModel:

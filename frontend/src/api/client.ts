@@ -42,6 +42,8 @@ import type {
   CalendarDedupRulesUpdateRequest,
   CalendarDuplicatesParams,
   CalendarDuplicatesResponse,
+  ConflictScanParams,
+  ConflictScanResponse,
   CalendarKeepSeparateRequest,
   CalendarKeepSeparateResponse,
   CalendarPrepResponse,
@@ -1145,6 +1147,30 @@ export function getCalendarWorkspaceDuplicates(
   });
   return apiFetch<ApiResponse<CalendarDuplicatesResponse>>(
     `/calendar/workspace/duplicates?${sp.toString()}`,
+  );
+}
+
+/**
+ * Scan the visible window for conflicts / overcommitment (the radar).
+ *
+ * Read-only and fail-open: a degraded response carries `issues_available=false`
+ * with an empty `issues` list, which the FE must render as "silent" (no banner).
+ */
+export function getCalendarWorkspaceConflicts(
+  params: ConflictScanParams,
+): Promise<ApiResponse<ConflictScanResponse>> {
+  const sp = new URLSearchParams();
+  sp.set("start", params.start);
+  sp.set("end", params.end);
+  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+  if (params.butler_name != null && params.butler_name !== "")
+    sp.set("butler_name", params.butler_name);
+  if (params.back_to_back_gap_minutes != null)
+    sp.set("back_to_back_gap_minutes", String(params.back_to_back_gap_minutes));
+  if (params.overloaded_day_hours != null)
+    sp.set("overloaded_day_hours", String(params.overloaded_day_hours));
+  return apiFetch<ApiResponse<ConflictScanResponse>>(
+    `/calendar/workspace/conflicts?${sp.toString()}`,
   );
 }
 
