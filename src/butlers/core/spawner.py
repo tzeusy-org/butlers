@@ -1656,7 +1656,28 @@ class Spawner:
                         _failover_effective_tier,
                         _attempt_count,
                     )
-                    # The runtime_failure row for the last attempt was already written above.
+                    # The runtime_failure row for the last attempt was already written
+                    # above. Write an explicit terminal 'exhausted' provenance row so
+                    # downstream readers get an unambiguous terminal marker for the
+                    # logical session instead of having to infer exhaustion from the
+                    # last runtime_failure row plus the absence of a later success row.
+                    if self._pool is not None and catalog_entry_id is not None:
+                        await _write_dispatch_attempt(
+                            self._pool,
+                            catalog_entry_id=catalog_entry_id,
+                            butler=self._config.name,
+                            outcome="exhausted",
+                            attempt_index=len(_attempted_ids),
+                            session_id=session_id,
+                            failure_reason=(
+                                f"same_tier_failover_exhausted: tier={_failover_effective_tier} "
+                                f"after {_attempt_count} attempt(s)"
+                            ),
+                            error_code=type(_attempt_exc).__name__,
+                            error_message=str(_attempt_exc),
+                            tool_call_count=len(_attempt_tool_calls),
+                            logical_session_id=effective_request_id,
+                        )
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 

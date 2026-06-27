@@ -82,6 +82,15 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **THEN** operator-visible provenance SHALL identify the skipped `catalog_entry_id`,
   the exhausted quota window, current usage, and configured limit
 
+#### Scenario: Exhaustion provenance
+- **WHEN** every eligible same-tier candidate has been attempted or skipped and none succeeds
+- **THEN** the spawner SHALL write one terminal attempt row with `outcome='exhausted'`
+- **AND** that row SHALL carry the last failed `catalog_entry_id`, the terminal error code,
+  a `failure_reason` identifying same-tier failover exhaustion, and the
+  `logical_session_id` tying it to the other attempts of the logical session
+- **AND** downstream readers SHALL be able to detect terminal exhaustion from the explicit
+  `exhausted` row rather than inferring it from the last `runtime_failure` row
+
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)
 - RFC 0001 (Daemon Lifecycle and Triggers; the spawner orchestrates ephemeral runtime invocations for a logical session)

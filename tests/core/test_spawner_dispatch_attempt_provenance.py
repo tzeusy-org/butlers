@@ -381,6 +381,172 @@ class TestRuntimeFailureProvenance:
 
 
 # ---------------------------------------------------------------------------
+# Tests: exhausted provenance
+# ---------------------------------------------------------------------------
+
+
+class TestExhaustedProvenance:
+    async def test_exhausted_row_written_when_all_candidates_fail(self, tmp_path: Path) -> None:
+        """An explicit 'exhausted' terminal row is written when no next candidate exists."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(eligible=True, reason="cli_missing"),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,  # exhausted after first fail
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter("cli not found"),
+            ).trigger("hello", "tick")
+
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        outcomes = [a[4] for a in attempts]
+        assert "exhausted" in outcomes, f"Expected exhausted terminal row in outcomes: {outcomes}"
+
+    async def test_exhausted_row_carries_terminal_metadata(self, tmp_path: Path) -> None:
+        """The exhausted row carries the failed catalog entry, error code, and logical session."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(eligible=True, reason="cli_missing"),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter("cli not found"),
+            ).trigger("hello", "tick")
+
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        exhausted_rows = [a for a in attempts if a[4] == "exhausted"]
+        assert len(exhausted_rows) == 1, f"Expected exactly one exhausted row: {attempts}"
+        row = exhausted_rows[0]
+        # Column mapping: SQL=a[0]; $1 session_id=a[1]; $2 catalog_entry_id=a[2];
+        # $3 butler=a[3]; $4 outcome=a[4]; $5 failure_reason=a[5]; $6 error_code=a[6];
+        # $9 attempt_index=a[9]; $10 logical_session_id=a[10].
+        assert row[2] == _PRIMARY_ID, "exhausted row should reference the last failed catalog entry"
+        assert row[6] == "RuntimeError", "exhausted row should carry the terminal error code"
+        assert "same_tier_failover_exhausted" in (row[5] or ""), (
+            f"exhausted row should identify exhaustion in failure_reason: {row[5]}"
+        )
+        assert row[10] is not None, "exhausted row must carry a logical_session_id"
+
+    async def test_exhausted_row_after_runtime_failure_row(self, tmp_path: Path) -> None:
+        """Exhaustion writes the runtime_failure row first, then the terminal exhausted row."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-primary",
+                    [],
+                    _PRIMARY_ID,
+                    1800,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(eligible=True, reason="cli_missing"),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_FailingAdapter("cli not found"),
+            ).trigger("hello", "tick")
+
+        attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
+        outcomes = [a[4] for a in attempts]
+        assert outcomes.index("runtime_failure") < outcomes.index("exhausted"), (
+            f"runtime_failure row must precede the exhausted terminal row: {outcomes}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Tests: suppressed provenance
 # ---------------------------------------------------------------------------
 
