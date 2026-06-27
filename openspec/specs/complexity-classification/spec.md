@@ -4,7 +4,7 @@
 
 Defines the complexity classification system used for dynamic model routing. Complexity tiers determine which model and runtime adapter are selected at spawn time, enabling cost-efficient model selection proportional to task difficulty.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Complexity Enum
 The system SHALL define a complexity classification enum with six canonical tiers representing model capability and resource requirements. The legacy four-tier vocabulary (`trivial`, `medium`, `high`, `extra_high`) plus `discretion` and `self_healing` was retired in migration `core_093`. Callers that still emit a legacy value are remapped with a loud deprecation warning by `_check_deprecated_tier()` in `src/butlers/core/model_routing.py`.
@@ -71,8 +71,16 @@ The manual trigger API SHALL accept an optional complexity parameter for operato
 - **THEN** the complexity defaults to `workhorse`
 
 ### Requirement: Tick Trigger Complexity
-Internal tick-triggered sessions SHALL use a fixed low-cost complexity tier (`cheap`, the canonical successor to the retired `trivial` tier).
+The `tick` trigger source covers two distinct internal paths, each of which SHALL resolve its own complexity tier as described below. The system SHALL NOT apply a single fixed low-cost tier to every tick-triggered session.
 
-#### Scenario: Tick uses cheap complexity
-- **WHEN** a butler session is triggered by the tick handler
+1. The scheduler tick handler (`tick()` in `src/butlers/core/scheduler.py`) dispatches each due scheduled task at that task's own configured complexity, defaulting to `workhorse` (`_DEFAULT_COMPLEXITY`) when the row specifies none or an unrecognized value. These sessions carry a `schedule:<name>` or `deadline:<name>` trigger source, not a fixed low-cost tier.
+2. The Switchboard routing-classification spawn (`src/butlers/modules/pipeline.py`) is the only session literally tagged `trigger_source="tick"`; it uses the `cheap` tier for its lightweight routing-LLM decision.
+
+#### Scenario: Scheduler tick uses each task's complexity, default workhorse
+- **WHEN** the scheduler tick handler dispatches a due cron, deadline, or event-chain task
+- **THEN** the complexity is the task row's stored value
+- **AND** a row with no complexity or an unrecognized value falls back to `workhorse`
+
+#### Scenario: Switchboard routing classification uses cheap
+- **WHEN** the Switchboard pipeline spawns its routing-classification session (`trigger_source="tick"`)
 - **THEN** the complexity is set to `cheap`
