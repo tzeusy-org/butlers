@@ -49,6 +49,9 @@ vi.mock("@/hooks/use-model-catalog", () => ({
   })),
   useUpdateModelPriority: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useVerifyAllModels: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetModelTokenLimits: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useResetModelUsage: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useModelUsageDetail: vi.fn(() => ({ data: undefined, isLoading: false })),
 }));
 
 vi.mock("sonner", () => ({
@@ -67,6 +70,8 @@ vi.mock("sonner", () => ({
 import {
   useCreateModelCatalogEntry,
   useModelCatalog,
+  useResetModelUsage,
+  useSetModelTokenLimits,
   useUpdateModelCatalogEntry,
 } from "@/hooks/use-model-catalog";
 
@@ -348,11 +353,12 @@ describe("SettingsModelsPage — happy path: verified model row", () => {
     expect(html).toContain("Delete");
   });
 
-  it("renders usage_24h token count in the row", () => {
+  it("renders compact usage_24h token count in the row", () => {
     const model = makeModel({ alias: "usage-model", usage_24h: 5000 });
     setHookState({ entries: [model] });
     const html = renderPage();
-    expect(html).toContain("5,000 tok");
+    // Compact format: 5000 → "5K"
+    expect(html).toContain("5K");
   });
 
   it("renders the Workhorse tier section with model count", () => {
@@ -981,5 +987,146 @@ describe("SettingsModelsPage — AddModelDialog", () => {
     expect(toast.error).toHaveBeenCalled();
     // Dialog remains open so the user can fix the alias
     expect(screen.getByText(/Register a new entry/)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Usage columns — 30d usage, progress bars, color thresholds, BLOCKED badge,
+// reset, tooltip, inline limit editing (bu-1ywfy; spec: catalog-token-limits
+// "Dashboard Usage Columns")
+// ---------------------------------------------------------------------------
+
+describe("SettingsModelsPage — token-usage columns", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setHookState({ entries: [] });
+  });
+
+  it("renders both 24h and 30d compact usage values", () => {
+    const model = makeModel({ alias: "u", usage_24h: 142_312, usage_30d: 3_400_000 });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).toContain("142K"); // rolling 24h
+    expect(html).toContain("3.4M"); // rolling 30d
+  });
+
+  it("renders the 24h and 30d window labels per row", () => {
+    setHookState({ entries: [makeModel({ alias: "u" })] });
+    const html = renderPage();
+    expect(html).toContain("24h");
+    expect(html).toContain("30d");
+  });
+
+  it("renders a green progress bar when usage is below 60% of the limit", () => {
+    const model = makeModel({ alias: "g", usage_24h: 100_000, limit_24h: 500_000 });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).toContain("bg-green-500");
+    expect(html).not.toContain("bg-red-500");
+  });
+
+  it("renders a yellow progress bar between 60% and 85%", () => {
+    const model = makeModel({ alias: "y", usage_24h: 350_000, limit_24h: 500_000 });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).toContain("bg-yellow-500");
+  });
+
+  it("renders a red progress bar at or above 85%", () => {
+    const model = makeModel({ alias: "r", usage_24h: 450_000, limit_24h: 500_000 });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).toContain("bg-red-500");
+  });
+
+  it("renders a BLOCKED badge when usage exceeds the limit", () => {
+    const model = makeModel({ alias: "b", usage_24h: 600_000, limit_24h: 500_000 });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).toContain("BLOCKED");
+  });
+
+  it("does not render a BLOCKED badge when under the limit", () => {
+    const model = makeModel({ alias: "ok", usage_24h: 100_000, limit_24h: 500_000 });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).not.toContain("BLOCKED");
+  });
+
+  it("shows used/- with no progress fill when no limit is configured", () => {
+    const model = makeModel({ alias: "nolimit", usage_24h: 42_000, limit_24h: null });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).toContain("42K");
+    // The dashed no-limit placeholder, not a colored fill bar.
+    expect(html).toContain("border-dashed");
+  });
+
+  it("exposes the exact counts, percent, and window label via the tooltip aria-label", () => {
+    const model = makeModel({
+      id: "t",
+      alias: "tip",
+      usage_24h: 142_312,
+      limit_24h: 500_000,
+    });
+    setHookState({ entries: [model] });
+    const html = renderPage();
+    expect(html).toContain("142,312 / 500,000 tokens");
+    expect(html).toContain("28% used");
+    expect(html).toContain("Rolling 24h window");
+  });
+
+  it("renders a reset button for each window", () => {
+    setHookState({ entries: [makeModel({ alias: "rst" })] });
+    const html = renderPage();
+    expect(html).toContain("Reset 24h usage for rst");
+    expect(html).toContain("Reset 30d usage for rst");
+  });
+
+  it("calls reset-usage with the correct window when the reset button is clicked", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useResetModelUsage).mockReturnValue({ mutate, isPending: false } as AnyMock);
+    setHookState({ entries: [makeModel({ id: "model-1", alias: "rst" })] });
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Reset 24h usage for rst"));
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "model-1", body: { window: "24h" } }),
+      expect.any(Object),
+    );
+  });
+
+  it("opens an inline limit editor and saves both windows when the limit is edited", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useSetModelTokenLimits).mockReturnValue({ mutate, isPending: false } as AnyMock);
+    setHookState({
+      entries: [
+        makeModel({ id: "model-1", alias: "ed", limit_24h: null, limit_30d: 9_000_000 }),
+      ],
+    });
+
+    mountPage();
+    // Click the 24h limit ("-") to open the inline editor.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Set 24h limit for ed"));
+    });
+
+    const input = screen.getByLabelText("Set 24h limit for ed") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "750000" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "model-1",
+        // Preserves the untouched 30d limit, updates 24h.
+        body: { limit_24h: 750000, limit_30d: 9_000_000 },
+      }),
+      expect.any(Object),
+    );
   });
 });

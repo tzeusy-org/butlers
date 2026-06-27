@@ -19,6 +19,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
+import { RotateCcw } from "lucide-react";
 
 import { ApiError } from "@/api/index.ts";
 import type { ComplexityTier, ModelCatalogEntry } from "@/api/types.ts";
@@ -26,6 +27,12 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -46,11 +53,15 @@ import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
   useModelCatalog,
+  useModelUsageDetail,
+  useResetModelUsage,
+  useSetModelTokenLimits,
   useTestModelCatalogEntry,
   useUpdateModelCatalogEntry,
   useUpdateModelPriority,
   useVerifyAllModels,
 } from "@/hooks/use-model-catalog";
+import type { UsageWindow } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -91,6 +102,47 @@ const RUNTIME_TYPES = ["claude", "codex", "gemini", "opencode"] as const;
 const DEFAULT_SESSION_TIMEOUT_S = 1800;
 
 type StateFilter = "all" | "verified" | "attention" | "offline" | "deprecated";
+
+// ---------------------------------------------------------------------------
+// Token-usage formatting helpers (spec: catalog-token-limits §"Dashboard Usage
+// Columns")
+// ---------------------------------------------------------------------------
+
+/** Compact token count for the bar label: 142312 → "142K", 4_500_000 → "4.5M". */
+function formatCompactTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 1000)}K`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** Percent of a window's limit consumed, or null when no limit is configured. */
+function usagePercent(usage: number, limit: number | null): number | null {
+  if (limit === null || limit <= 0) return null;
+  return (usage / limit) * 100;
+}
+
+/**
+ * Progress-bar fill color per spec thresholds:
+ * green 0–60%, yellow 60–85%, red 85–100%, red when over (BLOCKED).
+ */
+function barColorClass(percent: number): string {
+  if (percent >= 85) return "bg-red-500";
+  if (percent >= 60) return "bg-yellow-500";
+  return "bg-green-500";
+}
+
+/** Coarse "Nm ago" / "Nh ago" / "Nd ago" relative time for the reset tooltip. */
+function relativeTimeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const sec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+}
 
 // ---------------------------------------------------------------------------
 // Edit model dialog
@@ -839,6 +891,200 @@ function PriorityStepper({
 }
 
 // ---------------------------------------------------------------------------
+// Usage cell — one rolling window (24h or 30d) per spec "Dashboard Usage
+// Columns": progress bar + thresholds + BLOCKED badge + reset + tooltip +
+// inline limit editing.
+// ---------------------------------------------------------------------------
+
+function UsageCell({
+  model,
+  window,
+  usage,
+  limit,
+}: {
+  model: ModelCatalogEntry;
+  window: UsageWindow & ("24h" | "30d");
+  usage: number;
+  limit: number | null;
+}) {
+  const setLimits = useSetModelTokenLimits();
+  const resetUsage = useResetModelUsage();
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [tipOpen, setTipOpen] = useState(false);
+
+  // Detailed usage (reset timestamps) is fetched lazily, only while hovered.
+  const { data: detail } = useModelUsageDetail(model.id, tipOpen);
+  const resetAt =
+    window === "24h" ? detail?.data.reset_24h_at ?? null : detail?.data.reset_30d_at ?? null;
+
+  const percent = usagePercent(usage, limit);
+  const blocked = percent !== null && percent > 100;
+  const windowLabel = window === "24h" ? "Rolling 24h window" : "Rolling 30d window";
+
+  // Accessible-name / tooltip contract (exact counts, percent, window label).
+  const tooltipText = [
+    `${usage.toLocaleString()} / ${limit !== null ? limit.toLocaleString() : "∞"} tokens`,
+    percent !== null ? `${Math.round(percent)}% used` : "no limit set",
+    windowLabel,
+  ].join(" · ");
+
+  const startEdit = () => {
+    setDraft(limit !== null ? String(limit) : "");
+    setEditing(true);
+  };
+
+  const handleSaveLimit = () => {
+    // Guard against double submission (e.g. Enter then onBlur) while a save is in flight.
+    if (setLimits.isPending) return;
+
+    const trimmed = draft.trim();
+    let parsed: number | null;
+    if (trimmed === "" || trimmed === "-") {
+      parsed = null;
+    } else {
+      const n = Math.round(Number(trimmed));
+      if (!Number.isFinite(n) || n < 0) {
+        toast.error("Limit must be a non-negative integer (or blank for unlimited)");
+        return;
+      }
+      parsed = n;
+    }
+
+    // No-op when the value is unchanged — avoids redundant network/database writes.
+    if (parsed === limit) {
+      setEditing(false);
+      return;
+    }
+
+    const body =
+      window === "24h"
+        ? { limit_24h: parsed, limit_30d: model.limit_30d }
+        : { limit_24h: model.limit_24h, limit_30d: parsed };
+
+    setLimits.mutate(
+      { id: model.id, body },
+      {
+        onSuccess: () => {
+          toast.success(
+            `Set ${window} limit for ${model.alias} to ${parsed !== null ? parsed.toLocaleString() : "unlimited"}`,
+          );
+          setEditing(false);
+        },
+        onError: () => toast.error(`Failed to set ${window} limit`),
+      },
+    );
+  };
+
+  const handleReset = () => {
+    resetUsage.mutate(
+      { id: model.id, body: { window } },
+      {
+        onSuccess: () => toast.success(`Reset ${window} usage for ${model.alias}`),
+        onError: () => toast.error(`Failed to reset ${window} usage`),
+      },
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-1 min-w-[128px]">
+      {/* Header line: window label · BLOCKED badge · reset */}
+      <div className="flex items-center gap-1.5">
+        <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">
+          {window}
+        </span>
+        {blocked && (
+          <span className="font-mono text-[8px] uppercase tracking-widest px-1 rounded bg-red-500 text-white">
+            BLOCKED
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={resetUsage.isPending}
+          aria-label={`Reset ${window} usage for ${model.alias}`}
+          title={`Reset ${window} usage`}
+          className="ml-auto text-muted-foreground hover:text-foreground disabled:opacity-40
+            transition-colors"
+        >
+          <RotateCcw className="w-3 h-3" />
+        </button>
+      </div>
+
+      {/* Progress bar (only when a limit is configured) — wrapped in a tooltip.
+          The single TooltipProvider lives at the page root (SettingsModelsPage). */}
+        <Tooltip open={tipOpen} onOpenChange={setTipOpen}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={tooltipText}
+              className="block w-full cursor-default"
+            >
+              {limit !== null ? (
+                <div className="h-1.5 w-full rounded bg-muted overflow-hidden">
+                  <div
+                    className={`h-full rounded ${barColorClass(percent ?? 0)}`}
+                    style={{ width: `${Math.min(100, percent ?? 0)}%` }}
+                  />
+                </div>
+              ) : (
+                <div className="h-1.5 w-full rounded border border-dashed border-border/60" />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            <div className="font-mono text-[10px] leading-relaxed">
+              <div>
+                {usage.toLocaleString()} / {limit !== null ? limit.toLocaleString() : "∞"} tokens
+              </div>
+              <div>{percent !== null ? `${Math.round(percent)}% used` : "no limit set"}</div>
+              <div>{windowLabel}</div>
+              {resetAt && <div>Last reset: {relativeTimeAgo(resetAt)}</div>}
+            </div>
+          </TooltipContent>
+        </Tooltip>
+
+      {/* used / limit text — clicking the limit opens the inline editor */}
+      <div className="flex items-center gap-1 font-mono text-[10px] tabular-nums">
+        <span className={blocked ? "text-red-500" : "text-muted-foreground"}>
+          {formatCompactTokens(usage)}
+        </span>
+        <span className="text-muted-foreground">/</span>
+        {editing ? (
+          <Input
+            autoFocus
+            disabled={setLimits.isPending}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={handleSaveLimit}
+            onKeyDown={(e) => {
+              // Blur on Enter so the single onBlur handler performs the save —
+              // avoids a duplicate request from Enter + the subsequent blur.
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            placeholder="—"
+            aria-label={`Set ${window} limit for ${model.alias}`}
+            className="h-5 w-16 px-1 font-mono text-[10px]"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={startEdit}
+            aria-label={`Set ${window} limit for ${model.alias}`}
+            className="text-foreground/80 hover:text-foreground hover:underline underline-offset-2
+              transition-colors"
+          >
+            {limit !== null ? formatCompactTokens(limit) : "-"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Model row
 // ---------------------------------------------------------------------------
 
@@ -891,7 +1137,7 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
       ]
         .filter(Boolean)
         .join(" ")}
-      style={{ gridTemplateColumns: "auto 1fr auto auto auto auto auto" }}
+      style={{ gridTemplateColumns: "auto 1fr auto auto auto auto auto auto" }}
     >
       {/* Priority stepper */}
       <PriorityStepper entryId={model.id} priority={model.priority} />
@@ -916,10 +1162,11 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
         </div>
       </div>
 
-      {/* Usage (24h) */}
-      <span className="font-mono text-[10px] text-muted-foreground tabular-nums text-right">
-        {model.usage_24h.toLocaleString()} tok
-      </span>
+      {/* Usage (rolling 24h) — bar + thresholds + reset + inline limit edit */}
+      <UsageCell model={model} window="24h" usage={model.usage_24h} limit={model.limit_24h} />
+
+      {/* Usage (rolling 30d) */}
+      <UsageCell model={model} window="30d" usage={model.usage_30d} limit={model.limit_30d} />
 
       {/* Enable toggle */}
       <Switch
@@ -994,6 +1241,9 @@ function ApiWireFooter() {
     "POST /api/settings/models/{id}/test",
     "DELETE /api/settings/models/{id}",
     "POST /api/settings/models/verify-all",
+    "PUT /api/settings/models/{id}/limits",
+    "POST /api/settings/models/{id}/reset-usage",
+    "GET /api/settings/models/{id}/usage",
   ];
 
   return (
@@ -1078,7 +1328,8 @@ export default function SettingsModelsPage() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <TooltipProvider>
+      <div className="flex flex-col min-h-screen">
       {/* Breadcrumb */}
       <div className="px-7 py-3.5 border-b border-border flex items-baseline gap-3 font-mono text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
         <span>butlers</span>
@@ -1219,6 +1470,7 @@ export default function SettingsModelsPage() {
           <ApiWireFooter />
         </div>
       </div>
-    </div>
+      </div>
+    </TooltipProvider>
   );
 }
