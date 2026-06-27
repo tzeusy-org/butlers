@@ -21,10 +21,11 @@ from taking actions beyond their intended scope.
   control within the system that restricts the owner.
 - **The host machine.** If the machine is compromised, the system is compromised.
   Butlers does not attempt to defend against a hostile operating environment.
-- **The PostgreSQL instance.** Database access implies full read/write to all
-  butler schemas. The system relies on host-level access controls (filesystem
-  permissions, network binding, pg_hba.conf) rather than application-level
-  encryption.
+- **The PostgreSQL instance.** Superuser or migration-role database access
+  implies full read/write to all butler schemas (runtime butler connections are
+  scoped by `SET ROLE`; see Schema Isolation below). The system relies on
+  host-level access controls (filesystem permissions, network binding,
+  pg_hba.conf) rather than application-level encryption.
 
 ### What is partially trusted
 
@@ -71,6 +72,31 @@ locked-down MCP configuration containing only that butler's registered tools.
 - The LLM has access to all tools registered by the butler's modules. There is
   no per-session tool restriction within a single butler. If a module's tool is
   loaded, every session of that butler can call it.
+
+## Schema Isolation
+
+The single PostgreSQL database uses per-butler schemas with role-based
+least-privilege at runtime. `scripts/init-db.sql` creates one LOGIN role per
+butler and grants it access only to its own schema plus the shared `public`
+schema (read and write), with read-only access to connector schemas it depends
+on. At runtime each butler's connection pool issues `SET ROLE` to that butler's
+role (`src/butlers/db.py`), so a butler's queries cannot read or write another
+butler's schema even though all schemas live in one database.
+
+**Guarantees:**
+
+- A butler runtime connection scoped by `SET ROLE` can reach only its own schema
+  and `public`, plus any explicitly granted connector read schemas.
+- Cross-butler data access goes through MCP and the Switchboard, not direct SQL.
+
+**Limitations:**
+
+- The migration role and any superuser connection retain full access to all
+  schemas, consistent with the trust model (the owner and whoever holds the
+  database credentials are trusted).
+- Role enforcement degrades to a warning if the per-butler role cannot be
+  verified, unless `strict_role_enforcement` is set, in which case startup fails
+  closed.
 
 ## Approval Gates
 
@@ -154,21 +180,29 @@ credentials, or direct SQL on companion entity UUIDs for per-account tokens.
 
 ## Identity Resolution
 
-The shared contacts system maps channel-specific identifiers (Telegram chat ID,
-email address, Discord user ID) to canonical contacts. This enables:
+Identity resolution maps channel-specific identifiers (Telegram chat ID, email
+address, Discord user ID) to a known entity and their roles. The canonical
+reverse-lookup (`resolve_contact_by_channel` in `src/butlers/identity.py`) reads
+`relationship.entity_facts` RDF triples (predicates `has-handle`, `has-email`,
+`has-phone`) joined to `public.entities`. Under the seam law (RFC 0004
+Amendment 3), `relationship.entity_facts` is the single source of truth for all
+non-secret identifiers and relationships, while `public.entity_info` holds only
+secured credentials. Telegram handles are stored canonically with a `telegram:`
+prefix. This enables:
 
 - **Sender recognition:** Knowing who sent a message regardless of channel.
 - **Cross-channel context:** The relationship butler knows that the person who
   emailed is the same person who messaged on Telegram.
-- **Owner identification:** The owner's contact is bootstrapped at startup and
-  recognized across all channels.
+- **Owner identification:** The owner entity (`'owner' = ANY(roles)`) is
+  recognized across all channels and is the resolution target for owner-directed
+  delivery.
 
 **Limitations:**
 
 - Identity resolution is not cryptographic authentication. A Telegram chat ID
-  can be associated with a contact, but the system cannot prove the person
+  can be associated with an entity, but the system cannot prove the person
   controlling that Telegram account is who they claim to be.
-- Contact merging (deduplication) is a manual or LLM-assisted process, not
+- Entity merging (deduplication) is a manual or LLM-assisted process, not
   automatic.
 
 ## Sensitive Data Categories
@@ -214,19 +248,25 @@ nothing more.**
 
 ### Network Isolation Model
 
-Four Docker networks enforce least-privilege connectivity:
+Four Docker bridge networks separate connectivity by function:
 
-| Network | `internal` | Purpose |
-|---------|-----------|---------|
-| `db` | yes | Database and storage. No outbound internet. |
-| `backend` | yes | Inter-service communication (butlers, switchboard, connectors). No outbound internet. |
-| `frontend` | yes | Vite dev server to dashboard-api only. No outbound internet. |
-| `egress` | no | Outbound internet for services that call external APIs (LLM providers, Google OAuth, Telegram, Gmail). |
+| Network | Purpose |
+|---------|---------|
+| `db` | Database and storage (postgres, minio). |
+| `backend` | Inter-service communication (butlers, switchboard, connectors). |
+| `frontend` | Vite dev server to dashboard-api only. |
+| `egress` | Outbound internet for services that call external APIs (LLM providers, Google OAuth, Telegram, Gmail). |
 
 Services that need external API access join the `egress` network in addition to
-their functional networks. Services that don't (postgres, minio, migrations,
-log-init, oauth-gate) are restricted to internal networks and cannot reach the
-internet at all.
+their functional networks.
+
+None of these networks set Docker's `internal: true` flag. Docker's
+`DOCKER-ISOLATION-STAGE-1` rules for multiple internal networks interfere with
+each other and break inter-container communication, so isolation is enforced by
+the egress firewall (`scripts/egress-firewall.sh`) using per-bridge iptables
+rules on the `DOCKER-USER` chain rather than by the `internal` flag. The firewall
+is what blocks a compromised container from reaching private subnets; see the
+next section for its allow and deny rules.
 
 ### Private Subnet Firewall
 
