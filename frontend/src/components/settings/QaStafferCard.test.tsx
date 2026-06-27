@@ -26,6 +26,7 @@ vi.mock("@/hooks/use-qa", () => ({
   useQaAllowedRepos: vi.fn(),
   useUpdateQaRepoConfig: vi.fn(),
   useSyncQaRepo: vi.fn(),
+  useUpdateQaGitAuthor: vi.fn(),
   useAddQaAllowedRepo: vi.fn(),
   usePatchQaAllowedRepo: vi.fn(),
   useDeleteQaAllowedRepo: vi.fn(),
@@ -40,6 +41,7 @@ import {
   useQaRepoConfig,
   useQaSummary,
   useSyncQaRepo,
+  useUpdateQaGitAuthor,
   useUpdateQaRepoConfig,
 } from "@/hooks/use-qa";
 
@@ -48,12 +50,13 @@ type AnyMock = any;
 
 const updateMutate = vi.fn();
 const syncMutate = vi.fn();
+const gitAuthorMutate = vi.fn();
 const addMutate = vi.fn();
 const patchMutate = vi.fn();
 const deleteMutate = vi.fn();
 
 function mutation(mutate: ReturnType<typeof vi.fn>) {
-  return { mutate, isPending: false };
+  return { mutate, isPending: false, isError: false };
 }
 
 function setup(opts?: {
@@ -104,6 +107,7 @@ function setup(opts?: {
   });
   (useUpdateQaRepoConfig as AnyMock).mockReturnValue(mutation(updateMutate));
   (useSyncQaRepo as AnyMock).mockReturnValue(mutation(syncMutate));
+  (useUpdateQaGitAuthor as AnyMock).mockReturnValue(mutation(gitAuthorMutate));
   (useAddQaAllowedRepo as AnyMock).mockReturnValue(mutation(addMutate));
   (usePatchQaAllowedRepo as AnyMock).mockReturnValue(mutation(patchMutate));
   (useDeleteQaAllowedRepo as AnyMock).mockReturnValue(mutation(deleteMutate));
@@ -145,11 +149,45 @@ describe("QaStafferCard", () => {
     setup();
     const input = screen.getByLabelText("QA repository URL");
     fireEvent.change(input, { target: { value: "https://github.com/example/next" } });
-    fireEvent.click(screen.getByText("Save"));
+    // The git-author Save button has its own accessible name, so match exactly.
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(updateMutate).toHaveBeenCalledWith(
       { repo_url: "https://github.com/example/next" },
       expect.anything(),
     );
+  });
+
+  it("makes the git author identity fields editable and wires the save mutation", () => {
+    setup({ authorName: false, authorEmail: false });
+    const nameInput = screen.getByLabelText("Git author name") as HTMLInputElement;
+    const emailInput = screen.getByLabelText("Git author email") as HTMLInputElement;
+    const saveBtn = screen.getByLabelText("Save git author identity");
+
+    // Empty → disabled (both fields required, email must look valid).
+    expect((saveBtn as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(nameInput, { target: { value: "QA Staffer" } });
+    fireEvent.change(emailInput, { target: { value: "qa@butlers.local" } });
+    expect((saveBtn as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(saveBtn);
+    expect(gitAuthorMutate).toHaveBeenCalledWith(
+      { name: "QA Staffer", email: "qa@butlers.local" },
+      expect.anything(),
+    );
+  });
+
+  it("keeps the git author save disabled for a malformed email", () => {
+    setup({ authorName: false, authorEmail: false });
+    fireEvent.change(screen.getByLabelText("Git author name"), {
+      target: { value: "QA Staffer" },
+    });
+    fireEvent.change(screen.getByLabelText("Git author email"), {
+      target: { value: "not-an-email" },
+    });
+    expect(
+      (screen.getByLabelText("Save git author identity") as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("wires the repo Sync mutation", () => {

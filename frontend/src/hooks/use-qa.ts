@@ -34,6 +34,7 @@ import {
   retryHealingAttempt,
   syncQaRepo,
   undismissQaKnownIssue,
+  updateQaGitAuthor,
   updateQaRepoConfig,
 } from "@/api/index.ts";
 import type {
@@ -42,6 +43,7 @@ import type {
   QaCaseJournalParams,
   QaCasesParams,
   QaDismissRequest,
+  QaGitAuthorUpdate,
   QaInvestigationsParams,
   QaKnownIssuesParams,
   QaPatrolsParams,
@@ -347,6 +349,20 @@ export function useSyncQaRepo() {
     mutationFn: () => syncQaRepo(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["qa-repo-config"] });
+    },
+  });
+}
+
+/**
+ * Store the QA git author identity (name + email). Invalidates the QA summary
+ * cache on success so the card's credentials status badges refresh.
+ */
+export function useUpdateQaGitAuthor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: QaGitAuthorUpdate) => updateQaGitAuthor(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
     },
   });
 }

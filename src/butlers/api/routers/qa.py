@@ -765,6 +765,29 @@ class QaRepoSyncResponse(BaseModel):
     error: str | None = None
 
 
+class QaGitAuthorUpdate(BaseModel):
+    """Request body for updating the QA git author identity.
+
+    Both fields are stored in the shared credential store as
+    ``BUTLERS_QA_GIT_AUTHOR_NAME`` / ``BUTLERS_QA_GIT_AUTHOR_EMAIL`` and consumed
+    at investigation-dispatch time to author QA-generated commits.
+    """
+
+    name: str = Field(..., min_length=1, description="Git author name (e.g. 'QA Staffer')")
+    email: str = Field(..., min_length=3, description="Git author email")
+
+
+class QaGitAuthorStatus(BaseModel):
+    """Presence status of the QA git author identity after a write.
+
+    Mirrors the ``credentials_status`` fields surfaced by ``GET /api/qa/summary``
+    so the dashboard can update its status badges without an extra round-trip.
+    """
+
+    git_author_name_present: bool
+    git_author_email_present: bool
+
+
 class QaMetaReviewFinding(BaseModel):
     """A QA-self-recursive finding routed to the operator meta-review lane.
 
@@ -3199,6 +3222,55 @@ async def update_repo_config(
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         ),
+        meta=ApiMeta(),
+    )
+
+
+@router.put("/settings/git-author", response_model=ApiResponse[QaGitAuthorStatus])
+async def update_git_author(
+    body: QaGitAuthorUpdate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[QaGitAuthorStatus]:
+    """Store the QA git author identity in the shared credential store.
+
+    Persists ``BUTLERS_QA_GIT_AUTHOR_NAME`` and ``BUTLERS_QA_GIT_AUTHOR_EMAIL``
+    via the same ``CredentialStore`` / ``butler_secrets`` backend the rest of the
+    QA subsystem reads from at dispatch time (see
+    ``QaModule._resolve_git_identity`` and ``core.qa.dispatch``).  The values are
+    commit metadata, not secrets, so they are stored with ``is_sensitive=False``.
+    """
+    from butlers.core.qa.dispatch import QA_GIT_AUTHOR_EMAIL_KEY, QA_GIT_AUTHOR_NAME_KEY
+    from butlers.credential_store import CredentialStore
+
+    name = body.name.strip()
+    email = body.email.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Git author name must not be empty")
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        raise HTTPException(
+            status_code=422, detail="Git author email must be a valid email address"
+        )
+
+    store = CredentialStore(_shared_pool(db))
+    await store.store(
+        QA_GIT_AUTHOR_NAME_KEY,
+        name,
+        category="qa",
+        description="QA staffer git author name for investigation commits",
+        is_sensitive=False,
+    )
+    await store.store(
+        QA_GIT_AUTHOR_EMAIL_KEY,
+        email,
+        category="qa",
+        description="QA staffer git author email for investigation commits",
+        is_sensitive=False,
+    )
+
+    logger.info("QA git author identity updated via dashboard")
+
+    return ApiResponse(
+        data=QaGitAuthorStatus(git_author_name_present=True, git_author_email_present=True),
         meta=ApiMeta(),
     )
 

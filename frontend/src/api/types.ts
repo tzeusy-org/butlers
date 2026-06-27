@@ -4992,6 +4992,18 @@ export interface QaRepoSyncResponse {
   error: string | null;
 }
 
+/** Request body for PUT /api/qa/settings/git-author */
+export interface QaGitAuthorUpdate {
+  name: string;
+  email: string;
+}
+
+/** Response from PUT /api/qa/settings/git-author */
+export interface QaGitAuthorStatus {
+  git_author_name_present: boolean;
+  git_author_email_present: boolean;
+}
+
 /** A single entry in the QA repository whitelist. */
 export interface QaAllowedRepo {
   id: string;

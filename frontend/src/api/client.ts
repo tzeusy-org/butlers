@@ -283,6 +283,8 @@ import type {
   QaRepoConfig,
   QaRepoConfigUpdate,
   QaRepoSyncResponse,
+  QaGitAuthorUpdate,
+  QaGitAuthorStatus,
   QaAllowedRepo,
   QaAllowedRepoCreate,
   QaAllowedRepoPatch,
@@ -5602,6 +5604,16 @@ export function updateQaRepoConfig(
 export function syncQaRepo(): Promise<ApiResponse<QaRepoSyncResponse>> {
   return apiFetch<ApiResponse<QaRepoSyncResponse>>("/qa/settings/repo/sync", {
     method: "POST",
+  });
+}
+
+/** PUT /api/qa/settings/git-author — store git author identity (name + email) */
+export function updateQaGitAuthor(
+  body: QaGitAuthorUpdate,
+): Promise<ApiResponse<QaGitAuthorStatus>> {
+  return apiFetch<ApiResponse<QaGitAuthorStatus>>("/qa/settings/git-author", {
+    method: "PUT",
+    body: JSON.stringify(body),
   });
 }
 

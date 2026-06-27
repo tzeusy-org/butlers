@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -1265,3 +1267,94 @@ class TestListMetaReviewFindings:
         assert meta["limit"] == 10 and meta["offset"] == 5 and meta["total"] == 50
 
         assert (await _call(_make_503_app(), "get", "/api/qa/meta-review")).status_code == 503
+
+
+class _FakeCredentialStore:
+    """In-memory CredentialStore double shared between the write endpoint and the
+    dispatch read path, proving a round-trip without a live database."""
+
+    def __init__(self, pool: Any = None, **_: Any) -> None:
+        self.values: dict[str, str] = {}
+
+    async def store(
+        self,
+        key: str,
+        value: str,
+        *,
+        category: str = "general",
+        description: str | None = None,
+        is_sensitive: bool = True,
+        expires_at: Any = None,
+    ) -> None:
+        self.values[key.strip()] = value.strip()
+
+    async def resolve(self, key: str, *, env_fallback: bool = False) -> str | None:
+        return self.values.get(key)
+
+
+class TestUpdateGitAuthor:
+    async def test_write_endpoint_stores_identity_and_dispatch_reads_it(self) -> None:
+        """PUT /api/qa/settings/git-author stores name+email in the credential
+        store, and the dispatch read path (_resolve_git_identity) returns them."""
+        from butlers.core.qa.dispatch import (
+            QA_GIT_AUTHOR_EMAIL_KEY,
+            QA_GIT_AUTHOR_NAME_KEY,
+        )
+        from butlers.modules.qa import QaModule
+
+        fake_store = _FakeCredentialStore()
+        app, _ = _build_app()
+
+        with mock.patch(
+            "butlers.credential_store.CredentialStore",
+            side_effect=lambda *a, **k: fake_store,
+        ):
+            resp = await _call(
+                app,
+                "put",
+                "/api/qa/settings/git-author",
+                json={"name": "QA Staffer", "email": "qa@butlers.local"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["git_author_name_present"] is True
+        assert data["git_author_email_present"] is True
+
+        # Stored under the canonical dispatch keys.
+        assert fake_store.values[QA_GIT_AUTHOR_NAME_KEY] == "QA Staffer"
+        assert fake_store.values[QA_GIT_AUTHOR_EMAIL_KEY] == "qa@butlers.local"
+
+        # The dispatch read path picks up exactly what the endpoint wrote.
+        fake_self = SimpleNamespace(_credential_store=fake_store)
+        name, email = await QaModule._resolve_git_identity(fake_self)
+        assert name == "QA Staffer"
+        assert email == "qa@butlers.local"
+
+    async def test_rejects_blank_name_and_malformed_email(self) -> None:
+        app, _ = _build_app()
+        # Missing "@" → 422.
+        bad_email = await _call(
+            app,
+            "put",
+            "/api/qa/settings/git-author",
+            json={"name": "QA Staffer", "email": "not-an-email"},
+        )
+        assert bad_email.status_code == 422
+        # Empty name → 422 (pydantic min_length).
+        blank_name = await _call(
+            app,
+            "put",
+            "/api/qa/settings/git-author",
+            json={"name": "", "email": "qa@butlers.local"},
+        )
+        assert blank_name.status_code == 422
+
+    async def test_503_when_shared_pool_unavailable(self) -> None:
+        resp = await _call(
+            _make_503_app(),
+            "put",
+            "/api/qa/settings/git-author",
+            json={"name": "QA Staffer", "email": "qa@butlers.local"},
+        )
+        assert resp.status_code == 503

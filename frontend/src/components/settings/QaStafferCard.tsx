@@ -11,13 +11,15 @@
  *
  * Wired entirely to the existing use-qa hooks — this component adds no new
  * data fetching. The git author identity STATUS comes from
- * GET /api/qa/summary's credentials_status block; editing the identity needs a
- * write endpoint that does not exist yet (tracked as a follow-up), so the card
- * surfaces status only.
+ * GET /api/qa/summary's credentials_status block; the identity itself is
+ * EDITABLE here via PUT /api/qa/settings/git-author (useUpdateQaGitAuthor),
+ * which stores BUTLERS_QA_GIT_AUTHOR_NAME / _EMAIL in the shared secrets backend
+ * that the QA staffer reads at dispatch time. The GitHub token remains
+ * status-only (no write endpoint).
  *
  * Design language: Dispatch — mono eyebrows, hairline rules, no drop shadows.
  *
- * bu-r5bnn
+ * bu-r5bnn, bu-481kf
  */
 
 import { useState } from "react";
@@ -36,6 +38,7 @@ import {
   useQaRepoConfig,
   useQaSummary,
   useSyncQaRepo,
+  useUpdateQaGitAuthor,
   useUpdateQaRepoConfig,
 } from "@/hooks/use-qa";
 import { resolveQaRepoUrlInputValue } from "@/components/settings/qa-settings-state";
@@ -108,6 +111,7 @@ export default function QaStafferCard() {
 
   const updateRepo = useUpdateQaRepoConfig();
   const syncRepo = useSyncQaRepo();
+  const updateGitAuthor = useUpdateQaGitAuthor();
   const addRepo = useAddQaAllowedRepo();
   const patchRepo = usePatchQaAllowedRepo();
   const deleteRepo = useDeleteQaAllowedRepo();
@@ -115,6 +119,8 @@ export default function QaStafferCard() {
   const [repoDraft, setRepoDraft] = useState<string | null>(null);
   const [repoDirty, setRepoDirty] = useState(false);
   const [newRepo, setNewRepo] = useState("");
+  const [authorName, setAuthorName] = useState("");
+  const [authorEmail, setAuthorEmail] = useState("");
 
   const creds = summary.data?.data?.credentials_status;
   const ghTokenState = boolToState(creds?.gh_token_present);
@@ -147,6 +153,28 @@ export default function QaStafferCard() {
         onSuccess: () => {
           setRepoDraft(null);
           setRepoDirty(false);
+        },
+      },
+    );
+  }
+
+  // Mirror the backend validation (qa.py update_git_author): the email must
+  // contain "@" and may not start or end with it, so a malformed value disables
+  // Save instead of triggering an unexpected 422.
+  const trimmedEmail = authorEmail.trim();
+  const emailValid =
+    trimmedEmail.includes("@") && !trimmedEmail.startsWith("@") && !trimmedEmail.endsWith("@");
+  const canSaveAuthor =
+    authorName.trim().length > 0 && emailValid && !updateGitAuthor.isPending;
+
+  function handleSaveAuthor() {
+    if (!canSaveAuthor) return;
+    updateGitAuthor.mutate(
+      { name: authorName.trim(), email: authorEmail.trim() },
+      {
+        onSuccess: () => {
+          setAuthorName("");
+          setAuthorEmail("");
         },
       },
     );
@@ -256,17 +284,60 @@ export default function QaStafferCard() {
         {summary.isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : (
-          <div className="flex flex-col divide-y divide-border/40">
-            <StatusLine label="GitHub token · BUTLERS_QA_GH_TOKEN" state={ghTokenState} />
-            <StatusLine
-              label="Git author name · BUTLERS_QA_GIT_AUTHOR_NAME"
-              state={authorNameState}
-            />
-            <StatusLine
-              label="Git author email · BUTLERS_QA_GIT_AUTHOR_EMAIL"
-              state={authorEmailState}
-            />
-          </div>
+          <>
+            <div className="flex flex-col divide-y divide-border/40">
+              <StatusLine label="GitHub token · BUTLERS_QA_GH_TOKEN" state={ghTokenState} />
+              <StatusLine
+                label="Git author name · BUTLERS_QA_GIT_AUTHOR_NAME"
+                state={authorNameState}
+              />
+              <StatusLine
+                label="Git author email · BUTLERS_QA_GIT_AUTHOR_EMAIL"
+                state={authorEmailState}
+              />
+            </div>
+
+            {/* Editable git author identity ----------------------------- */}
+            <div className="flex flex-col gap-2 mt-3">
+              <Eyebrow>edit commit identity</Eyebrow>
+              <div className="flex gap-2">
+                <Input
+                  aria-label="Git author name"
+                  placeholder={authorNameState === "present" ? "Name set · enter to replace" : "QA Staffer"}
+                  value={authorName}
+                  disabled={updateGitAuthor.isPending}
+                  onChange={(e) => setAuthorName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveAuthor();
+                  }}
+                />
+                <Input
+                  aria-label="Git author email"
+                  type="email"
+                  placeholder={authorEmailState === "present" ? "Email set · enter to replace" : "qa@example.com"}
+                  value={authorEmail}
+                  disabled={updateGitAuthor.isPending}
+                  onChange={(e) => setAuthorEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveAuthor();
+                  }}
+                />
+                <Button
+                  variant="outline"
+                  onClick={handleSaveAuthor}
+                  disabled={!canSaveAuthor}
+                  aria-label="Save git author identity"
+                >
+                  {updateGitAuthor.isPending ? "Saving…" : "Save"}
+                </Button>
+              </div>
+              {updateGitAuthor.isError ? (
+                <p className="font-mono text-[11px] text-[var(--red)]">
+                  Could not save commit identity. Try again.
+                </p>
+              ) : null}
+            </div>
+          </>
         )}
         {creds?.provisioning_hint ? (
           <p className="font-mono text-[11px] text-muted-foreground mt-1">
@@ -274,8 +345,8 @@ export default function QaStafferCard() {
           </p>
         ) : null}
         <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
-          Credentials are provisioned through the secrets store; editing the commit identity from
-          the dashboard is not available yet.
+          The git author identity is stored in the secrets backend and used to author QA
+          investigation commits. The GitHub token is provisioned through the secrets store.
         </p>
       </div>
 
