@@ -985,7 +985,7 @@ async def list_entities(
     conditions: list[str] = [
         "(e.metadata->>'merged_into') IS NULL",
         "(e.metadata->>'deleted_at') IS NULL",
-        "NOT ('google_account' = ANY(e.roles))",
+        "NOT (e.roles && ARRAY['google_account', 'steam_account'])",
     ]
 
     if archived:
