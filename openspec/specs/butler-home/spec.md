@@ -20,7 +20,7 @@ The home butler operates as a dedicated domain butler for smart-home orchestrati
 #### Scenario: Module profile
 
 - **WHEN** the home butler starts
-- **THEN** it SHALL load modules: `home_assistant`, `memory`, `contacts` (Google provider, sync enabled), and `approvals`
+- **THEN** it SHALL load modules: `home_assistant`, `memory`, `contacts` (Google provider, sync enabled), `approvals`, and `google_drive`
 
 #### Scenario: Proactive event processing
 

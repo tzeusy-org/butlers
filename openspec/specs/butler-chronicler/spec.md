@@ -152,7 +152,7 @@ without invoking attendee resolution.
 
 - **WHEN** an owner-only adapter's `project()` executes
 - **THEN** the owner `entity_id` SHALL be resolved exactly once via
-  `public.contacts WHERE 'owner' = ANY(roles)` (not per row)
+  `public.entities WHERE 'owner' = ANY(roles)` (not per row)
 - **AND** the resolved `entity_id` SHALL be stamped on every upserted
   episode and point-event row
 - **AND** a single `episode_entities` row with `role='owner'` SHALL be
@@ -160,8 +160,8 @@ without invoking attendee resolution.
 
 #### Scenario: Unresolved owner degrades to NULL
 
-- **WHEN** no owner contact exists, the owner contact's `entity_id` is
-  NULL, or `public.contacts` is absent
+- **WHEN** no owner entity exists, the owner entity's `entity_id` is
+  NULL, or `public.entities` is absent
 - **THEN** the adapter SHALL write `entity_id = NULL` and SHALL NOT write
   an `episode_entities` row
 - **AND** it SHALL log at DEBUG level and SHALL NOT raise
@@ -172,7 +172,7 @@ without invoking attendee resolution.
 - **THEN** the backfill SHALL enumerate every owner-only `source_name`
   including the distinct health values `health.steps` and
   `health.heart_rate` separately from `google_health.measurements`
-- **AND** it SHALL resolve the owner via `public.contacts` rather than the
+- **AND** it SHALL resolve the owner via `public.entities` rather than the
   calendar-specific `google_accounts` path
 
 ### Requirement: Home Assistant Presence Person Attribution
@@ -186,8 +186,9 @@ schema owner, resolving the entity per tracked person without an LLM call.
 - **WHEN** the adapter rolls up `home` state runs for a `person.*` entity
   into a `presence_episode`
 - **THEN** the HA entity id SHALL be resolved to a graph `entity_id` via
-  `connectors.home_assistant_persons` joined to `public.contacts.entity_id`,
-  resolved once per tracked person (not per row)
+  the `connectors.home_assistant_persons.entity_id` column (a direct FK to
+  `public.entities` added in migration core_132, no longer joined through
+  `public.contacts`), resolved once per tracked person (not per row)
 - **AND** the resolved `entity_id` SHALL be stamped on the episode
 - **AND** an `episode_entities` row SHALL be written for the resolved
   person with `role='owner'` (the subject of the episode)

@@ -87,8 +87,8 @@ Modules SHALL be pluggable units that add domain-specific MCP tools and database
 #### Scenario: Module ABC contract
 - **WHEN** a module is implemented
 - **THEN** it extends the `Module` abstract base class providing: `name` (unique string identifier), `config_schema` (Pydantic model for `[modules.{name}]` TOML section), `dependencies` (list of module names this module depends on)
-- **AND** it implements: `register_tools(mcp, config, db)` to add MCP tools, `migration_revisions()` returning an Alembic branch label or None, `on_startup(config, db, credential_store, blob_store, *, switchboard_client)` for initialization, `on_shutdown()` for cleanup
-- **AND** `on_startup()` receives an optional `switchboard_client` kwarg — the daemon's Switchboard MCPClient instance (or None when switchboard is not configured). Modules that need inter-butler communication (e.g., self_healing QA relay) use this to relay findings via Switchboard's `route()` tool
+- **AND** it implements: `register_tools(mcp, config, db, butler_name)` to add MCP tools, `migration_revisions()` returning an Alembic branch label or None, `on_startup(config, db, credential_store=None, blob_store=None)` for initialization, `on_shutdown()` for cleanup
+- **AND** modules that need inter-butler communication (e.g., self_healing QA relay) implement the optional `wire_runtime()` hook, which the daemon calls after `on_startup()` and after the Switchboard connection is established (lifecycle step 13d) to inject the spawner and the daemon's Switchboard MCPClient (or None when switchboard is not configured); the module uses that client to relay findings via Switchboard's `route()` tool. The Switchboard client is NOT passed as an `on_startup()` kwarg
 
 #### Scenario: Module tool metadata
 - **WHEN** a module has tools with safety-sensitive arguments
@@ -117,7 +117,7 @@ Skills SHALL be structured behavioral guides (per agentskills.io spec) that are 
 
 #### Scenario: Skill file format
 - **WHEN** a skill is defined
-- **THEN** it lives at `roster/{butler-name}/skills/{skill-name}/SKILL.md` (butler-specific) or `roster/shared/skills/{skill-name}/SKILL.md` (shared across butlers)
+- **THEN** it lives at `roster/{butler-name}/.agents/skills/{skill-name}/SKILL.md` (butler-specific) or `roster/shared/skills/{skill-name}/SKILL.md` (shared across butlers)
 - **AND** the SKILL.md file contains YAML frontmatter (`name`, `description`, `version`, optional `trigger_patterns`) followed by markdown content defining usage guides, templates, workflows, and examples
 
 #### Scenario: Skill loading into runtime sessions
@@ -129,14 +129,14 @@ Skills SHALL be structured behavioral guides (per agentskills.io spec) that are 
 #### Scenario: Shared skills
 - **WHEN** a skill is used across multiple butlers
 - **THEN** it lives in `roster/shared/skills/{skill-name}/SKILL.md`
-- **AND** it is symlinked into each consuming butler's `skills/` directory
+- **AND** it is symlinked into each consuming butler's `.agents/skills/` directory
 - **AND** current shared skills include:
   - `butler-memory`: Entity resolution before storage, permanence levels (`permanent`, `stable`, `standard`, `volatile`), fact anchoring to `entity_id`, JSON array tags for cross-cutting queries
   - `butler-notifications`: Notification delivery via `notify()` with required parameters (`channel`, `message`/`emoji`, `intent`), intent selection (`send`, `reply`, `react`), `request_context` propagation
 
 #### Scenario: Butler-specific skills
 - **WHEN** a butler has domain-specific workflows
-- **THEN** it places skills in `roster/{butler-name}/skills/{skill-name}/SKILL.md`
+- **THEN** it places skills in `roster/{butler-name}/.agents/skills/{skill-name}/SKILL.md`
 - **AND** these skills are only available to that butler's runtime sessions
 - **AND** skills may have optional companion scripts alongside the SKILL.md
 
@@ -269,7 +269,7 @@ Every butler SHALL live in `roster/{butler-name}/` and follow a fixed directory 
 
 #### Scenario: Optional subdirectories
 - **WHEN** a butler has domain-specific features
-- **THEN** skills are placed in `roster/{butler-name}/skills/{skill-name}/SKILL.md` with optional companion scripts
+- **THEN** skills are placed in `roster/{butler-name}/.agents/skills/{skill-name}/SKILL.md` with optional companion scripts
 - **AND** dashboard API routes are placed in `roster/{butler-name}/api/router.py` (exporting a module-level `router` APIRouter variable) with optional `models.py`
 - **AND** no `__init__.py` is required in `api/`; auto-discovery handles registration via `src/butlers/api/router_discovery.py`
 
@@ -323,7 +323,7 @@ Scheduled tasks declared in `butler.toml` with `dispatch_mode = "prompt"` SHALL 
 
 #### Scenario: Prompt-dispatched scheduled task has a companion skill
 - **WHEN** a `[[butler.schedule]]` entry uses `dispatch_mode = "prompt"`
-- **THEN** a companion skill exists in `roster/{butler-name}/skills/` documenting the full workflow for that scheduled task
+- **THEN** a companion skill exists in `roster/{butler-name}/.agents/skills/` documenting the full workflow for that scheduled task
 - **AND** the schedule entry's `prompt` field references the skill and provides the trigger context (e.g., "Run the upcoming-bills-check workflow. Horizon: 14 days, include overdue.")
 - **AND** the companion skill contains: the complete tool call sequence, output formatting, notification delivery via `notify(intent="send")`, and the no-op path (when there is nothing to report)
 
@@ -379,7 +379,7 @@ AGENTS.md SHALL be loaded into every runtime session via the CLAUDE.md indirecti
 
 #### Scenario: Workflow content lives in skills
 - **WHEN** a butler has a multi-step workflow (e.g., fact extraction pipeline, message classification rules, health check-in flow, bill review triage)
-- **THEN** that workflow is documented as a skill in `roster/{butler-name}/skills/{skill-name}/SKILL.md`
+- **THEN** that workflow is documented as a skill in `roster/{butler-name}/.agents/skills/{skill-name}/SKILL.md`
 - **AND** the AGENTS.md references the skill with a one-liner (e.g., "For the conversational fact extraction workflow, consult the `fact-extraction` skill.")
 - **AND** the skill contains the complete procedure: tool call sequences, decision frameworks, classification rules, complete worked examples, and output templates
 

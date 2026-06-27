@@ -16,14 +16,14 @@ The general butler handles ad-hoc user requests without specialist schema assump
 
 #### Scenario: Module profile
 - **WHEN** the general butler starts
-- **THEN** it loads modules: `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), and `memory`
+- **THEN** it loads modules: `general` (the custom module that registers the collection and item management tools), `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), `memory`, and `steam` (lifestyle gaming-activity capture available to the catch-all butler)
 
 ### Requirement: General Butler Tool Surface
-The general butler provides collection and entity management tools for organizing freeform data.
+The general butler provides collection and item management tools for organizing freeform data.
 
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the general butler
-- **THEN** it has access to: `collection_create`, `collection_list`, `collection_delete`, `entity_create`, `entity_get`, `entity_update`, `entity_delete`, `entity_search`, `collection_export`, and calendar tools
+- **THEN** it has access to: `collection_create`, `collection_list`, `collection_delete`, `item_create`, `item_get`, `item_update`, `item_delete`, `item_search`, `collection_export`, and calendar tools
 
 ### Requirement: General Butler Schedules
 The general butler runs memory maintenance, briefing aggregation, and a daily end-of-day preparation prompt that incorporates cross-butler data.

@@ -55,8 +55,11 @@ The module SHALL export a `DEFAULT_TZ` constant set to `"Asia/Singapore"`. This 
 explicit, deterministic default used both as the `AppTimezoneContext` default value and as
 the fallback the App applies when `GET /api/settings/general` has not yet returned a
 timezone. `"Asia/Singapore"` matches the `SGT` constant used by the backend briefing logic
-(`briefing.py`), keeping the owner's configured zone consistent across the stack. Browser
-locale is never used as the default.
+(`briefing.py`, a hardcoded UTC+8 offset). Note that the backend general-settings module
+(`src/butlers/core/general_settings.py`) uses a different fallback, `DEFAULT_GENERAL_TIMEZONE
+= "UTC"`; the frontend `DEFAULT_TZ` and that backend default do not currently align, and a
+user-configured timezone (resolved through `GET /api/settings/general`) reconciles the two at
+runtime. Browser locale is never used as the default.
 
 #### Scenario: DEFAULT_TZ is the context default
 

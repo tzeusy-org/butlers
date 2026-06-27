@@ -1,7 +1,7 @@
 # Messenger Staffer Role
 
 ## Purpose
-The Messenger (port 41104) is the outbound delivery execution plane for Telegram and Email. It is a staffer — an infrastructure agent that serves the ecosystem by owning all outbound channel delivery. It does not perform classification or domain logic.
+The Messenger (port 41104) is the outbound delivery execution plane for Telegram, Email, and WhatsApp (WhatsApp tools are registered but disabled by default via `send_enabled = false`, pending account ban-risk assessment). It is a staffer, an infrastructure agent that serves the ecosystem by owning all outbound channel delivery. It does not perform classification or domain logic.
 
 ## ADDED Requirements
 
@@ -11,6 +11,7 @@ The messenger is a staffer — a delivery-only execution plane with no domain lo
 #### Scenario: Identity and port
 - **WHEN** the messenger daemon starts
 - **THEN** it operates on port 41104 with description "Outbound delivery execution plane for Telegram and Email"
+- **AND** it also enables the `whatsapp` module with `send_tools = true` and `send_enabled = false` (tools registered but functionally disabled by default)
 - **AND** its `butler.toml` has `type = "staffer"`
 - **AND** it uses the `codex` runtime adapter with a maximum of 3 concurrent sessions
 - **AND** its database schema is `messenger` within the consolidated `butlers` database
@@ -38,7 +39,7 @@ The messenger butler owns all external user-channel delivery tools. No other but
 
 #### Scenario: Channel tool surface
 - **WHEN** the messenger butler receives a `notify.v1` delivery intent
-- **THEN** it executes delivery through its owned channel tools: `telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`
+- **THEN** it executes delivery through its owned channel tools: `telegram_send_message`, `telegram_reply_to_message`, `telegram_react_to_message`, `email_send_message`, `email_reply_to_thread`, and (when enabled) `whatsapp_send_message`, `whatsapp_reply_to_message`
 - **AND** non-messenger butlers must never call channel send/reply tools directly
 
 #### Scenario: Delivery validation and lineage
@@ -51,7 +52,7 @@ Sensitive delivery tools require approval before execution.
 
 #### Scenario: Gated tools
 - **WHEN** the messenger butler starts with the `approvals` module enabled
-- **THEN** `telegram_send_message`, `email_send_message`, and `notify` are gated by the approval subsystem
+- **THEN** the following tools are gated by the approval subsystem: `telegram_send_message`, `telegram_reply_to_message`, `telegram_react_to_message`, `email_send_message`, `email_reply_to_thread`, `whatsapp_send_message`, `whatsapp_reply_to_message`, and `notify`
 - **AND** the LLM CLI must obtain approval before invoking these tools in production
 
 ### Requirement: Idempotent Delivery Requests

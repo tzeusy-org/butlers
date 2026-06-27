@@ -43,7 +43,8 @@ The travel butler runs upcoming travel checks, document expiry scans, and insigh
 
 #### Scenario: Scheduled task inventory
 - **WHEN** the travel butler daemon is running
-- **THEN** it executes three scheduled tasks: `upcoming-travel-check` (0 8 * * *), `trip-document-expiry` (0 9 * * 1), and `insight-scan` (0 7 45 * * *, job: evaluate travel domain data and generate insight candidates)
+- **THEN** it executes the domain scheduled tasks: `upcoming-travel-check` (0 0 * * *, which is 08:00 SGT since the scheduler interprets cron in UTC), `trip-document-expiry` (0 9 * * 1), and `insight-scan` (45 7 * * *, job: evaluate travel domain data and generate insight candidates)
+- **AND** it also runs the cross-butler contribution jobs `daily_briefing_contribution` (55 6 * * *), `calendar_overlay_contribution` (50 6 * * *), and `calendar_prep_contribution` (56 6 * * *)
 
 ### Requirement: Travel Butler Skills
 The travel butler has pre-trip checklist and trip planner skills.
