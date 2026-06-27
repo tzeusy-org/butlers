@@ -137,6 +137,6 @@ Connector authentication uses bearer tokens issued by the Switchboard. Token sco
 
 ## Related Pages
 
-- [Connector Interface Contract](interface.md) -- Full normative spec including `ingest.v1` envelope schema
+- [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema
 - [Switchboard Butler Role](../architecture/routing.md) -- Ingestion authority
 - [API Authentication](../identity_and_secrets/cli-runtime-auth.md) -- Token lifecycle

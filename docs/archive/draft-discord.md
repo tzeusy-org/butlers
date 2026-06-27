@@ -4,7 +4,7 @@
 # Discord User Connector (Draft)
 
 Status: **DRAFT** (v2-only WIP, not production-ready)  
-Depends on: `docs/connectors/interface.md`
+Depends on: `docs/connectors/overview.md`
 
 ## 1. Purpose
 This draft connector describes wiring Discord activity into the butler ecosystem through a user's Discord account context so butlers can stay current on life events, commitments, and evolving personal knowledge without explicit manual upload.
@@ -26,7 +26,7 @@ Out of scope in this draft:
 - Outbound Discord delivery behavior (this doc is ingress-focused).
 
 ## 3. Request Context Mapping (Interface Alignment)
-Use `ingest.v1` from `docs/connectors/interface.md`.
+Use `ingest.v1` from `docs/api_and_protocols/ingestion-envelope.md`.
 
 Discord mapping (target):
 - `source.channel`: `discord`

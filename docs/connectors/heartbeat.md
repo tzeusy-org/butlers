@@ -154,4 +154,4 @@ On receiving a heartbeat, the Switchboard:
 
 - [Connector Architecture Overview](overview.md) -- What connectors are and how they work
 - [Metrics](metrics.md) -- Statistics aggregation and dashboard API
-- [Connector Interface Contract](interface.md) -- Full connector contract
+- [Connector Interface Contract](overview.md) -- Full connector contract

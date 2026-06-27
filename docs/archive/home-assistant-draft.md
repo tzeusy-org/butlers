@@ -6,7 +6,7 @@
 Status: **Draft** (Research Only — no implementation)
 Last updated: 2026-02-19
 Author: Research pass, butlers-962.5
-Depends on: `src/butlers/modules/base.py`, `docs/connectors/interface.md`
+Depends on: `src/butlers/modules/base.py`, `docs/connectors/overview.md`
 
 ---
 

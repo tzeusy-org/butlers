@@ -6,7 +6,7 @@
 Status: **Draft** (Research Only — no implementation)
 Last updated: 2026-02-19
 Author: Research pass, butlers-962.1
-Depends on: `docs/connectors/interface.md`, `src/butlers/modules/base.py`
+Depends on: `docs/connectors/overview.md`, `src/butlers/modules/base.py`
 
 ---
 
@@ -315,7 +315,7 @@ is the best-fit option. The approach mirrors the `lharries/whatsapp-mcp` archite
 2. The Python `WhatsAppModule` implements the `Module` ABC, starts the Go sidecar on
    `on_startup()`, and polls or receives webhooks from the sidecar for inbound events.
 3. Inbound events are normalized into `ingest.v1` envelopes and submitted to Switchboard
-   via the canonical connector pattern (`docs/connectors/interface.md`).
+   via the canonical connector pattern (`docs/connectors/overview.md`).
 
 **Why not Cloud API:** Cannot access the user's personal WhatsApp inbox. Requires a
 dedicated business number. Webhook endpoint breaks the tailnet isolation requirement.
@@ -366,7 +366,7 @@ The $19/month cost may be acceptable for a self-hosted deployment.
 
 ### 6.1 ingest.v1 Mapping
 
-Following `docs/connectors/interface.md`, a WhatsApp connector would map events as:
+Following `docs/connectors/overview.md`, a WhatsApp connector would map events as:
 
 ```json
 {
@@ -638,7 +638,7 @@ When the implementation ticket is created, the following steps are required:
 5. Register `whatsapp` channel in Switchboard ingress dedupe contract.
 6. Add connector profile at `docs/connectors/whatsapp.md`.
 7. Write unit tests for module tools, migration, and ingestion normalization.
-8. Update `docs/connectors/interface.md` to reference `whatsapp.md`.
+8. Update `docs/connectors/index.md` to reference `whatsapp.md`.
 
 ---
 

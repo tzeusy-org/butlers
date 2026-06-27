@@ -6,7 +6,7 @@
 Status: **Draft** (Research Only — no implementation)
 Last updated: 2026-02-19
 Author: Research pass, butlers-962.3
-Depends on: `src/butlers/modules/base.py`, `docs/connectors/interface.md`
+Depends on: `src/butlers/modules/base.py`, `docs/connectors/overview.md`
 
 ---
 
@@ -1085,7 +1085,7 @@ When the implementation ticket is created:
 16. Write unit tests: EXIF stripping, thumbnail generation, OCR dispatch,
     face detection flag, pipeline injection.
 17. Document privacy-preserving pipeline in this file (§11) and link from
-    `docs/connectors/interface.md`.
+    `docs/connectors/overview.md`.
 
 ---
 

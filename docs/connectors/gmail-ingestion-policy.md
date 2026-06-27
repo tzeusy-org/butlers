@@ -2,7 +2,7 @@
 
 > **Purpose:** Define the three-tier email ingestion policy that processes inbox events in proportion to their value, reducing LLM and storage cost while preserving high-value workflows.
 > **Audience:** Developers and operators configuring email ingestion behavior.
-> **Prerequisites:** [Gmail Connector](gmail.md), [Connector Interface Contract](interface.md).
+> **Prerequisites:** [Gmail Connector](gmail.md), [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md).
 
 ## Overview
 
@@ -120,6 +120,6 @@ Recommended dimensions: `endpoint_identity`, `rule_id`, `reason`.
 ## Related Pages
 
 - [Gmail Connector](gmail.md) -- Connector runtime and configuration
-- [Connector Interface Contract](interface.md) -- Full `ingest.v1` envelope spec
+- [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Attachment Handling](attachment-handling.md) -- Attachment fetch policy
 - [Metrics](metrics.md) -- Connector statistics and dashboard API

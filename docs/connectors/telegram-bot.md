@@ -2,7 +2,7 @@
 
 > **Purpose:** Profile the Telegram bot connector -- how it polls or receives webhook updates, normalizes them, and submits to Switchboard ingest.
 > **Audience:** Developers deploying or operating the Telegram bot connector.
-> **Prerequisites:** [Connector Architecture Overview](overview.md), [Connector Interface Contract](interface.md).
+> **Prerequisites:** [Connector Architecture Overview](overview.md), [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md).
 
 ## Overview
 
@@ -130,6 +130,6 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)
-- [Connector Interface Contract](interface.md) -- Full `ingest.v1` envelope spec
+- [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation

@@ -1,7 +1,7 @@
 # Live Listener Connector
 > **Purpose:** Capture ambient audio from physical microphones, detect speech, transcribe it, and submit voice events to the Switchboard for routing.
 > **Audience:** Contributors.
-> **Prerequisites:** [Connector Interface](interface.md), [Connector Metrics](metrics.md).
+> **Prerequisites:** [Connector Interface](overview.md), [Connector Metrics](metrics.md).
 
 ## Overview
 
@@ -60,7 +60,7 @@ Each mic pipeline runs in a retry loop with exponential backoff. A single mic fa
 
 ## Related Pages
 
-- [Connector Interface](interface.md) -- Shared connector contract and lifecycle
+- [Connector Interface](overview.md) -- Shared connector contract and lifecycle
 - [Connector Metrics](metrics.md) -- Standard Prometheus instrumentation for connectors
 - [Attachment Handling](attachment-handling.md) -- How binary content flows through connectors
 - [Heartbeat Protocol](heartbeat.md) -- Connector liveness signaling

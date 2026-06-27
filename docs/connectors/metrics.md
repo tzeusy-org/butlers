@@ -1,7 +1,7 @@
 # Connector Metrics
 > **Purpose:** Standardized Prometheus instrumentation for all connector runtimes, covering ingestion, source API calls, checkpoints, errors, and attachments.
 > **Audience:** Contributors.
-> **Prerequisites:** [Connector Interface](interface.md), [Heartbeat Protocol](heartbeat.md).
+> **Prerequisites:** [Connector Interface](overview.md), [Heartbeat Protocol](heartbeat.md).
 
 ## Overview
 
@@ -77,7 +77,7 @@ Core API routes in `src/butlers/api/routers/connectors.py` expose: connector lis
 
 ## Related Pages
 
-- [Connector Interface](interface.md) -- Shared connector contract and lifecycle
+- [Connector Interface](overview.md) -- Shared connector contract and lifecycle
 - [Heartbeat Protocol](heartbeat.md) -- Liveness signaling that complements these metrics
 - [Attachment Handling](attachment-handling.md) -- Attachment-specific metric semantics
 - [Metrics Module](../modules/metrics.md) -- Butler-level Prometheus integration (separate from connector metrics)

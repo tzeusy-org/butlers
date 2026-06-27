@@ -2,7 +2,7 @@
 
 > **Purpose:** Profile the Telegram user-client connector -- live MTProto ingestion, per-chat buffering, discretion filtering, deployment, and privacy requirements.
 > **Audience:** Developers deploying or operating the Telegram user-client connector.
-> **Prerequisites:** [Connector Architecture Overview](overview.md), [Connector Interface Contract](interface.md).
+> **Prerequisites:** [Connector Architecture Overview](overview.md), [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md).
 
 ## Overview
 
@@ -220,7 +220,7 @@ Key metrics to monitor:
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)
-- [Connector Interface Contract](interface.md) -- Full `ingest.v1` envelope spec
+- [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Telegram Bot Connector](telegram-bot.md) -- Bot API connector (separate from user client)
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation

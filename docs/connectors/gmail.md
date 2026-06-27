@@ -2,7 +2,7 @@
 
 > **Purpose:** Profile the Gmail connector -- live ingestion via history polling and Pub/Sub push, backfill support, tiered processing, and multi-account operation.
 > **Audience:** Developers deploying or operating the Gmail connector.
-> **Prerequisites:** [Connector Architecture Overview](overview.md), [Connector Interface Contract](interface.md).
+> **Prerequisites:** [Connector Architecture Overview](overview.md), [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md).
 
 ## Overview
 
@@ -206,7 +206,7 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)
-- [Connector Interface Contract](interface.md) -- Full `ingest.v1` envelope spec
+- [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Gmail Ingestion Policy](gmail-ingestion-policy.md) -- Tiered email processing
 - [Attachment Handling](attachment-handling.md) -- Attachment fetch policy
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
