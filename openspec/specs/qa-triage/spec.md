@@ -22,7 +22,7 @@ The triage layer SHALL check each finding's fingerprint against three sources to
 - **THEN** the finding is marked `dedup_reason = "active_investigation"`
 - **AND** it is excluded from investigation dispatch
 - **AND** the finding's `qa_findings` record is linked to the existing attempt ID
-- **AND** if the matched attempt has `status = "pr_open"` with a non-null `pr_url`, the finding's record also stores the `pr_url` for dashboard display
+- **AND** if the matched attempt has `status = "pr_open"` with a non-null `pr_url`, the dashboard reads the `pr_url` through the finding's `healing_attempt_id` FK to the attempt row (the `pr_url` is not copied onto `qa_findings`)
 - **NOTE** `dispatch_pending` is NOT a valid status and is NOT included here — there is no deferred pre-launch state; novelty claim and row insertion are atomic
 
 #### Scenario: Check local dismissal cache
@@ -54,8 +54,8 @@ All findings (novel and deduplicated) SHALL be recorded in `public.qa_findings` 
 Operators SHALL be able to dismiss findings via the dashboard API, preventing them from triggering investigations for a configurable duration.
 
 #### Scenario: Dismiss a finding by fingerprint
-- **WHEN** `POST /api/qa/dismiss` is called with `fingerprint` and `duration_hours` (default: 24)
-- **THEN** a row is upserted in `public.qa_dismissals` with `fingerprint`, `dismissed_until = now() + duration`, `dismissed_by = "dashboard"`
+- **WHEN** `POST /api/qa/known-issues/{fingerprint}/dismiss` is called (fingerprint in the path) with an optional body `{dismissed_until, dismissed_by}`
+- **THEN** a row is upserted in `public.qa_dismissals` with `fingerprint`, `dismissed_until` (the supplied timestamp, or a year-9999 sentinel for an indefinite dismissal when omitted), and `dismissed_by` (defaults to `"dashboard_user"`)
 - **AND** subsequent triage cycles skip this fingerprint until `dismissed_until` expires
 
 #### Scenario: Dismissal expiry
@@ -71,12 +71,12 @@ Novel findings SHALL be ordered by severity for investigation dispatch, with mor
 - **AND** within the same severity, by occurrence_count descending (most frequent first)
 - **AND** the dispatch loop processes them in this order up to the concurrency cap
 
-### Requirement: Journal Event Emission — Triage
-The triage layer SHALL emit a `flagged` journal event into `public.qa_investigation_events` whenever it persists a novel finding that becomes the head of a new investigation. Triage MAY emit `sampled` and `cross-checked` events when it performs multi-source corroboration; v1 implementations are permitted to omit these.
+### Requirement: Journal Event Emission, Triage
+The dispatch layer SHALL emit a `flagged` journal event into `public.qa_investigation_events` whenever a novel finding becomes the head of a new investigation, immediately after the atomic novelty claim that inserts the `healing_attempts` row (the triage module classifies novelty; the dispatch layer performs the emission). Triage MAY emit `sampled` and `cross-checked` events when it performs multi-source corroboration; v1 implementations are permitted to omit these.
 
 #### Scenario: flagged event on novel finding dispatch
 - **WHEN** triage persists a `qa_findings` row with `dedup_reason = null` AND the dispatcher proceeds to insert a new `healing_attempts` row for that finding (novelty gate atomic claim succeeds)
-- **THEN** triage inserts a `qa_investigation_events` row with `step = 'flagged'`, `attempt_id = <new attempt id>`, `finding_id = <the qa_findings id>`, `text` summarizing the trigger (e.g. `"patrol cycle <N> · failure_streak crossed <K>"` or `"novel finding from <source_type>"`), and a `detail` with the source butler, fingerprint prefix, and severity heuristic label
+- **THEN** the dispatch layer inserts a `qa_investigation_events` row with `step = 'flagged'`, `attempt_id = <new attempt id>`, `finding_id = <the qa_findings id>`, `text` summarizing the trigger (e.g. `"patrol cycle <N> · failure_streak crossed <K>"` or `"novel finding from <source_type>"`), and a `detail` with the source butler, fingerprint prefix, and severity heuristic label
 - **AND** the event's `ts` matches the patrol's `started_at` to within one second
 
 #### Scenario: No flagged event for deduplicated findings

@@ -36,7 +36,7 @@ While tests are running (or paused in a debugger), connect to any butler's datab
 
 ```bash
 # The ecosystem fixture logs the actual port at session start.
-psql -h localhost -p $EXPOSED_PORT -U test -d butler_health
+psql -h localhost -p $EXPOSED_PORT -U test -d butlers   # then: SET search_path TO health;
 ```
 
 The `butler_ecosystem` fixture is session-scoped. If you set a breakpoint, all butlers remain running on their ports and all databases remain accessible.
@@ -108,9 +108,9 @@ grep 'classify_message\|route.*target' .tmp/e2e-logs/e2e-latest.log
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │          TESTCONTAINER PostgreSQL (session-scoped)       │  │
 │  │                                                          │  │
-│  │  butler_switchboard  butler_general  butler_relationship │  │
-│  │  butler_health       butler_messenger                    │  │
-│  │                                                          │  │
+│  │  One `butlers` database; per-butler SCHEMAS:             │  │
+│  │  switchboard  general  relationship  health  messenger   │  │
+│  │  plus shared `public`                                    │  │
 │  │  Core tables: state, scheduled_tasks, sessions           │  │
 │  │  Butler tables: measurements, contacts, butler_registry  │  │
 │  └─────────────────────────────────────────────────────────┘  │
@@ -137,7 +137,7 @@ The project SHALL use pytest with pytest-asyncio as the test runner. Configurati
 - **THEN** known deprecation warnings from `websockets`, `uvicorn`, `AsyncMock`, `EmailModule`, and `health server` are filtered to avoid noise
 
 ### Requirement: Test Markers and Categories
-Tests SHALL be classified into four tiers with increasing scope, cost, and infrastructure requirements. Markers SHALL control which tiers execute in which environment.
+Tests SHALL be classified into tiers of increasing scope, cost, and infrastructure: unit, smoke, integration, nightly (adapter), and e2e, plus specialized opt-in markers (benchmark, bench, discretion_bench, switchboard_bench, routing_accuracy, tool_accuracy, db, contract, perf) registered in `pyproject.toml`. Markers SHALL control which tiers execute in which environment.
 
 #### Scenario: Unit tests (default, unmarked)
 - **WHEN** a test has no marker or is marked `@pytest.mark.unit`
@@ -152,7 +152,7 @@ Tests SHALL be classified into four tiers with increasing scope, cost, and infra
 
 #### Scenario: Nightly tests (adapter integration)
 - **WHEN** a test is marked `@pytest.mark.nightly`
-- **THEN** it is excluded from default CI via `addopts = "-m 'not nightly'"`
+- **THEN** it is excluded from default CI via the default `addopts` deselection `-m 'not nightly and not bench and not perf'` (alongside `--import-mode=importlib -n 3 --dist loadfile --ignore=tests/benchmarks`)
 - **AND** it requires the adapter's CLI binary on PATH (skipped via `skipif` when missing)
 - **AND** it requires valid LLM API credentials in the environment
 - **AND** it validates parser correctness against real CLI output (structural assertions only)
@@ -167,7 +167,7 @@ Shared fixtures and helpers SHALL be provided in `tests/adapters/conftest.py` fo
 
 #### Scenario: run_cli fixture
 - **WHEN** an integration test needs to invoke a real CLI binary
-- **THEN** it SHALL use the `run_cli(binary, prompt, timeout=120)` fixture from conftest
+- **THEN** it SHALL use the `run_cli(binary, args, prompt, timeout=120, cwd="/tmp")` module-level helper function from conftest (not a pytest fixture)
 - **AND** the fixture SHALL return `(stdout, stderr, returncode)` via `subprocess.run()`
 - **AND** the fixture SHALL default `cwd` to `/tmp` to avoid polluting the working directory
 
@@ -189,7 +189,7 @@ Tests SHALL be organized into subdirectories by concern, with standalone test fi
 
 #### Scenario: Standalone cross-cutting test files
 - **WHEN** a test validates a cross-cutting concern
-- **THEN** it may live at the top level of `tests/` (e.g., `test_routing_contracts.py`, `test_tool_name_compliance.py`, `test_tool_gating.py`, `test_smoke.py`, `test_startup_guard.py`)
+- **THEN** it may live at the top level of `tests/` (e.g., `test_education_analytics_mcp_guardrails.py`, `test_telegram_prefix_resolution.py`) or, for architectural-invariant contract tests, under `tests/contracts/`
 
 #### Scenario: Butler-specific integration tests
 - **WHEN** a butler has roster-level integration tests
@@ -200,7 +200,7 @@ Fixtures SHALL be layered across three conftest files with clear scoping and re-
 
 #### Scenario: Root conftest (conftest.py)
 - **WHEN** any test in the project runs
-- **THEN** it has access to fixtures from the root `conftest.py` which provides: `docker_available` flag (checks `shutil.which("docker")`), `SpawnerResult` dataclass (mock spawner output), `MockSpawner` class (configurable mock with invocation recording and result queuing), `mock_spawner` fixture (provides a MockSpawner instance), `postgres_container` session-scoped fixture (PostgreSQL 16 testcontainer), and `provisioned_postgres_pool` fixture (creates a fresh database with unique name per test invocation)
+- **THEN** it has access to fixtures from the root `conftest.py` which provides: `docker_available` flag (checks `shutil.which("docker")`), `SpawnerResult` dataclass (mock spawner output), `MockSpawner` class (configurable mock with invocation recording and result queuing), `mock_spawner` fixture (provides a MockSpawner instance), `postgres_container` session-scoped fixture (`pgvector/pgvector:pg17` testcontainer), and `provisioned_postgres_pool` fixture (creates a fresh database with unique name per test invocation)
 
 #### Scenario: Tests conftest (tests/conftest.py)
 - **WHEN** tests under `tests/` run
@@ -215,7 +215,7 @@ Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with r
 
 #### Scenario: Session-scoped PostgreSQL container
 - **WHEN** a test session starts and any test requires a database
-- **THEN** a single `PostgresContainer("postgres:16")` is started and shared across all tests in the session
+- **THEN** a single `PostgresContainer("pgvector/pgvector:pg17")` is started and shared across all tests in the session (matching production docker-compose for pgvector and extension parity)
 - **AND** individual databases within that container provide per-test isolation via unique random names (`test_{uuid_hex[:12]}`)
 
 #### Scenario: Provisioned pool per test
@@ -275,11 +275,11 @@ LLM behavior is non-deterministic. The E2E harness SHALL separate infrastructure
 - **AND** assertions never match on exact text output from the LLM
 
 ### Requirement: E2E Declarative Scenario Framework
-Simple input-output test cases SHALL be defined as `E2EScenario` dataclass instances in `tests/e2e/scenarios.py`. A parametrized test runner SHALL auto-generate one pytest test case per scenario.
+Simple input-output test cases SHALL be defined as `Scenario` dataclass instances in `tests/e2e/scenarios.py`. A parametrized test runner SHALL auto-generate one pytest test case per scenario.
 
-#### Scenario: E2EScenario dataclass
+#### Scenario: Scenario dataclass
 - **WHEN** a new scenario is defined
-- **THEN** it specifies: `id` (unique identifier), `description` (human-readable), `input_prompt` (message text), `expected_butler` (target butler name), `expected_tool_calls` (list of tool names), `db_assertions` (list of DbAssertion), `tags` (for pytest `-k` filtering), `timeout_seconds` (default 30), and optional `skip_reason`
+- **THEN** it specifies: `id` (unique identifier), `description` (human-readable), `envelope` (ingest.v1 payload dict built via the `email_envelope()` / `telegram_envelope()` factory functions), `expected_routing` (target butler name, or None for multi-target), `expected_tool_calls` (subset-matched tool names), `db_assertions` (list of DbAssertion), `tags` (list, for pytest `-k` filtering), and `timeout_seconds` (default 60)
 
 #### Scenario: DbAssertion dataclass
 - **WHEN** database side effects are specified
@@ -291,7 +291,7 @@ Simple input-output test cases SHALL be defined as `E2EScenario` dataclass insta
   - **None**: the query must return no rows (assert absence)
 
 #### Scenario: Automatic test generation
-- **WHEN** a new `E2EScenario` is added to `scenarios.py`
+- **WHEN** a new `Scenario` is added to `scenarios.py`
 - **THEN** the parametrized runner in `test_scenario_runner.py` automatically generates a pytest test case for it with no new test functions required
 
 ### Requirement: E2E Complex Flow Tests
@@ -583,15 +583,15 @@ E2E performance tests SHALL validate serial dispatch lock behavior under load, c
 ### Requirement: E2E Infrastructure Domain
 E2E infrastructure tests SHALL validate the staging environment: PostgreSQL testcontainer provisioning, database isolation, port allocation, Docker requirements, module degradation, and CI/CD exclusion.
 
-#### Scenario: Per-butler database provisioning
+#### Scenario: Per-butler schema provisioning
 - **WHEN** the E2E ecosystem bootstraps
-- **THEN** each butler gets a dedicated database (e.g., `butler_switchboard`, `butler_health`, `butler_relationship`) within the shared testcontainer
-- **AND** each database has core tables (`state`, `scheduled_tasks`, `sessions`) plus butler-specific domain tables
+- **THEN** all butlers share a single `butlers` database within the testcontainer, and each butler gets its own PostgreSQL schema (e.g., `switchboard`, `health`, `relationship`) plus the shared `public` schema
+- **AND** each schema has core tables (`state`, `scheduled_tasks`, `sessions`) plus butler-specific domain tables
 
-#### Scenario: Static port allocation
+#### Scenario: Offset port allocation
 - **WHEN** E2E butlers start
-- **THEN** they use the same static ports as production (41100-41106)
-- **AND** if the production stack is running on those ports, the E2E harness fails with `EADDRINUSE`
+- **THEN** each butler's production base port is shifted by `E2E_PORT_OFFSET` (11000), so the E2E stack can run alongside a live production stack without port conflicts
+- **AND** the `switchboard_url` of non-switchboard butlers is patched to the switchboard's offset port
 
 #### Scenario: Docker requirements check
 - **WHEN** the E2E session starts
@@ -632,8 +632,8 @@ Tests SHALL follow consistent naming patterns for discoverability and filtering.
 - **THEN** it follows the pattern `test_{behavior_under_test}` with descriptive names that indicate the expected behavior (e.g., `test_state_persists_across_sessions`, `test_cross_db_isolation`, `test_serial_dispatch_contention`)
 
 #### Scenario: Declarative scenario naming
-- **WHEN** an `E2EScenario` is defined
-- **THEN** its `id` follows the pattern `{butler}-{action}` (e.g., `health-weight-log`, `switchboard-classify-health`, `relationship-add-contact`) and its `tags` tuple enables tag-based filtering via `pytest -k`
+- **WHEN** a `Scenario` is defined
+- **THEN** its `id` follows the pattern `{channel-or-butler}-{action}` (e.g., `email-meeting-invite`, `switchboard-classify-health`, `relationship-add-contact`) and its `tags` list enables tag-based filtering via `pytest -k`
 
 ### Requirement: Smoke Test Tier
 The project SHALL define a `smoke` test tier: fast, deterministic operational-proof
@@ -650,7 +650,7 @@ proving a real operational surface requires a real database, but MUST NOT requir
 - **THEN** it is marked `@pytest.mark.smoke`
 - **AND** the `smoke` marker is registered in `pyproject.toml` under
   `[tool.pytest.ini_options]` markers alongside the existing `unit`, `integration`,
-  `nightly`, and `e2e` markers
+  `nightly`, `e2e`, and the specialized benchmark/contract/db/perf markers
 
 #### Scenario: No real LLM calls in smoke tier
 - **WHEN** any smoke test runs

@@ -41,7 +41,7 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 #### Scenario: Source registration at startup
 - **WHEN** the QA Staffer daemon starts
 - **THEN** it registers all enabled discovery sources from `[modules.qa].enabled_sources` config
-- **AND** default enabled sources are: `["log_scanner", "session_records", "butler_reports"]`
+- **AND** default enabled sources are: `["log_scanner", "session_records", "butler_reports", "tool_call_failures"]`
 - **AND** disabled sources are logged at INFO level and skipped during patrol
 - **AND** adapter diagnostics that are only useful through structured session
   records are suppressed by `log_scanner` only when `session_records` actually
@@ -51,7 +51,7 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 - **WHEN** the QA module's `register_tools()` is called
 - **THEN** it registers: `report_finding` (receives findings from butler relay via Switchboard route), `force_patrol` (triggers immediate patrol), `get_qa_status` (returns QA staffer operational summary)
 - **AND** `report_finding` is the tool called by butlers' self-healing modules via `switchboard_client.call_tool("route", {"target_butler": "qa", "tool_name": "report_finding", "args": ...})`
-- **AND** `report_finding` accepts: `fingerprint` (str — treated as a hint; the QA module recomputes the canonical fingerprint via `compute_fingerprint_from_report` and logs a debug warning on mismatch), `exception_type` (str), `call_site` (str), `severity` (int 0–4 — clamped to range with a WARNING if out-of-range; authoritative canonical scoring overrides caller intent for critical/high errors), `event_summary` (str), `context` (str, optional), `source_butler` (str)
+- **AND** `report_finding` accepts: `fingerprint` (str, treated as a hint; the QA module recomputes the canonical fingerprint via `compute_fingerprint_from_report` and logs a debug warning on mismatch), `exception_type` (str), `call_site` (str), `severity` (int 0-4, clamped to range with a WARNING if out-of-range; authoritative canonical scoring overrides caller intent for critical/high errors), `event_summary` (str), `context` (str, optional), `source_butler` (str), and `trigger_source` (str, optional, carrying the calling session's trigger_source such as "healing" or "qa", propagated as `source_session_trigger_source` for QA self-recursion suppression)
 - **AND** `report_finding` queues the finding (with canonical fingerprint and severity) in the `butler_reports` source buffer and returns `{"accepted": true}` synchronously
 - **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agent reasoning about user-related errors)
 
@@ -74,7 +74,7 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 - **AND** the patrol record includes the failed source in `error_detail`
 
 ### Requirement: V1 Discovery Sources
-The QA Staffer SHALL ship with three discovery sources in v1.
+The QA Staffer SHALL ship with four discovery sources in v1.
 
 #### Scenario: Log scanner source
 - **WHEN** the `log_scanner` source is enabled
@@ -97,6 +97,11 @@ The QA Staffer SHALL ship with three discovery sources in v1.
 - **AND** the QA staffer's `report_finding` MCP tool handler queues received findings in an in-memory buffer
 - **AND** the patrol cycle drains the buffer and includes those findings alongside batch sources
 - **AND** if the buffer exceeds `max_reactive_buffer` (default: 50), oldest entries are dropped with a WARNING
+
+#### Scenario: Tool-call failure source
+- **WHEN** the `tool_call_failures` source is enabled
+- **THEN** it queries recent failed MCP tool calls within the lookback window and produces `QaFinding` objects with fingerprints derived from the tool name and call site
+- **AND** all filtering is tool-based (SQL queries); no LLM invocation
 
 ### Requirement: Future Discovery Source Catalog
 The discovery source architecture SHALL accommodate future sources without requiring changes to the triage, dispatch, or dashboard layers.
@@ -173,8 +178,9 @@ The QA Staffer's patrol behavior SHALL be configurable via `butler.toml` under `
 
 #### Scenario: Default configuration
 - **WHEN** `[modules.qa]` is absent or has no overrides
-- **THEN** defaults apply: `patrol_interval_minutes = 10`, `log_lookback_minutes = 15`, `max_concurrent_investigations = 2`, `severity_threshold = 2`, `enabled = true`, `enabled_sources = ["log_scanner", "session_records", "butler_reports"]`, `max_reactive_buffer = 50`, `log_scanner_max_entries = 10000`, `log_scanner_max_findings = 100`
+- **THEN** defaults apply: `patrol_interval_minutes = 10`, `log_lookback_minutes = 15`, `max_concurrent_investigations = 2`, `severity_threshold = 2`, `enabled = true`, `enabled_sources = ["log_scanner", "session_records", "butler_reports", "tool_call_failures"]`, `max_reactive_buffer = 50`, `log_scanner_max_entries = 10000`, `log_scanner_max_findings = 100`
 - **NOTE** `log_scanner_max_entries` counts only error/warning candidates (benign INFO/DEBUG lines do not consume the budget); `log_scanner_max_findings` caps the maximum distinct fingerprints returned per scan; file order within each subdirectory is randomised to prevent systematic starvation of later-sorted files under high load
+- **NOTE** the module also exposes `retention_cleanup_hour` (UTC hour for the daily raw-evidence cleanup, default 4) and log-scanner safety caps `log_scanner_max_total_lines` and `log_scanner_max_scan_seconds`; the QA roster runs `qa_evidence_cleanup` (hourly tick that acts only at the configured hour) and `qa_pr_status_check` schedules alongside `qa_patrol`
 
 #### Scenario: Custom configuration
 - **WHEN** `[modules.qa]` specifies overrides
@@ -257,6 +263,7 @@ The QA Staffer SHALL integrate with the project's observability stack: OpenTelem
   - `qa_investigations_active` (gauge) — currently running investigations
   - `qa_patrol_duration_seconds` (histogram) — patrol cycle duration
   - `qa_investigation_duration_seconds` (histogram, labels: `status`) — investigation outcome durations
+  - `qa_findings_retention_purged_total` (counter): finding rows whose retained raw evidence lines were purged by the daily retention cleanup
 - **AND** labels follow RFC 0005 low-cardinality discipline: no UUIDs, fingerprints, butler names, or timestamps as label values
 
 ### Requirement: Patrol Database Schema
@@ -264,7 +271,7 @@ Patrol cycles SHALL be recorded in `public.qa_patrols` for observability and das
 
 #### Scenario: Patrol record structure
 - **WHEN** a patrol cycle starts
-- **THEN** a row is inserted with: `id` (UUIDv7), `started_at` (timestamptz), `completed_at` (nullable timestamptz), `status` (text: running, clean, findings_dispatched, error, skipped_overlap), `findings_count` (int), `novel_count` (int), `dispatched_count` (int), `log_lookback_minutes` (int), `sources_polled` (text[], list of source names), `error_detail` (nullable text)
+- **THEN** a row is inserted with: `id` (UUIDv7), `started_at` (timestamptz), `completed_at` (nullable timestamptz), `status` (text: running, clean, findings_dispatched, suppressed, error, skipped_overlap), `findings_count` (int), `novel_count` (int), `dispatched_count` (int), `log_lookback_minutes` (int), `sources_polled` (text[], list of source names), `error_detail` (nullable text)
 
 #### Scenario: Patrol record is updated on completion
 - **WHEN** a patrol cycle completes (success or failure)

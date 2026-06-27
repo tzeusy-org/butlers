@@ -106,9 +106,9 @@ A shared set of fixtures and helpers SHALL be provided in `tests/adapters/confte
 - **THEN** it SHALL use the shared `parse_jsonl_events(stdout)` helper
 - **AND** the helper SHALL return a list of parsed event dicts, skipping non-JSON lines
 
-#### Scenario: Binary availability skip helper
-- **WHEN** an adapter's CLI binary is not installed
-- **THEN** the `skip_if_no_binary(name)` helper SHALL cause tests to be skipped with a descriptive reason message
+#### Scenario: Binary availability skip
+- **WHEN** an adapter's CLI binary is not installed on PATH
+- **THEN** the adapter's integration tests SHALL be skipped via a module-level `@pytest.mark.skipif(not shutil.which("<binary>"), reason="<binary> not on PATH")` marker (the Claude adapter additionally guards on `ANTHROPIC_API_KEY`)
 
 ### Requirement: Structural Assertions Only
 Integration tests SHALL assert on structural properties of extracted data (non-None, non-empty, correct type, positive values). Tests SHALL NOT assert on LLM behavioral output (specific text content, exact token counts, tool call ordering).

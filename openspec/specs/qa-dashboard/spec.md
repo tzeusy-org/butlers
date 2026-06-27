@@ -113,10 +113,10 @@ The dashboard API SHALL expose endpoints under `/api/qa/` to support the fronten
 - **THEN** it returns all active/open issues: healing attempts with status in (`dispatch_pending`, `investigating`, `pr_open`)
 - **AND** grouped by fingerprint with occurrence count, affected butlers, and PR info where available
 
-#### Scenario: POST /api/qa/dismiss
-- **WHEN** `POST /api/qa/dismiss` is called with `{ fingerprint, duration_hours }`
-- **THEN** the fingerprint is added to the dismissal cache in `public.qa_dismissals`
-- **AND** returns `{ fingerprint, dismissed_until }`
+#### Scenario: POST /api/qa/known-issues/{fingerprint}/dismiss
+- **WHEN** `POST /api/qa/known-issues/{fingerprint}/dismiss` is called with the fingerprint in the path and an optional body `{ dismissed_until, dismissed_by }`
+- **THEN** the fingerprint is added to the dismissal cache in `public.qa_dismissals` (`dismissed_until` defaults to a year-9999 sentinel when omitted; `dismissed_by` defaults to `"dashboard_user"`)
+- **AND** returns `ApiResponse[QaDismissal]`
 
 #### Scenario: POST /api/qa/force-patrol
 - **WHEN** `POST /api/qa/force-patrol` is called
@@ -131,8 +131,8 @@ The dashboard API SHALL expose endpoints under `/api/qa/` to support the fronten
 - **WHEN** `GET /api/qa/dismissals` is called
 - **THEN** it returns all active dismissals (dismissed_until > now()) for management
 
-#### Scenario: DELETE /api/qa/dismissals/:fingerprint
-- **WHEN** `DELETE /api/qa/dismissals/:fingerprint` is called
+#### Scenario: DELETE /api/qa/dismissals/{fingerprint}
+- **WHEN** `DELETE /api/qa/dismissals/{fingerprint}` is called
 - **THEN** the dismissal for that fingerprint is removed
 - **AND** subsequent patrol cycles will treat findings with that fingerprint as novel again
 
@@ -182,10 +182,10 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 - **AND** below the row, an H2 sans-500 22 px headline renders the case's `headline` (or `event_summary` as a fallback when `investigation_notes.headline` is null)
 
 #### Scenario: Active dismissal display
-- **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `expires_at > now()`)
-- **THEN** the header renders a mono caption "dismissed until <expires_at>" beneath the sev/id/butler row
+- **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `dismissed_until > now()`)
+- **THEN** the header renders a mono caption "dismissed until <dismissed_until>" beneath the sev/id/butler row
 - **AND** a "remove dismissal" pill action is rendered alongside the existing `Retry` / `Dismiss` pills
-- **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/:fingerprint` and triggers a re-fetch of the case so the caption and pill disappear
+- **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/{fingerprint}` and triggers a re-fetch of the case so the caption and pill disappear
 
 #### Scenario: Diagnosis column
 - **WHEN** the Case Dossier renders the left column

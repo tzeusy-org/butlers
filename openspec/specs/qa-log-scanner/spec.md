@@ -144,7 +144,7 @@ Multiple log entries with the same fingerprint within a single scan cycle SHALL 
 - **AND** `first_seen` and `last_seen` timestamps bracket the occurrences
 
 ### Requirement: Scan Performance Guardrails
-The scanner SHALL have configurable limits to prevent unbounded resource consumption during a patrol cycle.
+The scanner SHALL have configurable limits (max candidate entries, max unique findings, max total lines parsed, and a wall-clock deadline) to prevent unbounded resource consumption during a patrol cycle. On any cap hit the scanner records the truncation time and reason (exposed as `last_truncated` and `last_truncated_reason`) and returns the findings collected so far. File scan order within a subdirectory is shuffled per cycle to avoid deterministic starvation of later files.
 
 #### Scenario: Maximum entries per scan
 - **WHEN** the scanner has processed `max_entries_per_scan` entries (default: 10000)
@@ -155,3 +155,13 @@ The scanner SHALL have configurable limits to prevent unbounded resource consump
 - **WHEN** the scanner has produced `max_findings_per_scan` unique findings (default: 100)
 - **THEN** it stops processing and returns
 - **AND** logs a WARNING indicating the finding cap was hit
+
+#### Scenario: Maximum total lines parsed
+- **WHEN** the scanner has read `max_total_lines` log lines across all files (default: 200000)
+- **THEN** it stops reading and returns the findings collected so far
+- **AND** records the truncation time and reason in `last_truncated` and `last_truncated_reason`
+
+#### Scenario: Wall-clock scan deadline
+- **WHEN** the scanner has run for `max_scan_seconds` wall-clock seconds (default: 30.0)
+- **THEN** it stops reading and returns the findings collected so far
+- **AND** records the truncation time and reason in `last_truncated` and `last_truncated_reason`

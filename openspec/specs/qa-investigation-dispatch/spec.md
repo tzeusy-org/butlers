@@ -7,11 +7,11 @@ Unified investigation lifecycle management for all QA-originated issues regardle
 ## Requirements
 
 ### Requirement: Investigation Creation from QA Finding
-The QA dispatcher SHALL create investigations for novel findings, using the existing `healing_attempts` table with a QA-specific source marker. All IDs SHALL be UUIDv7 for time-ordered sortability.
+The QA dispatcher SHALL create investigations for novel findings, using the existing `healing_attempts` table with a QA-specific source marker. Journal-event and notes IDs SHALL be UUIDv7 for time-ordered sortability; the reused `healing_attempts.id` and `qa_findings.id` primary keys retain their legacy `gen_random_uuid()` (UUIDv4) defaults.
 
 #### Scenario: Create investigation from finding
 - **WHEN** a novel finding passes admission gates and is accepted for investigation
-- **THEN** a row is inserted in `public.healing_attempts` with: `id` (UUIDv7), `fingerprint` matching the finding, `butler_name` matching the finding's `source_butler`, `status = "investigating"`, `severity` from the finding, `exception_type` and `call_site` from the finding, `sanitized_msg` from the finding's `event_summary`
+- **THEN** a row is inserted in `public.healing_attempts` with: `id` (UUIDv4, from the table's legacy `gen_random_uuid()` default), `fingerprint` matching the finding, `butler_name` matching the finding's `source_butler`, `status = "investigating"`, `severity` from the finding, `exception_type` and `call_site` from the finding, `sanitized_msg` from the finding's `event_summary`
 - **AND** the row includes `qa_patrol_id` linking it to the originating patrol cycle
 - **AND** the finding's `qa_findings.healing_attempt_id` is updated with the new attempt ID
 
@@ -46,8 +46,8 @@ Each investigation SHALL run in a dedicated git worktree branched off latest `ma
 #### Scenario: Worktree creation
 - **WHEN** an investigation is dispatched
 - **THEN** `git fetch origin main` is run first to ensure the latest `main`
-- **AND** a worktree is created at `self-healing/qa/<fingerprint-prefix>-<timestamp>/`
-- **AND** the branch name follows the pattern `qa/fix-<fingerprint-prefix>-<timestamp>`
+- **AND** a worktree is created under `.healing-worktrees/qa/<source_butler>/<fingerprint-prefix>-<epoch>/` via `create_healing_worktree(prefix="qa")` (the fingerprint prefix is the first 12 hex characters)
+- **AND** the branch name follows the pattern `qa/<source_butler>/<fingerprint-prefix>-<epoch>`
 
 #### Scenario: Worktree cleanup on completion
 - **WHEN** an investigation completes (any terminal status)
@@ -88,10 +88,10 @@ The QA investigation agent SHALL receive a prompt that includes the error contex
 - **AND** the prompt explicitly instructs the agent to NOT include any user data, PII, or sensitive content in commits or PR descriptions
 - **AND** the prompt explicitly instructs the agent to ignore unrelated repository workflow instructions and to not run `bd`, push branches manually, or open PRs itself
 
-#### Scenario: Agent uses self_healing model tier
+#### Scenario: Agent uses specialty model tier
 - **WHEN** the investigation agent is spawned
-- **THEN** it uses `complexity = "self_healing"` for model resolution
-- **AND** if no model is available in the self_healing tier, the investigation is skipped with status `failed` and reason `"no_model_available"`
+- **THEN** it uses `Complexity.SPECIALTY` for model resolution (the legacy `self_healing` tier was retired in migration core_093 and is accepted only as a deprecated alias that remaps to `specialty`)
+- **AND** if no model is available in the `specialty` tier, the investigation is skipped with status `failed` and reason `"no_model_available"`
 
 #### Scenario: Agent context from reactive butler reports
 - **WHEN** the finding originated from a `butler_reports` source (via `report_error`) with a non-empty `context` field
@@ -205,7 +205,7 @@ QA SHALL enforce both per-session timeouts and an overall investigation hard lim
 - **AND** the worktree is cleaned up
 
 ### Requirement: Investigation Outcome Recording
-All investigation outcomes SHALL be recorded for dashboard reporting, PR tracking, and trend analysis. All record IDs SHALL be UUIDv7.
+All investigation outcomes SHALL be recorded for dashboard reporting, PR tracking, and trend analysis. Journal-event and notes record IDs SHALL be UUIDv7; the reused `healing_attempts.id` and `qa_findings.id` primary keys retain their legacy `gen_random_uuid()` (UUIDv4) defaults.
 
 #### Scenario: Successful investigation with PR
 - **WHEN** the investigation agent creates a PR

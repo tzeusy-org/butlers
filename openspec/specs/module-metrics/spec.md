@@ -73,7 +73,7 @@ The module SHALL enforce a hard limit of **1,000 defined metrics per butler**. A
 
 ### Requirement: Metric definition and registration (metrics_define)
 
-The `metrics_define` MCP tool SHALL register a new metric definition. Parameters: `name` (str, user-supplied, pre-namespace), `type` (enum: `counter` | `gauge` | `histogram`), `help` (str, human-readable description), `labels` (list[str], optional, default `[]`). On success it SHALL:
+The `metrics_define` MCP tool SHALL register a new metric definition. Parameters: `name` (str, user-supplied, pre-namespace), `metric_type` (enum: `counter` | `gauge` | `histogram`), `help` (str, human-readable description), `labels` (list[str], optional, default `[]`). On success it SHALL:
 
 1. Create the corresponding OTEL instrument via `get_meter()` (`Counter`, `UpDownCounter`, or `Histogram`)
 2. Persist the definition to the butler's state store under key `metrics_catalogue:<name>` as a JSON object `{name, type, help, labels, registered_at}`
@@ -81,18 +81,18 @@ The `metrics_define` MCP tool SHALL register a new metric definition. Parameters
 
 #### Scenario: Counter is defined and registered
 
-- **WHEN** `metrics_define` is called with `type="counter"`, `name="emails_processed"`, `help="Total emails processed"`
+- **WHEN** `metrics_define` is called with `metric_type="counter"`, `name="emails_processed"`, `help="Total emails processed"`
 - **THEN** an OTEL `Counter` named `butler_<butler>_emails_processed` MUST be created via `get_meter().create_counter()`
 - **AND** the definition MUST be persisted to the state store
 
 #### Scenario: Gauge is defined and registered
 
-- **WHEN** `metrics_define` is called with `type="gauge"`
+- **WHEN** `metrics_define` is called with `metric_type="gauge"`
 - **THEN** an OTEL `UpDownCounter` MUST be created via `get_meter().create_up_down_counter()`
 
 #### Scenario: Histogram is defined and registered
 
-- **WHEN** `metrics_define` is called with `type="histogram"`
+- **WHEN** `metrics_define` is called with `metric_type="histogram"`
 - **THEN** an OTEL `Histogram` MUST be created via `get_meter().create_histogram()`
 
 #### Scenario: Redefining an existing metric returns the cached instrument
