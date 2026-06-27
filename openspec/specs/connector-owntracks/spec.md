@@ -62,6 +62,11 @@ Every incoming webhook POST MUST be authenticated via a bearer token before proc
 - **WHEN** the connector compares the provided token to the configured token
 - **THEN** it MUST use constant-time string comparison (`hmac.compare_digest`) to prevent timing attacks
 
+#### Scenario: HTTP Basic auth compatibility
+- **WHEN** the app sends `Authorization: Basic <base64(user:password)>` (OwnTracks native username/password fields)
+- **THEN** the connector compares the Basic-auth password to the configured token (username ignored) using `hmac.compare_digest`
+- **AND** a valid password authenticates identically to a matching bearer token
+
 ### Requirement: Dashboard Setup UX
 A dedicated "OwnTracks" section on the Butlers dashboard settings page provides the complete setup flow for connecting the OwnTracks mobile app.
 
@@ -199,7 +204,7 @@ Location events are automatically purged after a configurable retention period.
 #### Scenario: Retention purge schedule
 - **WHEN** the connector is running
 - **THEN** a background task runs every 6 hours to delete expired location events
-- **AND** the task deletes rows from `public.ingestion_events` where `source_channel = 'owntracks'` AND `created_at < NOW() - INTERVAL '<retention_days> days'`
+- **AND** the task deletes rows from `public.ingestion_events` where `source_channel = 'owntracks'` AND `received_at < NOW() - (<retention_days> * INTERVAL '1 day')`
 
 #### Scenario: Default retention period
 - **WHEN** `OWNTRACKS_RETENTION_DAYS` is not set
@@ -305,12 +310,12 @@ The connector is deployed as a standalone service in the docker-compose stack.
 #### Scenario: Service definition
 - **WHEN** the connector is deployed via docker-compose
 - **THEN** a `connector-owntracks` service is defined in Layer 1b alongside other connectors
-- **AND** it depends on `log-init`, `migrations`, and `switchboard` (healthy)
+- **AND** it depends on `log-init` and `migrations` (completed successfully) and `butlers-up` (healthy)
 - **AND** it uses the standard `*connector-env` anchor plus OwnTracks-specific env vars
-- **AND** `CONNECTOR_HEALTH_PORT` is set to `40083`
+- **AND** `CONNECTOR_HEALTH_PORT` is set to `40086` (the code default is 40083; the compose deployment overrides it to 40086 to avoid collisions with sibling connector ports)
 
 #### Scenario: Network and port exposure
 - **WHEN** the connector runs
 - **THEN** it is on the `db` and `backend` networks
-- **AND** the health port (40083) is exposed for monitoring
+- **AND** the health port (40086) is exposed for monitoring (bound to 127.0.0.1 via `OWNTRACKS_HOST_PORT`)
 - **AND** the webhook port MUST be reachable by the OwnTracks mobile app (tailnet routing or reverse proxy)

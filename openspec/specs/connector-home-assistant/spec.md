@@ -40,13 +40,12 @@ The connector authenticates with Home Assistant using a long-lived access token 
 
 #### Scenario: Credential storage
 - **WHEN** HA connection settings are validated and saved
-- **THEN** the HA base URL SHALL be stored as credential key `home_assistant:base_url`
-- **AND** the HA access token SHALL be stored as credential key `home_assistant:access_token`
-- **AND** both credentials SHALL be stored in the CredentialStore with `secured=true`
+- **THEN** the HA base URL SHALL be stored as owner `entity_info` key `home_assistant_url` (non-secured)
+- **AND** the HA access token SHALL be stored as owner `entity_info` key `home_assistant_token` with `secured=true`
 
 #### Scenario: Credential resolution at startup
 - **WHEN** the connector process starts
-- **THEN** it SHALL resolve `home_assistant:base_url` and `home_assistant:access_token` from the CredentialStore
+- **THEN** it SHALL resolve `home_assistant_url` (non-secured) and `home_assistant_token` (`secured=true`) from the owner's `entity_info`
 - **AND** if either credential is missing, the connector SHALL log an ERROR and exit with a non-zero status
 - **AND** environment variables `HA_BASE_URL` and `HA_ACCESS_TOKEN` MAY override CredentialStore values for development/testing
 
@@ -120,7 +119,7 @@ The connector implements a three-layer filtering pipeline to reduce HA event noi
 
 #### Scenario: Layer 2 — Significance filter
 - **WHEN** an event passes the domain allowlist
-- **THEN** for numeric sensor entities (device_class in `temperature`, `humidity`, `energy`, `power`, `illuminance`, `pressure`, `battery`), the connector SHALL compare the numeric delta between `old_state.state` and `new_state.state` against a per-device-class threshold
+- **THEN** for numeric sensor entities (device_class in `temperature`, `humidity`, `energy`, `power`, `illuminance`, `pressure`, `battery`, `voltage`, `current`, `carbon_dioxide`, `carbon_monoxide`, `pm25`, `pm10`, `volatile_organic_compounds`), the connector SHALL compare the numeric delta between `old_state.state` and `new_state.state` against a per-device-class threshold
 - **AND** default thresholds SHALL be: temperature ±0.5, humidity ±2.0, energy ±0.1, power ±10.0, illuminance ±50.0, pressure ±1.0, battery ±5.0
 - **AND** events with delta below the threshold SHALL be dropped with `filter_reason = "insignificant_delta:<device_class>:<delta>"`
 - **AND** non-numeric entities (binary sensors, locks, lights, switches, automations, scripts) SHALL always pass this filter
@@ -175,7 +174,7 @@ The connector persists checkpoint state for crash-safe resumption.
 
 #### Scenario: Checkpoint contents
 - **WHEN** the connector saves a checkpoint
-- **THEN** it SHALL write to `cursor_store`: `{"last_event_ts": "<time_fired ISO 8601>", "last_entity_id": str, "transport": "websocket" | "rest"}`
+- **THEN** it SHALL write to `cursor_store`: `{"last_event_ts": "<time_fired ISO 8601>", "last_entity_id": str, "transport": "websocket" | "rest_fallback"}`
 - **AND** the checkpoint SHALL be keyed by `(provider="home_assistant", endpoint_identity=<ha endpoint>)`
 
 #### Scenario: Checkpoint timing

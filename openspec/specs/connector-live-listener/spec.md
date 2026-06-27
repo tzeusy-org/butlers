@@ -108,7 +108,7 @@ The connector sends speech audio to an external faster-whisper service and recei
 
 #### Scenario: Wyoming protocol client (default)
 - **WHEN** `LIVE_LISTENER_TRANSCRIPTION_PROTOCOL=wyoming`
-- **THEN** the client connects via TCP to `LIVE_LISTENER_TRANSCRIPTION_URL` (default: `tcp://wyoming-faster-whisper.parrot-hen.ts.net:10300` -- the `wyoming` namespace on the tailnet)
+- **THEN** the client connects via TCP to the configured `LIVE_LISTENER_TRANSCRIPTION_URL` (for example `tcp://wyoming-faster-whisper.parrot-hen.ts.net:10300`, the `wyoming` namespace on the tailnet). The URL is always required and has no default
 - **AND** the client uses the Wyoming wire protocol: JSON header line + binary payload framing
 - **AND** the ASR message flow is: `transcribe` event (with optional language hint from `LIVE_LISTENER_LANGUAGE`) -> `audio-start` event (rate=16000, width=2, channels=1) -> one or more `audio-chunk` events with raw PCM payload -> `audio-stop` event -> server responds with `transcript` event containing recognized text
 - **AND** audio chunks are sent as they arrive from the VAD during speech (streaming), not buffered until segment complete
@@ -279,7 +279,7 @@ Configuration via environment variables extending the base connector variables.
 #### Scenario: Required variables
 - **WHEN** the live-listener connector starts
 - **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=live-listener`, `CONNECTOR_CHANNEL=voice`, and `LIVE_LISTENER_DEVICES` (JSON device list) MUST be set
-- **AND** `LIVE_LISTENER_TRANSCRIPTION_URL` MUST be set (default: `tcp://localhost:10300` for Wyoming; no universal default -- the transcription service location is deployment-specific)
+- **AND** `LIVE_LISTENER_TRANSCRIPTION_URL` MUST be set. There is no default (the transcription service location is deployment-specific). An unset or empty value is a fatal startup error
 
 #### Scenario: Optional audio variables
 - **WHEN** the connector starts

@@ -28,7 +28,8 @@ The connector SHALL poll the Spotify Web API at configurable intervals to detect
 
 - **WHEN** the connector completes a poll cycle
 - **THEN** it SHALL also poll `GET /me/player/recently-played` with the `after` cursor parameter set to the last-seen play timestamp
-- **AND** any tracks not already observed via the `currently-playing` endpoint SHALL be ingested as track change events
+- **AND** gap-fill polling SHALL be throttled to `SPOTIFY_GAP_FILL_IDLE_INTERVAL_S` (default 10800)
+- **AND** tracks not already observed via the `currently-playing` endpoint SHALL be emitted as a single batched gap-fill digest (`external_event_id = "spotify:gapfill:<first_ms>:<last_ms>"`), not as per-track events
 
 #### Scenario: Private session handling
 
@@ -36,36 +37,42 @@ The connector SHALL poll the Spotify Web API at configurable intervals to detect
 - **THEN** the connector SHALL treat this as idle state and back off polling
 - **AND** it SHALL NOT emit any events for the private session period
 
-### Requirement: Track Change Event
+### Requirement: Context Start Event
 
-The connector SHALL emit a track change event when the currently-playing track changes.
+The connector SHALL emit one context-start event per listening context when playback begins from idle, to minimize LLM ingestion cost. It SHALL NOT emit per-track events during continuous playback. Track changes within a context are accumulated silently.
 
-#### Scenario: Track change detection
+#### Scenario: Context start detection
 
-- **WHEN** the currently-playing track ID differs from the previously observed track ID
-- **THEN** the connector SHALL emit a `spotify.track_change` event containing: track name, artist name(s), album name, track duration, playlist or album context URI, device name, and playback timestamp
+- **WHEN** playback begins from idle (a new listening context starts)
+- **THEN** the connector SHALL emit a `spotify.context_start` event containing: first track name, artist name(s), album name, context URI, device name, and playback timestamp
+- **AND** subsequent track changes within the same context SHALL be accumulated silently with no per-track event
 
-#### Scenario: Track change ingest.v1 envelope
+#### Scenario: Context start ingest.v1 envelope
 
-- **WHEN** a track change event is emitted
+- **WHEN** a context-start event is emitted
 - **THEN** the `ingest.v1` envelope SHALL have:
-  - `source.channel = "spotify"`
+  - `source.channel = "spotify_user_client"`
   - `source.provider = "spotify"`
   - `source.endpoint_identity = "spotify:<spotify_user_id>"`
-  - `event.external_event_id = "spotify:<timestamp_ms>:<track_id>"`
+  - `event.external_event_id = "spotify:ctx:<timestamp_ms>:<context_uri_or_track_id>"`
   - `event.external_thread_id = "<playlist_uri|album_uri|null>"`
   - `event.observed_at` = poll timestamp (RFC3339, timezone-aware)
   - `sender.identity = "<spotify_user_id>"`
   - `payload.raw` = full Spotify `currently-playing` API response dict
-  - `payload.normalized_text = "Listening to <track> by <artist> on <playlist_or_album>"`
-  - `control.idempotency_key = "spotify:<endpoint_identity>:<timestamp_ms>:<track_id>"`
+  - `payload.normalized_text = "Started listening to <context> first track: <track> by <artist>"` (falls back to `"Started listening to <track> by <artist>"` when no context label)
+  - `control.idempotency_key = "spotify:<endpoint_identity>:ctx:<timestamp_ms>:<context_uri_or_track_id>"`
   - `control.policy_tier = "default"`
   - `control.ingestion_tier = "full"`
+
+#### Scenario: Listening digest event
+
+- **WHEN** active playback continues past `SPOTIFY_DIGEST_INTERVAL_S` (default 3600)
+- **THEN** the connector SHALL emit a `spotify.listening_digest` event (`external_event_id = "spotify:digest:<digest_start_ms>"`) summarizing the tracks accumulated since the context start or previous digest
 
 #### Scenario: Repeated poll with same track
 
 - **WHEN** consecutive polls return the same track ID
-- **THEN** the connector SHALL NOT emit a duplicate track change event
+- **THEN** the connector SHALL NOT emit any event
 - **AND** the internal session state SHALL be updated with the latest poll timestamp
 
 ### Requirement: Listening Session Aggregation
@@ -77,9 +84,9 @@ The connector SHALL aggregate contiguous playback into logical listening session
 - **WHEN** the connector tracks playback state
 - **THEN** it SHALL maintain a state machine with states: `idle`, `active`, `draining`
 - **AND** transitions SHALL follow:
-  - `idle` + playback detected → `active` (start new session)
-  - `active` + track changed with same context → `active` (continue session, emit track_change)
-  - `active` + context changed → emit `session_summary`, then → `active` with new context
+  - `idle` + playback detected → `active` (start new session, emit `context_start`)
+  - `active` + track changed → `active` (accumulate silently, no event)
+  - `active` + context changed mid-playback (autoplay, radio, DJ) → `active` (accumulated silently, not a session boundary)
   - `active` + playback stopped → `draining`
   - `draining` + idle timeout (default 300s) exceeded → `idle`, emit `session_summary`
   - `draining` + playback resumed with same context → `active` (continue session, no event)
@@ -208,6 +215,8 @@ The connector SHALL use standard connector environment variables plus Spotify-sp
   - `SPOTIFY_POLL_ACTIVE_S` (default 60): polling interval during active playback
   - `SPOTIFY_POLL_IDLE_S` (default 300): maximum polling interval during idle
   - `SPOTIFY_SESSION_IDLE_TIMEOUT_S` (default 300): seconds of no playback before closing a session
+  - `SPOTIFY_DIGEST_INTERVAL_S` (default 3600): seconds of continuous active playback before emitting a `listening_digest`
+  - `SPOTIFY_GAP_FILL_IDLE_INTERVAL_S` (default 10800): throttle interval for recently-played gap-fill polling
   - `CONNECTOR_HEALTH_PORT` (default 40083): health/metrics HTTP port
   - `CONNECTOR_HEARTBEAT_INTERVAL_S` (default 120): heartbeat interval
   - `CONNECTOR_MAX_INFLIGHT` (default 8): max concurrent ingest submissions
@@ -221,7 +230,8 @@ The connector SHALL export Spotify-specific Prometheus metrics in addition to th
 - **WHEN** the connector is running
 - **THEN** it SHALL export:
   - `connector_spotify_polls_total` (Counter, labels: `endpoint_identity`, `status=success|error|rate_limited|idle`)
-  - `connector_spotify_track_changes_total` (Counter, labels: `endpoint_identity`)
+  - `connector_spotify_context_starts_total` (Counter, labels: `endpoint_identity`)
+  - `connector_spotify_digests_total` (Counter, labels: `endpoint_identity`)
   - `connector_spotify_sessions_total` (Counter, labels: `endpoint_identity`)
   - `connector_spotify_session_duration_seconds` (Histogram, labels: `endpoint_identity`)
   - `connector_spotify_token_refreshes_total` (Counter, labels: `endpoint_identity`, `status=success|error`)

@@ -212,7 +212,7 @@ All connector-to-Switchboard communication SHALL use a lazy, reconnecting MCP cl
 
 #### Scenario: MCP tool surface for connectors
 - **WHEN** a connector interacts with Switchboard
-- **THEN** it uses three MCP tools: `ingestion.ingest` (submit ingest.v1 envelope), `connector.heartbeat` (submit heartbeat.v1 envelope), and `backfill.poll` / `backfill.progress` (backfill orchestration)
+- **THEN** it uses three MCP tools: `ingest` (submit ingest.v1 envelope), `connector.heartbeat` (submit heartbeat.v1 envelope), and `backfill.poll` / `backfill.progress` (backfill orchestration)
 
 ### Requirement: Safe Resuming
 Connectors SHALL be crash-safe and restart-safe via checkpoint-after-acceptance semantics.

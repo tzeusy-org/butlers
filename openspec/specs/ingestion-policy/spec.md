@@ -12,7 +12,7 @@ The system SHALL store all ingestion filtering and routing rules in a single `in
 The table schema:
 - `id` UUID PRIMARY KEY (default gen_random_uuid())
 - `scope` TEXT NOT NULL -- `'global'` or `'connector:<connector_type>:<endpoint_identity>'`
-- `rule_type` TEXT NOT NULL -- unconstrained; known types: `sender_domain`, `sender_address`, `header_condition`, `mime_type`, `substring`, `chat_id`, `channel_id`
+- `rule_type` TEXT NOT NULL -- unconstrained; known types: `sender_domain`, `sender_address`, `header_condition`, `mime_type`, `substring`, `chat_id`, `channel_id`, `source_channel`, `mic_id`. The last two are evaluated by the engine and seeded via migrations (the OwnTracks/Home Assistant global `skip` rules and the live-listener voice gate) but are not accepted by the REST create/update validator.
 - `condition` JSONB NOT NULL -- schema determined by `rule_type`
 - `action` TEXT NOT NULL -- `block`, `skip`, `metadata_only`, `low_priority_queue`, `pass_through`, or `route_to:<butler>`
 - `priority` INTEGER NOT NULL (>= 0) -- lower = evaluated first
@@ -26,7 +26,7 @@ The table schema:
 
 Constraints:
 - `scope = 'global' OR scope LIKE 'connector:%'`
-- Connector-scoped rules MUST have `action = 'block'`
+- Connector-scoped rules MUST satisfy `action IN ('block', 'pass_through')` (DB CHECK: `scope = 'global' OR action IN ('block', 'pass_through')`). `pass_through` exists only to support whitelist-equivalent connector rules emitted by the source-filter migration. The REST create/update API is stricter and accepts only `block` for connector scope, so connector `pass_through` rows are migration-seeded, never API-created.
 - `priority >= 0`
 
 Indexes:
@@ -62,6 +62,8 @@ Each `rule_type` defines the expected shape of the `condition` JSONB field. The 
 | `substring` | `{"pattern": "<string>"}` | Case-insensitive substring search in raw key value |
 | `chat_id` | `{"chat_id": "<string>"}` | Exact string equality |
 | `channel_id` | `{"channel_id": "<string>"}` | Exact string equality |
+| `source_channel` | `{"source_channel": "<string>"}` | Exact case-sensitive match on the envelope source_channel; `"*"` matches any non-empty channel. Engine/migration only, not API-creatable |
+| `mic_id` | `{"mic_id": "<string>"}` | Case-insensitive exact match on raw_key (voice device name); `"*"` matches all mics. Engine/migration only, not API-creatable |
 
 #### Scenario: Valid sender_domain condition
 - **WHEN** a rule is created with `rule_type = 'sender_domain'` and `condition = {"domain": "chase.com", "match": "suffix"}`

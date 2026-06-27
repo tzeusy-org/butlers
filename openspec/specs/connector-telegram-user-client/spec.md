@@ -114,10 +114,10 @@ The connector authenticates with Telegram using personal account credentials (no
 - **WHEN** the user client connector starts
 - **THEN** `TELEGRAM_API_ID` (int, from my.telegram.org), `TELEGRAM_API_HASH` (string, from my.telegram.org), and `TELEGRAM_USER_SESSION` (Telethon session string or encrypted file path) must be available
 
-#### Scenario: DB-first credential resolution
-- **WHEN** database configuration is available
-- **THEN** the connector attempts DB-first resolution via `CredentialStore` for all three credentials
-- **AND** falls back to environment variables if DB resolution fails
+#### Scenario: Credentials resolved from owner entity_info only
+- **WHEN** the connector starts
+- **THEN** all three credentials are resolved exclusively from the owner entity's `public.entity_info` rows (types `telegram_api_id`, `telegram_api_hash`, `telegram_user_session`)
+- **AND** there is no environment-variable fallback; if any credential is missing the connector raises at startup
 
 #### Scenario: Session security
 - **WHEN** managing session credentials
@@ -186,7 +186,7 @@ The Telegram user client connector uses the shared discretion layer (`butlers.co
 - **WHEN** the Telegram user client connector starts
 - **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram_user_client` must be set
 - **AND** `endpoint_identity` is auto-resolved at startup via the Telethon `get_me()` call (e.g., `"telegram:user:<account_id>"`)
-- **AND** `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_USER_SESSION` must be resolvable
+- **AND** `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_USER_SESSION` must be present on the owner entity's `public.entity_info` (resolved from the database, not read from environment variables)
 
 #### Scenario: Optional variables
 - **WHEN** the connector starts

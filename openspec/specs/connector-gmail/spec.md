@@ -72,7 +72,7 @@ The connector supports two ingestion modes with different latency/complexity tra
   - `source.channel` = `"email"`
   - `source.provider` = `"gmail"` (must be `gmail`, not `imap`)
   - `source.endpoint_identity` = `"gmail:user:<email_address>"`
-  - `event.external_event_id` = Gmail message ID (or history event ID when message ID is absent)
+  - `event.external_event_id` = the RFC822 `Message-ID` header value (falls back to the Gmail message ID when the header is absent)
   - `event.external_thread_id` = Gmail `threadId`
   - `event.observed_at` = connector-observed timestamp (RFC3339)
   - `sender.identity` = normalized sender address from `From` header
@@ -171,16 +171,16 @@ The Gmail connector implements the ingestion policy gate using `IngestionPolicyE
 The connector assigns policy tiers for Switchboard queue ordering using a `PolicyTierAssigner` with first-match-wins rules.
 
 #### Scenario: Known contact → high priority
-- **WHEN** the sender address is in the known-contact set (loaded from `GMAIL_KNOWN_CONTACTS_PATH` JSON file cache)
+- **WHEN** the sender address is in the known-contact set (loaded from `public.priority_contacts` joined to `relationship.entity_facts`, cached in-process with a 15 minute TTL)
 - **THEN** `policy_tier="high_priority"` with rule `"known_contact"`
 
 #### Scenario: Reply to outbound mail → high priority
 - **WHEN** the `In-Reply-To` header references a message ID from the user's sent items
 - **THEN** `policy_tier="high_priority"` with rule `"reply_to_outbound"`
 
-#### Scenario: Direct correspondence → interactive
+#### Scenario: Direct correspondence → high priority
 - **WHEN** the user's address (`GMAIL_USER_EMAIL`) is in `To` or `Cc`, there is no `List-Unsubscribe` header, and no bulk `Precedence` header
-- **THEN** `policy_tier="interactive"` with rule `"direct_correspondence"`
+- **THEN** `policy_tier="high_priority"` with rule `"direct_correspondence"` (the `interactive` tier is reserved for live chat channels, not asynchronous email)
 
 #### Scenario: Fallback → default
 - **WHEN** no priority rule matches
@@ -243,7 +243,7 @@ The connector implements metadata-first lazy fetching with per-MIME-type size li
 - **AND** the `blob_ref` column SHALL contain an `s3://` URI
 - **AND** `.ics` attachments bypass LLM routing classification and route directly to the calendar module
 
-#### Scenario: [TARGET-STATE] Attachment reference persistence
+#### Scenario: Attachment reference persistence
 - **WHEN** attachment metadata is collected at ingest time
 - **THEN** a row is written to `switchboard.attachment_refs` with `message_id`, `attachment_id`, `filename`, `media_type`, `size_bytes`, `fetched` (boolean), `blob_ref` (nullable, `s3://` scheme when populated)
 

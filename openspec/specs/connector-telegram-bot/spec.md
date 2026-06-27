@@ -48,8 +48,8 @@ Each Telegram update is normalized to the canonical `ingest.v1` envelope.
   - `sender.identity` = `message.from.id` (Telegram sender user ID)
   - `payload.raw` = full Telegram update JSON
   - `payload.normalized_text` = extracted text (see tiered extraction)
-  - `control.idempotency_key` = `"telegram:<endpoint_identity>:<update_id>"`
-  - `control.policy_tier` = `"default"`
+  - `control.idempotency_key` = `"tg:<chat_id>:<message_id>"` (canonical across the bot and user-client connectors so the same Telegram message dedupes identically; falls back to `"telegram:<endpoint_identity>:<update_id>"` only when chat_id or message_id is unavailable)
+  - `control.policy_tier` = `"interactive"` (bot messages are direct user-to-bot interactions)
 
 ### Requirement: Tiered Text Extraction
 The connector extracts human-readable text from Telegram messages using a four-tier fallback strategy.
@@ -87,7 +87,7 @@ The connector processes a defined subset of Telegram update types.
 - **THEN** it is silently skipped
 
 ### Requirement: Lifecycle Reactions
-The connector supports best-effort emoji reactions on ingested messages to provide visual feedback on processing status.
+Lifecycle reactions are applied downstream by the pipeline (via `core/channel_reactions.py` and the Messenger butler's telegram tools), not by this transport-only connector. The connector neither sends nor tracks reactions. The emoji mapping below documents the cross-component behavior for reference.
 
 #### Scenario: Reaction emoji mapping
 - **WHEN** an ingested message progresses through the pipeline
@@ -187,7 +187,7 @@ The connector guarantees at-least-once delivery with crash-safe resume.
 
 #### Scenario: Dedup identity
 - **WHEN** a Telegram update is submitted
-- **THEN** the dedupe key is based on `update_id` + `endpoint_identity`
+- **THEN** the dedupe key is based on `chat_id` + `message_id` (canonical key shared with the user-client connector), falling back to `update_id` + `endpoint_identity` when those are unavailable
 - **AND** duplicate accepted ingest responses are treated as success, not failures
 
 #### Scenario: Checkpoint semantics

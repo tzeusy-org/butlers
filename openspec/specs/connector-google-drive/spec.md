@@ -101,7 +101,11 @@ The connector normalizes Drive changes into human-readable metadata summaries by
 #### Scenario: File modified event
 - **WHEN** a change references a file ID that exists in the local metadata cache
 - **AND** the file's `modifiedTime` has changed but name and parent are unchanged
-- **THEN** `payload.normalized_text` SHALL be `"file_modified: <filename> (<mime_type>) at <modified_time_iso>"`
+- **THEN** the connector SHALL increment the `file_modified` metric and update its cache, but SHALL NOT submit an `ingest.v1` envelope for pure content-modification events (suppressed as high-noise). The `"file_modified: <filename> (<mime_type>) at <modified_time_iso>"` normalized_text form is retained for the change classifier only.
+
+#### Scenario: Shared-with-me change suppression
+- **WHEN** a change references a file whose primary owner (`file.owners[0].emailAddress`) is not the connected account email
+- **THEN** the connector SHALL skip the change (no ingest submission) and increment a `shared_with_me_skipped` counter label, so files merely shared with the owner do not flood ingestion
 
 #### Scenario: File trashed event
 - **WHEN** a change has `file.trashed = true` or `removed = true`
@@ -204,7 +208,7 @@ The connector SHALL support discovering new or removed accounts without a full p
 
 #### Scenario: Process-level default variables (optional)
 - **WHEN** the connector starts
-- **THEN** `GDRIVE_POLL_INTERVAL_S` (default 300), `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40085), `GDRIVE_ACCOUNT_RESCAN_INTERVAL_S` (default 300) are optionally configurable as process-level defaults
+- **THEN** `GDRIVE_POLL_INTERVAL_S` (default 300), `GDRIVE_BATCH_WINDOW_S` (default 0, batch-digest mode disabled), `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40088, since 40085 belongs to the Google Calendar connector), `CONNECTOR_HEARTBEAT_INTERVAL_S` (default 120), `GDRIVE_ACCOUNT_RESCAN_INTERVAL_S` (default 300) are optionally configurable as process-level defaults
 - **AND** per-account overrides in `google_accounts.metadata.google_drive` take precedence
 
 ### Requirement: Google Drive Connector Prometheus Metrics

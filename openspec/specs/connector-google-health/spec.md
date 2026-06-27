@@ -49,7 +49,7 @@ The pairing flow SHALL pre-register each owner Google Health identity as its own
 
 ### Requirement: OAuth Token Lifecycle via Shared Google Credential Pipeline
 
-The connector SHALL NOT implement its own OAuth refresh logic. It SHALL delegate to the shared Google credential pipeline (using `resolve_owner_entity_info()` — NOT `CredentialStore.resolve()` or `os.environ.get`).
+The connector SHALL NOT implement its own OAuth refresh logic. It SHALL delegate to the shared Google credential pipeline, resolving OAuth app credentials (client_id, client_secret) via `load_google_credentials()` and each account's refresh token via `google_credentials._resolve_entity_refresh_token()` (keyed by the account's companion entity_id). It SHALL NOT read `GOOGLE_OAUTH_REFRESH_TOKEN` from `CredentialStore.resolve()` or `os.environ`.
 
 #### Scenario: Access token acquisition
 
@@ -61,7 +61,8 @@ The connector SHALL NOT implement its own OAuth refresh logic. It SHALL delegate
 
 - **WHEN** a Google Health API call returns HTTP 401
 - **THEN** the connector SHALL invalidate its cached access token and retry once
-- **AND** if the retry also returns 401, SHALL mark the account `status = 'revoked'` and transition to `degraded`
+- **AND** if the retry also returns 401, SHALL set that account's heartbeat to `error` (error_message `token_invalid`) and stop polling it, leaving other accounts unaffected
+- **AND** the shared `public.google_accounts.status` SHALL be flipped to `revoked` only when Google's token endpoint returns `invalid_grant` (a confirmed grant revocation), so a transient or scope-local API 401 never knocks the sibling Google connectors (Drive, Calendar, Gmail) offline
 
 #### Scenario: Access tokens are never persisted
 
@@ -112,7 +113,7 @@ The connector SHALL run independent polling loops per data type bundle.
 #### Scenario: Reconciled stream preference
 
 - **WHEN** the connector fetches a data type bundle that supports the Reconciled Stream
-- **THEN** the connector SHALL use the Reconciled Stream (passes `view=reconciled`)
+- **THEN** the connector SHALL use the Reconciled Stream by calling the resource's `dataPoints:reconcile` method endpoint (daily-summary and sleep bundles poll `:reconcile` paths; the activity bundle uses `:dailyRollUp`)
 
 ### Requirement: Ingest Envelope Construction
 

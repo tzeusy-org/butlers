@@ -24,7 +24,7 @@ The Steam connector runs as a single process that discovers and manages all conn
 - **THEN** `source.channel = "gaming"`, `source.provider = "steam"`, and `source.endpoint_identity = "steam:user:76561198000000000"`
 - **AND** the endpoint identity is derived from the account's SteamID
 
-> **RFC 0003 amendment required:** The `gaming/steam` channel/provider pair is not in the current Switchboard ingestion contract. RFC 0003 must be amended to register this pair before implementation.
+> **RFC 0003 amended:** The `gaming/steam` channel/provider pair is registered in the Switchboard ingestion contract (`roster/switchboard/tools/routing/contracts.py`: `SourceChannel` includes `gaming`, `SourceProvider` includes `steam`, and `_ALLOWED_PROVIDERS_BY_CHANNEL["gaming"] = {"steam"}`).
 
 #### Scenario: No qualifying accounts
 
@@ -46,12 +46,11 @@ The connector polls multiple data types at independent intervals per account.
 #### Scenario: Default poll intervals
 
 - **WHEN** a Steam account has no per-account metadata overrides
-- **THEN** the connector SHALL use the following default intervals:
+- **THEN** the connector SHALL run exactly two background pollers:
   - Recently played games: 300 seconds (5 minutes)
   - Online status: 300 seconds (5 minutes)
-  - Achievement unlocks: 900 seconds (15 minutes)
-  - Friend list changes: 3600 seconds (60 minutes)
-  - Game library (purchase detection): 86400 seconds (24 hours)
+- **AND** achievement, friend list, and game library data SHALL NOT be polled in the background (they produced noise without matching the owner's game start/stop goals)
+- **AND** that data remains reachable only via the on-demand MCP tools `steam_get_achievements`, `steam_list_friends`, and `steam_list_owned_games` (the achievement/friend/game-library poller code exists but is never spawned at runtime)
 
 #### Scenario: Per-account interval overrides
 
@@ -226,7 +225,7 @@ Per-account, per-data-type cursors enable crash-safe resume.
   - `status`: worst-case across all accounts (`healthy`, `degraded`, `error`)
   - `uptime_seconds`
   - `active_accounts`: count of accounts with active polling loops
-  - `account_health`: per-account details with `steam_id` (redacted), `endpoint_identity`, `status`, `last_poll_at`, `data_types` (per-type last poll and status), `error` (if any)
+  - `account_health`: per-account details with `steam_id` (redacted), `endpoint_identity`, `status`, `data_types` (per-type last poll time and status, under `data_types[*].last_poll_at`), `error` (if any)
 
 #### Scenario: SteamID redaction in health output
 
@@ -235,7 +234,7 @@ Per-account, per-data-type cursors enable crash-safe resume.
 
 ### Requirement: Source Channel and Provider Registration
 
-Steam introduces a new channel/provider pair that must be registered in the Switchboard's ingestion contract (RFC 0003 amendment).
+Steam introduces a channel/provider pair that is registered in the Switchboard's ingestion contract (RFC 0003 amended; see `roster/switchboard/tools/routing/contracts.py`).
 
 #### Scenario: SourceChannel enum extension
 

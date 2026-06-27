@@ -90,12 +90,12 @@ Flushed conversation snippets SHALL be submitted as a single ingest.v1 envelope 
   - `event.external_thread_id` = `<chat_id>`
   - `sender.identity` = `"multiple"`
   - `payload.normalized_text` = concatenated text of NEW (buffered) messages only, with sender prefixes
-  - `payload.conversation_history` = ordered list of all context messages (history + new)
+  - `payload.raw.conversation_history` = ordered list of all context messages (history + new)
   - `control.idempotency_key` = `"tg_batch:<chat_id>:<min_msg_id>:<max_msg_id>"`
   - `control.payload_type` = `"conversation_history"`
 
 #### Scenario: Conversation history entry format
-- **WHEN** `payload.conversation_history` is populated
+- **WHEN** `payload.raw.conversation_history` is populated
 - **THEN** each entry SHALL contain: `message_id`, `sender_id`, `text`, `timestamp` (ISO 8601), `is_new` (boolean), and `reply_to` (message ID or null)
 - **AND** entries are ordered by `message_id` ascending
 

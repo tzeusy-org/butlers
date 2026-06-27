@@ -179,6 +179,8 @@ on every run.
   - `skipped_group_too_large` (int) — chat groups exceeding the 20-participant gate
   - `calendar_events_scanned` (int)
   - `errors` (int) — checkpoint I/O failures and other non-fatal errors
+  - `co_attended_edges_minted` (int), count of co-attendance relationship edges created from shared calendar events
+  - `knows_edges_minted` (int), count of "knows" relationship edges minted during the sync
 
 ## Design Notes
 

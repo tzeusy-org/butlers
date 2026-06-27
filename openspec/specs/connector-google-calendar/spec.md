@@ -160,7 +160,7 @@ The Google Calendar connector implements the ingestion policy gate using `Ingest
 
 #### Scenario: Envelope construction from calendar event
 - **WHEN** the Google Calendar connector builds an `IngestionEnvelope`
-- **THEN** `sender_address` is the event organizer email (lowercase), `source_channel = "google_calendar"`, and `raw_key` is the event organizer email
+- **THEN** `sender_address` is the event organizer email, `source_channel = "google_calendar"`, and `raw_key` is the Google Calendar event ID
 
 ### Requirement: Multi-Account Connector Architecture
 A single Google Calendar connector process manages concurrent poll loops for all connected Google accounts.
@@ -204,18 +204,19 @@ The connector SHALL support discovering new or removed accounts without a full p
 #### Scenario: Health model (multi-account)
 - **WHEN** the Google Calendar connector's health is queried
 - **THEN** it returns: `status` (worst-case across all account loops), `uptime_seconds`, `active_accounts` (count), `account_health` (array of per-account status objects)
-- **AND** each per-account status includes: `email`, `endpoint_identity`, `status` (`healthy`/`degraded`/`error`), `last_checkpoint_save_at`, `last_sync_at`, `source_api_connectivity`, `error` (if any)
+- **AND** each per-account status includes: `email`, `endpoint_identity`, `status` (`healthy`/`degraded`/`error`), `last_checkpoint_save_at`, `last_ingest_submit_at`, `source_api_connectivity`, `error` (if any)
+- **AND** the aggregated status also includes a `timestamp` field (RFC3339)
 
 ### Requirement: Environment Variables
 
 #### Scenario: Required variables
 - **WHEN** the Google Calendar connector starts
-- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=google_calendar`, `CONNECTOR_CHANNEL=google_calendar` MUST be set
+- **THEN** `SWITCHBOARD_MCP_URL` MUST be set. The channel and provider are fixed internally to `google_calendar` (the `CONNECTOR_PROVIDER` and `CONNECTOR_CHANNEL` env vars are set in deployment for consistency but are not read by the connector)
 - **AND** database connectivity (`DATABASE_URL` or `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_PASSWORD`) MUST be configured for account discovery and credential resolution
 
 #### Scenario: Optional variables
 - **WHEN** the connector starts
-- **THEN** `GCAL_POLL_INTERVAL_S` (default 60), `GCAL_STARTING_SOON_LEAD_MINUTES` (default 15), `GCAL_ACCOUNT_RESCAN_INTERVAL_S` (default 300), `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40084), `CONNECTOR_HEARTBEAT_INTERVAL_S` (default 120) are optionally configurable
+- **THEN** `GCAL_POLL_INTERVAL_S` (default 60), `GCAL_STARTING_SOON_LEAD_MINUTES` (default 15), `GCAL_ACCOUNT_RESCAN_INTERVAL_S` (default 300), `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40085), `CONNECTOR_HEARTBEAT_INTERVAL_S` (default 120) are optionally configurable
 
 ### Requirement: Free/Busy Scope Coverage
 
