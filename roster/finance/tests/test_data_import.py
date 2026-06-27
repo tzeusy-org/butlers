@@ -19,7 +19,7 @@ from __future__ import annotations
 import csv
 import io
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1076,3 +1076,31 @@ class TestReturnShape:
 
         for key in ("total", "imported", "skipped", "errors", "import_batch_id", "detected_format"):
             assert key in result, f"Missing key: {key}"
+
+    async def test_categories_learned_triggered_on_category_data(self):
+        """A successful blob-store import with category data triggers
+        learn_merchant_categories() and returns the upserted count."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)  # has a Category column
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetchval = AsyncMock(return_value=False)
+        pool.fetch = AsyncMock(return_value=[])  # no duplicates
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+
+        learn_spy = AsyncMock(return_value={"upserted": 3, "as_of": "2024-01-01"})
+        with patch(
+            "butlers.tools.finance.pattern_recognition.learn_merchant_categories",
+            new=learn_spy,
+        ):
+            result = await import_transactions(
+                pool=pool,
+                blob_store=blob_store,
+                storage_ref="s3://bucket/chase.csv",
+            )
+
+        assert result["imported"] == 4
+        learn_spy.assert_awaited_once()
+        assert learn_spy.await_args.args[0] is pool
+        assert result["categories_learned"] == 3

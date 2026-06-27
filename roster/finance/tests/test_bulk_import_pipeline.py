@@ -550,11 +550,73 @@ class TestPostImportTriggers:
                     "butlers.tools.finance.data_import._trigger_compute_baselines",
                     new=AsyncMock(return_value=True),
                 ) as mock_baselines,
+                patch(
+                    "butlers.tools.finance.data_import._trigger_learn_merchant_categories",
+                    new=AsyncMock(return_value=3),
+                ) as mock_learn,
             ):
                 result = await import_transactions_from_file(pool, file_path=path)
                 assert result["imported"] == 0
                 mock_refresh.assert_not_called()
                 mock_baselines.assert_not_called()
+                mock_learn.assert_not_called()
+                assert result["categories_learned"] == 0
+        finally:
+            os.unlink(path)
+
+    async def test_learn_merchant_categories_triggered_with_category_data(self):
+        """A real import with category data triggers learn_merchant_categories()
+        and surfaces the upserted count via ``categories_learned``."""
+        from butlers.tools.finance.data_import import import_transactions_from_file
+
+        # CHASE_CSV carries a Category column on every imported row.
+        path = _write_tmp_csv(CHASE_CSV)
+        try:
+            pool = MagicMock()
+            pool.execute = AsyncMock(return_value="INSERT 0 1")
+            pool.fetchrow = AsyncMock(return_value=None)
+            pool.fetchval = AsyncMock(return_value=False)  # no MV, no mappings table
+
+            # Spy on the real learning entry point (imported lazily inside the
+            # trigger helper) to prove the import path reaches it.
+            learn_spy = AsyncMock(return_value={"upserted": 2, "as_of": "2024-01-01"})
+            with patch(
+                "butlers.tools.finance.pattern_recognition.learn_merchant_categories",
+                new=learn_spy,
+            ):
+                result = await import_transactions_from_file(pool, file_path=path)
+
+            assert result["imported"] == 4
+            learn_spy.assert_awaited_once()
+            # The helper passes the live pool through to the learning function.
+            assert learn_spy.await_args.args[0] is pool
+            assert result["categories_learned"] == 2
+        finally:
+            os.unlink(path)
+
+    async def test_learn_merchant_categories_not_triggered_without_category_data(self):
+        """When no imported row carries category data, learning does not fire and
+        ``categories_learned`` is 0."""
+        from butlers.tools.finance.data_import import import_transactions_from_file
+
+        # UNCATEGORIZED_CSV has no Category column.
+        path = _write_tmp_csv(UNCATEGORIZED_CSV)
+        try:
+            pool = MagicMock()
+            pool.execute = AsyncMock(return_value="INSERT 0 1")
+            pool.fetchrow = AsyncMock(return_value=None)
+            pool.fetchval = AsyncMock(return_value=False)
+            pool.fetch = AsyncMock(return_value=[])
+
+            with patch(
+                "butlers.tools.finance.data_import._trigger_learn_merchant_categories",
+                new=AsyncMock(return_value=5),
+            ) as mock_learn:
+                result = await import_transactions_from_file(pool, file_path=path)
+
+            assert result["imported"] == 2
+            mock_learn.assert_not_called()
+            assert result["categories_learned"] == 0
         finally:
             os.unlink(path)
 

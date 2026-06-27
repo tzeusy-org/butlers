@@ -43,6 +43,11 @@ _COL_DESCRIPTION = "description"
 _COL_CATEGORY = "category"
 _COL_DIRECTION = "direction"
 
+# Placeholder category assigned to rows whose CSV carries no category value.
+# Treated as "no category data" when deciding whether to learn merchant->category
+# mappings post-import.
+_UNCATEGORIZED = "uncategorized"
+
 # ---------------------------------------------------------------------------
 # Format definitions
 # ---------------------------------------------------------------------------
@@ -417,7 +422,7 @@ def _parse_row(
     # --- Optional fields ---
     category_col = fmt["col_map"].get(_COL_CATEGORY) if "col_map" in fmt else None
     raw_category = (_resolve_col(row, category_col) or "").strip() if category_col else ""
-    category = raw_category.lower() if raw_category else "uncategorized"
+    category = raw_category.lower() if raw_category else _UNCATEGORIZED
 
     description_col = fmt["col_map"].get(_COL_DESCRIPTION) if "col_map" in fmt else None
     raw_description = (_resolve_col(row, description_col) or "").strip() if description_col else ""
@@ -819,7 +824,11 @@ async def import_transactions(
     -------
     dict
         ``{total, imported, skipped, errors, import_batch_id, detected_format,
-           dry_run, preview (when dry_run=True)}``
+           dry_run, categories_learned, preview (when dry_run=True)}``
+
+    On a successful non-dry-run import where the rows carry category data,
+    ``learn_merchant_categories()`` is triggered to upsert merchant->category
+    mappings and the count is reported via ``categories_learned``.
     """
     import_batch_id = str(uuid.uuid4())
 
@@ -923,6 +932,14 @@ async def import_transactions(
             len(batch_errors),
         )
 
+    # --- Post-import merchant-category learning ---
+    # Build merchant->category mappings from the imported category data so future
+    # imports and transaction records can auto-categorise (spec: finance-data-import
+    # "Post-import merchant categorization learning").
+    categories_learned = 0
+    if total_imported > 0 and _has_category_data(parsed):
+        categories_learned = await _trigger_learn_merchant_categories(pool)
+
     return {
         "total": total_rows,
         "imported": total_imported,
@@ -932,6 +949,7 @@ async def import_transactions(
         "detected_format": fmt["name"],
         "date_format_detected": date_fmt,
         "dry_run": False,
+        "categories_learned": categories_learned,
         "error_details": all_errors[:50],  # cap to first 50 for response size
     }
 
@@ -1116,6 +1134,38 @@ async def _trigger_compute_baselines(pool: asyncpg.Pool) -> bool:
         return False
 
 
+def _has_category_data(parsed: list[dict[str, Any]]) -> bool:
+    """Return True when any parsed row carries a real (non-placeholder) category.
+
+    Rows with no category in the source CSV are normalised to ``_UNCATEGORIZED``;
+    those do not count as category data for the purpose of merchant-category
+    learning.
+    """
+    return any((txn.get("category") or "").strip() not in ("", _UNCATEGORIZED) for txn in parsed)
+
+
+async def _trigger_learn_merchant_categories(pool: asyncpg.Pool) -> int:
+    """Trigger merchant-category learning after an import.
+
+    Reuses ``pattern_recognition.learn_merchant_categories`` to aggregate the
+    most-frequent category per merchant from the imported transactions and
+    upsert the result into ``finance.merchant_mappings``.
+
+    Returns the number of mappings upserted, or 0 when the learning function is
+    unavailable or fails (best-effort, non-fatal to the import).
+    """
+    try:
+        from butlers.tools.finance.pattern_recognition import learn_merchant_categories
+
+        result = await learn_merchant_categories(pool)
+        upserted = int(result.get("upserted", 0)) if isinstance(result, dict) else 0
+        logger.info("import: learn_merchant_categories upserted %d mapping(s)", upserted)
+        return upserted
+    except Exception as exc:
+        logger.warning("import: learn_merchant_categories trigger failed: %s", exc)
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Dry run with duplicate detection
 # ---------------------------------------------------------------------------
@@ -1181,6 +1231,9 @@ async def import_transactions_from_file(
     Post-import triggers (non-dry-run only, when 1+ rows imported):
     - Refreshes the ``spending_summaries`` materialized view (if present).
     - Calls ``compute_baselines()`` when 50 or more rows were imported.
+    - Calls ``learn_merchant_categories()`` when imported rows carry category
+      data, upserting merchant->category mappings and reporting the count via
+      ``categories_learned``.
 
     Parameters
     ----------
@@ -1207,7 +1260,7 @@ async def import_transactions_from_file(
     dict
         ``{total, imported, skipped, errors, import_batch_id, detected_format,
            dry_run, merchant_mappings_applied, mv_refreshed,
-           baselines_triggered, preview (when dry_run=True)}``
+           baselines_triggered, categories_learned, preview (when dry_run=True)}``
     """
     import_batch_id = str(uuid.uuid4())
 
@@ -1305,10 +1358,14 @@ async def import_transactions_from_file(
     # --- Post-import triggers ---
     mv_refreshed = False
     baselines_triggered = False
+    categories_learned = 0
     if total_imported > 0:
         mv_refreshed = await _refresh_spending_summaries(pool)
         if total_imported >= 50:
             baselines_triggered = await _trigger_compute_baselines(pool)
+        # Learn merchant->category mappings from the imported category data.
+        if _has_category_data(parsed):
+            categories_learned = await _trigger_learn_merchant_categories(pool)
 
     return {
         "total": total_rows,
@@ -1322,5 +1379,6 @@ async def import_transactions_from_file(
         "merchant_mappings_applied": merchant_mappings_applied,
         "mv_refreshed": mv_refreshed,
         "baselines_triggered": baselines_triggered,
+        "categories_learned": categories_learned,
         "error_details": all_errors[:50],  # cap to first 50 for response size
     }
