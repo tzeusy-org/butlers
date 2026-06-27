@@ -265,7 +265,7 @@ function Dossier({
       if (ran) {
         toast.success("Approved & dispatched");
       } else {
-        toast.warning("Approved — queued, not yet run. Retry from History.");
+        toast.warning("Approved. Queued, not yet run. Retry from History.");
       }
       invalidate();
     },
@@ -804,7 +804,7 @@ function RetryDispatchButton({ actionId }: { actionId: string }) {
       if (ran) {
         toast.success("Dispatched");
       } else {
-        toast.warning("Still not run — no reachable butler");
+        toast.warning("Still not run: no reachable butler");
       }
       qc.invalidateQueries({ queryKey: Q.history() });
       qc.invalidateQueries({ queryKey: ["approvals", "flat"] });

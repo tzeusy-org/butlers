@@ -135,7 +135,7 @@ export default function ConnectorDetailPage() {
     if (oauthError === 'no_primary_account') {
       toast.warning('No primary account set. Go to Secrets to set a primary account.')
     } else {
-      toast.warning(`OAuth error: ${oauthError.replace(/_/g, ' ')} — try re-authorizing.`)
+      toast.warning(`OAuth error: ${oauthError.replace(/_/g, ' ')}. Try re-authorizing.`)
     }
   }, [oauthError, setSearchParams])
 

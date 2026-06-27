@@ -190,7 +190,7 @@ export function MeetingPrepRail({
           data-testid="meeting-prep-empty"
           className="font-mono text-[11px] leading-snug text-[var(--mfg)]"
         >
-          No prep context yet — attendee relationships and message history will
+          No prep context yet. Attendee relationships and message history will
           appear here once they are linked.
         </p>
       ) : (

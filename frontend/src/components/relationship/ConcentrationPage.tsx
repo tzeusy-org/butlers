@@ -493,7 +493,7 @@ export default function ConcentrationPage() {
     <Page
       archetype="overview"
       title="Concentration"
-      description="Balance-sheet of relationship weight by predicate — see which entities dominate each relationship type."
+      description="Balance-sheet of relationship weight by predicate. See which entities dominate each relationship type."
       breadcrumbs={[{ label: "Entities", href: "/entities" }, { label: "Concentration" }]}
     >
       {/* SubpageTabs — Concentration is active */}

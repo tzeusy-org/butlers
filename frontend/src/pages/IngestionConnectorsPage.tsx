@@ -46,7 +46,7 @@ export default function IngestionConnectorsPage() {
     if (oauthError === 'no_primary_account') {
       toast.warning('No primary account set. Go to Secrets to set a primary account.')
     } else {
-      toast.warning(`OAuth error: ${oauthError.replace(/_/g, ' ')} — try re-authorizing.`)
+      toast.warning(`OAuth error: ${oauthError.replace(/_/g, ' ')}. Try re-authorizing.`)
     }
   }, [oauthError, setSearchParams])
 
@@ -55,7 +55,7 @@ export default function IngestionConnectorsPage() {
       <DispatchHeader
         eyebrow="Ingestion · connectors"
         headline="Where signals come from."
-        description="Every channel the house listens on — status, health, and credential state."
+        description="Every channel the house listens on: status, health, and credential state."
       />
       <IngestionSubNav />
       <DispatchSurface>

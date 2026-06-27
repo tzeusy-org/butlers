@@ -68,7 +68,7 @@ export const GATE_DEFS: GateDefinition[] = [
     key: 'route',
     label: 'route',
     gloss:
-      'Resolves which butler handles this event — or marks it as preserved-without-dispatch for audit.',
+      'Resolves which butler handles this event, or marks it as preserved-without-dispatch for audit.',
     codePolicy: null,
   },
   {

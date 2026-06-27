@@ -248,10 +248,10 @@ export function PrioritySendersBlock({
                 <div
                   className="mt-1.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--filter-amber,oklch(0.72_0.15_85))] border border-[color:var(--filter-amber,oklch(0.72_0.15_85))]/40 px-2 py-0.5 inline-flex items-center gap-1.5"
                   data-testid={`priority-sender-inert-${entry.contact_id}`}
-                  title="This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact — without one, this entry matches nothing."
+                  title="This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact. Without one, this entry matches nothing."
                 >
                   <span aria-hidden="true">⚠</span>
-                  no email fact — entry matches nothing
+                  no email fact: entry matches nothing
                 </div>
               )}
             </div>

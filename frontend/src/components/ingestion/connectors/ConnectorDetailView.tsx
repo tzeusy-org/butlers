@@ -620,7 +620,7 @@ function livenessText(liveness: string): string {
 
 function describeConnector(connector: ConnectorDetail): string {
   const t = connector.connector_type.replace(/_/g, ' ')
-  return `${t.charAt(0).toUpperCase() + t.slice(1)} connector — ${connector.endpoint_identity}.`
+  return `${t.charAt(0).toUpperCase() + t.slice(1)} connector: ${connector.endpoint_identity}.`
 }
 
 function deriveSparkline(stats: ConnectorStats | undefined): number[] {

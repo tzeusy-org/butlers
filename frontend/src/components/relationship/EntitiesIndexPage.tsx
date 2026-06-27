@@ -737,7 +737,7 @@ function EntityTable({
               <td className="py-2.5 pr-4">
                 {entity.tier != null ? (
                   <Badge variant="outline" className="text-xs tabular-nums">
-                    {entity.tier} — {DUNBAR_TIER_LABELS[entity.tier] ?? `Tier ${entity.tier}`}
+                    {entity.tier}: {DUNBAR_TIER_LABELS[entity.tier] ?? `Tier ${entity.tier}`}
                   </Badge>
                 ) : (
                   <span className="text-muted-foreground text-xs">—</span>

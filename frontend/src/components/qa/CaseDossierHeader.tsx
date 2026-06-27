@@ -106,7 +106,7 @@ export function CaseDossierHeader({
                         ? toast.success("Investigation re-dispatched.")
                         : toast.message("Retry queued.", {
                             description:
-                              "Awaiting daemon dispatch — no investigation agent was spawned yet.",
+                              "Awaiting daemon dispatch. No investigation agent was spawned yet.",
                           }),
                     onError: (err) =>
                       toast.error(`Retry failed: ${err instanceof Error ? err.message : "Unknown error"}`),

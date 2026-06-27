@@ -265,7 +265,7 @@ function RetentionPolicies() {
 
       {updateMutation.isError && (
         <Mono muted className="text-[var(--red)]">
-          save failed — try again
+          save failed, try again
         </Mono>
       )}
     </section>
@@ -335,7 +335,7 @@ const REEMBED_CONFIRM_WINDOW_MS = 5000;
  * `dry run` — secondary pill; renders its result inline as one mono line, no
  * modal.
  * `re-embed` — long synchronous run. The confirm step is an inline pill-morph
- * (`re-embed — confirm?` for 5s), NOT a dialog. While running: a `composing…`
+ * (`re-embed (confirm?)` for 5s), NOT a dialog. While running: a `composing…`
  * mono status line. On completion: one mono line `re-embedded N rows · Ns`.
  * NO progress bar.
  */
@@ -480,7 +480,7 @@ function Embeddings() {
             {runInFlight
               ? "composing…"
               : armed
-                ? "re-embed — confirm?"
+                ? "re-embed (confirm?)"
                 : "re-embed"}
           </button>
         </div>
@@ -495,7 +495,7 @@ function Embeddings() {
 
       {reembedMutation.isError && (
         <Mono muted className="text-[var(--red)]">
-          re-embed failed — try again
+          re-embed failed, try again
         </Mono>
       )}
     </section>

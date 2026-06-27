@@ -275,7 +275,7 @@ export default function SymptomTracker() {
         <SkeletonRows />
       ) : symptoms.length === 0 ? (
         <p className="text-muted-foreground font-serif text-[15px] italic">
-          Nothing logged yet — log a symptom above, or tell your Health butler.
+          Nothing logged yet. Log a symptom above, or tell your Health butler.
         </p>
       ) : (
         <div className="divide-y divide-border/60 border-y border-border/60">

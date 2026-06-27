@@ -559,7 +559,7 @@ export function OwnTracksDrawerContent() {
           data-owntracks-token-panel="true"
         >
           <Mono size={9} upper tracking="0.14em" color="var(--dim)">
-            {tokenConfigured ? "new token — copy now, replaces previous" : "token — copy now, won't be shown again"}
+            {tokenConfigured ? "new token: copy now, replaces previous" : "token: copy now, won't be shown again"}
           </Mono>
           <Mono size={12} className="break-all" data-owntracks-token-value="true">{generatedToken}</Mono>
           <div className="flex gap-2">
@@ -1312,7 +1312,7 @@ function WhatsAppPairModal({
         <Mono size={11} color="var(--green)">paired successfully</Mono>
       )}
       {pollQuery.data?.status === "expired" && (
-        <Mono size={11} color="var(--amber)">qr code expired — try again</Mono>
+        <Mono size={11} color="var(--amber)">qr code expired, try again</Mono>
       )}
 
       <PillBtn onClick={onCancel}>cancel</PillBtn>

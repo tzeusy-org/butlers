@@ -435,7 +435,7 @@ export default function ColumnsPage() {
           className="flex overflow-x-auto border border-border rounded-md min-h-[400px] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="columns-cascade"
           role="region"
-          aria-label="Cascading column view — use arrow keys to navigate, Enter to open detail"
+          aria-label="Cascading column view: use arrow keys to navigate, Enter to open detail"
           tabIndex={0}
           onKeyDown={handleKeyDown}
         >

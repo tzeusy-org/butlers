@@ -88,7 +88,7 @@ export function CalendarPortabilityDialog({
       await navigator.clipboard.writeText(subscribeUrl);
       toast.success("Subscribe URL copied");
     } catch {
-      toast.error("Could not copy — select the URL and copy manually");
+      toast.error("Could not copy. Select the URL and copy manually");
     }
   }
 
@@ -136,7 +136,7 @@ export function CalendarPortabilityDialog({
           <DialogTitle>Export / Import calendar</DialogTitle>
           <DialogDescription>
             Read-only ICS export and a live subscribe feed, plus deduped `.ics`
-            import. Your calendar, your data — no lock-in.
+            import. Your calendar, your data. No lock-in.
           </DialogDescription>
         </DialogHeader>
 

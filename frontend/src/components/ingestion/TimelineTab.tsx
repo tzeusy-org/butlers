@@ -543,7 +543,7 @@ function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselec
     } catch (err: unknown) {
       // 409 means the batch contains email or replay-unsafe events — surface a clear message.
       if (err instanceof ApiError && err.status === 409) {
-        const msg = "Selection contains email or replay-unsafe events — remove them and retry";
+        const msg = "Selection contains email or replay-unsafe events. Remove them and retry";
         setErrorMsg(msg);
         toast.error(msg);
       } else {

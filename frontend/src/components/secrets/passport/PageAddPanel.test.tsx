@@ -272,7 +272,7 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
   it("shows 'owner entity ID not available' hint in provider panel when ownerEntityId is undefined", () => {
     renderAddPanel(undefined);
     fireEvent.click(screen.getByText("connect provider"));
-    expect(screen.getByText(/owner entity ID not available — cannot connect provider/i)).toBeTruthy();
+    expect(screen.getByText(/owner entity ID not available: cannot connect provider/i)).toBeTruthy();
   });
 
   it("does NOT call reauthorizeUserCredential when ownerEntityId is undefined and connect is clicked", () => {

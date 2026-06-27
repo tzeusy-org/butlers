@@ -488,7 +488,7 @@ function FrontierPanel({
         {isLoading ? (
           <LoadingLine />
         ) : top5.length === 0 ? (
-          <EmptyStateLine>No frontier nodes yet — keep mastering prerequisites!</EmptyStateLine>
+          <EmptyStateLine>No frontier nodes yet. Keep mastering prerequisites!</EmptyStateLine>
         ) : (
           <ul className="divide-y" data-testid="frontier-list">
             {top5.map((entry) => (

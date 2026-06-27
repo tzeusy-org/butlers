@@ -299,14 +299,14 @@ export function useRequestCurriculum() {
     mutationFn: (body: CurriculumRequestBody) => requestEducationCurriculum(body),
     onSuccess: () => {
       toast.success(
-        "Curriculum requested — the butler will set it up within a few minutes and message you to begin",
+        "Curriculum requested. The butler will set it up within a few minutes and message you to begin",
       );
       qc.invalidateQueries({ queryKey: ["education", "mind-maps"] });
     },
     onError: (error: Error & { status?: number }) => {
       if (error.status === 409) {
         toast.error(
-          "A curriculum request is already pending — please wait for the butler to process it",
+          "A curriculum request is already pending. Please wait for the butler to process it",
         );
       } else {
         toast.error("Failed to submit curriculum request");

@@ -682,7 +682,7 @@ function TestModeExpiryBanner({
 }) {
   const tone = isExpiring ? "var(--red)" : "var(--amber)";
   const label = isExpiring
-    ? "test-mode consent about to expire — re-consent to keep Google Health connected"
+    ? "test-mode consent about to expire, re-consent to keep Google Health connected"
     : "test mode: consent expires every 7 days until production verification completes";
 
   // Re-consent link → OAuth start scoped to Google Health, forcing the consent
@@ -2598,7 +2598,7 @@ export function PageCli({
           data-rotated-secret-panel="true"
         >
           <Mono size={9} upper tracking="0.14em" color="var(--dim)">
-            new token — copy now, won't be shown again
+            new token: copy now, won't be shown again
           </Mono>
           <Mono size={12}>{rotatedSecret}</Mono>
           <div className="flex gap-2">
@@ -3203,7 +3203,7 @@ export function PassportAddPanel({
 
           {!ownerEntityId && (
             <Mono size={11} color="var(--red)">
-              owner entity ID not available — cannot create user credential
+              owner entity ID not available: cannot create user credential
             </Mono>
           )}
 
@@ -3259,7 +3259,7 @@ export function PassportAddPanel({
             </div>
             {!ownerEntityId && (
               <Mono size={11} color="var(--dim)" className="mt-2">
-                owner entity ID not available — cannot connect provider
+                owner entity ID not available: cannot connect provider
               </Mono>
             )}
             {oauthError && (

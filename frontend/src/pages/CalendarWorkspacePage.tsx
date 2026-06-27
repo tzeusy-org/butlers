@@ -973,7 +973,7 @@ function OverlayPill({ entry }: { entry: UnifiedCalendarEntry }) {
   const accent = overlayButlerAccent(md.source_butler);
   const title = `${md.source_butler ?? "overlay"} · ${md.kind || "context"}${
     md.priority ? ` (${md.priority})` : ""
-  }: ${entry.title}${badge ? ` — ${badge}` : ""}`;
+  }: ${entry.title}${badge ? ` (${badge})` : ""}`;
   return (
     <div
       data-overlay-entry-id={entry.entry_id}
@@ -1314,7 +1314,7 @@ function CalendarFindTimePanel({
             checked.{" "}
             <span className="text-[var(--mfg)]">
               {result.reason ??
-                "The calendar source is unreachable — try again shortly."}
+                "The calendar source is unreachable. Try again shortly."}
             </span>
           </p>
         </div>
@@ -2040,7 +2040,7 @@ function CalendarSearchPalette({
               <p className="text-sm text-[var(--fg)]">
                 Search is unavailable right now.{" "}
                 <span className="text-[var(--mfg)]">
-                  The calendar index couldn&rsquo;t be reached — results may be
+                  The calendar index couldn&rsquo;t be reached. Results may be
                   incomplete. Try again shortly.
                 </span>
               </p>
@@ -4758,7 +4758,7 @@ export default function CalendarWorkspacePage() {
                           {dayEntries.length > 3 ? (
                             <button
                               type="button"
-                              aria-label={`${dayEntries.length - 3} more on ${format(day, "MMM d")} — open day view`}
+                              aria-label={`${dayEntries.length - 3} more on ${format(day, "MMM d")}: open day view`}
                               onClick={() =>
                                 updateQuery({ range: "day", anchor: day })
                               }
@@ -5413,7 +5413,7 @@ export default function CalendarWorkspacePage() {
               enables or disables a calendar as a sync source (persisted); a
               disabled calendar is skipped by sync but its already-synced events
               stay visible. Use Hide/Show to remove a calendar from the grid
-              without changing its sync — a view-only preference.
+              without changing its sync, a view-only preference.
             </DialogDescription>
           </DialogHeader>
           {(() => {
@@ -6297,7 +6297,7 @@ export default function CalendarWorkspacePage() {
                   </Eyebrow>
                   {recurrencePreview.isError ? (
                     <p className="text-sm text-[var(--mfg)]">
-                      Couldn’t preview this recurrence — check the rule or cron
+                      Couldn’t preview this recurrence. Check the rule or cron
                       expression.
                     </p>
                   ) : recurrencePreviewData ? (

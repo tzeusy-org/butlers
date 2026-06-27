@@ -95,7 +95,7 @@ export default function EpisodeDetailPage() {
           <ProvenanceLink
             key={f.id}
             to={`/memory/facts/${f.id}`}
-            label={`derived fact ${shortFragment(f.id)} — ${f.subject} · ${f.predicate}`}
+            label={`derived fact ${shortFragment(f.id)}: ${f.subject} · ${f.predicate}`}
           />
         ))}
       </>

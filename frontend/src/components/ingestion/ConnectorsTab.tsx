@@ -106,7 +106,7 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
       {/* Metrics unavailable eyebrow — shown when Prometheus is unreachable */}
       {!aggregatesAvailable && (
         <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-          metrics unavailable — aggregate statistics are temporarily unavailable
+          metrics unavailable: aggregate statistics are temporarily unavailable
         </div>
       )}
 
@@ -149,7 +149,7 @@ export function ConnectorsTab({ isActive }: ConnectorsTabProps) {
       {dormantConnectors.length > 0 && (
         <div data-testid="dormant-available-section">
           <h3 className="text-sm font-semibold text-muted-foreground mb-3">
-            Available — not yet configured
+            Available: not yet configured
           </h3>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {dormantConnectors.map((profile) => (

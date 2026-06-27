@@ -371,7 +371,7 @@ describe("HousekeepingBand", () => {
     // First click arms (morphs label) but does NOT mutate.
     act(() => findReembed().click());
     expect(reembedMutate).not.toHaveBeenCalled();
-    expect(mounted.container.textContent).toContain("re-embed — confirm?");
+    expect(mounted.container.textContent).toContain("re-embed (confirm?)");
     expect(mounted.container.querySelector("dialog")).toBeNull();
 
     // Second click within the window commits a live run (dry_run=false).

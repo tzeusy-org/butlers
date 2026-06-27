@@ -11,7 +11,7 @@ export default function MeasurementsPage() {
         <Eyebrow as="div">Health · Measurements</Eyebrow>
         <Display>Measurements</Display>
         <p className="text-muted-foreground mt-1 max-w-2xl">
-          Your readings as a trajectory — what changed over time. Changes here and
+          Your readings as a trajectory: what changed over time. Changes here and
           readings logged via your Health butler stay in sync.
         </p>
       </header>

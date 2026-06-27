@@ -18,7 +18,7 @@ export default function IngestionHistoryPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">History</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Backfill and replay history — track and manage historical ingestion runs.
+          Backfill and replay history. Track and manage historical ingestion runs.
         </p>
       </div>
       <BackfillHistoryTab />

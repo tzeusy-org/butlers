@@ -425,7 +425,7 @@ export function FingerprintRow({
             className="font-mono text-[9px] uppercase tracking-[0.10em] bg-transparent border-none cursor-pointer p-0"
             style={{ color: "var(--dim)" }}
           >
-            {open ? "— hide verify cmd" : "+ verify cmd"}
+            {open ? "− hide verify cmd" : "+ verify cmd"}
           </button>
           {open && (
             <div className="mt-1">

@@ -489,7 +489,7 @@ function SecretsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
     >
       <p className="text-xs text-muted-foreground leading-relaxed">
         Inspect API keys, CLI tokens, user credentials, and the Google OAuth app
-        configuration — plus what each credential feeds.
+        configuration, plus what each credential feeds.
       </p>
     </PanelShell>
   );

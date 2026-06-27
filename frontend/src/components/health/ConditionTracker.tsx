@@ -212,7 +212,7 @@ export default function ConditionTracker() {
         <SkeletonRows />
       ) : conditions.length === 0 ? (
         <p className="text-muted-foreground font-serif text-[15px] italic">
-          Nothing on record yet — add a condition above, or tell your Health butler.
+          Nothing on record yet. Add a condition above, or tell your Health butler.
         </p>
       ) : (
         <div className="divide-y divide-border/60 border-y border-border/60">

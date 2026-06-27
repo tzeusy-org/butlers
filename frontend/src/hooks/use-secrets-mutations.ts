@@ -225,8 +225,8 @@ export function useRotateCliRuntime() {
     onSuccess: (_, { id, value }) => {
       toast.success(
         value && value.trim()
-          ? "CLI token saved — copy the value now"
-          : "CLI token rotated — copy the new value now",
+          ? "CLI token saved. Copy the value now"
+          : "CLI token rotated. Copy the new value now",
       );
       void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
       void queryClient.invalidateQueries({ queryKey: secretsCliKeys.byId(id) });

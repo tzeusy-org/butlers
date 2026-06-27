@@ -2003,7 +2003,7 @@ function EntityDetailModeToggle({
       aria-label={`Switch to ${nextMode} mode`}
       data-testid="entity-mode-toggle"
       onClick={() => onModeChange(nextMode)}
-      title={`${mode === "editorial" ? "Editorial" : "Workbench"} mode — click to switch to ${nextMode}`}
+      title={`${mode === "editorial" ? "Editorial" : "Workbench"} mode: click to switch to ${nextMode}`}
       className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
       <Layers className="h-3.5 w-3.5" aria-hidden />
@@ -2146,7 +2146,7 @@ function WorkbenchContextRail({
                 onClick={() => onOpenMergeReviewWith(peer.id)}
                 className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                {peer.name ?? "another entity"} — likely the same →
+                {peer.name ?? "another entity"}, likely the same →
               </button>
             ))}
           </div>
@@ -2962,7 +2962,7 @@ export default function EntityDetailPage() {
         type="button"
         data-testid="forget-entity-button"
         aria-label="Forget this entity"
-        title="Forget this entity — irreversible hard delete"
+        title="Forget this entity: irreversible hard delete"
         onClick={() => {
           setForgetError(null);
           setForgetDialogOpen(true);
@@ -3002,7 +3002,7 @@ export default function EntityDetailPage() {
               data-testid="duplicate-warning-panel"
             >
               <span className="text-foreground">
-                Shares identifiers with another entity — this may be a duplicate.
+                Shares identifiers with another entity. This may be a duplicate.
               </span>
               <Button
                 type="button"

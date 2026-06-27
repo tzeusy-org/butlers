@@ -538,7 +538,7 @@ function DataOpsSection() {
         <div className="flex flex-col gap-1.5">
           <Eyebrow>Wipe all data</Eyebrow>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Temporarily disabled — a safer implementation is in progress.
+            Temporarily disabled. A safer implementation is in progress.
           </p>
         </div>
         <Button variant="destructive" disabled className="self-start">
@@ -608,7 +608,7 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
       await navigator.clipboard.writeText(createdSecret);
       toast.success("Secret copied to clipboard");
     } catch {
-      toast.error("Copy failed — select and copy the secret manually");
+      toast.error("Copy failed. Select and copy the secret manually");
     }
   }
 
@@ -623,7 +623,7 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
             <div className="space-y-3 py-2">
               <p className="text-sm text-muted-foreground">
                 This secret is shown <strong>once</strong> and cannot be retrieved later.
-                Store it now — use it to verify the <code>X-Butler-Signature</code> HMAC.
+                Store it now. Use it to verify the <code>X-Butler-Signature</code> HMAC.
               </p>
               <div className="space-y-1">
                 <Label htmlFor="wh-created-secret">Signing secret</Label>
@@ -782,7 +782,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
       await navigator.clipboard.writeText(revealedSecret);
       toast.success("Secret copied to clipboard");
     } catch {
-      toast.error("Copy failed — select and copy the secret manually");
+      toast.error("Copy failed. Select and copy the secret manually");
     }
   }
 
@@ -797,7 +797,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
             <div className="space-y-3 py-2">
               <p className="text-sm text-muted-foreground">
                 This secret is shown <strong>once</strong> and cannot be retrieved later.
-                Store it now — use it to verify the <code>X-Butler-Signature</code> HMAC.
+                Store it now. Use it to verify the <code>X-Butler-Signature</code> HMAC.
               </p>
               <div className="space-y-1">
                 <Label htmlFor="wh-regenerated-secret">Signing secret</Label>
@@ -946,10 +946,10 @@ function WebhooksSection() {
       const result = await testWebhook(id);
       if (result.ok) {
         toast.success(
-          `Test passed — HTTP ${result.status_code} in ${result.latency_ms?.toFixed(0) ?? "?"}ms`,
+          `Test passed: HTTP ${result.status_code} in ${result.latency_ms?.toFixed(0) ?? "?"}ms`,
         );
       } else {
-        toast.error(`Test failed — HTTP ${result.status_code ?? "no response"}`);
+        toast.error(`Test failed: HTTP ${result.status_code ?? "no response"}`);
       }
       await reload();
     } catch (err) {
@@ -1256,7 +1256,7 @@ export default function SettingsPermissionsPage() {
       )}
 
       {/* Audit reel */}
-      <Section title="Audit reel" description="Last 15 privileged-action entries — permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.">
+      <Section title="Audit reel" description="Last 15 privileged-action entries: permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.">
         <AuditReelSection />
       </Section>
 

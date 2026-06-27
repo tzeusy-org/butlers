@@ -82,15 +82,15 @@ function toDotState(state: GoogleHealthConnectorState) {
 function formatConnectorError(code: string): string {
   switch (code) {
     case "api_forbidden":
-      return "Google Health connector unavailable (403) — the Google Health API rejected the request. This usually means the OAuth grant is still in test mode or the account is not on the Google Health access allowlist.";
+      return "Google Health connector unavailable (403). The Google Health API rejected the request. This usually means the OAuth grant is still in test mode or the account is not on the Google Health access allowlist.";
     case "scope_missing":
-      return "Google Health connector unavailable — required Google Health scopes are missing. Re-grant the scopes in Settings.";
+      return "Google Health connector unavailable. Required Google Health scopes are missing. Re-grant the scopes in Settings.";
     case "token_invalid":
-      return "Google Health connector unavailable — the Google account's authorization was revoked. Reconnect the account in Settings.";
+      return "Google Health connector unavailable. The Google account's authorization was revoked. Reconnect the account in Settings.";
     case "source_api_unreachable":
-      return "Google Health connector unavailable — the Google Health API could not be reached.";
+      return "Google Health connector unavailable. The Google Health API could not be reached.";
     case "no_primary_account":
-      return "Google Health connector unavailable — no Google account is connected.";
+      return "Google Health connector unavailable. No Google account is connected.";
     default:
       return `Google Health connector unavailable (${code}).`;
   }

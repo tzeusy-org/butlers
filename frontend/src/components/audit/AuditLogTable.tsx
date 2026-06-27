@@ -58,7 +58,7 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
     return (
       <EmptyState
         title="Audit log unavailable."
-        description="Failed to load audit log entries. The audit log may be temporarily unavailable — try again shortly."
+        description="Failed to load audit log entries. The audit log may be temporarily unavailable. Try again shortly."
       />
     );
   }

@@ -150,7 +150,7 @@ export function CalendarDuplicatesPanel({
         label: cluster.kept_entry.title,
       });
       toast.success(
-        next ? "Cluster kept separate — copies will show." : "Cluster will collapse again.",
+        next ? "Cluster kept separate. Copies will show." : "Cluster will collapse again.",
       );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to update keep-separate.");
@@ -261,12 +261,12 @@ export function CalendarDuplicatesPanel({
 
       {!available ? (
         <p data-testid="duplicates-unavailable" className="font-mono text-[11px] text-[var(--mfg)]">
-          Duplicate review is unavailable right now — the underlying read could not run. Try again
+          Duplicate review is unavailable right now. The underlying read could not run. Try again
           shortly.
         </p>
       ) : clusters.length === 0 ? (
         <p data-testid="duplicates-empty" className="font-mono text-[11px] text-[var(--mfg)]">
-          No cross-source duplicates in this range — nothing is being collapsed.
+          No cross-source duplicates in this range. Nothing is being collapsed.
         </p>
       ) : (
         <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
@@ -337,7 +337,7 @@ export function CalendarDuplicatesPanel({
                   </button>
                   <span className="font-mono text-[10px] text-[var(--dim)]">
                     {cluster.keep_separate
-                      ? "Not collapsed — all copies show in the calendar."
+                      ? "Not collapsed. All copies show in the calendar."
                       : "Collapsed to one entry in the calendar."}
                   </span>
                 </div>

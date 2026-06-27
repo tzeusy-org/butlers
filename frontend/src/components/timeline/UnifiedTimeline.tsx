@@ -280,7 +280,7 @@ function ErrorState({ onRetry }: { onRetry?: () => void }) {
     <div data-testid="timeline-error">
       <EmptyStateUI
         title="Could not load the timeline."
-        description="The event stream failed to load. This is not the same as having no activity — please try again."
+        description="The event stream failed to load. This is not the same as having no activity. Please try again."
         action={
           onRetry ? (
             <Button variant="outline" size="sm" onClick={onRetry}>

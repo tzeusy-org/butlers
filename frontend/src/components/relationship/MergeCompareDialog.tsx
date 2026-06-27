@@ -295,7 +295,7 @@ export function MergeCompareDialog({
     if (!pair) return;
     try {
       await dismiss.mutateAsync({ entity_a: pair.entityA, entity_b: pair.entityB });
-      toast.success("Dismissed — pair removed from the duplicate queue.");
+      toast.success("Dismissed. Pair removed from the duplicate queue.");
       onResolved?.();
       handleClose(false);
     } catch (err) {
@@ -311,7 +311,7 @@ export function MergeCompareDialog({
         <DialogHeader>
           <DialogTitle>Review merge</DialogTitle>
           <DialogDescription>
-            Compare the two entities, choose which one survives, then merge — or dismiss the pair if
+            Compare the two entities, choose which one survives, then merge, or dismiss the pair if
             they are not duplicates.
           </DialogDescription>
         </DialogHeader>
@@ -380,7 +380,7 @@ export function MergeCompareDialog({
             onClick={handleDismiss}
             data-testid="compare-dismiss"
           >
-            {dismiss.isPending ? "Dismissing..." : "Not a duplicate — dismiss"}
+            {dismiss.isPending ? "Dismissing..." : "Not a duplicate, dismiss"}
           </Button>
           <Button
             type="button"

@@ -418,7 +418,7 @@ export function ExpandedContactInfoRow({
         {isEntityFacts && !entry.verified && (
           <span
             data-testid="unverified-dot"
-            title="Unverified — owner has not confirmed this channel"
+            title="Unverified: owner has not confirmed this channel"
             style={{
               display: "inline-block",
               width: "6px",
@@ -482,7 +482,7 @@ export function ExpandedContactInfoRow({
       {!isEntityFacts && (
         <span
           className="text-xs text-muted-foreground shrink-0"
-          title="Legacy channel — no entity-keyed write path available (read-only)"
+          title="Legacy channel: no entity-keyed write path available (read-only)"
         >
           (legacy)
         </span>

@@ -139,7 +139,7 @@ function IssueCard({
         </div>
       ) : (
         <p className="mt-1 text-xs italic text-[var(--fg-muted)]">
-          No suggested fix yet — the radar will propose one shortly.
+          No suggested fix yet. The radar will propose one shortly.
         </p>
       )}
     </li>

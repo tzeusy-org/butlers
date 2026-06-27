@@ -583,7 +583,7 @@ function NeighbourFanOut({
       data-testid="neighbours-panel"
       tabIndex={0}
       role="listbox"
-      aria-label="Neighbours — use arrow keys to cursor, Enter to re-centre"
+      aria-label="Neighbours: use arrow keys to cursor, Enter to re-centre"
       aria-activedescendant={cursoredId ? `hop-neighbour-${cursoredId}` : undefined}
       onKeyDown={handleKeyDown}
     >

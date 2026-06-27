@@ -67,8 +67,8 @@ function emptySessionsReason(
 
   if (policyBypass || event.triage_decision === 'route_to') {
     return target
-      ? `Routed directly to ${target} via a policy-bypass rule and ingested deterministically — no LLM session was spawned (and no model cost).`
-      : 'Routed via a policy-bypass rule and ingested deterministically — no LLM session was spawned (and no model cost).'
+      ? `Routed directly to ${target} via a policy-bypass rule and ingested deterministically. No LLM session was spawned (and no model cost).`
+      : 'Routed via a policy-bypass rule and ingested deterministically. No LLM session was spawned (and no model cost).'
   }
   if (event.status === 'skipped' || event.triage_decision === 'skip') {
     return 'This event matched a skip rule, so it was stored but never dispatched to a butler.'

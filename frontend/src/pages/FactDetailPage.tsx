@@ -87,7 +87,7 @@ function EntityAnchor({
  * The only mutations on the entire memory surface. Both endpoints are live, so
  * this footer always renders. `Confirm` is the single commit-class pill
  * (fg-on-bg); `Retract` is secondary (bordered). Retract requires a one-step
- * confirm: the pill becomes `Retract — confirm?` for 5s, no modal.
+ * confirm: the pill becomes `Retract (confirm?)` for 5s, no modal.
  */
 function CommitFooter({ fact }: { fact: Fact }) {
   const confirmMutation = useConfirmFact();
@@ -146,7 +146,7 @@ function CommitFooter({ fact }: { fact: Fact }) {
             "disabled:pointer-events-none disabled:opacity-40",
           )}
         >
-          {retractArmed ? "Retract — confirm?" : "Retract"}
+          {retractArmed ? "Retract (confirm?)" : "Retract"}
         </button>
         <Voice variant="italic" as="span" className="text-[13px] text-[var(--mfg)]">
           Marks the record incorrect; agents stop retrieving it.

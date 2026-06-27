@@ -49,7 +49,7 @@ function DayBriefingChip({
   const accent = overlayButlerAccent(md.source_butler);
   const label = `${md.source_butler ?? "overlay"} · ${md.kind || "context"}${
     md.priority ? ` (${md.priority})` : ""
-  }: ${entry.title}${badge ? ` — ${badge}` : ""}`;
+  }: ${entry.title}${badge ? ` (${badge})` : ""}`;
   const interactive = typeof onSelect === "function";
 
   const content = (
@@ -148,13 +148,13 @@ export function DayBriefingCard({
         // Honest empty/degraded state — no specialist contributed (or the cached
         // view is unavailable). Render explicitly rather than omitting the card.
         <p data-testid="day-briefing-clear" className="font-mono text-[11px] text-[var(--mfg)]">
-          No domain context for this day — tomorrow is clear.
+          No domain context for this day. Tomorrow is clear.
         </p>
       ) : !hasEntries ? (
         // A specialist contributed but had nothing for the day: still "clear",
         // but we know coverage ran (distinct from "no domain context").
         <p data-testid="day-briefing-clear" className="font-mono text-[11px] text-[var(--mfg)]">
-          Nothing scheduled across your domains — tomorrow is clear.
+          Nothing scheduled across your domains. Tomorrow is clear.
         </p>
       ) : (
         <div className="flex flex-col gap-2.5">

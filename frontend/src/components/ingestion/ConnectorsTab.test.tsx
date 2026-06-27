@@ -247,6 +247,6 @@ describe("ConnectorsTab", () => {
     setupDefaultMocks([], MOCK_PROFILES);
     render();
 
-    expect(container.textContent).toContain("Available — not yet configured");
+    expect(container.textContent).toContain("Available: not yet configured");
   });
 });

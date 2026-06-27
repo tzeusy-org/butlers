@@ -18,7 +18,7 @@ export default function IssuesPage() {
           <h1 className="text-3xl font-bold tracking-tight">Issues</h1>
           <p className="text-muted-foreground mt-1">
             {showDismissed
-              ? "Dismissed issues — restore one to return it to the active feed."
+              ? "Dismissed issues. Restore one to return it to the active feed."
               : "Grouped errors and warnings across all butlers, newest first."}
           </p>
         </div>

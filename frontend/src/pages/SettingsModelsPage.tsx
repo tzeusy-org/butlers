@@ -241,7 +241,7 @@ function EditModelForm({
         onError: (err) => {
           const msg =
             err instanceof ApiError && err.status === 422
-              ? "Validation error — check your inputs"
+              ? "Validation error: check your inputs"
               : err instanceof Error
                 ? err.message
                 : "Failed to save model";
@@ -462,7 +462,7 @@ function EditModelDialog({ model, open, onOpenChange }: EditModelDialogProps) {
       <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle className="font-mono text-sm">
-            Edit model — <span className="text-muted-foreground">{model.alias}</span>
+            Edit model: <span className="text-muted-foreground">{model.alias}</span>
           </DialogTitle>
           <DialogDescription className="font-mono text-[11px]">
             Edit the configuration for this model catalog entry.
@@ -556,7 +556,7 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
           if (err instanceof ApiError && err.status === 409) {
             msg = `A model with alias "${alias.trim()}" already exists`;
           } else if (err instanceof ApiError && err.status === 422) {
-            msg = "Validation error — check your inputs";
+            msg = "Validation error: check your inputs";
           } else if (err instanceof Error) {
             msg = err.message;
           } else {
@@ -1318,7 +1318,7 @@ export default function SettingsModelsPage() {
       },
       onError: (err) => {
         if (err instanceof ApiError && err.status === 429) {
-          toast.warning("Verify all was called recently — wait 60 seconds before retrying.");
+          toast.warning("Verify all was called recently. Wait 60 seconds before retrying.");
         } else {
           const msg = err instanceof Error ? err.message : "Verify all failed";
           toast.error(msg);

@@ -139,7 +139,7 @@ export function CalendarProposalsPanel({
       const verb = action === "accept" ? "accepted" : "dismissed";
       toast.info(
         err.status === 404
-          ? "Proposal no longer exists — it was already resolved."
+          ? "Proposal no longer exists. It was already resolved."
           : `Proposal was already resolved and could not be ${verb}.`,
       );
       return; // keep the optimistic removal
@@ -158,7 +158,7 @@ export function CalendarProposalsPanel({
     setEditDraft(null);
     try {
       await acceptMutation.mutateAsync({ proposalId: id, overrides });
-      toast.success("Proposal accepted — event added to the Butlers calendar.");
+      toast.success("Proposal accepted. Event added to the Butlers calendar.");
     } catch (err) {
       reconcileError(id, err, "accept");
     } finally {
@@ -266,7 +266,7 @@ export function CalendarProposalsPanel({
           data-testid="proposals-empty"
           className="font-mono text-[11px] text-[var(--mfg)]"
         >
-          No pending proposals — nothing awaiting your review.
+          No pending proposals. Nothing awaiting your review.
         </p>
       ) : (
         <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">

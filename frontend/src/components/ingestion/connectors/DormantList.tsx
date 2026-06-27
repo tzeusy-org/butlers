@@ -82,7 +82,7 @@ export function DormantList({ profiles }: DormantListProps) {
 
               {/* Description gloss — serif italic */}
               <div className="font-serif italic text-[13px] text-muted-foreground/60 leading-snug min-w-0 truncate">
-                {profile.display_name} connector — not yet configured.
+                {profile.display_name} connector: not yet configured.
               </div>
 
               {/* Connect action */}

@@ -342,7 +342,7 @@ export function FiltersPipeline() {
             add rule
           </span>
           <p className="mt-1.5 font-serif text-[13.5px] text-muted-foreground leading-[1.55]">
-            Rules are written in a small DSL — channel matchers, sender / kind /
+            Rules are written in a small DSL: channel matchers, sender / kind /
             header predicates, and one verdict per rule:{' '}
             <code className="font-mono text-[11px]">drop</code>,{' '}
             <code className="font-mono text-[11px]">preserve</code>,{' '}

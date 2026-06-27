@@ -383,7 +383,7 @@ describe("useRotateCliRuntime", () => {
     const { onSuccess } = capturedMutationOptions();
     onSuccess(undefined, { id: "cli-auth/codex" }, undefined);
 
-    expect(mockToastSuccess).toHaveBeenCalledWith("CLI token rotated — copy the new value now");
+    expect(mockToastSuccess).toHaveBeenCalledWith("CLI token rotated. Copy the new value now");
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: secretsInventoryKeys.all,
     });

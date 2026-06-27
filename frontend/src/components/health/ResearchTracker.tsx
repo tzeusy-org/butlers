@@ -307,7 +307,7 @@ export default function ResearchTracker() {
         <SkeletonRows />
       ) : notes.length === 0 ? (
         <p className="text-muted-foreground font-serif text-[15px] italic">
-          Nothing saved yet — add a research note above, or tell your Health butler.
+          Nothing saved yet. Add a research note above, or tell your Health butler.
         </p>
       ) : (
         <div className="divide-y divide-border/60 border-y border-border/60">
