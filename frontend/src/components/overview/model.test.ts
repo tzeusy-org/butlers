@@ -107,6 +107,8 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
     },
     credentials_status: {
       gh_token_present: null,
+      git_author_name_present: null,
+      git_author_email_present: null,
       provisioning_hint: null,
     },
     port: null,

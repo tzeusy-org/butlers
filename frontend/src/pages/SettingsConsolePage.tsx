@@ -30,6 +30,7 @@ import { apiFetch } from "@/api/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useSettingsConsoleStream } from "@/hooks/use-settings-console-stream";
+import QaStafferCard from "@/components/settings/QaStafferCard";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -606,6 +607,12 @@ export default function SettingsConsolePage() {
         {/* Secrets — static panel (Google OAuth app credentials now live here) */}
         <SecretsPanel onNavigate={handleNavigate} />
       </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* QA Staffer card — operator-managed repo/credentials/whitelist      */}
+      {/* config wired to the existing use-qa hooks (qa-dashboard spec).      */}
+      {/* ------------------------------------------------------------------ */}
+      <QaStafferCard />
     </div>
   );
 }

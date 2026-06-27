@@ -490,6 +490,17 @@ class QaCredentialsStatus(BaseModel):
     is missing and operator action is required.
     """
 
+    git_author_name_present: bool | None = None
+    """Whether ``BUTLERS_QA_GIT_AUTHOR_NAME`` is set in the credential store.
+
+    ``None`` means the status could not be determined; ``True``/``False``
+    mirror ``gh_token_present`` semantics for the git commit identity, which is
+    validated and surfaced independently from the GitHub token.
+    """
+
+    git_author_email_present: bool | None = None
+    """Whether ``BUTLERS_QA_GIT_AUTHOR_EMAIL`` is set in the credential store."""
+
     provisioning_hint: str | None = None
     """Actionable instructions for provisioning the missing credential.
 
@@ -1481,6 +1492,8 @@ async def get_qa_summary(
                     )
                 credentials_status = QaCredentialsStatus(
                     gh_token_present=parsed_creds.gh_token_present,
+                    git_author_name_present=parsed_creds.git_author_name_present,
+                    git_author_email_present=parsed_creds.git_author_email_present,
                     provisioning_hint=provisioning_hint,
                 )
         except Exception:

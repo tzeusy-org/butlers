@@ -405,14 +405,21 @@ class TestGetQaSummary:
         assert body3["data"]["circuit_breaker"]["tripped"] is True
         assert body3["data"]["staffer_status"] == "circuit_breaker_tripped"
 
-        # credentials_status: token_present=True → gh_token_present reflected; no hint
+        # credentials_status: token_present=True → gh_token_present reflected; no hint.
+        # Git author identity presence is surfaced independently of the GH token.
         async def _creds_fn() -> dict:
-            return {"gh_token_present": True}
+            return {
+                "gh_token_present": True,
+                "git_author_name_present": True,
+                "git_author_email_present": False,
+            }
 
         app4, _ = _build_summary_app()
         app4.dependency_overrides[_get_credentials_status_fn] = lambda: _creds_fn
         creds = (await _call(app4, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
         assert creds["gh_token_present"] is True
+        assert creds["git_author_name_present"] is True
+        assert creds["git_author_email_present"] is False
         assert creds["provisioning_hint"] is None
 
     async def test_summary_kpi_mttr_is_null_without_terminal_24h_sample(self) -> None:

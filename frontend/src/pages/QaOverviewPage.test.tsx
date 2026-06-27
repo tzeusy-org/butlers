@@ -76,7 +76,7 @@ const MOCK_SUMMARY = {
   },
   active_sources: [],
   circuit_breaker: { tripped: false, consecutive_failures: 0 },
-  credentials_status: { gh_token_present: true, provisioning_hint: null },
+  credentials_status: { gh_token_present: true, git_author_name_present: true, git_author_email_present: true, provisioning_hint: null },
   port: 41110,
   model: "claude-sonnet-4-5",
   patrol_interval_minutes: 10,

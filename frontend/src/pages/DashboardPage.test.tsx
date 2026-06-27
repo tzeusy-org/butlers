@@ -579,7 +579,7 @@ describe("DashboardPage -- OperationsNowList", () => {
           active_breakdown: { awaiting_ci: 0, escalated_open_cases: 0 },
           active_sources: [],
           circuit_breaker: { tripped: false, consecutive_failures: 0 },
-          credentials_status: { gh_token_present: null, provisioning_hint: null },
+          credentials_status: { gh_token_present: null, git_author_name_present: null, git_author_email_present: null, provisioning_hint: null },
           port: null,
           model: null,
           patrol_interval_minutes: null,
