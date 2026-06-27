@@ -134,7 +134,8 @@ Modules are the only way to add capabilities to a butler. A module implements
 the `Module` abstract base class and provides:
 
 - `register_tools()` --- adds MCP tools to the butler's server
-- `migrations()` --- declares database migrations for module-specific tables
+- `migration_revisions()` --- declares the Alembic branch label for module-specific
+  migrations (or returns None when the module owns no tables)
 - `on_startup()` / `on_shutdown()` --- lifecycle hooks
 
 **Why this constraint matters:**
@@ -192,13 +193,22 @@ significant fraction of the context window on tool definitions alone.
 Tool registration is gated at two independent layers, each with its own
 mechanism. Both must pass for a tool to appear on a butler's MCP surface.
 
-1. **Core daemon tools** are conditionally registered inside
-   `_register_core_tools()` based on `butler_type` (STAFFER vs BUTLER) and
+1. **Core daemon tools** are gated by `butler_type` (STAFFER vs BUTLER) and
    `butler_name` (switchboard, messenger). Deadline, event-chain, and
    seasonal-period tools register only for domain butlers, not staffers. Ingest
    pipeline tools register only for the Switchboard. Notify delivery tools
-   register only for the Messenger. This is imperative gating --- `if` guards
-   inside the daemon, evaluated once at startup.
+   register only for the Messenger. Mechanically, `_register_core_tools()` is a
+   thin dispatcher: it builds a `ToolContext` (carrying `butler_type`,
+   `is_switchboard`, `is_messenger`) plus a group-aware `_core_tool(group)`
+   factory, then delegates to `register_all_core_tools()` in
+   `butlers.core_tools`. Each domain register function applies the type/name
+   guards (e.g. `if butler_type != ButlerType.STAFFER: return` for the temporal
+   group, `if not ctx.is_switchboard: return` for ingest). These guards are
+   evaluated once at startup. Core tools additionally support a declarative
+   `core_groups` layer: when `core_groups` is set on the DB-backed runtime
+   config, only tools in the listed groups register, mirroring the module
+   `groups` mechanism in layer 2 below. When `core_groups` is unset, all core
+   groups register (backward compatible).
 
 2. **Module tools** are filtered declaratively via `groups` config in
    `butler.toml`. Each module defines named tool groups (e.g., "measurements",
