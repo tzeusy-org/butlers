@@ -107,7 +107,6 @@ def test_healing_config_defaults_and_from_module_config() -> None:
     assert cfg.max_concurrent == 2
     assert cfg.circuit_breaker_threshold == 5
     assert cfg.timeout_minutes == 30
-    assert cfg.gh_token_env_var == "GH_TOKEN"
 
     full = HealingConfig.from_module_config(
         {
@@ -117,11 +116,10 @@ def test_healing_config_defaults_and_from_module_config() -> None:
             "max_concurrent": 4,
             "circuit_breaker_threshold": 3,
             "timeout_minutes": 60,
-            "gh_token_env_var": "MY_GH_TOKEN",
         }
     )
     assert full.enabled is True and full.severity_threshold == 1
-    assert full.gh_token_env_var == "MY_GH_TOKEN"
+    assert full.timeout_minutes == 60
     assert HealingConfig.from_module_config({}).enabled is False
 
 

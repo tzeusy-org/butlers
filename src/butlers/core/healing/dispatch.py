@@ -115,16 +115,6 @@ class HealingConfig:
     timeout_minutes:
         Maximum wall-clock minutes for a healing agent session before the
         watchdog cancels it.  Default 30.
-    gh_token_env_var:
-        **DEPRECATED** — Environment variable name that holds the GitHub token
-        for PR creation.  Default ``"GH_TOKEN"``.
-
-        As of the QA Staffer integration, GitHub tokens should be provisioned
-        via ``CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")`` (Tier 1 system
-        secret, category="qa").  This field is retained for backward
-        compatibility with existing configurations but will be removed in a
-        future release.  Setting this field to a non-default value emits a
-        DeprecationWarning.
     pr_labels:
         Labels to apply to self-healing PRs.  Default ``["self-healing", "automated"]``.
 
@@ -154,10 +144,6 @@ class HealingConfig:
         # Default: 30
         timeout_minutes = 30
 
-        # [DEPRECATED] Environment variable holding the GitHub token for PR creation.
-        # Use CredentialStore.resolve("BUTLERS_QA_GH_TOKEN") instead.
-        # gh_token_env_var = "GH_TOKEN"
-
         # Labels applied to self-healing PRs on GitHub.
         # Default: ["self-healing", "automated"]
         pr_labels = ["self-healing", "automated"]
@@ -174,25 +160,7 @@ class HealingConfig:
     max_concurrent: int = 2
     circuit_breaker_threshold: int = 5
     timeout_minutes: int = 30
-    gh_token_env_var: str = "GH_TOKEN"
     pr_labels: list[str] = field(default_factory=lambda: ["self-healing", "automated"])
-
-    def __post_init__(self) -> None:
-        """Warn when gh_token_env_var is explicitly set to a non-default value.
-
-        The field is deprecated. GitHub tokens should be provisioned via
-        CredentialStore.resolve("BUTLERS_QA_GH_TOKEN").
-        """
-        import warnings
-
-        if self.gh_token_env_var != "GH_TOKEN":
-            warnings.warn(
-                "HealingConfig.gh_token_env_var is deprecated. "
-                "Use CredentialStore.resolve('BUTLERS_QA_GH_TOKEN') instead. "
-                "This field will be removed in a future release.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
 
     @classmethod
     def from_module_config(cls, module_cfg: dict) -> HealingConfig:
@@ -204,7 +172,6 @@ class HealingConfig:
             max_concurrent=int(module_cfg.get("max_concurrent", 2)),
             circuit_breaker_threshold=int(module_cfg.get("circuit_breaker_threshold", 5)),
             timeout_minutes=int(module_cfg.get("timeout_minutes", 30)),
-            gh_token_env_var=str(module_cfg.get("gh_token_env_var", "GH_TOKEN")),
             pr_labels=list(module_cfg.get("pr_labels", ["self-healing", "automated"])),
         )
 

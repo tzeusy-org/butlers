@@ -2082,17 +2082,15 @@ class Spawner:
                     _gh_token: str | None = None
                     if self._credential_store is not None:
                         try:
-                            _gh_token = await self._credential_store.resolve(
-                                healing_config.gh_token_env_var
-                            )
+                            _gh_token = await self._credential_store.resolve("GH_TOKEN")
                         except Exception as _cred_exc:
                             logger.debug(
                                 "Failed to resolve %s from credential store: %s",
-                                healing_config.gh_token_env_var,
+                                "GH_TOKEN",
                                 _cred_exc,
                             )
                     if _gh_token is None:
-                        _gh_token = os.environ.get(healing_config.gh_token_env_var)
+                        _gh_token = os.environ.get("GH_TOKEN")
 
                     _task_registry: list[asyncio.Task] | None = None
                     if self._healing_module is not None and hasattr(
