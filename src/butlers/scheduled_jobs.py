@@ -417,12 +417,46 @@ async def _run_education_compute_analytics_snapshots_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run education analytics snapshot computation as a deterministic job."""
+    """Run education analytics snapshot computation as a deterministic job.
+
+    Wires the curriculum-replan feedback loop (spec module-education-analytics,
+    "Feedback Loop Trigger"): for every freshly computed snapshot,
+    ``analytics_compute_all`` invokes the callback below when
+    ``len(struggling_nodes) >= 3`` or ``retention_rate_7d < 0.60``. The callback
+    re-sequences that map's curriculum via ``curriculum_replan`` so the learner's
+    path adapts to current mastery instead of the loop never firing.
+    """
     del job_args
     from butlers.tools.education.analytics import analytics_compute_all
+    from butlers.tools.education.curriculum import curriculum_replan
 
-    count = await analytics_compute_all(pool=pool)
-    return {"snapshots_computed": count}
+    replans_triggered = 0
+
+    async def _curriculum_replan_callback(mind_map_id: str, metrics: dict[str, Any]) -> None:
+        """Replan one struggling map. Isolated so a single failure cannot abort the job."""
+        nonlocal replans_triggered
+        struggling = len(metrics.get("struggling_nodes", []))
+        retention_7d = metrics.get("retention_rate_7d")
+        reason = (
+            "nightly analytics feedback loop: "
+            f"struggling_nodes={struggling}, retention_rate_7d={retention_7d}"
+        )
+        try:
+            await curriculum_replan(pool, mind_map_id, reason=reason)
+            replans_triggered += 1
+        except Exception:
+            # A map that went abandoned/completed between snapshot and replan (or any
+            # other replan error) should not abort the remaining maps' snapshots.
+            logger.exception(
+                "education feedback loop: curriculum_replan failed for mind_map_id=%s",
+                mind_map_id,
+            )
+
+    count = await analytics_compute_all(
+        pool=pool,
+        curriculum_replan=_curriculum_replan_callback,
+    )
+    return {"snapshots_computed": count, "replans_triggered": replans_triggered}
 
 
 async def _run_health_briefing_contribution_job(
