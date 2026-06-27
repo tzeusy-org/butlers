@@ -59,7 +59,7 @@ describe("PageHeader", () => {
     act(() => {
       root.render(
         <MemoryRouter initialEntries={["/sessions"]}>
-          <PageHeader title="Sessions" />
+          <PageHeader />
         </MemoryRouter>,
       );
     });
@@ -86,7 +86,7 @@ describe("PageHeader", () => {
     act(() => {
       root.render(
         <MemoryRouter initialEntries={["/sessions"]}>
-          <PageHeader title="Sessions" hideBreadcrumbs />
+          <PageHeader hideBreadcrumbs />
         </MemoryRouter>,
       );
     });
@@ -94,17 +94,19 @@ describe("PageHeader", () => {
     expect(container.querySelector("nav")).toBeNull();
   });
 
-  it("still renders title and action buttons when hideBreadcrumbs={true}", () => {
+  it("never renders an <h1> (page title ownership belongs to <Page>, not PageHeader)", () => {
     act(() => {
       root.render(
         <MemoryRouter initialEntries={["/sessions"]}>
-          <PageHeader title="My Page" hideBreadcrumbs />
+          <PageHeader hideBreadcrumbs />
         </MemoryRouter>,
       );
     });
 
-    expect(container.querySelector("h1")?.textContent).toBe("My Page");
+    // PageHeader is shell chrome only; it must not own the page <h1>.
+    expect(container.querySelector("h1")).toBeNull();
 
+    // Action buttons (command palette + theme toggle) still render.
     const buttons = container.querySelectorAll("button");
     expect(buttons.length).toBeGreaterThanOrEqual(2);
   });
@@ -176,7 +178,7 @@ describe("PageHeader", () => {
     act(() => {
       root.render(
         <MemoryRouter initialEntries={["/sessions"]}>
-          <PageHeader title="Sessions" />
+          <PageHeader />
         </MemoryRouter>,
       );
     });

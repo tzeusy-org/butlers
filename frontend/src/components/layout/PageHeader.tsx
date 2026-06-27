@@ -12,7 +12,6 @@ interface Breadcrumb {
 }
 
 interface PageHeaderProps {
-  title?: string
   breadcrumbs?: Breadcrumb[]
   hideBreadcrumbs?: boolean
 }
@@ -66,7 +65,7 @@ function titleizeSegment(value: string): string {
     .join(' ')
 }
 
-export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false }: PageHeaderProps) {
+export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false }: PageHeaderProps) {
   const location = useLocation()
   const { theme, setTheme, resolvedTheme } = useDarkMode()
   const { isSupplyingBreadcrumbs } = useBreadcrumbsControl()
@@ -76,7 +75,7 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
   // AND this header has no explicit breadcrumbs prop of its own. If the header
   // is given its own breadcrumbs they should always render.
   const shouldHideBreadcrumbs = hideBreadcrumbs || (isSupplyingBreadcrumbs && breadcrumbs == null)
-  const activeButlerName = title == null && breadcrumbs == null
+  const activeButlerName = breadcrumbs == null
     ? getButlerDetailName(location.pathname)
     : null
 
@@ -124,9 +123,6 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
             ))}
           </nav>
         )}
-
-        {/* Title */}
-        {title && <h1 className="text-lg font-semibold">{title}</h1>}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
