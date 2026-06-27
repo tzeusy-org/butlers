@@ -251,8 +251,7 @@ Post-vertical-D pattern in code (`DashboardPage`, shipped PRs
 `StatsCard` boilerplate. It uses `text-sm font-medium tabular-nums`
 for the value and `text-xs text-muted-foreground` for the label,
 no `Card` wrapper, intentionally demoted visual weight.
-The topology graph previously shown on `/` has been relocated to
-`/system`.
+The topology graph lives at `/system`, not on `/`.
 
 ### B. List / index
 Filterable table-of-things. Header + filter bar + table + manual
@@ -425,7 +424,7 @@ graph LR
 - Dark-mode toggling is handled by a hand-rolled
   `hooks/useDarkMode.ts`.
 
-**Theme commitment (settled bu-iaw5h.1):** The project has committed to
+**Theme commitment:** The project has committed to
 dark-primary. `useDarkMode` defaults to `'dark'` on a cold load with no
 localStorage entry. System `prefers-color-scheme` is not consulted as a
 default; the dashboard opens dark regardless of OS preference. Light is a
@@ -533,9 +532,8 @@ This document covers the dashboard's surface. It is the map an
 
 ## `<Page>` Primitive Contract
 
-> Status: **shipped** (implemented in bu-yo4bt epic; `DashboardPage` migrated
-> post-vertical-D via PRs #1345–#1361, #1363). This section documents the
-> contract as implemented in `components/ui/page.tsx`.
+> Status: **shipped**. This section documents the contract as implemented in
+> `components/ui/page.tsx`.
 
 ### Motivation
 
@@ -600,10 +598,9 @@ interface PageProps {
 **Prop rules:**
 
 - `title` is required. It becomes the page `<h1>` (rendered at
-  `text-3xl font-bold tracking-tight`). This was confirmed during the
-  bu-yo4bt.9 spec sync and PR #1373 review: `text-3xl` is the canonical
-  operator-tool H1 size (not `text-2xl` as the pre-D detail-page audit
-  had proposed). The shipped `<Page>` `HeadingBlock` uses `text-3xl`.
+  `text-3xl font-bold tracking-tight`). `text-3xl` is the canonical
+  operator-tool H1 size (not `text-2xl`). The `<Page>` `HeadingBlock` uses
+  `text-3xl`.
   Pages not yet migrated to `<Page>` that use `text-2xl` (e.g. `CostsPage`)
   will adopt `text-3xl` when they migrate.
   It is also used for `<title>` via a `useEffect` if there is no other title
@@ -656,8 +653,8 @@ Reference page: `DashboardPage` (post-vertical-D, uses `<Page archetype="overvie
      investigations summary)
   5. **Demoted stat strip**: `flex flex-wrap border-t border-border pt-3` row of
      `<StatItem>` entries (`text-sm font-medium tabular-nums`); no `<Card>` wrapper
-- Rationale: `DashboardPage` was migrated to `<Page>` (PRs #1345–#1361).
-  The topology graph previously on `/` is now at `/system`.
+- Rationale: `DashboardPage` uses `<Page>`. The topology graph lives at
+  `/system`, not on `/`.
 
 #### B. List (`archetype="list"`)
 
@@ -829,7 +826,7 @@ For converting an existing page to the `<Page>` primitive:
 Migration order (rough priority by blast radius and visitor frequency):
 1. `SymptomsPage` -- small, clean, easy reference implementation
 2. `EntitiesPage` -- list archetype canonical case
-3. `DashboardPage` -- ~~overview canonical case~~ **already migrated** (post-vertical-D, PRs #1345–#1361)
+3. `DashboardPage` -- overview canonical case, **already migrated**
 4. Detail pages in dependency order (start with `FactDetailPage`, least tangled)
 5. `ChroniclesPage` last -- workspace archetype needs the least from `<Page>`
 

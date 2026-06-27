@@ -39,11 +39,11 @@ days has not been attested (see SC-6).
 | QA staffer | `roster/qa/butler.toml` — `type = "staffer"`, patrol cron `*/10 * * * *` |
 | General, Health, Relationship, Finance, Education, Travel, Home, Lifestyle, Chronicler | All have `roster/<name>/butler.toml`, `MANIFESTO.md`, migrations |
 | Chronicler | `roster/chronicler/butler.toml` — 13 scheduled projection jobs; `roster/chronicler/` specialised module |
-| Daemon multi-process launch | `docker-compose.yml` + `tests/smoke/test_daemon_lifecycle.py` (PR #2431) |
+| Daemon multi-process launch | `docker-compose.yml` + `tests/smoke/test_daemon_lifecycle.py` |
 
 **Gap:** "run concurrently and handle declared responsibilities" is an
 operational claim requiring a live system; CI validates individual daemon
-lifecycle (smoke tests, PR #2429/#2431) but not 12-butler simultaneous uptime.
+lifecycle (smoke tests) but not 12-butler simultaneous uptime.
 
 ---
 
@@ -103,7 +103,7 @@ cron entries.
 | Tick-based retry | `scheduler.py::_tick_deferred_notification_pass()` — "Keep status=pending for next-tick retry" |
 | Butler schedule declarations | All `roster/*/butler.toml` — `[[butler.schedule]]` blocks with cron strings |
 | Scheduler tests | `tests/core/` — scheduler unit tests |
-| Smoke test — daemon lifecycle | `tests/smoke/test_daemon_lifecycle.py` (PR #2431) |
+| Smoke test — daemon lifecycle | `tests/smoke/test_daemon_lifecycle.py` |
 
 **Note:** Retry is tick-based (pending task re-fires on next cron tick); there
 is no configurable max-retry cap or exponential backoff for job failures. This
@@ -159,7 +159,7 @@ ingestion monitoring, settings console, audit log, webhooks, data ops.
 | Audit log | `frontend/src/pages/AuditLogPage.tsx`; `src/butlers/api/routers/audit.py` |
 | Webhooks | `src/butlers/api/routers/webhooks.py` — HMAC-SHA256, test-fire endpoint |
 | Data ops | `src/butlers/api/routers/data_ops.py` — 60-min signed URL export + phrase-gated wipe |
-| Insight delivery tile | `frontend/src/components/system/InsightDeliveryTile.tsx` (PR #2435) |
+| Insight delivery tile | `frontend/src/components/system/InsightDeliveryTile.tsx` |
 | Backend API | `src/butlers/api/` — per-butler routers, auto-discovered via `router_discovery.py` |
 
 ---
@@ -179,7 +179,7 @@ attestation tracks this. This criterion requires accumulated field evidence.
 |---------------------------|----------|
 | QA patrol cron | `roster/qa/butler.toml` — `cron = "*/10 * * * *"` |
 | Self-healing module | `src/butlers/modules/self_healing/__init__.py` — `SelfHealingModule` |
-| Smoke tests | `tests/smoke/test_clean_start.py`, `test_health.py`, `test_route_inbox_recovery.py` (PRs #2429, #2431) |
+| Smoke tests | `tests/smoke/test_clean_start.py`, `test_health.py`, `test_route_inbox_recovery.py` |
 | Clean-start validation | `tests/smoke/test_scaffolding.py` |
 
 **Note:** "7 days without manual intervention" is a runtime criterion, not
@@ -209,7 +209,7 @@ deployment and user data that cannot be observed from the repository.
 
 **Status: implemented (unproven in production)**
 
-EPIC C (proactive insight delivery, `bu-dl98i.3`) has fully landed. All three
+EPIC C (proactive insight delivery) has fully landed. All three
 phases of the RFC 0011 pipeline are wired end-to-end: butler-side insight
 generation, Switchboard brokering (dedup, budget, adaptive ratchet, anti-spam),
 and durable delivery via Messenger. The dashboard surfaces live delivery state.
@@ -218,9 +218,6 @@ A gen-1 spec-to-code reconciliation confirmed faithful implementation across
 
 | Evidence | Detail |
 |----------|--------|
-| EPIC C completion PRs | `#2420` — durable notify path wired into insight delivery cycle (`bu-dl98i.3.1`) |
-| | `#2427` — spec-coverage for five delivery paths (`bu-dl98i.3.2`) |
-| | `#2435` — dashboard insight-delivery state surface (`bu-dl98i.3.3`) |
 | Broker implementation | `roster/switchboard/tools/insight/broker.py` — `propose_insight_candidate()`, `expire_candidates()`, `filter_by_cooldown()`, `deduplicate_candidates()`, `compute_effective_budget()`, `check_and_update_engagement()`, `check_total_disengagement_auto_off()`, `delivery_cycle()` |
 | Scheduled delivery cron | `roster/switchboard/butler.toml` — `cron = "0 8 * * *"`, job `insight_delivery_cycle` |
 | API endpoint | `GET /api/system/insights/delivery-state` (`src/butlers/api/routers/system.py`) |
@@ -295,9 +292,9 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 
 | Component | Status | Evidence |
 |-----------|--------|----------|
-| Shared contacts registry | **implemented** | `public.contacts` table; `src/butlers/core/owner.py` |
-| Cross-channel identity resolution | **implemented** | `public.contact_info` — Telegram IDs, email addresses, Discord IDs |
-| Owner bootstrapping | **implemented** | `src/butlers/core/owner.py` — auto-creates owner on startup |
+| Shared entity registry | **implemented** | `public.entities` table; roles live on `public.entities.roles` |
+| Cross-channel identity resolution | **implemented** | `relationship.entity_facts` `has-handle` triples (Telegram IDs, email addresses, Discord IDs) joined to `public.entities` (`src/butlers/identity.py`) |
+| Owner bootstrapping | **implemented** | `src/butlers/core/owner.py` — resolves the owner via `public.entities WHERE 'owner' = ANY(roles)` |
 
 ### Situational Awareness
 

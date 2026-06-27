@@ -162,7 +162,7 @@ FROM public.contacts c
 LEFT JOIN public.entities e ON e.id = c.entity_id
 ```
 
-Direct reads of `contacts.roles` are deprecated. The `contacts.roles` column will be dropped in a follow-up migration (`core_015`).
+Roles live on `public.entities.roles` and are read directly from the entity. The former `public.contacts` table (which carried its own `roles` array) is dropped (`core_134`).
 
 **Implementation note:** `resolve_contact_by_channel()` and `create_temp_contact()` in `src/butlers/identity.py` both use this JOIN pattern. `resolve_owner_contact_info()` and `upsert_owner_contact_info()` in `src/butlers/credential_store.py` use `JOIN public.entities e ON e.id = c.entity_id WHERE 'owner' = ANY(e.roles)`.
 

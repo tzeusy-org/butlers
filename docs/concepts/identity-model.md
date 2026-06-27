@@ -1,63 +1,55 @@
 # Identity Model
 
-> **Purpose:** Explain how the shared identity schema maps external sender identifiers to known contacts and roles, enabling identity-aware routing and access control.
+> **Purpose:** Explain how the shared identity schema maps external sender identifiers to known entities and roles, enabling identity-aware routing and access control.
 > **Audience:** Developers working on identity resolution, routing, approval gates, or contact management.
 > **Prerequisites:** [What Is Butlers?](../overview/what-is-butlers.md), [Switchboard Routing](switchboard-routing.md).
 
 ## Overview
 
-Butlers maintains a shared identity registry in the `public` PostgreSQL schema. This registry maps external channel identifiers (Telegram chat IDs, email addresses, Discord handles) to canonical contact records, which in turn link to entity records carrying roles. The identity model powers sender recognition during Switchboard ingestion, owner-aware routing, approval gate role checks, and outbound recipient resolution via `notify()`.
+Butlers maintains a shared identity registry anchored on `public.entities`. Channel identifiers (Telegram chat IDs, email addresses, Discord handles) attach to an entity as `relationship.entity_facts` triples, and roles live on the entity itself. The identity model powers sender recognition during Switchboard ingestion, owner-aware routing, approval gate role checks, and outbound recipient resolution via `notify()`.
 
 ## Schema Structure
 
-The identity model spans three tables in the `public` schema:
+Identity resolution reads two tables: the entity anchor in the `public` schema and the channel-handle triples in the `relationship` schema. (The earlier `public.contacts` and `public.contact_info` tables are retired --- `public.contact_info` was dropped in `core_115` and `public.contacts` in `core_134`; resolution no longer touches either.)
 
 ### public.entities
 
 The entity table is the anchor for identity. Each row represents a known person or actor. Key fields:
 
-- **`id`** (UUID) --- primary key
+- **`id`** (UUID) --- primary key; the authoritative identity key
 - **`canonical_name`** --- display name
 - **`entity_type`** --- typically `"person"`
-- **`roles`** (TEXT[]) --- role assignments (e.g., `['owner']`)
+- **`roles`** (TEXT[]) --- role assignments (e.g., `['owner']`); the authoritative source of truth for identity roles
 - **`aliases`** (TEXT[]) --- alternative names
 - **`metadata`** (JSONB) --- extensible metadata; temporary entities carry `{"unidentified": true}`
 
-### public.contacts
+### relationship.entity_facts (channel handles)
 
-The contacts table links a named contact to an entity. Key fields:
+Channel identifiers are stored as fact triples keyed by entity. The relevant fields:
 
-- **`id`** (UUID) --- primary key
-- **`name`** --- display name
-- **`entity_id`** (UUID, FK to `public.entities`) --- the linked entity
-- **`roles`** (TEXT[]) --- legacy roles array (roles are now primarily sourced from the entity)
-- **`metadata`** (JSONB) --- extensible; temporary contacts carry `{"needs_disambiguation": true}`
-
-### public.contact_info
-
-The contact_info table stores per-channel identifiers linked to contacts. Key fields:
-
-- **`contact_id`** (UUID, FK to `public.contacts`) --- the owning contact
-- **`type`** (TEXT) --- channel type (e.g., `"telegram"`, `"email"`, `"discord"`)
-- **`value`** (TEXT) --- the channel-specific identifier (e.g., a Telegram chat ID, an email address)
-- **`is_primary`** (BOOLEAN) --- whether this is the primary contact method for the channel
-- **`secured`** (BOOLEAN) --- marks credential entries
-
-A UNIQUE constraint on `(type, value)` guarantees at most one contact per channel identifier.
+- **`subject`** (UUID, references `public.entities.id`) --- the owning entity
+- **`predicate`** (TEXT) --- the channel kind: `has-handle` (Telegram and similar handles), `has-email`, or `has-phone`
+- **`object`** (TEXT) --- the channel-specific identifier; Telegram handles are stored in canonical prefixed form `telegram:<id>`
+- **`object_kind`** (TEXT) --- `'literal'` for channel-identifier values
+- **`validity`** (TEXT) --- `'active'` for the current resolvable handle
 
 ## Identity Resolution
 
-The core identity operation is `resolve_contact_by_channel()` in `src/butlers/identity.py`. Given a channel type and value, it performs a JOIN across all three tables:
+The core identity operation is `resolve_contact_by_channel()` in `src/butlers/identity.py`. Given a channel type and value, it maps the channel type to a predicate and queries the triple store, joining to the entity for the name and roles:
 
 ```sql
-SELECT c.id, c.name, COALESCE(e.roles, '{}'), c.entity_id
-FROM public.contact_info ci
-JOIN public.contacts c ON c.id = ci.contact_id
-LEFT JOIN public.entities e ON e.id = c.entity_id
-WHERE ci.type = $1 AND ci.value = $2
+SELECT ef.subject              AS entity_id,
+       e.canonical_name        AS name,
+       COALESCE(e.roles, '{}') AS roles
+FROM   relationship.entity_facts ef
+JOIN   public.entities e ON e.id = ef.subject
+WHERE  ef.predicate   = $1
+  AND  ef.object      = $2
+  AND  ef.object_kind = 'literal'
+  AND  ef.validity    = 'active'
 ```
 
-The result is a `ResolvedContact` dataclass containing `contact_id`, `name`, `roles` (sourced from the entity, not the contact), and `entity_id`.
+The result is a `ResolvedContact` dataclass containing `name`, `roles` (sourced from the entity), `entity_id` (the authoritative key), and `contact_id` (always `None` since resolution no longer reads `public.contacts`).
 
 The function is safe to call before migrations have run --- it catches all database exceptions and returns `None` gracefully.
 
@@ -71,12 +63,13 @@ The owner contact is the system administrator. It is bootstrapped automatically 
 
 ## Unknown Sender Handling
 
-When identity resolution returns no match for a sender, the system creates a temporary contact and entity via `create_temp_contact()`. This function:
+When identity resolution returns no match for a sender, the system creates a temporary entity via `create_temp_contact()`. This function:
 
-1. Creates a `public.entities` row with `metadata.unidentified = true` and `entity_type = "person"`.
-2. Creates a `public.contacts` row linked to the entity with `metadata.needs_disambiguation = true`.
-3. Creates a `public.contact_info` row for the channel identifier (using `ON CONFLICT DO NOTHING` for race safety).
-4. Returns a `ResolvedContact` with empty roles.
+1. Re-checks the triple store to avoid double-creation; if the channel identifier already resolves, it returns that entity instead of minting a duplicate.
+2. Creates a `public.entities` row with `metadata.unidentified = true` and `entity_type = "person"`.
+3. Returns a `ResolvedContact` with empty roles and `contact_id = None`.
+
+The sender's channel triple is not written here. Asserting the `relationship.entity_facts` handle happens in a post-resolution hook in the routing pipeline (`relationship.tools.relationship_assert_fact.assert_sender_channel_fact()`); the Switchboard ingress path never writes `relationship.entity_facts`.
 
 The identity preamble for unknown senders includes `-- pending disambiguation`, signaling to the receiving butler that the sender identity is provisional.
 

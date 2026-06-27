@@ -190,12 +190,17 @@ Contact resolution is performed by `_resolve_contacts`, which JOINs:
 ```
 {schema}.sessions.ingestion_event_id
   → public.ingestion_events.id
-  → public.contact_info(type=source_channel, value=source_sender_identity)
-  → public.contacts.name
+  → relationship.entity_facts(predicate=<channel predicate>, object=source_sender_identity)
+  → public.entities.canonical_name
 ```
 
-The JOIN is guarded: if `public.ingestion_events` or the contact tables are
-absent (e.g. before migration), the adapter degrades to `(None, None)` and
+The `source_channel` maps to a predicate (`email` → `has-email`, `phone` →
+`has-phone`, the `telegram*`/`whatsapp_jid` channels → `has-handle`), matched
+against active literal triples.
+
+The JOIN is guarded: if `public.ingestion_events`, `relationship.entity_facts`,
+or `public.entities` are absent (e.g. before migration), the adapter degrades to
+`(None, None)` and
 falls through to `'Conversation via unknown channel'` for route sessions.
 
 Only `trigger_source='route'` rows with a non-NULL `ingestion_event_id` are
