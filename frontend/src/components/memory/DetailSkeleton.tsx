@@ -62,24 +62,44 @@ export function DetailEyebrow({ kind, id }: { kind: string; id: string }) {
 /**
  * The memory content rendered as the page heading (sans 24px/500). This is the
  * single H1 on the page — no "Details" chrome. Dimmed to `--dim` when `dimmed`.
+ *
+ * An optional `subtitle` renders as a plain mono line directly below the H1 —
+ * the record-identity line the detail-page archetype mandates (subject ·
+ * predicate for a fact, the session reference for an episode). It is omitted
+ * entirely when empty, and dims alongside the heading on a fading record.
  */
 export function DetailHeading({
   children,
+  subtitle,
   dimmed = false,
 }: {
   children: ReactNode;
+  subtitle?: ReactNode;
   dimmed?: boolean;
 }) {
+  const hasSubtitle = subtitle != null && subtitle !== "";
   return (
-    <h1
-      className={cn(
-        "text-[24px] font-medium leading-snug tracking-tight",
-        "whitespace-pre-wrap break-words",
-        dimmed ? "text-[var(--dim)]" : "text-[var(--fg)]",
-      )}
-    >
-      {children}
-    </h1>
+    <div className="flex flex-col gap-1.5">
+      <h1
+        className={cn(
+          "text-[24px] font-medium leading-snug tracking-tight",
+          "whitespace-pre-wrap break-words",
+          dimmed ? "text-[var(--dim)]" : "text-[var(--fg)]",
+        )}
+      >
+        {children}
+      </h1>
+      {hasSubtitle ? (
+        <p
+          className={cn(
+            "font-mono text-[12px] leading-snug",
+            dimmed ? "text-[var(--dim)]" : "text-[var(--mfg)]",
+          )}
+        >
+          {subtitle}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -183,6 +203,32 @@ export function ProvenanceLink({ to, label }: { to: string; label: string }) {
       <span aria-hidden>↳</span>
       <span className="underline [text-underline-offset:3px]">{label}</span>
     </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Metadata block — the record's raw metadata bag as a mono code block
+// ---------------------------------------------------------------------------
+
+/**
+ * `METADATA` eyebrow + the record's `metadata` bag rendered as a mono code
+ * block (pretty-printed JSON). The detail-page archetype mandates this block
+ * when metadata is non-empty; an empty/absent bag OMITS the section entirely
+ * (no empty shell — same discipline as the KV band and provenance section).
+ */
+export function MetadataBlock({
+  metadata,
+}: {
+  metadata: Record<string, unknown> | null | undefined;
+}) {
+  if (metadata == null || Object.keys(metadata).length === 0) return null;
+  return (
+    <section className="flex flex-col gap-2">
+      <Eyebrow as="div">METADATA</Eyebrow>
+      <pre className="overflow-x-auto rounded-md border border-[var(--border-soft)] p-3 font-mono text-[11px] leading-relaxed text-[var(--mfg)] whitespace-pre-wrap break-words">
+        {JSON.stringify(metadata, null, 2)}
+      </pre>
+    </section>
   );
 }
 

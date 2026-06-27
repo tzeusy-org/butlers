@@ -26,6 +26,7 @@ import {
   DetailHeading,
   DetailSkeleton,
   KVBand,
+  MetadataBlock,
   ProvenanceLink,
   ProvenanceSection,
   StateLine,
@@ -124,6 +125,9 @@ export default function RuleDetailPage() {
           { key: "tags", value: rule.tags.length > 0 ? rule.tags.join(", ") : null },
         ]}
       />
+
+      {/* Metadata — raw bag as a mono code block; omitted when empty. */}
+      <MetadataBlock metadata={rule.metadata} />
 
       {/* Provenance — omitted when no source episode. */}
       <ProvenanceSection>{provenance}</ProvenanceSection>

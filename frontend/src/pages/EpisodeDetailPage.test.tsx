@@ -118,6 +118,34 @@ describe("EpisodeDetailPage", () => {
     expect(out).toContain("general lane");
   });
 
+  it("renders the record-identity subtitle (session reference) below the heading", () => {
+    setEpisode(BASE_EPISODE);
+    const out = html();
+    expect(out).toContain("session sess-abc");
+  });
+
+  it("falls back to the truncated episode id when the episode has no session", () => {
+    setEpisode({ ...BASE_EPISODE, session_id: null });
+    const out = html();
+    expect(out).toContain(`Episode ${BASE_EPISODE.id.slice(0, 8)}`);
+  });
+
+  it("renders the metadata as a mono code block when non-empty", () => {
+    setEpisode({ ...BASE_EPISODE, metadata: { source: "telegram", chat_id: 42 } });
+    const out = html();
+    expect(out).toContain("METADATA");
+    expect(out).toContain("<pre");
+    expect(out).toContain("source");
+    expect(out).toContain("telegram");
+  });
+
+  it("omits the metadata block when the bag is empty", () => {
+    setEpisode({ ...BASE_EPISODE, metadata: {} });
+    const out = html();
+    expect(out).not.toContain("METADATA");
+    expect(out).not.toContain("<pre");
+  });
+
   it("renders the consolidation glyph WITH its word in the KV band", () => {
     setEpisode(BASE_EPISODE);
     const out = html();

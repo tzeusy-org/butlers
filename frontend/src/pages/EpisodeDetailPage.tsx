@@ -27,6 +27,7 @@ import {
   DetailHeading,
   DetailSkeleton,
   KVBand,
+  MetadataBlock,
   ProvenanceLink,
   ProvenanceSection,
   StateLine,
@@ -105,8 +106,18 @@ export default function EpisodeDetailPage() {
     <DetailSkeleton backHref="/memory?register=episodes" backLabel="daybook">
       <DetailEyebrow kind="episode" id={episode.id} />
 
-      {/* Heading: the episode's opening line. */}
-      <DetailHeading>{heading}</DetailHeading>
+      {/* Heading: the episode's opening line; the session reference is the
+          record-identity subtitle below it (per the detail-page archetype —
+          a session-scoped record derives identity from its session). Falls
+          back to the truncated episode id when the episode has no session, so
+          the record-identity line is never absent (per the domain-pages spec). */}
+      <DetailHeading
+        subtitle={
+          episode.session_id ? `session ${episode.session_id}` : `Episode ${episode.id.slice(0, 8)}`
+        }
+      >
+        {heading}
+      </DetailHeading>
 
       {/* State line — consolidation state + butler, in the API's words. */}
       <StateLine fragments={[status, episode.butler ? `${episode.butler} lane` : null]} />
@@ -145,6 +156,9 @@ export default function EpisodeDetailPage() {
           { key: "expires", value: episode.expires_at ? <Mono>{fmtDate(episode.expires_at)}</Mono> : null },
         ]}
       />
+
+      {/* Metadata — raw bag as a mono code block; omitted when empty. */}
+      <MetadataBlock metadata={episode.metadata} />
 
       {/* Provenance — derived facts only; omitted when none. */}
       <ProvenanceSection>{provenance}</ProvenanceSection>

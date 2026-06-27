@@ -136,6 +136,32 @@ describe("FactDetailPage", () => {
     expect(text).toContain("lifestyle scope");
   });
 
+  it("renders the record-identity subtitle (subject · predicate) below the heading", () => {
+    setFact(makeFact({ subject: "Owner", predicate: "preferred_pain_relief" }));
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).toContain("Owner · preferred_pain_relief");
+  });
+
+  it("renders the metadata as a mono code block when non-empty", () => {
+    setFact(makeFact({ metadata: { confidence_source: "owner_confirmed" } }));
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).toContain("METADATA");
+    const pre = mounted.container.querySelector("pre");
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toContain("confidence_source");
+    expect(pre?.textContent).toContain("owner_confirmed");
+  });
+
+  it("omits the metadata block when the bag is empty", () => {
+    setFact(makeFact({ metadata: {} }));
+    mounted = render();
+    const text = mounted.container.textContent ?? "";
+    expect(text).not.toContain("METADATA");
+    expect(mounted.container.querySelector("pre")).toBeNull();
+  });
+
   it("renders the decay-arithmetic line in the mono format", () => {
     setFact(makeFact({ confidence: 0.94, decay_rate: 0.002 }));
     mounted = render();

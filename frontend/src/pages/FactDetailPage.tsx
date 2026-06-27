@@ -27,6 +27,7 @@ import {
   DetailHeading,
   DetailSkeleton,
   KVBand,
+  MetadataBlock,
   ProvenanceLink,
   ProvenanceSection,
   StateLine,
@@ -217,8 +218,11 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
     <DetailSkeleton backHref="/memory" backLabel="ledger">
       <DetailEyebrow kind="fact" id={fact.id} />
 
-      {/* Heading: the content is the headline. */}
-      <DetailHeading dimmed={dimmed}>{fact.content}</DetailHeading>
+      {/* Heading: the content is the headline; subject · predicate is the
+          record-identity subtitle below it (per the detail-page archetype). */}
+      <DetailHeading dimmed={dimmed} subtitle={`${fact.subject} · ${fact.predicate}`}>
+        {fact.content}
+      </DetailHeading>
 
       {/* State line — lifecycle in the API's words. */}
       <StateLine
@@ -259,6 +263,9 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
           { key: "tags", value: fact.tags.length > 0 ? fact.tags.join(", ") : null },
         ]}
       />
+
+      {/* Metadata — raw bag as a mono code block; omitted when empty. */}
+      <MetadataBlock metadata={fact.metadata} />
 
       {/* Provenance & cross-references — omitted when empty. */}
       <ProvenanceSection>

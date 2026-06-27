@@ -113,7 +113,8 @@ export function useFact(factId: string | null) {
 /**
  * Re-ink a fact (POST /facts/:id/confirm). On success, invalidates the
  * single-fact and facts-list caches so the detail page reflects the reset
- * decay timer immediately. bu-awo8k.3.
+ * decay timer immediately, plus the memory-stats cache so the KPI counts
+ * (active vs fading facts) do not go stale. bu-awo8k.3, bu-3mxat.
  */
 export function useConfirmFact() {
   const queryClient = useQueryClient();
@@ -122,6 +123,7 @@ export function useConfirmFact() {
     onSuccess: (_, factId) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-fact", factId] });
       void queryClient.invalidateQueries({ queryKey: ["memory-facts"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-stats"] });
     },
   });
 }
@@ -129,7 +131,8 @@ export function useConfirmFact() {
 /**
  * Retract a fact (POST /facts/:id/retract). On success, invalidates the
  * single-fact and facts-list caches so the detail page reflects the retracted
- * validity immediately. bu-awo8k.4.
+ * validity immediately, plus the memory-stats cache so the KPI counts (active
+ * facts drop, the headline numbers stay honest). bu-awo8k.4, bu-3mxat.
  */
 export function useRetractFact() {
   const queryClient = useQueryClient();
@@ -138,6 +141,7 @@ export function useRetractFact() {
     onSuccess: (_, factId) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-fact", factId] });
       void queryClient.invalidateQueries({ queryKey: ["memory-facts"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-stats"] });
     },
   });
 }
