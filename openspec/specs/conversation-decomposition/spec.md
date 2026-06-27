@@ -24,19 +24,17 @@ The switchboard pipeline SHALL decompose conversation history batches into per-b
 - **AND** decomposition runs in the background pipeline processing task, not in `ingest_v1()`
 
 ### Requirement: Signal Extraction for Decomposition
-The decomposition step SHALL invoke signal-extraction to produce per-butler conceptual messages. As built (`src/butlers/modules/pipeline.py`), the decomposition branch dispatches through the Spawner (`_dispatch_fn`, the same path used for routing) with the routing prompt and `complexity=CHEAP`, rather than calling the LLM API directly. When the dispatched runtime returns JSON that parses as a list, those objects are treated as decomposition signals; each is routed by reading `target_butler` (or `butler`), `tool_name` (default `route.execute`), and `tool_args`.
-
-Note (intended-but-unbuilt): the original design called for a dedicated signal-extraction invocation that calls the LLM API directly with a signal-extraction prompt template loaded from a signal-extraction skill directory, and for strict enforcement of the full signal schema (including `signal_type`, `excerpts`, and `confidence`). Neither the dedicated direct-API path nor the schema/excerpt enforcement is implemented today; this remains intent and is tracked as a remediation follow-up, not current behavior.
+The decomposition step SHALL invoke signal-extraction to produce per-butler conceptual messages. As built (`src/butlers/modules/pipeline.py`), the decomposition branch dispatches through the Spawner (`_dispatch_fn`, the same path used for routing) with a **dedicated signal-extraction prompt** (`_build_decomposition_prompt`, which drives the `/signal-extraction` skill and asks for a strict JSON array of full-schema conceptual messages rather than `route_to_butler` tool calls) and `complexity=CHEAP`. The dispatched runtime's JSON output is parsed (tolerating markdown fences and wrapper objects) and each object is normalized to the full conceptual-message schema (`signal_type`, `target_butler`, `tool_name`, `tool_args`, `excerpts`, `confidence`); entries without a routable `target_butler` (accepting the legacy `butler` alias) are dropped.
 
 #### Scenario: Signal extraction produces conceptual messages
 - **WHEN** the decomposition step processes a conversation history batch
-- **THEN** it dispatches the conversation content (as untrusted-data context in the routing prompt) through the Spawner
-- **AND** when the runtime returns a JSON array, each object is treated as a signal carrying at least `target_butler`, `tool_name`, and `tool_args`
+- **THEN** it dispatches the conversation content (as untrusted-data context in the dedicated signal-extraction prompt) through the Spawner
+- **AND** when the runtime returns a JSON array, each object is normalized to the full conceptual-message schema (`signal_type`, `target_butler`, `tool_name`, `tool_args`, `excerpts`, `confidence`) before routing
 
 ### Requirement: Cherry-Picked Message Excerpts
 Each conceptual message SHALL contain only the conversation messages relevant to that concept, cherry-picked from the full conversation window.
 
-Note (intended-but-unbuilt): excerpt cherry-picking and the full conceptual-message structure (`signal_type`, `excerpts`, `confidence`) are not extracted or enforced by the pipeline today. The pipeline reads only `target_butler`, `tool_name`, and `tool_args` from each signal; any per-excerpt selection is left to the runtime's output and is not validated. This requirement is intent, tracked as a remediation follow-up.
+As built, the dedicated signal-extraction prompt instructs the runtime to cherry-pick per-concept `excerpts`, and the pipeline normalizes each excerpt to the `{sender, text, timestamp, message_id}` projection and carries the full conceptual-message metadata (`signal_type`, `excerpts`, `confidence`) to the target butler via the route arguments (`__conceptual_message`). Selection of which messages are relevant remains the runtime's responsibility; the pipeline enforces the excerpt shape but does not itself re-derive relevance.
 
 #### Scenario: Relevant messages cherry-picked per concept
 - **WHEN** signal extraction identifies a concept (e.g., "finance: shared expense discussion")

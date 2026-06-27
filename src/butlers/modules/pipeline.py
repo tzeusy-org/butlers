@@ -583,6 +583,177 @@ def _infer_fallback_target_from_cc_output(
 
 
 # ---------------------------------------------------------------------------
+# Decomposition signal schema (conversation-decomposition spec)
+# ---------------------------------------------------------------------------
+
+# Allowed categorical confidence levels for a decomposition conceptual message.
+_VALID_DECOMP_CONFIDENCE = ("HIGH", "MEDIUM", "LOW")
+
+
+def _normalize_decomp_excerpts(raw: Any) -> list[dict[str, Any]]:
+    """Normalize the ``excerpts`` field of a decomposition signal.
+
+    Per the conversation-decomposition spec each excerpt is a
+    ``{sender, text, timestamp, message_id}`` object cherry-picked from the
+    conversation window. Non-dict entries are dropped; each kept entry is
+    projected onto exactly those four keys so downstream consumers see a
+    stable shape.
+    """
+    if not isinstance(raw, list):
+        return []
+    excerpts: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        excerpts.append(
+            {
+                "sender": item.get("sender"),
+                "text": item.get("text"),
+                "timestamp": item.get("timestamp"),
+                "message_id": item.get("message_id"),
+            }
+        )
+    return excerpts
+
+
+def _normalize_decomp_signal(sig: Any) -> dict[str, Any] | None:
+    """Normalize one raw decomposition signal into the full conceptual-message schema.
+
+    The conversation-decomposition spec requires each conceptual message to carry
+    ``signal_type``, ``target_butler``, ``tool_name``, ``tool_args``, ``excerpts``
+    and ``confidence``. The model may emit partial or legacy-shaped objects, so
+    this enforces the full schema, defaulting confidence to ``LOW`` and accepting
+    the legacy ``type``/``butler`` aliases. Returns ``None`` when there is no
+    usable target butler (the signal cannot be routed).
+    """
+    if not isinstance(sig, dict):
+        return None
+    target = str(sig.get("target_butler") or sig.get("butler") or "").strip()
+    if not target:
+        return None
+    signal_type = str(sig.get("signal_type") or sig.get("type") or "").strip()
+    tool_name = str(sig.get("tool_name") or "route.execute").strip()
+    # The model sometimes stringifies nested objects; parse a JSON-string
+    # ``tool_args`` so valid arguments are not silently dropped.
+    tool_args = sig.get("tool_args")
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except (json.JSONDecodeError, ValueError):
+            tool_args = {}
+    if not isinstance(tool_args, dict):
+        tool_args = {}
+    confidence_raw = str(sig.get("confidence") or "").strip().upper()
+    confidence = confidence_raw if confidence_raw in _VALID_DECOMP_CONFIDENCE else "LOW"
+    return {
+        "signal_type": signal_type,
+        "target_butler": target,
+        "tool_name": tool_name,
+        "tool_args": tool_args,
+        "excerpts": _normalize_decomp_excerpts(sig.get("excerpts")),
+        "confidence": confidence,
+    }
+
+
+def _normalize_decomp_signals(raw: Any) -> list[dict[str, Any]]:
+    """Normalize a parsed signal payload into full-schema conceptual messages.
+
+    Accepts the shapes LLMs commonly emit even when told to return a bare array:
+    a single signal object, or a wrapper object that nests the array under a key
+    (e.g. ``{"signals": [...]}``). Drops entries with no routable target butler
+    (see :func:`_normalize_decomp_signal`).
+    """
+    if isinstance(raw, dict):
+        # Unwrap a wrapper object by taking its first list value; otherwise treat
+        # the dict as a single signal so one extracted signal is not dropped.
+        wrapped = next((v for v in raw.values() if isinstance(v, list)), None)
+        raw = wrapped if wrapped is not None else [raw]
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in raw:
+        norm = _normalize_decomp_signal(item)
+        if norm is not None:
+            normalized.append(norm)
+    return normalized
+
+
+def _build_decomposition_prompt(
+    message: str,
+    butlers: list[dict[str, Any]],
+    conversation_history: str = "",
+    attachments: list[dict[str, Any]] | None = None,
+) -> str:
+    """Build the signal-extraction prompt for conversation decomposition.
+
+    Unlike :func:`_build_routing_prompt` (which asks the model to call the
+    ``route_to_butler`` MCP tool), this prompt drives the ``/signal-extraction``
+    skill and asks for a strict JSON array of conceptual messages following the
+    full decomposition signal schema (``signal_type``, ``target_butler``,
+    ``tool_name``, ``tool_args``, ``excerpts``, ``confidence``). The switchboard
+    parses that array and fans out one route per conceptual message.
+
+    Parameters
+    ----------
+    message:
+        The triggering message text (current message in the batch).
+    butlers:
+        List of available butlers with capabilities.
+    conversation_history:
+        Formatted conversation-history context for the batch.
+    attachments:
+        Optional list of attachment metadata dicts.
+    """
+    from butlers.tools.switchboard.routing.classify import _format_capabilities
+
+    butler_list = "\n".join(
+        (
+            f"- {b['name']}: {b.get('description') or 'No description'} "
+            f"(capabilities: {_format_capabilities(b)})"
+        )
+        for b in butlers
+    )
+
+    # Keep user text isolated in serialized JSON so the model receives it
+    # as data, not as additional instructions.
+    encoded_message = json.dumps({"message": message}, ensure_ascii=False)
+
+    prompt_parts = [
+        "Please use the /signal-extraction skill to decompose the conversation history "
+        "into per-butler conceptual messages.\n\n"
+        "IMPORTANT: Do NOT call any MCP tools. Return ONLY a JSON array (no prose, no "
+        "markdown fences). Each array element is one conceptual message with EXACTLY "
+        "these fields:\n"
+        '- signal_type: domain type (e.g. "finance", "health", "relationship")\n'
+        "- target_butler: destination butler name (must be one listed below)\n"
+        "- tool_name: MCP tool to call on the target butler\n"
+        "- tool_args: JSON object of tool arguments\n"
+        "- excerpts: array of {sender, text, timestamp, message_id} objects, "
+        "cherry-picked from the conversation. Include ONLY the messages relevant to "
+        "this concept; a message relevant to multiple concepts is duplicated into each "
+        "conceptual message.\n"
+        "- confidence: one of HIGH, MEDIUM, LOW\n\n"
+        "If no supported signals are present, return [].\n\n"
+    ]
+
+    prompt_parts.append(
+        f"Available butlers:\n{butler_list}\n\nUser input JSON:\n{encoded_message}\n\n"
+    )
+
+    if conversation_history:
+        prompt_parts.append(conversation_history)
+        prompt_parts.append("## Current Message\n\n")
+
+    if attachments:
+        prompt_parts.append(
+            f"## Attachments\n\nThis conversation includes {len(attachments)} "
+            "attachment(s); reference them in tool_args where relevant.\n\n"
+        )
+
+    return "".join(prompt_parts)
+
+
+# ---------------------------------------------------------------------------
 # Conversation Batch History Formatter (decomposition branch)
 # ---------------------------------------------------------------------------
 
@@ -1758,9 +1929,18 @@ class MessagePipeline:
 
                     with tracer.start_as_current_span("butlers.switchboard.routing.build_prompt"):
                         butlers = await _load_available_butlers(self._pool)
-                        routing_prompt = _build_routing_prompt(
-                            message_text, butlers, conversation_history, attachments
-                        )
+                        if _payload_type == "conversation_history":
+                            # Dedicated signal-extraction prompt: asks for a strict
+                            # JSON array of full-schema conceptual messages
+                            # (signal_type/excerpts/confidence), not route_to_butler
+                            # tool calls.
+                            routing_prompt = _build_decomposition_prompt(
+                                message_text, butlers, conversation_history, attachments
+                            )
+                        else:
+                            routing_prompt = _build_routing_prompt(
+                                message_text, butlers, conversation_history, attachments
+                            )
 
                     # Set routing context for route_to_butler tool
                     self._set_routing_context(
@@ -1819,10 +1999,25 @@ class MessagePipeline:
                                 "output_tokens": _output_tokens,
                             }
                     if _payload_type == "conversation_history" and cc_output.strip():
+                        # LLMs often wrap the JSON in a markdown fence even when
+                        # told not to; strip it so a cosmetic wrapper does not
+                        # silently drop every signal into decomposed_empty.
+                        _cleaned_output = cc_output.strip()
+                        if _cleaned_output.startswith("```"):
+                            _cleaned_output = re.sub(
+                                r"^```(?:json)?\s*|\s*```$",
+                                "",
+                                _cleaned_output,
+                                flags=re.IGNORECASE,
+                            ).strip()
                         try:
-                            _parsed = json.loads(cc_output)
-                            if isinstance(_parsed, list):
-                                _decomp_signals = _parsed
+                            _parsed = json.loads(_cleaned_output)
+                            # Enforce the full conceptual-message schema
+                            # (signal_type, target_butler, tool_name, tool_args,
+                            # excerpts, confidence). _normalize_decomp_signals
+                            # accepts list / single-object / wrapper-object shapes
+                            # and drops entries without a routable target.
+                            _decomp_signals = _normalize_decomp_signals(_parsed)
                         except (json.JSONDecodeError, ValueError):
                             pass
 
@@ -1883,25 +2078,28 @@ class MessagePipeline:
                         _decomp_failed_details: list[str] = []
 
                         for _sig in _decomp_signals:
-                            _target = str(
-                                _sig.get("target_butler") or _sig.get("butler") or ""
-                            ).strip()
-                            if not _target:
-                                continue
+                            # Signals are normalized to the full schema upstream, so
+                            # target_butler is always present and routable here.
+                            _target = _sig["target_butler"]
                             _decomp_routed.append(_target)
-                            _sig_tool = str(_sig.get("tool_name") or "route.execute").strip()
+                            _sig_tool = _sig["tool_name"]
 
                             _route_args: dict[str, Any] = {
-                                **(
-                                    _sig.get("tool_args")
-                                    if isinstance(_sig.get("tool_args"), dict)
-                                    else {}
-                                ),
+                                **_sig["tool_args"],
                                 "__switchboard_route_context": {
                                     "request_id": request_id,
                                     "fanout_mode": "decomposition",
                                     "segment_id": f"decomp-{_target}",
                                     "attempt": 1,
+                                },
+                                # Carry the cherry-picked conceptual-message
+                                # metadata to the target butler so it receives the
+                                # relevant excerpts and extraction confidence, not
+                                # just the bare tool args.
+                                "__conceptual_message": {
+                                    "signal_type": _sig["signal_type"],
+                                    "excerpts": _sig["excerpts"],
+                                    "confidence": _sig["confidence"],
                                 },
                             }
 

@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,9 +27,12 @@ from butlers.modules.pipeline import (
     PipelineConfig,
     PipelineModule,
     RoutingResult,
+    _build_decomposition_prompt,
     _build_routing_prompt,
     _extract_routed_butlers,
     _infer_fallback_target_from_cc_output,
+    _normalize_decomp_signal,
+    _normalize_decomp_signals,
 )
 
 pytestmark = pytest.mark.unit
@@ -268,6 +272,262 @@ class TestMessagePipelineProcess:
             "input_tokens": 12,
             "output_tokens": 0,
         }
+
+
+# ---------------------------------------------------------------------------
+# Decomposition signal schema (conversation-decomposition spec) [bu-2czq5]
+# ---------------------------------------------------------------------------
+
+
+class TestDecompositionSignalSchema:
+    def test_build_decomposition_prompt_requests_full_schema(self):
+        prompt = _build_decomposition_prompt("hi", _MOCK_BUTLERS, "history", None)
+        # Drives the dedicated signal-extraction skill, not message-triage tools.
+        assert "/signal-extraction" in prompt
+        assert "Do NOT call any MCP tools" in prompt
+        # Every full-schema field is requested.
+        for field_name in (
+            "signal_type",
+            "target_butler",
+            "tool_name",
+            "tool_args",
+            "excerpts",
+            "confidence",
+        ):
+            assert field_name in prompt
+        assert "sender" in prompt and "message_id" in prompt
+
+    def test_normalize_signal_enforces_full_schema(self):
+        norm = _normalize_decomp_signal(
+            {
+                "signal_type": "finance",
+                "target_butler": "finance",
+                "tool_name": "expense_log",
+                "tool_args": {"amount": 42},
+                "excerpts": [
+                    {
+                        "sender": "alice",
+                        "text": "split the bill",
+                        "timestamp": "2026-06-27T10:00:00Z",
+                        "message_id": "m1",
+                    }
+                ],
+                "confidence": "high",
+            }
+        )
+        assert norm == {
+            "signal_type": "finance",
+            "target_butler": "finance",
+            "tool_name": "expense_log",
+            "tool_args": {"amount": 42},
+            "excerpts": [
+                {
+                    "sender": "alice",
+                    "text": "split the bill",
+                    "timestamp": "2026-06-27T10:00:00Z",
+                    "message_id": "m1",
+                }
+            ],
+            "confidence": "HIGH",  # normalized to upper-case
+        }
+
+    def test_normalize_signal_defaults_and_legacy_aliases(self):
+        # Legacy "type"/"butler" aliases + missing excerpts/confidence.
+        norm = _normalize_decomp_signal({"type": "health", "butler": "health"})
+        assert norm is not None
+        assert norm["signal_type"] == "health"
+        assert norm["target_butler"] == "health"
+        assert norm["tool_name"] == "route.execute"
+        assert norm["tool_args"] == {}
+        assert norm["excerpts"] == []
+        assert norm["confidence"] == "LOW"  # unknown/absent → LOW
+
+    def test_normalize_signal_drops_untargeted_and_nondict(self):
+        assert _normalize_decomp_signal({"signal_type": "finance"}) is None
+        assert _normalize_decomp_signal("not a dict") is None
+        assert _normalize_decomp_signals(
+            ["bad", {"signal_type": "x"}, {"target_butler": "finance"}]
+        ) == [
+            {
+                "signal_type": "",
+                "target_butler": "finance",
+                "tool_name": "route.execute",
+                "tool_args": {},
+                "excerpts": [],
+                "confidence": "LOW",
+            }
+        ]
+
+    def test_normalize_excerpts_drops_non_dict_and_projects_keys(self):
+        norm = _normalize_decomp_signal(
+            {
+                "target_butler": "finance",
+                "excerpts": ["junk", {"text": "hi", "extra": "ignored"}],
+            }
+        )
+        assert norm is not None
+        assert norm["excerpts"] == [
+            {"sender": None, "text": "hi", "timestamp": None, "message_id": None}
+        ]
+
+    def test_normalize_signal_parses_stringified_tool_args(self):
+        # Models sometimes stringify the nested tool_args object.
+        norm = _normalize_decomp_signal({"target_butler": "finance", "tool_args": '{"amount": 42}'})
+        assert norm is not None
+        assert norm["tool_args"] == {"amount": 42}
+        # Unparseable string falls back to an empty object, not a dropped signal.
+        norm_bad = _normalize_decomp_signal({"target_butler": "finance", "tool_args": "not json"})
+        assert norm_bad is not None
+        assert norm_bad["tool_args"] == {}
+
+    def test_normalize_signals_wraps_single_object(self):
+        # A single signal object (not an array) must not be dropped.
+        out = _normalize_decomp_signals({"target_butler": "finance"})
+        assert [s["target_butler"] for s in out] == ["finance"]
+
+    def test_normalize_signals_unwraps_wrapper_object(self):
+        # `{"signals": [...]}` wrapper is unwrapped to its array.
+        out = _normalize_decomp_signals(
+            {"signals": [{"target_butler": "finance"}, {"target_butler": "health"}]}
+        )
+        assert [s["target_butler"] for s in out] == ["finance", "health"]
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_decomposition_fanout_carries_full_schema(
+        self, mock_route, mock_load, mock_history
+    ):
+        """Fan-out must produce the full schema, not just target/tool_name/tool_args."""
+        signal = {
+            "signal_type": "finance",
+            "target_butler": "finance",
+            "tool_name": "expense_log",
+            "tool_args": {"amount": 42},
+            "excerpts": [
+                {
+                    "sender": "alice",
+                    "text": "Let's split the dinner bill",
+                    "timestamp": "2026-06-27T10:00:00Z",
+                    "message_id": "m1",
+                }
+            ],
+            "confidence": "HIGH",
+        }
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output=json.dumps([signal]),
+                success=True,
+                tool_calls=[],
+                model="opencode/test",
+                input_tokens=20,
+                output_tokens=10,
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000002",
+        )
+
+        assert result.target_butler == "finance"
+        assert result.routed_targets == ["finance"]
+
+        # decomposition_output stores the full-schema conceptual message.
+        update_kwargs = pipeline._update_message_inbox_lifecycle.await_args.kwargs
+        stored = update_kwargs["decomposition_output"]["signals"]
+        assert len(stored) == 1
+        assert stored[0]["signal_type"] == "finance"
+        assert stored[0]["confidence"] == "HIGH"
+        assert stored[0]["excerpts"][0]["message_id"] == "m1"
+
+        # The route() call carries the conceptual-message metadata to the butler.
+        route_kwargs = mock_route.await_args.kwargs
+        assert route_kwargs["target_butler"] == "finance"
+        conceptual = route_kwargs["args"]["__conceptual_message"]
+        assert conceptual["signal_type"] == "finance"
+        assert conceptual["confidence"] == "HIGH"
+        assert conceptual["excerpts"][0]["text"] == "Let's split the dinner bill"
+        assert route_kwargs["args"]["amount"] == 42
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_decomposition_parses_markdown_fenced_output(
+        self, mock_route, mock_load, mock_history
+    ):
+        """A markdown-fenced array must still route, not fall back to decomposed_empty."""
+        signal = {
+            "signal_type": "finance",
+            "target_butler": "finance",
+            "tool_name": "expense_log",
+            "tool_args": {"amount": 42},
+            "excerpts": [],
+            "confidence": "HIGH",
+        }
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="```json\n" + json.dumps([signal]) + "\n```",
+                success=True,
+                tool_calls=[],
+                model="opencode/test",
+                input_tokens=20,
+                output_tokens=10,
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000003",
+        )
+
+        assert result.routed_targets == ["finance"]
+        update_kwargs = pipeline._update_message_inbox_lifecycle.await_args.kwargs
+        assert len(update_kwargs["decomposition_output"]["signals"]) == 1
 
 
 # ---------------------------------------------------------------------------
