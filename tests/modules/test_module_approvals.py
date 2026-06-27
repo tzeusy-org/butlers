@@ -600,3 +600,144 @@ class TestRedaction:
         result = redact_tool_args("some_tool", {"message": "hello", "count": 3})
         assert result["message"] == "hello"
         assert result["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Autonomy velocity tracking wired into the manual-approval path (bu-2adfu)
+# ---------------------------------------------------------------------------
+
+
+class _VelocityMockDB(MockDB):
+    """MockDB extended with autonomy_approval_history + state-store support.
+
+    Lets the real ``_approve_action`` path drive ``update_velocity`` end to end
+    so we can assert the ``autonomy:velocity:{fingerprint}`` state is written —
+    not a mock of ``update_velocity`` itself.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.approval_history: list[dict[str, Any]] = []
+        self.state: dict[str, dict[str, Any]] = {}
+
+    async def execute(self, query: str, *args: Any) -> str:
+        if "INSERT INTO autonomy_approval_history" in query:
+            # (id, fingerprint, tool_name, tool_args, action_id, approved_at, ttd)
+            self.approval_history.append(
+                {
+                    "pattern_fingerprint": args[1],
+                    "tool_name": args[2],
+                    "approved_at": args[5],
+                    "time_to_decision_seconds": args[6],
+                }
+            )
+            return "INSERT 0 1"
+        return await super().execute(query, *args)
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        if "FROM autonomy_approval_history" in query and "time_to_decision_seconds" in query:
+            fp = args[0]
+            rows = [
+                r
+                for r in self.approval_history
+                if r["pattern_fingerprint"] == fp and r["time_to_decision_seconds"] is not None
+            ]
+            rows.sort(key=lambda r: r["approved_at"], reverse=True)
+            limit = args[1] if len(args) > 1 else len(rows)
+            return [
+                {"time_to_decision_seconds": r["time_to_decision_seconds"]} for r in rows[:limit]
+            ]
+        return await super().fetch(query, *args)
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        if "autonomy_approval_history" in query and "COUNT" in query:
+            fp = args[0]
+            cnt = sum(1 for r in self.approval_history if r["pattern_fingerprint"] == fp)
+            return {"cnt": cnt}
+        if "autonomy_suggestions" in query:
+            return None
+        return await super().fetchrow(query, *args)
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        if "INSERT INTO state" in query:
+            key, value = args[0], args[1]
+            existing = self.state.get(key)
+            version = (existing["version"] + 1) if existing else 1
+            self.state[key] = {"value": value, "version": version}
+            return version
+        if "SELECT value FROM state" in query:
+            entry = self.state.get(args[0])
+            return entry["value"] if entry else None
+        return await super().fetchval(query, *args)
+
+
+class TestApprovalVelocityWiring:
+    """A manual approval must record velocity into the state store so the
+    dashboard ``fast_approval`` indicator surfaces (autonomy-tracker spec).
+    """
+
+    async def _approve(self, db: _VelocityMockDB, requested_at: datetime) -> str:
+        from butlers.modules.approvals.autonomy_tracker import compute_fingerprint
+
+        module = ApprovalsModule()
+        await module.on_startup(config=None, db=db)
+
+        action_id = uuid.uuid4()
+        tool_args = {"to": "alice@example.com", "body": "hello"}
+        db._insert_action(
+            id=action_id,
+            tool_name="email_send",
+            tool_args=tool_args,
+            status="pending",
+            requested_at=requested_at,
+        )
+
+        async def mock_executor(tool_name, tool_args):
+            return {"status": "sent"}
+
+        module.set_tool_executor(mock_executor)
+        result = await module._approve_action(
+            str(action_id),
+            actor={
+                "type": "human",
+                "id": str(uuid.uuid4()),
+                "authenticated": True,
+                "roles": ["owner"],
+            },
+        )
+        assert result["status"] == "executed"
+        return compute_fingerprint("email_send", tool_args)
+
+    async def test_manual_approval_writes_velocity_state(self):
+        from butlers.modules.approvals.autonomy_tracker import get_velocity
+
+        db = _VelocityMockDB()
+        # Slow decision (~60s) => fast_approval must be False.
+        fingerprint = await self._approve(
+            db, requested_at=datetime.now(UTC) - timedelta(seconds=60)
+        )
+
+        # The history row was recorded by the real path.
+        assert len(db.approval_history) == 1
+        # The velocity state key was written under the spec'd key.
+        state_key = f"autonomy:velocity:{fingerprint}"
+        assert state_key in db.state
+
+        velocity = await get_velocity(db, fingerprint)
+        assert velocity is not None
+        assert velocity["sample_count"] == 1
+        assert velocity["avg_seconds"] >= 50.0
+        assert velocity["fast_approval"] is False
+        assert "updated_at" in velocity
+
+    async def test_fast_manual_approval_sets_fast_approval_flag(self):
+        from butlers.modules.approvals.autonomy_tracker import get_velocity
+
+        db = _VelocityMockDB()
+        # Near-instant decision (~0s) => fast_approval must be True.
+        fingerprint = await self._approve(db, requested_at=datetime.now(UTC))
+
+        velocity = await get_velocity(db, fingerprint)
+        assert velocity is not None
+        assert velocity["avg_seconds"] < 5.0
+        assert velocity["fast_approval"] is True

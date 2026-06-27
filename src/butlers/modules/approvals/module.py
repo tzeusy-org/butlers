@@ -54,6 +54,9 @@ from butlers.modules.approvals.autonomy_tracker import (
 from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
+from butlers.modules.approvals.autonomy_tracker import (
+    update_velocity as _update_velocity,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.executor import (
@@ -750,12 +753,23 @@ class ApprovalsModule(Module):
             )
             if updated_action_row is not None:
                 updated_action = PendingAction.from_row(updated_action_row)
+                fingerprint = _compute_fingerprint(action.tool_name, action.tool_args)
                 await _record_approval(self._db, updated_action)
                 await _check_promotion_threshold(
                     pool=self._db,
-                    pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
+                    pattern_fingerprint=fingerprint,
                     tool_name=action.tool_name,
                     tool_args=action.tool_args,
+                    config=self._config,
+                )
+                # Compute and persist approval velocity so the dashboard
+                # fast_approval indicator surfaces (autonomy-tracker spec:
+                # "Approval Velocity Tracking"). The state store lives in the
+                # same butler schema, so self._db serves as the state_pool.
+                await _update_velocity(
+                    pool=self._db,
+                    state_pool=self._db,
+                    pattern_fingerprint=fingerprint,
                     config=self._config,
                 )
         except Exception:
