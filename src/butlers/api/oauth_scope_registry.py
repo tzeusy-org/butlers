@@ -214,7 +214,12 @@ _GOOGLE_CALENDAR_MANIFEST = ScopeManifest(
 )
 
 _GOOGLE_DRIVE_MANIFEST = ScopeManifest(
-    version=1,
+    # version 2: required scope corrected from drive.readonly to full drive.
+    # The google_drive module writes files and hard-fails startup without the
+    # full drive scope (modules/google_drive: _DRIVE_SCOPE check), so the single
+    # OAuth grant backing this connector must cover full read/write drive. The
+    # connector ingestion path alone only reads, but the grant is shared.
+    version=2,
     required=[
         ScopeDecl(
             name="openid",
@@ -229,15 +234,8 @@ _GOOGLE_DRIVE_MANIFEST = ScopeManifest(
             serif_note="Used to read your Google account display name",
         ),
         ScopeDecl(
-            name="https://www.googleapis.com/auth/drive.readonly",
-            serif_note="Used to read your Google Drive files for ingestion",
-        ),
-    ],
-    optional=[
-        ScopeDecl(
             name="https://www.googleapis.com/auth/drive",
-            serif_note="Grants full Drive access for file management features",
-            category="optional",
+            serif_note="Used to read your Drive files for ingestion and to manage files",
         ),
     ],
 )

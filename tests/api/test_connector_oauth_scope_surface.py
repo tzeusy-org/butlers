@@ -582,3 +582,33 @@ class TestRegistryOAuthFlowConsistency:
             f"In required but not flow: {sorted(required - authorized_scopes)}\n"
             f"In flow but not required: {sorted(authorized_scopes - required)}"
         )
+
+    def test_google_drive_required_matches_module_write_scope(self) -> None:
+        """google_drive manifest must declare the FULL drive scope the module needs.
+
+        The google_drive module writes files and hard-fails startup unless the
+        granted scopes include the full ``drive`` scope (modules/google_drive
+        validates ``_DRIVE_SCOPE`` and bails otherwise). Declaring the read-only
+        ``drive.readonly`` scope as the required scope would make the scope-surface
+        dashboard report the WRONG required grant (read-only) when read/write is
+        actually needed. This test ties the manifest to the module's real
+        requirement so the two cannot drift apart (regression: bu-yvayp).
+        """
+        from butlers.api.oauth_scope_registry import get_scope_manifest
+        from butlers.modules.google_drive import _DRIVE_SCOPE
+
+        manifest = get_scope_manifest("google_drive")
+        assert manifest is not None
+
+        required = manifest.required_names()
+        assert _DRIVE_SCOPE in required, (
+            "google_drive manifest must require the full drive scope the module writes with.\n"
+            f"Module requires    : {_DRIVE_SCOPE}\n"
+            f"Manifest required  : {sorted(required)}"
+        )
+        # The read-only scope must not stand in for the full scope as required —
+        # full drive supersedes it and is what the OAuth grant must cover.
+        assert "https://www.googleapis.com/auth/drive.readonly" not in required, (
+            "drive.readonly must not be the declared required scope — the module "
+            "writes files and needs full drive; full drive supersedes read-only."
+        )
