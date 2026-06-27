@@ -420,6 +420,66 @@ Projection adapters whose source exposes only daily aggregates SHALL produce epi
   warnings channel so operators can detect connector polling gaps
   and accumulated overnight play
 
+### Requirement: Operational Sessions Excluded from User-Visible Projection
+
+`CoreSessionsAdapter` SHALL exclude operational (butler-internal) sessions
+from the user-visible episode projection. Excluded sessions SHALL be reachable
+only through the dedicated operational endpoint `GET /api/chronicler/ops/sessions`,
+never through the user-facing `GET /api/chronicler/episodes` surface.
+
+#### Scenario: Operational trigger sources are not projected
+
+- **WHEN** `CoreSessionsAdapter` projects `core.sessions` rows into
+  `chronicler.episodes`
+- **THEN** rows whose `trigger_source` is exactly `tick`, `qa`, or `healing`
+  SHALL be excluded
+- **AND** rows whose `trigger_source` begins with `schedule:` SHALL be excluded
+- **AND** the exclusion SHALL be applied at the SQL layer so the per-schema
+  projection watermark advances only over user-visible rows
+- **AND** `deadline:*` sessions SHALL NOT be excluded (they are user-proxied
+  work and belong in the Tasks lane)
+
+#### Scenario: Excluded sessions reachable only via the ops endpoint
+
+- **WHEN** an engineer needs to audit scheduler cadence, switchboard tick rate,
+  or QA canary health
+- **THEN** `GET /api/chronicler/ops/sessions` SHALL return only the sessions
+  whose `trigger_source` matches the exclusion set (`tick`, `qa`, `healing`,
+  `schedule:*`)
+- **AND** this endpoint SHALL read the raw per-butler sessions tables directly
+  rather than `chronicler.episodes`
+- **AND** data from this endpoint SHALL NEVER appear in
+  `GET /api/chronicler/episodes`
+
+### Requirement: Calendar Scheduled Blocks Are Not Attendance Assertions
+
+Calendar `scheduled_block` episodes SHALL be treated as appointments that were
+scheduled, NOT as confirmed attendance (`source_name = google_calendar.completed`,
+`episode_type = scheduled_block`). A past calendar block proves only that the
+event was on the calendar and SHALL NOT be treated as evidence that the owner
+was present.
+
+#### Scenario: Scheduled block is not an attendance fact
+
+- **WHEN** Chronicler surfaces a `scheduled_block` episode in a summary,
+  drilldown, or routing handoff
+- **THEN** it SHALL phrase the block as scheduled (for example
+  "Calendar had X scheduled at HH:MM" or "X was on the calendar for
+  HH:MM to HH:MM")
+- **AND** it SHALL NOT describe the block as the owner having attended X
+- **AND** it SHALL NOT route the block to a domain butler as an attendance
+  fact, nor instruct any butler to record attendance from a calendar block
+  alone
+
+#### Scenario: Attendance requires a corroborating signal
+
+- **WHEN** attendance is to be asserted for a time that overlaps a
+  `scheduled_block`
+- **THEN** the assertion SHALL require a corroborating signal beyond the
+  calendar block, such as explicit user confirmation, a location ping at the
+  venue during the appointment window, or a calendar `status` of
+  completed/accepted plus user acknowledgement
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)

@@ -93,6 +93,11 @@ tools. These are out of scope.
 - Relationship / contact queries → **Relationship**
 
 ### Calendar attendance prohibition (bu-gnoi0)
+> **Canonical:** this rule is normative in the spec, see
+> `openspec/specs/butler-chronicler/spec.md` Requirement "Calendar Scheduled
+> Blocks Are Not Attendance Assertions". The notes below are the runtime-agent
+> elaboration; keep them consistent with the spec.
+
 Calendar `scheduled_block` episodes (source_name=`google_calendar.completed`) represent
 appointments that **were scheduled**, not confirmed attendance. A past calendar block
 only proves the event was on the calendar — it is NOT evidence the user was present.
@@ -280,6 +285,11 @@ GROUP BY 1;
 `deadline:*` values MAY appear and are expected in the Tasks lane.
 
 ## Ops sessions escape hatch
+
+> **Canonical:** the projection-exclusion + ops-endpoint contract is normative
+> in the spec, see `openspec/specs/butler-chronicler/spec.md` Requirement
+> "Operational Sessions Excluded from User-Visible Projection". The notes below
+> are the runtime-agent elaboration; keep them consistent with the spec.
 
 Operational sessions are **never projected** into `chronicler.episodes`.
 Engineers who need to audit scheduler cadence, switchboard tick rate, or QA
