@@ -47,7 +47,7 @@ Explicit reveal actions SHALL ship and remain available where credential pages s
 
 #### Scenario: Fingerprint never persisted
 - **WHEN** any credential read endpoint returns a fingerprint
-- **THEN** the fingerprint is computed on-read via PostgreSQL `sha256(<secret_value>)::text` and truncated to the first 8 hex characters
+- **THEN** the fingerprint is computed on-read by hashing the secret value with SHA-256 in the application layer and truncating to the first 8 hex characters
 - **AND** the fingerprint is NEVER stored in any DB column, file, or cache
 
 #### Scenario: Fingerprint verify command exposure
@@ -91,7 +91,7 @@ The User-tab's six bespoke provider Setup cards SHALL be replaced by one row tem
 
 ### Requirement: Owner-Default Inventory Surfaces Primary Google Account
 
-The owner-default `/secrets` inventory (`GET /api/secrets/inventory` without `?identity=`) SHALL include the primary Google account's `google_oauth_refresh` credential entry in the `user` array. This entry SHALL be present whenever at least one Google account with `is_primary = true` and `status != 'revoked'` exists in `public.google_accounts`. This includes `status = 'expired'` accounts so the owner can reach the scope-set picker and reauth CTA without needing a manual `?identity=` parameter.
+The owner-default `/secrets` inventory (`GET /api/secrets/inventory` without `?identity=`) SHALL include the primary Google account's `google_oauth_refresh` credential entry in the `user` array. This entry SHALL be present whenever at least one Google account with `is_primary = true` exists in `public.google_accounts`, regardless of `status`. This includes `status = 'expired'` and `status = 'revoked'` accounts so the owner can reach the scope-set picker and reauth CTA without needing a manual `?identity=` parameter; hiding a revoked primary would make the reauthorize flow unreachable.
 
 Including the primary Google account credential in the owner-default inventory makes the scope-set picker (including `Google Health`) reachable at `/secrets?focus=u:google` WITHOUT requiring the owner to first discover or manually specify an `?identity=<entity_id>` parameter.
 
@@ -110,7 +110,7 @@ This requirement is **co-owned** with the `dashboard-google-accounts` spec (§Mu
 #### Scenario: No Google account connected — no google_oauth_refresh in owner-default
 
 - **WHEN** `GET /api/secrets/inventory` is called without `?identity=`
-- **AND** no Google account exists in `public.google_accounts` (or none with `is_primary = true AND status != 'revoked'`)
+- **AND** no Google account exists in `public.google_accounts` (or none with `is_primary = true`)
 - **THEN** the response `user` array SHALL NOT contain a `google_oauth_refresh` entry
 - **AND** the spine at `/secrets` SHALL NOT render a `u:google` row in the owner-default view
 

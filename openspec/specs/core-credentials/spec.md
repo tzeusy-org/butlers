@@ -14,12 +14,12 @@ The `CredentialStore` class provides async CRUD operations on the `butler_secret
 - **AND** the raw value is never logged
 
 #### Scenario: Resolve secret (DB-first, env fallback)
-- **WHEN** `store.resolve(key)` is called
+- **WHEN** `store.resolve(key, env_fallback=True)` is called
 - **THEN** the store checks the local DB first, then fallback DBs, then `os.environ[key]`
 - **AND** returns the first non-None value found
 
 #### Scenario: Resolve with env fallback disabled
-- **WHEN** `store.resolve(key, env_fallback=False)` is called
+- **WHEN** `store.resolve(key, env_fallback=False)` is called (this is the default; bare `store.resolve(key)` behaves identically)
 - **THEN** only DB sources are checked; environment variables are not consulted
 
 #### Scenario: Load from DB only
@@ -358,11 +358,11 @@ The module exposes two public helpers:
 - **AND** `GET /api/audit-log?key=user:<provider>` returns the same row (long-scope form is also accepted by the filter)
 
 ### Requirement: On-Read Fingerprint Computation (No Persistence)
-Credential fingerprints rendered on `/secrets` SHALL be computed on-read using PostgreSQL's `sha256()` function and truncated to the first 8 hex characters. Fingerprints SHALL NOT be persisted to any column, cache, or log.
+Credential fingerprints rendered on `/secrets` SHALL be computed on-read by hashing the secret value with SHA-256 and truncating to the first 8 hex characters. The computation runs in the application layer (`_fingerprint()` in `secrets_v2.py`) over the value fetched by the read query. Fingerprints SHALL NOT be persisted to any column, cache, or log.
 
 Rationale: persisting a fingerprint creates a side-channel for offline brute-force attacks against weak secrets; on-read computation eliminates the side-channel without measurably impacting read latency at the page sizes the `/secrets` page renders.
 
-#### Scenario: SELECT computes fingerprint inline
+#### Scenario: Fingerprint computed on-read
 - **WHEN** `GET /api/secrets/inventory` is called
-- **THEN** the underlying SELECT query includes a computed column of the form `substr(encode(sha256(value::bytea), 'hex'), 1, 8) AS fingerprint`
+- **THEN** the secret value returned by the read query is hashed on-read with SHA-256 and truncated to the first 8 hex characters (`hashlib.sha256(value.encode()).hexdigest()[:8]`)
 - **AND** no DB column anywhere in the schema stores the fingerprint

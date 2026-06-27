@@ -143,10 +143,13 @@ be retained but the degraded state SHALL be reported by the degraded-safety
 indicator.
 
 This adds an opt-in strict mode bound to the hardened posture; it does not change
-the `database-security` graceful-fallback policy for `dev`. Today the policy is
-fail-open in all postures: `src/butlers/db.py` logs "Could not verify role … SET
-ROLE enforcement disabled" and "Role … not found; SET ROLE enforcement disabled"
-and proceeds with the connecting user's privileges, which is a silent loss of
+the `database-security` graceful-fallback policy for `dev`. Under `dev`,
+`src/butlers/db.py` retains fail-open behavior (logs "Could not verify role … SET
+ROLE enforcement disabled" or "Role … not found; SET ROLE enforcement disabled"
+and proceeds with the connecting user's privileges). Under the hardened posture,
+`Database.strict_role_enforcement` (the `Database` class in `src/butlers/db.py`)
+is enabled (auto-detected from `is_hardened_posture()`) and the daemon fails
+closed rather than silently losing
 schema isolation for an always-on deployment.
 
 #### Scenario: Missing role fails closed under hardened posture
@@ -166,9 +169,12 @@ schema isolation for an always-on deployment.
 An always-on personal-data deployment SHALL have a documented, executable
 backup-and-restore path for the PostgreSQL data plane, and that path SHALL be
 verifiable (a restore drill that proves a backup can be restored to a working
-state). The system currently ships no backup/restore tooling (no `pg_dump`/
-`pg_restore` script or documented drill). Restore verification protects the
-owner's irreplaceable personal data against corruption or accidental loss.
+state). This is shipped: `deploy/backup/pg_dump.sh` produces timestamped dumps,
+`scripts/pg_restore.sh` restores to a scratch database, and
+`scripts/pg_verify_restore.sh` runs the verification drill (schema, table, and
+row-count checks), all documented in `docs/operations/backup-restore.md`. Restore
+verification protects the owner's irreplaceable personal data against corruption
+or accidental loss.
 
 #### Scenario: Documented restore drill exists and is verifiable
 - **WHEN** an operator follows the documented backup-and-restore procedure

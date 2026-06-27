@@ -11,13 +11,13 @@ The dashboard SHALL maintain a single, append-only audit log used by every mutat
 
 #### Scenario: Audit log table shape
 - **WHEN** the audit log table is provisioned
-- **THEN** `public.audit_log` exists with columns `id BIGSERIAL PRIMARY KEY`, `ts TIMESTAMPTZ NOT NULL DEFAULT now()`, `actor TEXT NOT NULL`, `action TEXT NOT NULL`, `target TEXT`, `note TEXT`, `ip INET`, `request_id UUID`
+- **THEN** `public.audit_log` exists with columns `id BIGSERIAL PRIMARY KEY`, `ts TIMESTAMPTZ NOT NULL DEFAULT now()`, `actor TEXT NOT NULL`, `action TEXT NOT NULL`, `target TEXT`, `note TEXT`, `ip INET`, `request_id UUID`, `metadata JSONB`, `result TEXT`, `error TEXT` (the last three added by migration `core_122` for writer unification)
 - **AND** indexes exist on `(ts DESC)`, `(action)`, and `(actor)`
 - **AND** no DELETE statement against `audit_log` exists anywhere in the repository (verified by a static-check test).
 
 #### Scenario: audit.append helper contract
 - **WHEN** a mutation endpoint succeeds
-- **THEN** it calls `audit.append(actor, action, target=None, note=None, ip=None, request_id=None) -> int` returning the new row id
+- **THEN** it calls `audit.append(pool_or_conn, actor, action, *, target=None, note=None, ip=None, request_id=None, metadata=None, result=None, error=None) -> int` returning the new row id (the first positional argument is an asyncpg pool or an already-acquired connection; passing a connection lets the audit insert participate in the caller's open transaction)
 - **AND** the call is made INSIDE the same SQL transaction as the state change (commit only after the audit row is written)
 - **AND** Prometheus counter `audit_log_appended_total{action}` is incremented after commit.
 
