@@ -459,6 +459,81 @@ chronicler `episode_entities` storage shape introduced in
   (matching the existing list contract) so that adding the join does
   not destabilize pagination
 
+### Requirement: Episode Tier-2 Explain Endpoint
+
+The Chronicler SHALL expose `POST /api/chronicler/episodes/{episode_id}/explain`,
+a rate-limited Tier-2 drilldown that assembles a token-bounded bundle (episode
+detail in corrected view, linked point events, and correction history) and
+dispatches it to an LLM for a single episode. The bundle SHALL be capped so the
+episode detail is never truncated and only the supporting arrays shrink to fit
+the character budget.
+
+#### Scenario: Explain assembles a token-bounded bundle
+
+- **WHEN** `POST /api/chronicler/episodes/{episode_id}/explain` is called for an
+  existing, non-tombstoned, non-sensitive episode and a dispatch callable is wired
+- **THEN** the endpoint SHALL build a bundle from the corrected episode, its
+  linked events, and its correction history, bounded to the configured character
+  cap, and dispatch it for Tier-2 interpretation
+
+#### Scenario: Sensitive and restricted episodes are excluded
+
+- **WHEN** the target episode has `canonical_privacy` of `sensitive` or `restricted`
+- **THEN** the endpoint SHALL return HTTP 403 with `code=episode_explain_excluded`
+  and SHALL NOT send any payload to the LLM
+
+#### Scenario: Per-episode rate limit enforced
+
+- **WHEN** an explain for the same episode was performed within the rate-limit
+  window (24 hours)
+- **THEN** the endpoint SHALL return HTTP 429 with
+  `code=episode_explain_rate_limited` and `details.retry_after_seconds`
+
+#### Scenario: Missing episode or unavailable dispatch
+
+- **WHEN** the episode does not exist
+- **THEN** the endpoint SHALL return HTTP 404
+- **AND WHEN** no dispatch callable is wired in the deployment
+- **THEN** the endpoint SHALL return HTTP 503 with `code=dispatch_unavailable`
+
+### Requirement: Operational Sessions Escape Hatch
+
+The Chronicler SHALL expose `GET /api/chronicler/ops/sessions`, a read-only
+endpoint that returns exactly the sessions whose `trigger_source` matches the
+projection exclusion set (`tick`, `qa`, `healing`, and the `schedule:*` prefix).
+These rows are intentionally invisible to `/api/chronicler/episodes` and exist so
+that engineers can audit scheduler cadence and background-job health without
+direct database access.
+
+#### Scenario: Ops sessions returned with filters
+
+- **WHEN** `GET /api/chronicler/ops/sessions` is called with optional
+  `trigger_source`, `since`, `until`, and `limit` (1-500, default 50) parameters
+- **THEN** only sessions in the exclusion set SHALL be returned, ordered most
+  recent first, each carrying `butler`, `session_id`, `trigger_source`,
+  `started_at`, `completed_at`, `duration_ms`, `success`, and `model`
+
+#### Scenario: Ops data never leaks into user-facing episodes
+
+- **WHEN** a session is returned by `/api/chronicler/ops/sessions`
+- **THEN** that same session SHALL NOT appear in `/api/chronicler/episodes`; the
+  separation is enforced at the adapter layer, not by the endpoint
+
+### Requirement: Projection Health Visibility
+
+The Chronicler SHALL expose `GET /api/chronicler/projection-health`, a read-only
+endpoint that returns one row per `projection_checkpoints` entry so that adapter
+ingestion errors are surfaced without direct database access.
+
+#### Scenario: Per-checkpoint health listed
+
+- **WHEN** `GET /api/chronicler/projection-health` is called
+- **THEN** the response SHALL include `source_name`, `subsource`, `last_error`,
+  `last_run_at`, `rows_projected`, and `watermark` for every checkpoint, ordered
+  by `source_name ASC, subsource ASC`
+- **AND WHEN** the `projection_checkpoints` table is empty
+- **THEN** the endpoint SHALL return an empty `data` array
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)
