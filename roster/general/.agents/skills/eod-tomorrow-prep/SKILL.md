@@ -1,6 +1,6 @@
 ---
 name: eod-tomorrow-prep
-description: Daily tomorrow-prep briefing, review tomorrow's calendar and send a structured preparation summary via Telegram (sent at the end of the day, 23:00 SGT, to prepare for the day ahead)
+description: Daily tomorrow-prep briefing, review tomorrow's calendar and fold in today's cross-butler specialist highlights into a multi-domain preparation summary sent via Telegram (sent at the end of the day, 23:00 SGT, to prepare for the day ahead)
 trigger_patterns:
   - eod-tomorrow-prep
   - scheduled daily at 23:00 SGT
@@ -8,36 +8,68 @@ trigger_patterns:
 
 # Tomorrow Prep
 
-This skill runs every day at 23:00 SGT (UTC+8) as a scheduled task. It reviews tomorrow's
-calendar and sends a structured preparation summary to the user via Telegram. The message is
-sent at the end of the day to prepare the user for the day ahead. Frame it as "Tomorrow Prep"
-and title it with tomorrow's date so the future date is expected.
+This skill runs every day at 23:00 SGT (UTC+8) as a scheduled task. It reviews
+tomorrow's calendar, folds in today's cross-butler specialist highlights, and sends
+a structured multi-domain preparation summary to the user via Telegram. The message
+is sent at the end of the day to prepare the user for the day ahead. Frame it as
+"Tomorrow Prep" and title it with tomorrow's date so the future date is expected.
+Do not call it an "end-of-day briefing".
+
+The specialist highlights come from the `collect_briefing_contributions` job (cron
+`58 6 * * *`, which is 14:58 SGT), which aggregates each specialist butler's daily
+contribution into a combined payload under `briefing/combined/<today-SGT>` earlier
+the same day. This skill reads that payload and surfaces the domains that have
+updates. When no payload exists, it degrades gracefully to a calendar-only summary.
 
 ## When to Use
 
-Triggered automatically by the `eod-tomorrow-prep` scheduled task (cron: `0 15 * * *`).
+Triggered automatically by the `eod-tomorrow-prep` scheduled task (cron: `0 15 * * *`,
+which is 23:00 SGT).
 
 ## Workflow
 
-### Step 1: Determine Tomorrow's Date (SGT, UTC+8)
+### Step 1: Determine Today's and Tomorrow's Dates (SGT, UTC+8)
 
-Compute tomorrow's date in Singapore Time (UTC+8). All event times throughout this skill
-are expressed in SGT.
+Compute both today's and tomorrow's dates in Singapore Time (UTC+8). Today's date
+keys the specialist payload lookup; tomorrow's date frames the calendar timeline.
+Date string format is `YYYY-MM-DD`. All event times throughout this skill are
+expressed in SGT.
 
 ```python
 from datetime import datetime, timedelta, timezone
 
 SGT = timezone(timedelta(hours=8))
 now_sgt = datetime.now(SGT)
+today_sgt = now_sgt.strftime("%Y-%m-%d")
 tomorrow_sgt = now_sgt + timedelta(days=1)
 
 start = tomorrow_sgt.replace(hour=0, minute=0, second=0, microsecond=0)
 end   = tomorrow_sgt.replace(hour=23, minute=59, second=59, microsecond=0)
 ```
 
-### Step 2: Fetch Tomorrow's Events
+### Step 2: Fetch Specialist Highlights (Briefing Contributions)
 
-Call `calendar_list_events` with the computed start and end bounds (SGT):
+Call `state_get('briefing/combined/<today-SGT>')`, where `<today-SGT>` is today's
+date in `YYYY-MM-DD` format (SGT). This returns a JSON payload with a
+`contributions` list. Each entry has these fields:
+
+- `butler`: the specialist butler that produced the contribution
+- `has_updates`: boolean, whether this specialist has anything to report today
+- `highlights`: structured highlight data
+- `summary`: a pre-rendered one-line summary string for direct inclusion
+
+```python
+combined = state_get(f"briefing/combined/{today_sgt}")
+contributions = (combined or {}).get("contributions", [])
+```
+
+If `state_get` returns null or empty, proceed in **calendar-only mode**: skip the
+"Today's Highlights" section entirely and build the summary from the calendar alone.
+
+### Step 3: Fetch Tomorrow's Events
+
+Call `calendar_list_events` with the computed start and end bounds (SGT, 00:00 to
+23:59 tomorrow):
 
 ```python
 events = calendar_list_events(
@@ -46,97 +78,82 @@ events = calendar_list_events(
 )
 ```
 
-### Step 3: Extract Event Details
+For each event, extract title, start time (SGT), duration, location, and any
+description notes. Sort events by start time (ascending) to build a chronological
+timeline.
 
-For each event returned, extract:
-- **Title**: event name
-- **Time**: start time in SGT
-- **Duration**: end time − start time (in minutes or hours)
-- **Location**: venue or video link (if present)
-- **Description/Notes**: any additional context from the event body
+### Step 4: Compose the Multi-Domain Summary
 
-Sort the events by start time (ascending) to build a chronological timeline.
-
-### Step 4: Check User Preferences (Optional)
-
-Optionally call `memory_recall` to retrieve any stored user preferences that may enhance
-the briefing — for example, preferred prep lead times, known commute durations, or
-recurring preparation notes for specific event types:
-
-```python
-preferences = memory_recall(topic="user preferences")
-```
-
-Use any returned preferences to personalize step 5 (e.g., adjust prep note recommendations
-based on known habits). If `memory_recall` returns nothing or is unavailable, proceed
-without preferences — the briefing remains complete without them.
-
-### Step 5: Compose the Summary
-
-Build a structured Telegram message using the following template:
+Open with a title line that makes clear this previews the day ahead, using
+TOMORROW's weekday and date so the future date reads as intentional:
 
 ```
-Tomorrow: [Weekday], [Date in SGT]
-
-[HH:MM] [Event Title] ([Duration])
-  📍 [Location if present]
-  → Prep: [any docs to review, travel time estimate, items to bring — infer from description]
-
-[HH:MM] [Free block] — [duration] free
-
-[HH:MM] [Next Event Title] ([Duration])
-  📍 [Location if present]
-  → Prep: [preparation notes]
-
-Heads-up:
-• [Flag early starts (before 08:00)]
-• [Flag back-to-back events (gap < 15 min)]
-• [Flag travel-heavy days or unusual locations]
-• [Flag unusually long events (> 3 hours)]
+**🌅 Tomorrow Prep — [Tomorrow's Weekday, Date]**
 ```
 
-**Composition guidelines:**
-- List events in chronological order (all times in SGT)
-- Identify free blocks between events; highlight blocks ≥ 30 minutes as breathing room
-- Infer preparation notes from the event description, title, and location — e.g. if a location
-  is a physical address, note travel time; if a title mentions "review" or "demo", suggest
-  preparing materials
-- Keep the heads-up section concise — maximum 3–4 bullets
-- Mobile-friendly: keep the total message under ~400 words
+Do not title this an "end-of-day briefing"; it is sent at the end of the day,
+23:00 SGT, to prepare for tomorrow.
 
-### Step 6: Handle the Empty-Calendar Case
+Then assemble the body sections:
 
-If `calendar_list_events` returns zero events for tomorrow:
+**Calendar — [Day, Date]**
+List tomorrow's events in chronological order (times in SGT). For each event:
+title, time, duration, location. Include prep notes (documents to review, travel
+time, items to bring), inferred from the event title, description, and location.
+Note any free blocks between events. If there are no events:
+"No events scheduled for tomorrow."
 
-Send a brief note instead of a structured briefing:
+**Today's Highlights**
+Include this section **only** if at least one specialist contribution has
+`has_updates=true`. Omit the section entirely if no contributions are present or all
+have `has_updates=false` (calendar-only mode).
+
+For each specialist domain with `has_updates=true`, include one concise line using
+the pre-rendered `summary` field. Group lines under these fixed domain labels (one
+label per specialist butler, in the order specialists are declared in
+`src/butlers/jobs/briefing.py::SPECIALIST_BUTLERS`):
 
 ```
-Tomorrow: [Weekday], [Date in SGT]
-
-No events scheduled — clear day ahead.
+Learning (education) · Finance · Health · Home · Lifestyle · Relationships · Travel
 ```
 
-### Step 7: Send via notify()
+**Heads-up** (optional)
+Include only when two or more high-priority highlights across different domains
+suggest a cross-domain conflict or compounded risk (for example, a travel departure
+that overlaps a medical appointment). Keep it to one or two sentences maximum.
 
-Send the composed message using `intent="send"` (outbound, not a reply):
+### Step 5: Length Check
+
+Ensure the full message is under 500 words for mobile readability. Trim event prep
+notes or specialist summaries if needed to stay within the limit. The calendar
+timeline takes priority over the Highlights section when trimming.
+
+### Step 6: Send via notify()
+
+Send the composed message using `intent="send"` (a proactive outbound notification,
+not a reply). Scheduled prompt sessions have no interactive user, so `notify()` is
+the only way to reach the user, and `request_context` is not required for `intent="send"`:
 
 ```python
 notify(
     channel="telegram",
     intent="send",
     message=<composed_message>,
-    request_context=<session_request_context>,
 )
 ```
 
-Do not wait for a user reply. This is a proactive outbound notification.
+Do not wait for a user reply.
 
 ## Exit Criteria
 
-- Tomorrow's date determined in SGT (UTC+8)
-- `calendar_list_events` called with correct SGT start/end bounds
-- All events extracted with title, time, duration, location, description
-- `memory_recall(topic="user preferences")` attempted; result used if available
-- Summary composed with chronological timeline, prep notes, free blocks, and heads-up
+- Today's and tomorrow's dates determined in SGT (UTC+8)
+- `state_get('briefing/combined/<today-SGT>')` attempted; specialist contributions
+  used when present, calendar-only fallback when absent or empty
+- `calendar_list_events` called with correct SGT start/end bounds for tomorrow
+- Calendar timeline composed with chronological events, prep notes, and free blocks
+- "Today's Highlights" included only when at least one contribution has
+  `has_updates=true`, grouped under the fixed domain labels
+- Optional "Heads-up" included only for cross-domain conflicts
+- Full message under 500 words; calendar prioritized over Highlights when trimming
 - `notify(channel="telegram", intent="send", ...)` called once
 - Session exits after delivery
