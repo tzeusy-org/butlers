@@ -12,7 +12,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.finance._helpers import _deserialize_row
+from butlers.tools.finance._helpers import _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +299,7 @@ async def track_bill(
             predicted,
         )
 
-    result = _deserialize_row(row)
+    result = _row_to_dict(row)
 
     # Fire-and-forget SPO mirror write to public.facts. Scheduled as a
     # background task so failures never roll back the primary upsert.
@@ -404,7 +404,7 @@ async def upcoming_bills(
     autopay_amount = Decimal("0.00")
 
     for row in rows:
-        bill = _deserialize_row(row)
+        bill = _row_to_dict(row)
         due = row["due_date"]
         bill_status = row["status"]
 

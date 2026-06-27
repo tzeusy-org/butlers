@@ -8,7 +8,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.finance._helpers import _deserialize_row
+from butlers.tools.finance._helpers import _row_to_dict
 
 _VALID_STATUSES = ("active", "cancelled", "paused")
 _VALID_FREQUENCIES = ("weekly", "monthly", "quarterly", "yearly", "custom")
@@ -144,4 +144,4 @@ async def track_subscription(
             metadata_value,
         )
 
-    return _deserialize_row(row)
+    return _row_to_dict(row)

@@ -95,7 +95,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONNECTOR_TYPE = "owntracks"
-CONNECTOR_TYPE = _CONNECTOR_TYPE  # Public alias for use in tests and external code
 _CONNECTOR_CHANNEL = "owntracks"
 _CONNECTOR_PROVIDER = "owntracks"
 
@@ -107,7 +106,6 @@ _MIN_RETENTION_DAYS = 1
 _RETENTION_PURGE_INTERVAL_S = 6 * 60 * 60  # 6 hours
 
 # Public aliases for use by standalone OwnTracksRetentionConfig / OwnTracksRetention
-CONNECTOR_TYPE = _CONNECTOR_TYPE
 DEFAULT_RETENTION_DAYS = _DEFAULT_RETENTION_DAYS
 MIN_RETENTION_DAYS = _MIN_RETENTION_DAYS
 RETENTION_PURGE_INTERVAL_S = _RETENTION_PURGE_INTERVAL_S

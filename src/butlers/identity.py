@@ -730,8 +730,10 @@ def build_identity_preamble(
     channel:
         The source channel (e.g., ``"telegram"``).
     temp_contact_id:
-        Kept for backward compatibility with ``create_temp_contact`` callers.
-        No longer emitted in the preamble string.
+        contact_id of the temporary contact (may be ``None``). Used as a
+        fallback identifier in the preamble for unknown senders when
+        ``temp_entity_id`` is not available (``create_temp_contact`` always
+        returns a contact_id), emitted as ``(contact_id: <uuid>)``.
     temp_entity_id:
         entity_id of the temporary contact (may be ``None``).
 
