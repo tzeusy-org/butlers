@@ -13,7 +13,10 @@ from butlers.tools.education._helpers import _row_to_dict
 # Constants
 # ---------------------------------------------------------------------------
 
-_VALID_RESPONSE_TYPES = {"diagnostic", "teach", "quiz", "review"}
+# Must stay in lockstep with the quiz_responses.response_type CHECK constraint
+# (roster/education/migrations/001_education_tables.py). A type accepted here that
+# the DB rejects would pass Python validation then fail the INSERT.
+_VALID_RESPONSE_TYPES = {"diagnostic", "teach", "review"}
 
 # Exponential recency weights for up to 5 responses (oldest → newest).
 # Weight for position i (0=oldest, 4=newest) = 2^i, normalized so sum=1.
