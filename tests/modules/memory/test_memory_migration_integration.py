@@ -264,6 +264,121 @@ def test_fact_write_and_read_round_trip(memory_migrated_db: str) -> None:
     assert abs(result["importance"] - 7.0) < 1e-6
 
 
+async def _supersede_and_search_catalog(db_url: str) -> dict:
+    """Store a property fact, supersede it, and probe the discovery catalog.
+
+    Returns a dict capturing the catalog state needed to assert that the
+    superseded fact's catalog entry was marked stale and no longer surfaces in
+    cross-butler search, while the superseding fact does.
+    """
+    from butlers.modules.memory.search import search_catalog
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+
+        # First (soon-to-be-superseded) property fact.
+        old = await store_fact(
+            pool,
+            subject="alice",
+            predicate="favorite_color",
+            content="blue",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+        old_id = old["id"]
+
+        # Sanity: the old fact is discoverable via the catalog before supersession.
+        before = await search_catalog(
+            pool,
+            "alice favorite_color",
+            engine,
+            tenant_id="shared",
+            mode="keyword",
+        )
+        before_ids = {r["source_id"] for r in before}
+
+        # Superseding property fact (same subject + predicate, new content).
+        new = await store_fact(
+            pool,
+            subject="alice",
+            predicate="favorite_color",
+            content="red",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+        new_id = new["id"]
+        assert new["supersedes_id"] == old_id
+
+        # Catalog row for the superseded fact: marked stale.
+        stale_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts'"
+            " AND source_id = $1",
+            old_id,
+        )
+
+        after = await search_catalog(
+            pool,
+            "alice favorite_color",
+            engine,
+            tenant_id="shared",
+            mode="keyword",
+        )
+        after_ids = {r["source_id"] for r in after}
+
+        return {
+            "old_id": old_id,
+            "new_id": new_id,
+            "before_ids": before_ids,
+            "after_ids": after_ids,
+            "stale_confidence": stale_row["confidence"] if stale_row else None,
+            "stale_invalid_at": stale_row["invalid_at"] if stale_row else None,
+        }
+    finally:
+        await pool.close()
+
+
+def test_fact_supersession_marks_catalog_entry_stale(memory_migrated_db: str) -> None:
+    """Superseding a fact invalidates its catalog entry so it stops surfacing.
+
+    Regression for the unimplemented "Fact supersession updates catalog"
+    scenario in the memory-discovery-catalog spec: the superseded fact's
+    public.memory_catalog row must be marked stale (confidence=0, invalid_at
+    set) and excluded from cross-butler catalog search, while the superseding
+    fact remains discoverable.
+    """
+    result = asyncio.run(_supersede_and_search_catalog(memory_migrated_db))
+
+    old_id = result["old_id"]
+    new_id = result["new_id"]
+
+    # Old fact was discoverable before supersession.
+    assert old_id in result["before_ids"]
+
+    # Catalog entry for the superseded fact is marked stale.
+    assert result["stale_confidence"] == 0
+    assert result["stale_invalid_at"] is not None
+
+    # After supersession the stale entry no longer surfaces, but the new one does.
+    assert old_id not in result["after_ids"]
+    assert new_id in result["after_ids"]
+
+
 def test_migration_is_idempotent(postgres_container) -> None:
     """Running the memory migration chain twice on the same DB does not fail."""
     db_name = migration_db_name()

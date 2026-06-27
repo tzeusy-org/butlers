@@ -789,7 +789,8 @@ async def _catalog_semantic_search(
     """Semantic search on public.memory_catalog via pgvector."""
     embedding_str = str(query_embedding)
     params: list = [embedding_str, tenant_id]
-    conditions = ["tenant_id = $2"]
+    # Exclude stale entries (superseded / invalidated facts have invalid_at set).
+    conditions = ["tenant_id = $2", "invalid_at IS NULL"]
     if memory_type is not None:
         params.append(memory_type)
         conditions.append(f"memory_type = ${len(params)}")
@@ -824,6 +825,8 @@ async def _catalog_keyword_search(
     conditions = [
         f"search_vector @@ plainto_tsquery('{_CATALOG_TS_CONFIG}', $1)",
         "tenant_id = $2",
+        # Exclude stale entries (superseded / invalidated facts have invalid_at set).
+        "invalid_at IS NULL",
     ]
     if memory_type is not None:
         params.append(memory_type)

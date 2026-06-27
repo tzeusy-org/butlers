@@ -359,6 +359,46 @@ async def _upsert_catalog(
     )
 
 
+async def _mark_catalog_stale(
+    pool: Pool,
+    *,
+    source_schema: str,
+    source_table: str,
+    source_ids: list[uuid.UUID],
+    invalid_at: datetime,
+) -> None:
+    """Mark ``public.memory_catalog`` rows stale so they stop surfacing in search.
+
+    Used when canonical memories are superseded (or otherwise invalidated): the
+    catalog is a discovery index, so stale summaries must not keep appearing in
+    cross-butler search results.  Sets ``confidence = 0`` and records
+    ``invalid_at`` (the search queries exclude rows with ``invalid_at`` set).
+
+    Updates all matching rows in a single statement via ``ANY`` to avoid an
+    N+1 query pattern.  Best-effort, like ``_upsert_catalog``: callers wrap
+    this so a catalog failure never blocks the canonical write.  IDs without a
+    catalog row (e.g. superseded facts predating catalog write-behind) are a
+    no-op, and an empty ``source_ids`` short-circuits before touching the DB.
+    """
+    if not source_ids:
+        return
+    await pool.execute(
+        """
+        UPDATE public.memory_catalog
+        SET confidence = 0,
+            invalid_at = $4,
+            updated_at = now()
+        WHERE source_schema = $1
+          AND source_table = $2
+          AND source_id = ANY($3)
+        """,
+        source_schema,
+        source_table,
+        source_ids,
+        invalid_at,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API — Storage
 # ---------------------------------------------------------------------------
@@ -896,6 +936,11 @@ async def store_fact(
     # is deprecated; included in the return dict after the block exits.
     _deprecation_warning: str | None = None
 
+    # IDs of facts superseded by this write (forward + inverse edge facts).
+    # Collected inside the transaction and used after commit to cascade the
+    # supersession to public.memory_catalog (mark those entries stale).
+    superseded_ids: list[uuid.UUID] = []
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             source_butler, source_episode_id = await _resolve_write_provenance_with_conn(
@@ -1167,6 +1212,7 @@ async def store_fact(
                 if existing:
                     old_id = existing["id"]
                     supersedes_id = old_id
+                    superseded_ids.append(old_id)
                     # Mark old fact as superseded and set invalid_at to record when
                     # it was known to be no longer true (i.e. when the new fact arrives).
                     await conn.execute(
@@ -1274,6 +1320,7 @@ async def store_fact(
                             if _inv_existing:
                                 _inv_old_id = _inv_existing["id"]
                                 _inv_supersedes_id = _inv_old_id
+                                superseded_ids.append(_inv_old_id)
                                 await conn.execute(
                                     "UPDATE facts"
                                     " SET validity = 'superseded', invalid_at = $2"
@@ -1413,6 +1460,25 @@ async def store_fact(
                 source_schema,
                 exc_info=True,
             )
+
+        # Cascade supersession to the catalog: mark the superseded facts' catalog
+        # entries stale so cross-butler search stops surfacing the old summaries.
+        if superseded_ids:
+            try:
+                await _mark_catalog_stale(
+                    pool,
+                    source_schema=source_schema,
+                    source_table="facts",
+                    source_ids=superseded_ids,
+                    invalid_at=now,
+                )
+            except Exception:
+                logger.warning(
+                    "memory_catalog: failed to mark superseded facts %s stale (schema=%r)",
+                    superseded_ids,
+                    source_schema,
+                    exc_info=True,
+                )
 
     # Build the return dict.  Include "suggestions" only when there are close
     # matches — omit the key entirely when there are none (per spec: "the
