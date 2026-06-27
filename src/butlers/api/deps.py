@@ -586,6 +586,14 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
     # Wire the rollup router's separate dependency stub
     app.dependency_overrides[ingestion_events._get_rollup_db_manager] = get_db_manager
 
+    # Wire the QA credentials-status callable from the CredentialStore so the
+    # dashboard reports REAL credential presence (gh_token / git-author) instead
+    # of null/"unknown". Without this the QA settings card degrades to unknown
+    # in production because no other path supplies credentials_status_fn.
+    app.dependency_overrides[qa._get_credentials_status_fn] = qa.make_credentials_status_fn(
+        get_db_manager
+    )
+
     # Wire dynamically-loaded butler routers
     if dynamic_modules:
         for module in dynamic_modules:

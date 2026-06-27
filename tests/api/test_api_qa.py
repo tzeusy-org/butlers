@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,7 @@ from butlers.api.routers.qa import (
     _get_db_manager,
     _get_force_patrol_fn,
     _get_staffer_info_fn,
+    make_credentials_status_fn,
 )
 
 pytestmark = pytest.mark.unit
@@ -329,6 +331,120 @@ async def _call(app: Any, method: str, path: str, **kwargs: Any) -> httpx.Respon
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         return await getattr(client, method)(path, **kwargs)
+
+
+def _wire_credential_acquire(pool: Any, present_keys: set[str]) -> None:
+    """Attach a CredentialStore-compatible ``acquire()`` path to a mock pool.
+
+    ``CredentialStore.has(key)`` does ``async with pool.acquire() as conn:
+    conn.fetchrow(sql, key)`` and treats a non-None row as "present".  The
+    injected conn returns a row only for keys in ``present_keys`` — so the
+    presence booleans reflect a real store lookup, and no secret value is ever
+    read.
+    """
+    fake_conn = AsyncMock()
+
+    async def _conn_fetchrow(_sql: str, *params: Any) -> Any:
+        key = params[0] if params else None
+        return {"present": 1} if key in present_keys else None
+
+    fake_conn.fetchrow = _conn_fetchrow
+
+    @asynccontextmanager
+    async def _acquire():
+        yield fake_conn
+
+    pool.acquire = _acquire
+
+
+class TestCredentialsStatusProductionWiring:
+    """The daemon/app wires a production credentials_status_fn from the
+    CredentialStore so the QA settings card reports REAL booleans (bu-r69zm)."""
+
+    async def test_summary_reports_real_credentials_via_daemon_wiring(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exercise the real wire_db_dependencies path (not a test override):
+        gh token + author name present, author email absent → endpoint reflects
+        the live CredentialStore presence booleans, no secret values leaked."""
+        from butlers.api import deps as deps_mod
+        from butlers.api.deps import wire_db_dependencies
+        from butlers.api.routers import qa as qa_router
+
+        app, pool = _build_summary_app()
+        mock_db = app.dependency_overrides[_get_db_manager]()
+
+        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_TOKEN", "BUTLERS_QA_GIT_AUTHOR_NAME"})
+
+        # Point the deps singleton at the same mock_db so the production-wired
+        # callable (which reads get_db_manager()) resolves against this pool.
+        monkeypatch.setattr(deps_mod, "_db_manager", mock_db)
+
+        # The production credentials_status_fn must NOT be wired before wiring.
+        assert qa_router._get_credentials_status_fn not in app.dependency_overrides or (
+            app.dependency_overrides.get(qa_router._get_credentials_status_fn) is None
+        )
+
+        # Run the SAME wiring the daemon/app runs at startup.
+        wire_db_dependencies(app)
+        assert qa_router._get_credentials_status_fn in app.dependency_overrides
+
+        creds = (await _call(app, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
+
+        assert creds["gh_token_present"] is True
+        assert creds["git_author_name_present"] is True
+        assert creds["git_author_email_present"] is False
+        # Token present → no provisioning hint.
+        assert creds["provisioning_hint"] is None
+        # Only presence booleans + the optional hint are exposed — no secret values.
+        assert set(creds.keys()) == {
+            "gh_token_present",
+            "git_author_name_present",
+            "git_author_email_present",
+            "provisioning_hint",
+        }
+
+    async def test_summary_surfaces_provisioning_hint_when_gh_token_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the CredentialStore has no GH token, the production wiring
+        reports gh_token_present=False and the endpoint adds a provisioning
+        hint (honest "missing" rather than null "unknown")."""
+        from butlers.api import deps as deps_mod
+        from butlers.api.deps import wire_db_dependencies
+
+        app, pool = _build_summary_app()
+        mock_db = app.dependency_overrides[_get_db_manager]()
+        _wire_credential_acquire(pool, set())  # nothing present
+        monkeypatch.setattr(deps_mod, "_db_manager", mock_db)
+
+        wire_db_dependencies(app)
+
+        creds = (await _call(app, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
+        assert creds["gh_token_present"] is False
+        assert creds["git_author_name_present"] is False
+        assert creds["git_author_email_present"] is False
+        assert creds["provisioning_hint"] is not None
+        assert "BUTLERS_QA_GH_TOKEN" in creds["provisioning_hint"]
+
+    async def test_make_credentials_status_fn_returns_booleans_only(self) -> None:
+        """The factory's callable reads presence via the store and returns ONLY
+        booleans (never secret values)."""
+        pool = MagicMock()
+        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_TOKEN"})
+        db = MagicMock(spec=DatabaseManager)
+        db.credential_shared_pool.return_value = pool
+
+        provider = make_credentials_status_fn(lambda: db)
+        fn = provider()
+        result = await fn()
+
+        assert result == {
+            "gh_token_present": True,
+            "git_author_name_present": False,
+            "git_author_email_present": False,
+        }
+        assert all(isinstance(v, bool) for v in result.values())
 
 
 class TestGetQaSummary:

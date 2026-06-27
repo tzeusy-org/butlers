@@ -44,6 +44,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -232,6 +233,51 @@ async def _resolve_github_token(db: DatabaseManager) -> str | None:
         if value:
             return value
     return None
+
+
+async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
+    """Resolve QA credential *presence* booleans from the CredentialStore.
+
+    Reads the shared ``butler_secrets`` store for the canonical QA credential
+    keys and reports **only whether each is present** — secret values are never
+    loaded or returned.  This is the production implementation behind the
+    ``_get_credentials_status_fn`` dependency, wired by the daemon/app at
+    startup (see ``butlers.api.deps.wire_db_dependencies``).
+
+    Raises if the shared pool is unavailable; the caller (``get_qa_summary``)
+    swallows such failures and reports the status as "unknown" (all ``None``).
+    """
+    from butlers.core.qa.dispatch import (
+        QA_GH_TOKEN_KEY,
+        QA_GIT_AUTHOR_EMAIL_KEY,
+        QA_GIT_AUTHOR_NAME_KEY,
+    )
+    from butlers.credential_store import CredentialStore
+
+    store = CredentialStore(db.credential_shared_pool())
+    return {
+        "gh_token_present": await store.has(QA_GH_TOKEN_KEY),
+        "git_author_name_present": await store.has(QA_GIT_AUTHOR_NAME_KEY),
+        "git_author_email_present": await store.has(QA_GIT_AUTHOR_EMAIL_KEY),
+    }
+
+
+def make_credentials_status_fn(get_db: Callable[[], DatabaseManager]):
+    """Build the production ``_get_credentials_status_fn`` dependency provider.
+
+    The returned zero-arg provider is suitable for
+    ``app.dependency_overrides[_get_credentials_status_fn]``.  It yields an
+    async callable that resolves the real credential-presence booleans from the
+    CredentialStore at request time (so it always reflects the live pool).
+    """
+
+    def _provider():
+        async def _fn() -> dict[str, bool]:
+            return await _resolve_credentials_status(get_db())
+
+        return _fn
+
+    return _provider
 
 
 async def _row_to_pr_summary_live(
