@@ -23,6 +23,12 @@ dispatch_mode = "job"
 job_name = "compute_analytics_snapshots"
 
 [[butler.schedule]]
+name = "weekly-mind-map-staleness"
+cron = "30 4 * * 1"
+dispatch_mode = "job"
+job_name = "mind_map_staleness_abandonment"
+
+[[butler.schedule]]
 name = "weekly-progress-digest"
 cron = "0 9 * * 0"
 dispatch_mode = "prompt"

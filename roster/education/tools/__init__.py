@@ -44,6 +44,7 @@ from butlers.tools.education.mind_map_queries import (
     mind_map_subtree,
 )
 from butlers.tools.education.mind_maps import (
+    mind_map_abandon_stale,
     mind_map_create,
     mind_map_get,
     mind_map_list,
@@ -71,6 +72,7 @@ __all__ = [
     "mind_map_get",
     "mind_map_list",
     "mind_map_update_status",
+    "mind_map_abandon_stale",
     # node CRUD
     "mind_map_node_create",
     "mind_map_node_get",

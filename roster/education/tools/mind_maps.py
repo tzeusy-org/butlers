@@ -156,3 +156,54 @@ async def mind_map_update_status(
             f"Mind map not found: {mind_map_id}. "
             "Use mind_map_list() to find existing mind maps and their IDs."
         )
+
+
+async def mind_map_abandon_stale(
+    pool: asyncpg.Pool,
+    inactivity_days: int = 30,
+) -> list[str]:
+    """Transition stale ``active`` mind maps to ``'abandoned'``.
+
+    A mind map is *stale* when its status is ``'active'`` and more than
+    ``inactivity_days`` (default 30, per the module-education-mind-map spec)
+    have elapsed since the most recent activity on the map. "Activity" is the
+    maximum ``updated_at`` across all nodes belonging to the map. Maps with no
+    nodes fall back to the map's own ``updated_at`` so freshly created empty
+    maps are not abandoned prematurely.
+
+    ``completed`` and already-``abandoned`` maps are never touched.
+
+    This is the query backing the weekly staleness-abandonment scheduled job.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    inactivity_days:
+        Inactivity threshold in days. A map is abandoned only when its most
+        recent activity is strictly older than this many days.
+
+    Returns
+    -------
+    list of str
+        The UUIDs of the mind maps that were transitioned to ``'abandoned'``.
+    """
+    rows = await pool.fetch(
+        """
+        WITH stale AS (
+            SELECT m.id
+            FROM education.mind_maps m
+            LEFT JOIN education.mind_map_nodes n ON n.mind_map_id = m.id
+            WHERE m.status = 'active'
+            GROUP BY m.id
+            HAVING COALESCE(MAX(n.updated_at), m.updated_at)
+                   < now() - make_interval(days => $1)
+        )
+        UPDATE education.mind_maps
+        SET status = 'abandoned', updated_at = now()
+        WHERE id IN (SELECT id FROM stale)
+        RETURNING id
+        """,
+        inactivity_days,
+    )
+    return [str(row["id"]) for row in rows]
