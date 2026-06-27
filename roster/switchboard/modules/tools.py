@@ -129,7 +129,11 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             - ``ingestion_event_not_found`` — no event with that request_id
             - ``ingestion_event_expired`` — event is older than 1 month
             - ``message_inbox_not_found`` — inbox row was pruned
-            - ``dispatch_failed`` — routing to correct_butler failed
+            - ``butler_not_registered`` — correct_butler is not in the registry;
+              the response includes ``available_butlers`` (routable butler-typed
+              agents) so the caller can pick a valid target
+            - ``target_is_staffer`` — correct_butler is a staffer, not a butler
+            - ``dispatch_failed`` — routing to a registered correct_butler failed
         """
         return await _correct_route.correct_route(
             module._get_pool(),

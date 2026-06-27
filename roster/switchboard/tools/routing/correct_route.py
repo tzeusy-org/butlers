@@ -36,6 +36,7 @@ import asyncpg
 from butlers.tools.switchboard.registry.registry import (
     AGENT_TYPE_BUTLER,
     AGENT_TYPE_STAFFER,
+    list_butlers,
 )
 from butlers.tools.switchboard.routing.route import route as _route_tool
 
@@ -259,32 +260,58 @@ async def correct_route(
         },
     }
 
-    # 5. Validate that correct_butler is a butler-typed agent (not a staffer).
+    # 5. Validate that correct_butler is a registered, butler-typed agent.
     # User messages must only be re-dispatched to domain butlers; staffers are
     # infrastructure agents that process butler-to-staffer traffic, not user messages.
     target_row = await pool.fetchrow(
         "SELECT agent_type FROM butler_registry WHERE name = $1",
         correct_butler,
     )
-    if target_row is not None:
-        target_agent_type = str(target_row.get("agent_type") or AGENT_TYPE_BUTLER).lower()
-        if target_agent_type == AGENT_TYPE_STAFFER:
-            logger.warning(
-                "correct_route: rejected re-dispatch to staffer-typed agent: "
-                "request_id=%s, correct_butler=%s",
-                request_id,
-                correct_butler,
-            )
-            return {
-                "success": False,
-                "error": "target_is_staffer",
-                "message": (
-                    f"Cannot re-dispatch user message to '{correct_butler}': "
-                    f"it is a staffer-typed agent. User messages can only be "
-                    f"re-dispatched to butler-typed agents. "
-                    f"Use list_butlers() to find valid routing targets."
-                ),
-            }
+    if target_row is None:
+        # Unregistered target: reject with the list of available butlers so the
+        # caller/LLM can pick a valid routing target (per butler-switchboard spec,
+        # "Re-dispatch to unregistered butler rejected").
+        available_butlers = [
+            b["name"] for b in await list_butlers(pool, routable_only=True, butler_only=True)
+        ]
+        logger.warning(
+            "correct_route: rejected re-dispatch to unregistered butler: "
+            "request_id=%s, correct_butler=%s, available=%s",
+            request_id,
+            correct_butler,
+            available_butlers,
+        )
+        available_text = ", ".join(available_butlers) if available_butlers else "(none)"
+        return {
+            "success": False,
+            "error": "butler_not_registered",
+            "message": (
+                f"Cannot re-dispatch user message to '{correct_butler}': "
+                f"it is not in the Switchboard's butler registry. "
+                f"Available butlers: {available_text}. "
+                f"Use list_butlers() for full details."
+            ),
+            "available_butlers": available_butlers,
+        }
+
+    target_agent_type = str(target_row.get("agent_type") or AGENT_TYPE_BUTLER).lower()
+    if target_agent_type == AGENT_TYPE_STAFFER:
+        logger.warning(
+            "correct_route: rejected re-dispatch to staffer-typed agent: "
+            "request_id=%s, correct_butler=%s",
+            request_id,
+            correct_butler,
+        )
+        return {
+            "success": False,
+            "error": "target_is_staffer",
+            "message": (
+                f"Cannot re-dispatch user message to '{correct_butler}': "
+                f"it is a staffer-typed agent. User messages can only be "
+                f"re-dispatched to butler-typed agents. "
+                f"Use list_butlers() to find valid routing targets."
+            ),
+        }
 
     # 6. Route to the correct butler
     logger.info(

@@ -475,13 +475,17 @@ class TestCorrectRouteStafferRejection:
         # Must not return target_is_staffer
         assert result.get("error") != "target_is_staffer"
 
-    async def test_unknown_target_not_in_registry_proceeds(self) -> None:
-        """If target is not in registry (None row), no type check error is raised.
+    async def test_unknown_target_not_in_registry_rejected_with_available(
+        self, monkeypatch: Any
+    ) -> None:
+        """A target not in the registry is rejected with the available butlers.
 
-        A target not found in the registry skips the agent_type check and
-        falls through to dispatch, which will then return dispatch_failed or
-        ingestion_event_not_found depending on the state.
+        Per the butler-switchboard spec, re-dispatch to an unregistered butler
+        must fail with the list of available butlers (sourced from the real
+        registry) so the caller can pick a valid routing target — it must NOT
+        fall through to a generic dispatch error.
         """
+        from butlers.tools.switchboard.routing import correct_route as correct_route_mod
         from butlers.tools.switchboard.routing.correct_route import correct_route
 
         request_id = uuid.uuid4()
@@ -501,6 +505,13 @@ class TestCorrectRouteStafferRejection:
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
         pool.execute = AsyncMock(return_value=None)
 
+        # Stub the registry enumeration so available_butlers is populated from a
+        # known set of routable butler-typed agents.
+        list_butlers_mock = AsyncMock(
+            return_value=[{"name": "personal_assistant"}, {"name": "finance"}]
+        )
+        monkeypatch.setattr(correct_route_mod, "list_butlers", list_butlers_mock)
+
         result = await correct_route(
             pool,
             request_id=request_id,
@@ -508,5 +519,12 @@ class TestCorrectRouteStafferRejection:
             correction_id=correction_id,
         )
 
-        # Must not be target_is_staffer — target not in registry is fine for type check
-        assert result.get("error") != "target_is_staffer"
+        assert result["success"] is False
+        assert result["error"] == "butler_not_registered"
+        assert result["available_butlers"] == ["personal_assistant", "finance"]
+        # Enumeration must request only routable butler-typed agents.
+        list_butlers_mock.assert_awaited_once()
+        assert list_butlers_mock.await_args.kwargs == {
+            "routable_only": True,
+            "butler_only": True,
+        }

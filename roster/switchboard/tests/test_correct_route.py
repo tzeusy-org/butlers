@@ -402,23 +402,112 @@ class TestCorrectRouteMessageInboxMissing:
         assert "data_correction" in result["message"]
 
 
-class TestCorrectRouteDispatchFailure:
-    """Tests for routing failures (butler not registered or unreachable)."""
+async def _register_butler(
+    pool: asyncpg.Pool,
+    name: str,
+    *,
+    endpoint_url: str = "http://localhost:8099/mcp/sse",
+    agent_type: str = "butler",
+) -> None:
+    """Register an active agent in butler_registry for routing tests."""
+    await pool.execute(
+        """
+        INSERT INTO butler_registry (name, endpoint_url, last_seen_at, agent_type)
+        VALUES ($1, $2, now(), $3)
+        ON CONFLICT (name) DO NOTHING
+        """,
+        name,
+        endpoint_url,
+        agent_type,
+    )
 
-    async def test_unregistered_butler_returns_dispatch_failed(self, pool: asyncpg.Pool) -> None:
-        """Returns dispatch_failed when target butler not in registry."""
+
+def _failing_call_fn() -> Any:
+    """Return a call_fn that simulates an unreachable but registered butler."""
+    return AsyncMock(side_effect=RuntimeError("connection refused"))
+
+
+class TestCorrectRouteUnregistered:
+    """Tests for re-dispatch to a butler that is not in the registry.
+
+    Per the butler-switchboard spec ("Re-dispatch to unregistered butler
+    rejected"), the tool must fail with the list of available butlers so the
+    caller can pick a valid routing target.
+    """
+
+    async def test_unregistered_butler_returns_butler_not_registered(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """Returns butler_not_registered when target is not in the registry."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
         await _seed_ingestion_event(pool, request_id=request_id)
         await _seed_message_inbox(pool, request_id=request_id)
 
-        # "nonexistent_butler" is not in butler_registry — route() will return error
+        # Register some valid butlers (and a staffer, which must be excluded).
+        await _register_butler(pool, "personal_assistant")
+        await _register_butler(pool, "finance")
+        await _register_butler(pool, "messenger", agent_type="staffer")
+
         result = await correct_route(
             pool,
             request_id=request_id,
             correct_butler="nonexistent_butler",
             correction_id=correction_id,
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "butler_not_registered"
+        # The available_butlers list must be populated from the real registry,
+        # contain only routable butler-typed agents, and exclude the staffer.
+        assert set(result["available_butlers"]) == {"personal_assistant", "finance"}
+        assert "messenger" not in result["available_butlers"]
+        # The human-readable message must name the rejected butler and the options.
+        assert "nonexistent_butler" in result["message"]
+        assert "personal_assistant" in result["message"]
+        assert "finance" in result["message"]
+
+    async def test_unregistered_butler_empty_registry(self, pool: asyncpg.Pool) -> None:
+        """Returns an empty available_butlers list when none are registered."""
+        request_id = _make_request_id()
+        correction_id = _make_correction_id()
+
+        await _seed_ingestion_event(pool, request_id=request_id)
+        await _seed_message_inbox(pool, request_id=request_id)
+
+        result = await correct_route(
+            pool,
+            request_id=request_id,
+            correct_butler="ghost_butler",
+            correction_id=correction_id,
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "butler_not_registered"
+        assert result["available_butlers"] == []
+
+
+class TestCorrectRouteDispatchFailure:
+    """Tests for routing failures (registered butler unreachable)."""
+
+    async def test_registered_butler_unreachable_returns_dispatch_failed(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """Returns dispatch_failed when a registered butler cannot be reached."""
+        request_id = _make_request_id()
+        correction_id = _make_correction_id()
+
+        await _seed_ingestion_event(pool, request_id=request_id)
+        await _seed_message_inbox(pool, request_id=request_id)
+        await _register_butler(pool, "nonexistent_butler")
+
+        result = await correct_route(
+            pool,
+            request_id=request_id,
+            correct_butler="nonexistent_butler",
+            correction_id=correction_id,
+            call_fn=_failing_call_fn(),
         )
 
         assert result["success"] is False
@@ -433,12 +522,14 @@ class TestCorrectRouteDispatchFailure:
 
         await _seed_ingestion_event(pool, request_id=request_id)
         await _seed_message_inbox(pool, request_id=request_id)
+        await _register_butler(pool, "ghost_butler")
 
         result = await correct_route(
             pool,
             request_id=request_id,
             correct_butler="ghost_butler",
             correction_id=correction_id,
+            call_fn=_failing_call_fn(),
         )
 
         assert "list_butlers" in result["message"]
@@ -450,13 +541,14 @@ class TestCorrectRouteDispatchFailure:
 
         await _seed_ingestion_event(pool, request_id=request_id)
         await _seed_message_inbox(pool, request_id=request_id)
+        await _register_butler(pool, "missing_butler")
 
-        # "missing_butler" is not in butler_registry — triggers dispatch_failed
         result = await correct_route(
             pool,
             request_id=request_id,
             correct_butler="missing_butler",
             correction_id=correction_id,
+            call_fn=_failing_call_fn(),
         )
 
         assert result["success"] is False
