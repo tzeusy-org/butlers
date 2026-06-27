@@ -243,7 +243,7 @@ class TestMergeDuplicates:
         keep = await _insert_txn(pool, merchant="Netflix")
         discard = await _insert_txn(pool, merchant="Netflix")
 
-        await merge_duplicates(pool=pool, keep_id=keep["id"], discard_id=discard["id"])
+        await merge_duplicates(pool=pool, keep_id=keep["id"], duplicate_ids=[discard["id"]])
 
         # Check discard has deleted_at set
         row = await pool.fetchrow(
@@ -259,7 +259,9 @@ class TestMergeDuplicates:
         keep = await _insert_txn(pool, metadata={"source": "keep"})
         discard = await _insert_txn(pool, metadata={"extra": "from_discard"})
 
-        result = await merge_duplicates(pool=pool, keep_id=keep["id"], discard_id=discard["id"])
+        result = await merge_duplicates(
+            pool=pool, keep_id=keep["id"], duplicate_ids=[discard["id"]]
+        )
         assert result["id"] == keep["id"]
         # keep's metadata is preserved; discard's non-conflicting keys are merged in
         assert result["metadata"]["source"] == "keep"
@@ -272,15 +274,17 @@ class TestMergeDuplicates:
         keep = await _insert_txn(pool, metadata={"key": "keep_val"})
         discard = await _insert_txn(pool, metadata={"key": "discard_val"})
 
-        result = await merge_duplicates(pool=pool, keep_id=keep["id"], discard_id=discard["id"])
+        result = await merge_duplicates(
+            pool=pool, keep_id=keep["id"], duplicate_ids=[discard["id"]]
+        )
         assert result["metadata"]["key"] == "keep_val"
 
     async def test_merge_same_id_returns_error(self, pool):
-        """merge_duplicates with keep_id == discard_id returns error."""
+        """merge_duplicates with keep_id appearing in duplicate_ids returns error."""
         from butlers.tools.finance.transactions import merge_duplicates
 
         txn = await _insert_txn(pool)
-        result = await merge_duplicates(pool=pool, keep_id=txn["id"], discard_id=txn["id"])
+        result = await merge_duplicates(pool=pool, keep_id=txn["id"], duplicate_ids=[txn["id"]])
         assert "error" in result
 
     async def test_merge_keep_not_found(self, pool):
@@ -293,12 +297,12 @@ class TestMergeDuplicates:
         result = await merge_duplicates(
             pool=pool,
             keep_id=str(uuid.uuid4()),
-            discard_id=discard["id"],
+            duplicate_ids=[discard["id"]],
         )
         assert result["error"] == "keep_transaction_not_found"
 
     async def test_merge_discard_not_found(self, pool):
-        """merge_duplicates with unknown discard_id returns error."""
+        """merge_duplicates with unknown duplicate id returns error."""
         import uuid
 
         from butlers.tools.finance.transactions import merge_duplicates
@@ -307,7 +311,7 @@ class TestMergeDuplicates:
         result = await merge_duplicates(
             pool=pool,
             keep_id=keep["id"],
-            discard_id=str(uuid.uuid4()),
+            duplicate_ids=[str(uuid.uuid4())],
         )
         assert result["error"] == "discard_transaction_not_found"
 
@@ -1200,20 +1204,6 @@ class TestMergeDuplicatesEnhanced:
             duplicate_ids=[txn["id"]],
         )
         assert "error" in result
-
-    async def test_merge_backward_compat_discard_id(self, pool_v2):
-        """merge_duplicates still works with legacy discard_id parameter."""
-        from butlers.tools.finance.transactions import merge_duplicates
-
-        keep = await _insert_txn_v2(pool_v2, merchant="LegacyMerge")
-        dup = await _insert_txn_v2(pool_v2, merchant="LegacyMerge")
-
-        result = await merge_duplicates(
-            pool=pool_v2,
-            keep_id=keep["id"],
-            discard_id=dup["id"],
-        )
-        assert result["id"] == keep["id"]
 
 
 # ---------------------------------------------------------------------------

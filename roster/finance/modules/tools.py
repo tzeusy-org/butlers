@@ -729,7 +729,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         async def merge_duplicates(
             keep_id: str,
             duplicate_ids: str | None = None,
-            discard_id: str | None = None,
         ) -> dict[str, Any]:
             """Merge duplicate transactions, keeping one canonical and soft-deleting the rest.
 
@@ -738,7 +737,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             duplicate_ids: JSON string — array of transaction IDs to mark as duplicates
               and soft-delete. Each duplicate gets is_duplicate=true and duplicate_of=keep_id
               (when those columns exist from finance_002 migration).
-            discard_id: Legacy single-record interface. Ignored when duplicate_ids is provided.
 
             Merges metadata from all discarded records into the kept record before deletion.
             Records corrections in transaction_corrections for the audit trail.
@@ -752,7 +750,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
                 module._get_pool(),
                 keep_id=keep_id,
                 duplicate_ids=parsed_duplicate_ids,
-                discard_id=discard_id,
             )
 
     if hasattr(_transactions, "split_transaction"):

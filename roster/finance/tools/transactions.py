@@ -1196,12 +1196,8 @@ async def merge_duplicates(
     pool: asyncpg.Pool,
     keep_id: str,
     duplicate_ids: list[str] | None = None,
-    discard_id: str | None = None,
 ) -> dict[str, Any]:
     """Merge duplicate transactions, keeping one canonical record and soft-deleting the rest.
-
-    Supports both the new ``duplicate_ids`` list interface (for multiple duplicates)
-    and the legacy ``discard_id`` single-record interface for backward compatibility.
 
     For each duplicate:
     - Sets ``is_duplicate = true`` and ``duplicate_of = keep_id`` (when those columns exist)
@@ -1219,10 +1215,6 @@ async def merge_duplicates(
         UUID string of the transaction to keep (canonical record).
     duplicate_ids:
         List of UUID strings of transactions to mark as duplicates and soft-delete.
-        Use this for the new interface that supports multiple duplicates at once.
-    discard_id:
-        UUID string of a single transaction to discard (legacy interface).
-        Ignored when ``duplicate_ids`` is provided.
 
     Returns
     -------
@@ -1230,14 +1222,12 @@ async def merge_duplicates(
         Updated TransactionRecord dict for the kept transaction, or
         ``{"error": ..., "keep_id": ..., "duplicate_ids": ...}`` on failure.
     """
-    # Resolve the list of IDs to discard, supporting both interfaces.
+    # Resolve the list of IDs to discard.
     if duplicate_ids is not None:
         ids_to_discard = list(duplicate_ids)
-    elif discard_id is not None:
-        ids_to_discard = [discard_id]
     else:
         return {
-            "error": "must provide duplicate_ids or discard_id",
+            "error": "must provide duplicate_ids",
             "keep_id": keep_id,
             "duplicate_ids": [],
         }
