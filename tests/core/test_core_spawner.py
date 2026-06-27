@@ -62,7 +62,7 @@ def test_merge_tool_call_records():
         {"name": "route_to_butler", "input": {"butler": "relationship"}},
         {"name": "route_to_butler", "input": {"butler": "health"}},
     ]
-    assert _merge_tool_call_records(parsed, executed) == [
+    assert _merge_tool_call_records(parsed, executed, butler_name="switchboard") == [
         {"name": "route_to_butler", "input": {"butler": "relationship"}},
         {"name": "route_to_butler", "input": {"butler": "health"}},
     ]
@@ -83,7 +83,7 @@ def test_merge_tool_call_records():
             "result": {"status": "accepted", "butler": "relationship"},
         },
     ]
-    assert _merge_tool_call_records(parsed2, executed2) == [
+    assert _merge_tool_call_records(parsed2, executed2, butler_name="switchboard") == [
         {
             "name": "route_to_butler",
             "input": {"butler": "relationship"},
@@ -124,7 +124,7 @@ def test_merge_tool_call_records_dedup_by_id():
             },
         },
     ]
-    merged = _merge_tool_call_records(parsed, [])
+    merged = _merge_tool_call_records(parsed, [], butler_name="switchboard")
     assert len(merged) == 1
     assert merged[0]["input"]["status"] == "completed"
 

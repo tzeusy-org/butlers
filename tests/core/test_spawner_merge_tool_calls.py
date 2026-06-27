@@ -121,20 +121,6 @@ def test_merge_preserves_non_matching_names():
     assert merged[0]["name"] == "route_to_butler"
 
 
-def test_merge_is_backward_compatible_without_butler_name():
-    """Calling without butler_name still behaves like the original name-based match."""
-    parsed = [{"name": "route_to_butler", "input": {"butler": "relationship"}}]
-    executed = [
-        {"name": "route_to_butler", "input": {"butler": "relationship"}},
-        {"name": "route_to_butler", "input": {"butler": "health"}},
-    ]
-    merged = _merge_tool_call_records(parsed, executed)
-    assert merged == [
-        {"name": "route_to_butler", "input": {"butler": "relationship"}},
-        {"name": "route_to_butler", "input": {"butler": "health"}},
-    ]
-
-
 def test_merge_preserves_bare_name_as_canonical_when_prefixed_only():
     """When a record has only a prefixed name (no capture counterpart),
     normalization still records the bare name form in the final entry so

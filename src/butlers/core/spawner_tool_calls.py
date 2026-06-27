@@ -108,20 +108,19 @@ def _merge_tool_call_records(
     parsed_calls: list[dict[str, Any]],
     executed_calls: list[dict[str, Any]],
     *,
-    butler_name: str | None = None,
+    butler_name: str,
 ) -> list[dict[str, Any]]:
     """Merge parser + executed call records while preserving retry attempts.
 
-    ``butler_name`` enables normalization of runtime-specific tool-name
-    prefixes so parser-side records (e.g. ``mcp__lifestyle__memory_entity_resolve``
-    or ``lifestyle_memory_entity_resolve``) collapse against capture-side records
-    that use the bare ``fn.__name__`` form. When ``butler_name`` is omitted the
-    function falls back to legacy name-equality semantics for backward compat.
+    ``butler_name`` drives normalization of runtime-specific tool-name prefixes
+    so parser-side records (e.g. ``mcp__lifestyle__memory_entity_resolve`` or
+    ``lifestyle_memory_entity_resolve``) collapse against capture-side records
+    that use the bare ``fn.__name__`` form. It is required: every production
+    caller passes ``self._config.name``, which the config layer guarantees is a
+    non-empty butler name.
     """
 
     def _normalize_name_in_place(call: dict[str, Any]) -> dict[str, Any]:
-        if not butler_name:
-            return call
         normalized = dict(call)
         raw_name = str(normalized.get("name", "") or "")
         normalized["name"] = _normalize_tool_name(raw_name, butler_name)
@@ -193,13 +192,7 @@ def _merge_tool_call_records(
         # Unmatched parser record: normalize the stored name so downstream
         # consumers (dashboard, tool-call-scorecard) see one canonical form
         # per tool even when no capture counterpart was recorded.
-        if butler_name:
-            normalized = dict(parsed_call)
-            raw_name = str(normalized.get("name", "") or "")
-            normalized["name"] = _normalize_tool_name(raw_name, butler_name)
-            merged.append(normalized)
-        else:
-            merged.append(parsed_call)
+        merged.append(_normalize_name_in_place(parsed_call))
 
     return _dedup_tool_calls_by_id(merged)
 
