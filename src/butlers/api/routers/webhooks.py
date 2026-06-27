@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 import time
 import uuid
 from datetime import UTC, datetime
@@ -51,6 +52,18 @@ router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 _DEFAULT_RETRY_POLICY = {"max_attempts": 3, "backoff_seconds": 2}
 _TEST_TIMEOUT_SECONDS = 10
 
+#: Number of leading secret characters surfaced in ``secret_prefix`` for human
+#: identification.  The full secret is never echoed after creation.
+_SECRET_PREFIX_LEN = 6
+
+#: Column projection for endpoints returning the public ``WebhookRow`` shape
+#: (no ``secret_encrypted``).  Centralised so the SELECT/RETURNING column lists
+#: stay in lockstep with :func:`_row_to_model`.
+_WEBHOOK_PROJECTION = (
+    "id, endpoint, events, enabled, secret_prefix, last_test_at, last_test_ok, "
+    "retry_policy, created_at, updated_at"
+)
+
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
@@ -70,37 +83,60 @@ class RetryPolicy(BaseModel):
 
 
 class WebhookCreate(BaseModel):
-    """Request body for creating a webhook."""
+    """Request body for creating a webhook.
+
+    The signing secret is generated server-side; clients cannot supply one.
+    """
 
     endpoint: str
     events: list[str] = []
     enabled: bool = True
-    secret: str | None = None
     retry_policy: RetryPolicy = RetryPolicy()
 
 
 class WebhookUpdate(BaseModel):
-    """Request body for updating a webhook (all fields optional)."""
+    """Request body for updating a webhook (all fields optional).
+
+    Set ``regenerate_secret=True`` to rotate the signing secret; the new secret
+    is returned ONCE in the response.  Without it the secret is left untouched
+    and never echoed.
+    """
 
     endpoint: str | None = None
     events: list[str] | None = None
     enabled: bool | None = None
-    secret: str | None = None
     retry_policy: RetryPolicy | None = None
+    regenerate_secret: bool = False
 
 
 class WebhookRow(BaseModel):
-    """A webhook registration returned by the API."""
+    """A webhook registration returned by the API.
+
+    The plaintext signing secret is NEVER included — only ``secret_prefix``
+    (the first few characters plus an ellipsis) for human identification.
+    """
 
     id: uuid.UUID
     endpoint: str
     events: list[str]
     enabled: bool
+    secret_prefix: str | None = None
     last_test_at: datetime | None = None
     last_test_ok: bool | None = None
     retry_policy: RetryPolicy
     created_at: datetime
     updated_at: datetime
+
+
+class WebhookWithSecret(WebhookRow):
+    """A webhook plus its plaintext secret, returned ONCE at create/regenerate.
+
+    ``secret`` is populated only by ``POST /api/webhooks`` and by
+    ``PUT /api/webhooks/{id}`` with ``regenerate_secret=True``.  Every other
+    endpoint returns :class:`WebhookRow` (no secret).
+    """
+
+    secret: str | None = None
 
 
 class WebhookTestResult(BaseModel):
@@ -116,6 +152,16 @@ class WebhookTestResult(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _generate_secret() -> str:
+    """Generate a fresh, URL-safe webhook signing secret."""
+    return secrets.token_urlsafe(32)
+
+
+def _secret_prefix(secret: str) -> str:
+    """Return the first few chars of *secret* plus an ellipsis for display."""
+    return f"{secret[:_SECRET_PREFIX_LEN]}…"
 
 
 def _encrypt_secret(secret: str) -> bytes:
@@ -156,6 +202,7 @@ def _row_to_model(row: dict | object) -> WebhookRow:
         endpoint=row["endpoint"],
         events=evts if isinstance(evts, list) else [],
         enabled=row["enabled"],
+        secret_prefix=row["secret_prefix"],
         last_test_at=row["last_test_at"],
         last_test_ok=row["last_test_ok"],
         retry_policy=policy,
@@ -241,9 +288,7 @@ async def list_webhooks(
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
     rows = await pool.fetch(
-        "SELECT id, endpoint, events, enabled, last_test_at, last_test_ok, "
-        "       retry_policy, created_at, updated_at "
-        "FROM public.webhooks ORDER BY created_at DESC"
+        f"SELECT {_WEBHOOK_PROJECTION} FROM public.webhooks ORDER BY created_at DESC"
     )
     return ApiResponse(data=[_row_to_model(r) for r in rows])
 
@@ -253,22 +298,25 @@ async def list_webhooks(
 # ---------------------------------------------------------------------------
 
 
-@router.post("", response_model=ApiResponse[WebhookRow], status_code=201)
+@router.post("", response_model=ApiResponse[WebhookWithSecret], status_code=201)
 async def create_webhook(
     body: WebhookCreate,
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[WebhookRow]:
-    """Create a new webhook registration.
+) -> ApiResponse[WebhookWithSecret]:
+    """Create a new webhook registration with a server-generated signing secret.
 
-    If *secret* is supplied it is encrypted with AES-256-GCM before insert.
-    The plaintext secret is never persisted.
+    A fresh secret is generated, stored encrypted with AES-256-GCM, and returned
+    exactly ONCE in this response body.  No subsequent endpoint ever echoes it
+    again — only ``secret_prefix`` is exposed thereafter.
     """
     try:
         pool = db.pool("switchboard")
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    secret_encrypted = _encrypt_secret(body.secret) if body.secret is not None else None
+    secret = _generate_secret()
+    secret_encrypted = _encrypt_secret(secret)
+    secret_prefix = _secret_prefix(secret)
     now = datetime.now(UTC)
     row_id = str(uuid.uuid4())
 
@@ -276,15 +324,16 @@ async def create_webhook(
 
     row = await pool.fetchrow(
         "INSERT INTO public.webhooks "
-        "(id, endpoint, events, enabled, secret_encrypted, retry_policy, created_at, updated_at) "
-        "VALUES ($1::uuid, $2, $3::jsonb, $4, $5, $6::jsonb, $7, $8) "
-        "RETURNING id, endpoint, events, enabled, last_test_at, last_test_ok, "
-        "          retry_policy, created_at, updated_at",
+        "(id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
+        " retry_policy, created_at, updated_at) "
+        "VALUES ($1::uuid, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9) "
+        f"RETURNING {_WEBHOOK_PROJECTION}",
         row_id,
         body.endpoint,
         json.dumps(body.events),
         body.enabled,
         secret_encrypted,
+        secret_prefix,
         json.dumps(rp_json),
         now,
         now,
@@ -292,7 +341,8 @@ async def create_webhook(
 
     await audit.append(pool, "owner", "webhook.create", target=str(row_id))
 
-    return ApiResponse(data=_row_to_model(row))
+    base = _row_to_model(row)
+    return ApiResponse(data=WebhookWithSecret(**base.model_dump(), secret=secret))
 
 
 # ---------------------------------------------------------------------------
@@ -312,9 +362,7 @@ async def get_webhook(
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
     row = await pool.fetchrow(
-        "SELECT id, endpoint, events, enabled, last_test_at, last_test_ok, "
-        "       retry_policy, created_at, updated_at "
-        "FROM public.webhooks WHERE id = $1::uuid",
+        f"SELECT {_WEBHOOK_PROJECTION} FROM public.webhooks WHERE id = $1::uuid",
         str(webhook_id),
     )
     if row is None:
@@ -328,21 +376,26 @@ async def get_webhook(
 # ---------------------------------------------------------------------------
 
 
-@router.put("/{webhook_id}", response_model=ApiResponse[WebhookRow])
+@router.put("/{webhook_id}", response_model=ApiResponse[WebhookWithSecret])
 async def update_webhook(
     webhook_id: uuid.UUID,
     body: WebhookUpdate,
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[WebhookRow]:
-    """Update one webhook registration (partial update — only supplied fields change)."""
+) -> ApiResponse[WebhookWithSecret]:
+    """Update one webhook registration (partial update — only supplied fields change).
+
+    With ``regenerate_secret=True`` a fresh signing secret is generated and
+    returned ONCE in the ``secret`` field.  Without it, the stored secret is left
+    untouched and ``secret`` is ``null`` (never echoed).
+    """
     try:
         pool = db.pool("switchboard")
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
     existing = await pool.fetchrow(
-        "SELECT id, endpoint, events, enabled, secret_encrypted, last_test_at, last_test_ok, "
-        "       retry_policy, created_at, updated_at "
+        "SELECT id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
+        "       last_test_at, last_test_ok, retry_policy, created_at, updated_at "
         "FROM public.webhooks WHERE id = $1::uuid",
         str(webhook_id),
     )
@@ -364,21 +417,28 @@ async def update_webhook(
         existing_rp = json.loads(existing_rp)
     new_rp = body.retry_policy.model_dump() if body.retry_policy is not None else existing_rp
 
-    new_secret_encrypted = (
-        _encrypt_secret(body.secret) if body.secret is not None else existing["secret_encrypted"]
-    )
+    # Secret rotation: only when explicitly requested.  Otherwise the stored
+    # ciphertext and prefix are preserved verbatim and never echoed.
+    generated_secret: str | None = None
+    if body.regenerate_secret:
+        generated_secret = _generate_secret()
+        new_secret_encrypted = _encrypt_secret(generated_secret)
+        new_secret_prefix = _secret_prefix(generated_secret)
+    else:
+        new_secret_encrypted = existing["secret_encrypted"]
+        new_secret_prefix = existing["secret_prefix"]
 
     row = await pool.fetchrow(
         "UPDATE public.webhooks "
         "SET endpoint = $1, events = $2::jsonb, enabled = $3, secret_encrypted = $4, "
-        "    retry_policy = $5::jsonb, updated_at = $6 "
-        "WHERE id = $7::uuid "
-        "RETURNING id, endpoint, events, enabled, last_test_at, last_test_ok, "
-        "          retry_policy, created_at, updated_at",
+        "    secret_prefix = $5, retry_policy = $6::jsonb, updated_at = $7 "
+        "WHERE id = $8::uuid "
+        f"RETURNING {_WEBHOOK_PROJECTION}",
         new_endpoint,
         json.dumps(new_events),
         new_enabled,
         new_secret_encrypted,
+        new_secret_prefix,
         json.dumps(new_rp),
         now,
         str(webhook_id),
@@ -386,7 +446,8 @@ async def update_webhook(
 
     await audit.append(pool, "owner", "webhook.update", target=str(webhook_id))
 
-    return ApiResponse(data=_row_to_model(row))
+    base = _row_to_model(row)
+    return ApiResponse(data=WebhookWithSecret(**base.model_dump(), secret=generated_secret))
 
 
 # ---------------------------------------------------------------------------

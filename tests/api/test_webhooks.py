@@ -44,6 +44,7 @@ def _make_webhook_record(overrides: dict | None = None) -> dict:
         "events": json.dumps(["data.export", "permission.set"]),
         "enabled": True,
         "secret_encrypted": None,
+        "secret_prefix": None,
         "last_test_at": None,
         "last_test_ok": None,
         "retry_policy": json.dumps({"max_attempts": 3, "backoff_seconds": 2}),
@@ -133,12 +134,16 @@ async def test_list_webhooks_returns_rows(app):
 
 
 async def test_create_webhook(app, monkeypatch):
-    """POST creates a webhook; secret is encrypted before insert."""
+    """POST generates a secret server-side, encrypts it, and returns it ONCE."""
     monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
 
-    created_row = _make_webhook_record()
+    # Echo back the prefix the router computed so the row reflects what was stored.
+    def _fetchrow(*args, **kwargs):
+        prefix = args[6]  # $6 = secret_prefix
+        return _make_record(_make_webhook_record({"secret_prefix": prefix}))
+
     pool = _make_pool()
-    pool.fetchrow = AsyncMock(return_value=_make_record(created_row))
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -150,7 +155,6 @@ async def test_create_webhook(app, monkeypatch):
                     "endpoint": "https://example.com/hook",
                     "events": ["permission.set"],
                     "enabled": True,
-                    "secret": "mysecret",
                 },
             )
 
@@ -158,24 +162,30 @@ async def test_create_webhook(app, monkeypatch):
     data = resp.json()["data"]
     assert data["endpoint"] == "https://example.com/hook"
 
-    # Verify the INSERT was called with bytes (not a hash string).
-    call_args = pool.fetchrow.call_args
-    # The 5th positional arg ($5) is secret_encrypted.
-    positional = call_args[0]
-    # positional[0] = SQL, then $1..$8 follow
+    # The plaintext secret is returned exactly once on create.
+    returned_secret = data["secret"]
+    assert isinstance(returned_secret, str) and returned_secret
+
+    # secret_prefix is the first 6 chars + ellipsis of the returned secret.
+    assert data["secret_prefix"] == f"{returned_secret[:6]}…"
+
+    # The INSERT stored the secret as encrypted bytes that round-trip to the
+    # returned plaintext (server-generated, never client-supplied).
+    positional = pool.fetchrow.call_args[0]
     secret_arg = positional[5]  # $5 = secret_encrypted
     assert isinstance(secret_arg, bytes), "secret should be stored as encrypted bytes"
-    # Decrypt and verify round-trip.
-    assert aes_gcm.decrypt(secret_arg, key=_TEST_KEY) == "mysecret"
+    assert aes_gcm.decrypt(secret_arg, key=_TEST_KEY) == returned_secret
 
 
-async def test_create_webhook_no_secret(app, monkeypatch):
-    """POST without a secret stores NULL for secret_encrypted."""
+async def test_create_webhook_client_secret_ignored(app, monkeypatch):
+    """A client-supplied 'secret' field is ignored; the server generates its own."""
     monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
 
-    created_row = _make_webhook_record()
+    def _fetchrow(*args, **kwargs):
+        return _make_record(_make_webhook_record({"secret_prefix": args[6]}))
+
     pool = _make_pool()
-    pool.fetchrow = AsyncMock(return_value=_make_record(created_row))
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -183,14 +193,117 @@ async def test_create_webhook_no_secret(app, monkeypatch):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/webhooks",
-                json={"endpoint": "https://example.com/hook"},
+                json={"endpoint": "https://example.com/hook", "secret": "attacker-chosen"},
             )
 
     assert resp.status_code == 201
-    # secret_encrypted arg should be None
-    call_args = pool.fetchrow.call_args[0]
-    secret_arg = call_args[5]
-    assert secret_arg is None
+    returned_secret = resp.json()["data"]["secret"]
+    # Server-generated secret is never the value the client tried to supply.
+    assert returned_secret != "attacker-chosen"
+    secret_arg = pool.fetchrow.call_args[0][5]
+    assert aes_gcm.decrypt(secret_arg, key=_TEST_KEY) == returned_secret
+
+
+# ---------------------------------------------------------------------------
+# Secret model: list/get omit secret; PUT regenerate rotates; plain PUT keeps it
+# ---------------------------------------------------------------------------
+
+
+async def test_list_and_get_omit_secret(app):
+    """GET list and GET one expose only secret_prefix — never the plaintext secret."""
+    row = _make_webhook_record({"secret_prefix": "abc123…"})
+    pool = _make_pool(rows=[row], fetchrow_return=row)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        list_resp = await client.get("/api/webhooks")
+        get_resp = await client.get(f"/api/webhooks/{_WH_ID}")
+
+    list_row = list_resp.json()["data"][0]
+    get_row = get_resp.json()["data"]
+
+    for r in (list_row, get_row):
+        assert "secret" not in r, "plaintext secret must never appear in list/get"
+        assert r["secret_prefix"] == "abc123…"
+
+
+async def test_put_regenerate_rotates_secret(app, monkeypatch):
+    """PUT {regenerate_secret: true} mints a new secret, returns it ONCE, and rotates storage."""
+    monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
+
+    old_encrypted = aes_gcm.encrypt("old-secret", key=_TEST_KEY)
+    existing = _make_webhook_record({"secret_encrypted": old_encrypted, "secret_prefix": "old-se…"})
+
+    calls: list = []
+
+    def _fetchrow(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            # First call: SELECT existing row.
+            return _make_record(existing)
+        # Second call: UPDATE ... RETURNING — reflect the new prefix ($5).
+        return _make_record(_make_webhook_record({"secret_prefix": args[5]}))
+
+    pool = _make_pool()
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                f"/api/webhooks/{_WH_ID}",
+                json={"regenerate_secret": True},
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    new_secret = data["secret"]
+    assert isinstance(new_secret, str) and new_secret
+    assert new_secret != "old-secret"
+    assert data["secret_prefix"] == f"{new_secret[:6]}…"
+
+    # The UPDATE stored freshly-encrypted bytes that decrypt to the new secret.
+    update_args = calls[1]
+    new_encrypted = update_args[4]  # $4 = secret_encrypted
+    assert new_encrypted != old_encrypted
+    assert aes_gcm.decrypt(new_encrypted, key=_TEST_KEY) == new_secret
+
+
+async def test_put_without_regenerate_keeps_secret(app):
+    """PUT without regenerate_secret leaves the stored secret untouched and never echoes it."""
+    old_encrypted = b"\x00\x01\x02existing-ciphertext"
+    existing = _make_webhook_record({"secret_encrypted": old_encrypted, "secret_prefix": "keep12…"})
+
+    calls: list = []
+
+    def _fetchrow(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return _make_record(existing)
+        return _make_record(_make_webhook_record({"secret_prefix": args[5]}))
+
+    pool = _make_pool()
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                f"/api/webhooks/{_WH_ID}",
+                json={"endpoint": "https://new.example.com/hook"},
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # No new secret is minted/echoed on a plain update.
+    assert data["secret"] is None
+    # The stored ciphertext and prefix are carried over unchanged.
+    update_args = calls[1]
+    assert update_args[4] == old_encrypted  # $4 = secret_encrypted unchanged
+    assert update_args[5] == "keep12…"  # $5 = secret_prefix unchanged
 
 
 # ---------------------------------------------------------------------------

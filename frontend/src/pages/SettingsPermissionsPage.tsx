@@ -66,11 +66,18 @@ interface WebhookRow {
   endpoint: string;
   events: string[];
   enabled: boolean;
+  secret_prefix: string | null;
   last_test_at: string | null;
   last_test_ok: boolean | null;
   retry_policy: { max_attempts: number; backoff_seconds: number };
   created_at: string;
   updated_at: string;
+}
+
+// POST /api/webhooks and PUT {regenerate_secret:true} return the plaintext
+// secret exactly once. Every other endpoint returns only secret_prefix.
+interface WebhookWithSecret extends WebhookRow {
+  secret: string | null;
 }
 
 type ExportScope = "all" | "memory" | "audit" | "config";
@@ -179,16 +186,16 @@ async function postExport(scope: ExportScope): Promise<{ signed_url: string; exp
 async function createWebhook(
   endpoint: string,
   events: string[],
-  secret?: string,
-): Promise<WebhookRow> {
+): Promise<WebhookWithSecret> {
+  // The signing secret is generated server-side and returned ONCE here.
   const resp = await fetch("/api/webhooks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint, events, secret: secret || undefined }),
+    body: JSON.stringify({ endpoint, events }),
   });
   if (!resp.ok) throw new Error(`POST /api/webhooks failed: ${resp.status}`);
   const body = await resp.json();
-  return body.data as WebhookRow;
+  return body.data as WebhookWithSecret;
 }
 
 // ---------------------------------------------------------------------------
@@ -524,14 +531,16 @@ interface AddWebhookModalProps {
 function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
   const [endpoint, setEndpoint] = useState("");
   const [events, setEvents] = useState("");
-  const [secret, setSecret] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // The one-time plaintext secret returned by POST. While set, the modal shows
+  // the reveal view instead of the form — it is never recoverable afterwards.
+  const [createdSecret, setCreatedSecret] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setEndpoint("");
       setEvents("");
-      setSecret("");
+      setCreatedSecret(null);
     }
   }, [open]);
 
@@ -543,10 +552,15 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
         .split(",")
         .map((e) => e.trim())
         .filter(Boolean);
-      await createWebhook(endpoint.trim(), evtList, secret.trim() || undefined);
+      const created = await createWebhook(endpoint.trim(), evtList);
       toast.success("Webhook created");
       onCreated();
-      onClose();
+      if (created.secret) {
+        // Hold the modal open on the reveal view so the user can copy the secret.
+        setCreatedSecret(created.secret);
+      } else {
+        onClose();
+      }
     } catch (err) {
       toast.error(`Create failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -554,55 +568,91 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
     }
   }
 
+  async function handleCopy() {
+    if (!createdSecret) return;
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("Clipboard API not available");
+      }
+      await navigator.clipboard.writeText(createdSecret);
+      toast.success("Secret copied to clipboard");
+    } catch {
+      toast.error("Copy failed — select and copy the secret manually");
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent>
-        <DialogHeader>
-          <DialogTitle className="font-medium">Add webhook</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-3 py-2">
-          <div className="space-y-1">
-            <Label htmlFor="wh-endpoint">Endpoint URL</Label>
-            <Input
-              id="wh-endpoint"
-              placeholder="https://example.com/webhook"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-              autoFocus
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="wh-events">Events (comma-separated)</Label>
-            <Input
-              id="wh-events"
-              placeholder="permission.set, data.export"
-              value={events}
-              onChange={(e) => setEvents(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="wh-secret">Secret (optional)</Label>
-            <Input
-              id="wh-secret"
-              type="password"
-              placeholder="Signing secret"
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-            />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button
-            disabled={!endpoint.trim() || submitting}
-            onClick={handleCreate}
-          >
-            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Create
-          </Button>
-        </DialogFooter>
+        {createdSecret ? (
+          <>
+            <DialogHeader>
+              <DialogTitle className="font-medium">Copy your signing secret</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                This secret is shown <strong>once</strong> and cannot be retrieved later.
+                Store it now — use it to verify the <code>X-Butler-Signature</code> HMAC.
+              </p>
+              <div className="space-y-1">
+                <Label htmlFor="wh-created-secret">Signing secret</Label>
+                <Input
+                  id="wh-created-secret"
+                  data-testid="webhook-created-secret"
+                  readOnly
+                  value={createdSecret}
+                  className="font-mono text-xs"
+                  onFocus={(e) => e.target.select()}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={handleCopy}>
+                Copy secret
+              </Button>
+              <Button onClick={onClose}>Done</Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle className="font-medium">Add webhook</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <div className="space-y-1">
+                <Label htmlFor="wh-endpoint">Endpoint URL</Label>
+                <Input
+                  id="wh-endpoint"
+                  placeholder="https://example.com/webhook"
+                  value={endpoint}
+                  onChange={(e) => setEndpoint(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="wh-events">Events (comma-separated)</Label>
+                <Input
+                  id="wh-events"
+                  placeholder="permission.set, data.export"
+                  value={events}
+                  onChange={(e) => setEvents(e.target.value)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A signing secret is generated automatically and shown once after creation.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose} disabled={submitting}>
+                Cancel
+              </Button>
+              <Button disabled={!endpoint.trim() || submitting} onClick={handleCreate}>
+                {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Create
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -697,6 +747,9 @@ function WebhooksSection() {
                   Events
                 </th>
                 <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                  Secret
+                </th>
+                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Last test
                 </th>
                 <th className="text-right font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
@@ -712,6 +765,16 @@ function WebhooksSection() {
                   </td>
                   <td className="text-xs px-4 py-2 border-r border-b border-border/60">
                     {wh.events.length > 0 ? wh.events.join(", ") : "—"}
+                  </td>
+                  <td
+                    className="font-mono text-xs px-4 py-2 border-r border-b border-border/60"
+                    data-testid={`webhook-secret-prefix-${wh.id}`}
+                  >
+                    {wh.secret_prefix ? (
+                      <span className="text-muted-foreground">{wh.secret_prefix}</span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td
                     className="text-xs px-4 py-2 border-r border-b border-border/60"
