@@ -87,10 +87,13 @@ does not ship.
    tuning lives in the database.** A butler's personality, schedule, module
    selection, and manifesto live in git-tracked files under `roster/`. These
    define *who the butler is* --- its name, purpose, domain, and governing
-   document. Operational tuning --- model selection, concurrency limits, tool
-   surface configuration (`core_groups`), session timeouts --- lives in a
-   per-schema `runtime_config` database table, seeded from git on first boot
-   and managed via the dashboard thereafter. The distinction: identity answers
+   document. Operational tuning lives in the database, not git. Concurrency
+   limits and tool surface configuration (`core_groups`) live in a per-schema
+   `runtime_config` table, seeded from git on first boot and managed via the
+   dashboard thereafter. Model selection and session timeouts are resolved per
+   complexity tier from the shared `public.model_catalog` table and edited via
+   the dashboard Models tab (see `src/butlers/core/model_routing.py`). The
+   distinction: identity answers
    "what is this butler?"; operational tuning answers "how should it behave
    right now?" If someone changes a butler's name, manifesto, or module list,
    that is an identity change and belongs in git. If someone changes which

@@ -1,7 +1,7 @@
 # v1 Status Matrix
 
-**Last updated:** 2026-06-17
-**Branch:** current `main` (as of commit `4d9bcdcf3`)
+**Last updated:** 2026-06-28
+**Branch:** current `main` (as of commit `10c8a1bd6`)
 
 Maps every success criterion from [`v1.md`](v1.md) to its current status and
 concrete evidence. Honest by design: partial and unproven are not failure states
@@ -269,6 +269,7 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 | Home Assistant | **implemented** | `roster/home/modules/__init__.py` — `HomeAssistantModule` |
 | Google Drive | **implemented** | `src/butlers/modules/google_drive/` — `GoogleDriveModule` |
 | WhatsApp | **implemented** | `src/butlers/modules/whatsapp/` — `WhatsAppModule` |
+| Steam | **implemented** | `src/butlers/modules/steam.py` (`SteamModule`); enabled in `roster/lifestyle/butler.toml` (`[modules.steam]`); `tests/modules/test_module_steam.py` |
 | Insight broker | **implemented** | `roster/switchboard/modules/insight_broker.py` (see SC-8) |
 
 ### Connectors
@@ -288,6 +289,7 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 | Spotify | **implemented** | `src/butlers/connectors/spotify.py` |
 | Google Health | **implemented** | `src/butlers/connectors/google_health.py` |
 | WhatsApp user client | **implemented** | `src/butlers/connectors/whatsapp_user_client.py` |
+| Steam | **implemented** | `src/butlers/connectors/steam.py` (`SteamConnector`, per-data-type polling); `src/butlers/steam_account_registry.py`, `src/butlers/api/routers/steam.py`; `tests/connectors/test_steam_connector.py` |
 
 ### Identity System
 
