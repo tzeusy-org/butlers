@@ -56,6 +56,7 @@ Metrics exported (HA-specific, in addition to standard ConnectorMetrics):
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
 import os
@@ -72,6 +73,7 @@ from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.home_assistant_envelope import parse_time_fired
 from butlers.connectors.home_assistant_wellness import (
     WellnessClassifier,
     WellnessRule,
@@ -100,6 +102,11 @@ _DEFAULT_WS_PING_INTERVAL_S = 30
 _DEFAULT_WS_PONG_TIMEOUT_S = 10
 _DEFAULT_DISCRETION_TIMEOUT_S = 5
 _DEFAULT_EVENT_QUEUE_MAX = 100
+# Wall-clock window an event is held in the reorder buffer before it becomes
+# eligible for submission. HA-internal batching delivers out-of-order events
+# within the same WebSocket burst (sub-second), so a short window is enough to
+# let a late-but-earlier event slot ahead while keeping submission latency low.
+_DEFAULT_EVENT_REORDER_WINDOW_S = 0.5
 _DEFAULT_WS_RECONNECT_INITIAL_S = 1.0
 _DEFAULT_WS_RECONNECT_MAX_S = 60.0
 
@@ -736,6 +743,122 @@ class HAWebSocketClient:
 
         if self._stop_event is not None:
             self._stop_event.set()
+
+
+# ---------------------------------------------------------------------------
+# Event reordering buffer (connector-home-assistant spec — "Event ordering")
+# ---------------------------------------------------------------------------
+
+
+class HAEventReorderBuffer:
+    """Bounded, time-windowed reorder buffer for HA WebSocket events.
+
+    HA delivers ``state_changed`` / ``automation_triggered`` events in roughly
+    chronological order, but during HA-internal batching a burst can arrive
+    slightly out of ``time_fired`` order. The connector contract
+    (connector-home-assistant spec, "Event ordering") requires events to be
+    submitted in ``time_fired`` order, so this buffer briefly holds incoming
+    events, orders them by ``time_fired``, and releases them in order once they
+    have aged past a short reorder window.
+
+    Ordering
+        Events are held in a min-heap keyed by ``(time_fired, arrival_seq)``.
+        ``arrival_seq`` is a monotonic counter that keeps the order stable for
+        events sharing a ``time_fired`` (they retain arrival order). The head of
+        the heap is therefore always the earliest buffered event. An event is
+        released only once it has been held for at least ``window_s``, which
+        gives a late-but-earlier event time to arrive and slot ahead of it.
+
+    Bound (HA_EVENT_QUEUE_MAX)
+        The buffer never holds more than ``max_size`` events. When a new event
+        would exceed the bound, the earliest-buffered event is released
+        immediately (forced flush of the head). Overflow therefore applies
+        backpressure by draining the oldest event rather than dropping it, which
+        preserves the connector's at-least-once delivery guarantee.
+
+    Events with a missing or unparseable ``time_fired`` cannot be ordered; they
+    are keyed to sort after all well-formed events and are released on window
+    age-out or final flush. Downstream dispatch performs their validation.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_size: int,
+        submit: _EventDispatch,
+        window_s: float = _DEFAULT_EVENT_REORDER_WINDOW_S,
+        time_source: Callable[[], float] | None = None,
+    ) -> None:
+        self._max_size = max(1, int(max_size))
+        self._window_s = max(0.0, float(window_s))
+        self._submit = submit
+        self._time_source = time_source
+        # Heap entries:
+        #   (order_key, arrival_seq, arrival_time, event_type, event, transport)
+        self._heap: list[tuple[float, int, float, str, dict[str, Any], str | None]] = []
+        self._seq = 0
+
+    @property
+    def flush_interval_s(self) -> float:
+        """Suggested cadence for a background ``flush_due`` driver."""
+        return max(0.05, self._window_s / 2)
+
+    def __len__(self) -> int:
+        return len(self._heap)
+
+    def _now(self) -> float:
+        if self._time_source is not None:
+            return self._time_source()
+        return asyncio.get_running_loop().time()
+
+    @staticmethod
+    def _order_key(event: dict[str, Any]) -> float:
+        time_fired = event.get("time_fired", "") if isinstance(event, dict) else ""
+        if not time_fired:
+            return float("inf")
+        try:
+            return parse_time_fired(time_fired).timestamp()
+        except Exception:
+            return float("inf")
+
+    async def add(
+        self, event_type: str, event: dict[str, Any], transport: str | None = None
+    ) -> None:
+        """Buffer an incoming event, draining the head if the bound is exceeded.
+
+        ``transport`` is threaded through to the wrapped dispatch so events
+        polled via the REST fallback keep their ``rest_fallback`` checkpoint
+        tag; WebSocket events pass ``None`` and let the dispatcher infer it.
+        """
+        heapq.heappush(
+            self._heap,
+            (
+                self._order_key(event),
+                self._seq,
+                self._now(),
+                event_type,
+                event,
+                transport,
+            ),
+        )
+        self._seq += 1
+        while len(self._heap) > self._max_size:
+            await self._release_head()
+
+    async def flush_due(self) -> None:
+        """Release every event that has aged past the reorder window, in order."""
+        now = self._now()
+        while self._heap and (now - self._heap[0][2]) >= self._window_s:
+            await self._release_head()
+
+    async def flush_all(self) -> None:
+        """Release all buffered events in ``time_fired`` order (shutdown drain)."""
+        while self._heap:
+            await self._release_head()
+
+    async def _release_head(self) -> None:
+        _, _, _, event_type, event, transport = heapq.heappop(self._heap)
+        await self._submit(event_type, event, transport)
 
 
 # ---------------------------------------------------------------------------
@@ -1699,6 +1822,16 @@ async def _main() -> None:
         ha_filter_persistence=ha_filter_persistence,
     )
 
+    # Reorder buffer: HA can deliver events slightly out of time_fired order
+    # during internal batching. Buffer briefly, submit in time_fired order, and
+    # bound the buffer at HA_EVENT_QUEUE_MAX (spec "Event ordering"). Both the WS
+    # client and the REST fallback feed the buffer, which threads each event's
+    # transport tag through to the shared dispatcher.
+    reorder_buffer = HAEventReorderBuffer(
+        max_size=config.event_queue_max,
+        submit=dispatch,
+    )
+
     # ------------------------------------------------------------------
     # Build and wire the transport supervisor: WebSocket client with REST
     # polling fallback after _WS_FALLBACK_FAILURE_THRESHOLD failed reconnects.
@@ -1709,7 +1842,7 @@ async def _main() -> None:
         config=config,
         ha_base_url=ha_base_url,
         ha_access_token=ha_access_token,
-        dispatch=dispatch,
+        dispatch=reorder_buffer.add,
     )
 
     # Set up graceful shutdown via OS signals
@@ -1730,17 +1863,41 @@ async def _main() -> None:
     except Exception:
         pass
 
+    # Drive the reorder buffer: periodically release events that have aged past
+    # the reorder window so submission is not stalled waiting for new arrivals.
+    async def _reorder_flush_loop() -> None:
+        try:
+            while not stop_event.is_set():
+                await asyncio.sleep(reorder_buffer.flush_interval_s)
+                await reorder_buffer.flush_due()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.warning("ha-connector: reorder flush loop error", exc_info=True)
+
     # Run the WS client; stop when a signal arrives
     ws_task = asyncio.create_task(ws_client.run())
+    flush_task = asyncio.create_task(_reorder_flush_loop())
     await stop_event.wait()
 
     logger.info("HAConnector: shutting down")
+    # Stop ingress first so no new events arrive while the buffer drains.
     rest_poller.stop()
     ws_task.cancel()
     try:
         await ws_task
     except (asyncio.CancelledError, Exception):
         pass
+    flush_task.cancel()
+    try:
+        await flush_task
+    except (asyncio.CancelledError, Exception):
+        pass
+    # Drain any buffered events in time_fired order before exiting.
+    try:
+        await reorder_buffer.flush_all()
+    except Exception:
+        logger.warning("ha-connector: error draining reorder buffer on shutdown", exc_info=True)
     await connector.stop_heartbeat()
 
     if db_pool is not None:
