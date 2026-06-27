@@ -102,9 +102,15 @@ inconsistently applied**. Naming it makes it easier to reason about.
   (`Main`, `Dedicated Butlers`, `Telemetry`) configured declaratively in
   `nav-config.ts`, with butler-presence filtering and live badge counts
   hooked up via `useBadgeCounts`. Today's spend lives in the footer.
-- **Pages**: each route is a flat component under `src/pages/`. There is
-  **no shared `<Page>` wrapper**. The page-title pattern (h1 +
-  description + optional action row) is hand-rolled on every page.
+- **Pages**: each route is a flat component under `src/pages/`. The
+  first-contact snapshot found no shared `<Page>` wrapper and a
+  hand-rolled page-title pattern on every page. That gap has since been
+  closed: a `<Page>` primitive (`frontend/src/components/ui/page.tsx`)
+  now owns title, description, breadcrumbs, the actions slot, loading,
+  error, and empty states, and renders the H1 as `text-3xl font-bold
+  tracking-tight`. Adoption is partial (roughly 18 archetype mounts
+  across the page tree as of 2026-06-27); the remaining pages still
+  hand-roll their header and are migration targets, not the destination.
 - **Cards** are the dominant container; the shadcn `Card` family
   (`Card / CardHeader / CardTitle / CardDescription / CardAction /
   CardContent / CardFooter`) is used everywhere.
@@ -143,17 +149,34 @@ not tonal: sentence-case vs Title Case, "Loading…" vs "Loading butlers…".
 
 ## What Is Drifting
 
+> Reconciliation note (2026-06-27): this list is the first-contact
+> snapshot. The `/impeccable` redesign captured in the doctrine sections
+> below has since shipped primitives that resolve or shrink several of
+> these items. Resolved items are annotated inline; they are kept for the
+> historical record, not because they still describe the live UI.
+
 1. **Page chrome is reinvented per page.** Heading sizes vary
    (`text-2xl` on Dashboard and Costs; `text-3xl` on Butlers and
    Chronicles), description placement varies, action-button rows have
    no canonical position. There is no `<Page>` / `<PageHeader>`
    container component to hold the shape.
+   *Resolved (partial): the `<Page>` primitive
+   (`frontend/src/components/ui/page.tsx`) now owns the page shape and
+   the canonical `text-3xl font-bold tracking-tight` H1. Adoption is
+   in progress; unmigrated pages still hand-roll the header.*
 2. **The token system leaks.** Several pages reach for raw hex when
    they need a non-semantic color: `EntitiesPage.tsx` lines 102–113 hard-code
    six tier colors; `EntityDetailPage.tsx` lines 313/316 inline
    `#7c3aed` and `#f59e0b`; `SymptomsPage.tsx` does the same for
    severity; `GroupsPage.tsx` line 121 keeps a hex palette array. The
    project ran out of semantic tokens at "destructive" and stopped.
+   *Resolved (mostly): `index.css` now declares named
+   `--severity-*`, `--permanence-*`, and `--role-*` token sets with
+   light/dark parity, and `EntitiesPage.tsx` carries no inline hex.
+   The remaining raw-hex usage is narrow (a color-input placeholder in
+   `GroupsPage.tsx`, plus a few in `CalendarWorkspacePage.tsx` and
+   `SettingsSpendPage.tsx`) and is a residual cleanup, not the
+   systemic leak the snapshot described.*
 3. **Repeated patterns are not yet components.** A `StatsCard` shape is
    reimplemented inline in DashboardPage, CostsPage, QaOverviewPage,
    and others. Loading skeletons are bespoke per page. Empty states
@@ -165,6 +188,14 @@ not tonal: sentence-case vs Title Case, "Loading…" vs "Loading butlers…".
    `<Time />` component or formatter helper, and no decision about
    whether the dashboard renders in the *user's* timezone or the
    *butler's*.
+   *Resolved: the `<Time>` primitive
+   (`frontend/src/components/ui/time.tsx`) now exists with `mode`
+   (`absolute` / `relative` / `smart` / `clock-24h-mono` /
+   `relative-compact`) and `precision` props, renders in the owner
+   timezone via `formatInTimeZone()`, and is consumed across pages
+   (Chronicles, QA, Sessions, Groups, and more). The
+   `CalendarWorkspacePage` grid-label exemption is documented under
+   Non-negotiable rule 4.*
 5. **Visualization is unevenly committed.** `recharts` for bars/pies,
    `@xyflow/react` for topology, `maplibre-gl` for the chronicles map,
    and ad-hoc inline SVG / styled `<div>` widths for everything else
@@ -181,6 +212,11 @@ not tonal: sentence-case vs Title Case, "Loading…" vs "Loading butlers…".
    *invoked once* in `RootLayout` with no title, so every page
    re-implements its own H1. The component name suggests a contract it
    does not deliver.
+   *Resolved (partial): the H1 contract now lives in the `<Page>`
+   primitive, which owns the title, breadcrumbs, and actions slot for
+   migrated pages. `PageHeader.tsx` still exists as the shell breadcrumb
+   bar; the per-page H1 duplication remains only on pages not yet
+   migrated onto `<Page>`.*
 8. **Information density varies wildly without acknowledgment.**
    `DashboardPage` is sparse and lyrical. `QaOverviewPage` is dense
    with five+ regions stacked vertically. `ChroniclesPage` is its own
@@ -226,7 +262,7 @@ the use case before being treated as binding.
      tracking-tight` for all standard (non-editorial) pages. This ratifies
      the shipped shape and supersedes the earlier detail-page-audit choice of
      `text-2xl` (decision bu-23bgb): the heading weight stays `font-bold`
-     (700) for standard chrome — the Dispatch "Display weight is 500" rule
+     (700) for standard chrome: the Dispatch "Display weight is 500" rule
      below applies only to the Display/Editorial tier, not the standard H1.
    - **Editorial archetype gets a Display tier.** The Overview opens
      with a Display headline instead of the standard H1. The Display
@@ -242,7 +278,7 @@ the use case before being treated as binding.
      is an editorial-archetype page and the Display 44px headline
      carve-out above applies: it renders via `<Page archetype="editorial">`
      which renders the title as a Display 44px headline when breadcrumbs
-     or actions are supplied (bu-hm0oe: resolution b — additive, does not
+     or actions are supplied (bu-hm0oe: resolution b, additive, does not
      touch `archetype="detail"`). Workbench is a workspace-grade record
      page: it renders via `<Page archetype="overview">` (the `workspace`
      archetype gap is left to Phase 2 per entity-brief.md R3; `overview`
@@ -268,9 +304,16 @@ the use case before being treated as binding.
      "tighter scale ratio. 1.125–1.2 between steps is typical for
      product UI." The dashboard is product, not brand.
 3. **Information density is a deliberate dial, not an accident.**
-   Each page declares its archetype (overview, drilldown, workspace,
-   feed, log, graph). The archetype determines layout, not the
-   author.
+   Each page declares its archetype, and the archetype determines
+   layout, not the author. The shipped archetype set is the seven-member
+   union owned by the `<Page>` primitive (`frontend/src/components/ui/page.tsx`):
+   `overview`, `list`, `detail`, `workspace`, `editor`, `editorial`,
+   and `status-board`. This supersedes the earlier aspirational naming
+   (`drilldown`, `feed`, `log`, `graph`) from the first draft: `detail`
+   absorbed `drilldown`, `list` absorbed `feed` and `log`, and the
+   graph-heavy pages render inside `workspace` or `status-board` rather
+   than a dedicated `graph` archetype. New pages pick from the shipped
+   seven; adding an eighth is a `<Page>` change, not a per-page choice.
 4. **Time is a typed primitive.** All timestamps render via a single
    `<Time>` component that knows the user's timezone, the butler's
    timezone, the desired precision, and the relative-vs-absolute mode.
@@ -797,7 +840,7 @@ defeated when digits jitter as they update.
 weight would do; bold display reads as loud, which violates the calm
 contract. This governs the **Display/Editorial tier** (the 44px headline);
 it does not override the standard `<Page>` H1, which stays `text-3xl
-font-bold` (700) — see the `Page` primitive section (decision bu-23bgb).
+font-bold` (700). See the `Page` primitive section (decision bu-23bgb).
 
 **Eyebrows title sections in lieu of a heading.** They establish
 rhythm without adding shouting weight. They are not subtitles, they
@@ -855,7 +898,7 @@ state for the attention list is the Voice register doing its job:
 #### Attention-tint exception
 
 > Status: **single permitted exception** to the state-color-on-background
-> prohibition — approved by openspec/changes/redesign-settings-dispatch-console/.
+> prohibition, approved by openspec/changes/redesign-settings-dispatch-console/.
 
 Rows or panels that *demand human attention right now* may carry a
 **4–7% alpha background tint** in the state color, paired with a **2px left
@@ -873,7 +916,7 @@ Constraints:
 - The pattern applies **only** to "demands attention now" states. Routine
   status (healthy, idle, neutral) receives no tint, no rail.
 - A row already carrying a `Sev` glyph or any other affordance does
-  **not** also receive the tint — *one affordance per signal* still applies.
+  **not** also receive the tint: *one affordance per signal* still applies.
 - Two tones only: `red` (4–7% alpha) for critical states, `amber` (4–6%
   alpha) for warning states. No other hues enter the background.
 
@@ -890,7 +933,7 @@ mega-number that screams; the alignment is the design.
 
 ### Butler hue scope
 
-> Status: non-negotiable (with one documented exception — see
+> Status: non-negotiable (with one documented exception, see
 > [Attention-tint exception](#attention-tint-exception) above).
 
 Each butler has one hue from the categorical palette. The hue appears
