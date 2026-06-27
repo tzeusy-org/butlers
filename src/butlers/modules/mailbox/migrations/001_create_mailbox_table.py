@@ -29,6 +29,7 @@ def upgrade() -> None:
             status TEXT NOT NULL DEFAULT 'unread',
             metadata JSONB NOT NULL DEFAULT '{}',
             read_at TIMESTAMPTZ,
+            actioned_at TIMESTAMPTZ,
             archived_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

@@ -289,8 +289,9 @@ class MailboxModule(Module):
         if status == "actioned":
             if "read_at" in columns:
                 updates.append("read_at = COALESCE(read_at, now())")
-            if "actioned_at" in columns:
-                updates.append("actioned_at = COALESCE(actioned_at, now())")
+            # actioned_at is owned by the mailbox migration chain (mailbox_001 +
+            # repair mailbox_002), so it always exists — no column guard needed.
+            updates.append("actioned_at = COALESCE(actioned_at, now())")
         if status == "archived" and "archived_at" in columns:
             updates.append("archived_at = COALESCE(archived_at, now())")
 

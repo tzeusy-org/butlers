@@ -8,7 +8,7 @@ The Mailbox module provides a local message queue for inter-butler and external 
 
 ### Requirement: Mailbox Table Schema
 
-The `mailbox` table stores messages with fields: `id` (UUID, PK), `sender` (TEXT), `sender_channel` (TEXT), `subject` (TEXT, nullable), `body` (TEXT), `priority` (INTEGER, default 0), `status` (TEXT, default 'unread'), `metadata` (JSONB, default '{}'), `read_at` (TIMESTAMPTZ), `archived_at` (TIMESTAMPTZ), `created_at` (TIMESTAMPTZ), `updated_at` (TIMESTAMPTZ).
+The `mailbox` table stores messages with fields: `id` (UUID, PK), `sender` (TEXT), `sender_channel` (TEXT), `subject` (TEXT, nullable), `body` (TEXT), `priority` (INTEGER, default 0), `status` (TEXT, default 'unread'), `metadata` (JSONB, default '{}'), `read_at` (TIMESTAMPTZ), `actioned_at` (TIMESTAMPTZ), `archived_at` (TIMESTAMPTZ), `created_at` (TIMESTAMPTZ), `updated_at` (TIMESTAMPTZ).
 
 #### Scenario: Table creation via migration
 

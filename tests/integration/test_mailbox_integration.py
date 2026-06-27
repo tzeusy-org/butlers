@@ -259,6 +259,8 @@ class TestMailboxCRUD:
         assert r["status"] == "read"
         r = await mod._mailbox_update_status(mailbox_pool, msg_id, "actioned")
         assert r["status"] == "actioned"
+        # The actioned transition must set actioned_at (no column-existence guard).
+        assert r["actioned_at"] is not None
         r = await mod._mailbox_update_status(mailbox_pool, msg_id, "archived")
         assert r["status"] == "archived"
 
