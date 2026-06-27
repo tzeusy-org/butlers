@@ -167,3 +167,141 @@ async def test_submit_to_ingest_api_mcp_error_propagated(
     ):
         with pytest.raises(RuntimeError, match="Ingest tool error"):
             await gmail_runtime._submit_to_ingest_api(envelope)
+
+
+# ---------------------------------------------------------------------------
+# reply_to_outbound rule: sent_message_ids population (bu-zn9zu)
+# ---------------------------------------------------------------------------
+
+
+def _fake_http_for_sent(
+    list_pages: list[dict[str, Any]],
+    message_id_headers: dict[str, str | None],
+) -> MagicMock:
+    """Build a fake httpx client serving SENT list pages + per-message metadata.
+
+    list_pages: sequential messages.list responses (dicts with 'messages'/'nextPageToken').
+    message_id_headers: maps Gmail message id -> Message-ID header value (or None to omit).
+    """
+    pages = iter(list_pages)
+
+    def _make_resp(payload: dict[str, Any]) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value=payload)
+        return resp
+
+    async def fake_get(url: str, **kwargs: Any) -> MagicMock:
+        if url.endswith("/messages"):
+            return _make_resp(next(pages))
+        mid = url.rsplit("/", 1)[-1]
+        header_val = message_id_headers.get(mid)
+        headers = [{"name": "Message-ID", "value": header_val}] if header_val is not None else []
+        return _make_resp({"payload": {"headers": headers}})
+
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=fake_get)
+    return client
+
+
+async def test_fetch_sent_message_ids_parses_headers(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """_fetch_sent_message_ids returns angle-bracketed Message-IDs from SENT mail."""
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._get_access_token = AsyncMock(return_value="tok")  # type: ignore[method-assign]
+    runtime._http_client = _fake_http_for_sent(  # type: ignore[assignment]
+        list_pages=[{"messages": [{"id": "s1"}, {"id": "s2"}], "nextPageToken": None}],
+        message_id_headers={
+            # one already bracketed, one bare — both normalize to bracketed form
+            "s1": "<sent-1@example.com>",
+            "s2": "sent-2@example.com",
+        },
+    )
+
+    sent = await runtime._fetch_sent_message_ids()
+
+    assert sent == frozenset({"<sent-1@example.com>", "<sent-2@example.com>"})
+
+
+async def test_reply_to_outbound_fires_via_real_policy_path(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """Inbound reply to an owner-sent Message-ID is classified high_priority.
+
+    Drives the real policy path: populate sent_message_ids via the connector's
+    refresh, then evaluate inbound mail through evaluate_message_policy.
+    """
+    from butlers.connectors.gmail_policy import (
+        POLICY_TIER_DEFAULT,
+        POLICY_TIER_HIGH_PRIORITY,
+        RULE_REPLY_TO_OUTBOUND,
+        evaluate_message_policy,
+    )
+
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    # Owner sent exactly one message.
+    runtime._fetch_sent_message_ids = AsyncMock(  # type: ignore[method-assign]
+        return_value=frozenset({"<sent-1@example.com>"})
+    )
+    runtime._gmail_policy_evaluator.get_known_contacts = AsyncMock(  # type: ignore[method-assign]
+        return_value=frozenset()
+    )
+
+    await runtime._refresh_policy_tier_assigner()
+    assert runtime._policy_tier_assigner.sent_message_ids == frozenset({"<sent-1@example.com>"})
+
+    # Inbound email replying to the owner's sent message -> high_priority.
+    reply_msg: dict[str, Any] = {
+        "labelIds": ["INBOX"],
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "stranger@external.com"},
+                {"name": "In-Reply-To", "value": "<sent-1@example.com>"},
+            ]
+        },
+    }
+    reply_result = evaluate_message_policy(
+        reply_msg,
+        label_filter=runtime._label_filter,
+        tier_assigner=runtime._policy_tier_assigner,
+        endpoint_identity="test",
+    )
+    assert reply_result.policy_tier == POLICY_TIER_HIGH_PRIORITY
+    assert reply_result.assignment_rule == RULE_REPLY_TO_OUTBOUND
+
+    # Unrelated inbound email (replies to an unknown id, owner not a recipient)
+    # must NOT be falsely elevated.
+    unrelated_msg: dict[str, Any] = {
+        "labelIds": ["INBOX"],
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "stranger@external.com"},
+                {"name": "In-Reply-To", "value": "<not-ours@external.com>"},
+            ]
+        },
+    }
+    unrelated_result = evaluate_message_policy(
+        unrelated_msg,
+        label_filter=runtime._label_filter,
+        tier_assigner=runtime._policy_tier_assigner,
+        endpoint_identity="test",
+    )
+    assert unrelated_result.policy_tier == POLICY_TIER_DEFAULT
+
+
+async def test_refresh_sent_message_ids_fail_open_retains_previous(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """A failed SENT refresh retains the previous cache instead of clearing it."""
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._sent_ids_cache = frozenset({"<prev@example.com>"})
+    # Force a refresh attempt (expire the TTL window) that then raises.
+    runtime._sent_ids_loaded_at = float("-inf")
+    runtime._fetch_sent_message_ids = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("Gmail API down")
+    )
+
+    await runtime._refresh_sent_message_ids()
+
+    assert runtime._policy_tier_assigner.sent_message_ids == frozenset({"<prev@example.com>"})

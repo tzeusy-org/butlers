@@ -154,6 +154,11 @@ def _redact_email(email: str | None) -> str | None:
 # Default re-scan interval for dynamic account discovery (seconds).
 _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S = 300
 
+# TTL (seconds) for the recently-sent Message-ID cache backing the
+# reply_to_outbound policy rule. Sent mail changes slowly relative to the poll
+# cadence, so a 15-minute cache avoids re-walking the SENT mailbox every cycle.
+_SENT_IDS_TTL = 900
+
 
 # Attachment policy: per-MIME-type size limits and fetch mode.
 # See docs/connectors/attachment_handling.md section 3 and 4.
@@ -283,6 +288,13 @@ class GmailConnectorConfig(BaseModel):
     # Required for direct-correspondence tier rule evaluation
     gmail_user_email: str = ""
 
+    # reply_to_outbound rule: recent SENT-mailbox window used to populate
+    # PolicyTierAssigner.sent_message_ids so an inbound reply to mail the owner
+    # sent is classified high_priority. Bounded by a lookback window and a max
+    # message count to keep the per-refresh Gmail API cost predictable.
+    gmail_sent_lookback_days: int = 7
+    gmail_sent_max_messages: int = 200
+
     # Backfill polling protocol (docs/connectors/interface.md section 14)
     # CONNECTOR_BACKFILL_ENABLED controls whether backfill polling is active.
     connector_backfill_enabled: bool = True
@@ -357,6 +369,23 @@ class GmailConnectorConfig(BaseModel):
         # Policy tier assignment (per docs/switchboard/email_priority_queuing.md)
         gmail_user_email = os.environ.get("GMAIL_USER_EMAIL", "")
 
+        # reply_to_outbound: recent SENT-mailbox window for sent_message_ids.
+        sent_lookback_days_str = os.environ.get("GMAIL_SENT_LOOKBACK_DAYS", "7")
+        try:
+            gmail_sent_lookback_days = int(sent_lookback_days_str)
+        except ValueError as exc:
+            raise ValueError(
+                f"GMAIL_SENT_LOOKBACK_DAYS must be an integer, got: {sent_lookback_days_str}"
+            ) from exc
+
+        sent_max_messages_str = os.environ.get("GMAIL_SENT_MAX_MESSAGES", "200")
+        try:
+            gmail_sent_max_messages = int(sent_max_messages_str)
+        except ValueError as exc:
+            raise ValueError(
+                f"GMAIL_SENT_MAX_MESSAGES must be an integer, got: {sent_max_messages_str}"
+            ) from exc
+
         # Backfill polling protocol (docs/connectors/interface.md section 14)
         backfill_enabled_str = os.environ.get("CONNECTOR_BACKFILL_ENABLED", "true").lower()
         connector_backfill_enabled = backfill_enabled_str not in ("false", "0", "no", "off")
@@ -400,6 +429,8 @@ class GmailConnectorConfig(BaseModel):
             "gmail_label_include": gmail_label_include,
             "gmail_label_exclude": gmail_label_exclude,
             "gmail_user_email": gmail_user_email,
+            "gmail_sent_lookback_days": gmail_sent_lookback_days,
+            "gmail_sent_max_messages": gmail_sent_max_messages,
             "connector_backfill_enabled": connector_backfill_enabled,
             "connector_backfill_poll_interval_s": connector_backfill_poll_interval_s,
             "connector_backfill_progress_interval": connector_backfill_progress_interval,
@@ -555,6 +586,13 @@ class GmailConnectorRuntime:
             known_contacts=frozenset(),
         )
 
+        # Recently-sent Message-ID cache for the reply_to_outbound rule.
+        # Refreshed (TTL-bounded) before each poll cycle via
+        # _refresh_sent_message_ids(); fail-open (retains previous set on error).
+        # float('-inf') forces a load on the first refresh regardless of uptime.
+        self._sent_ids_cache: frozenset[str] = frozenset()
+        self._sent_ids_loaded_at: float = float("-inf")
+
         # Ingestion policy evaluators (replaces SourceFilterEvaluator).
         # Two scopes evaluated in order:
         #   1. connector:gmail:<endpoint> — pre-ingest block/pass_through
@@ -584,6 +622,116 @@ class GmailConnectorRuntime:
         """
         known_contacts = await self._gmail_policy_evaluator.get_known_contacts()
         self._policy_tier_assigner.known_contacts = known_contacts
+        await self._refresh_sent_message_ids()
+
+    async def _refresh_sent_message_ids(self) -> None:
+        """Refresh PolicyTierAssigner.sent_message_ids from the owner's SENT mailbox.
+
+        TTL-bounded (``_SENT_IDS_TTL``) so the SENT mailbox is only re-walked
+        periodically rather than every poll cycle. Fail-open: on any error the
+        previous cached set is retained so the reply_to_outbound rule degrades to
+        its prior state instead of silently clearing.
+        """
+        if (time.monotonic() - self._sent_ids_loaded_at) < _SENT_IDS_TTL:
+            # Cache still warm — ensure the assigner points at the current set.
+            self._policy_tier_assigner.sent_message_ids = self._sent_ids_cache
+            return
+
+        try:
+            self._sent_ids_cache = await self._fetch_sent_message_ids()
+            self._sent_ids_loaded_at = time.monotonic()
+            logger.debug(
+                "Refreshed %d recently-sent Message-IDs for reply_to_outbound rule",
+                len(self._sent_ids_cache),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to refresh sent Message-IDs; retaining previous set (%d entries)",
+                len(self._sent_ids_cache),
+                exc_info=True,
+            )
+
+        self._policy_tier_assigner.sent_message_ids = self._sent_ids_cache
+
+    async def _fetch_sent_message_ids(self) -> frozenset[str]:
+        """Fetch RFC822 Message-IDs of recently-sent messages from the SENT mailbox.
+
+        Enumerates the owner's SENT messages bounded to
+        ``GMAIL_SENT_LOOKBACK_DAYS`` and at most ``GMAIL_SENT_MAX_MESSAGES``,
+        then reads each message's ``Message-ID`` header (metadata format only).
+        Returns an angle-bracketed set so it matches the In-Reply-To/References
+        comparison in :meth:`PolicyTierAssigner.assign`.
+        """
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized")
+
+        max_messages = self._config.gmail_sent_max_messages
+        if max_messages <= 0:
+            return frozenset()
+
+        lookback_days = self._config.gmail_sent_lookback_days
+        token = await self._get_access_token()
+        query = f"in:sent newer_than:{lookback_days}d"
+
+        # Step 1: enumerate recent sent-message stubs (id only).
+        stub_ids: list[str] = []
+        page_token: str | None = None
+        while len(stub_ids) < max_messages:
+            params: dict[str, Any] = {
+                "q": query,
+                "labelIds": "SENT",
+                "maxResults": min(100, max_messages - len(stub_ids)),
+            }
+            if page_token:
+                params["pageToken"] = page_token
+
+            response = await self._http_client.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            self._source_api_ok = True
+            self._metrics.record_source_api_call(api_method="messages.list.sent", status="success")
+
+            data = response.json()
+            for stub in data.get("messages", []):
+                mid = stub.get("id")
+                if mid:
+                    stub_ids.append(mid)
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+
+        # Step 2: read the Message-ID header from each sent message (metadata only).
+        sent_ids: set[str] = set()
+        for message_id in stub_ids[:max_messages]:
+            try:
+                response = await self._http_client.get(
+                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}",
+                    params={"format": "metadata", "metadataHeaders": "Message-ID"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+                self._metrics.record_source_api_call(
+                    api_method="messages.get.sent", status="success"
+                )
+            except Exception as exc:
+                logger.debug("Failed to fetch sent Message-ID for %s: %s", message_id, exc)
+                continue
+
+            headers = response.json().get("payload", {}).get("headers", [])
+            for h in headers:
+                if isinstance(h, dict) and h.get("name", "").lower() == "message-id":
+                    raw = (h.get("value") or "").strip()
+                    if raw:
+                        bare = raw.strip("<>").strip()
+                        if bare:
+                            sent_ids.add(f"<{bare}>")
+                    break
+
+        return frozenset(sent_ids)
 
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
