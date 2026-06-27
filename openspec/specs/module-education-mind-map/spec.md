@@ -257,7 +257,7 @@ The system SHALL provide a `mind_map_node_update(pool, node_id, **fields)` funct
 
 ### Requirement: Edge creation
 
-The system SHALL provide a `mind_map_edge_create(pool, parent_node_id, child_node_id, edge_type='prerequisite')` function that inserts a row into `mind_map_edges`. The function MUST enforce the primary key constraint `(parent_node_id, child_node_id)`. Edges between nodes belonging to different mind maps MUST be rejected. The default `edge_type` SHALL be `'prerequisite'`; the only other permitted value is `'related'`.
+The system SHALL provide a `mind_map_edge_create(pool, parent_node_id, child_node_id, edge_type='prerequisite')` function that inserts a row into `mind_map_edges`. The table has a primary key on `(parent_node_id, child_node_id)`, and re-creating the same pair is an idempotent upsert (`ON CONFLICT (parent_node_id, child_node_id) DO UPDATE SET edge_type = EXCLUDED.edge_type`) rather than an error. Edges between nodes belonging to different mind maps MUST be rejected. The default `edge_type` SHALL be `'prerequisite'`; the only other permitted value is `'related'`.
 
 #### Scenario: Create a prerequisite edge between two nodes
 
@@ -269,10 +269,11 @@ The system SHALL provide a `mind_map_edge_create(pool, parent_node_id, child_nod
 - **WHEN** `mind_map_edge_create(pool, <parent_id>, <child_id>, edge_type='related')` is called
 - **THEN** the inserted row MUST have `edge_type = 'related'`
 
-#### Scenario: Duplicate edge is rejected
+#### Scenario: Duplicate edge is an idempotent upsert
 
 - **WHEN** `mind_map_edge_create(pool, <parent_id>, <child_id>)` is called a second time for the same pair
-- **THEN** the function MUST raise an error (primary key violation)
+- **THEN** the function MUST complete without error
+- **AND** if the new `edge_type` differs from the existing edge, the existing edge's `edge_type` MUST be updated to the new value; otherwise the row is left unchanged
 
 #### Scenario: Edge across different mind maps is rejected
 

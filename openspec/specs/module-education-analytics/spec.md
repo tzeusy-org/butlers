@@ -154,8 +154,9 @@ THEN `metrics.estimated_completion_days` is `null`
 ### Requirement: Time-of-Day Distribution Bucketing
 
 The system SHALL bucket quiz response timestamps (from the `responded_at` field) into three named
-periods: `morning` (06:00–11:59 local time or UTC if timezone is not configured), `afternoon`
-(12:00–17:59), and `evening` (18:00–05:59 spanning midnight). The `time_of_day_distribution` JSONB
+periods: `morning` (06:00–11:59 UTC), `afternoon`
+(12:00–17:59 UTC), and `evening` (18:00–05:59 UTC, spanning midnight). Bucketing uses UTC
+unconditionally (the `responded_at` timestamp is evaluated `AT TIME ZONE 'UTC'`). The `time_of_day_distribution` JSONB
 field SHALL be a map of `{"morning": <int>, "afternoon": <int>, "evening": <int>}` counting the number
 of quiz sessions (grouped by date) falling in each bucket, covering the same period as
 `sessions_this_period`.

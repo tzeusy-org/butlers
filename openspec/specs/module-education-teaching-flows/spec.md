@@ -16,6 +16,7 @@ Permitted transitions:
 - `teaching` → `quizzing`
 - `quizzing` → `reviewing`
 - `quizzing` → `teaching` (when the frontier has more unmastered nodes)
+- `quizzing` → `completed` (when all nodes are mastered)
 - `reviewing` → `teaching` (when the frontier has more unmastered nodes)
 - `reviewing` → `completed` (when all nodes are mastered)
 - any non-terminal state → `abandoned`
@@ -84,7 +85,7 @@ State schema:
 }
 ```
 
-`current_node_id` MUST be non-null when `status` is `teaching`, `quizzing`, or `reviewing`. `current_phase` MUST be non-null when `status` is `teaching` or `quizzing`; it MUST be `null` in all other states.
+`current_node_id` MUST be non-null when `status` is `teaching`, `quizzing`, or `reviewing`. `current_phase` MUST be non-null when `status` is `teaching`; it MUST be `null` in all other states (phase tracking within `quizzing` and `reviewing` is not used).
 
 #### Scenario: State written atomically on transition
 

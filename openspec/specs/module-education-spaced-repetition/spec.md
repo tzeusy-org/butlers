@@ -7,36 +7,48 @@ Defines the SM-2-inspired spaced repetition engine for the education butler, cov
 
 ### Requirement: SM-2 Interval Calculation — Successful Recall
 
-When a user successfully recalls a node (quality >= 3), the next review interval is determined by the node's current repetition count. A fresh node (repetitions == 0) reviews again after 1 day; after the first successful review (repetitions == 1) the interval jumps to 6 days; for all subsequent successful reviews the interval is `last_interval * ease_factor`, producing exponential spacing.
+When a user successfully recalls a node (quality >= 3), the next review interval is determined by the node's current repetition count following a stepped ramp: repetitions == 0 reviews again after 6 hours (`0.25` days); repetitions == 1 after 12 hours (`0.5` days); repetitions == 2 after 1 day (`1.0`); repetitions == 3 after 6 days (`6.0`). For repetitions >= 4 the interval is `last_interval * ease_factor`, producing exponential spacing thereafter.
 
 #### Scenario: First successful recall (repetitions == 0)
 
 - **WHEN** `spaced_repetition_record_response()` is called with `quality=3` and the node has `repetitions=0`
-- **THEN** `interval_days` returned is `1.0`
+- **THEN** `interval_days` returned is `0.25` (6 hours)
 - **AND** `repetitions` in the returned dict is `1`
 
 #### Scenario: Second successful recall (repetitions == 1)
 
 - **WHEN** `spaced_repetition_record_response()` is called with `quality=4` and the node has `repetitions=1`
-- **THEN** `interval_days` returned is `6.0`
+- **THEN** `interval_days` returned is `0.5` (12 hours)
 - **AND** `repetitions` in the returned dict is `2`
 
-#### Scenario: Third and subsequent successful recall
+#### Scenario: Third successful recall (repetitions == 2)
 
-- **WHEN** `spaced_repetition_record_response()` is called with `quality=5` and the node has `repetitions=2`, `ease_factor=2.5`, and `last_interval=6.0`
-- **THEN** `interval_days` returned is `15.0` (6.0 * 2.5)
+- **WHEN** `spaced_repetition_record_response()` is called with `quality=5` and the node has `repetitions=2`
+- **THEN** `interval_days` returned is `1.0` (fixed 1-day step at repetitions == 2)
 - **AND** `repetitions` in the returned dict is `3`
+
+#### Scenario: Fourth successful recall (repetitions == 3)
+
+- **WHEN** `spaced_repetition_record_response()` is called with `quality=4` and the node has `repetitions=3`
+- **THEN** `interval_days` returned is `6.0` (fixed 6-day step at repetitions == 3)
+- **AND** `repetitions` in the returned dict is `4`
+
+#### Scenario: Fifth and subsequent successful recall (repetitions >= 4)
+
+- **WHEN** `spaced_repetition_record_response()` is called with `quality=5` and the node has `repetitions=4`, `ease_factor=2.5`, and `last_interval=6.0`
+- **THEN** `interval_days` returned is `15.0` (6.0 * 2.5)
+- **AND** `repetitions` in the returned dict is `5`
 
 #### Scenario: Interval grows with ease factor over multiple repetitions
 
-- **WHEN** a node undergoes five consecutive successful reviews with constant `ease_factor=2.5` starting from `repetitions=2`, `last_interval=6.0`
-- **THEN** each successive `interval_days` is the previous interval multiplied by 2.5
+- **WHEN** a node undergoes successive successful reviews with constant `ease_factor=2.5` starting from `repetitions=4`, `last_interval=6.0`
+- **THEN** for each repetition >= 4 the next `interval_days` is the previous interval multiplied by 2.5
 - **AND** intervals form a monotonically increasing sequence: 15, 37.5, 93.75, ...
 
 #### Scenario: Perfect recall (quality == 5)
 
 - **WHEN** `spaced_repetition_record_response()` is called with `quality=5` on a node with `repetitions=0`
-- **THEN** `interval_days` is `1.0` (first repetition rule applies regardless of quality when in 0-state)
+- **THEN** `interval_days` is `0.25` (6 hours; the repetitions == 0 step applies regardless of quality when in the 0-state)
 - **AND** `repetitions` in the returned dict is `1`
 
 ---
@@ -87,26 +99,26 @@ The minimum ease factor is 1.3. Quality values 0-5 are all valid inputs.
 
 ### Requirement: Failed Recall Reset
 
-A quality score below 3 (0, 1, or 2) constitutes a failed recall. On failure, repetitions are reset to 0 and the interval resets to 1 day. The ease factor is still adjusted (penalized) per the standard formula — it is not reset.
+A quality score below 3 (0, 1, or 2) constitutes a failed recall. On failure, repetitions are reset to 0 and the interval resets to the repetitions == 0 step of 6 hours (`0.25` days). The ease factor is still adjusted (penalized) per the standard formula, it is not reset.
 
 #### Scenario: Quality 2 triggers reset
 
 - **WHEN** `spaced_repetition_record_response()` is called with `quality=2` on a node with `repetitions=5`, `ease_factor=2.8`, `last_interval=93.75`
 - **THEN** the returned `repetitions` is `0`
-- **AND** the returned `interval_days` is `1.0`
+- **AND** the returned `interval_days` is `0.25` (6 hours, reset to the repetitions == 0 step)
 - **AND** the returned `ease_factor` is less than `2.8` (penalized but not reset to default)
 
 #### Scenario: Quality 1 triggers reset
 
 - **WHEN** `spaced_repetition_record_response()` is called with `quality=1` on a node with `repetitions=3`
 - **THEN** the returned `repetitions` is `0`
-- **AND** the returned `interval_days` is `1.0`
+- **AND** the returned `interval_days` is `0.25` (6 hours, reset to the repetitions == 0 step)
 
 #### Scenario: Quality 0 triggers reset with maximum ease factor penalty
 
 - **WHEN** `spaced_repetition_record_response()` is called with `quality=0` on a node with `repetitions=4`, `ease_factor=2.5`
 - **THEN** the returned `repetitions` is `0`
-- **AND** the returned `interval_days` is `1.0`
+- **AND** the returned `interval_days` is `0.25` (6 hours, reset to the repetitions == 0 step)
 - **AND** the returned `ease_factor` is `1.7`
 
 #### Scenario: Quality == 3 is not a failure
@@ -253,34 +265,21 @@ When a mind map transitions to `status='completed'` or `status='abandoned'`, all
 
 ### Requirement: Node State Updates and Mastery Status Transitions
 
-`spaced_repetition_record_response()` updates the node's persistent state in `mind_map_nodes` after every call: `ease_factor`, `repetitions`, `next_review_at`, `last_reviewed_at`, and `mastery_status`. The `mastery_status` field follows a defined transition table based on the review outcome.
+`spaced_repetition_record_response()` updates the node's persistent state in `mind_map_nodes` after every call: `ease_factor`, `repetitions`, `next_review_at`, `last_reviewed_at`, and `mastery_status`. Within the spaced-repetition engine, the `mastery_status` field changes only on regression (a failed recall demotes the node); forward promotions (`learning` to `reviewing`, `reviewing` to `mastered`) are owned by the mastery module's `mastery_record_response()` write path and are specified in `module-education-mastery`, not here. A successful recall in this engine advances scheduling state (`repetitions`, `interval`, `next_review_at`) but leaves `mastery_status` unchanged.
 
-#### Scenario: Node transitions from learning to reviewing after first successful review
+#### Scenario: Successful recall leaves mastery_status unchanged
 
-- **WHEN** `spaced_repetition_record_response()` is called with `quality >= 3` on a node with `mastery_status='learning'` and `repetitions=0`
-- **THEN** the node's `mastery_status` is updated to `'reviewing'` in `mind_map_nodes`
-- **AND** `repetitions` becomes `1`
-- **AND** `next_review_at` is set to `now() + 1 day`
-- **AND** `last_reviewed_at` is set to `now()`
-
-#### Scenario: Node remains reviewing while repetitions increase
-
-- **WHEN** `spaced_repetition_record_response()` is called with `quality >= 3` on a node with `mastery_status='reviewing'` and `repetitions >= 1`
+- **WHEN** `spaced_repetition_record_response()` is called with `quality >= 3` on a node with `mastery_status='reviewing'`
 - **THEN** `mastery_status` remains `'reviewing'`
 - **AND** `repetitions` is incremented by 1
-
-#### Scenario: Node transitions to mastered after sufficient repetitions with high ease factor
-
-- **WHEN** `spaced_repetition_record_response()` is called with `quality >= 4` on a node with `repetitions >= 5` and `ease_factor >= 2.5`
-- **THEN** `mastery_status` is updated to `'mastered'`
-- **AND** `next_review_at` is still set (mastered nodes continue to receive long-interval reviews)
+- **AND** `next_review_at` and `last_reviewed_at` are updated for the next interval
 
 #### Scenario: Failed recall demotes a reviewing node back to learning
 
 - **WHEN** `spaced_repetition_record_response()` is called with `quality < 3` on a node with `mastery_status='reviewing'`
 - **THEN** `mastery_status` is updated to `'learning'`
 - **AND** `repetitions` is reset to `0`
-- **AND** `next_review_at` is set to `now() + 1 day`
+- **AND** `next_review_at` is set to `now() + 0.25 day` (6 hours)
 
 #### Scenario: Failed recall demotes a mastered node to reviewing
 

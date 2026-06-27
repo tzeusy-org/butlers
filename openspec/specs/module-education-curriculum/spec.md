@@ -8,7 +8,11 @@ Defines the curriculum planning system for the education butler: LLM-driven topi
 
 ### Requirement: Topic decomposition into concept graph
 
-When `curriculum_generate()` is invoked, the system SHALL spawn an ephemeral LLM session using a curriculum-planning skill prompt that instructs the session to decompose the given topic into a set of concept nodes and prerequisite edges. The LLM session MUST output structured JSON representing nodes (each with `label`, `description`, and `effort_minutes`) and edges (each specifying a `parent` → `child` prerequisite relationship). The session MUST persist this graph by calling `mind_map_create()`, `mind_map_node_create()`, and `mind_map_edge_create()` tool calls. The skill prompt MUST require the LLM to produce a root node representing the topic itself, with all other nodes reachable from it via directed prerequisite edges.
+Curriculum planning is split into two layers:
+
+1. LLM orchestration layer (butler session level). An ephemeral LLM session, spawned by the curriculum-planning skill prompt, decomposes the given topic into a set of concept nodes and prerequisite edges. The session MUST output structured JSON representing nodes (each with `label`, `description`, and `effort_minutes`) and edges (each specifying a `parent` → `child` prerequisite relationship), and MUST persist this graph by calling `mind_map_create()`, `mind_map_node_create()`, and `mind_map_edge_create()` tool calls. The skill prompt MUST require the LLM to produce a root node representing the topic itself, with all other nodes reachable from it via directed prerequisite edges.
+
+2. Validation and sequencing layer (`curriculum_generate()`). After the nodes and edges are persisted, `curriculum_generate(pool, mind_map_id)` validates the persisted graph against the structural constraints, applies diagnostic mastery seeding, computes the learning order via topological sort with tie-breaking, assigns sequence numbers, and transitions the mind map to `active`. `curriculum_generate()` SHALL NOT spawn the LLM session: all concept nodes and prerequisite edges MUST already exist in the database before it is called.
 
 #### Scenario: Basic topic decomposition creates nodes and edges
 

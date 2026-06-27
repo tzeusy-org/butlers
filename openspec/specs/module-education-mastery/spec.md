@@ -8,7 +8,7 @@ Defines the mastery tracking subsystem for the education butler: quiz response r
 
 ### Requirement: Quiz response recording
 
-The system SHALL persist every quiz interaction as a row in the `quiz_responses` table. A quiz response MUST capture the node, mind map, question text, user answer, SM-2 quality score (integer 0–5), response type, optional session ID, and timestamp. The `quality` column MUST be constrained to values between 0 and 5 inclusive. The `mastery_record_response()` function MUST be the sole write path for quiz responses and MUST return the UUID of the newly created row.
+The system SHALL persist every quiz interaction as a row in the `quiz_responses` table. A quiz response MUST capture the node, mind map, question text, user answer, SM-2 quality score (integer 0–5), response type, optional session ID, optional evaluator notes (free-text rationale recorded by the grading session, added in migration `002_add_evaluator_notes`), and timestamp. The `quality` column MUST be constrained to values between 0 and 5 inclusive. The `mastery_record_response()` function MUST be the sole write path for quiz responses and MUST return the UUID of the newly created row.
 
 #### Scenario: Successful response recording returns UUID
 
@@ -211,6 +211,24 @@ Both conditions MUST be evaluated atomically within `mastery_record_response()` 
 - **AND** the three most recent `review` responses have qualities `[4, 3, 4]`
 - **AND** the resulting `mastery_score = 0.88` (above 0.85)
 - **THEN** the node's `mastery_status` MUST remain `'reviewing'` (quality=3 in last three disqualifies graduation)
+
+---
+
+### Requirement: Mind map auto-completion when all nodes mastered
+
+When a quiz response promotes the last remaining unmastered node in a mind map to `mastered`, `mastery_record_response()` SHALL automatically update that mind map's `status` to `completed` within the same transaction.
+
+#### Scenario: Mind map completed when final node is mastered
+
+- **WHEN** `mastery_record_response()` promotes a node to `mastered`
+- **AND** every other node in the same mind map is already `mastered`
+- **THEN** the mind map's `status` MUST be set to `completed` in the same transaction as the quiz response insert
+
+#### Scenario: Mind map not completed while unmastered nodes remain
+
+- **WHEN** `mastery_record_response()` promotes a node to `mastered`
+- **AND** at least one other node in the same mind map is not yet `mastered`
+- **THEN** the mind map's `status` MUST remain unchanged
 
 #### Scenario: Fewer than three review responses never triggers mastery graduation
 

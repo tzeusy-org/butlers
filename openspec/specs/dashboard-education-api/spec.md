@@ -10,11 +10,13 @@ Defines the education butler's dashboard API write/read endpoints: pending revie
 
 The system SHALL expose `GET /api/education/mind-maps/{mind_map_id}/pending-reviews` returning nodes due for spaced repetition review (where `next_review_at <= now()`).
 
-The response SHALL be a JSON array of node objects, each containing: `id`, `mind_map_id`, `label`, `mastery_score`, `mastery_status`, `next_review_at`, `last_reviewed_at`, `ease_factor`, `repetitions`.
+The endpoint SHALL accept an optional `horizon_days` query parameter (integer, `>= 0`). When omitted, only overdue nodes are returned. When set, upcoming reviews due within that many days from now are also included, enabling timeline grouping (Overdue / Today / This Week / Later).
+
+The response SHALL be a JSON array of node objects, each containing: `node_id`, `label`, `ease_factor`, `repetitions`, `next_review_at`, `mastery_status`.
 
 The endpoint SHALL return 404 if the mind map does not exist. The endpoint SHALL return an empty array if no reviews are due.
 
-The endpoint SHALL call the existing `spaced_repetition_pending_reviews(pool, mind_map_id)` tool function without duplicating its SQL logic.
+The endpoint SHALL call the existing `spaced_repetition_pending_reviews(pool, mind_map_id, horizon_days=horizon_days)` tool function without duplicating its SQL logic.
 
 #### Scenario: Reviews due for a mind map with scheduled nodes
 

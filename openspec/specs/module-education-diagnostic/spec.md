@@ -8,14 +8,13 @@ The diagnostic assessment capability runs a short, adaptive probe sequence befor
 
 ### Requirement: Concept Inventory Generation
 
-The system SHALL generate a topic concept inventory of 10-15 key concepts spanning beginner to expert difficulty levels when a diagnostic assessment is started.
+When a diagnostic assessment is started, the `diagnostic_start` tool SHALL return the mind map's concept inventory (data layer) and the ephemeral diagnostic skill session SHALL select 10 to 15 key concepts spanning beginner to expert difficulty levels from it (pedagogy layer).
 
-#### Scenario: Inventory generated within bounds
+#### Scenario: Inventory fetched for skill processing
 
 - **WHEN** `diagnostic_start(pool, mind_map_id)` is called for a topic
-- **THEN** the returned concept inventory MUST contain between 10 and 15 concept entries
-- **AND** each entry MUST include a `node_id`, `label`, `description`, and `difficulty_rank` (integer 1–N ordered from easiest to hardest)
-- **AND** the inventory MUST span at least three distinct difficulty levels (beginner, intermediate, expert)
+- **THEN** the returned concept inventory MUST include the mind map's nodes, each with a `node_id`, `label`, `description`, and `difficulty_rank` (derived from the node's tree depth, ordered from root outward)
+- **AND** the ephemeral diagnostic skill session MUST select 10 to 15 key concepts from the returned inventory, spanning at least three distinct difficulty levels (beginner, intermediate, expert), to use as probe targets
 
 #### Scenario: Inventory persisted to flow state
 
@@ -30,11 +29,11 @@ The system SHALL generate a topic concept inventory of 10-15 key concepts spanni
 - **THEN** the call MUST raise an error indicating the mind map was not found
 - **AND** no flow state MUST be written
 
-#### Scenario: Inventory generation is LLM-driven
+#### Scenario: Inventory ordering for adaptive probing
 
-- **WHEN** the concept inventory is produced
-- **THEN** concept labels and difficulty rankings MUST be determined by the ephemeral LLM session, not by a hardcoded rubric
-- **AND** the skill prompt supplied to the session MUST instruct it to order concepts from foundational to expert, accounting for prerequisite relationships within the topic domain
+- **WHEN** `diagnostic_start(pool, mind_map_id)` returns the concept inventory
+- **THEN** each concept's `difficulty_rank` MUST reflect its position in the concept tree (assigned at node creation from `depth`, not recomputed by the LLM during the diagnostic)
+- **AND** the ephemeral skill session MUST order the selected concepts from foundational to expert, accounting for prerequisite relationships within the topic domain
 
 ---
 
@@ -127,11 +126,11 @@ The diagnostic assessment SHALL integrate with the teaching flow state machine, 
 - **AND** `started_at` MUST be set to the current UTC timestamp
 - **AND** any pre-existing flow state for the same `mind_map_id` MUST be overwritten only if its status is `'PENDING'`; otherwise the call MUST raise an error
 
-#### Scenario: Flow state rejects start when already diagnosing
+#### Scenario: Restart allowed when already diagnosing (stuck-session recovery)
 
 - **WHEN** `diagnostic_start(pool, mind_map_id)` is called and the existing flow state has `status = 'DIAGNOSING'`
-- **THEN** the call MUST raise an error indicating the assessment is already in progress
-- **AND** the existing flow state MUST remain unchanged
+- **THEN** the call MUST reinitialize the assessment, refreshing `concept_inventory` and resetting `probes_issued` to 0 and `diagnostic_results` to `{}` (this allows recovery from a session that ended before completing the diagnostic)
+- **AND** a start MUST still be rejected when the flow is in any later state (such as PLANNING, TEACHING, REVIEWING, COMPLETED, or ABANDONED)
 
 #### Scenario: Flow transitions to PLANNING on complete
 

@@ -71,7 +71,7 @@ Edges of type `prerequisite` SHALL render as solid arrows. Edges of type `relate
 
 Frontier nodes (from the `/frontier` endpoint) SHALL have a pulsing ring indicator to highlight them as next teachable concepts.
 
-Clicking a node SHALL open a detail panel beside the graph showing: node label, description, mastery score, mastery status, next review date (if scheduled), effort estimate, and a link to view quiz history for that node.
+Clicking a node SHALL open a detail panel beside the graph showing: node label, description, mastery score, mastery status, next review date (if scheduled), effort estimate, the spaced-repetition internals `ease_factor` and `repetitions`, and a link to view quiz history for that node.
 
 #### Scenario: Render a mind map with mixed mastery statuses
 
@@ -211,7 +211,7 @@ The Analytics tab SHALL display mastery analytics for the selected mind map, con
 
 The Curriculum tab's node detail panel SHALL include a "Quiz History" section showing paginated quiz responses for the selected node. Additionally, a "Quiz History" panel SHALL be accessible from the mind map selector level to view all quiz responses for the entire mind map.
 
-Each quiz response entry SHALL display: question text, user answer (or "No answer" if null), quality score (0–5) as a colored badge (0–2 red, 3 amber, 4–5 green), response type (diagnostic/teach/review) as a label, and the timestamp.
+Each quiz response entry SHALL display: question text, user answer (or "No answer" if null), quality score (0–5) as a colored badge with a granular label per score (0 Blackout red, 1 Wrong red, 2 Hard amber, 3 Okay yellow, 4 Good blue, 5 Easy emerald), response type (diagnostic/teach/review) as a label, and the timestamp.
 
 Responses SHALL be ordered by `responded_at` descending (newest first). Pagination SHALL use a "Load more" button with a page size of 20.
 
@@ -267,3 +267,24 @@ Mutation hooks SHALL be provided for:
 - **WHEN** `useUpdateMindMapStatus` succeeds
 - **THEN** the `["education", "mind-maps"]` query cache SHALL be invalidated
 - **AND** the mind map list SHALL refetch
+
+---
+
+### Requirement: Education butler-detail Reviews tab
+
+In addition to the standalone `/education` page, the butler detail page for the education butler SHALL provide a "Reviews" tab (`ButlerEducationReviewsTab`) that aggregates learning state across all active mind maps into a single multi-panel dashboard.
+
+The tab SHALL display:
+1. A KPI summary row: total review cards, mastered count, overdue count, and average mastery score.
+2. A mind maps progress panel: per-map mastery percentage with a progress bar and mastered/total node count.
+3. A pending reviews timeline grouped by Overdue / Today / This Week / Later, with colored left borders per group.
+4. A frontier nodes panel: the next concepts to learn, each with a mastery badge.
+5. A 7-day retention trend chart with the latest mastery percentage as a headline value and a hover tooltip.
+
+Polling intervals SHALL scale with the number of active mind maps so that total request volume stays bounded as the map count grows (base interval 15 seconds for reviews, 30 seconds for mastery and frontier data).
+
+#### Scenario: Reviews tab aggregates across maps
+
+- **WHEN** the education butler detail page Reviews tab loads with multiple active mind maps
+- **THEN** the KPI row, mind maps progress panel, pending reviews timeline, frontier panel, and retention trend chart SHALL each render with data aggregated across those maps
+- **AND** the pending reviews SHALL be grouped into Overdue, Today, This Week, and Later sections

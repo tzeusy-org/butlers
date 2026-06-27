@@ -87,7 +87,7 @@ The education butler SHALL enable the memory and contacts modules, and SHALL NOT
 
 ### Requirement: Scheduled Tasks
 
-The education butler SHALL run three scheduled tasks: a nightly analytics job, a weekly progress digest prompt, and a weekly stale-flow check.
+The education butler SHALL run five scheduled tasks: a nightly analytics job, a weekly progress digest prompt, a weekly stale-flow check, a daily spaced-repetition nudge, and a daily briefing contribution job.
 
 #### Scenario: Nightly analytics job configuration
 
@@ -108,6 +108,18 @@ The education butler SHALL run three scheduled tasks: a nightly analytics job, a
 - **THEN** it includes a scheduled task (job or prompt dispatch) that checks for teaching flows with `last_session_at` older than 30 days
 - **AND** the task MUST clean up associated pending review schedules for abandoned flows
 - **AND** the task runs on a weekly cadence (cron expression MUST fire no more than once per day)
+
+#### Scenario: Daily spaced-repetition nudge configuration
+
+- **WHEN** 17:00 arrives each day
+- **THEN** the education butler executes a scheduled task named `daily-spaced-repetition-nudge` on cron `0 17 * * *`
+- **AND** the task MUST use `dispatch_mode = "prompt"` with a prompt that lists active mind maps, collects pending reviews per map, and sends a single Telegram summary only when at least one review is pending (sending nothing when there are zero pending reviews)
+
+#### Scenario: Daily briefing contribution job configuration
+
+- **WHEN** 06:55 arrives each day
+- **THEN** the education butler executes a scheduled task named `daily_briefing_contribution` on cron `55 6 * * *`
+- **AND** the task MUST use `dispatch_mode = "job"` with `job_name = "daily_briefing_contribution"`
 
 #### Scenario: Nightly analytics job does not spawn LLM
 
@@ -166,7 +178,8 @@ The education butler directory at `roster/education/` SHALL contain all required
 #### Scenario: Optional directories present when features are active
 
 - **WHEN** the education butler is fully configured
-- **THEN** the following directories MUST exist: `tools/`, `migrations/`, `api/`, `skills/`, and `tests/`
+- **THEN** the following directories MUST exist: `tools/`, `migrations/`, `api/`, `.agents/`, and `tests/`
+- **AND** the `.agents/` directory MUST contain a `skills/` subdirectory holding the domain-specific skills, with a `.claude` symlink pointing to `.agents` for Claude Code discovery
 - **AND** each directory MAY be empty initially but MUST be created to signal intent
 
 #### Scenario: AGENTS.md initialized with notes-to-self header
@@ -248,12 +261,12 @@ The education butler's `CLAUDE.md` SHALL provide a complete system prompt coveri
 
 ### Requirement: Skill Definitions
 
-The education butler SHALL provide five domain-specific skills plus two shared skill symlinks.
+The education butler SHALL provide six domain-specific skills plus three shared skill symlinks.
 
 #### Scenario: Domain skill inventory
 
-- **WHEN** the `roster/education/skills/` directory is inspected
-- **THEN** it MUST contain skill directories (each with a `SKILL.md`): `diagnostic-assessment`, `curriculum-planning`, `teaching-session`, `review-session`, and `progress-digest`
+- **WHEN** the `roster/education/.agents/skills/` directory is inspected
+- **THEN** it MUST contain skill directories (each with a `SKILL.md`): `diagnostic-assessment`, `curriculum-planning`, `teaching-session`, `review-session`, `progress-digest`, and `stale-flow-cleanup`
 
 #### Scenario: diagnostic-assessment skill purpose
 
@@ -285,10 +298,16 @@ The education butler SHALL provide five domain-specific skills plus two shared s
 - **THEN** its `SKILL.md` MUST describe the weekly digest generation: read the last 7 analytics snapshots, compute trends (velocity, retention, struggling nodes), compose a structured digest, and deliver via `notify()`
 - **AND** it MUST specify that the digest is sent via the owner contact's preferred channel, not hardcoded to Telegram
 
+#### Scenario: stale-flow-cleanup skill purpose
+
+- **WHEN** the `stale-flow-cleanup` skill is loaded
+- **THEN** its `SKILL.md` MUST describe abandoning inactive teaching flows: identify flows whose `last_session_at` is older than 30 days and are not already completed or abandoned, transition them to abandoned, call `spaced_repetition_schedule_cleanup()` to remove pending review schedules, and record the abandonment as a memory fact
+- **AND** it MUST specify that this skill backs the `weekly-stale-flow-check` scheduled task
+
 #### Scenario: Shared skill symlinks present
 
-- **WHEN** the `roster/education/skills/` directory is inspected
-- **THEN** it MUST contain symlinks `butler-memory` and `butler-notifications` pointing to `../../shared/skills/butler-memory` and `../../shared/skills/butler-notifications` respectively
+- **WHEN** the `roster/education/.agents/skills/` directory is inspected
+- **THEN** it MUST contain symlinks `butler-memory`, `butler-notifications`, and `routed-message-safety` pointing into the shared skills directory (`../../../shared/skills/<name>`)
 - **AND** these symlinks MUST resolve to valid SKILL.md files in the shared skills directory
 
 ---
