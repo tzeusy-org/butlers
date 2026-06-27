@@ -28,12 +28,20 @@ Write the failing test first. Then write the code that makes it pass.
 
 **Test infrastructure:**
 
-- pytest with pytest-asyncio (asyncio_mode = "auto").
-- Database tests are separated (`tests/test_db.py`, `tests/test_migrations.py`)
-  and can be skipped for fast iteration.
+- pytest with pytest-asyncio (asyncio_mode = "auto"). Default `addopts` use
+  importlib import mode and exclude the `nightly`, `bench`, and `perf` markers.
+- Tests are separated by marker, not by a single file. The relevant markers are
+  `unit`, `smoke`, `integration`, `db`, `e2e`, `nightly`, `bench`, and
+  `contract` (architectural invariants from this doctrine and key RFCs).
+  Database and migration tests live under `tests/migrations/`, `tests/config/`,
+  and `tests/core/` and carry the `integration`/`db`/`nightly` markers, so they
+  are selected or skipped by marker rather than by ignoring named files.
 - E2E test suite with benchmark scoring for routing accuracy and session
-  reliability. E2E tests require `ANTHROPIC_API_KEY` and the `claude` binary;
-  they are not part of the default CI pipeline and run via `make test-e2e`.
+  reliability. E2E tests require `ANTHROPIC_API_KEY`, the `claude` binary, and
+  Docker; they are not part of the default CI pipeline and run via
+  `make test-e2e` (validate mode) or `make test-e2e-benchmark` (model
+  scorecards). A separate frontend Playwright e2e suite does run in CI (see the
+  `frontend-e2e` job below) and locally via `make test-e2e-frontend`.
 
 ## OpenSpec-Driven Development
 
@@ -101,8 +109,18 @@ trackers. Not task lists in comments.
 **Why beads:**
 
 - Dependency-aware: blockers and relationships between issues are first-class.
-- Git-friendly: Dolt-powered version control with native sync.
+- Dolt-backed: issues live in a Dolt database, not in git or SQLite.
 - Agent-optimized: JSON output, ready work detection, discovered-from links.
+
+**Backend (how the data actually lives):** `bd` v1.0.x is backed by the shared
+Dolt server on `127.0.0.1:3307` (database `butlers`), discovered via
+`.beads/metadata.json` (`dolt_mode: server`). Writes auto-commit to Dolt
+history; there is no `bd sync` step (that subcommand does not exist in this bd
+version). To refresh the git-tracked JSONL mirror, run
+`bd export -o .beads/issues.export.jsonl`. Never create `.beads/issues.jsonl`:
+on bd 1.0.4 server mode its presence triggers a full-file re-import on every
+write that can wedge bd town-wide. The mirror lives at
+`.beads/issues.export.jsonl` (see `export.path` in `.beads/config.yaml`).
 
 **Workflow:**
 
@@ -124,26 +142,50 @@ purposes.
 **Quality gate before merge:**
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/ -q
+make lint                                                  # ruff check src/ tests/
+uv run ruff format --check src/ tests/ roster/ conftest.py -q
+make check-for-update-joins                                # SQL safety: FOR UPDATE + outer joins
 ```
 
-Both must pass. No exceptions, no "I'll fix the lint later."
+All must pass. No exceptions, no "I'll fix the lint later." The
+`check-for-update-joins` gate is structural: PostgreSQL rejects `FOR UPDATE` on
+the nullable side of an outer join at runtime, and mock-based tests silently
+bypass it, so it is enforced statically.
 
-**CI test pipeline** (runs automatically on push/PR):
+**CI pipeline** (GitHub Actions, runs automatically on push/PR). There are three
+jobs:
+
+1. `check` (Python). Verifies the uv lock file (`uv lock --check`), installs
+   with `uv sync --frozen --dev`, then runs lint, the format check, the SQL
+   safety check, and the test stages below with coverage:
 
 ```bash
-# Unit tests — excludes DB, migration, and E2E tests for speed
-uv run pytest tests/ -q --maxfail=1 --tb=short \
-  --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e \
-  -m "not integration and not e2e"
+# Unit tests: excludes E2E, selects non-integration/non-e2e markers
+uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e \
+  -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json
 
-# Integration tests — requires Docker (testcontainers), runs in parallel
-uv run pytest roster/ tests/integration/ -q --maxfail=5 --tb=short \
-  -m "integration" -n auto --dist loadfile
+# Smoke tests: fast operational gate plus release evidence
+uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short
+
+# Integration tests: requires Docker (testcontainers), runs in parallel
+uv run pytest roster/ tests/integration/ tests/config/ tests/core/ tests/migrations/ \
+  -q --maxfail=5 --tb=short -m "integration and not nightly" -n auto --dist loadfile \
+  --cov=src/butlers --cov-append
 ```
 
-The local quality-gate shortcut (`make test-qg`) mirrors the CI unit-test scope.
+2. `frontend` (Node 24, `frontend/`). Runs `npm ci`, `npm run lint`
+   (`eslint .`), `npm run build` (`tsc -b && vite build`), and `npm run test`
+   (`vitest run`).
+
+3. `frontend-e2e` (Node 24, `frontend/`). Installs Playwright browsers, builds,
+   and runs `npm run test:e2e`.
+
+Longer-running schema-matrix and migration tests run separately in the nightly
+workflow (`-m "nightly or integration"`), not on every push.
+
+The local quality-gate shortcut (`make test-qg`) runs the unit-test scope in
+parallel (`-n auto --dist loadfile`); `make test-qg-serial` is the serial
+fallback for order-dependent debugging.
 
 ## Git Workflow
 
@@ -153,13 +195,29 @@ The local quality-gate shortcut (`make test-qg`) mirrors the CI unit-test scope.
 - Work is not complete until it is pushed to the remote. Local-only commits are
   unreliable artifacts.
 
+**Repo-root discipline (non-negotiable):** never move the main repo root
+(`~/gt/butlers`) off `main`. Agents and humans both rely on the root checkout
+staying on `main` at all times.
+
+- Small, low-regression-risk changes may be committed directly to `main` from
+  the root checkout (after a best-effort format/lint pass on the touched files),
+  without ever moving HEAD off `main`.
+- Anything larger or riskier (features, migrations, broad refactors,
+  architectural work) uses a dedicated git worktree branched off `origin/main`,
+  with commits, pushes, and PRs all coming from the worktree. Open PRs against
+  `--base main`. When in doubt, use a worktree.
+
+See the root `CLAUDE.md` for the exact worktree commands and the full discipline.
+
 ## Development Environment
 
 - **Package manager:** uv (not pip, not poetry, not conda).
 - **Python:** 3.12+
 - **Database:** PostgreSQL with JSONB support.
-- **Containers:** Docker Compose for the full stack.
-- **Frontend:** Vite for the dashboard development server.
+- **Containers:** Docker Compose for the full stack; testcontainers for
+  integration tests.
+- **Frontend:** Node 24 with Vite for the dashboard; ESLint for linting, Vitest
+  for unit tests, Playwright for e2e.
 
 ## Anti-Patterns
 
