@@ -41,25 +41,31 @@ class SpotifyStatusResponse(BaseModel):
     """Response for GET /api/connectors/spotify/status.
 
     Reports the current Spotify connection state for the settings page.
+    Field shape conforms to the ``dashboard-spotify-setup`` spec and the
+    frontend ``SpotifyStatusResponse`` interface consumed by the settings
+    drawer (``SpotifyDrawerContent``).
     """
+
+    connected: bool = False
+    """True when tokens are present and verified against Spotify /me."""
 
     state: SpotifyConnectionState
     """Machine-readable connectivity state."""
 
+    spotify_user_id: str | None = None
+    """Spotify user id of the authenticated user, or null."""
+
     display_name: str | None = None
     """Spotify display name of the authenticated user, or null."""
 
-    email: str | None = None
-    """Spotify account email, or null."""
+    account_type: str | None = None
+    """Spotify product/account type (e.g. 'premium', 'free'), or null."""
 
-    product: str | None = None
-    """Spotify product type (e.g. 'premium', 'free'), or null."""
-
-    last_verified_at: datetime | None = None
+    last_sync_at: datetime | None = None
     """ISO datetime of the last successful /me verification, or null."""
 
-    client_id_configured: bool = False
-    """Whether a client_id is stored in CredentialStore."""
+    error: str | None = None
+    """Human-readable error description when the connection is unhealthy."""
 
     needs_reauth: bool = False
     """True when stored scopes are insufficient for current requirements."""
@@ -100,12 +106,12 @@ class SpotifyConfigRequest(BaseModel):
 class SpotifyConfigResponse(BaseModel):
     """Response for POST /api/connectors/spotify/config."""
 
-    success: bool = True
-    message: str = "Spotify client_id saved"
+    configured: bool = True
+    """True when the client_id was stored in CredentialStore."""
 
 
 class SpotifyDisconnectResponse(BaseModel):
     """Response for POST /api/connectors/spotify/disconnect."""
 
-    success: bool = True
-    message: str = "Spotify disconnected"
+    disconnected: bool = True
+    """True when Spotify credentials were cleared from CredentialStore."""

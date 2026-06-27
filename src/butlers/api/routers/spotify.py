@@ -689,22 +689,22 @@ async def get_spotify_status(
     cred_store = _make_credential_store(db_manager)
     if cred_store is None:
         return SpotifyStatusResponse(
+            connected=False,
             state=SpotifyConnectionState.not_configured,
-            client_id_configured=False,
         )
 
     client_id = await cred_store.resolve(_CRED_CLIENT_ID)
     if not client_id:
         return SpotifyStatusResponse(
+            connected=False,
             state=SpotifyConnectionState.not_configured,
-            client_id_configured=False,
         )
 
     access_token = await cred_store.resolve(_CRED_ACCESS_TOKEN)
     if not access_token:
         return SpotifyStatusResponse(
+            connected=False,
             state=SpotifyConnectionState.needs_auth,
-            client_id_configured=True,
         )
 
     # Check for scope mismatch before verifying connectivity
@@ -714,27 +714,29 @@ async def get_spotify_status(
         missing_scopes = sorted(_REQUIRED_SCOPES - granted_scopes)
         if missing_scopes:
             return SpotifyStatusResponse(
+                connected=False,
                 state=SpotifyConnectionState.needs_reauth,
-                client_id_configured=True,
                 needs_reauth=True,
                 missing_scopes=missing_scopes,
+                error="Spotify authorization is missing required permissions. Re-authorize.",
             )
 
     # Verify token against Spotify API
     me_data = await _fetch_spotify_me(access_token)
     if me_data is None:
         return SpotifyStatusResponse(
+            connected=False,
             state=SpotifyConnectionState.disconnected,
-            client_id_configured=True,
+            error="Spotify token verification failed. Re-connect your account.",
         )
 
     return SpotifyStatusResponse(
+        connected=True,
         state=SpotifyConnectionState.connected,
-        client_id_configured=True,
+        spotify_user_id=me_data.get("id"),
         display_name=me_data.get("display_name"),
-        email=me_data.get("email"),
-        product=me_data.get("product"),
-        last_verified_at=datetime.now(UTC),
+        account_type=me_data.get("product"),
+        last_sync_at=datetime.now(UTC),
     )
 
 
@@ -759,10 +761,7 @@ async def disconnect_spotify(
     if cred_store is None:
         # No DB — nothing to delete; treat as success
         logger.info("Disconnect requested but credential store is unavailable; treating as success")
-        return SpotifyDisconnectResponse(
-            success=True,
-            message="Spotify disconnected (credential store was unavailable)",
-        )
+        return SpotifyDisconnectResponse()
 
     deleted_count = 0
     for key in _TOKEN_CRED_KEYS:
@@ -770,7 +769,4 @@ async def disconnect_spotify(
             deleted_count += 1
 
     logger.info("Spotify disconnect: deleted %d credential key(s)", deleted_count)
-    return SpotifyDisconnectResponse(
-        success=True,
-        message=f"Spotify disconnected ({deleted_count} credential(s) removed)",
-    )
+    return SpotifyDisconnectResponse()

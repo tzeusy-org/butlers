@@ -163,7 +163,7 @@ class TestSpotifyAPI:
         yield
         _spotify_clear_states()
 
-    def _make_app(self, *, client_id="a" * 32, client_secret="secret"):
+    def _make_app(self, *, client_id="a" * 32, client_secret="secret", access_token=None):
         conn = AsyncMock()
 
         async def _fetchrow(q, *args):
@@ -171,11 +171,15 @@ class TestSpotifyAPI:
             secrets = {
                 "SPOTIFY_CLIENT_ID": client_id,
                 "SPOTIFY_CLIENT_SECRET": client_secret,
+                "SPOTIFY_ACCESS_TOKEN": access_token,
             }
             val = secrets.get(key) if key else None
             return {"secret_value": val} if val else None
 
         conn.fetchrow.side_effect = _fetchrow
+        # asyncpg returns a command-status string like "DELETE 1" from execute();
+        # CredentialStore.delete() parses it, so a plain mock object breaks it.
+        conn.execute = AsyncMock(return_value="DELETE 1")
 
         @asynccontextmanager
         async def _acquire():
@@ -197,6 +201,90 @@ class TestSpotifyAPI:
             resp = await client.post("/api/connectors/spotify/oauth/start")
         assert resp.status_code == 200
         assert "authorization_url" in resp.json()
+
+    # ------------------------------------------------------------------
+    # Contract conformance (bu-fm0w7): BE responses must match the spec /
+    # frontend SpotifyStatusResponse shape so the drawer reads real fields.
+    # ------------------------------------------------------------------
+
+    # Exact field set the frontend SpotifyStatusResponse interface consumes.
+    _STATUS_KEYS = {
+        "connected",
+        "state",
+        "spotify_user_id",
+        "display_name",
+        "account_type",
+        "last_sync_at",
+        "error",
+        "needs_reauth",
+        "missing_scopes",
+    }
+
+    async def test_status_not_configured_shape(self):
+        app = self._make_app(client_id=None)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/spotify/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Spec-conformant shape: exactly the keys the FE consumes, no legacy fields.
+        assert set(body) == self._STATUS_KEYS
+        assert body["connected"] is False
+        assert body["state"] == "not_configured"
+        # Legacy BE-only fields must not leak.
+        for legacy in ("email", "product", "last_verified_at", "client_id_configured"):
+            assert legacy not in body
+
+    async def test_status_connected_maps_me_fields(self, monkeypatch):
+        from butlers.api.routers import spotify as spotify_router
+
+        async def _fake_me(_token):
+            return {
+                "id": "spotify_user_42",
+                "display_name": "Ada Lovelace",
+                "product": "premium",
+                "email": "ada@example.com",
+            }
+
+        monkeypatch.setattr(spotify_router, "_fetch_spotify_me", _fake_me)
+
+        app = self._make_app(access_token="tok-abc")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/spotify/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == self._STATUS_KEYS
+        assert body["connected"] is True
+        assert body["state"] == "connected"
+        assert body["spotify_user_id"] == "spotify_user_42"
+        assert body["display_name"] == "Ada Lovelace"
+        # account_type maps from Spotify's product field.
+        assert body["account_type"] == "premium"
+        assert body["last_sync_at"] is not None
+
+    async def test_config_returns_configured_shape(self):
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/connectors/spotify/config",
+                json={"client_id": "a" * 32},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"configured": True}
+
+    async def test_disconnect_returns_disconnected_shape(self):
+        app = self._make_app(access_token="tok-abc")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/connectors/spotify/disconnect")
+        assert resp.status_code == 200
+        assert resp.json() == {"disconnected": True}
 
 
 # ---------------------------------------------------------------------------
