@@ -55,7 +55,8 @@ The module resolves Google OAuth credentials for the configured account and vali
 #### Scenario: Account not connected
 - **WHEN** the module starts with `account = "nonexistent@gmail.com"`
 - **AND** no `google_accounts` row exists for that email
-- **THEN** startup SHALL fail with a descriptive error directing the user to connect the account via the dashboard OAuth flow
+- **THEN** startup SHALL log a warning and enter degraded mode (it SHALL NOT raise); the butler continues to boot
+- **AND** every Drive tool SHALL return a descriptive not-configured error directing the user to connect the account via the dashboard OAuth flow until the account is authorized
 
 ### Requirement: Google OAuth and Rate Limiting
 The Google provider handles OAuth token refresh and rate-limited retries.
@@ -169,7 +170,7 @@ Creates or uploads a file to Google Drive.
 - **WHEN** `drive_write_file(name="report.txt", content="Report content...", mime_type="text/plain")` is called without `folder_id`
 - **THEN** the module SHALL auto-ensure the butler subfolder exists
 - **AND** create the file in `butlers/{butler_name}/` via `files.create` with the provided content as media upload
-- **AND** return `{"file_id": "<id>", "name": "<name>", "folder": "<folder_path>", "web_view_link": "<url>"}`
+- **AND** return `{"file_id": "<id>", "name": "<name>", "folder": "<folder_id>", "web_view_link": "<url>", "mime_type": "<inferred_or_given_type>"}` (the `folder` value is the resolved Drive folder ID, usable directly in subsequent Drive calls)
 
 #### Scenario: Write file to specific folder
 - **WHEN** `drive_write_file(folder_id="xyz789", name="data.csv", content="a,b,c\n1,2,3", mime_type="text/csv")` is called
@@ -191,7 +192,7 @@ Creates a folder in Google Drive.
 #### Scenario: Create folder in butler hierarchy (default)
 - **WHEN** `drive_create_folder(name="reports")` is called without `parent_id`
 - **THEN** the folder SHALL be created inside the butler's subfolder (`butlers/{butler_name}/reports`)
-- **AND** return `{"folder_id": "<id>", "name": "<name>", "parent_path": "<path>"}`
+- **AND** return `{"folder_id": "<id>", "name": "<name>", "parent_path": "<parent_folder_id>", "web_view_link": "<url>"}` (the `parent_path` value is the resolved Drive parent folder ID, not a human-readable path)
 
 #### Scenario: Create folder in specific location
 - **WHEN** `drive_create_folder(parent_id="xyz789", name="archive")` is called
@@ -203,7 +204,7 @@ Moves a file from one folder to another.
 #### Scenario: Move file to new parent
 - **WHEN** `drive_move_file(file_id="abc123", new_parent_id="xyz789")` is called
 - **THEN** the module SHALL call `files.update` with `addParents=new_parent_id` and `removeParents=<current_parent_id>`
-- **AND** return `{"file_id": "<id>", "name": "<name>", "new_parent_id": "<id>"}`
+- **AND** return `{"status": "ok", "file_id": "<id>", "name": "<name>", "new_parent_id": "<id>"}`
 
 #### Scenario: File not found
 - **WHEN** `drive_move_file` is called with a nonexistent file ID

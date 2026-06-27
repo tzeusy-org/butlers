@@ -19,10 +19,12 @@ The module registers MCP tools for inbox operations and message send/reply.
 
 #### Scenario: Email write tools
 
-- **WHEN** the email module registers tools
+- **WHEN** the email module registers tools AND `send_tools = true` is configured (default `false`)
 - **THEN** the following write tools are available:
   - `email_send_message` (compose and send a new email)
   - `email_reply_to_thread` (reply to an existing email thread)
+- **AND** when `send_tools = false` these tools are NOT registered (only butlers that opt in, such as the Messenger, enable them)
+- **AND** `email_send_message` declares `to` as a safety-critical arg (`tool_metadata`) so the approval gate can intercept outbound sends, enforces the email send permission before SMTP, and writes a `gmail_send` audit event
 
 ### Requirement: EmailConfig with Credential Scoping
 
@@ -54,7 +56,8 @@ Credentials are resolved at startup via CredentialStore (DB-first, then env) and
 #### Scenario: credentials_env property
 
 - **WHEN** `credentials_env` is queried
-- **THEN** it returns the env var names for all enabled scopes (address and password for each)
+- **THEN** it returns the env var names for the bot scope only (address and password) when the bot scope is enabled
+- **AND** user-scope credentials are NOT included; they are resolved from the owner `entity_info` record, not from environment variables
 
 ### Requirement: IMAP Inbox Search
 

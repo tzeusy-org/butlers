@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Home Assistant module provides MCP tools for bidirectional smart-home control: querying entity state from an in-memory cache, calling HA services, fetching history and statistics, rendering Jinja2 templates, and logging all issued commands. It maintains a persistent WebSocket connection for real-time state updates and falls back to REST polling when the WebSocket is unavailable.
+The Home Assistant module provides MCP tools for bidirectional smart-home control: querying entity state from an in-memory cache, calling HA services, fetching history and statistics, rendering Jinja2 templates, logging all issued commands, and tracking recurring home-maintenance items. It maintains a persistent WebSocket connection for real-time state updates and falls back to REST polling when the WebSocket is unavailable. A `read_only` mode restricts the surface to query tools only.
 
 ## ADDED Requirements
 
@@ -17,7 +17,8 @@ Configuration controls the HA connection URL, SSL verification, WebSocket keepal
 - **AND** `verify_ssl` (bool, default `false`)
 - **AND** `websocket_ping_interval` (int, default `30` — seconds between WebSocket keepalive pings)
 - **AND** `poll_interval_seconds` (int, default `60` — REST polling interval when WebSocket is disconnected)
-- **AND** `snapshot_interval_seconds` (int, default `300` — interval for persisting entity cache to DB)
+- **AND** `snapshot_interval_seconds` (int, default `300`; interval for the snapshot loop)
+- **AND** `read_only` (bool, default `false`; when `true`, only query tools are registered and all mutation tools (`ha_call_service`, `ha_activate_scene`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove`) are skipped)
 
 #### Scenario: Config validation
 
@@ -306,33 +307,35 @@ Every service call issued through the module is persisted to the `ha_command_log
 
 ### Requirement: Entity Snapshot Persistence
 
-The module periodically persists the entity cache to the database for offline context.
+Snapshot persistence to the `ha_entity_snapshot` table is currently disabled. HA state is queried live via `ha_get_entity_state` / `ha_list_entities`, so the module does not write the periodic cache snapshot (an earlier implementation that stored every entity as a property fact produced roughly 210k superseded rows in three days). When the snapshot loop does run, it persists entity state to the memory subsystem as volatile `ha_state` property facts anchored to HA entities (one active fact per entity), not to the `ha_entity_snapshot` table.
 
-#### Scenario: Periodic snapshot
+#### Scenario: Snapshot loop persistence target
 
-- **WHEN** `snapshot_interval_seconds` has elapsed since the last snapshot
-- **THEN** the module SHALL UPSERT all cached entities into `ha_entity_snapshot` (ON CONFLICT DO UPDATE on entity_id)
+- **WHEN** the snapshot loop runs (interval `snapshot_interval_seconds`)
+- **THEN** the module SHALL persist entity state to the memory subsystem as `ha_state` property facts (each new fact supersedes the prior active `ha_state` fact for that entity), and SHALL NOT UPSERT into the `ha_entity_snapshot` table
 
-#### Scenario: Snapshot on shutdown
+#### Scenario: Shutdown
 
 - **WHEN** `on_shutdown` is called
-- **THEN** the module SHALL persist a final snapshot before closing connections
+- **THEN** the module SHALL close its connections without writing a final entity snapshot (snapshot persistence is disabled; HA state is available live)
 
 ### Requirement: Database Schema Migration
 
-The module provides an Alembic migration for its two tables.
+The module provides an Alembic migration for its home-domain tables.
 
 #### Scenario: Migration creates tables
 
 - **WHEN** the Alembic migration runs
-- **THEN** `ha_entity_snapshot` (entity_id TEXT PK, state TEXT, attributes JSONB, last_updated TIMESTAMPTZ, captured_at TIMESTAMPTZ) SHALL be created
+- **THEN** `ha_entity_snapshot` (entity_id TEXT PK, state TEXT, attributes JSONB, last_updated TIMESTAMPTZ, captured_at TIMESTAMPTZ) SHALL be created (retained for compatibility even though snapshot writes are currently disabled)
 - **AND** `ha_command_log` (id BIGSERIAL PK, domain TEXT, service TEXT, target JSONB, data JSONB, result JSONB, context_id TEXT, issued_at TIMESTAMPTZ) SHALL be created
+- **AND** `maintenance_items` SHALL be created (backing the maintenance tool suite)
+- **AND** the `ha_state` predicate SHALL be seeded into `predicate_registry`
 - **AND** index `ix_ha_command_log_issued_at` on `ha_command_log(issued_at)` SHALL be created
 
 #### Scenario: Migration branch label
 
 - **WHEN** `migration_revisions()` is called
-- **THEN** it SHALL return `"home_assistant"` as the Alembic branch label
+- **THEN** it SHALL return `"home"` as the Alembic branch label
 
 ### Requirement: Tool Metadata for Approval Sensitivity
 
@@ -361,9 +364,40 @@ The module registers under the name `home_assistant` with a dependency on `conta
 
 ### Requirement: Tool Registration
 
-The module registers all 9 MCP tools during `register_tools()`.
+The module registers up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
 
 #### Scenario: Tool inventory
 
-- **WHEN** `register_tools(mcp, config, db)` is called
-- **THEN** the following tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_call_service`, `ha_activate_scene`
+- **WHEN** `register_tools(mcp, config, db)` is called with `read_only = false` (default)
+- **THEN** the following tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_call_service`, `ha_activate_scene`, `ha_maintenance_list`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove`
+
+#### Scenario: Read-only tool inventory
+
+- **WHEN** `register_tools(mcp, config, db)` is called with `read_only = true`
+- **THEN** only the query tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_maintenance_list`
+- **AND** the mutation tools `ha_call_service`, `ha_activate_scene`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove` SHALL NOT be registered
+
+### Requirement: Maintenance Tool Suite
+
+The module provides recurring home-maintenance tracking backed by the `maintenance_items` table.
+
+#### Scenario: Create a maintenance item
+
+- **WHEN** `ha_maintenance_create(name, category, interval_days, notes=None)` is called
+- **THEN** a maintenance item SHALL be created with `category` one of `filter`, `hvac`, `appliance`, `plumbing`, `electrical`, `general`
+- **AND** duplicate names SHALL be rejected
+
+#### Scenario: Complete a maintenance item
+
+- **WHEN** `ha_maintenance_complete(name, completed_at=None)` is called
+- **THEN** the item SHALL be marked complete and `next_due_at` recomputed from `interval_days` (`completed_at` defaults to now)
+
+#### Scenario: List maintenance items
+
+- **WHEN** `ha_maintenance_list(category=None, status=None)` is called
+- **THEN** items SHALL be returned with a computed `status`: `due` (`next_due_at <= now()`), `upcoming` (within 7 days), or `ok` (more than 7 days away); never-completed items with `next_due_at IS NULL` are classified `due`
+
+#### Scenario: Remove a maintenance item
+
+- **WHEN** `ha_maintenance_remove(name)` is called
+- **THEN** the item SHALL be deleted, or an error returned if no item with that name exists

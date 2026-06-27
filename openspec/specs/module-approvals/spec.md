@@ -258,14 +258,15 @@ Configurable retention windows control automatic cleanup of approvals data: `pen
 - **WHEN** `cleanup_old_events` is called with `privileged=True`
 - **THEN** events older than the retention window are deleted (bypasses immutability trigger)
 
-### Requirement: MCP Tool Surface (16 Tools)
+### Requirement: MCP Tool Surface (17 Tools)
 
-The module registers exactly 16 stable MCP tools when enabled (13 existing + 3 new autonomy suggestion tools).
+The module registers exactly 17 stable MCP tools when enabled (8 queue tools + 6 rule tools + 3 autonomy suggestion tools).
 
-#### Scenario: Queue management tools (7)
+#### Scenario: Queue management tools (8)
 
 - **WHEN** the approvals module is registered
-- **THEN** the following 7 queue tools are available: `list_pending_actions`, `show_pending_action`, `approve_action`, `reject_action`, `pending_action_count`, `expire_stale_actions`, `list_executed_actions`
+- **THEN** the following 8 queue tools are available: `list_pending_actions`, `show_pending_action`, `approve_action`, `dispatch_approved_action`, `reject_action`, `pending_action_count`, `expire_stale_actions`, `list_executed_actions`
+- **AND** `dispatch_approved_action` executes an already-approved action by calling the original tool directly (idempotent replay), without re-entering the approval gate
 
 #### Scenario: Rule management tools (6)
 
@@ -314,7 +315,7 @@ The approval gate operates at two layers. Both MUST enforce gating independently
 
 **Layer 1 — MCP tool wrapping** (gate.py): Intercepts gated tool calls at the MCP boundary before the tool handler runs. This is the primary gate for direct tool invocations.
 
-**Layer 2 — route.execute inline gate** (daemon.py): The Messenger butler's `route.execute` handler calls module methods directly (e.g., `_send_email()`, `_send_message()`), bypassing MCP tool wrappers entirely. An inline approval gate MUST re-enforce role-based gating at this layer for every outbound channel.
+**Layer 2 (inline delivery gate)** (`core_tools/_notifications.py` and `core_tools/_routing.py`): Outbound delivery paths call module methods directly (e.g., `_send_email()`, `_send_message()`), bypassing MCP tool wrappers entirely. An inline approval gate MUST re-enforce role-based gating at this layer for every outbound channel. As of the channel-general gating work, `notify()` (`_notifications.py`) enforces the gate on all channels: the email channel via `check_email_recipient` and every non-email channel (telegram and beyond) via the channel-general `check_recipient` guard. The Messenger's `route.execute` synchronous delivery path (`_routing.py`) currently enforces the inline gate for the email channel only; extending it to telegram and other channels for full parity is tracked as remediation work.
 
 #### Scenario: route.execute enforces approval gate for email delivery
 

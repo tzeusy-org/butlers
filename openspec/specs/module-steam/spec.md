@@ -39,7 +39,7 @@ The module resolves Steam API keys at startup from the account registry.
 
 - **WHEN** `on_startup` is called and no active Steam account exists
 - **THEN** the module SHALL log a warning and start in degraded mode
-- **AND** all tools SHALL return an actionable error: `{"error": "no_steam_account", "message": "No Steam account connected. Connect one via the dashboard at /settings/integrations.", "hint": "Register an API key at https://steamcommunity.com/dev/apikey and connect it through the dashboard."}`
+- **AND** all tools SHALL return an actionable error: `{"error": "no_steam_account", "message": "No Steam account is connected.", "hint": "Connect a Steam account via the dashboard settings and set it as primary."}`
 
 ### Requirement: Player Summary Tool
 
@@ -66,8 +66,8 @@ The module resolves Steam API keys at startup from the account registry.
 
 #### Scenario: Get owned games
 
-- **WHEN** `steam_get_owned_games` is called with optional `steam_id` and `include_free` (default false)
-- **THEN** the tool SHALL call `IPlayerService/GetOwnedGames/v1` with `include_appinfo=true` and `include_played_free_games` matching the `include_free` parameter
+- **WHEN** `steam_get_owned_games` is called with optional `steam_id` and `include_free_games` (default true)
+- **THEN** the tool SHALL call `IPlayerService/GetOwnedGames/v1` with `include_appinfo=true` and `include_played_free_games` matching the `include_free_games` parameter
 - **AND** return `game_count` and a list of games with: `app_id`, `name`, `playtime_forever_minutes`, `playtime_2weeks_minutes` (if any), `icon_url`, `logo_url`
 
 #### Scenario: Private game library
@@ -121,7 +121,7 @@ The module resolves Steam API keys at startup from the account registry.
 
 - **WHEN** `steam_get_game_news` is called with `app_id` and optional `count` (default 5)
 - **THEN** the tool SHALL call `ISteamNews/GetNewsForApp/v2` with the app ID and count
-- **AND** return a list of news items with: `gid` (news ID), `title`, `url`, `author`, `contents` (truncated to 500 chars), `date` (ISO8601), `feed_label`
+- **AND** return a list of news items with: `gid` (news ID), `title`, `url`, `author`, `contents` (truncated to a configurable `max_length`, default 300 chars), `date` (ISO8601), `feed_label`
 - **AND** this tool does NOT require a SteamID parameter (game news is public)
 
 ### Requirement: Player Level Tool

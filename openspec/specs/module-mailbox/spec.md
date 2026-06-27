@@ -47,7 +47,7 @@ Messages transition through statuses: `unread`, `read`, `actioned`, `archived`.
 
 ### Requirement: Known Channels
 
-The module recognizes a set of known sender channels: `mcp`, `telegram`, `email`, `api`, `scheduler`, `system`.
+The module recognizes a set of known sender channels: `mcp`, `telegram_bot`, `telegram_user_client`, `email`, `api`, `scheduler`, `system`.
 
 #### Scenario: Unknown channel accepted with warning
 
@@ -61,7 +61,7 @@ The module registers 5 MCP tools for mailbox management.
 
 #### Scenario: mailbox_post
 
-- **WHEN** `mailbox_post` is called with `sender`, `sender_channel`, `body`, optional `subject`, `priority`, `metadata`
+- **WHEN** `mailbox_post` is called with `sender`, `sender_channel`, `body`, optional `subject`, `priority` (tool default 2), `metadata`
 - **THEN** a new message is inserted into the mailbox table
 - **AND** the body is stored as JSONB `{"text": body}` when the column type is `jsonb`
 - **AND** the response includes `message_id` (UUID) and `created_at`
@@ -96,7 +96,7 @@ The module introspects the actual database schema to handle column type variatio
 #### Scenario: JSONB body column
 
 - **WHEN** the `body` column is of type `jsonb`
-- **THEN** the body is cast with `$N::jsonb` during INSERT
+- **THEN** the body dict is passed directly to the asyncpg JSONB codec during INSERT (no explicit `$N::jsonb` cast)
 - **AND** JSON string values in body and metadata are parsed on read
 
 #### Scenario: TEXT body column

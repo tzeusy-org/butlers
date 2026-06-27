@@ -100,10 +100,10 @@ The pipeline uses per-task context variables to prevent cross-contamination betw
 - **AND** context is cleared when the routing session completes
 
 ### Requirement: Conversation Decomposition Branch
-The pipeline SHALL detect `control.payload_type == "conversation_history"` on incoming messages and route them through a decomposition branch instead of standard LLM classification.
+The pipeline SHALL detect `payload_type == "conversation_history"` (read from the routing request context, which is populated from the ingest envelope's `control` block) on incoming messages and route them through a decomposition branch instead of standard LLM classification.
 
 #### Scenario: Decomposition branch entry
-- **WHEN** `pipeline.process()` receives a message where `raw_payload.control.payload_type == "conversation_history"`
+- **WHEN** `pipeline.process()` receives a message where the request context carries `payload_type == "conversation_history"`
 - **AND** `triage_decision` is `pass_through` (no policy bypass)
 - **THEN** the pipeline enters the conversation decomposition branch
 - **AND** does NOT spawn a standard classification CC session

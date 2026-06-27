@@ -16,6 +16,7 @@ The module registers MCP tools for send and reply operations.
 - **THEN** the following tools are available:
   - `telegram_send_message` (send a message to a chat)
   - `telegram_reply_to_message` (reply to a specific message in a chat)
+  - `telegram_react_to_message` (set an emoji reaction on a specific message via `chat_id`, `message_id`, `emoji`)
 
 ### Requirement: Output-Only Module Design
 
@@ -88,7 +89,7 @@ The module supports setting Telegram reactions for ingest pipeline lifecycle eve
 - **WHEN** `react_for_ingest` is called with `external_thread_id` (format: `<chat_id>:<message_id>`) and a reaction key
 - **THEN** the reaction emoji is mapped via `REACTION_TO_EMOJI`:
   - `:eye` -> eyes emoji (in-progress)
-  - `:done` -> checkmark emoji (success)
+  - `:thumbsup` -> thumbs-up emoji (success)
   - `:space invader` -> alien emoji (failure)
 - **AND** a `setMessageReaction` API call is made
 

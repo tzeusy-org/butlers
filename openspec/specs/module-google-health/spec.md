@@ -122,8 +122,8 @@ All query tools SHALL query the Health butler's SPO fact store — not the Googl
 #### Scenario: Fact store query path
 
 - **WHEN** any query tool runs
-- **THEN** it SHALL use the memory module's `memory_search` primitives with `scope='health'` and the appropriate predicate filter
-- **AND** it SHALL NOT issue any HTTP call to `health.googleapis.com`
+- **THEN** it SHALL return a structured directive (query string, `scope='health'`, the appropriate predicate filter, and an `instruction` field) telling the runtime instance to call `memory_search` against the Health butler's fact store
+- **AND** the tool itself SHALL NOT call `memory_search` directly (the module holds no embedding engine; `memory_search` is invoked by the LLM via the directive) and SHALL NOT issue any HTTP call to `health.googleapis.com`
 
 #### Scenario: Connector outage resilience
 
