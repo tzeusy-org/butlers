@@ -11,7 +11,7 @@ Verifies:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +19,7 @@ import pytest
 from butlers.connectors.google_calendar import (
     CalendarAccountConfig,
     CalendarConnectorRuntime,
+    StartingSoonSeenSet,
     _build_ingest_envelope,
     _build_normalized_text,
     _parse_dt,
@@ -105,33 +106,41 @@ def test_internal_envelope_passes_parse_ingest_envelope() -> None:
 
 
 @pytest.mark.parametrize(
-    "change_type,expected_prefix",
-    [("created", "[CREATED]"), ("updated", "[UPDATED]"), ("deleted", "[DELETED]")],
+    "event_type",
+    ["created", "updated", "deleted", "starting_soon"],
 )
-def test_normalized_text_change_type_prefix(change_type: str, expected_prefix: str) -> None:
+def test_normalized_text_spec_format(event_type: str) -> None:
+    """normalized_text follows the spec format with event-type prefix + location."""
     text = _build_normalized_text(
-        change_type=change_type,
+        event_type=event_type,
         summary="Test Event",
         start_dt=datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
         end_dt=datetime(2026, 6, 1, 11, 0, tzinfo=UTC),
+        location="Room 5B",
         organizer_email="org@example.com",
-        attendees=[],
+        attendee_count=3,
     )
-    assert expected_prefix in text
+    assert text.startswith(f"[Calendar: {event_type}] Test Event")
+    assert "2026-06-01 10:00 UTC - 2026-06-01 11:00 UTC" in text
+    assert "Room 5B" in text
+    assert "3 attendees" in text
+    assert "Organizer: org@example.com" in text
 
 
-def test_normalized_text_attendee_list_capped_at_10() -> None:
-    """Attendee list is capped; overflow shown as (+N more)."""
-    attendees = [f"user{i}@example.com" for i in range(15)]
+def test_normalized_text_missing_location_placeholder() -> None:
+    """Absent location/time degrade to spec placeholders, not omitted fields."""
     text = _build_normalized_text(
-        change_type="updated",
-        summary="Big meeting",
+        event_type="updated",
+        summary="No place",
         start_dt=None,
         end_dt=None,
+        location=None,
         organizer_email="org@example.com",
-        attendees=attendees,
+        attendee_count=0,
     )
-    assert "(+5 more)" in text
+    assert "(no location)" in text
+    assert "0 attendees" in text
+    assert "? - ?" in text
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +177,68 @@ def test_parse_event_start_prefers_datetime_and_missing() -> None:
 # ---------------------------------------------------------------------------
 # Policy integration: blocked events buffered
 # ---------------------------------------------------------------------------
+
+
+async def test_check_starting_soon_emits_spec_envelope(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """The live _check_starting_soon path emits a spec-aligned starting-soon envelope.
+
+    Asserts the envelope carries:
+    - control.idempotency_key in the canonical
+      ``gcal:<endpoint>:starting_soon:<event_id>:<lead>`` form, stable across re-checks
+    - event.external_event_id == ``starting_soon:<event_id>``
+    - normalized_text in the spec format, including location
+    """
+    runtime = CalendarConnectorRuntime(account_config)
+    start_dt = datetime.now(UTC) + timedelta(minutes=14)
+    event = {
+        "id": "evt-soon",
+        "summary": "Launch sync",
+        "status": "confirmed",
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": (start_dt + timedelta(minutes=30)).isoformat()},
+        "location": "Room 5B",
+        "organizer": {"email": "org@example.com"},
+        "attendees": [{"email": "a@example.com"}, {"email": "b@example.com"}],
+    }
+    runtime._upcoming_events["evt-soon"] = (event, start_dt)
+
+    submitted: list[dict] = []
+
+    async def _capture(env: dict) -> None:
+        submitted.append(env)
+
+    with patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture):
+        await runtime._check_starting_soon()
+        # Re-check with a fresh seen-set proves the idempotency_key is deterministic
+        # (derived from event id + lead, not from wall-clock observation time).
+        runtime._seen_set = StartingSoonSeenSet()
+        await runtime._check_starting_soon()
+
+    assert len(submitted) == 2
+    env = submitted[0]
+    assert env["event"]["external_event_id"] == "starting_soon:evt-soon"
+    assert env["control"]["idempotency_key"] == f"gcal:{_ENDPOINT}:starting_soon:evt-soon:15"
+    assert env["control"]["policy_tier"] == "interactive"
+    assert env["payload"]["normalized_text"].startswith("[Calendar: starting_soon] Launch sync")
+    assert "Room 5B" in env["payload"]["normalized_text"]
+    assert "2 attendees" in env["payload"]["normalized_text"]
+    # idempotency_key is stable across independent re-checks of the same event
+    assert submitted[1]["control"]["idempotency_key"] == env["control"]["idempotency_key"]
+
+    # Within a single run the seen-set suppresses duplicate notifications.
+    runtime2 = CalendarConnectorRuntime(account_config)
+    runtime2._upcoming_events["evt-soon"] = (event, start_dt)
+    again: list[dict] = []
+
+    async def _capture2(env: dict) -> None:
+        again.append(env)
+
+    with patch.object(runtime2, "_submit_to_ingest_api", side_effect=_capture2):
+        await runtime2._check_starting_soon()
+        await runtime2._check_starting_soon()
+    assert len(again) == 1
 
 
 async def test_blocked_event_buffered_not_ingested(

@@ -446,15 +446,16 @@ def build_event_envelope(
     organizer_email = event.get("organizer", {}).get("email") or "unknown"
     idempotency_key = f"gcal:{endpoint_identity}:{event_id}:{updated}"
 
-    # Build simple normalized text for this envelope
+    # Build normalized text per spec (shared formatter).
     summary = event.get("summary", "(no title)")
-    start_raw = event.get("start", {})
-    end_raw = event.get("end", {})
-    start_str = start_raw.get("dateTime") or start_raw.get("date") or "?"
-    end_str = end_raw.get("dateTime") or end_raw.get("date") or "?"
-    normalized_text = (
-        f"[Calendar: {event_type}] {summary} | {start_str} - {end_str}"
-        f" | Organizer: {organizer_email}"
+    normalized_text = _build_normalized_text(
+        event_type=event_type,
+        summary=summary,
+        start_dt=_parse_event_start(event),
+        end_dt=_parse_event_end(event),
+        location=event.get("location"),
+        organizer_email=organizer_email,
+        attendee_count=len(event.get("attendees", []) or []),
     )
 
     return {
@@ -509,12 +510,16 @@ def build_starting_soon_envelope(
     organizer_email = event.get("organizer", {}).get("email") or "unknown"
     idempotency_key = f"gcal:{endpoint_identity}:starting_soon:{event_id}:{lead_minutes}"
 
-    # Build normalized text for starting-soon
+    # Build normalized text per spec (shared formatter).
     summary = event.get("summary", "(no title)")
-    start_raw = event.get("start", {})
-    start_str = start_raw.get("dateTime") or start_raw.get("date") or ""
-    normalized_text = (
-        f"[Calendar: starting_soon] {summary} | {start_str} | Organizer: {organizer_email}"
+    normalized_text = _build_normalized_text(
+        event_type="starting_soon",
+        summary=summary,
+        start_dt=_parse_event_start(event),
+        end_dt=_parse_event_end(event),
+        location=event.get("location"),
+        organizer_email=organizer_email,
+        attendee_count=len(event.get("attendees", []) or []),
     )
 
     return {
@@ -851,8 +856,10 @@ class CalendarConnectorRuntime:
         self._sync_token: str | None = None
 
         # In-memory upcoming event cache for "starting soon" synthesis.
-        # Maps event_id → (summary, start_dt) for events in the look-ahead window.
-        self._upcoming_events: dict[str, tuple[str, datetime]] = {}
+        # Maps event_id → (event, start_dt) for events in the look-ahead window.
+        # The full event dict is retained so starting-soon envelopes can be built
+        # through the canonical builder (location, attendees, idempotency_key).
+        self._upcoming_events: dict[str, tuple[dict[str, Any], datetime]] = {}
 
         # Seen-set for "starting soon" dedup
         self._seen_set = StartingSoonSeenSet()
@@ -1247,8 +1254,7 @@ class CalendarConnectorRuntime:
             event_id = event.get("id", "")
             start_dt = _parse_event_start(event)
             if start_dt and now <= start_dt <= window_end:
-                summary = event.get("summary", "(no title)")
-                self._upcoming_events[event_id] = (summary, start_dt)
+                self._upcoming_events[event_id] = (event, start_dt)
 
         if ingest_events:
             for event in all_events:
@@ -1332,12 +1338,13 @@ class CalendarConnectorRuntime:
 
         # Build normalized_text
         normalized_text = _build_normalized_text(
-            change_type=change_type,
+            event_type=change_type,
             summary=summary,
             start_dt=start_dt,
             end_dt=end_dt,
+            location=event.get("location"),
             organizer_email=organizer_email,
-            attendees=attendee_emails,
+            attendee_count=len(attendee_emails),
         )
 
         # Build ingestion policy envelope for pre-ingest evaluation
@@ -1420,7 +1427,7 @@ class CalendarConnectorRuntime:
             if change_type == "deleted":
                 self._upcoming_events.pop(event_id, None)
             elif now <= start_dt <= window_end:
-                self._upcoming_events[event_id] = (summary, start_dt)
+                self._upcoming_events[event_id] = (event, start_dt)
             else:
                 self._upcoming_events.pop(event_id, None)
 
@@ -1528,7 +1535,8 @@ class CalendarConnectorRuntime:
         for eid in to_remove:
             del self._upcoming_events[eid]
 
-        for event_id, (summary, start_dt) in list(self._upcoming_events.items()):
+        for event_id, (event, start_dt) in list(self._upcoming_events.items()):
+            summary = event.get("summary", "(no title)")
             for lead_minutes in self._config.all_lead_minutes:
                 notify_at = start_dt - timedelta(minutes=lead_minutes)
 
@@ -1539,43 +1547,14 @@ class CalendarConnectorRuntime:
                     if self._seen_set.has_seen(event_id, lead_minutes):
                         continue
 
-                    # Emit "starting soon" envelope
-                    observed_at = datetime.now(UTC).isoformat()
-                    start_dt_utc = (
-                        start_dt.astimezone(UTC) if start_dt.tzinfo is not None else start_dt
+                    # Emit "starting soon" envelope via the canonical builder so it
+                    # carries the spec external_event_id ("starting_soon:<event_id>") and
+                    # a stable control.idempotency_key alongside the full event payload.
+                    envelope = build_starting_soon_envelope(
+                        event,
+                        lead_minutes=lead_minutes,
+                        endpoint_identity=self._config.endpoint_identity,
                     )
-                    normalized_text = (
-                        f"Event starting soon ({lead_minutes}m): {summary} "
-                        f"starts at {start_dt_utc.strftime('%Y-%m-%d %H:%M UTC')}"
-                    )
-                    envelope = {
-                        "schema_version": "ingest.v1",
-                        "source": {
-                            "channel": _CONNECTOR_CHANNEL,
-                            "provider": _CONNECTOR_PROVIDER,
-                            "endpoint_identity": self._config.endpoint_identity,
-                        },
-                        "event": {
-                            "external_event_id": f"{event_id}:starting_soon:{lead_minutes}m",
-                            "external_thread_id": event_id,
-                            "observed_at": observed_at,
-                        },
-                        "sender": {
-                            "identity": self._config.email,
-                        },
-                        "payload": {
-                            "raw": {
-                                "event_id": event_id,
-                                "summary": summary,
-                                "starts_at": start_dt.isoformat(),
-                                "lead_minutes": lead_minutes,
-                            },
-                            "normalized_text": normalized_text,
-                        },
-                        "control": {
-                            "policy_tier": "interactive",
-                        },
-                    }
 
                     try:
                         await self._submit_to_ingest_api(envelope)
@@ -2196,31 +2175,44 @@ def _parse_dt(dt_str: str) -> datetime | None:
         return None
 
 
+def _format_dt_utc(dt: datetime | None) -> str:
+    """Format a datetime as ``YYYY-MM-DD HH:MM UTC``, or ``?`` when absent."""
+    if dt is None:
+        return "?"
+    dt_utc = dt.astimezone(UTC) if dt.tzinfo is not None else dt
+    return dt_utc.strftime("%Y-%m-%d %H:%M UTC")
+
+
 def _build_normalized_text(
     *,
-    change_type: str,
+    event_type: str,
     summary: str,
     start_dt: datetime | None,
     end_dt: datetime | None,
+    location: str | None,
     organizer_email: str,
-    attendees: list[str],
+    attendee_count: int,
 ) -> str:
-    """Build a structured normalized_text string for ingest.v1."""
-    parts = [f"[{change_type.upper()}] {summary}"]
-    if start_dt:
-        start_utc = start_dt.astimezone(UTC) if start_dt.tzinfo is not None else start_dt
-        parts.append(f"Start: {start_utc.strftime('%Y-%m-%d %H:%M UTC')}")
-    if end_dt:
-        end_utc = end_dt.astimezone(UTC) if end_dt.tzinfo is not None else end_dt
-        parts.append(f"End: {end_utc.strftime('%Y-%m-%d %H:%M UTC')}")
-    if organizer_email and organizer_email != "unknown":
-        parts.append(f"Organizer: {organizer_email}")
-    if attendees:
-        # Cap attendee list to avoid overly long normalized_text
-        shown = attendees[:10]
-        suffix = f" (+{len(attendees) - 10} more)" if len(attendees) > 10 else ""
-        parts.append(f"Attendees: {', '.join(shown)}{suffix}")
-    return " | ".join(parts)
+    """Build a structured normalized_text string per the Google Calendar spec.
+
+    Per connector-google-calendar/spec.md §Scenario: Normalized text format, the
+    canonical shape is::
+
+        "[Calendar: <event_type>] <title> | <start> - <end> | <location>
+         | <attendee_count> attendees | Organizer: <organizer>"
+
+    where ``event_type`` is one of ``created``, ``updated``, ``deleted`` or
+    ``starting_soon``. ``location`` falls back to ``(no location)`` when absent.
+    """
+    location_str = location.strip() if location and location.strip() else "(no location)"
+    organizer_str = organizer_email or "unknown"
+    return (
+        f"[Calendar: {event_type}] {summary}"
+        f" | {_format_dt_utc(start_dt)} - {_format_dt_utc(end_dt)}"
+        f" | {location_str}"
+        f" | {attendee_count} attendees"
+        f" | Organizer: {organizer_str}"
+    )
 
 
 def _build_ingest_envelope(
