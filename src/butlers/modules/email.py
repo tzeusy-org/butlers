@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.core.audit import write_audit_entry
 from butlers.core.permissions import EMAIL_SEND_PERMISSION, require_permission
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolMeta
 
 logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -142,6 +142,20 @@ class EmailModule(Module):
 
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        """Declare the recipient address as a safety-critical argument.
+
+        The ``to`` argument controls where an outbound email is delivered, so a
+        standing approval rule may only auto-approve a send when it pins ``to``
+        to an exact value or pattern.  A rule that leaves ``to`` unconstrained
+        (``any``) cannot blanket-approve sends to arbitrary recipients — the
+        approval gate parks such calls for explicit owner approval.
+        """
+        return {
+            "email_send_message": ToolMeta(arg_sensitivities={"to": True}),
+            "email_reply_to_thread": ToolMeta(arg_sensitivities={"to": True}),
+        }
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register email MCP tools.

@@ -97,6 +97,27 @@ def _constraint_specificity(constraint: dict[str, Any] | str) -> int:
     return 2  # plain value = exact match
 
 
+def constraint_pins_value(constraint: dict[str, Any] | str | None) -> bool:
+    """Return whether *constraint* pins an argument to a specific value or pattern.
+
+    A constraint "pins" an argument when it is an ``exact`` match or a
+    ``pattern`` glob — anything that bounds the argument to a non-arbitrary
+    value.  An ``any`` constraint (or a missing constraint) does not pin the
+    argument: it permits any value.
+
+    Used by the approval gate to decide whether a standing rule constrains the
+    safety-critical arguments a module declared via ``Module.tool_metadata()``.
+    """
+    if constraint is None:
+        return False
+    return _constraint_specificity(constraint) > 0
+
+
+def parse_constraints(raw: Any) -> dict[str, Any]:
+    """Public wrapper around :func:`_parse_constraints` (JSON string or dict)."""
+    return _parse_constraints(raw)
+
+
 def _rule_specificity(arg_constraints: dict[str, Any]) -> int:
     """Compute total specificity score for a rule's constraints.
 

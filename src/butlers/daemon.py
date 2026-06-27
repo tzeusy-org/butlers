@@ -101,7 +101,7 @@ from butlers.module_state import (
     ModuleStartupStatus,
 )
 from butlers.modules.approvals.gate import apply_approval_gates
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolMeta
 from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
 from butlers.owner_bootstrap import (
@@ -1337,7 +1337,23 @@ class ButlerDaemon:
             return {}
 
         pool = self.db.pool
-        originals = await apply_approval_gates(self.mcp, approval_config, pool, self.config.name)
+
+        # Collect module-declared tool sensitivity metadata so the gate can
+        # honor safety-critical argument declarations (a standing rule may only
+        # auto-approve when it pins the safety-critical args a module declared).
+        tool_metadata: dict[str, ToolMeta] = {}
+        for mod in self._active_modules:
+            try:
+                declared = mod.tool_metadata()
+                if declared:
+                    tool_metadata.update(declared)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Module '%s' tool_metadata() failed: %s", mod.name, exc)
+                continue
+
+        originals = await apply_approval_gates(
+            self.mcp, approval_config, pool, self.config.name, tool_metadata=tool_metadata
+        )
 
         for mod in self._active_modules:
             if mod.name == "approvals" and hasattr(mod, "set_approval_policy"):

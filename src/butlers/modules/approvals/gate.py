@@ -40,9 +40,61 @@ from butlers.identity import (
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
-from butlers.modules.approvals.rules import match_rules_from_list
+from butlers.modules.approvals.rules import (
+    constraint_pins_value,
+    match_rules_from_list,
+    parse_constraints,
+)
+from butlers.modules.base import ToolMeta
 
 logger = logging.getLogger(__name__)
+
+
+def _unpinned_safety_critical_args(
+    tool_args: dict[str, Any],
+    tool_meta: ToolMeta | None,
+    matching_rule: dict[str, Any],
+) -> list[str]:
+    """Return the safety-critical args a standing rule fails to pin.
+
+    A module declares safety-critical arguments via ``Module.tool_metadata()``
+    (``ToolMeta.arg_sensitivities``).  A standing rule may only auto-approve a
+    gated tool when it *pins* every safety-critical argument present in the
+    call — i.e. constrains it to an exact value or pattern rather than ``any``.
+
+    Returns the sorted list of safety-critical argument names that are present
+    in *tool_args* but left unpinned (or unconstrained) by *matching_rule*.
+    An empty list means the rule pins every safety-critical argument and may
+    auto-approve.  On any failure to parse the rule constraints, every present
+    safety-critical argument is treated as unpinned (fail-closed).
+    """
+    if tool_meta is None:
+        return []
+    critical = {arg for arg, sensitive in tool_meta.arg_sensitivities.items() if sensitive}
+    if not critical:
+        return []
+
+    raw = matching_rule.get("arg_constraints", {}) if isinstance(matching_rule, dict) else {}
+    try:
+        constraints = parse_constraints(raw) if raw else {}
+        if not isinstance(constraints, dict):
+            # Valid JSON that is not an object (e.g. "[1,2]", "123", "null").
+            # Refuse to auto-approve rather than crash on constraints.get(...).
+            raise TypeError(f"constraints must be a dict, got {type(constraints).__name__}")
+    except Exception:  # noqa: BLE001 — malformed constraints: refuse to auto-approve
+        logger.warning(
+            "Gate: failed to parse rule constraints for safety-critical check; "
+            "treating all safety-critical args as unpinned",
+            exc_info=True,
+        )
+        return sorted(arg for arg in critical if arg in tool_args)
+
+    unpinned = [
+        arg
+        for arg in critical
+        if arg in tool_args and not constraint_pins_value(constraints.get(arg))
+    ]
+    return sorted(unpinned)
 
 
 async def _resolve_registered_tool(mcp: Any, tool_name: str) -> Any | None:
@@ -257,6 +309,7 @@ async def apply_approval_gates(
     approval_config: ApprovalConfig | None,
     pool: Any,
     butler_name: str | None = None,
+    tool_metadata: dict[str, ToolMeta] | None = None,
 ) -> dict[str, Any]:
     """Wrap gated tools on the FastMCP server with approval interception.
 
@@ -276,6 +329,11 @@ async def apply_approval_gates(
     butler_name:
         The name of the butler that owns this gate (used for WS event
         attribution).  Pass ``None`` when the name is unavailable.
+    tool_metadata:
+        Combined ``{tool_name: ToolMeta}`` map aggregated from every active
+        module's ``tool_metadata()``.  Lets the gate consult module-declared
+        safety-critical arguments so a standing rule may only auto-approve when
+        it pins those arguments.  Pass ``None`` to rely on heuristics alone.
 
     Returns
     -------
@@ -290,6 +348,7 @@ async def apply_approval_gates(
     if not gated_tools:
         return {}
 
+    metadata = tool_metadata or {}
     originals: dict[str, Any] = {}
 
     for tool_name, tool_config in gated_tools.items():
@@ -317,6 +376,7 @@ async def apply_approval_gates(
             risk_tier=effective_risk_tier,
             rule_precedence=approval_config.rule_precedence,
             butler_name=butler_name,
+            tool_meta=metadata.get(tool_name),
         )
 
         # Replace the tool's handler on the MCP server
@@ -333,6 +393,7 @@ def _make_gate_wrapper(
     risk_tier: ApprovalRiskTier,
     rule_precedence: tuple[str, ...],
     butler_name: str | None = None,
+    tool_meta: ToolMeta | None = None,
 ) -> Any:
     """Create an async wrapper function that intercepts gated tool calls.
 
@@ -350,6 +411,13 @@ def _make_gate_wrapper(
     3. If the target is a known non-owner contact: check standing rules;
        auto-approve if a rule matches, otherwise pend.
     4. If the target is unresolvable: require approval (conservative default).
+
+    Safety-critical arguments declared by the owning module via
+    ``tool_metadata()`` (``tool_meta``) tighten step 3: a standing rule may
+    only auto-approve when it *pins* every safety-critical argument present in
+    the call (exact value or pattern, not ``any``).  An otherwise-matching rule
+    that leaves a safety-critical argument unpinned falls through to parking.
+    This complements the existing heuristics and never bypasses the gate.
     """
 
     _WHY_MAX_CHARS = 2000
@@ -541,7 +609,24 @@ def _make_gate_wrapper(
 
         matching_rule = match_standing_rule(tool_name, tool_args, rules)
 
-        if matching_rule is not None and resolved_contact is not None:
+        # Safety-critical gating: a standing rule may only auto-approve when it
+        # pins every safety-critical argument the owning module declared via
+        # tool_metadata().  An unpinned safety-critical arg means the rule is
+        # too broad to blanket-approve this call, so we fall through to parking
+        # (fail-closed; this tightens the gate and never bypasses it).
+        unpinned_critical: list[str] = []
+        if matching_rule is not None:
+            unpinned_critical = _unpinned_safety_critical_args(tool_args, tool_meta, matching_rule)
+            if unpinned_critical:
+                logger.info(
+                    "Gate: standing rule %s leaves safety-critical arg(s) %s unpinned for "
+                    "tool %r; parking instead of auto-approving",
+                    matching_rule.get("id"),
+                    unpinned_critical,
+                    tool_name,
+                )
+
+        if matching_rule is not None and resolved_contact is not None and not unpinned_critical:
             # Non-owner with matching standing rule: auto-approve
             rule_id = matching_rule["id"]
 
@@ -605,9 +690,14 @@ def _make_gate_wrapper(
                 return exec_result.result or {}
             return {"error": exec_result.error}
 
-        # No rule matched (or unresolvable target) — park the action
+        # No rule matched (or unresolvable target, or a matching rule that left a
+        # safety-critical arg unpinned) — park the action
         pend_reason: str
-        if resolved_contact is None:
+        if unpinned_critical:
+            pend_reason = "safety-critical arg not pinned by standing rule: " + ", ".join(
+                unpinned_critical
+            )
+        elif resolved_contact is None:
             pend_reason = "unresolvable target"
         else:
             pend_reason = "no matching standing rule"
