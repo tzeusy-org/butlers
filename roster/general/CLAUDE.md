@@ -89,6 +89,6 @@ Choose the appropriate response mode based on the message type and action taken:
 
 - **data-organizer** — Collection naming conventions, item schema templates, JSONB query patterns, data hygiene workflows
 - **memory-taxonomy** — General domain memory classification: subject/predicate taxonomy, permanence levels, tagging strategy, example facts, question-answering flow
-- **eod-tomorrow-prep** — Scheduled daily at 15:00 SGT: fetch tomorrow's calendar, compose timeline with prep notes and heads-up, send via notify(intent="send")
+- **eod-tomorrow-prep** — Scheduled daily at 23:00 SGT: fetch tomorrow's calendar, compose timeline with prep notes and heads-up, send via notify(intent="send")
 
 # Notes to self

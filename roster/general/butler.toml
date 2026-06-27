@@ -50,7 +50,7 @@ name = "eod-tomorrow-prep"
 cron = "0 15 * * *"
 prompt = """
 Tomorrow prep: review tomorrow's calendar and incorporate today's specialist highlights into a
-multi-domain preparation summary you send this afternoon to get the user ready for the day ahead.
+multi-domain preparation summary you send at the end of the day (23:00 SGT) to get the user ready for the day ahead.
 Target under 500 words total.
 
 Steps:
@@ -67,7 +67,7 @@ Steps:
    the day ahead, using TOMORROW's weekday and date so the future date reads as intentional:
 
    **🌅 Tomorrow Prep — [Tomorrow's Weekday, Date]**
-   (Do NOT call this an "end-of-day briefing" — it is sent this afternoon to prepare for tomorrow.)
+   (Do NOT title this an "end-of-day briefing"; it is sent at the end of the day, 23:00 SGT, to prepare for tomorrow.)
 
    **Calendar — [Day, Date]**
    List tomorrow's events in chronological order (times in SGT). For each event: title, time,
