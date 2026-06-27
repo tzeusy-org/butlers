@@ -18,9 +18,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from opentelemetry import metrics
+from opentelemetry.metrics import _internal as _metrics_internal
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.util._once import Once
 
 from butlers.modules.pipeline import (
     MessagePipeline,
@@ -584,3 +590,161 @@ class TestPipelineConfig:
         cfg = PipelineConfig()
         assert cfg.enable_ingress_dedupe is True
         assert cfg.classification_timeout_s is None
+
+
+# ---------------------------------------------------------------------------
+# Empty-decomposition metric (module-pipeline spec, decomposition_empty counter)
+# ---------------------------------------------------------------------------
+
+
+def _reset_metrics_global_state() -> None:
+    _metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+    _metrics_internal._METER_PROVIDER = None
+
+
+def _make_in_memory_provider() -> tuple[MeterProvider, InMemoryMetricReader]:
+    _reset_metrics_global_state()
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    metrics.set_meter_provider(provider)
+    return provider, reader
+
+
+def _collect_metrics(reader: InMemoryMetricReader) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    data = reader.get_metrics_data()
+    if data is None:
+        # No instruments recorded a measurement (e.g. non-empty decomposition
+        # never touches the counter), so the reader has nothing to collect.
+        return result
+    for rm in data.resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.data.data_points:
+                    result[metric.name] = metric.data.data_points
+    return result
+
+
+class TestDecompositionEmptyMetric:
+    """The `butlers.pipeline.decomposition_empty` counter is emitted only when a
+    conversation decomposition yields no signals, labelled with source_channel
+    and connector_type from the request context."""
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_counter_incremented_on_empty_decomposition(self, mock_load, mock_history):
+        async def mock_dispatch(**kwargs):
+            # No parseable signals → decomposed_empty short-circuit.
+            return FakeSpawnerResult(
+                output="[]",
+                success=True,
+                tool_calls=[],
+                model="opencode/test",
+                input_tokens=12,
+                output_tokens=0,
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        _provider, reader = _make_in_memory_provider()
+        try:
+            result = await pipeline.process(
+                "conversation batch",
+                tool_args={
+                    "source_channel": "telegram_user_client",
+                    "request_context": {
+                        "payload_type": "conversation_history",
+                        "source_channel": "telegram_user_client",
+                        "connector_type": "telegram",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000003",
+            )
+
+            assert result.target_butler == "decomposed_empty"
+
+            data = _collect_metrics(reader)
+            assert "butlers.pipeline.decomposition_empty" in data
+            points = data["butlers.pipeline.decomposition_empty"]
+            assert len(points) == 1
+            point = points[0]
+            assert point.value == 1
+            assert point.attributes["source_channel"] == "telegram_user_client"
+            assert point.attributes["connector_type"] == "telegram"
+        finally:
+            _reset_metrics_global_state()
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_counter_not_incremented_on_non_empty_decomposition(
+        self, mock_route, mock_load, mock_history
+    ):
+        signal = {
+            "signal_type": "finance",
+            "target_butler": "finance",
+            "tool_name": "expense_log",
+            "tool_args": {"amount": 42},
+            "confidence": "HIGH",
+        }
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output=json.dumps([signal]),
+                success=True,
+                tool_calls=[],
+                model="opencode/test",
+                input_tokens=20,
+                output_tokens=10,
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        _provider, reader = _make_in_memory_provider()
+        try:
+            result = await pipeline.process(
+                "conversation batch",
+                tool_args={
+                    "source_channel": "telegram_user_client",
+                    "request_context": {
+                        "payload_type": "conversation_history",
+                        "source_channel": "telegram_user_client",
+                        "connector_type": "telegram",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000004",
+            )
+
+            assert result.target_butler == "finance"
+            data = _collect_metrics(reader)
+            assert "butlers.pipeline.decomposition_empty" not in data
+        finally:
+            _reset_metrics_global_state()

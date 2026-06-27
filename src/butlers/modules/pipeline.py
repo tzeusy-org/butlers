@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
 from butlers.core.model_routing import Complexity
@@ -33,6 +33,23 @@ from butlers.tools.switchboard.routing.telemetry import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PIPELINE_METER_NAME = "butlers"
+
+
+def _decomposition_empty_counter() -> metrics.Counter:
+    """Counter: conversation decompositions that yielded no routable signals.
+
+    Labels: ``source_channel``, ``connector_type`` (sourced from the ingest
+    request context). Lazily created from the global MeterProvider so it is a
+    no-op when telemetry is not configured.
+    """
+    return metrics.get_meter(_PIPELINE_METER_NAME).create_counter(
+        name="butlers.pipeline.decomposition_empty",
+        description="Conversation decompositions that returned no signals (decomposed_empty)",
+        unit="1",
+    )
+
 
 _ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECASE)
 _TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
@@ -2037,6 +2054,18 @@ class MessagePipeline:
                                 request_id=request_id,
                                 lifecycle_state="decomposed_empty",
                             ),
+                        )
+                        _empty_ctx = request_context or {}
+                        _decomposition_empty_counter().add(
+                            1,
+                            {
+                                "source_channel": str(
+                                    _empty_ctx.get("source_channel") or source or "unknown"
+                                ),
+                                "connector_type": str(
+                                    _empty_ctx.get("connector_type") or "unknown"
+                                ),
+                            },
                         )
                         _empty_decomp: dict[str, Any] = {
                             "signals": [],
