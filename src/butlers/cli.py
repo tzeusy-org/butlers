@@ -503,11 +503,19 @@ def _is_db_unreachable(exc: BaseException) -> bool:
         _errno.ECONNRESET,
         _errno.EPIPE,
     }
+    try:
+        from butlers.storage import BlobStorageStartupError
+    except ImportError:
+        blob_startup_error: tuple[type[BaseException], ...] = ()
+    else:
+        blob_startup_error = (BlobStorageStartupError,)
 
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
+        if blob_startup_error and isinstance(cur, blob_startup_error):
+            return False
         if isinstance(cur, ConnectionRefusedError | ConnectionResetError | socket.gaierror):
             return True
         if isinstance(cur, TimeoutError):

@@ -14,6 +14,7 @@ from butlers.cli import (
     _ordered_configs,
     _start_all,
 )
+from butlers.storage import BlobStorageStartupError
 
 pytestmark = pytest.mark.unit
 
@@ -52,6 +53,17 @@ def test_is_db_unreachable_walks_cause_chain():
             raise RuntimeError("wrapped") from e
     except RuntimeError as outer:
         assert _is_db_unreachable(outer) is True
+
+
+def test_is_db_unreachable_excludes_blob_storage_startup_errors():
+    """Blob storage network failures are fatal startup errors, not DB retry candidates."""
+    try:
+        try:
+            raise TimeoutError("slow S3 endpoint")
+        except TimeoutError as e:
+            raise BlobStorageStartupError("Cannot reach S3 endpoint") from e
+    except BlobStorageStartupError as outer:
+        assert _is_db_unreachable(outer) is False
 
 
 class TestStartAllPortRetry:
