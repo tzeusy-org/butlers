@@ -228,6 +228,49 @@ def test_read_backup_facts_ignores_non_matching_files(tmp_path: Path):
     assert facts.backup_history == []
 
 
+def test_read_backup_facts_caps_history_at_7_most_recent(tmp_path: Path):
+    """Spec: backup_history returns up to 7 MOST-RECENT events, newest first.
+
+    With more than 7 dumps present, only the 7 most recent are returned and
+    they are ordered most-recent-first by the dump's backup (mtime) time.
+    """
+    base = time.time()
+    # Create 10 dumps with strictly increasing mtimes; size encodes recency
+    # rank so we can assert ordering and the cut-off independently of names.
+    for i in range(10):
+        f = tmp_path / f"butlers_2026-05-{i + 1:02d}T00-00-00.sql.gz"
+        f.write_bytes(b"x" * (i + 1))
+        ts = base + i  # larger i == more recent
+        os.utime(f, (ts, ts))
+
+    facts = _read_backup_facts_from_dir(tmp_path)
+
+    assert facts.backup_source_reachable is True
+    # Capped at 7 even though 10 dumps exist.
+    assert len(facts.backup_history) == 7
+    # Most-recent-first: i=9 (size 10) down through i=3 (size 4).
+    sizes = [e.size_bytes for e in facts.backup_history]
+    assert sizes == [10, 9, 8, 7, 6, 5, 4]
+    # last_backup_* reflects the single most-recent dump.
+    assert facts.last_backup_size_bytes == 10
+    assert facts.last_backup_at == facts.backup_history[0].completed_at
+
+
+def test_read_backup_facts_returns_all_when_fewer_than_7(tmp_path: Path):
+    """Fewer than 7 dumps → all are returned, newest first."""
+    base = time.time()
+    for i in range(3):
+        f = tmp_path / f"butlers_2026-05-{i + 1:02d}T00-00-00.sql.gz"
+        f.write_bytes(b"x" * (i + 1))
+        ts = base + i
+        os.utime(f, (ts, ts))
+
+    facts = _read_backup_facts_from_dir(tmp_path)
+
+    assert len(facts.backup_history) == 3
+    assert [e.size_bytes for e in facts.backup_history] == [3, 2, 1]
+
+
 # ---------------------------------------------------------------------------
 # GET /api/system/egress
 # ---------------------------------------------------------------------------

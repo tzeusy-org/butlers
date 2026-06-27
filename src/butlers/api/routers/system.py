@@ -441,8 +441,11 @@ def _read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
 
     stamped.sort(key=lambda t: t[0], reverse=True)
 
+    # Spec (system-overview-page, "Backup State Facts"): backup_history is
+    # "up to 7 most recent backup events". stamped is sorted most-recent-first,
+    # so the first 7 entries are the events to surface.
     history: list[BackupEvent] = []
-    for _mtime, stat in stamped:
+    for _mtime, stat in stamped[:7]:
         mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
         history.append(
             BackupEvent(
