@@ -392,7 +392,13 @@ def evaluate_message_policy(
         reason=filter_reason,
     ).inc()
 
-    # --- Step 2: Ingestion tier (always pass_through -> Tier 1) ---
+    # --- Step 2: Ingestion tier (default pass_through -> Tier 1) ---
+    # This is the DEFAULT tier for the label/policy pipeline.  The authoritative
+    # ingestion tier is resolved by the connector from the global ingestion_rules
+    # decision (see GmailConnectorRuntime._apply_global_action_tier): a
+    # `metadata_only` action downgrades this to Tier 2.  Keeping the default at
+    # pass_through preserves the safety invariant "never silently drop mail" when
+    # no global rule matches.
     triage_action = "pass_through"
     ingestion_tier = classify_ingestion_tier(triage_action)
 

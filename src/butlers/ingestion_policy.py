@@ -46,6 +46,7 @@ _KNOWN_RULE_TYPES = frozenset(
         "sender_domain",
         "sender_address",
         "header_condition",
+        "label_match",
         "mime_type",
         "substring",
         "chat_id",
@@ -87,6 +88,13 @@ class IngestionEnvelope:
     For Gmail: the From header value.
     For Telegram: the chat_id as a string.
     For Discord: the channel_id as a string.
+    """
+
+    labels: list[str] = field(default_factory=list)
+    """Channel-native label identifiers (used by the label_match rule_type).
+
+    For Gmail: the message's ``labelIds`` (e.g. ``INBOX``, ``CATEGORY_PROMOTIONS``).
+    Empty for channels without a label concept.
     """
 
 
@@ -141,7 +149,7 @@ def _extract_emails(raw: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Condition matchers (all 7 rule_types)
+# Condition matchers (one per rule_type in _KNOWN_RULE_TYPES)
 # ---------------------------------------------------------------------------
 
 
@@ -269,6 +277,25 @@ def _match_header_condition(envelope: IngestionEnvelope, condition: dict[str, An
     return False
 
 
+def _match_label_match(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
+    """Match label_match: the specified label is present on the message.
+
+    Condition schema: {"label": "FINANCE"}
+
+    Comparison is case-insensitive (both sides upper-cased), matching the
+    Gmail label-filter convention in ``gmail_policy.LabelFilterPolicy``.
+    Supports the ``"*"`` wildcard to match any message that carries at least
+    one label.
+    """
+    target = str(condition.get("label", "")).strip().upper()
+    if not target:
+        return False
+    msg_labels = {str(label).strip().upper() for label in envelope.labels}
+    if target == "*":
+        return bool(msg_labels)
+    return target in msg_labels
+
+
 def _match_mime_type(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
     """Match mime_type: exact or wildcard subtype (/*).
 
@@ -380,6 +407,7 @@ _MATCHERS: dict[str, Any] = {
     "sender_domain": _match_sender_domain,
     "sender_address": _match_sender_address,
     "header_condition": _match_header_condition,
+    "label_match": _match_label_match,
     "mime_type": _match_mime_type,
     "substring": _match_substring,
     "chat_id": _match_chat_id,

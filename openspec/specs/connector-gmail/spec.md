@@ -316,21 +316,31 @@ Dashboard-triggered, cost-aware historical email processing with recommended cat
 - **THEN** explicit opt-in confirmation is required in dashboard UX
 - **AND** lifecycle actions (create, pause, resume, cancel, complete, error, cost cap) are audit logged
 
-### Requirement: [TARGET-STATE] Email Metadata Storage for Tier 2
-Tier 2 records are stored in a dedicated reference table.
+### Requirement: Email Metadata Storage for Tier 2
+Tier 2 (metadata-only) emails are persisted in the canonical `switchboard.message_inbox`
+lifecycle table, tagged with `ingestion_tier='metadata'`. A separate
+`email_metadata_refs` table was introduced and later dropped (switchboard
+migration `014_drop_dead_feature_tables`, originally created in `004_switchboard_email`)
+because it duplicated `message_inbox`; `message_inbox` is the single source of
+truth for accepted ingestion records across all tiers.
 
 #### Scenario: Tier 2 metadata persistence
 - **WHEN** a Tier 2 email is accepted
-- **THEN** it is stored in `switchboard.email_metadata_refs` with `endpoint_identity`, `gmail_message_id`, `thread_id`, `sender`, `subject`, `received_at`, `labels`, `summary`, `tier=2`
+- **THEN** the connector submits a slim `ingest.v1` envelope with `payload.raw=null`,
+  `payload.normalized_text=<subject only>`, and `control.ingestion_tier="metadata"`
+- **AND** Switchboard persists a `message_inbox` row with `ingestion_tier='metadata'`,
+  bypassing LLM classification; `raw_payload` retains the source endpoint identity,
+  `external_event_id` (Gmail message ID), `external_thread_id`, and sender identity
+
+#### Scenario: Tier 2 metadata is queryable by tier
+- **WHEN** Tier 2 records are queried
+- **THEN** they are retrievable via the `ix_message_inbox_ingestion_tier_received_at`
+  index on `(ingestion_tier, received_at DESC)`
 
 #### Scenario: On-demand body retrieval
 - **WHEN** a butler needs the full body of a Tier 2 email
 - **THEN** it is fetched on demand from Gmail API by message ID
 - **AND** fetching does not auto-promote to Tier 1
-
-#### Scenario: Tier 2 retention
-- **WHEN** `email_metadata_refs` records age
-- **THEN** default retention is 90 days with scheduled pruning
 
 ### Requirement: Multi-Account Connector Architecture
 A single Gmail connector process manages concurrent watch/poll loops for all connected Google accounts.

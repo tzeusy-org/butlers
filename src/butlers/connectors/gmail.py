@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import codecs
+import dataclasses
 import html
 import logging
 import os
@@ -71,6 +72,7 @@ from butlers.connectors.gmail_policy import (
     LabelFilterPolicy,
     MessagePolicyResult,
     PolicyTierAssigner,
+    classify_ingestion_tier,
     evaluate_message_policy,
     parse_label_list,
 )
@@ -84,7 +86,11 @@ from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
     load_google_credentials,
 )
-from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_policy import (
+    IngestionEnvelope,
+    IngestionPolicyEvaluator,
+    PolicyDecision,
+)
 from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -1395,6 +1401,12 @@ class GmailConnectorRuntime:
                                         _bf_global.reason,
                                     )
                                 else:
+                                    # Honor the resolved global triage action
+                                    # (metadata_only -> Tier 2) for backfilled
+                                    # messages, matching live ingestion.
+                                    policy_result = self._apply_global_action_tier(
+                                        policy_result, _bf_global
+                                    )
                                     envelope = await self._build_ingest_envelope(
                                         message_data,
                                         policy_result=policy_result,
@@ -2105,6 +2117,15 @@ class GmailConnectorRuntime:
                     )
                     return
 
+                # 3. Honor the resolved global triage action.
+                # The connector-side label/policy pipeline (evaluate_message_policy)
+                # defaults to pass_through -> Tier 1.  The actual ingestion tier is
+                # driven by the global ingestion rules: a `metadata_only` action
+                # downgrades to Tier 2 (slim envelope, payload.raw=null), while
+                # route_to/low_priority_queue/pass_through remain Tier 1 (full
+                # payload, with downstream queue/routing handled by Switchboard).
+                policy_result = self._apply_global_action_tier(policy_result, _gp_decision)
+
                 # Build ingest.v1 envelope (tier-aware)
                 envelope = await self._build_ingest_envelope(
                     message_data,
@@ -2216,11 +2237,41 @@ class GmailConnectorRuntime:
         return "(no subject)"
 
     @staticmethod
+    def _apply_global_action_tier(
+        policy_result: MessagePolicyResult,
+        global_decision: PolicyDecision,
+    ) -> MessagePolicyResult:
+        """Fold the resolved global triage action into the ingestion tier.
+
+        ``evaluate_message_policy`` produces the label-filter outcome and policy
+        (priority) tier but defaults the ingestion tier to ``pass_through`` ->
+        Tier 1.  The authoritative ingestion tier comes from the global
+        ``ingestion_rules`` decision, which this method maps onto the result:
+
+        - ``metadata_only`` -> Tier 2 (slim, metadata-only envelope)
+        - ``route_to`` / ``low_priority_queue`` / ``pass_through`` -> Tier 1
+
+        ``skip`` is handled by the caller before this point and never reaches
+        here.  Returns a new ``MessagePolicyResult`` (the input is not mutated).
+        """
+        action = global_decision.action
+        # pass_through means "no global rule matched" -> keep the connector
+        # pipeline's default tier untouched.
+        if action == "pass_through":
+            return policy_result
+        return dataclasses.replace(
+            policy_result,
+            ingestion_tier=classify_ingestion_tier(action),
+            triage_action=action,
+        )
+
+    @staticmethod
     def _build_ingestion_envelope(message_data: dict[str, Any]) -> IngestionEnvelope:
         """Build an IngestionEnvelope from a Gmail message payload.
 
         Populates sender_address (normalized From header), headers dict,
-        and raw_key (raw From header value) for policy evaluation.
+        labels (Gmail labelIds, for label_match rules), and raw_key (raw From
+        header value) for policy evaluation.
         """
         raw_headers = message_data.get("payload", {}).get("headers", [])
         headers_dict: dict[str, str] = {}
@@ -2242,6 +2293,7 @@ class GmailConnectorRuntime:
             sender_address=sender,
             source_channel="email",
             headers=headers_dict,
+            labels=list(message_data.get("labelIds") or []),
             raw_key=from_value,
         )
 

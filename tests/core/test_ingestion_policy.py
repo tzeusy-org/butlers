@@ -36,6 +36,7 @@ from butlers.ingestion_policy import (
     _match_channel_id,
     _match_chat_id,
     _match_header_condition,
+    _match_label_match,
     _match_mime_type,
     _match_sender_address,
     _match_sender_domain,
@@ -83,6 +84,7 @@ def _email_envelope(
     headers: dict[str, str] | None = None,
     mime_parts: list[str] | None = None,
     raw_key: str = "",
+    labels: list[str] | None = None,
 ) -> IngestionEnvelope:
     return IngestionEnvelope(
         sender_address=sender,
@@ -90,6 +92,7 @@ def _email_envelope(
         headers=headers or {},
         mime_parts=mime_parts or [],
         raw_key=raw_key,
+        labels=labels or [],
     )
 
 
@@ -127,6 +130,7 @@ def test_ingestion_envelope_and_policy_decision_contracts() -> None:
     env2 = IngestionEnvelope()
     assert env2.sender_address == "" and env2.source_channel == ""
     assert env2.headers == {} and env2.mime_parts == [] and env2.raw_key == ""
+    assert env2.labels == []
 
     assert PolicyDecision(action="block").bypasses_llm is True
     assert PolicyDecision(action="pass_through").bypasses_llm is False
@@ -213,6 +217,14 @@ def test_all_matchers() -> None:
     )
     assert not _match_header_condition(_email_envelope(headers={"Foo": "bar"}), {"header": "Foo"})
 
+    # label_match: exact (case-insensitive), no match, wildcard, empty-labels wildcard rejection
+    assert _match_label_match(_email_envelope(labels=["INBOX", "FINANCE"]), {"label": "FINANCE"})
+    assert _match_label_match(_email_envelope(labels=["inbox", "finance"]), {"label": "FINANCE"})
+    assert not _match_label_match(_email_envelope(labels=["INBOX"]), {"label": "FINANCE"})
+    assert _match_label_match(_email_envelope(labels=["INBOX"]), {"label": "*"})
+    assert not _match_label_match(_email_envelope(labels=[]), {"label": "*"})
+    assert not _match_label_match(_email_envelope(labels=["INBOX"]), {"label": ""})
+
     # mime_type: exact, glob, no match, empty, case-insensitive
     assert _match_mime_type(
         _email_envelope(mime_parts=["text/plain", "text/calendar"]), {"type": "text/calendar"}
@@ -277,6 +289,25 @@ def test_all_matchers() -> None:
     assert _match_source_channel(owntracks_env, {"source_channel": "*"})
     assert not _match_source_channel(empty_env, {"source_channel": "*"})
     assert not _match_source_channel(owntracks_env, {"source_channel": ""})
+
+    # label_match: in _KNOWN_RULE_TYPES, drives a global metadata_only decision
+    assert "label_match" in _KNOWN_RULE_TYPES
+    ev_label = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev_label._last_loaded_at = time.monotonic()
+    ev_label._rules = [
+        _rule(
+            id="id-label",
+            rule_type="label_match",
+            condition={"label": "CATEGORY_PROMOTIONS"},
+            action="metadata_only",
+            priority=1,
+        )
+    ]
+    assert (
+        ev_label.evaluate(_email_envelope(labels=["INBOX", "CATEGORY_PROMOTIONS"])).action
+        == "metadata_only"
+    )
+    assert ev_label.evaluate(_email_envelope(labels=["INBOX"])).action == "pass_through"
 
 
 # ---------------------------------------------------------------------------

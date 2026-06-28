@@ -142,6 +142,93 @@ async def test_metadata_tier_envelope_has_null_raw(
     assert envelope["control"]["ingestion_tier"] == "metadata"
 
 
+# ---------------------------------------------------------------------------
+# Global triage action -> ingestion tier wiring (bu-59ock)
+# ---------------------------------------------------------------------------
+
+
+def _tier1_result() -> Any:
+    from butlers.connectors.gmail_policy import INGESTION_TIER_FULL, MessagePolicyResult
+
+    return MessagePolicyResult(
+        should_ingest=True,
+        ingestion_tier=INGESTION_TIER_FULL,
+        policy_tier="default",
+        assignment_rule="fallback_default",
+        filter_reason="label_allowed",
+        triage_action="pass_through",
+    )
+
+
+def test_apply_global_action_tier_metadata_only_downgrades_to_tier2() -> None:
+    """A global `metadata_only` decision downgrades a Tier 1 result to Tier 2."""
+    from butlers.connectors.gmail_policy import INGESTION_TIER_METADATA
+    from butlers.ingestion_policy import PolicyDecision
+
+    result = GmailConnectorRuntime._apply_global_action_tier(
+        _tier1_result(), PolicyDecision(action="metadata_only")
+    )
+    assert result.ingestion_tier == INGESTION_TIER_METADATA
+    assert result.triage_action == "metadata_only"
+
+
+def test_apply_global_action_tier_non_metadata_stays_tier1() -> None:
+    """pass_through/route_to/low_priority_queue keep the message at Tier 1."""
+    from butlers.connectors.gmail_policy import INGESTION_TIER_FULL
+    from butlers.ingestion_policy import PolicyDecision
+
+    for action in ("pass_through", "route_to", "low_priority_queue"):
+        result = GmailConnectorRuntime._apply_global_action_tier(
+            _tier1_result(), PolicyDecision(action=action)
+        )
+        assert result.ingestion_tier == INGESTION_TIER_FULL, action
+
+
+async def test_ingest_single_message_metadata_only_global_rule_builds_tier2(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """End-to-end: a global metadata_only rule yields a slim Tier 2 envelope.
+
+    Regression for the previously hardcoded pass_through: non-skip global
+    actions silently degraded to full Tier 1 ingestion.
+    """
+    from butlers.ingestion_policy import PolicyDecision
+
+    captured: dict[str, Any] = {}
+
+    async def fake_submit(env: dict[str, Any]) -> None:
+        captured["env"] = env
+
+    with (
+        patch.object(
+            gmail_runtime,
+            "_fetch_message",
+            new_callable=AsyncMock,
+            return_value=_make_message(),
+        ),
+        patch.object(
+            gmail_runtime,
+            "_submit_to_ingest_api",
+            new=AsyncMock(side_effect=fake_submit),
+        ),
+        patch.object(
+            gmail_runtime._ingestion_policy,
+            "evaluate",
+            return_value=PolicyDecision(action="pass_through"),
+        ),
+        patch.object(
+            gmail_runtime._global_ingestion_policy,
+            "evaluate",
+            return_value=PolicyDecision(action="metadata_only"),
+        ),
+    ):
+        await gmail_runtime._ingest_single_message("msg123")
+
+    assert "env" in captured, "expected a Tier 2 envelope to be submitted"
+    assert captured["env"]["payload"]["raw"] is None
+    assert captured["env"]["control"]["ingestion_tier"] == "metadata"
+
+
 async def test_submit_to_ingest_api_mcp_error_propagated(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
