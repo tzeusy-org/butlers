@@ -87,19 +87,26 @@ S3 connection parameters SHALL be resolved exclusively from the layered `Credent
 - **THEN** `aioboto3` SHALL fall through to its default credential chain (IAM roles, `~/.aws/credentials`, etc.)
 
 ### Requirement: S3 connectivity validation at startup
-The daemon SHALL validate S3 connectivity during initialization via a `head_bucket` call before accepting requests.
+The daemon SHALL validate S3 connectivity during initialization via a `head_bucket` call before accepting requests when S3 endpoint and bucket credentials are configured. Validation failure SHALL disable blob storage for that daemon startup, not abort the daemon.
 
 #### Scenario: Successful connectivity check
 - **WHEN** the daemon starts and `S3BlobStore.startup_check()` succeeds (endpoint reachable, bucket exists)
 - **THEN** startup proceeds normally
+- **AND** `daemon.blob_store` SHALL be available to modules and core media tools
 
-#### Scenario: Unreachable endpoint fails startup
+#### Scenario: Unreachable endpoint disables blob storage non-fatally
 - **WHEN** the S3 endpoint is unreachable during `startup_check()`
-- **THEN** the daemon SHALL fail with a clear error message including the endpoint URL
+- **THEN** the daemon SHALL log a warning with a clear error message including the endpoint URL
+- **AND** `daemon.blob_store` SHALL be set to `None`
+- **AND** startup SHALL continue so non-blob tools can operate
+- **AND** blob operations SHALL fail at runtime with a clear unavailable-store error
 
-#### Scenario: Missing bucket fails startup
+#### Scenario: Missing bucket disables blob storage non-fatally
 - **WHEN** the S3 endpoint is reachable but the configured bucket does not exist
-- **THEN** the daemon SHALL fail with an error message indicating the bucket name
+- **THEN** the daemon SHALL log a warning indicating the bucket name
+- **AND** `daemon.blob_store` SHALL be set to `None`
+- **AND** startup SHALL continue so non-blob tools can operate
+- **AND** blob operations SHALL fail at runtime with a clear unavailable-store error
 
 ### Requirement: S3 session lifecycle
 The `S3BlobStore` SHALL manage an `aioboto3` session tied to the daemon lifecycle.

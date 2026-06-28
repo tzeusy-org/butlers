@@ -12,9 +12,11 @@ single S3-compatible blob store. The `S3BlobStore` class implements the
 storage. Keys are butler-prefixed and date-partitioned. Credentials are
 resolved exclusively from the `CredentialStore` (DB-backed, no env-var
 fallback). Blob storage is initialized at daemon startup phase 8c; a
-`head_bucket` check either confirms reachability or aborts startup with a
-clear error. A single bucket serves all blob types for the deployment; no
-attachment-vs-export bucket split exists.
+`head_bucket` check confirms reachability when possible. If the configured
+endpoint or bucket cannot be validated, startup continues with blob storage
+disabled and blob-dependent tools fail clearly at runtime. A single bucket
+serves all blob types for the deployment; no attachment-vs-export bucket split
+exists.
 
 ## Motivation
 
@@ -191,12 +193,18 @@ phase 8b) initializes blob storage:
 3. Otherwise, construct `S3BlobStore` and call `await startup_check()`.
 4. `startup_check()` performs `head_bucket` on the configured bucket.
    - **Success** → logs `"S3 blob storage ready: endpoint=... bucket=... prefix=..."` and continues.
-   - **Bucket missing** (404 / `NoSuchBucket`) → raises `RuntimeError` with message including bucket name and endpoint. **Fatal** — startup aborts.
-   - **Endpoint unreachable** (connection error) → raises `RuntimeError` with message including endpoint URL. **Fatal** — startup aborts.
+   - **Bucket missing** (404 / `NoSuchBucket`) → raises `BlobStorageStartupError`
+     with message including bucket name and endpoint. The daemon catches this,
+     logs a warning, sets `daemon.blob_store = None`, and continues.
+   - **Endpoint unreachable** (connection error) → raises `BlobStorageStartupError`
+     with message including endpoint URL. The daemon catches this, logs a
+     warning, sets `daemon.blob_store = None`, and continues.
 
-Phase 8c is non-fatal only in the "credentials absent" branch. A reachable
-endpoint with a missing bucket is always fatal because it indicates a
-configuration error that the operator must fix before the daemon can be useful.
+Phase 8c is non-fatal for both "credentials absent" and "configured but
+unavailable" branches. This keeps text-only routing, scheduling, and normal MCP
+tools available when the blob service is down. Blob-producing and blob-consuming
+tools must surface the unavailable store as an actionable runtime error rather
+than silently dropping media.
 
 ### D7: Session Lifecycle
 

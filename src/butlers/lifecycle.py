@@ -45,7 +45,7 @@ from butlers.exceptions import RuntimeBinaryNotFoundError
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
-from butlers.storage import S3BlobStore
+from butlers.storage import BlobStorageStartupError, S3BlobStore
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ async def run_startup(daemon: Any) -> None:
         )
         daemon.blob_store = None
     else:
-        daemon.blob_store = S3BlobStore(
+        blob_store = S3BlobStore(
             bucket=s3_bucket,
             butler_name=daemon.config.name,
             endpoint_url=s3_endpoint,
@@ -224,7 +224,17 @@ async def run_startup(daemon: Any) -> None:
             secret_access_key=s3_secret_key,
             region=s3_region or "us-east-1",
         )
-        await daemon.blob_store.startup_check()
+        try:
+            await blob_store.startup_check()
+        except BlobStorageStartupError as exc:
+            logger.warning(
+                "S3 blob storage unavailable; blob operations will fail at runtime. "
+                "Check /api/settings/blob-storage/test and the BLOB_S3_* secrets: %s",
+                exc,
+            )
+            daemon.blob_store = None
+        else:
+            daemon.blob_store = blob_store
 
     # 8c2. Restore CLI auth tokens from DB to filesystem (non-fatal).
     #      Ensures LLM runtime CLIs have their auth files (e.g. OpenCode's

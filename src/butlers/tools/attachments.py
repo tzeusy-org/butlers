@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024  # 5MB
 
 
-async def get_attachment(blob_store: BlobStore, storage_ref: str) -> dict[str, Any]:
+async def get_attachment(blob_store: BlobStore | None, storage_ref: str) -> dict[str, Any]:
     """Retrieve an ingested media attachment for analysis.
 
     Returns base64-encoded data suitable for Claude vision/PDF input.
@@ -39,6 +39,12 @@ async def get_attachment(blob_store: BlobStore, storage_ref: str) -> dict[str, A
         ValueError: If storage_ref is invalid or blob exceeds size limit
         BlobNotFoundError: If blob does not exist
     """
+    if blob_store is None:
+        raise ValueError(
+            "Blob storage is not configured or currently unavailable. "
+            "Check /api/settings/blob-storage/test and the BLOB_S3_* secrets."
+        )
+
     # Validate storage_ref format
     try:
         blob_ref = BlobRef.parse(storage_ref)
