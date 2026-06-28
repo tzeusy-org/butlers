@@ -527,7 +527,9 @@ async def _auth_ws(websocket: WebSocket) -> bool:
     """Validate the ?api_key= param at WebSocket upgrade time.
 
     Returns True when auth passes (or no auth is configured).
-    Closes the socket with 4003 on failure.
+    Closes the socket with WS code 4401 on failure (spec
+    dashboard-settings-console; matches /api/approvals/stream and
+    /api/spend/stream).
     """
     configured_key: str | None = os.environ.get("DASHBOARD_API_KEY") or None
     if configured_key is None:
@@ -538,7 +540,7 @@ async def _auth_ws(websocket: WebSocket) -> bool:
     if secrets.compare_digest(provided, configured_key):
         return True
 
-    await websocket.close(code=4003)
+    await websocket.close(code=4401)
     return False
 
 
@@ -565,10 +567,12 @@ async def settings_stream(
       { "type": "attention_add", "data": <AttentionItem dict> }
       { "type": "attention_remove", "data": { "kind": "..." } }
     """
-    await websocket.accept()
-
+    # Auth gate runs BEFORE accept so an auth failure closes with 4401 at the
+    # upgrade (mirrors /api/approvals/stream and /api/spend/stream).
     if not await _auth_ws(websocket):
         return
+
+    await websocket.accept()
 
     _POLL_INTERVAL_S = 5.0
 

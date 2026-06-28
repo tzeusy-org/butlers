@@ -171,7 +171,9 @@ async def spend_stream(
     The connection is kept open until the client disconnects.
     """
     if not _auth_ws_api_key(api_key):
-        await websocket.close(code=1008, reason="Unauthorized")
+        # Spec dashboard-settings-console: auth-failure closes with WS code 4401
+        # (matches /api/approvals/stream and /api/settings/stream).
+        await websocket.close(code=4401)
         return
 
     await websocket.accept()

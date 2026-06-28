@@ -1059,16 +1059,18 @@ async def test_spend_stream_snapshot_includes_recent_events(app):
 
 
 async def test_spend_stream_auth_rejected_when_key_configured(app, monkeypatch):
-    """WS /api/spend/stream closes with 1008 when api_key is wrong."""
+    """WS /api/spend/stream closes with 4401 when api_key is wrong (spec)."""
     monkeypatch.setenv("DASHBOARD_API_KEY", "secret-key")
 
     from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
 
     with TestClient(app) as client:
-        with pytest.raises(Exception):
-            # Wrong key — should be rejected (close code 1008 or connection refused)
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            # Wrong key — closes at the upgrade with WS code 4401.
             with client.websocket_connect("/api/spend/stream?api_key=wrong-key") as ws:
                 ws.receive_text()
+    assert exc_info.value.code == 4401
 
 
 async def test_spend_stream_auth_accepted_with_correct_key(app, monkeypatch):
