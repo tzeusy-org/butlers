@@ -55,6 +55,38 @@ _UUID = str(uuid.uuid4())
 _TRIP_UUID = str(uuid.uuid4())
 
 
+@pytest.fixture(autouse=True)
+def _freeze_travel_clock(monkeypatch):
+    """Pin the travel router's clock to the module-import anchors (`_NOW`/`_TODAY`).
+
+    The row factories below build fixtures from the import-time `_NOW`/`_TODAY`
+    constants, while the travel API computes its day-deltas (`days_until_departure`,
+    `days_until_expiry`, and the upcoming-trip window) from its own
+    ``date.today()`` / ``datetime.now()`` evaluated at *request* time. If module
+    import and the request straddle a midnight boundary, those two clocks differ
+    by a day and date-anchored assertions flake (e.g. ``assert 2 == 3`` at the
+    UTC-midnight rollover).
+
+    Freezing the router's clock to the exact anchors the fixtures use makes the
+    two share one clock, eliminating the off-by-one regardless of wall-clock time.
+    API behaviour is unchanged — only the ``date``/``datetime`` source the router
+    reads is pinned for the duration of each test.
+    """
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return _TODAY
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return _NOW
+
+    monkeypatch.setattr(_travel_router_mod, "date", _FrozenDate)
+    monkeypatch.setattr(_travel_router_mod, "datetime", _FrozenDateTime)
+
+
 def _trip_row(
     *,
     id: Any = None,
