@@ -94,6 +94,7 @@ from butlers.core.spawner_guardrails import (
     _check_degenerate_tool_loop,
     _check_token_budget,
     _check_tool_call_budget,
+    _check_undelivered_interactive_reply,
 )
 from butlers.core.spawner_provider import (
     _derive_llm_provider,  # noqa: F401 — re-export for test patches
@@ -120,6 +121,7 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import CredentialStore
+from butlers.routing_guidance import _INTERACTIVE_ROUTE_CHANNELS
 
 logger = logging.getLogger(__name__)
 
@@ -1775,6 +1777,27 @@ class Spawner:
                 )
                 raise RuntimeError(_guardrail_reason)
 
+            # Delivery accounting: the runtime ran cleanly, but an interactive
+            # routed message whose only notify attempts all failed delivered
+            # nothing to the user. Record that session as failed so it is
+            # honestly accounted (dashboards, metrics) instead of a silent
+            # success. Detected on this normal-completion path — not via a
+            # raised exception — so it does NOT trigger failover/self-healing.
+            _undelivered_reason = _check_undelivered_interactive_reply(
+                tool_calls,
+                routing_context=routing_context,
+                trigger_source=trigger_source,
+                interactive_channels=_INTERACTIVE_ROUTE_CHANNELS,
+            )
+            if _undelivered_reason is not None:
+                logger.warning(
+                    "Session %s (butler=%s) ran successfully but delivered no "
+                    "interactive reply: %s",
+                    session_id,
+                    self._config.name,
+                    _undelivered_reason,
+                )
+
             spawner_result = SpawnerResult(
                 output=result_text,
                 success=True,
@@ -1794,7 +1817,8 @@ class Spawner:
                     output=result_text,
                     tool_calls=tool_calls,
                     duration_ms=duration_ms,
-                    success=True,
+                    success=_undelivered_reason is None,
+                    error=_undelivered_reason,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                 )

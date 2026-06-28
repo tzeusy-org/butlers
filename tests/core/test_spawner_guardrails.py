@@ -33,7 +33,9 @@ from butlers.core.spawner import (
     _check_token_budget,
     _check_tool_call_budget,
 )
+from butlers.core.spawner_guardrails import _check_undelivered_interactive_reply
 from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+from butlers.routing_guidance import _INTERACTIVE_ROUTE_CHANNELS
 
 pytestmark = pytest.mark.unit
 
@@ -619,3 +621,204 @@ class TestSpawnerGuardrailEmission:
         mock_suppressed.assert_called_once()
         reason = mock_suppressed.call_args[1].get("reason", "")
         assert reason, f"Expected a non-empty suppressed reason, got: {reason!r}"
+
+
+# ---------------------------------------------------------------------------
+# _check_undelivered_interactive_reply (helper-unit)
+# ---------------------------------------------------------------------------
+
+
+def _telegram_routing_ctx() -> dict[str, Any]:
+    return {
+        "request_context": {
+            "request_id": "019ef580-de73-7ae4-8c14-c3ccc8a9bf21",
+            "source_channel": "telegram_bot",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "206570151",
+            "source_thread_identity": "206570151:1311",
+        }
+    }
+
+
+def _undelivered(tool_calls: list[dict[str, Any]], **over: Any) -> str | None:
+    kwargs: dict[str, Any] = {
+        "routing_context": _telegram_routing_ctx(),
+        "trigger_source": "route",
+        "interactive_channels": _INTERACTIVE_ROUTE_CHANNELS,
+    }
+    kwargs.update(over)
+    return _check_undelivered_interactive_reply(tool_calls, **kwargs)
+
+
+class TestUndeliveredInteractiveReply:
+    """Helper-unit coverage for the undelivered-interactive-reply guardrail."""
+
+    def test_attempted_but_all_failed_is_flagged(self) -> None:
+        # The incident shape: notify attempted, validation rejected at the
+        # boundary so the captured result is null/absent.
+        calls = [
+            {"name": "calendar_list_events", "result": {"events": []}},
+            {"name": "notify", "result": None},
+            {"name": "notify", "result": None},
+        ]
+        reason = _undelivered(calls)
+        assert reason is not None
+        assert "undelivered_interactive_reply" in reason
+        assert "2 notify attempt" in reason
+
+    def test_notify_status_error_is_flagged(self) -> None:
+        calls = [{"name": "notify", "result": {"status": "error", "error": "boom"}}]
+        assert _undelivered(calls) is not None
+
+    def test_notify_outcome_error_is_flagged(self) -> None:
+        calls = [{"name": "notify", "outcome": "error", "result": None}]
+        assert _undelivered(calls) is not None
+
+    def test_delivered_ok_is_not_flagged(self) -> None:
+        calls = [{"name": "notify", "result": {"status": "ok"}}]
+        assert _undelivered(calls) is None
+
+    def test_deferred_counts_as_delivered(self) -> None:
+        # Quiet-hours hold is a successful delivery decision, not a failure.
+        calls = [{"name": "notify", "result": {"status": "deferred", "notification_id": "n1"}}]
+        assert _undelivered(calls) is None
+
+    def test_mixed_attempts_with_one_success_is_not_flagged(self) -> None:
+        calls = [
+            {"name": "notify", "result": {"status": "error"}},
+            {"name": "notify", "result": {"status": "ok"}},
+        ]
+        assert _undelivered(calls) is None
+
+    def test_no_notify_attempt_is_not_flagged(self) -> None:
+        # Conservative: the runtime may have legitimately decided not to reply.
+        calls = [{"name": "calendar_list_events", "result": {"events": []}}]
+        assert _undelivered(calls) is None
+
+    def test_prefixed_notify_name_is_detected(self) -> None:
+        # Unmerged parser-side records may carry a prefixed tool name.
+        calls = [{"name": "mcp__health.notify", "result": None}]
+        assert _undelivered(calls) is not None
+
+    def test_non_route_trigger_is_ignored(self) -> None:
+        calls = [{"name": "notify", "result": None}]
+        assert _undelivered(calls, trigger_source="tick") is None
+
+    def test_non_interactive_channel_is_ignored(self) -> None:
+        calls = [{"name": "notify", "result": None}]
+        ctx = {"request_context": {"source_channel": "email"}}
+        assert _undelivered(calls, routing_context=ctx) is None
+
+    def test_missing_routing_context_is_ignored(self) -> None:
+        calls = [{"name": "notify", "result": None}]
+        assert _undelivered(calls, routing_context=None) is None
+
+    def test_source_channel_from_source_metadata_fallback(self) -> None:
+        calls = [{"name": "notify", "result": None}]
+        ctx = {"source_metadata": {"channel": "telegram_bot"}}
+        assert _undelivered(calls, routing_context=ctx) is not None
+
+
+class TestSpawnerUndeliveredReplyAccounting:
+    """Integration: an undelivered interactive reply is recorded as a failed session.
+
+    The runtime returns cleanly (no exception), so failover/self-healing are not
+    triggered, but the session row is persisted with success=False and a reason.
+    """
+
+    async def test_route_reply_with_failed_notify_marks_session_failed(
+        self, tmp_path: Path
+    ) -> None:
+        # One notify attempt whose result is null (boundary rejection shape).
+        adapter = _SuccessAdapter(
+            result_text="I replied (allegedly).",
+            tool_calls=[{"name": "notify", "input": {"intent": "reply"}, "result": None}],
+        )
+        spawner, _mock_pool = _make_spawner(adapter, tmp_path)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value=_telegram_routing_ctx(),
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_result(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=type(
+                    "Q",
+                    (),
+                    {
+                        "allowed": True,
+                        "usage_24h": 0,
+                        "limit_24h": None,
+                        "usage_30d": 0,
+                        "limit_30d": None,
+                    },
+                )(),
+            ),
+        ):
+            mock_sc.return_value = _SESSION_ID
+            result = await spawner.trigger("Did I miss the Dr Ng followup?", "route")
+
+        # The runtime invocation itself succeeded (memory/route flow unaffected).
+        assert result.success is True
+        # But the session row is recorded as a failed delivery.
+        mock_complete.assert_awaited_once()
+        kwargs = mock_complete.await_args.kwargs
+        assert kwargs["success"] is False
+        assert "undelivered_interactive_reply" in (kwargs["error"] or "")
+
+    async def test_route_reply_with_delivered_notify_marks_session_success(
+        self, tmp_path: Path
+    ) -> None:
+        adapter = _SuccessAdapter(
+            result_text="Replied.",
+            tool_calls=[
+                {"name": "notify", "input": {"intent": "reply"}, "result": {"status": "ok"}}
+            ],
+        )
+        spawner, _mock_pool = _make_spawner(adapter, tmp_path)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value=_telegram_routing_ctx(),
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_result(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=type(
+                    "Q",
+                    (),
+                    {
+                        "allowed": True,
+                        "usage_24h": 0,
+                        "limit_24h": None,
+                        "usage_30d": 0,
+                        "limit_30d": None,
+                    },
+                )(),
+            ),
+        ):
+            mock_sc.return_value = _SESSION_ID
+            result = await spawner.trigger("Did I miss the Dr Ng followup?", "route")
+
+        assert result.success is True
+        mock_complete.assert_awaited_once()
+        kwargs = mock_complete.await_args.kwargs
+        assert kwargs["success"] is True
+        assert kwargs["error"] is None

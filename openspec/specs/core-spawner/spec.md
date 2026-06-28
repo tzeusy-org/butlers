@@ -162,7 +162,16 @@ Each invocation creates a session record before the runtime call and completes i
 
 #### Scenario: Successful session
 - **WHEN** a runtime invocation completes successfully
+- **AND** no post-invoke accounting check marks the user-visible outcome as failed
 - **THEN** `session_create()` is called before invocation and `session_complete()` is called after with `success=True`, output text, tool calls, duration, and token counts
+
+#### Scenario: Undelivered interactive reply records a failed session
+- **WHEN** a route-triggered session originates from an interactive source channel
+- **AND** the runtime attempts one or more `notify()` calls
+- **AND** none of the captured notify attempts returns a delivered or deferred status
+- **THEN** `session_complete()` is called with `success=False`
+- **AND** the `error` value contains the `undelivered_interactive_reply` marker
+- **AND** this accounting failure does not raise into same-tier failover or self-healing
 
 #### Scenario: Failed session — spawner fallback dispatch
 - **WHEN** a runtime invocation raises an exception
