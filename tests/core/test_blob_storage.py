@@ -62,6 +62,10 @@ def test_s3_blob_store_configures_explicit_network_timeouts(moto_s3_server):
 
     assert store._boto_config.connect_timeout == 1.25
     assert store._boto_config.read_timeout == 1.25
+    # total_max_attempts=1 means exactly one attempt (no retries) — the
+    # strongest fail-fast. botocore translates max_attempts=N to
+    # total_max_attempts=N+1, so total_max_attempts is the correct key here.
+    assert store._boto_config.retries == {"total_max_attempts": 1}
 
 
 def test_blob_ref_contract():
