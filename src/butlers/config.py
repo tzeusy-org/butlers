@@ -903,24 +903,6 @@ def load_config(config_dir: Path) -> ButlerConfig:
                 validated.append(stripped)
             oauth[provider_name] = validated
 
-    # --- Reject old section names with clear error messages ---
-    # Unconditional: even if [butler.runtime_seed] is also present, having
-    # [butler.runtime] around invites silent drift between the two.
-    if "runtime" in butler_section:
-        raise ConfigError(
-            "[butler.runtime] is no longer supported. "
-            "Move operational seed fields to [butler.runtime_seed] and "
-            "model selection settings to the model catalog. The runtime "
-            "adapter type is fixed to DEFAULT_RUNTIME_TYPE in "
-            "butlers.core.runtimes."
-        )
-    if "seed_configs" in butler_section:
-        raise ConfigError(
-            "[butler.seed_configs] has been merged into [butler.runtime_seed]. "
-            "Please move only operational seed fields into [butler.runtime_seed] "
-            "and remove the [butler.seed_configs] section."
-        )
-
     # --- Reject top-level [runtime] section ---
     # The runtime adapter type is fixed for the entire roster; keeping a
     # per-butler toggle in git invites silent drift and offers no consumer

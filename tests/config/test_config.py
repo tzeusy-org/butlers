@@ -204,24 +204,6 @@ def test_runtime_seed_config(tmp_path: Path):
 @pytest.mark.parametrize(
     "toml, match",
     [
-        # Old [butler.runtime] section rejected with clear error.
-        (
-            '[butler]\nname = "m"\nport = 7017\n[butler.runtime]\nmodel = "x"\n',
-            r"\[butler\.runtime\] is no longer supported",
-        ),
-        # Old [butler.seed_configs] section rejected with clear error.
-        (
-            '[butler]\nname = "m"\nport = 7014\n[butler.seed_configs]\nmodel = "x"\n',
-            r"\[butler\.seed_configs\] has been merged",
-        ),
-        # [butler.runtime] must raise even if [butler.runtime_seed] is also set;
-        # allowing both silently would let the two sections drift apart.
-        (
-            '[butler]\nname = "m"\nport = 7020\n'
-            "[butler.runtime_seed]\nmax_concurrent_sessions = 2\n"
-            '[butler.runtime]\nmodel = "x"\n',
-            r"\[butler\.runtime\] is no longer supported",
-        ),
         # Top-level [runtime] section is rejected at load time; the runtime
         # adapter type is fixed for every roster butler, so this knob is cruft.
         (
