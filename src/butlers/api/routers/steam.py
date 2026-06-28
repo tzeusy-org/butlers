@@ -17,10 +17,12 @@ API key validation:
   (HTTP 403), or the steam_id is not found in the response, a 400 is returned.
 
 Account status (GET /api/steam/accounts/{id}/status):
-  Returns ``has_api_key`` (key present in entity_info), ``key_valid`` (null = not
-  yet checked, true/false = last validation result), ``last_poll_at`` (from the
-  steam_accounts table), and ``connector_health`` (effective health string for this
-  account from the connector's health report, null if connector unreachable).
+  Returns ``has_api_key`` (key present in entity_info), ``key_valid`` (result of a
+  live Steam Web API test call against the stored key: true = authenticated,
+  false = rejected with 401/403, null = no key or transient/network error),
+  ``last_poll_at`` (from the steam_accounts table), and ``connector_health``
+  (effective health string for this account from the connector's health report,
+  null if connector unreachable).
 
 Connector health proxy (GET /api/steam/connector/health):
   Proxies the Steam connector's ``/health`` HTTP endpoint (port configured via
@@ -249,6 +251,34 @@ async def _validate_steam_credentials(
         )
 
     return players[0]
+
+
+async def _check_api_key_valid(api_key: str, steam_id: int) -> bool | None:
+    """Probe whether a stored Steam Web API key still authenticates.
+
+    Performs a single lightweight ``ISteamUser/GetPlayerSummaries`` test call
+    (the same call used at connect time) and maps the outcome to a tri-state:
+
+    - ``True``  — Steam authenticated the key (HTTP 200).
+    - ``False`` — Steam rejected the key as invalid/unauthorized (HTTP 401/403).
+    - ``None``  — the result is unknown because of a transient/network error or
+      rate-limiting. We deliberately do **not** report ``False`` here, since a
+      transient failure says nothing about whether the key is valid.
+
+    The API key is never logged or returned; only the boolean verdict escapes.
+    """
+    try:
+        await _validate_steam_credentials(api_key, steam_id)
+    except _SteamValidationError as exc:
+        if exc.category == "invalid_api_key":
+            return False
+        if exc.category == "steam_id_not_found":
+            # Auth succeeded (HTTP 200); the steam_id lookup merely returned no
+            # players. The key itself is valid.
+            return True
+        # api_error → transient/network/rate-limit; verdict is unknown.
+        return None
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +592,10 @@ async def get_steam_account_status(
 
     Fields returned:
     - ``has_api_key``      — whether an API key is stored in entity_info
-    - ``key_valid``        — None (not yet validated), True, or False
+    - ``key_valid``        — result of a live Steam Web API test call against the
+                             stored key: True (authenticated), False (Steam
+                             rejected it with 401/403), or None (no key stored,
+                             or a transient/network error made the result unknown)
     - ``last_poll_at``     — timestamp of the last successful connector poll
     - ``connector_health`` — connector-reported health ('healthy', 'degraded',
                              'error') or null when connector is unreachable
@@ -605,6 +638,13 @@ async def get_steam_account_status(
         )
     has_api_key = key_row is not None
 
+    # Validate the stored key with a real (lightweight) Steam Web API test call.
+    # Tri-state: True = key authenticated, False = Steam rejected it (401/403),
+    # None = unknown (no key stored, or a transient/network error occurred).
+    key_valid: bool | None = None
+    if has_api_key:
+        key_valid = await _check_api_key_valid(key_row["value"], account.steam_id)
+
     # Probe the connector health to get per-account health status.
     connector_health: str | None = await _probe_connector_account_health(account.steam_id)
 
@@ -613,7 +653,7 @@ async def get_steam_account_status(
         steam_id=account.steam_id,
         status=account.status,
         has_api_key=has_api_key,
-        key_valid=None,  # Validation is only done at connect time; no cached result stored
+        key_valid=key_valid,
         last_poll_at=account.last_poll_at,
         connector_health=connector_health,
     )
