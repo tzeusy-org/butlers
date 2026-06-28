@@ -107,10 +107,11 @@ The following must start before dependents can function:
        └── 3'. Dashboard API
 ```
 
-PostgreSQL is the hard dependency for everything. MinIO is required for blob
-storage but butler daemons will start without it (blob operations will fail
-at runtime). The Switchboard must be up before connectors attempt ingestion,
-enforced by the readiness probe.
+PostgreSQL is the hard dependency for everything. MinIO / S3 is required for
+blob storage, but butler daemons start without a usable blob store when the S3
+configuration is absent or the configured endpoint/bucket fails validation
+(blob operations fail at runtime). The Switchboard must be up before connectors
+attempt ingestion, enforced by the readiness probe.
 
 ---
 
@@ -127,7 +128,7 @@ enforced by the readiness probe.
 
 | Dependency | Used By | Purpose | Failure Impact |
 |---|---|---|---|
-| **MinIO / S3** | Blob storage (attachments) | Attachment storage and retrieval | Attachment operations fail; core messaging continues |
+| **MinIO / S3** | Blob storage (attachments) | Attachment storage and retrieval | Attachment operations fail; non-blob daemon startup and core text messaging continue |
 | **Grafana Alloy** | Telemetry | OTLP trace/metric collection | No observability; no-op tracer/meter used instead |
 | **Tempo** | Trace queries | Trace storage backend | Cannot query traces; collection unaffected |
 | **Prometheus** | Metric queries | Metric storage backend | Cannot query metrics; emission unaffected |
@@ -193,6 +194,8 @@ errors. Connectors cannot resolve credentials.
 
 ### MinIO/S3 down
 
-- Attachment upload/download fails.
-- Core messaging continues (text-based ingestion and routing work).
+- Daemon startup continues with `daemon.blob_store = None` after the S3
+  validation warning.
+- Attachment upload/download fails at runtime.
+- Core messaging continues for text-based ingestion and routing.
 - Gmail connector attachment lazy-fetch fails.

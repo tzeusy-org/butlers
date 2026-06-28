@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -641,3 +642,124 @@ class TestStep6DbRoleWiring:
         # injected db's role must remain untouched.
         mock_from_env.assert_not_called()
         assert injected.role is None
+
+
+# ===========================================================================
+# Step 8c — S3 blob storage degradation
+# ===========================================================================
+
+
+class _StopAfterBlobStorage(Exception):
+    """Sentinel raised after step 8c to prove startup reached the next phase."""
+
+
+class _FakeCredentialStore:
+    def __init__(self, values: dict[str, str | None]) -> None:
+        self.values = values
+        self.resolve_calls: list[tuple[str, bool]] = []
+
+    async def resolve(self, key: str, *, env_fallback: bool = True) -> str | None:
+        self.resolve_calls.append((key, env_fallback))
+        return self.values.get(key)
+
+
+class TestStep8cBlobStorageDegradation:
+    """Step 8c: configured-but-unavailable S3 disables blob I/O without killing startup."""
+
+    async def test_configured_s3_startup_failure_disables_blob_store_and_continues(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from contextlib import ExitStack
+
+        from butlers import lifecycle
+        from butlers.storage import BlobStorageStartupError
+
+        class UnavailableS3BlobStore:
+            def __init__(self, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def startup_check(self) -> None:
+                raise BlobStorageStartupError(
+                    "Cannot reach S3 endpoint http://synology-garage:3900"
+                )
+
+        pool = AsyncMock()
+        daemon = MagicMock()
+        daemon.config = SimpleNamespace(
+            name="test-butler",
+            logging=SimpleNamespace(log_root=None, level="INFO", format="text"),
+            modules={},
+            env_required=[],
+            env_optional=[],
+            db_name="butlers",
+            db_schema="test_butler",
+        )
+        daemon.db = SimpleNamespace(pool=pool)
+        daemon._registry.load_all.return_value = []
+        daemon._select_startup_modules.return_value = []
+        daemon._validate_module_configs.return_value = {}
+        daemon._collect_module_credentials.return_value = {}
+        daemon._module_statuses = {}
+        daemon._cascade_module_failures.return_value = None
+        daemon._build_db_url.return_value = "postgresql://example/butlers"
+        daemon._db_log_handler = None
+
+        store = _FakeCredentialStore(
+            {
+                "BLOB_S3_ENDPOINT_URL": "http://synology-garage:3900",
+                "BLOB_S3_BUCKET": "butlers-dev",
+                "BLOB_S3_REGION": "garage",
+                "BLOB_S3_ACCESS_KEY_ID": "access-key",
+                "BLOB_S3_SECRET_ACCESS_KEY": "secret-key",
+            }
+        )
+        daemon._build_credential_store = AsyncMock(return_value=store)
+
+        caplog.set_level(logging.WARNING)
+        with ExitStack() as stack:
+            stack.enter_context(patch("butlers.core.logging.configure_logging"))
+            stack.enter_context(patch.object(lifecycle, "resolve_log_root", return_value=None))
+            stack.enter_context(patch.object(lifecycle, "init_telemetry"))
+            stack.enter_context(patch.object(lifecycle, "init_metrics"))
+            stack.enter_context(
+                patch.object(lifecycle, "_flatten_config_for_secret_scan", return_value={})
+            )
+            stack.enter_context(patch.object(lifecycle, "detect_secrets", return_value=[]))
+            stack.enter_context(patch.object(lifecycle, "validate_credentials"))
+            stack.enter_context(
+                patch.object(
+                    lifecycle, "validate_module_credentials_async", new=AsyncMock(return_value={})
+                )
+            )
+            stack.enter_context(patch.object(lifecycle, "run_migrations", new=AsyncMock()))
+            stack.enter_context(patch.object(lifecycle, "has_butler_chain", return_value=False))
+            stack.enter_context(patch.object(lifecycle, "S3BlobStore", UnavailableS3BlobStore))
+            stack.enter_context(
+                patch("butlers.core.butler_logging.ButlerLogger", return_value=MagicMock())
+            )
+            stack.enter_context(
+                patch(
+                    "butlers.core.butler_logging.ButlerDBLogHandler",
+                    return_value=logging.NullHandler(),
+                )
+            )
+            stack.enter_context(
+                patch("butlers.cli_auth.persistence.restore_tokens", new=AsyncMock(return_value={}))
+            )
+            stack.enter_context(
+                patch.object(
+                    lifecycle,
+                    "_ensure_owner_entity",
+                    new=AsyncMock(side_effect=_StopAfterBlobStorage),
+                )
+            )
+
+            with pytest.raises(_StopAfterBlobStorage):
+                await lifecycle.run_startup(daemon)
+
+        if daemon._db_log_handler is not None:
+            logging.getLogger().removeHandler(daemon._db_log_handler)
+
+        assert daemon.blob_store is None
+        assert "S3 blob storage unavailable; blob operations will fail at runtime" in caplog.text
+        assert all(env_fallback is False for _, env_fallback in store.resolve_calls)

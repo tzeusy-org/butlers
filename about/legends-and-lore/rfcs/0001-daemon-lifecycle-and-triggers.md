@@ -28,6 +28,7 @@ The daemon executes these phases in strict order. A failure at a fatal phase abo
 | 7 | Run core Alembic migrations | Fatal |
 | 8 | Run module Alembic migrations | Fatal |
 | 8b | Create CredentialStore; validate module credentials via DB-first resolution | Non-fatal -- logs warnings |
+| 8c | Initialize S3-compatible blob storage from CredentialStore | Non-fatal -- disables blob operations if absent or validation fails |
 | 9 | Module `on_startup()` in topological order | Non-fatal (degraded -- failed module + dependents marked unavailable) |
 | 9b | Resolve runtime config from DB (seed from `[butler.runtime_seed]` on first boot) | Fatal -- cannot operate without runtime config |
 | 10 | Create Spawner with runtime adapter; verify LLM binary on PATH | Fatal if binary missing |

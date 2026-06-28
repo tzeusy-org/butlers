@@ -15,6 +15,8 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_S3_REQUEST_TIMEOUT_S = 5.0
+
 
 class BlobRef(NamedTuple):
     """Reference to a stored blob.
@@ -111,6 +113,10 @@ class BlobNotFoundError(Exception):
         super().__init__(f"Blob not found: {storage_ref}")
 
 
+class BlobStorageStartupError(RuntimeError):
+    """Raised when blob storage cannot be validated during daemon startup."""
+
+
 class S3BlobStore:
     """S3-compatible blob store.
 
@@ -136,6 +142,7 @@ class S3BlobStore:
         access_key_id: str | None = None,
         secret_access_key: str | None = None,
         region: str = "us-east-1",
+        request_timeout_s: float = DEFAULT_S3_REQUEST_TIMEOUT_S,
     ):
         self.bucket = bucket
         self.butler_name = butler_name
@@ -150,7 +157,12 @@ class S3BlobStore:
         )
         # Path-style addressing required for Garage, MinIO, and most
         # S3-compatible stores.
-        self._boto_config = BotoConfig(s3={"addressing_style": "path"})
+        self._boto_config = BotoConfig(
+            connect_timeout=request_timeout_s,
+            read_timeout=request_timeout_s,
+            retries={"total_max_attempts": 1},
+            s3={"addressing_style": "path"},
+        )
         self._client = None
 
     def _s3_client(self):
@@ -275,15 +287,15 @@ class S3BlobStore:
                     msg = (
                         f"S3 bucket '{self.bucket}' does not exist at endpoint {self.endpoint_url}"
                     )
-                    raise RuntimeError(msg) from e
+                    raise BlobStorageStartupError(msg) from e
                 msg = (
                     f"S3 connectivity check failed for bucket '{self.bucket}' "
                     f"at endpoint {self.endpoint_url}: {e}"
                 )
-                raise RuntimeError(msg) from e
+                raise BlobStorageStartupError(msg) from e
             except Exception as e:
                 msg = f"Cannot reach S3 endpoint {self.endpoint_url}: {e}"
-                raise RuntimeError(msg) from e
+                raise BlobStorageStartupError(msg) from e
         logger.info(
             "S3 blob storage ready: endpoint=%s bucket=%s prefix=%s",
             self.endpoint_url,

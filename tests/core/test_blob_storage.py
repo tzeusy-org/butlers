@@ -48,6 +48,26 @@ def blob_store(moto_s3_server):
     )
 
 
+def test_s3_blob_store_configures_explicit_network_timeouts(moto_s3_server):
+    """S3 startup checks should fail fast when the endpoint does not answer."""
+    store = S3BlobStore(
+        bucket=TEST_BUCKET,
+        butler_name=TEST_BUTLER,
+        endpoint_url=moto_s3_server,
+        access_key_id="testing",
+        secret_access_key="testing",
+        region="us-east-1",
+        request_timeout_s=1.25,
+    )
+
+    assert store._boto_config.connect_timeout == 1.25
+    assert store._boto_config.read_timeout == 1.25
+    # total_max_attempts=1 means exactly one attempt (no retries) — the
+    # strongest fail-fast. botocore translates max_attempts=N to
+    # total_max_attempts=N+1, so total_max_attempts is the correct key here.
+    assert store._boto_config.retries == {"total_max_attempts": 1}
+
+
 def test_blob_ref_contract():
     """BlobRef parse/serialize roundtrip; invalid format raises; to_ref produces correct string."""
     ref = BlobRef.parse("s3://bucket/general/2026/02/16/abc123.jpg")

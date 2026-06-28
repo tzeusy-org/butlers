@@ -79,3 +79,9 @@ async def test_get_attachment_error_cases(blob_store):
 
     with pytest.raises(ValueError, match="Invalid storage_ref format"):
         await get_attachment(blob_store, "not-a-valid-ref-format")
+
+
+async def test_get_attachment_reports_blob_store_unavailable():
+    """A degraded S3 startup should produce an actionable attachment error."""
+    with pytest.raises(ValueError, match="Blob storage is not configured or currently unavailable"):
+        await get_attachment(None, "s3://test-butlers-blobs/testbutler/2026/01/01/file.jpg")
