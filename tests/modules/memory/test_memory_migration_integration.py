@@ -54,8 +54,8 @@ _EXPECTED_MEMORY_TABLES = {
     "memory_events",
     "predicate_registry",
     "memory_policies",
-    "rule_applications",
     # embedding_versions removed by mem_005 (dead table with 0 runtime references)
+    # rule_applications removed by mem_006 (write-orphaned audit table, 0 SELECT consumers)
 }
 
 # ---------------------------------------------------------------------------
