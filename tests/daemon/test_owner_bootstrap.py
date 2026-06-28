@@ -13,6 +13,7 @@ import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.daemon import _ensure_owner_entity
@@ -188,6 +189,36 @@ class TestSeedOwnerTelegramHandle:
         conn.fetchval = AsyncMock(side_effect=[False])
         conn.execute = AsyncMock()
         await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
+        conn.execute.assert_not_awaited()
+
+    async def test_non_relationship_role_privilege_denial_is_noop(self) -> None:
+        from butlers.owner_bootstrap import _seed_owner_telegram_handle
+
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(
+            side_effect=asyncpg.InsufficientPrivilegeError(
+                "permission denied for schema relationship"
+            )
+        )
+        conn.execute = AsyncMock()
+
+        with patch("butlers.owner_bootstrap.logger") as mock_logger:
+            await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
+
+        conn.execute.assert_not_awaited()
+        mock_logger.warning.assert_not_called()
+
+    async def test_seed_readiness_check_is_relationship_schema_guarded(self) -> None:
+        from butlers.owner_bootstrap import _seed_owner_telegram_handle
+
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(side_effect=[False])
+        conn.execute = AsyncMock()
+
+        await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
+
+        readiness_sql = conn.fetchval.await_args.args[0]
+        assert "current_schema() = 'relationship'" in readiness_sql
         conn.execute.assert_not_awaited()
 
 

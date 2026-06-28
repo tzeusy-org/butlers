@@ -108,8 +108,14 @@ async def _seed_owner_telegram_handle(
     """
     try:
         tables_ready = await conn.fetchval(
-            "SELECT to_regclass('relationship.entity_facts') IS NOT NULL "
-            "AND to_regclass('public.entity_info') IS NOT NULL"
+            """
+            SELECT CASE
+                WHEN current_schema() = 'relationship' THEN
+                    to_regclass('relationship.entity_facts') IS NOT NULL
+                    AND to_regclass('public.entity_info') IS NOT NULL
+                ELSE false
+            END
+            """
         )
         if not tables_ready:
             return
@@ -137,5 +143,7 @@ async def _seed_owner_telegram_handle(
             owner_entity_id,
             handle,
         )
+    except asyncpg.InsufficientPrivilegeError:
+        return
     except Exception:  # noqa: BLE001
         logger.warning("Owner Telegram handle seed skipped (non-fatal)", exc_info=True)
