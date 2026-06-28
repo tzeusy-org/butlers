@@ -972,6 +972,7 @@ export function SpotifyDrawerContent() {
   const status = statusQuery.data;
   const isConnected = status?.state === "connected";
   const isNotConfigured = status?.state === "not_configured";
+  const isError = status?.state === "error";
   const needsAuth = status?.state === "needs_auth" || status?.state === "needs_reauth";
 
   function handleConfigureOpen() {
@@ -1040,11 +1041,21 @@ export function SpotifyDrawerContent() {
               ? "var(--green)"
               : isNotConfigured
                 ? "var(--dim)"
-                : needsAuth
-                  ? "var(--amber)"
-                  : "var(--amber)",
+                : isError
+                  ? "var(--red)"
+                  : needsAuth
+                    ? "var(--amber)"
+                    : "var(--amber)",
           }}
-          aria-label={isConnected ? "connected" : isNotConfigured ? "not configured" : "needs auth"}
+          aria-label={
+            isConnected
+              ? "connected"
+              : isNotConfigured
+                ? "not configured"
+                : isError
+                  ? "error"
+                  : "needs auth"
+          }
           data-spotify-status-dot="true"
         />
         {status?.display_name && (
@@ -1077,6 +1088,32 @@ export function SpotifyDrawerContent() {
           </Mono>
         </div>
       </div>
+
+      {/* Error state — token refresh failed, re-authorization needed */}
+      {isError && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-spotify-error-card="true"
+        >
+          <Mono size={11} upper tracking="0.12em" color="var(--red)">
+            Error — re-authorization needed
+          </Mono>
+          <Mono size={11} color="var(--mfg)">
+            {status?.error ?? "Spotify token verification failed. Re-connect your account."}
+          </Mono>
+          <div className="flex gap-2">
+            <PillBtn
+              variant="commit"
+              onClick={handleOAuthConnect}
+              disabled={oauthStartMutation.isPending}
+              data-spotify-reconnect-btn="true"
+            >
+              {oauthStartMutation.isPending ? "redirecting…" : "re-connect"}
+            </PillBtn>
+          </div>
+        </div>
+      )}
 
       {/* Configure client_id inline panel */}
       {configureOpen && (
@@ -1205,7 +1242,7 @@ export function SpotifyDrawerContent() {
                   : "connect via spotify"}
             </PillBtn>
           )}
-          {!isNotConfigured && !isConnected && !needsAuth && (
+          {!isNotConfigured && !isConnected && !needsAuth && !isError && (
             <PillBtn
               variant="commit"
               onClick={handleOAuthConnect}

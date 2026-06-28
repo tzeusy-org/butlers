@@ -265,6 +265,42 @@ class TestSpotifyAPI:
         assert body["account_type"] == "premium"
         assert body["last_sync_at"] is not None
 
+    async def test_status_token_refresh_failure_maps_to_error_state(self, monkeypatch):
+        """A failed /me verification surfaces a distinct ``error`` state (not
+        ``disconnected``) so the FE can render a red re-authorization card."""
+        from butlers.api.routers import spotify as spotify_router
+
+        async def _fail_me(_token):
+            return None
+
+        monkeypatch.setattr(spotify_router, "_fetch_spotify_me", _fail_me)
+
+        app = self._make_app(access_token="tok-stale")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/spotify/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == self._STATUS_KEYS
+        assert body["connected"] is False
+        # Distinct error state, NOT collapsed to disconnected.
+        assert body["state"] == "error"
+        assert body["needs_reauth"] is True
+        assert body["error"]
+
+    async def test_callback_state_mismatch_returns_403(self):
+        """Spec requires HTTP 403 (not 400) on CSRF state mismatch."""
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"code": "auth-code", "state": "never-issued-state"},
+            )
+        assert resp.status_code == 403
+
     async def test_config_returns_configured_shape(self):
         app = self._make_app()
         async with httpx.AsyncClient(

@@ -553,7 +553,7 @@ async def spotify_oauth_callback(
     state_entry = _validate_and_consume_state(state)
     if state_entry is None:
         raise HTTPException(
-            status_code=400,
+            status_code=403,
             detail=(
                 "Invalid or expired state token. "
                 "The authorization session may have timed out. "
@@ -684,7 +684,8 @@ async def get_spotify_status(
     Returns needs_auth when a client_id is stored but no tokens exist.
     Returns needs_reauth when tokens exist but granted scopes are insufficient.
     Returns connected when GET /me succeeds and all required scopes are granted.
-    Returns disconnected when tokens are present but GET /me fails.
+    Returns error when tokens are present but GET /me fails (token refresh /
+    verification failure requiring re-authorization).
     """
     cred_store = _make_credential_store(db_manager)
     if cred_store is None:
@@ -726,7 +727,8 @@ async def get_spotify_status(
     if me_data is None:
         return SpotifyStatusResponse(
             connected=False,
-            state=SpotifyConnectionState.disconnected,
+            state=SpotifyConnectionState.error,
+            needs_reauth=True,
             error="Spotify token verification failed. Re-connect your account.",
         )
 

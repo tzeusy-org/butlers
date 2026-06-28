@@ -1348,6 +1348,31 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
     expect(html).toContain("disconnect");
   });
 
+  it("renders red error-state card when token refresh failed (state=error)", async () => {
+    const useSpotifyModule = await import("@/hooks/use-spotify.ts");
+    vi.mocked(useSpotifyModule.useSpotifyStatus).mockReturnValueOnce({
+      data: {
+        state: "error",
+        connected: false,
+        spotify_user_id: null,
+        display_name: null,
+        account_type: null,
+        last_sync_at: null,
+        error: "Spotify token verification failed. Re-connect your account.",
+        needs_reauth: true,
+        missing_scopes: [],
+      },
+      isLoading: false,
+      error: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    const html = renderInRouter(<SpotifyDrawerContent />);
+    expect(html).toContain('data-spotify-error-card="true"');
+    expect(html).toContain("Error — re-authorization needed");
+    expect(html).toContain("re-connect");
+    expect(html).toContain("Spotify token verification failed");
+  });
+
   it("renders dismiss button in standalone mode", () => {
     const html = renderInRouter(<SpotifyDrawer onClose={() => undefined} />);
     expect(html).toContain("dismiss");

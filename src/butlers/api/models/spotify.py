@@ -27,6 +27,11 @@ class SpotifyConnectionState(StrEnum):
     disconnected = "disconnected"
     """Credentials partially present but unverified or expired."""
 
+    error = "error"
+    """Tokens are stored but token refresh / verification failed — re-authorization
+    needed. Distinct from ``disconnected``: the frontend renders this as a red
+    error-state card."""
+
     not_configured = "not_configured"
     """No Spotify client_id configured — setup required."""
 
