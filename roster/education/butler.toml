@@ -36,8 +36,10 @@ prompt = """
 Generate and send a weekly learning progress digest for the user. Read analytics snapshots for the
 past 7 days across all active mind maps. Identify trends (velocity, retention rates, struggling
 areas). Highlight achievements (nodes mastered, streaks, improvements). Flag any areas where
-retention_rate_7d < 0.60 or struggling_nodes >= 3. Compose a structured summary and deliver via
-notify(channel="telegram", intent="send", message=<digest>).
+retention_rate_7d < 0.60 or struggling_nodes >= 3. Compose a structured summary and deliver it to
+the owner via their preferred notification channel: call
+notify(intent="send", message=<digest>) and let it route to the owner's preferred channel (do not
+hardcode a specific channel).
 
 Data-gathering guardrails:
 1) Start with analytics_get_cross_topic(), then analytics_get_trend(mind_map_id, days=7) once per

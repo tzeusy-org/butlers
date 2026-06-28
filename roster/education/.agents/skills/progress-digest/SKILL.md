@@ -10,7 +10,7 @@ version: 1.0.0
 
 Weekly learning progress digest. Read the last 7 days of analytics snapshots across all active
 mind maps, compute trends, highlight achievements, flag struggling areas, and deliver a structured
-summary to the user via their preferred notification channel (email by default for digests).
+summary to the owner via their preferred notification channel through `notify()`.
 
 ## When to Use
 
@@ -94,24 +94,22 @@ Estimated completions:
 **Tone:** Keep it encouraging. Acknowledge effort, not just outcomes. Frame struggle areas as
 opportunities, not failures.
 
-### Step 4: Deliver via Email
+### Step 4: Deliver via notify()
 
-For the weekly digest, use email as the primary delivery channel:
+For the weekly digest, deliver to the owner via their preferred notification channel. Call
+`notify()` without naming a channel and let it route to the owner's preferred channel:
 
 ```python
 notify(
-    channel="email",
     intent="send",
-    subject="Your weekly learning progress — [Date]",
+    subject="Your weekly learning progress - [Date]",
     message=<formatted_digest>,
     request_context=<session_request_context>
 )
 ```
 
-If the user has a preference stored in memory (from `memory_search()`), respect it:
-- If preference is Telegram or another channel, use that instead.
-- If no preference stored, default to email for digests (it's the appropriate format for
-  longer-form weekly summaries).
+Do not hardcode a channel. `notify()` resolves the owner's preferred channel automatically; the
+`subject` is used when the resolved channel supports it (for example email) and ignored otherwise.
 
 ### Step 5: Trigger Curriculum Re-planning (if needed)
 
@@ -155,7 +153,8 @@ determined, omit `entity_id` — it is not required for user/topic-level study p
 - `analytics_get_cross_topic()` called to get portfolio-level data
 - `analytics_get_trend()` called for each active mind map
 - Trends computed: velocity, retention, newly mastered concepts, struggling nodes
-- Digest formatted and delivered via `notify(channel="email", intent="send", subject=..., ...)`
+- Digest formatted and delivered via `notify(intent="send", subject=..., ...)` to the owner's
+  preferred channel (no hardcoded channel)
 - Curriculum re-planning triggered (via `curriculum_replan()`) for any topic with low retention
   or 3+ struggling nodes
 - Session exits after delivery — no teaching or review in this session
