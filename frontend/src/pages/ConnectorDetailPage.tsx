@@ -171,11 +171,15 @@ export default function ConnectorDetailPage() {
     window.location.href = url
   }, [connectorType, endpointIdentity])
 
-  // Build the onSetPrimaryAccount handler: navigates to /secrets where the user
-  // can set a primary Google account. no_primary_account is not a reauth issue —
-  // the connector has a valid credential but no account is designated as primary.
+  // Build the onSetPrimaryAccount handler: navigates to the Google account
+  // management surface where the user can set a primary Google account.
+  // no_primary_account is not a reauth issue — the connector has a valid
+  // credential but no account is designated as primary. Per the
+  // dashboard-google-accounts spec, any in-app cross-link to the Google account
+  // management surface targets /secrets?focus=u:google (the canonical deep-link
+  // that opens the PageGoogleAccounts passport page).
   const handleSetPrimaryAccount = useCallback(() => {
-    navigate('/secrets')
+    navigate('/secrets?focus=u:google')
   }, [navigate])
 
   return (
