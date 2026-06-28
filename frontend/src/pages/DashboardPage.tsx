@@ -34,13 +34,16 @@
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
-import { useSpendSummary } from "@/hooks/use-spend";
+import { useSpendSummary, useTopSessions } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
+
+import CostWidget from "@/components/costs/CostWidget";
+import TopSessionsTable from "@/components/costs/TopSessionsTable";
 
 import { AttentionList } from "@/components/overview/AttentionList";
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
@@ -70,6 +73,7 @@ export default function DashboardPage() {
   const notificationStatsQuery = useNotificationStats();
   const qaSummaryQuery = useQaSummary();
   const timelineQuery = useTimeline({ limit: 5 });
+  const topSessionsQuery = useTopSessions();
 
   // Derived values
   const model = deriveOverviewTriageModel({
@@ -86,6 +90,19 @@ export default function DashboardPage() {
     timeline: timelineQuery.isError ? [] : (timelineQuery.data?.data ?? []),
     timelineError: timelineQuery.isError,
   });
+
+  // Cost surface (spec: dashboard-domain-pages — CostWidget + TopSessionsTable).
+  // Reuse the same useSpendSummary("today") query already fetched for the
+  // ButlerIndex per-butler annotations (same query key — cached, no extra
+  // fetch). CostWidget shows the aggregate "Cost Today" total + the single
+  // most-expensive butler, derived from the by_butler breakdown; this is a
+  // distinct surface from the per-butler subtitles in ButlerIndex, so no
+  // aggregate cost figure is double-rendered.
+  const costData = costQuery.isError ? null : costQuery.data?.data;
+  const [topButler, topButlerCost] = Object.entries(costData?.by_butler ?? {}).reduce<
+    [string | null, number]
+  >((best, [name, cost]) => (cost > best[1] ? [name, cost] : best), [null, 0]);
+  const topSessions = topSessionsQuery.isError ? [] : (topSessionsQuery.data?.data ?? []);
 
   // Briefing headline and greet with safe fallbacks
   const greet = briefing?.greet ?? "Good morning.";
@@ -149,6 +166,27 @@ export default function DashboardPage() {
           <ButlerIndex butlers={model.operationsRows} butlersError={model.butlersError} />
           <OperationsNowList rows={model.nowRows} />
         </div>
+      </div>
+
+      {/*
+       * Cost surface (spec: dashboard-domain-pages — "Cost widget for dashboard
+       * overview" + "Top sessions table"). Full-width band below the editorial
+       * grid: the aggregate CostWidget (constrained to a half-width column) over
+       * the most-expensive-sessions table.
+       */}
+      <div
+        style={{ marginTop: "40px", display: "flex", flexDirection: "column", gap: "24px" }}
+        aria-label="Cost"
+      >
+        <div className="grid items-start gap-6 lg:grid-cols-2">
+          <CostWidget
+            totalCostUsd={costData?.total_cost_usd ?? 0}
+            topButler={topButler}
+            topButlerCost={topButlerCost}
+            isLoading={costQuery.isLoading}
+          />
+        </div>
+        <TopSessionsTable sessions={topSessions} isLoading={topSessionsQuery.isLoading} />
       </div>
     </Page>
   );

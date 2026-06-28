@@ -26,7 +26,7 @@ import DashboardPage from "@/pages/DashboardPage";
 
 vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
-vi.mock("@/hooks/use-spend", () => ({ useSpendSummary: vi.fn() }));
+vi.mock("@/hooks/use-spend", () => ({ useSpendSummary: vi.fn(), useTopSessions: vi.fn() }));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
 vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
 vi.mock("@/hooks/use-system", () => ({ useButlerHeartbeats: vi.fn() }));
@@ -40,7 +40,7 @@ vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
 
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
-import { useSpendSummary } from "@/hooks/use-spend";
+import { useSpendSummary, useTopSessions } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlerHeartbeats } from "@/hooks/use-system";
@@ -103,6 +103,25 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
         by_butler: { general: 0.30, health: 0.12 },
         by_model: {},
       },
+      meta: {},
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+  vi.mocked(useTopSessions).mockReturnValue({
+    data: {
+      data: [
+        {
+          session_id: "s1",
+          butler: "health",
+          cost_usd: 0.31,
+          input_tokens: 50_000,
+          output_tokens: 12_000,
+          model: "claude-opus-4",
+          started_at: "2026-05-14T11:50:00.000Z",
+        },
+      ],
       meta: {},
     },
     isLoading: false,
@@ -467,6 +486,43 @@ describe("DashboardPage -- ButlerIndex", () => {
   it("renders the Now section eyebrow", () => {
     const html = renderPage();
     expect(html).toContain("Now");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cost surface — CostWidget + TopSessionsTable (bu-6o2eu)
+//
+// Spec dashboard-domain-pages requires the overview to mount the CostWidget
+// ("Cost Today" aggregate) and the TopSessionsTable ("Most Expensive
+// Sessions"). Both were previously orphaned (imported by no page).
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- cost surface", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+  });
+
+  it("mounts the CostWidget with the aggregate cost-today total", () => {
+    const html = renderPage();
+    expect(html).toContain("Cost Today");
+    // total_cost_usd 0.42 -> "$0.42"
+    expect(html).toContain("$0.42");
+  });
+
+  it("shows the most-expensive butler derived from the by_butler breakdown", () => {
+    const html = renderPage();
+    // by_butler { general: 0.30, health: 0.12 } -> top is general at $0.30
+    expect(html).toContain("Top: general");
+    expect(html).toContain("$0.30");
+  });
+
+  it("mounts the TopSessionsTable with formatted token counts", () => {
+    const html = renderPage();
+    expect(html).toContain("Most Expensive Sessions");
+    // 50_000 / 12_000 input/output tokens -> "50.0K / 12.0K"
+    expect(html).toContain("50.0K");
+    expect(html).toContain("12.0K");
   });
 });
 
