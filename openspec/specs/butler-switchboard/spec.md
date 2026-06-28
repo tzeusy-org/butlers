@@ -126,13 +126,13 @@ Wellness ingest envelopes SHALL follow the canonical `ingest.v1` schema with Goo
   - `source.channel = "wellness"`
   - `source.provider = "google_health"`
   - `source.endpoint_identity` matching pattern `"google_health:user:<google_user_id>"`
-  - `sender.identity` set to the owner's Google user ID, resolved to the owner entity via the `contact_info` row pre-registered during pairing (`type="google_health"`)
+  - `sender.identity` set to the owner's Google user ID (canonically the account email today), resolved to the owner entity via the `relationship.entity_facts` `has-email` triple pre-registered during pairing (the canonical ingress resolver reads `relationship.entity_facts` only; `public.contact_info` is vestigial)
   - `control.idempotency_key` matching pattern `"google_health:<resource>:<record_id>"`
 
 #### Scenario: Identity resolution does not create temporary contacts
 
 - **WHEN** the Switchboard processes a wellness envelope's `sender.identity`
-- **THEN** it SHALL resolve the owner via the pre-registered `contact_info` row
+- **THEN** it SHALL resolve the owner via the pre-registered `relationship.entity_facts` `has-email` triple
 - **AND** SHALL NOT invoke `create_temp_contact()`
 - **AND** SHALL NOT emit disambiguation candidates
 

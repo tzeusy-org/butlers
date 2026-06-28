@@ -36,16 +36,25 @@ The connector SHALL operate against **every** `public.google_accounts` row whose
 - **THEN** within `scope_recheck_s` the connector SHALL stop polling that account and close its heartbeat
 - **AND** SHALL continue polling any other still-eligible accounts uninterrupted
 
-### Requirement: Owner Contact Info Registration
+### Requirement: Owner Identity Registration via Entity Facts
 
-The pairing flow SHALL pre-register each owner Google Health identity as its own `public.contact_info` row so that downstream identity resolution resolves `sender.identity` to the owner entity. One row per Google account.
+The pairing flow SHALL register each owner Google Health identity as a `relationship.entity_facts` triple on the owner entity so that the canonical ingress resolver (`resolve_contact_by_channel()`, which reads `relationship.entity_facts` only) resolves a wellness envelope's `sender.identity` to the owner entity. One triple per Google account. The write MUST go through the relationship butler's central writer `relationship_assert_fact()` (direct `INSERT` into `relationship.entity_facts` is forbidden per `relationship-facts`). The connector and OAuth callback SHALL NOT write `public.contact_info` or `public.contacts`; both are vestigial and being retired, and identity resolution no longer reads them.
 
-#### Scenario: Contact-info upsert per account
+Because a wellness envelope's `sender.identity` is the account email (canonically the Google `google_user_id` today), the triple SHALL use the `has-email` predicate (the email channel mapping defined in `relationship-facts`) with the account email as the literal object.
+
+#### Scenario: Entity-facts triple asserted per account
 
 - **WHEN** the OAuth callback for `scope_set=health` completes successfully for a given Google account
-- **THEN** a row SHALL be upserted into `public.contact_info` with `type = "google_health"`, `value = <google_user_id_for_that_account>`, `entity_id = <owner_entity_id>`, `secured = false`
-- **AND** re-running pairing for the same account SHALL be idempotent
-- **AND** multiple health-scoped accounts SHALL produce multiple `(type='google_health', value=<email_n>)` rows that share the same `entity_id`
+- **THEN** a triple SHALL be asserted via `relationship_assert_fact()` with `subject = <owner_entity_id>`, `predicate = "has-email"`, `object = <account_email>`, `object_kind = "literal"`, `validity = "active"`
+- **AND** re-running pairing for the same account SHALL be idempotent (the central writer upserts the existing active triple rather than creating a duplicate)
+- **AND** multiple health-scoped accounts SHALL produce multiple `has-email` triples that share the same `subject` (the owner entity)
+- **AND** no row SHALL be written to `public.contact_info` or `public.contacts`
+
+#### Scenario: Wellness sender identity resolves via the canonical resolver
+
+- **WHEN** a wellness envelope arrives with `sender.identity = <account_email>` for a paired health-scoped account
+- **THEN** `resolve_contact_by_channel("email", <account_email>)` SHALL resolve to the owner entity via the registered `has-email` triple
+- **AND** resolution SHALL NOT read `public.contact_info` or `public.contacts`
 
 ### Requirement: OAuth Token Lifecycle via Shared Google Credential Pipeline
 
