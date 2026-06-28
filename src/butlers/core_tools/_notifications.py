@@ -224,10 +224,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
         @tool_span("notify", butler_name=butler_name)
         async def notify(
             channel: Annotated[
-                Literal["telegram", "email", "whatsapp"] | None,
+                Literal["telegram", "email"] | None,
                 Field(
                     description=(
-                        "Delivery channel. Allowed values: telegram | email | whatsapp. "
+                        "Delivery channel. Allowed values: telegram | email. "
                         "Optional: when omitted together with an entity_id, the channel is "
                         "resolved from the entity's preferred channel (falling back to "
                         "telegram, then email). When omitted without an entity_id, delivery "
@@ -313,7 +313,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             """Send a `notify.v1` envelope through Switchboard `deliver()`.
 
             Required fields:
-            - `channel` (string enum): `telegram`, `email`, or `whatsapp`
+            - `channel` (string enum): `telegram` or `email`
             - `message` (string): required for `send`/`reply`, omitted for `react`
 
             Optional fields:

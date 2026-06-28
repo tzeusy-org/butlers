@@ -1398,7 +1398,10 @@ async def test_notify_schema_and_channels(butler_dir: Path) -> None:
         branches = channel_schema.get("anyOf", [])
         channel_enum = {v for b in branches for v in b.get("enum", [])}
         permits_null = any(b.get("type") == "null" for b in branches)
-    assert channel_enum == {"telegram", "email", "whatsapp"}
+    # Advertised channels must match notify()'s _SUPPORTED_CHANNELS exactly
+    # (telegram, email). whatsapp delivery is wired at the routing layer but is
+    # NOT enabled through the notify() tool, so it must not be over-advertised.
+    assert channel_enum == {"telegram", "email"}
     # Optional contract: the schema must permit null/omission of channel.
     permits_omission = permits_null or "channel" not in params.get("required", [])
     assert permits_omission, f"channel must be optional; schema={channel_schema!r}"
@@ -1409,6 +1412,12 @@ async def test_notify_schema_and_channels(butler_dir: Path) -> None:
     result = await notify_fn(channel="sms", message="Hello")
     assert result["status"] == "error"
     assert "Unsupported channel" in result["error"]
+
+    # whatsapp is advertised nowhere and rejected at runtime: the signature and
+    # _SUPPORTED_CHANNELS stay in sync (regression guard for bu-82ufx).
+    result_wa = await notify_fn(channel="whatsapp", message="Hello")
+    assert result_wa["status"] == "error"
+    assert "Unsupported channel" in result_wa["error"]
 
     # Valid channel, no switchboard → error (not channel error)
     result2 = await notify_fn(channel="email", message="Hello")
