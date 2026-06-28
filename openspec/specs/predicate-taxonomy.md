@@ -233,7 +233,7 @@ All relationship facts use `entity_id = contact_entity_id` (resolved contact ent
 | `loan` | Loan with contact (money lent or borrowed) | `person` | |
 | `contact_task` | Task related to a contact | `person` | |
 | `reminder` | Reminder about a contact | `person` | |
-| `dunbar_tier_override` | Manual override for Dunbar tier assignment | `person` | Pins contact to specific tier (5, 15, 50, 150, 500, 1500) |
+| `dunbar_tier_override` | Manual override for Dunbar tier assignment | `person` | Pins contact to specific tier (5, 15, 50, 150, 500, 1500). Seeded in the RDF `relationship.entity_predicate_registry` (rel_014/017/021), NOT the memory `predicate_registry` (see Part 6 note). |
 
 **quick_facts migration:** The `quick_facts` table stores `(contact_id, key, value)` — already SPO-shaped. Migration: `predicate = key`, `content = value`, `entity_id = contact_entity_id`. Keys become predicates directly; no fixed predicate name. These facts use `is_temporal = false` and support supersession by `(entity_id, scope, predicate)`.
 
@@ -758,7 +758,8 @@ The following predicates MUST be seeded into `predicate_registry` as part of eac
 | `loan` | false | person | Loan with a contact |
 | `contact_task` | false | person | Task related to a contact |
 | `reminder` | false | person | Reminder about a contact |
-| `dunbar_tier_override` | false | person | Manual override for Dunbar tier assignment |
+
+**Note on dunbar_tier_override:** Unlike the predicates above, `dunbar_tier_override` is NOT seeded into the memory `predicate_registry`. It lives in the RDF predicate registry `relationship.entity_predicate_registry`, seeded by relationship migrations rel_014 (`014_predicate_registry.py`), rel_017 (`017_repair_contact_predicate_seeds.py`), and rel_021 (`021_entity_v3_lifecycle.py`) with `kind = 'contact'` and single-value (supersede) lifecycle. The predicate's taxonomy and metadata are documented in Part 3.2 for completeness, but its seed home is the relationship RDF registry, not this seed summary.
 
 **Note on quick_facts:** The key-as-predicate pattern means individual quick_fact keys are NOT seeded individually. They are stored using whatever key string was used in the source table. No registry entry is created per key; they remain unregistered predicates (which is valid per the registry-is-advisory rule).
 
