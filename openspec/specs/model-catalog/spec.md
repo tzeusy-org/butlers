@@ -13,7 +13,7 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 - **WHEN** a model catalog entry is created
 - **THEN** it contains: `id` (UUID PK), `alias` (text, UNIQUE), `runtime_type` (text, NOT NULL), `model_id` (text, NOT NULL), `extra_args` (JSONB, default `[]`), `complexity_tier` (text, NOT NULL), `enabled` (boolean, default true), `priority` (int, default 0), `session_timeout_s` (int, NOT NULL, default 1800), `last_verified_at` (timestamptz, nullable), `last_verified_latency_ms` (int, nullable), `last_verified_ok` (bool, nullable), `created_at` (timestamptz), `updated_at` (timestamptz)
 - **AND** `session_timeout_s` was added by migration `core_073` when the per-session timeout moved off `runtime_config` onto the catalog
-- **AND** the `last_verified_*` columns were added by migration `core_093` and back the verification-state filter used during resolution (see Model Resolution)
+- **AND** the `last_verified_*` columns were added by migration `core_093` and back the verification filter used during resolution (see Model Resolution); `last_verified_ok` is a single nullable boolean (NULL = never verified, `true` = last probe passed, `false` = last probe failed), not a multi-valued connection-state column
 
 #### Scenario: Alias uniqueness
 - **WHEN** a catalog entry is created with an alias that already exists
@@ -36,7 +36,7 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 - **THEN** it MUST be a JSON array of strings, where each string is a single CLI token (e.g. `["--config", "model_reasoning_effort=high"]`)
 
 ### Requirement: Model Alias Concept
-A model alias is a named configuration combining a base model with optional extra runtime arguments. Aliases SHALL be rows in the model catalog — there is no separate alias table. The alias serves as the human-readable identifier while `model_id` is the actual model string passed to the runtime adapter.
+A model alias is a named configuration combining a base model with optional extra runtime arguments. Aliases SHALL be rows in the model catalog - there is no separate alias table. The alias serves as the human-readable identifier while `model_id` is the actual model string passed to the runtime adapter.
 
 #### Scenario: Alias with extra args
 - **WHEN** a catalog entry has alias `gpt-5.4-high`, model_id `gpt-5.4`, and extra_args `["--config", "model_reasoning_effort=high"]`
@@ -47,7 +47,7 @@ A model alias is a named configuration combining a base model with optional extr
 - **THEN** the spawner passes `model_id` as the model parameter with no additional args from the catalog
 
 ### Requirement: Butler Model Overrides Schema
-The system SHALL maintain a `public.butler_model_overrides` table for per-butler customization layered on top of the global catalog. Overrides are sparse — most butlers use global defaults.
+The system SHALL maintain a `public.butler_model_overrides` table for per-butler customization layered on top of the global catalog. Overrides are sparse - most butlers use global defaults.
 
 #### Scenario: Override entry structure
 - **WHEN** a butler model override is created
@@ -98,16 +98,19 @@ The system SHALL provide model resolution functions that select catalog entries 
 #### Scenario: No candidates fallback
 - **WHEN** `resolve_model()` finds no enabled qualifying entries in any tier
 - **THEN** the function returns `None`
-- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` — Catalog empty fallback)
+- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` - Catalog empty fallback)
 
 #### Scenario: Priority tie-breaking via round-robin
 - **WHEN** multiple enabled entries exist for the same butler+tier at the same effective priority
 - **THEN** the initial resolver load-balances across them using a per-`(butler_name, complexity_tier)` round-robin counter in `public.model_round_robin_counters`, ordering candidates by `created_at ASC, id ASC` and selecting index `counter % total`
 - **AND** the counter is incremented atomically only when a winning tier exists (empty-tier fallthrough attempts never increment any counter)
 
-#### Scenario: Verification-state filter
+#### Scenario: Verification filter
 - **WHEN** the resolver evaluates candidate rows
 - **THEN** rows with `last_verified_ok = false` are excluded (`mc.last_verified_ok IS DISTINCT FROM false`); rows never verified (`NULL`) or verified-ok (`true`) qualify
+- **AND** `last_verified_ok` is a single nullable boolean recording the outcome of the most recent verification probe: `NULL` = never verified, `true` = last probe passed, `false` = last probe failed. There is no multi-valued connection-state column.
+- **AND** the boolean is set by the model-settings verification endpoint (see `dashboard-model-settings`, which persists `last_verified_at`, `last_verified_latency_ms`, and `last_verified_ok`), not by the resolver; the resolver only reads it.
+- **AND** the `enabled` flag is independent of verification: resolution requires BOTH effective `enabled = true` AND `last_verified_ok IS DISTINCT FROM false`, so an operator may disable a verified-ok model (excluded) or keep a never-verified model enabled (qualifies).
 
 #### Scenario: Return type includes catalog_entry_id and session_timeout_s
 - **WHEN** `resolve_model()` returns a match
@@ -131,13 +134,14 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **AND** any subsequent failover attempts SHALL remain restricted to the effective tier
   that produced that selected candidate
 
-#### Scenario: State filter applies to failover candidates
+#### Scenario: Verification filter applies to failover candidates
 - **WHEN** a next-candidate query evaluates model catalog rows
 - **THEN** disabled rows (effective `enabled = false`) and rows that failed their last verification
   (`last_verified_ok = false`) SHALL NOT be returned as failover candidates
-- **AND** note: a richer multi-state machine (distinct error / offline / deprecated / rate-limited /
-  anomaly states) is NOT yet implemented; the as-built filter is the boolean
-  `last_verified_ok` verification result plus the effective `enabled` flag
+- **AND** the eligibility test is exactly the same boolean-plus-`enabled` contract used by the
+  primary resolver: effective `enabled = true` AND `last_verified_ok IS DISTINCT FROM false`. There
+  is no separate connection-state machine (no distinct error / offline / deprecated / rate-limited /
+  anomaly states); `last_verified_ok` plus `enabled` is the canonical and only eligibility signal.
 
 #### Scenario: Deterministic fallback ordering
 - **WHEN** multiple non-attempted candidates remain in the effective tier
