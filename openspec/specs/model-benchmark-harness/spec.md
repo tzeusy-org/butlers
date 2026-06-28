@@ -40,7 +40,7 @@ The harness SHALL run the full scenario corpus for one model before moving to th
 
 #### Scenario: Three-model benchmark run
 - **WHEN** models `[A, B, C]` are configured with 10 scenarios each
-- **THEN** all 10 scenarios run with model A pinned, then all 10 with model B, then all 10 with model C — 30 total executions, no interleaving
+- **THEN** all 10 scenarios run with model A pinned, then all 10 with model B, then all 10 with model C, for 30 total executions, no interleaving
 
 ### Requirement: Two execution modes
 The suite SHALL support `validate` mode (default, pass/fail assertions) and `benchmark` mode (scorecard generation, no hard failures).
@@ -53,21 +53,21 @@ The suite SHALL support `validate` mode (default, pass/fail assertions) and `ben
 - **WHEN** tests run with `--benchmark` flag
 - **THEN** scenarios execute for each model in the list, accumulating results without hard assertion failures, and scorecards are generated at the end
 
-### Requirement: JUnit XML as intermediary data layer
-All benchmark test cases SHALL emit their metrics as JUnit XML properties via pytest's `record_property` fixture. JUnit XML is the canonical intermediary data format between test execution and report generation.
+### Requirement: In-memory accumulator as intermediary data layer
+The harness SHALL accumulate every benchmark scenario result into a single session-scoped in-memory store (the `benchmark_result` accumulator). This in-memory accumulator is the canonical intermediary between test execution and report generation; the harness MUST NOT depend on pytest's `record_property` fixture, JUnit XML, or `pytest_terminal_summary` for benchmark reporting.
 
-#### Scenario: Metrics embedded in JUnit XML
-- **WHEN** a benchmark run executes with `--junit-xml=bench-results.xml`
-- **THEN** each `<testcase>` element in the output XML contains `<property>` elements for all metrics that test computed (accuracy, recall, precision, latency percentiles, etc.)
+#### Scenario: Metrics recorded into the in-memory accumulator
+- **WHEN** a benchmark scenario runs in benchmark mode
+- **THEN** its per-scenario metrics (scenario id, routing expected/actual/pass, tool-call expected/actual/pass, input/output tokens, duration) are appended to the session-scoped `benchmark_result` accumulator, keyed by model
 
-#### Scenario: Cross-model comparison via JUnit XML
-- **WHEN** benchmark runs produce JUnit XML files for models A, B, and C
-- **THEN** a downstream tool can parse the XML files to generate a comparison table without re-running the benchmarks or parsing stdout
+#### Scenario: Markdown scorecards generated at session end
+- **WHEN** a benchmark run completes (success or failure) in benchmark mode
+- **THEN** the `pytest_sessionfinish` hook computes per-model scorecards from the in-memory accumulator and writes Markdown scorecards plus a machine-readable `raw-results.json` to a timestamped directory under `.tmp/e2e-scorecards/<timestamp>/` (full output structure defined in the scorecard-reporting capability)
 
-#### Scenario: Terminal summary from in-memory data
-- **WHEN** a benchmark run completes (with or without `--junit-xml`)
-- **THEN** a consolidated human-readable report is printed to the terminal via `pytest_terminal_summary`, sourced from the same metric store that populates JUnit XML properties
+#### Scenario: Cross-model comparison from generated Markdown
+- **WHEN** a benchmark run produces scorecards for models A, B, and C
+- **THEN** the cross-model `summary.md` and each model's `raw-results.json` provide the comparison data directly, with no re-run of the benchmarks and no parsing of stdout or JUnit XML
 
-#### Scenario: Report without JUnit XML flag
-- **WHEN** a benchmark run executes without `--junit-xml`
-- **THEN** the terminal summary report still prints (it reads in-memory data, not the XML file), but no portable artifact is produced for downstream tooling
+#### Scenario: Output directory path surfaced to the terminal
+- **WHEN** scorecard generation completes
+- **THEN** the harness prints the output directory path to stdout so the human-readable Markdown report can be located, without relying on a `pytest_terminal_summary` hook
