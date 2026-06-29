@@ -256,6 +256,175 @@ class TestStartAllDbRetry:
             assert call_count == max_attempts + 1
 
 
+class TestStartAllReleasesFailedDaemon:
+    """Regression: a failed daemon.start() must release its prebound MCP socket.
+
+    daemon.start() pre-binds the MCP port (lifecycle step 14) before later
+    startup steps run.  If a later step raises, _start_all used to discard the
+    daemon without shutting it down, leaking the listening socket so the next
+    retry (or the next butler) hit "port still in use".  These tests pin that
+    _start_all calls daemon.shutdown() on every failed-start path.
+    """
+
+    @pytest.fixture
+    def configs(self, tmp_path):
+        d = tmp_path / "test_butler"
+        d.mkdir()
+        (d / "butler.toml").write_text('[butler]\nname = "test_butler"\nport = 19999\n')
+        return {"test_butler": d}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_called_on_each_failed_attempt_before_skip(self, configs):
+        """Every failed start (including retries) releases resources via shutdown()."""
+        call_count = 0
+
+        async def _always_fail(self):
+            nonlocal call_count
+            call_count += 1
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+
+        loop = asyncio.get_event_loop()
+        max_attempts = 3
+
+        with (
+            patch("butlers.daemon.ButlerDaemon") as MockDaemon,
+            patch("butlers.cli._PORT_RETRY_BASE_DELAY", 0.001),
+            patch("butlers.cli._PORT_RETRY_MAX_DELAY", 0.01),
+            patch("butlers.cli._PORT_RETRY_MAX_ATTEMPTS", max_attempts),
+        ):
+            instance = AsyncMock()
+            instance.start = AsyncMock(side_effect=_always_fail.__get__(instance))
+            instance.shutdown = AsyncMock()
+            MockDaemon.return_value = instance
+
+            with patch("asyncio.Event") as MockEvent:
+                event_instance = AsyncMock()
+                event_instance.wait = AsyncMock()
+                MockEvent.return_value = event_instance
+
+                with patch.object(loop, "add_signal_handler"):
+                    await _start_all(configs)
+
+            # initial attempt + max_attempts retries, each one cleaned up
+            assert call_count == max_attempts + 1
+            assert instance.shutdown.await_count == max_attempts + 1
+
+    @pytest.mark.asyncio
+    async def test_shutdown_called_on_non_port_failure(self, configs):
+        """A non-retried failure still releases the partially-started daemon."""
+
+        async def _other_error(self):
+            raise RuntimeError("a post-bind startup step blew up")
+
+        loop = asyncio.get_event_loop()
+
+        with patch("butlers.daemon.ButlerDaemon") as MockDaemon:
+            instance = AsyncMock()
+            instance.start = AsyncMock(side_effect=_other_error.__get__(instance))
+            instance.shutdown = AsyncMock()
+            MockDaemon.return_value = instance
+
+            with patch("asyncio.Event") as MockEvent:
+                event_instance = AsyncMock()
+                event_instance.wait = AsyncMock()
+                MockEvent.return_value = event_instance
+
+                with patch.object(loop, "add_signal_handler"):
+                    await _start_all(configs)
+
+            instance.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_error_does_not_crash_orchestrator(self, configs):
+        """A failing shutdown() during cleanup is swallowed, not propagated."""
+
+        async def _other_error(self):
+            raise RuntimeError("start failed")
+
+        loop = asyncio.get_event_loop()
+
+        with patch("butlers.daemon.ButlerDaemon") as MockDaemon:
+            instance = AsyncMock()
+            instance.start = AsyncMock(side_effect=_other_error.__get__(instance))
+            instance.shutdown = AsyncMock(side_effect=RuntimeError("cleanup also failed"))
+            MockDaemon.return_value = instance
+
+            with patch("asyncio.Event") as MockEvent:
+                event_instance = AsyncMock()
+                event_instance.wait = AsyncMock()
+                MockEvent.return_value = event_instance
+
+                with patch.object(loop, "add_signal_handler"):
+                    # Must not raise even though cleanup shutdown() raises.
+                    await _start_all(configs)
+
+            instance.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_real_prebound_socket_is_released_no_port_leak(self, configs):
+        """End-to-end: a real socket bound during start() is freed on failure.
+
+        Models the actual bug: start() pre-binds a listening socket (as
+        _start_mcp_server does) then a later step raises.  shutdown() mirrors
+        production by closing that socket.  After _start_all, the port must be
+        rebindable -- proving _start_all invoked shutdown() and did not leak the
+        listening socket.
+        """
+        # Bind to an ephemeral port to learn a free port, then release it so the
+        # fake daemon can claim it during start().
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", 0))
+        leaked_port = probe.getsockname()[1]
+        probe.close()
+
+        bound_sockets: list[socket.socket] = []
+
+        class FakeDaemon:
+            def __init__(self, config_dir):
+                self.config_dir = config_dir
+                self._mcp_socket: socket.socket | None = None
+
+            async def start(self):
+                # Pre-bind the MCP socket (lifecycle step 14)...
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind(("127.0.0.1", leaked_port))
+                sock.listen(16)
+                self._mcp_socket = sock
+                bound_sockets.append(sock)
+                # ...then a later startup step fails.
+                raise RuntimeError("post-bind startup step failed")
+
+            async def shutdown(self):
+                if self._mcp_socket is not None:
+                    self._mcp_socket.close()
+                    self._mcp_socket = None
+
+        loop = asyncio.get_event_loop()
+
+        with patch("butlers.daemon.ButlerDaemon", FakeDaemon):
+            with patch("asyncio.Event") as MockEvent:
+                event_instance = AsyncMock()
+                event_instance.wait = AsyncMock()
+                MockEvent.return_value = event_instance
+
+                with patch.object(loop, "add_signal_handler"):
+                    await _start_all(configs)
+
+        # The port must now be free: a fresh bind without SO_REUSEADDR succeeds
+        # only if _start_all closed the leaked listening socket via shutdown().
+        verify = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            verify.bind(("127.0.0.1", leaked_port))
+        finally:
+            verify.close()
+            for s in bound_sockets:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+
 class TestOrderedConfigs:
     def test_switchboard_starts_first(self):
         """Switchboard is prioritized before alphabetical ordering."""

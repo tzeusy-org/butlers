@@ -566,6 +566,21 @@ async def _start_all(configs: dict[str, Path]) -> None:
                 click.echo(f"  started: {name}")
                 started = True
             except Exception as exc:
+                # daemon.start() may have already pre-bound the MCP socket and
+                # launched the server task (lifecycle step 14) before a later
+                # step raised.  A failed start that is retried or skipped without
+                # releasing those resources leaves the port bound, so the next
+                # attempt collides with "port still in use".  Tear the failed
+                # daemon down before retrying/skipping.  shutdown() is fully
+                # guarded (every step is None-checked), so it is safe to call on
+                # a partially-started daemon; we still wrap it so a cleanup error
+                # never masks the original start failure or crashes the loop.
+                try:
+                    await daemon.shutdown()
+                except Exception:
+                    logger.warning(
+                        "Error releasing resources for failed butler %s", name, exc_info=True
+                    )
                 if _is_port_conflict(exc) and port_attempt < _PORT_RETRY_MAX_ATTEMPTS:
                     delay = min(_PORT_RETRY_BASE_DELAY * (2**port_attempt), _PORT_RETRY_MAX_DELAY)
                     port_attempt += 1
