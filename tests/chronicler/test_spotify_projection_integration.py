@@ -235,7 +235,8 @@ async def test_api_returns_spotify_episodes_by_source_name() -> None:
     ep = body["data"][0]
     assert ep["source_name"] == SOURCE_NAME
     assert ep["episode_type"] == "listening_episode"
-    assert ep["category"] == "music"
+    # Music folds into the Play Activity lane (IEA reframe).
+    assert ep["category"] == "play"
 
 
 @pytest.mark.asyncio
@@ -260,4 +261,4 @@ async def test_api_returns_multiple_spotify_sessions_projected() -> None:
     body = resp.json()
     assert len(body["data"]) == 3
     assert all(ep["source_name"] == SOURCE_NAME for ep in body["data"])
-    assert all(ep["category"] == "music" for ep in body["data"])
+    assert all(ep["category"] == "play" for ep in body["data"])

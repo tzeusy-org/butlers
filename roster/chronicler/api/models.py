@@ -23,6 +23,8 @@ class CategoryBucket(BaseModel):
     """One category bucket from GET /api/chronicler/aggregate/by-category."""
 
     category: str
+    """Activity lane (one of ``aggregations.LANES``). Only activity-layer
+    episodes are counted; intent (calendar) and evidence rows never appear."""
     total_seconds: float
     episode_count: int
     source_breakdown: list[SourceBreakdownEntry] = Field(default_factory=list)
@@ -142,10 +144,11 @@ class ChroniclerEpisode(BaseModel):
     created_at: datetime
     updated_at: datetime
     category: str
-    """Stable lane category derived from (source_name, episode_type) by
-    ``chronicler.aggregations.category_for``. One of the values in
-    ``CATEGORIES`` (e.g. ``work``, ``calendar``, ``music``, ...) or
-    ``other`` when the source/type pair is unmapped."""
+    """Life-balance Activity lane derived from (source_name, episode_type) by
+    ``lane_for_category(category_for(...))``. One of the values in ``LANES``
+    (``work``, ``play``, ``eat``, ``rest``, ``exercise``, ``travel``, ``sleep``,
+    ``social``) or ``other`` when the source/type pair has no lane (e.g. an
+    unmapped source, or a calendar/intent episode)."""
     participant_entity_ids: list[str] = Field(default_factory=list)
     """UUIDs of all entities linked to this episode via episode_entities join table.
     Ordered by role precedence (owner > organizer > participant) then entity_id ASC.

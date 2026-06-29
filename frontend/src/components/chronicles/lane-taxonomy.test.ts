@@ -11,24 +11,24 @@ import {
   type LaneConfig,
 } from "./lane-taxonomy"
 
-// All 10 stable category strings defined by the backend (aggregations.py).
-// core.sessions episodes are split into "conversations" and "tasks" based on
-// trigger_source; the old "work" lane has been replaced by these two lanes.
+// The eight life-balance Activity lanes emitted by the backend
+// (aggregations.LANES), plus the "other" catch-all used as a frontend fallback
+// for unmapped categories. Music/gaming fold into Play; calendar is intent and
+// is never a lane (IEA reframe, bu-3n44q5).
 const EXPECTED_CATEGORIES: Category[] = [
-  "conversations",
-  "tasks",
-  "calendar",
-  "music",
-  "gaming",
-  "travel",
   "sleep",
-  "meal",
-  "home",
+  "exercise",
+  "work",
+  "play",
+  "social",
+  "travel",
+  "eat",
+  "rest",
   "other",
 ]
 
 describe("LANE_TAXONOMY", () => {
-  it("contains exactly the 10 expected categories", () => {
+  it("contains exactly the eight Activity lanes plus the 'other' fallback", () => {
     const keys = Object.keys(LANE_TAXONOMY).sort()
     expect(keys).toEqual([...EXPECTED_CATEGORIES].sort())
   })
@@ -80,21 +80,27 @@ describe("LANE_TAXONOMY", () => {
 
 describe("categoryForSource", () => {
   it.each<[string, string, Category]>([
-    // core.sessions: fallback path cannot resolve trigger_source, defaults to "tasks"
-    ["core.sessions", "work", "tasks"],
-    ["google_calendar.completed", "scheduled_block", "calendar"],
-    ["spotify.session_summary", "listening_episode", "music"],
-    ["steam.play_history", "play_episode", "gaming"],
+    // core.sessions: conversations + tasks both fold into the Work lane.
+    ["core.sessions", "work", "work"],
+    ["spotify.session_summary", "listening_episode", "play"],
+    ["steam.play_history", "play_episode", "play"],
     ["owntracks.points", "movement_episode", "travel"],
     ["google_health.measurements", "sleep_episode", "sleep"],
-    ["health.meals", "eating_event", "meal"],
-    ["home_assistant.history", "presence_episode", "home"],
+    ["google_health.measurements", "workout_episode", "exercise"],
+    ["health.meals", "eating_event", "eat"],
+    ["home_assistant.history", "presence_episode", "rest"],
+    ["chronicler.focus_inferred", "focus_block", "work"],
+    ["chronicler.reading_inferred", "reading_block", "work"],
   ])("maps (%s, %s) → %s", (source, type, expected) => {
     expect(categoryForSource(source, type)).toBe(expected)
   })
 
   it("returns 'other' for an unknown source/type pair", () => {
     expect(categoryForSource("totally.unknown", "mystery_event")).toBe("other")
+  })
+
+  it("returns 'other' for a calendar (intent) episode — never a lane", () => {
+    expect(categoryForSource("google_calendar.completed", "scheduled_block")).toBe("other")
   })
 
   it("returns 'other' when source matches but episode_type does not", () => {

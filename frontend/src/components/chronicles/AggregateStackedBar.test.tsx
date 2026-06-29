@@ -65,7 +65,7 @@ describe("pivotByDay", () => {
   it("produces one row per distinct day", () => {
     const rows = [
       makeRow("2026-01-01", "work", 3600),
-      makeRow("2026-01-01", "music", 1800),
+      makeRow("2026-01-01", "play", 1800),
       makeRow("2026-01-02", "work", 7200),
     ]
     const pivoted = pivotByDay(rows)
@@ -77,18 +77,18 @@ describe("pivotByDay", () => {
   it("assigns correct category totals per day", () => {
     const rows = [
       makeRow("2026-01-01", "work", 3600),
-      makeRow("2026-01-01", "music", 1800),
+      makeRow("2026-01-01", "play", 1800),
       makeRow("2026-01-02", "work", 7200),
     ]
     const pivoted = pivotByDay(rows)
 
     expect(pivoted[0].work).toBe(3600)
-    expect(pivoted[0].music).toBe(1800)
+    expect(pivoted[0].play).toBe(1800)
     // unvisited category initialised to 0
     expect(pivoted[0].sleep).toBe(0)
 
     expect(pivoted[1].work).toBe(7200)
-    expect(pivoted[1].music).toBe(0)
+    expect(pivoted[1].play).toBe(0)
   })
 
   it("initialises all known LANE_TAXONOMY categories to 0", () => {

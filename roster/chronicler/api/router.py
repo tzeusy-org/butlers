@@ -39,7 +39,8 @@ from butlers.chronicler.adapters.sessions import (
 )
 from butlers.chronicler.aggregations import (
     category_for,
-    is_excluded_all_day,
+    lane_for_activity,
+    lane_for_category,
     union_seconds,
 )
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
@@ -164,11 +165,17 @@ def _row_to_episode(row: Any) -> ChroniclerEpisode:
         correction_note=row["correction_note"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        category=category_for(
-            row["source_name"],
-            row["episode_type"],
-            trigger_source=payload.get("trigger_source"),
-        ),
+        # The episode payload carries its life-balance Activity lane (Work,
+        # Play, …) — not the raw source category. Intent/unmapped rows have no
+        # lane and surface as "other" for display.
+        category=lane_for_category(
+            category_for(
+                row["source_name"],
+                row["episode_type"],
+                trigger_source=payload.get("trigger_source"),
+            )
+        )
+        or "other",
         participant_entity_ids=participant_entity_ids,
     )
 
@@ -1211,6 +1218,7 @@ async def aggregate_by_category(
                 privacy,
                 retention_days,
                 tombstone_at,
+                layer,
                 payload->>'trigger_source' AS trigger_source
             FROM v_episodes_corrected
             {where}
@@ -1221,14 +1229,17 @@ async def aggregate_by_category(
         span.set_attribute("chronicler.aggregate.query_latency_ms", query_latency_ms)
 
         # ── Aggregate in Python ────────────────────────────────────────────
-        # group by (category, source_name) to build per-source breakdowns,
-        # then roll up to per-category buckets.
+        # group by (lane, source_name) to build per-source breakdowns,
+        # then roll up to per-lane buckets.
+        #
+        # Only the 'activity' layer is counted (tasks.md §4): intent (calendar)
+        # and evidence (raw signals) episodes are dropped by lane_for_activity,
+        # so an uncorroborated calendar block contributes 0 s to every lane.
         #
         # Durations are collected as half-open [overlap_start, overlap_end)
         # intervals and unioned (not summed) at rollup, so two concurrent
-        # episodes in the same bucket count once and a category total can never
-        # exceed the window length. All-day / multi-day calendar events are
-        # dropped (they are not active "time spent" and would saturate the day).
+        # episodes in the same bucket count once and a lane total can never
+        # exceed the window length.
         cat_src: dict[tuple[str, str], dict[str, Any]] = defaultdict(
             lambda: {
                 "intervals": [],
@@ -1248,23 +1259,25 @@ async def aggregate_by_category(
             retention_days: int | None = row["retention_days"]
             is_tombstoned: bool = row["tombstone_at"] is not None
             row_trigger_source: str | None = row["trigger_source"]
+            ep_layer: str = row["layer"]
 
-            ep_category = category_for(source_name, episode_type, trigger_source=row_trigger_source)
-
-            if ep_category == "other":
-                logger.warning(
-                    "chronicler.aggregate.unmapped_source=%s episode_type=%s",
-                    source_name,
-                    episode_type,
-                )
-                span.set_attribute("chronicler.aggregate.unmapped_source", source_name)
+            # Only activity-layer episodes count; intent (calendar) and evidence
+            # rows resolve to None and are dropped (the "calendar = 5h" fix).
+            ep_lane = lane_for_activity(
+                ep_layer, source_name, episode_type, trigger_source=row_trigger_source
+            )
+            if ep_lane is None:
+                if ep_layer == "activity":
+                    logger.warning(
+                        "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+                        source_name,
+                        episode_type,
+                    )
+                    span.set_attribute("chronicler.aggregate.unmapped_source", source_name)
+                continue
 
             # Clip open episodes to query_end.
             ep_end_resolved = ep_end if ep_end is not None else end_at
-
-            # Drop all-day / multi-day calendar events from time-spent totals.
-            if is_excluded_all_day(ep_category, ep_start, ep_end_resolved):
-                continue
 
             # Duration = LEAST(end_at, query_end) - GREATEST(start_at, query_start), clamped at 0.
             overlap_start = max(ep_start, start_at)
@@ -1272,7 +1285,7 @@ async def aggregate_by_category(
             if overlap_end <= overlap_start:
                 continue
 
-            bucket_key = (ep_category, source_name)
+            bucket_key = (ep_lane, source_name)
             bucket = cat_src[bucket_key]
             bucket["intervals"].append((overlap_start, overlap_end))
             bucket["episode_count"] += 1
@@ -1293,8 +1306,8 @@ async def aggregate_by_category(
             }
         )
 
-        for (ep_category, source_name), src_data in cat_src.items():
-            bucket = cat_buckets[ep_category]
+        for (ep_lane, source_name), src_data in cat_src.items():
+            bucket = cat_buckets[ep_lane]
             bucket["intervals"].extend(src_data["intervals"])
             bucket["episode_count"] += src_data["episode_count"]
             bucket["precision_values"].extend(src_data["precision_values"])
@@ -1310,11 +1323,11 @@ async def aggregate_by_category(
 
         # Build CategoryBucket list sorted by total_seconds DESC, category ASC.
         result_buckets: list[CategoryBucket] = []
-        for ep_category, data in cat_buckets.items():
+        for ep_lane, data in cat_buckets.items():
             non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
             result_buckets.append(
                 CategoryBucket(
-                    category=ep_category,
+                    category=ep_lane,
                     total_seconds=union_seconds(data["intervals"]),
                     episode_count=data["episode_count"],
                     source_breakdown=data["source_breakdown"],
@@ -1452,6 +1465,7 @@ async def aggregate_by_day(
                 privacy,
                 retention_days,
                 tombstone_at,
+                layer,
                 payload->>'trigger_source' AS trigger_source
             FROM v_episodes_corrected
             {where}
@@ -1521,18 +1535,26 @@ async def aggregate_by_day(
             retention_days: int | None = row["retention_days"]
             is_tombstoned: bool = row["tombstone_at"] is not None
             row_trigger_source: str | None = row["trigger_source"]
+            ep_layer: str = row["layer"]
 
-            ep_category = category_for(source_name, episode_type, trigger_source=row_trigger_source)
-            if category is not None and ep_category != category:
+            # Only activity-layer episodes count; intent (calendar) and evidence
+            # rows resolve to None and are dropped (the "calendar = 5h" fix).
+            ep_lane = lane_for_activity(
+                ep_layer, source_name, episode_type, trigger_source=row_trigger_source
+            )
+            if ep_lane is None:
+                if ep_layer == "activity":
+                    logger.warning(
+                        "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+                        source_name,
+                        episode_type,
+                    )
+                    span.set_attribute("chronicler.aggregate.unmapped_source", source_name)
                 continue
 
-            if ep_category == "other":
-                logger.warning(
-                    "chronicler.aggregate.unmapped_source=%s episode_type=%s",
-                    source_name,
-                    episode_type,
-                )
-                span.set_attribute("chronicler.aggregate.unmapped_source", source_name)
+            # Optional caller filter is by lane (the dashboard renders lanes).
+            if category is not None and ep_lane != category:
+                continue
 
             if is_tombstoned:
                 logger.warning(
@@ -1544,10 +1566,6 @@ async def aggregate_by_day(
             # If end_at is NULL treat as open-ended — only count the portion
             # that falls within each day window.
             ep_end_resolved = ep_end if ep_end is not None else end_at
-
-            # Drop all-day / multi-day calendar events from time-spent totals.
-            if is_excluded_all_day(ep_category, ep_start, ep_end_resolved):
-                continue
 
             # Compute the local-date range this episode overlaps, clipped to the
             # query window.  ep_end_resolved is exclusive (like day_end), so we
@@ -1577,7 +1595,7 @@ async def aggregate_by_day(
                 overlap_start = max(ep_start, ds)
                 overlap_end = min(ep_end_resolved, de)
                 if overlap_end > overlap_start:
-                    bucket_key = (day_str, ep_category, source_name)
+                    bucket_key = (day_str, ep_lane, source_name)
                     bucket = day_cat_src[bucket_key]
                     bucket["intervals"].append((overlap_start, overlap_end))
                     bucket["episode_count"] += 1
@@ -1599,8 +1617,8 @@ async def aggregate_by_day(
             }
         )
 
-        for (day_str, ep_category, source_name), src_data in day_cat_src.items():
-            bucket = day_cat[(day_str, ep_category)]
+        for (day_str, ep_lane, source_name), src_data in day_cat_src.items():
+            bucket = day_cat[(day_str, ep_lane)]
             bucket["intervals"].extend(src_data["intervals"])
             bucket["episode_count"] += src_data["episode_count"]
             bucket["precision_values"].extend(src_data["precision_values"])
@@ -1615,13 +1633,13 @@ async def aggregate_by_day(
             )
 
         result: list[AggregateByDayRow] = []
-        for (day_str, ep_category), data in sorted(day_cat.items()):
+        for (day_str, ep_lane), data in sorted(day_cat.items()):
             ds, de = day_bounds[day_str]
             non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
             result.append(
                 AggregateByDayRow(
                     day=day_str,
-                    category=ep_category,
+                    category=ep_lane,
                     total_seconds=union_seconds(data["intervals"]),
                     episode_count=data["episode_count"],
                     day_start=ds,

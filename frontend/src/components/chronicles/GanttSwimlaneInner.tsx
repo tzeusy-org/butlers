@@ -265,10 +265,13 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
   // ---------------------------------------------------------------------------
   const panTo = useMapPanTo()
 
-  // Extract location from payload only for calendar-category episodes.
+  // Extract location from payload only for calendar (intent) episodes. Keyed on
+  // source_name, not lane: under the IEA reframe calendar episodes have no
+  // Activity lane (they fold into "other"), so detect them by their source.
   // payload is JSONB — location may be absent, null, or any type.
+  const isCalendarEpisode = episode.source_name.startsWith("google_calendar")
   const rawLocation =
-    category === "calendar" && typeof episode.payload?.location === "string"
+    isCalendarEpisode && typeof episode.payload?.location === "string"
       ? (episode.payload.location as string)
       : null
 

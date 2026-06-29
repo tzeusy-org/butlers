@@ -23,6 +23,7 @@ from butlers.chronicler.adapters.sessions import (
     EVENT_TYPE_SESSION_STARTED,
     CoreSessionsAdapter,
 )
+from butlers.chronicler.aggregations import lane_for_activity, union_seconds
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import (
     Compatibility,
@@ -928,6 +929,83 @@ async def test_overlapping_episodes_still_permitted(chronicler_pool) -> None:
     ids = {ep.id for ep in overlapping}
     assert intent.id in ids
     assert activity.id in ids
+
+
+async def test_uncorroborated_calendar_block_counts_zero_over_real_view(
+    chronicler_pool,
+) -> None:
+    """IEA counting regression (tasks.md §4), exercised against REAL Postgres.
+
+    A 5 h calendar block (intent layer) overlapped by a 2 h GPS-dwell movement
+    episode (activity layer). The aggregation seam ``lane_for_activity`` is run
+    over rows read back from the real ``v_episodes_corrected`` view (the layer
+    column round-trips through the view), so a wrong SQL/layer filter would be
+    caught here — a mocked pool cannot (this exact gap caused a prior main-red,
+    see bu-3n44q5). Expectation: the calendar block contributes 0 s to every
+    lane; the overlapping activity episode is the only thing counted, under its
+    own Travel lane.
+    """
+    window_start = datetime(2026, 6, 20, 9, 0, tzinfo=UTC)
+    window_end = datetime(2026, 6, 20, 18, 0, tzinfo=UTC)
+
+    # 5 h planned calendar block — intent, must never count.
+    await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="google_calendar.completed",
+            source_ref="iea-5h-calendar",
+            episode_type="scheduled_block",
+            start_at=window_start,
+            end_at=window_start + timedelta(hours=5),
+            title="5h calendar block",
+            layer=Layer.INTENT,
+        ),
+    )
+    # Overlapping 2 h GPS-dwell movement — activity, the thing that counts.
+    await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="owntracks.points",
+            source_ref="iea-gps-dwell",
+            episode_type="movement_episode",
+            start_at=window_start,
+            end_at=window_start + timedelta(hours=2),
+            title="GPS dwell",
+            layer=Layer.ACTIVITY,
+        ),
+    )
+
+    # Read back from the REAL corrected view, then run the real counting seam.
+    rows = await chronicler_pool.fetch(
+        """
+        SELECT source_name, episode_type, start_at, end_at, layer,
+               payload->>'trigger_source' AS trigger_source
+        FROM v_episodes_corrected
+        WHERE start_at < $2 AND (end_at IS NULL OR end_at > $1)
+          AND tombstone_at IS NULL
+        """,
+        window_start,
+        window_end,
+    )
+
+    lane_intervals: dict[str, list[tuple[datetime, datetime]]] = {}
+    for row in rows:
+        lane = lane_for_activity(
+            row["layer"],
+            row["source_name"],
+            row["episode_type"],
+            trigger_source=row["trigger_source"],
+        )
+        if lane is None:
+            continue
+        lane_intervals.setdefault(lane, []).append((row["start_at"], row["end_at"]))
+
+    lane_seconds = {lane: union_seconds(ivals) for lane, ivals in lane_intervals.items()}
+
+    # The intent calendar block contributes nothing; only Travel is counted.
+    assert lane_seconds == {"travel": pytest.approx(2 * 3600.0)}
+    assert "calendar" not in lane_seconds
+    assert "intent" not in lane_seconds
 
 
 async def test_sessions_adapter_degrades_when_schema_missing(chronicler_pool) -> None:

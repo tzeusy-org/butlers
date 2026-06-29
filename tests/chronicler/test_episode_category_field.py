@@ -1,10 +1,10 @@
 """Tests for the derived ``category`` field on Chronicler episode responses.
 
-The frontend Gantt lane taxonomy keys on stable category strings (``work``,
-``calendar``, ``music``, ...) — not on raw ``source_name`` values. The
-backend must surface the mapping (computed by
-``chronicler.aggregations.category_for``) on every episode payload returned
-from ``GET /api/chronicler/episodes`` and ``GET /api/chronicler/episodes/{id}``.
+The frontend Gantt lane taxonomy keys on stable Activity-lane strings
+(``work``, ``play``, ``rest``, ...) — not on raw ``source_name`` values. The
+backend must surface the mapping (computed by ``lane_for_category`` over
+``category_for``) on every episode payload returned from
+``GET /api/chronicler/episodes`` and ``GET /api/chronicler/episodes/{id}``.
 """
 
 from __future__ import annotations
@@ -99,11 +99,13 @@ def _build_app(rows: list[_Row]):
 @pytest.mark.parametrize(
     ("source_name", "episode_type", "expected_category"),
     [
-        # core.sessions: payload has no trigger_source → category_for defaults to 'tasks'
-        ("core.sessions", "work", "tasks"),
-        ("google_calendar.completed", "scheduled_block", "calendar"),
-        ("spotify.session_summary", "listening_episode", "music"),
-        ("steam.play_history", "play_episode", "gaming"),
+        # The category field carries the life-balance Activity lane (IEA, §4).
+        # core.sessions: no trigger_source → tasks → Work lane.
+        ("core.sessions", "work", "work"),
+        # Calendar is intent: no lane → "other" (and dropped from counting).
+        ("google_calendar.completed", "scheduled_block", "other"),
+        ("spotify.session_summary", "listening_episode", "play"),
+        ("steam.play_history", "play_episode", "play"),
         ("totally.unknown_source", "mystery_type", "other"),
     ],
 )
@@ -112,8 +114,8 @@ async def test_list_episodes_includes_category_field(
     episode_type: str,
     expected_category: str,
 ) -> None:
-    """The episode list response includes a ``category`` derived from
-    ``(source_name, episode_type)``."""
+    """The episode list response includes a ``category`` (the Activity lane)
+    derived from ``(source_name, episode_type)``."""
     rows = [_episode_row(source_name=source_name, episode_type=episode_type)]
     app, _ = _build_app(rows)
     async with httpx.AsyncClient(
@@ -142,4 +144,5 @@ async def test_get_single_episode_includes_category_field() -> None:
         resp = await client.get("/api/chronicler/episodes/00000000-0000-0000-0000-000000000001")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["category"] == "calendar"
+    # Calendar is the intent layer: no Activity lane → "other".
+    assert body["category"] == "other"

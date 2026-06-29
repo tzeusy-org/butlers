@@ -1,28 +1,27 @@
 // ---------------------------------------------------------------------------
-// Chronicles Lane Taxonomy — bu-ig72b.5 / bu-jomz2
+// Chronicles Lane Taxonomy — bu-ig72b.5 / bu-jomz2 / bu-3n44q5 (IEA reframe)
 //
-// Source of truth for the visual presentation of each chronicle category.
-// Backend (aggregations.py) owns the category string definitions; this file
-// maps those strings to display labels, colours, icons, and sort order.
+// Source of truth for the visual presentation of each Activity lane.
+// Backend (aggregations.py) owns the lane string definitions; this file maps
+// those strings to display labels, colours, icons, and sort order.
+//
+// The dashboard renders life-balance LANES, not data sources. Music/gaming fold
+// into Play; calendar is the intent layer and is never counted as a lane. See
+// `aggregations.LANES` / `lane_for_category` for the backend contract.
 //
 // Backend never returns colours, labels, or icons — those live here only.
-//
-// core.sessions episodes are split into two lanes by trigger_source:
-//   "conversations" — trigger_source='route'  (user→butler interactions)
-//   "tasks"         — all other trigger_source values  (scheduled/daemon work)
 // ---------------------------------------------------------------------------
 
 import type { LucideIcon } from "lucide-react"
 import {
-  Calendar,
+  Armchair,
+  Briefcase,
   CircleQuestionMark,
+  Dumbbell,
   Gamepad2,
-  House,
-  MessageCircle,
   Moon,
   Plane,
-  Music,
-  Terminal,
+  Users,
   Utensils,
 } from "lucide-react"
 
@@ -30,17 +29,20 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-/** All stable category strings emitted by the chronicler backend. */
+/**
+ * All stable Activity-lane strings emitted by the chronicler backend, plus the
+ * `other` catch-all used as a frontend fallback for unmapped categories (the
+ * backend never counts those toward a lane).
+ */
 export type Category =
-  | "conversations"
-  | "tasks"
-  | "calendar"
-  | "music"
-  | "gaming"
-  | "travel"
   | "sleep"
-  | "meal"
-  | "home"
+  | "exercise"
+  | "work"
+  | "play"
+  | "social"
+  | "travel"
+  | "eat"
+  | "rest"
   | "other"
 
 /** Visual configuration for a single Gantt lane / pie slice. */
@@ -59,7 +61,7 @@ export interface LaneConfig {
    * Must visually match `colour` above.
    */
   hex: string
-  /** Lucide-react icon component associated with this category. */
+  /** Lucide-react icon component associated with this lane. */
   icon: LucideIcon
   /**
    * Ascending sort position for rendering lanes in a predictable order.
@@ -73,47 +75,45 @@ export interface LaneConfig {
 // ---------------------------------------------------------------------------
 
 /**
- * Maps each stable category string → visual presentation config.
+ * Maps each stable Activity-lane string → visual presentation config.
  *
- * Ordering rationale: conversations first (most frequent user-visible lane),
- * then tasks (scheduled/daemon work), then calendar, then recreational
- * (music, gaming, travel), then biological (sleep, meal), then home,
- * then catch-all other last.
+ * Ordering follows the spec lane order: Sleep · Exercise · Work · Play ·
+ * Social · Travel · Eat · Rest, with the `other` catch-all last.
  */
 export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
-  conversations: {
-    label: "Conversations",
-    colour: "bg-blue-600",
-    hex: "#2563eb",
-    icon: MessageCircle,
+  sleep: {
+    label: "Sleep",
+    colour: "bg-slate-500",
+    hex: "#64748b",
+    icon: Moon,
     sortOrder: 0,
   },
-  tasks: {
-    label: "Tasks",
-    colour: "bg-sky-500",
-    hex: "#0ea5e9",
-    icon: Terminal,
+  exercise: {
+    label: "Exercise",
+    colour: "bg-rose-500",
+    hex: "#f43f5e",
+    icon: Dumbbell,
     sortOrder: 1,
   },
-  calendar: {
-    label: "Calendar",
-    colour: "bg-indigo-500",
-    hex: "#6366f1",
-    icon: Calendar,
+  work: {
+    label: "Work",
+    colour: "bg-blue-600",
+    hex: "#2563eb",
+    icon: Briefcase,
     sortOrder: 2,
   },
-  music: {
-    label: "Music",
-    colour: "bg-purple-500",
-    hex: "#a855f7",
-    icon: Music,
-    sortOrder: 3,
-  },
-  gaming: {
-    label: "Gaming",
+  play: {
+    label: "Play",
     colour: "bg-violet-600",
     hex: "#7c3aed",
     icon: Gamepad2,
+    sortOrder: 3,
+  },
+  social: {
+    label: "Social",
+    colour: "bg-pink-500",
+    hex: "#ec4899",
+    icon: Users,
     sortOrder: 4,
   },
   travel: {
@@ -123,64 +123,61 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
     icon: Plane,
     sortOrder: 5,
   },
-  sleep: {
-    label: "Sleep",
-    colour: "bg-slate-500",
-    hex: "#64748b",
-    icon: Moon,
-    sortOrder: 6,
-  },
-  meal: {
-    label: "Meal",
+  eat: {
+    label: "Eat",
     colour: "bg-amber-500",
     hex: "#f59e0b",
     icon: Utensils,
-    sortOrder: 7,
+    sortOrder: 6,
   },
-  home: {
-    label: "Home",
+  rest: {
+    label: "Rest",
     colour: "bg-emerald-600",
     hex: "#059669",
-    icon: House,
-    sortOrder: 8,
+    icon: Armchair,
+    sortOrder: 7,
   },
   other: {
     label: "Other",
     colour: "bg-slate-400",
     hex: "#94a3b8",
     icon: CircleQuestionMark,
-    sortOrder: 9,
+    sortOrder: 8,
   },
 }
 
 // ---------------------------------------------------------------------------
-// (source_name, episode_type) → Category mapping
+// (source_name, episode_type) → Activity lane mapping
 //
-// Mirrors `_CATEGORY_MAP` in `src/butlers/chronicler/aggregations.py`. Used as
-// a frontend fallback when the backend has not yet attached a `category` field
-// to the episode response (bug 1 fix). The backend remains the source of truth
-// — keep this table in sync with `_CATEGORY_MAP` whenever new sources land.
+// Mirrors `_CATEGORY_MAP` ∘ `_CATEGORY_TO_LANE` in
+// `src/butlers/chronicler/aggregations.py`. Used as a frontend fallback when
+// the backend has not yet attached a `category` (lane) field to the episode
+// response. The backend remains the source of truth — keep this table in sync
+// with the backend mapping whenever new sources land.
 //
-// For core.sessions episodes the backend dispatches by trigger_source;
-// this fallback table cannot resolve that, so it maps to "tasks" (the default
-// for unknown / NULL trigger_source). Callers should prefer the backend-supplied
-// `category` field for core.sessions episodes whenever available.
+// For core.sessions episodes the backend dispatches by trigger_source, but both
+// conversations and tasks fold into the Work lane, so this fallback resolves
+// core.sessions|work → "work" directly. Calendar is omitted: it is the intent
+// layer and resolves to "other".
 // ---------------------------------------------------------------------------
 
 const SOURCE_CATEGORY_MAP: Record<string, Category> = {
-  "core.sessions|work": "tasks",
-  "google_calendar.completed|scheduled_block": "calendar",
-  "spotify.session_summary|listening_episode": "music",
-  "steam.play_history|play_episode": "gaming",
+  "core.sessions|work": "work",
+  "spotify.session_summary|listening_episode": "play",
+  "steam.play_history|play_episode": "play",
   "owntracks.points|movement_episode": "travel",
   "google_health.measurements|sleep_episode": "sleep",
-  "health.meals|eating_event": "meal",
-  "home_assistant.history|presence_episode": "home",
+  "google_health.measurements|workout_episode": "exercise",
+  "health.meals|eating_event": "eat",
+  "home_assistant.history|presence_episode": "rest",
+  "chronicler.focus_inferred|focus_block": "work",
+  "chronicler.reading_inferred|reading_block": "work",
 }
 
 /**
- * Resolve the visual lane category for an episode given its
- * `(source_name, episode_type)` pair. Returns `"other"` for any unknown pair.
+ * Resolve the Activity lane for an episode given its
+ * `(source_name, episode_type)` pair. Returns `"other"` for any unknown pair
+ * (including calendar/intent rows, which are never a lane).
  *
  * This intentionally accepts strings (not narrow union types) so it can be
  * called against raw API payloads without type assertions. Callers should

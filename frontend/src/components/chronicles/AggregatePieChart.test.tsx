@@ -116,17 +116,17 @@ describe("AggregatePieChart — empty state", () => {
 
 describe("AggregatePieChart — data rendering", () => {
   it("renders the pie chart container when buckets are non-empty", () => {
-    const html = render([makeBucket("tasks",3600)])
+    const html = render([makeBucket("work",3600)])
     expect(html).toContain("pie-chart-container")
   })
 
   it("does NOT render the empty state when buckets are non-empty", () => {
-    const html = render([makeBucket("tasks",3600)])
+    const html = render([makeBucket("work",3600)])
     expect(html).not.toContain("pie-empty-state")
   })
 
   it("renders a recharts PieChart element", () => {
-    const html = render([makeBucket("tasks",3600), makeBucket("sleep", 1800)])
+    const html = render([makeBucket("work",3600), makeBucket("sleep", 1800)])
     expect(html).toContain("recharts-pie-chart")
   })
 })
@@ -140,9 +140,9 @@ describe("AggregatePieChart — slice ordering", () => {
     // API returns buckets sorted by total_seconds DESC; the component must
     // NOT reorder them.
     const buckets = [
-      makeBucket("tasks",7200),
+      makeBucket("work",7200),
       makeBucket("sleep", 3600),
-      makeBucket("meal", 1800),
+      makeBucket("eat", 1800),
     ]
     render(buckets)
 
@@ -153,8 +153,8 @@ describe("AggregatePieChart — slice ordering", () => {
   })
 
   it("maps category label from LANE_TAXONOMY", () => {
-    render([makeBucket("tasks",3600)])
-    expect(_lastPieData[0].name).toBe(LANE_TAXONOMY.tasks.label)
+    render([makeBucket("work",3600)])
+    expect(_lastPieData[0].name).toBe(LANE_TAXONOMY.work.label)
   })
 })
 
@@ -164,8 +164,8 @@ describe("AggregatePieChart — slice ordering", () => {
 
 describe("AggregatePieChart — colour binding", () => {
   it("pie data carries hex colour from LANE_TAXONOMY", () => {
-    render([makeBucket("tasks",3600)])
-    expect(_lastPieData[0].hex).toBe(LANE_TAXONOMY.tasks.hex)
+    render([makeBucket("work",3600)])
+    expect(_lastPieData[0].hex).toBe(LANE_TAXONOMY.work.hex)
   })
 
   it("falls back to 'other' taxonomy entry for unknown category", () => {
@@ -186,7 +186,7 @@ describe("AggregatePieChart — tooltip data contract", () => {
   })
 
   it("pie data carries _total for percentage calculation", () => {
-    render([makeBucket("tasks",7200), makeBucket("sleep", 3600)])
+    render([makeBucket("work",7200), makeBucket("sleep", 3600)])
     // _total is the sum of all buckets (7200 + 3600 = 10800)
     expect(_lastPieData[0]._total).toBe(10800)
     expect(_lastPieData[1]._total).toBe(10800)
@@ -199,45 +199,45 @@ describe("AggregatePieChart — tooltip data contract", () => {
 
 describe("AggregatePieChart — all-categories legend (bu-p4vd3)", () => {
   it("renders legend items for all LANE_TAXONOMY categories including empty ones", () => {
-    // Only tasks bucket present; all other 9 categories are absent.
-    const html = render([makeBucket("tasks", 3600)])
+    // Only the work bucket present; all other lanes are absent.
+    const html = render([makeBucket("work", 3600)])
     // Legend container is present.
     expect(html).toContain("pie-all-categories-legend")
     // Active category has its legend entry.
-    expect(html).toContain('pie-legend-tasks')
+    expect(html).toContain('pie-legend-work')
     // Empty categories also have legend entries.
-    expect(html).toContain('pie-legend-music')
-    expect(html).toContain('pie-legend-gaming')
-    expect(html).toContain('pie-legend-home')
+    expect(html).toContain('pie-legend-play')
+    expect(html).toContain('pie-legend-eat')
+    expect(html).toContain('pie-legend-rest')
   })
 
   it("marks empty categories with the empty affordance data-testid", () => {
-    const html = render([makeBucket("tasks", 3600)])
-    // Gaming has no data → shows empty affordance.
-    expect(html).toContain('pie-legend-empty-gaming')
-    // Tasks has data → no empty affordance for it.
-    expect(html).not.toContain('pie-legend-empty-tasks')
+    const html = render([makeBucket("work", 3600)])
+    // Play has no data → shows empty affordance.
+    expect(html).toContain('pie-legend-empty-play')
+    // Work has data → no empty affordance for it.
+    expect(html).not.toContain('pie-legend-empty-work')
   })
 
-  it("renders legend in empty state with all 10 categories", () => {
+  it("renders legend in empty state with all lanes", () => {
     // When buckets is empty, the EmptyState still renders the full legend.
     const html = render([])
     expect(html).toContain("pie-all-categories-legend")
-    // All LANE_TAXONOMY categories appear.
-    expect(html).toContain('pie-legend-conversations')
-    expect(html).toContain('pie-legend-tasks')
+    // All LANE_TAXONOMY lanes appear.
+    expect(html).toContain('pie-legend-work')
+    expect(html).toContain('pie-legend-sleep')
     expect(html).toContain('pie-legend-other')
     // All show the empty affordance dash.
-    expect(html).toContain('pie-legend-empty-conversations')
-    expect(html).toContain('pie-legend-empty-tasks')
+    expect(html).toContain('pie-legend-empty-work')
+    expect(html).toContain('pie-legend-empty-sleep')
   })
 
   it("does not show empty affordance for active categories", () => {
-    const html = render([makeBucket("sleep", 1800), makeBucket("music", 900)])
-    // Active categories: sleep, music — no empty affordance for them.
+    const html = render([makeBucket("sleep", 1800), makeBucket("play", 900)])
+    // Active lanes: sleep, play — no empty affordance for them.
     expect(html).not.toContain('pie-legend-empty-sleep')
-    expect(html).not.toContain('pie-legend-empty-music')
-    // Other categories are empty.
-    expect(html).toContain('pie-legend-empty-tasks')
+    expect(html).not.toContain('pie-legend-empty-play')
+    // Other lanes are empty.
+    expect(html).toContain('pie-legend-empty-work')
   })
 })

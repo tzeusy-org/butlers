@@ -73,6 +73,7 @@ def _make_episode_row(
     privacy: str = "normal",
     retention_days: int | None = None,
     tombstone_at: datetime | None = None,
+    layer: str = "activity",
 ) -> dict[str, Any]:
     return {
         "source_name": source_name,
@@ -84,6 +85,7 @@ def _make_episode_row(
         "privacy": privacy,
         "retention_days": retention_days,
         "tombstone_at": tombstone_at,
+        "layer": layer,
     }
 
 
@@ -362,7 +364,7 @@ async def test_by_day_single_episode_sums_correctly():
     assert len(data) == 1
     row = data[0]
     assert row["day"] == "2024-03-15"
-    assert row["category"] == "tasks"
+    assert row["category"] == "work"
     assert row["total_seconds"] == pytest.approx(7200.0)
     assert row["episode_count"] == 1
     assert "day_start" in row and "day_end" in row
@@ -499,9 +501,9 @@ async def test_by_day_dst_spring_forward_two_episodes_same_calendar_day():
     data = resp.json()
     days = {r["day"] for r in data}
     assert days == {"2024-03-10"}
-    tasks_row = next(r for r in data if r["category"] == "tasks")
-    assert tasks_row["episode_count"] == 2
-    assert tasks_row["total_seconds"] == pytest.approx(7200.0)
+    work_row = next(r for r in data if r["category"] == "work")
+    assert work_row["episode_count"] == 2
+    assert work_row["total_seconds"] == pytest.approx(7200.0)
 
 
 async def test_by_day_dst_fall_back_repeated_hour_counted_once():
@@ -523,10 +525,10 @@ async def test_by_day_dst_fall_back_repeated_hour_counted_once():
         )
     assert resp.status_code == 200
     data = resp.json()
-    tasks_rows = [r for r in data if r["category"] == "tasks"]
-    assert len(tasks_rows) == 1
-    assert tasks_rows[0]["day"] == "2024-11-03"
-    assert tasks_rows[0]["total_seconds"] == pytest.approx(3600.0)
+    work_rows = [r for r in data if r["category"] == "work"]
+    assert len(work_rows) == 1
+    assert work_rows[0]["day"] == "2024-11-03"
+    assert work_rows[0]["total_seconds"] == pytest.approx(3600.0)
 
 
 async def test_by_day_large_window_completes_quickly():
@@ -588,7 +590,7 @@ async def test_by_category_single_episode_correct_total():
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
     assert len(buckets) == 1
-    assert buckets[0]["category"] == "tasks"
+    assert buckets[0]["category"] == "work"
     assert buckets[0]["total_seconds"] == pytest.approx(7200.0)
     assert buckets[0]["episode_count"] == 1
 
@@ -615,7 +617,7 @@ async def test_by_category_multiple_categories_separate_buckets():
         )
     assert resp.status_code == 200
     categories = {b["category"] for b in resp.json()["data"]["buckets"]}
-    assert "tasks" in categories and "music" in categories
+    assert "work" in categories and "play" in categories
 
 
 async def test_by_category_open_episode_clipped_to_query_end():
@@ -654,8 +656,8 @@ async def test_by_category_sorted_by_total_seconds_desc_then_category_asc():
             start_at=day_start + timedelta(hours=2), end_at=day_start + timedelta(hours=5)
         ),
         _make_episode_row(
-            source_name="steam.play_history",
-            episode_type="play_episode",
+            source_name="owntracks.points",
+            episode_type="movement_episode",
             start_at=day_start + timedelta(hours=6),
             end_at=day_start + timedelta(hours=8),
         ),
@@ -671,10 +673,56 @@ async def test_by_category_sorted_by_total_seconds_desc_then_category_asc():
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
     assert len(buckets) == 3
-    # tasks=3h > gaming=2h > music=1h
-    assert buckets[0]["category"] == "tasks"
-    assert buckets[1]["category"] == "gaming"
-    assert buckets[2]["category"] == "music"
+    # work=3h > travel=2h > play=1h. (music+gaming would both fold into Play,
+    # so Play here is a single spotify episode.)
+    assert buckets[0]["category"] == "work"
+    assert buckets[1]["category"] == "travel"
+    assert buckets[2]["category"] == "play"
+
+
+async def test_by_category_uncorroborated_calendar_block_counts_zero():
+    """IEA regression (tasks.md §4): an uncorroborated 5 h calendar block is
+    intent → 0 s in every lane. Only the overlapping activity episode counts.
+
+    NOTE: this is the mocked-pool fast check; the authoritative regression runs
+    against real Postgres in roster/chronicler/tests/test_storage_integration.py
+    (a mocked pool cannot catch a wrong SQL layer filter — see bu-3n44q5).
+    """
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        # 5 h planned calendar block (intent layer) — must never count.
+        _make_episode_row(
+            source_name="google_calendar.completed",
+            episode_type="scheduled_block",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=5),
+            layer="intent",
+        ),
+        # Overlapping 2 h GPS-dwell movement (activity layer) — the thing that
+        # actually counts, under its own Travel lane.
+        _make_episode_row(
+            source_name="owntracks.points",
+            episode_type="movement_episode",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=2),
+            layer="activity",
+        ),
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    buckets = resp.json()["data"]["buckets"]
+    # Exactly one lane (Travel); no "calendar" / intent bucket at all.
+    assert len(buckets) == 1
+    assert buckets[0]["category"] == "travel"
+    assert buckets[0]["total_seconds"] == pytest.approx(7200.0)
+    assert {b["category"] for b in buckets} == {"travel"}
 
 
 async def test_by_category_response_envelope_fields():
@@ -770,6 +818,7 @@ def _make_otel_row(
     privacy: str = "normal",
     retention_days: int | None = None,
     tombstone_at: datetime | None = None,
+    layer: str = "activity",
 ) -> dict[str, Any]:
     if end_at is None:
         end_at = _T1
@@ -783,6 +832,7 @@ def _make_otel_row(
         "privacy": privacy,
         "retention_days": retention_days,
         "tombstone_at": tombstone_at,
+        "layer": layer,
     }
 
 
