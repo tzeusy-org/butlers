@@ -37,6 +37,36 @@ class Privacy(enum.StrEnum):
     RESTRICTED = "restricted"
 
 
+class Layer(enum.StrEnum):
+    """Intent / Evidence / Activity classification for a chronicler row.
+
+    ``intent`` — what was planned (calendar / scheduled blocks). Displayed as
+        a planned block but NEVER counted as lived time on its own.
+    ``evidence`` — raw signals consumed from read surfaces (GPS points, HR
+        samples, meal logs). Never counted; linkable as an activity's
+        ``evidence_refs``.
+    ``activity`` — inferred / lived time. The ONLY layer any time or balance
+        aggregate counts.
+    """
+
+    INTENT = "intent"
+    EVIDENCE = "evidence"
+    ACTIVITY = "activity"
+
+
+class Confidence(enum.StrEnum):
+    """Confidence an ``activity`` episode carries, from corroboration count.
+
+    ``high`` — 2+ independent evidence kinds.
+    ``medium`` — 2 weakly-related kinds, or 1 strong canonical kind.
+    ``low`` — single weak/ambiguous signal (still counted, but flagged).
+    """
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class Compatibility(enum.StrEnum):
     """Source compatibility status for the Chronicler contract registry."""
 
@@ -121,6 +151,8 @@ class PointEvent:
     tombstone_at: datetime | None = None
     tombstone_reason: str | None = None
     entity_id: UUID | None = None
+    # Raw point signals are always evidence; this is the conservative default.
+    layer: Layer = Layer.EVIDENCE
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -143,6 +175,13 @@ class Episode:
     tombstone_at: datetime | None = None
     tombstone_reason: str | None = None
     participant_entity_ids: list[UUID] = field(default_factory=list)
+    # Conservative default: ``evidence`` is never counted, so an un-stamped
+    # episode can never inflate lived-time totals (no "counted intent") and is
+    # not displayed as a planned block. Every projection adapter stamps the
+    # real layer explicitly (calendar -> intent, lived sources -> activity).
+    layer: Layer = Layer.EVIDENCE
+    confidence: Confidence = Confidence.LOW
+    evidence_refs: list[str] = field(default_factory=list)
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -173,6 +212,9 @@ class CorrectedEpisode:
     created_at: datetime
     updated_at: datetime
     participant_entity_ids: list[UUID] = field(default_factory=list)
+    layer: Layer = Layer.EVIDENCE
+    confidence: Confidence = Confidence.LOW
+    evidence_refs: list[str] = field(default_factory=list)
 
     @property
     def is_corrected(self) -> bool:
@@ -202,6 +244,7 @@ class CorrectedPointEvent:
     created_at: datetime
     updated_at: datetime
     entity_id: UUID | None = None
+    layer: Layer = Layer.EVIDENCE
 
     @property
     def is_corrected(self) -> bool:
@@ -231,9 +274,11 @@ class Override:
 
 __all__ = [
     "Compatibility",
+    "Confidence",
     "CorrectedEpisode",
     "CorrectedPointEvent",
     "Episode",
+    "Layer",
     "LinkRelation",
     "Override",
     "OverrideTarget",

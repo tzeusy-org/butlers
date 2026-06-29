@@ -45,7 +45,7 @@ from butlers.chronicler.adapters._owner_entity import (
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.aggregations import category_for
-from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 
 logger = logging.getLogger(__name__)
@@ -252,6 +252,7 @@ class FocusInferredAdapter(ProjectionAdapter):
                     title=out_title[:200],
                     payload=out_payload,
                     privacy=Privacy.NORMAL,
+                    layer=Layer.ACTIVITY,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).

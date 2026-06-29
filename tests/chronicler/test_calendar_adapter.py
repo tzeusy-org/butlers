@@ -35,7 +35,7 @@ from butlers.chronicler.adapters.calendar import (
     SOURCE_NAME,
     CalendarCompletedAdapter,
 )
-from butlers.chronicler.models import Episode
+from butlers.chronicler.models import Episode, Layer
 
 _NOW = datetime(2026, 4, 1, 10, 0, 0, tzinfo=UTC)
 
@@ -265,6 +265,19 @@ async def test_episode_basic_fields() -> None:
     assert ep.start_at == starts
     assert ep.end_at == ends
     assert ep.title == "Lunch with Jordan"
+
+
+async def test_freshly_projected_calendar_block_is_intent() -> None:
+    """Regression (bu-66v7ff): the calendar adapter stamps layer=intent on the
+    ongoing write path, not only on a one-time backfill.
+
+    A calendar block is planned intent and must never be counted as lived time;
+    relying on the conservative ``evidence`` column default would silently
+    misclassify every freshly-projected calendar block.
+    """
+    row = _make_row(event_title="Sprint planning")
+    ep = await _project_one(row)
+    assert ep.layer == Layer.INTENT
 
 
 # ---------------------------------------------------------------------------

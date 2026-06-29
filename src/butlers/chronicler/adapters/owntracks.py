@@ -59,7 +59,7 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
-from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import (
     get_carryover,
     save_carryover,
@@ -382,6 +382,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
+                    layer=Layer.EVIDENCE,
                 ),
             )
         return event
@@ -574,6 +575,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         title=title,
                         payload=payload,
                         privacy=Privacy.NORMAL,
+                        layer=Layer.ACTIVITY,
                     ),
                 )
                 # Write owner row into episode_entities join table (bu-4c1ks).

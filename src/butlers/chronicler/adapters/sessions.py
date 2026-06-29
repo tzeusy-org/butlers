@@ -45,6 +45,7 @@ from butlers.chronicler.adapters._owner_entity import (
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import (
     Episode,
+    Layer,
     LinkRelation,
     PointEvent,
     Precision,
@@ -445,6 +446,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         title=f"{schema}: session started",
                         payload={**payload_common, "boundary": "start"},
                         privacy=Privacy.NORMAL,
+                        layer=Layer.EVIDENCE,
                     ),
                 )
 
@@ -465,6 +467,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
                                 "duration_ms": duration_ms,
                             },
                             privacy=Privacy.NORMAL,
+                            layer=Layer.EVIDENCE,
                         ),
                     )
 
@@ -481,6 +484,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         title=episode_title,
                         payload=payload_common,
                         privacy=Privacy.NORMAL,
+                        layer=Layer.ACTIVITY,
                     ),
                 )
 

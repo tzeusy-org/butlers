@@ -38,6 +38,7 @@ ALL_CHAINS = [
     "mailbox",
     "memory",
     "whatsapp",
+    "chronicler",
 ]
 
 
@@ -65,7 +66,7 @@ def _load_chain_modules(chain: str) -> list[object]:
 
 
 def test_all_migration_chains_integrity() -> None:
-    """All 17 chains: files exist, up/downgrade callable, chain graph consistent, single root."""
+    """All 18 chains: files exist, up/downgrade callable, chain graph consistent, single root."""
     for chain in ALL_CHAINS:
         modules = _load_chain_modules(chain)
         assert len(modules) >= 1, f"Chain {chain!r} has no migration files"

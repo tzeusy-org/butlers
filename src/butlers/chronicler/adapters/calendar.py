@@ -86,7 +86,7 @@ import asyncpg
 from prometheus_client import Counter
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
-from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 
 logger = logging.getLogger(__name__)
@@ -564,6 +564,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     title=resolved_title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
+                    # Calendar blocks are planned intent, never lived time.
+                    layer=Layer.INTENT,
                 ),
             )
             # Write the multi-entity join table (bu-3zve1).

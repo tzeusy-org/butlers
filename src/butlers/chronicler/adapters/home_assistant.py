@@ -64,7 +64,7 @@ import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import upsert_owner_episode_entity
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
-from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
 
 logger = logging.getLogger(__name__)
@@ -504,6 +504,7 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
+                    layer=Layer.ACTIVITY,
                 ),
             )
             # Write the person's entity row into episode_entities (bu-v7hen).

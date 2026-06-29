@@ -26,7 +26,7 @@ import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import resolve_owner_entity_id
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
-from butlers.chronicler.models import PointEvent, Precision, Privacy
+from butlers.chronicler.models import Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import upsert_point_event
 
 logger = logging.getLogger(__name__)
@@ -239,6 +239,7 @@ class MealsAdapter(ProjectionAdapter):
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
                     entity_id=entity_id,
+                    layer=Layer.EVIDENCE,
                 ),
             )
         return event

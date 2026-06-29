@@ -26,7 +26,9 @@ from butlers.chronicler.adapters.sessions import (
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import (
     Compatibility,
+    Confidence,
     Episode,
+    Layer,
     LinkRelation,
     Override,
     OverrideTarget,
@@ -89,6 +91,8 @@ async def _apply_chronicler_schema(pool) -> None:
     - 015_point_events_entity_id: entity_id column on point_events + v_point_events_corrected update
     - 016_drop_episodes_entity_id: drops episodes.entity_id (added in 013) +
       recreates v_episodes_corrected without it
+    - 017_iea_layer_confidence_evidence: layer/confidence/evidence_refs on
+      episodes, layer on point_events, both exposed on the corrected views
 
     Tables intentionally omitted (not needed by storage integration tests):
     - ``tier2_cache`` (migration 004)
@@ -153,6 +157,8 @@ async def _apply_chronicler_schema(pool) -> None:
             tombstone_at TIMESTAMPTZ,
             tombstone_reason TEXT,
             entity_id UUID,
+            layer TEXT NOT NULL DEFAULT 'evidence'
+                CHECK (layer IN ('intent', 'evidence', 'activity')),
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref)
@@ -175,6 +181,11 @@ async def _apply_chronicler_schema(pool) -> None:
             retention_days INTEGER,
             tombstone_at TIMESTAMPTZ,
             tombstone_reason TEXT,
+            layer TEXT NOT NULL DEFAULT 'evidence'
+                CHECK (layer IN ('intent', 'evidence', 'activity')),
+            confidence TEXT NOT NULL DEFAULT 'low'
+                CHECK (confidence IN ('high', 'medium', 'low')),
+            evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref),
@@ -264,7 +275,10 @@ async def _apply_chronicler_schema(pool) -> None:
             o.corrected_at,
             o.note AS correction_note,
             e.created_at,
-            e.updated_at
+            e.updated_at,
+            e.layer,
+            e.confidence,
+            e.evidence_refs
         FROM episodes e
         LEFT JOIN v_latest_overrides o
             ON o.target_kind = 'episode' AND o.target_id = e.id
@@ -290,7 +304,8 @@ async def _apply_chronicler_schema(pool) -> None:
             o.note AS correction_note,
             p.created_at,
             p.updated_at,
-            p.entity_id
+            p.entity_id,
+            p.layer
         FROM point_events p
         LEFT JOIN v_latest_overrides o
             ON o.target_kind = 'point_event' AND o.target_id = p.id
@@ -737,6 +752,121 @@ async def test_sessions_adapter_projects_and_replays(chronicler_pool) -> None:
     assert len(episodes_final) == 2
     for ep in episodes_final:
         assert ep.end_at is not None, f"Episode {ep.source_ref} still open after replay"
+
+
+# ── IEA layer / confidence / evidence_refs (bu-66v7ff) ─────────────────────
+
+
+async def test_freshly_projected_activity_source_is_activity(chronicler_pool) -> None:
+    """Regression (bu-66v7ff): an activity-source adapter stamps layer=activity
+    on the ongoing write path, and its boundary point events are layer=evidence.
+
+    Exercises the real sessions adapter end-to-end (not just storage) so the
+    "stamp only on backfill" gap cannot regress silently.
+    """
+    fake_schema = "iealayer"
+    async with chronicler_pool.acquire() as conn:
+        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{fake_schema}"')
+        await conn.execute(make_sessions_table_ddl(fake_schema))
+        now = datetime.now(UTC)
+        await conn.execute(
+            f"""
+            INSERT INTO "{fake_schema}".sessions (
+                id, prompt, trigger_source, request_id, started_at, completed_at
+            ) VALUES ($1, 'done', 'external', 'r1', $2, $3)
+            """,
+            uuid4(),
+            now - timedelta(minutes=30),
+            now - timedelta(minutes=25),
+        )
+
+    adapter = CoreSessionsAdapter(butler_schemas=(fake_schema,))
+    result = await adapter.run(pool=chronicler_pool, chronicler_pool=chronicler_pool)
+    assert result.success
+
+    episodes = await list_episodes(chronicler_pool, source_name="core.sessions")
+    assert episodes
+    assert all(ep.layer == Layer.ACTIVITY for ep in episodes)
+
+    events = await list_point_events(chronicler_pool, source_name="core.sessions")
+    assert events
+    assert all(ev.layer == Layer.EVIDENCE for ev in events)
+
+
+async def test_upsert_episode_round_trips_intent_layer(chronicler_pool) -> None:
+    """A calendar-style intent episode stores and reads back as layer=intent."""
+    ep = await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="google_calendar.completed",
+            source_ref="iea-intent-1",
+            episode_type="scheduled_block",
+            start_at=datetime.now(UTC) - timedelta(hours=5),
+            end_at=datetime.now(UTC),
+            title="5h calendar block",
+            layer=Layer.INTENT,
+        ),
+    )
+    assert ep.layer == Layer.INTENT
+    # Read path (corrected view) also surfaces the layer.
+    fetched = await get_episode(chronicler_pool, ep.id)
+    assert fetched is not None
+    assert fetched.layer == Layer.INTENT
+
+
+async def test_upsert_episode_defaults_are_conservative(chronicler_pool) -> None:
+    """An episode upserted without IEA fields defaults to the conservative,
+    never-counted values (evidence / low / empty chain)."""
+    ep = await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="core.sessions",
+            source_ref="iea-default-1",
+            episode_type="work",
+            start_at=datetime.now(UTC) - timedelta(hours=1),
+            end_at=datetime.now(UTC),
+            title="unstamped",
+        ),
+    )
+    assert ep.layer == Layer.EVIDENCE
+    assert ep.confidence == Confidence.LOW
+    assert ep.evidence_refs == []
+
+
+async def test_overlapping_episodes_still_permitted(chronicler_pool) -> None:
+    """Adding the layer column must not introduce a uniqueness/exclusion
+    constraint that rejects time-overlapping episodes (intent + activity that
+    cover the same window legitimately coexist)."""
+    start = datetime.now(UTC) - timedelta(hours=2)
+    end = datetime.now(UTC)
+    intent = await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="google_calendar.completed",
+            source_ref="iea-overlap-intent",
+            episode_type="scheduled_block",
+            start_at=start,
+            end_at=end,
+            title="planned meeting",
+            layer=Layer.INTENT,
+        ),
+    )
+    activity = await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="core.sessions",
+            source_ref="iea-overlap-activity",
+            episode_type="work",
+            start_at=start + timedelta(minutes=10),
+            end_at=end - timedelta(minutes=10),
+            title="actual work",
+            layer=Layer.ACTIVITY,
+        ),
+    )
+    overlapping = await list_overlapping_episodes(chronicler_pool, intent.id)
+    ids = {ep.id for ep in overlapping}
+    assert intent.id in ids
+    assert activity.id in ids
 
 
 async def test_sessions_adapter_degrades_when_schema_missing(chronicler_pool) -> None:

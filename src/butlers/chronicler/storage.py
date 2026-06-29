@@ -18,9 +18,11 @@ import asyncpg
 
 from butlers.chronicler.models import (
     Compatibility,
+    Confidence,
     CorrectedEpisode,
     CorrectedPointEvent,
     Episode,
+    Layer,
     LinkRelation,
     Override,
     OverrideTarget,
@@ -52,8 +54,31 @@ def _coerce_payload(value: Any) -> dict[str, Any]:
     return {"raw": value}
 
 
+def _coerce_ref_list(value: Any) -> list[str]:
+    """Coerce a jsonb ``evidence_refs`` column into a list of strings.
+
+    The jsonb codec decodes to a Python list already; this guards the edge
+    cases (NULL, a raw JSON string, a non-list payload) defensively.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+        value = loaded
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return [str(value)]
+
+
+def _row_layer(row: asyncpg.Record, keys: Any) -> Layer:
+    return Layer(row["layer"]) if "layer" in keys else Layer.EVIDENCE
+
+
 def _row_to_point_event(row: asyncpg.Record) -> PointEvent:
-    keys = row.keys()
+    keys = set(row.keys())
     return PointEvent(
         id=row["id"],
         source_name=row["source_name"],
@@ -68,13 +93,14 @@ def _row_to_point_event(row: asyncpg.Record) -> PointEvent:
         tombstone_at=row["tombstone_at"],
         tombstone_reason=row["tombstone_reason"],
         entity_id=row["entity_id"] if "entity_id" in keys else None,
+        layer=_row_layer(row, keys),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
 def _row_to_episode(row: asyncpg.Record) -> Episode:
-    keys = row.keys()
+    keys = set(row.keys())
     return Episode(
         id=row["id"],
         source_name=row["source_name"],
@@ -94,13 +120,16 @@ def _row_to_episode(row: asyncpg.Record) -> Episode:
             if "participant_entity_ids" in keys and row["participant_entity_ids"] is not None
             else []
         ),
+        layer=_row_layer(row, keys),
+        confidence=Confidence(row["confidence"]) if "confidence" in keys else Confidence.LOW,
+        evidence_refs=_coerce_ref_list(row["evidence_refs"]) if "evidence_refs" in keys else [],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
 def _row_to_corrected_episode(row: asyncpg.Record) -> CorrectedEpisode:
-    keys = row.keys()
+    keys = set(row.keys())
     return CorrectedEpisode(
         id=row["id"],
         source_name=row["source_name"],
@@ -127,11 +156,14 @@ def _row_to_corrected_episode(row: asyncpg.Record) -> CorrectedEpisode:
             if "participant_entity_ids" in keys and row["participant_entity_ids"] is not None
             else []
         ),
+        layer=_row_layer(row, keys),
+        confidence=Confidence(row["confidence"]) if "confidence" in keys else Confidence.LOW,
+        evidence_refs=_coerce_ref_list(row["evidence_refs"]) if "evidence_refs" in keys else [],
     )
 
 
 def _row_to_corrected_point_event(row: asyncpg.Record) -> CorrectedPointEvent:
-    keys = row.keys()
+    keys = set(row.keys())
     return CorrectedPointEvent(
         id=row["id"],
         source_name=row["source_name"],
@@ -152,6 +184,7 @@ def _row_to_corrected_point_event(row: asyncpg.Record) -> CorrectedPointEvent:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         entity_id=row["entity_id"] if "entity_id" in keys else None,
+        layer=_row_layer(row, keys),
     )
 
 
@@ -387,7 +420,7 @@ async def _upsert_checkpoint_row(
 
 def _row_to_checkpoint(row: asyncpg.Record) -> ProjectionCheckpoint:
     raw_subsource = row["subsource"] if "subsource" in row.keys() else ""
-    keys = row.keys()
+    keys = set(row.keys())
     watermark_id: int | None = row["watermark_id"] if "watermark_id" in keys else None
     return ProjectionCheckpoint(
         source_name=row["source_name"],
@@ -453,9 +486,9 @@ async def upsert_point_event(
         INSERT INTO point_events (
             source_name, source_ref, event_type, occurred_at, precision,
             title, payload, privacy, retention_days, tombstone_at, tombstone_reason,
-            entity_id
+            entity_id, layer
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             event_type = EXCLUDED.event_type,
             occurred_at = EXCLUDED.occurred_at,
@@ -467,6 +500,7 @@ async def upsert_point_event(
             tombstone_at = EXCLUDED.tombstone_at,
             tombstone_reason = EXCLUDED.tombstone_reason,
             entity_id = EXCLUDED.entity_id,
+            layer = EXCLUDED.layer,
             updated_at = now()
         RETURNING *
         """,
@@ -482,6 +516,7 @@ async def upsert_point_event(
         event.tombstone_at,
         event.tombstone_reason,
         event.entity_id,
+        event.layer.value,
     )
     return _row_to_point_event(row)
 
@@ -502,9 +537,10 @@ async def upsert_episode(
         """
         INSERT INTO episodes (
             source_name, source_ref, episode_type, start_at, end_at,
-            precision, title, payload, privacy, retention_days, tombstone_at, tombstone_reason
+            precision, title, payload, privacy, retention_days, tombstone_at, tombstone_reason,
+            layer, confidence, evidence_refs
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             episode_type = EXCLUDED.episode_type,
             start_at = EXCLUDED.start_at,
@@ -516,6 +552,9 @@ async def upsert_episode(
             retention_days = EXCLUDED.retention_days,
             tombstone_at = EXCLUDED.tombstone_at,
             tombstone_reason = EXCLUDED.tombstone_reason,
+            layer = EXCLUDED.layer,
+            confidence = EXCLUDED.confidence,
+            evidence_refs = EXCLUDED.evidence_refs,
             updated_at = now()
         RETURNING *
         """,
@@ -531,6 +570,9 @@ async def upsert_episode(
         episode.retention_days,
         episode.tombstone_at,
         episode.tombstone_reason,
+        episode.layer.value,
+        episode.confidence.value,
+        list(episode.evidence_refs),
     )
     return _row_to_episode(row)
 

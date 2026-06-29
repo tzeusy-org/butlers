@@ -243,6 +243,8 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
             tombstone_at TIMESTAMPTZ,
             tombstone_reason TEXT,
             entity_id UUID,
+            layer TEXT NOT NULL DEFAULT 'evidence'
+                CHECK (layer IN ('intent', 'evidence', 'activity')),
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref)
@@ -265,6 +267,11 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
             retention_days INTEGER,
             tombstone_at TIMESTAMPTZ,
             tombstone_reason TEXT,
+            layer TEXT NOT NULL DEFAULT 'evidence'
+                CHECK (layer IN ('intent', 'evidence', 'activity')),
+            confidence TEXT NOT NULL DEFAULT 'low'
+                CHECK (confidence IN ('high', 'medium', 'low')),
+            evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref),

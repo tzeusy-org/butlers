@@ -47,7 +47,7 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
-from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import (
     get_carryover,
     save_carryover,
@@ -366,6 +366,7 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
+                    layer=Layer.ACTIVITY,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).
@@ -676,6 +677,7 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
                     title=title,
                     payload=payload,
                     privacy=privacy,
+                    layer=Layer.ACTIVITY,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).
@@ -780,6 +782,7 @@ class GoogleHealthStepsAdapter(ProjectionAdapter):
                     payload=payload,
                     privacy=Privacy.NORMAL,
                     entity_id=entity_id,
+                    layer=Layer.EVIDENCE,
                 ),
             )
 
@@ -894,6 +897,7 @@ class GoogleHealthHeartRateAdapter(ProjectionAdapter):
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
                     entity_id=entity_id,
+                    layer=Layer.EVIDENCE,
                 ),
             )
 
