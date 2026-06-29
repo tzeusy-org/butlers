@@ -30,7 +30,7 @@ CREATE TABLE public.entities (
 - `idx_entities_aliases` using GIN on `aliases`
 - `idx_entities_metadata` using GIN on `metadata`
 
-**Implementation note (search_path):** The memory module tools (`entity_create`, `entity_get`, `entity_update`, `entity_merge`, `entity_resolve`) address the table as `entities` (unqualified), relying on the session's `search_path` which sets the butler's own schema first, then `public`. For memory butlers (which do not have their own `entities` table post-`core_014`), the unqualified name resolves to `public.entities` via search_path. The `core_014` migration copies all butler-local entities data into `public.entities` as part of the migration.
+**Implementation note (search_path):** The memory module tools (`entity_create`, `entity_get`, `entity_update`, `entity_merge`, `entity_resolve`) address the table as `entities` (unqualified), relying on the session's `search_path` which sets the butler's own schema first, then `public`. For butlers using the memory module (which do not have their own `entities` table post-`core_014`), the unqualified name resolves to `public.entities` via search_path. The `core_014` migration copies all butler-local entities data into `public.entities` as part of the migration.
 
 **Grants:** `core_014` grants `SELECT, INSERT, UPDATE, DELETE` on `public.entities` to: `butler_switchboard_rw`, `butler_general_rw`, `butler_health_rw`, `butler_relationship_rw`, `butler_messenger_rw`. Additional butler roles must be added to `_ALL_BUTLER_ROLES` in `core_014` (or a follow-up migration) as new butlers are created.
 
@@ -418,7 +418,7 @@ CREATE TABLE public.entity_info (
 
 ### Requirement: Entity resolve case-insensitive exact tier with fact-count promotion
 
-`memory_entity_resolve(name, entity_type=...)` SHALL treat case-insensitive matches against `canonical_name` and against any element of `aliases` as a single tier called the **exact tier**. Within the exact tier, candidates SHALL be ranked by `fact_count`, defined as the number of rows in the memory butler's `facts` table where `(entity_id = e.id OR object_entity_id = e.id) AND validity = 'active' AND invalid_at IS NULL`. Candidates whose `fact_count` equals the maximum `fact_count` in the exact tier SHALL be returned with `score = 100`. All other exact-tier candidates SHALL be returned with `score = 80`.
+`memory_entity_resolve(name, entity_type=...)` SHALL treat case-insensitive matches against `canonical_name` and against any element of `aliases` as a single tier called the **exact tier**. Within the exact tier, candidates SHALL be ranked by `fact_count`, defined as the number of rows in the memory module's `facts` table where `(entity_id = e.id OR object_entity_id = e.id) AND validity = 'active' AND invalid_at IS NULL`. Candidates whose `fact_count` equals the maximum `fact_count` in the exact tier SHALL be returned with `score = 100`. All other exact-tier candidates SHALL be returned with `score = 80`.
 
 The returned `name_match` field for any exact-tier candidate SHALL be the literal string `"exact"`. The values `"canonical"` and `"alias"` SHALL NOT appear in the returned `name_match` field.
 

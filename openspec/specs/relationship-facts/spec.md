@@ -54,7 +54,7 @@ resolves the Phase 1 Amendment 1.1 open question.
 **Uniqueness:** `UNIQUE (subject, predicate, object) WHERE validity = 'active'`.
 
 **Schema boundary with `memory.facts` (R2 #3):** the table is `relationship.entity_facts`
-(schema-qualified). A separate `memory.facts` table exists under the memory butler schema
+(schema-qualified). A separate `memory.facts` table exists under the memory module schema
 per RFC 0006 (`src/butlers/modules/memory/migrations/001_memory_schema.py:106`); the two
 tables are isolated by schema and MUST NOT be cross-joined. Migration beads and all SQL
 authored under this change MUST reference the schema-qualified name `relationship.entity_facts`

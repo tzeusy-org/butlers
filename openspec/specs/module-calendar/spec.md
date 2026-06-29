@@ -149,7 +149,7 @@ The canonical `CalendarEvent` model is provider-neutral with fields: `event_id`,
 
 ### Requirement: calendar_event_entities Junction Table
 
-The `calendar_event_entities` table SHALL be the cross-reference between `calendar_events` rows and entities in the memory butler's entity graph. It MUST enable reverse lookup — given an entity, find all calendar events associated with it — and it SHALL be the authoritative source of participant entity membership for downstream retrospective projection by the Chronicler butler.
+The `calendar_event_entities` table SHALL be the cross-reference between `calendar_events` rows and entities in the memory module's entity graph. It MUST enable reverse lookup — given an entity, find all calendar events associated with it — and it SHALL be the authoritative source of participant entity membership for downstream retrospective projection by the Chronicler butler.
 
 Schema: `(event_id UUID REFERENCES calendar_events(id) ON DELETE CASCADE, entity_id UUID REFERENCES public.entities(id) ON DELETE CASCADE)` with a UNIQUE constraint on `(event_id, entity_id)`.
 

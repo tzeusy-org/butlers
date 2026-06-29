@@ -72,7 +72,7 @@ The dashboard SHALL expose data export and wipe endpoints under strict guards.
 #### Scenario: Every export scope yields its real data
 - **WHEN** the signed URL for a given `scope` is downloaded
 - **THEN** the archive contains the actual data for that scope, never an empty/near-empty file behind a success response:
-  - `memory` → the memory butler's facts/rules/episodes data
+  - `memory` → the memory module's facts/rules/episodes data
   - `audit` → `public.audit_log`
   - `config` → runtime/config tables (`public.runtime_config`, `public.model_catalog`, `public.permissions`)
   - `all` → the union of every scope above
