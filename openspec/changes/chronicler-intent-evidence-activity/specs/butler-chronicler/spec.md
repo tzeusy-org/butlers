@@ -5,11 +5,15 @@
 ### Requirement: Retrospective-Only Scope
 
 The chronicler SHALL remain retrospective: it MUST NOT plan, ingest external
-data, own a connector, or notify the owner. **Amendment:** it
-MAY synthesize durable insights into **its own schema** via the memory module,
-and MAY *propose* entity-enrichment facts to the `relationship` butler **over
-MCP**. These derived write-backs do not constitute ingestion, notification, or
-scheduler authority, and they never write another butler's schema directly.
+data, own a connector, or send proactive/coaching nudges. The **single
+sanctioned owner-facing message** is the existing once-daily *retrospective*
+day-close summary; this is a scheduled recap, not a proactive notification, and
+no other owner-facing messages are permitted. **Amendment:** the chronicler MAY
+synthesize durable insights into **its own schema** via the memory module, and
+MAY *propose* entity-enrichment facts to the `relationship` butler **over MCP**.
+These derived write-backs add no new owner-facing messages, do not constitute
+ingestion or scheduler authority, and never write another butler's schema
+directly.
 
 #### Scenario: Synthesized insight stays within own schema
 

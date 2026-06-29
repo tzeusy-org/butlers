@@ -36,38 +36,70 @@ time or balance aggregate.
 - **AND** it is excluded from time/balance totals
 - **AND** it remains linkable as an `evidence_ref` of an activity
 
-### Requirement: Calendar Counts Only When Corroborated
+### Requirement: Calendar Is Never Counted; Activities Counted On Their Own Merits
 
-A calendar `intent` block SHALL contribute lived time to an aggregate only when
-an independent `activity` corroborates it, and the time SHALL be attributed to
-the corroborating activity's lane, never to a "calendar" lane.
+Aggregates SHALL count the `activity` layer only; a calendar `intent` block is
+dropped wholesale from every total and SHALL never produce a "calendar" lane.
+"Corroboration" is therefore automatic, not a matching step: when a real activity
+overlaps a calendar block, the *activity* is counted on its own merits under its
+own lane, and the calendar block still contributes nothing. There SHALL be no
+calendar→activity attributor in the counting path. (Dropping a calendar block
+that an activity actively *contradicts* — e.g. "gym 9am" vs GPS-at-home — is
+conflict resolution performed at day-close, not in the counting path; see
+"Day-Close Reconciliation".)
 
 #### Scenario: Uncorroborated calendar block contributes zero
 
-- **WHEN** a 5-hour calendar block has no corroborating activity evidence in its
-  window
+- **WHEN** a 5-hour calendar block has no overlapping activity in its window
 - **THEN** the block contributes 0 seconds to every aggregate lane
 - **AND** no "calendar" lane appears in the aggregate
 
-#### Scenario: Corroborated calendar block counts under its activity lane
+#### Scenario: Activity overlapping a calendar block is what counts
 
-- **WHEN** a calendar block is corroborated by a co-located activity (e.g. GPS
-  dwell + a resolved participant)
-- **THEN** the lived time is attributed to the activity's lane (e.g. Social or
-  Work)
-- **AND** it is not attributed to a "calendar" lane
+- **WHEN** a GPS-dwell + resolved-participant `social` activity overlaps a
+  calendar block
+- **THEN** the `social` activity's time is counted under the `social` lane on its
+  own merits
+- **AND** the calendar block itself still contributes 0 seconds
+- **AND** no time is attributed to a "calendar" lane
 
 ### Requirement: Activity Lane Taxonomy
 
 Activity aggregates SHALL roll up into life-balance lanes:
 `sleep`, `exercise`, `work`, `play`, `social`, `travel`, `eat`, `rest`. Source
 types such as music, gaming, and calendar SHALL NOT appear as top-level lanes.
+The complete mapping from existing episode types to lanes SHALL be defined and
+each lane covered by a test:
+
+| Existing episode type / source | Lane |
+|---|---|
+| `google_health` sleep | `sleep` |
+| `google_health` workout, inferred exercise (HR+GPS+cadence) | `exercise` |
+| `core.sessions` work | `work` |
+| Spotify listening, Steam play | `play` |
+| comms bursts (gmail/telegram/whatsapp/discord), co-presence | `social` |
+| `owntracks` movement | `travel` |
+| meals | `eat` |
+| idle/at-home presence with no other activity | `rest` |
+
+Existing projected source episodes (sleep, workout, listening, play, work,
+movement, meal) ARE the `activity`-layer rows for their lane; Tier-1 projectors
+do not re-emit duplicates of them — they add `confidence`/`evidence_refs` and
+emit only genuinely *new* inferred activities (e.g. an exercise block inferred
+from HR+GPS when no workout episode exists). Where both a source episode and an
+inferred candidate cover the same block, day-close reconciliation merges them.
 
 #### Scenario: Music and gaming roll into Play
 
 - **WHEN** Spotify listening and Steam play activities are aggregated
 - **THEN** their time appears under the `play` lane
 - **AND** neither `music` nor `gaming` appears as a top-level lane
+
+#### Scenario: Every lane has a covering mapping
+
+- **WHEN** an episode of each mapped source type is aggregated
+- **THEN** it rolls up under the lane named in the mapping table
+- **AND** meals map to `eat`, workouts to `exercise`, and movement to `travel`
 
 ### Requirement: Activity Confidence From Independent Corroboration
 
@@ -112,25 +144,50 @@ to day-close.
 - **THEN** it emits candidate activities from evidence rules
 - **AND** no LLM is invoked during projection
 
-### Requirement: Day-Close Reconciliation
+### Requirement: Deterministic Reconciliation Core With LLM Narration
 
-The once-daily day-close LLM session SHALL reconcile candidate activities: merge
-duplicates across sources, resolve intent-vs-evidence conflicts, label ambiguous
-blocks, and write narrative. It SHALL remain the only LLM invocation in the
-projection path.
+Candidate dedup and intent-vs-evidence conflict resolution SHALL be performed by
+a **pure, deterministic function** (time-overlap merge of same-lane candidates;
+drop a calendar intent whose window is contradicted by activity evidence) that
+is unit-testable without an LLM. The once-daily day-close LLM SHALL only *narrate
+over* the reconciled result (labels ambiguous blocks, writes prose) and SHALL
+remain the only LLM invocation in the projection path. Aggregate correctness
+SHALL NOT depend on LLM output.
 
-#### Scenario: Conflicting intent dropped against evidence
+#### Scenario: Conflicting intent dropped deterministically
 
 - **WHEN** a calendar intent says "gym 9am" but location evidence places the
   owner at home during that window
-- **THEN** day-close does not count the gym block
+- **THEN** the deterministic reconciler drops the gym block (it is not counted)
+- **AND** this holds without invoking the LLM
 - **AND** the narrative does not assert attendance
 
-#### Scenario: Duplicate candidates merged
+#### Scenario: Duplicate candidates merged deterministically
 
-- **WHEN** two sources both emit a candidate for the same lived block
-- **THEN** day-close merges them into one activity
-- **AND** the merged activity links the evidence from both sources
+- **WHEN** two sources emit overlapping same-lane candidates for one lived block
+- **THEN** the deterministic reconciler merges them into one activity that links
+  the evidence from both sources
+- **AND** the merged block is counted once
+
+### Requirement: Layer Stamped On Every Projection Write
+
+Every projection adapter SHALL stamp `layer` on insert for all newly-projected
+rows — calendar → `intent`, lived-activity sources → `activity`, raw point
+signals → `evidence` — not only on a one-time backfill. The `layer` column SHALL
+have a conservative non-null default that never causes uncounted activity or
+counted intent.
+
+#### Scenario: Freshly-projected calendar block is intent
+
+- **WHEN** the calendar adapter projects a new event after this change ships
+- **THEN** the stored episode has `layer = intent`
+- **AND** it is excluded from lived-time totals
+
+#### Scenario: Freshly-projected activity is counted
+
+- **WHEN** an activity-source adapter projects a new episode after this change
+- **THEN** the stored episode has `layer = activity`
+- **AND** it is included in lived-time totals
 
 ### Requirement: Comms Projected Into Social
 
