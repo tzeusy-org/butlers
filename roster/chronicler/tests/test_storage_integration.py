@@ -49,6 +49,7 @@ from butlers.chronicler.storage import (
     list_point_events,
     mark_source_active,
     record_idempotency,
+    refresh_episode_evidence_refs,
     register_source,
     upsert_checkpoint,
     upsert_checkpoint_subsource,
@@ -639,6 +640,66 @@ async def test_link_events_to_episode(chronicler_pool) -> None:
 
     events = await list_episode_events(chronicler_pool, ep.id)
     assert {e.source_ref for e in events} == {"link-ev-1", "link-ev-2"}
+
+
+async def test_refresh_episode_evidence_refs_from_links(chronicler_pool) -> None:
+    """evidence_refs is denormalized from episode_event_links, occurrence-ordered."""
+    now = datetime.now(UTC)
+    ep = await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="core.sessions",
+            source_ref="evref-ep",
+            episode_type="work",
+            start_at=now,
+            end_at=now + timedelta(minutes=30),
+        ),
+    )
+    # Insert events out of occurrence order to prove ordering comes from the DB.
+    ev_late = await upsert_point_event(
+        chronicler_pool,
+        PointEvent(
+            source_name="core.sessions",
+            source_ref="evref-late",
+            event_type=EVENT_TYPE_SESSION_COMPLETED,
+            occurred_at=now + timedelta(minutes=30),
+        ),
+    )
+    ev_early = await upsert_point_event(
+        chronicler_pool,
+        PointEvent(
+            source_name="core.sessions",
+            source_ref="evref-early",
+            event_type=EVENT_TYPE_SESSION_STARTED,
+            occurred_at=now,
+        ),
+    )
+    assert ep.id and ev_early.id and ev_late.id
+
+    # No links yet -> empty refs.
+    assert await refresh_episode_evidence_refs(chronicler_pool, ep.id) == []
+
+    await link_event_to_episode(
+        chronicler_pool,
+        episode_id=ep.id,
+        event_id=ev_late.id,
+        relation=LinkRelation.BOUNDARY_END,
+    )
+    await link_event_to_episode(
+        chronicler_pool,
+        episode_id=ep.id,
+        event_id=ev_early.id,
+        relation=LinkRelation.BOUNDARY_START,
+    )
+
+    refs = await refresh_episode_evidence_refs(chronicler_pool, ep.id)
+    # Ordered by occurrence: early event id first, late event id second.
+    assert refs == [str(ev_early.id), str(ev_late.id)]
+
+    # Persisted onto the episode row's evidence_refs surface.
+    stored = await get_episode(chronicler_pool, ep.id)
+    assert stored is not None
+    assert stored.evidence_refs == [str(ev_early.id), str(ev_late.id)]
 
 
 # ── Checkpoints ────────────────────────────────────────────────────────────

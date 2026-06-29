@@ -16,6 +16,7 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.chronicler.confidence import evidence_refs_from_event_ids
 from butlers.chronicler.models import (
     Compatibility,
     Confidence,
@@ -614,6 +615,38 @@ async def list_episode_events(
         episode_id,
     )
     return [_row_to_corrected_point_event(r) for r in rows]
+
+
+async def refresh_episode_evidence_refs(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    episode_id: UUID,
+) -> list[str]:
+    """Populate ``episodes.evidence_refs`` from ``episode_event_links``.
+
+    The canonical evidence chain lives in ``episode_event_links``; this
+    denormalizes it onto the ``episodes.evidence_refs`` convenience surface as an
+    ordered (by occurrence), de-duplicated list of point-event id strings so
+    consumers can read an activity's evidence without a join. Idempotent: it
+    overwrites ``evidence_refs`` with the current link set, so re-running after
+    links are added/removed keeps the surface in sync. Returns the refs written.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT l.event_id
+        FROM episode_event_links l
+        JOIN point_events p ON p.id = l.event_id
+        WHERE l.episode_id = $1
+        ORDER BY p.occurred_at ASC, l.event_id ASC
+        """,
+        episode_id,
+    )
+    refs = evidence_refs_from_event_ids(r["event_id"] for r in rows)
+    await conn.execute(
+        "UPDATE episodes SET evidence_refs = $2, updated_at = now() WHERE id = $1",
+        episode_id,
+        refs,
+    )
+    return refs
 
 
 # ── Read queries (corrected views by default) ─────────────────────────────
