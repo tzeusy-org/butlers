@@ -43,6 +43,11 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.confidence import (
+    EvidenceKind,
+    derive_confidence,
+    evidence_refs_from_event_ids,
+)
 from butlers.chronicler.models import (
     Episode,
     Layer,
@@ -471,6 +476,23 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         ),
                     )
 
+                # Confidence: the session start/end boundary markers are a
+                # single strong canonical signal (one explicit session) → the
+                # work episode earns ``medium``. The two boundary events are not
+                # independent kinds — they bracket the same session.
+                confidence = derive_confidence([EvidenceKind(name="session_marker", strong=True)])
+
+                # Evidence chain: the boundary point events that bracket this
+                # work episode. Populated here (in addition to the canonical
+                # ``episode_event_links`` written below) so the activity row
+                # carries its corroborating signal ids without a join.
+                evidence_event_ids = [started_event.id]
+                if completed_event is not None and completed_event.id is not None:
+                    evidence_event_ids.append(completed_event.id)
+                evidence_refs = evidence_refs_from_event_ids(
+                    eid for eid in evidence_event_ids if eid is not None
+                )
+
                 episode_title = self._compute_episode_title(schema, trigger_source, contact_info)
                 episode = await upsert_episode(
                     conn,
@@ -485,6 +507,8 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         payload=payload_common,
                         privacy=Privacy.NORMAL,
                         layer=Layer.ACTIVITY,
+                        confidence=confidence,
+                        evidence_refs=evidence_refs,
                     ),
                 )
 

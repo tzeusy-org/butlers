@@ -55,6 +55,9 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     # (→ Work lane); payload.signal carries the kind.
     ("chronicler.focus_inferred", "focus_block"): "tasks",
     ("chronicler.reading_inferred", "reading_block"): "tasks",
+    # Inferred exercise from HR+GPS corroboration (bu-1sj3zn) folds into the
+    # 'workout' category (→ Exercise lane), matching explicit workout episodes.
+    ("chronicler.exercise_inferred", "exercise_episode"): "workout",
 }
 
 # trigger_source values that represent user→butler conversations.

@@ -42,6 +42,7 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.confidence import EvidenceKind, derive_confidence
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 
@@ -266,6 +267,12 @@ class SteamPlayAdapter(ProjectionAdapter):
         if steam_account_id is not None:
             payload["steam_account_id"] = str(steam_account_id)
 
+        # Confidence: a Steam daily-playtime aggregate is a single strong
+        # canonical signal — an explicit, platform-reported play record for the
+        # day — so it earns ``medium``. The day-grained boundary precision is a
+        # separate axis from confidence and does not weaken the corroboration.
+        confidence = derive_confidence([EvidenceKind(name="steam_play_history", strong=True)])
+
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
                 conn,
@@ -280,6 +287,7 @@ class SteamPlayAdapter(ProjectionAdapter):
                     payload=payload,
                     privacy=Privacy.NORMAL,
                     layer=Layer.ACTIVITY,
+                    confidence=confidence,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).

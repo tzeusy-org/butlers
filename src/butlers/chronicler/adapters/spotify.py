@@ -40,6 +40,7 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.confidence import EvidenceKind, derive_confidence
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 
@@ -211,6 +212,11 @@ class SpotifySessionAdapter(ProjectionAdapter):
             "track_names": track_names,
         }
 
+        # Confidence: a Spotify listening session is a single strong canonical
+        # signal — the connector materializes an explicit, API-derived session
+        # with real start/end boundaries — so it earns ``medium``.
+        confidence = derive_confidence([EvidenceKind(name="listening_session", strong=True)])
+
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
                 conn,
@@ -225,6 +231,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
                     payload=payload,
                     privacy=Privacy.NORMAL,
                     layer=Layer.ACTIVITY,
+                    confidence=confidence,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).

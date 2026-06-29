@@ -53,6 +53,8 @@ _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
     # Inferred chronicler-derived sources (bu-i29ix). Both fold into 'tasks'.
     ("chronicler.focus_inferred", "focus_block", None, "tasks"),
     ("chronicler.reading_inferred", "reading_block", None, "tasks"),
+    # Inferred exercise from HR+GPS corroboration (bu-1sj3zn) → Exercise lane.
+    ("chronicler.exercise_inferred", "exercise_episode", None, "workout"),
 ]
 
 

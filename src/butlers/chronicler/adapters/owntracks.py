@@ -59,9 +59,22 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
-from butlers.chronicler.models import Episode, Layer, PointEvent, Precision, Privacy
+from butlers.chronicler.confidence import (
+    EvidenceKind,
+    derive_confidence,
+    evidence_refs_from_event_ids,
+)
+from butlers.chronicler.models import (
+    Episode,
+    Layer,
+    LinkRelation,
+    PointEvent,
+    Precision,
+    Privacy,
+)
 from butlers.chronicler.storage import (
     get_carryover,
+    link_event_to_episode,
     save_carryover,
     upsert_episode,
     upsert_point_event,
@@ -136,6 +149,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         # Project each row as a point event.
         latest_watermark = since
         valid_rows: list[dict[str, Any]] = []
+        # Map each location point event's idempotency_key → its chronicler
+        # point-event id, so movement episodes can record their corroborating
+        # GPS fixes as ``evidence_refs`` (and link them in episode_event_links).
+        event_id_by_key: dict[str, UUID] = {}
         for row in rows:
             ts = row["ts"]
             if isinstance(ts, datetime) and ts.tzinfo is not None:
@@ -150,7 +167,9 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 continue
 
             valid_rows.append(normalized_row)
-            await self._project_point_event(chronicler_pool, normalized_row)
+            event = await self._project_point_event(chronicler_pool, normalized_row)
+            if event is not None and event.id is not None:
+                event_id_by_key[normalized_row["idempotency_key"]] = event.id
             result.rows_projected += 1
             result.point_events += 1
 
@@ -161,7 +180,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             entity_id = await resolve_owner_entity_id(pool)
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
             episodes_closed, new_carryover = await self._project_movement_episodes(
-                chronicler_pool, valid_rows, prior_carryover, entity_id=entity_id
+                chronicler_pool,
+                valid_rows,
+                prior_carryover,
+                event_id_by_key=event_id_by_key,
+                entity_id=entity_id,
             )
             result.episodes_closed += episodes_closed
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
@@ -393,6 +416,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         rows: list[dict[str, Any]],
         prior_carryover: dict,
         *,
+        event_id_by_key: dict[str, UUID] | None = None,
         entity_id: UUID | None = None,
     ) -> tuple[int, dict]:
         """Collapse point sequences into movement episodes.
@@ -420,6 +444,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         """
         if not rows:
             return 0, {}
+
+        event_id_by_key = event_id_by_key or {}
 
         # Re-sort by server ingestion time so that device clock skew or
         # buffered delivery never produces a negative-duration segment.
@@ -562,6 +588,23 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "end_lon": float(last["lon"]),
             }
 
+            # Evidence chain: the GPS location point events that make up this
+            # segment (those projected in THIS batch — cross-batch carryover
+            # points were linked on their own run). De-duplicated, ordered by
+            # occurrence via the row order.
+            seg_event_ids = [
+                event_id_by_key[r["idempotency_key"]]
+                for r in seg_rows
+                if r["idempotency_key"] in event_id_by_key
+            ]
+            evidence_refs = evidence_refs_from_event_ids(seg_event_ids)
+
+            # Confidence: a movement episode rests on a single, weak evidence
+            # kind — raw GPS fixes from one device. With no independent
+            # corroboration it stays ``low`` (still counted, but flagged for
+            # re-reconciliation).
+            confidence = derive_confidence([EvidenceKind(name="gps")])
+
             async with chronicler_pool.acquire() as conn:
                 episode = await upsert_episode(
                     conn,
@@ -576,11 +619,22 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         payload=payload,
                         privacy=Privacy.NORMAL,
                         layer=Layer.ACTIVITY,
+                        confidence=confidence,
+                        evidence_refs=evidence_refs,
                     ),
                 )
                 # Write owner row into episode_entities join table (bu-4c1ks).
                 ep_id = episode.id if episode is not None else None
                 await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+                # Link each GPS fix into the canonical evidence chain.
+                if ep_id is not None:
+                    for event_id in seg_event_ids:
+                        await link_event_to_episode(
+                            conn,
+                            episode_id=ep_id,
+                            event_id=event_id,
+                            relation=LinkRelation.EVIDENCE,
+                        )
             episodes_upserted += 1
 
             # The last segment may be open (continues into the next batch).

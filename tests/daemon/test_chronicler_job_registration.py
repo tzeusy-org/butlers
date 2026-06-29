@@ -16,6 +16,7 @@ _CHRONICLER_JOBS = (
     "chronicler_project_calendar",
     "chronicler_project_owntracks",
     "chronicler_project_steam",
+    "chronicler_project_exercise_inferred",
 )
 
 

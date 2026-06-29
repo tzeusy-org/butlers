@@ -47,6 +47,7 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.confidence import EvidenceKind, derive_confidence
 from butlers.chronicler.models import Episode, Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import (
     get_carryover,
@@ -353,6 +354,12 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
             if val is not None:
                 payload[field] = val
 
+        # Confidence: a ``sleep_session`` fact is a single strong canonical
+        # signal (an explicit, sensor-derived session boundary), so it lifts the
+        # episode to ``medium``. Duration / efficiency / stages are all derived
+        # from the same wearable session, so they are not independent kinds.
+        confidence = derive_confidence([EvidenceKind(name="sleep_session", strong=True)])
+
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
                 conn,
@@ -367,6 +374,7 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
                     payload=payload,
                     privacy=Privacy.SENSITIVE,
                     layer=Layer.ACTIVITY,
+                    confidence=confidence,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).
@@ -657,12 +665,20 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
             val = metadata.get(field_name)
             if val is not None:
                 payload[field_name] = val
-        privacy = (
-            Privacy.SENSITIVE
-            if payload.get("average_heart_rate") is not None
+        has_heart_rate = (
+            payload.get("average_heart_rate") is not None
             or payload.get("max_heart_rate") is not None
-            else Privacy.NORMAL
         )
+        privacy = Privacy.SENSITIVE if has_heart_rate else Privacy.NORMAL
+
+        # Confidence: the ``workout_session`` fact is a strong canonical signal
+        # (an explicit, user-or-device-declared workout) → ``medium`` on its own.
+        # When the same fact also carries heart-rate telemetry, that is a second
+        # independent evidence kind, lifting the episode to ``high``.
+        evidence_kinds = [EvidenceKind(name="workout_session", strong=True)]
+        if has_heart_rate:
+            evidence_kinds.append(EvidenceKind(name="heart_rate"))
+        confidence = derive_confidence(evidence_kinds)
 
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
@@ -678,6 +694,7 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
                     payload=payload,
                     privacy=privacy,
                     layer=Layer.ACTIVITY,
+                    confidence=confidence,
                 ),
             )
             # Write owner row into episode_entities join table (bu-4c1ks).

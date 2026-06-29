@@ -11,6 +11,7 @@ import asyncpg
 from butlers.chronicler.adapters import (
     CalendarCompletedAdapter,
     CoreSessionsAdapter,
+    ExerciseInferredAdapter,
     FocusInferredAdapter,
     GoogleHealthHeartRateAdapter,
     GoogleHealthSleepAdapter,
@@ -345,10 +346,25 @@ async def run_project_reading_inferred(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_exercise_inferred(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Derive exercise_episode candidates from HR+GPS corroboration."""
+    options = _parse_job_args(
+        "chronicler_project_exercise_inferred",
+        job_args,
+        supported_fields=("batch_limit", "elevated_hr_bpm"),
+    )
+    adapter = ExerciseInferredAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
     "run_project_calendar",
+    "run_project_exercise_inferred",
     "run_project_focus_inferred",
     "run_project_google_health_heart_rate",
     "run_project_google_health_sleep",

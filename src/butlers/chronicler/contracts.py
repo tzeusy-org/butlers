@@ -167,6 +167,19 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
+    # Inferred exercise from independent HR+GPS corroboration (bu-1sj3zn).
+    # Emits exercise_episode candidates over movement windows that carry an
+    # elevated heart rate and are NOT already covered by an explicit workout.
+    SourceAdapterState(
+        source_name="chronicler.exercise_inferred",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="chronicler.episodes (movement) + chronicler.point_events (heart_rate)",
+        boundary_semantics=(
+            "exercise_episode per movement window with elevated HR and no "
+            "overlapping workout_episode; reuses the movement (start_at, end_at)"
+        ),
+        optional_schema=False,
+    ),
     # Explicitly not time-bearing.
     SourceAdapterState(
         source_name="core.session_process_logs",
