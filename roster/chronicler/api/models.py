@@ -27,6 +27,13 @@ class CategoryBucket(BaseModel):
     episodes are counted; intent (calendar) and evidence rows never appear."""
     total_seconds: float
     episode_count: int
+    low_confidence_seconds: float = 0.0
+    """Of ``total_seconds``, how much is contributed by ``confidence='low'``
+    activity episodes — the share the dashboard flags as needing confirmation.
+    Computed as the union of the lane's low-confidence intervals, so it never
+    exceeds ``total_seconds``."""
+    low_confidence_episode_count: int = 0
+    """Count of contributing episodes whose ``confidence='low'``."""
     source_breakdown: list[SourceBreakdownEntry] = Field(default_factory=list)
     precision: str
     """Least-precise precision value across contributing rows."""
@@ -329,10 +336,90 @@ class ChroniclesBriefing(BaseModel):
     no episodes exist. Bounds backward archive navigation."""
 
 
+# ── Activity evidence chain (IEA, tasks.md S9a) ────────────────────────────
+
+
+class EvidenceChainLink(BaseModel):
+    """One corroborating signal backing an activity, resolved from the canonical
+    ``episode_event_links`` chain to its underlying point-event.
+
+    Lets a client answer "why is this activity counted?" by listing each linked
+    evidence point-event with its source and a human-readable descriptor.
+    """
+
+    event_id: str
+    source_name: str
+    event_type: str
+    occurred_at: datetime
+    relation: str
+    """How the point-event relates to the activity (``supports``,
+    ``boundary_start``, ``boundary_end``, ``evidence``)."""
+    descriptor: str
+    """Human-readable label — the event title when present, else a
+    ``"{source_name} {event_type}"`` fallback."""
+    privacy: str
+
+
+class ActivityEvidenceChain(BaseModel):
+    """Response envelope for GET /api/chronicler/episodes/{id}/evidence-chain."""
+
+    episode_id: str
+    layer: str
+    """The episode's IEA layer. Only ``activity`` rows carry a meaningful chain;
+    ``intent``/``evidence`` rows return whatever links they happen to have."""
+    confidence: str
+    """The activity's derived confidence (``high``/``medium``/``low``)."""
+    evidence_refs: list[str] = Field(default_factory=list)
+    """Denormalized point-event id list from ``episodes.evidence_refs``."""
+    links: list[EvidenceChainLink] = Field(default_factory=list)
+    """Resolved evidence links, ordered by point-event ``occurred_at`` ASC."""
+
+
+# ── Low-confidence correction prompts (IEA, tasks.md S9a) ──────────────────
+
+
+class CorrectionPrompt(BaseModel):
+    """One low-confidence activity surfaced for owner confirmation / relabel.
+
+    The write path reuses the existing corrections overlay: submit a correction
+    via ``POST /api/chronicler/episodes/{id}/corrections`` (which records a
+    non-destructive ``overrides`` row). Once an override exists the prompt drops
+    off the list (its ``corrected_at`` becomes non-NULL).
+    """
+
+    episode_id: str
+    source_name: str
+    episode_type: str
+    title: str | None = None
+    start_at: datetime
+    end_at: datetime | None = None
+    best_guess_lane: str | None = None
+    """The lane the activity is currently counted toward (``lane_for_activity``),
+    or null when its source/type maps to no lane."""
+    confidence: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_count: int = 0
+    """Number of corroborating evidence links — low here is why confidence is low."""
+
+
+class CorrectionPrompts(BaseModel):
+    """Response envelope for GET /api/chronicler/correction-prompts."""
+
+    start_at: datetime
+    end_at: datetime
+    tz: str
+    prompts: list[CorrectionPrompt] = Field(default_factory=list)
+    """Low-confidence activities, ordered by start_at ASC."""
+
+
 __all__ = [
+    "ActivityEvidenceChain",
     "AggregateByDayRow",
     "CategoryBucket",
     "CategoryBuckets",
+    "CorrectionPrompt",
+    "CorrectionPrompts",
+    "EvidenceChainLink",
     "ChroniclerEpisode",
     "ChroniclerOverride",
     "ChroniclerPointEvent",

@@ -13,10 +13,14 @@ from __future__ import annotations
 import importlib.util as _importlib_util
 from datetime import UTC, datetime, timedelta
 from pathlib import Path as _Path
+from unittest.mock import MagicMock
 from uuid import uuid4
 
+import httpx
 import pytest
 
+from butlers.api.app import create_app
+from butlers.api.db import DatabaseManager
 from butlers.chronicler.adapters.sessions import (
     EPISODE_TYPE_WORK,
     EVENT_TYPE_SESSION_COMPLETED,
@@ -1338,3 +1342,197 @@ async def test_upsert_point_event_entity_id_updates_on_replay(chronicler_pool) -
     second = await upsert_point_event(chronicler_pool, ev)
     assert second.id == first.id  # same row via ON CONFLICT
     assert second.entity_id == eid_2
+
+
+# ── IEA read API: evidence chain + correction prompts (S9a, bu-qld86v) ──────
+#
+# HTTP-driven integration tests for the read/correction surfaces that resolve
+# real joins/views (episode_event_links, v_episodes_corrected, the corrections
+# overlay).  Driven against the provisioned Postgres pool rather than a mocked
+# pool so the SQL — and the corrections-overlay write path — is exercised end to
+# end (see "Mocked-pool vs integration test gap").
+
+
+def _build_chronicler_api(pool) -> httpx.ASGITransport:
+    """Build a FastAPI app whose chronicler router is wired to ``pool``."""
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = pool
+    app = create_app(api_key="")
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+            break
+    else:  # pragma: no cover — defensive
+        raise AssertionError("chronicler router not registered on the app")
+    return httpx.ASGITransport(app=app)
+
+
+async def test_evidence_chain_resolves_links_and_confidence(chronicler_pool) -> None:
+    """GET /episodes/{id}/evidence-chain resolves the link chain + confidence."""
+    now = datetime.now(UTC)
+    ep = await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="core.sessions",
+            source_ref="evchain-ep",
+            episode_type="work",
+            start_at=now,
+            end_at=now + timedelta(minutes=30),
+            layer=Layer.ACTIVITY,
+            confidence=Confidence.LOW,
+        ),
+    )
+    ev_early = await upsert_point_event(
+        chronicler_pool,
+        PointEvent(
+            source_name="core.sessions",
+            source_ref="evchain-early",
+            event_type=EVENT_TYPE_SESSION_STARTED,
+            occurred_at=now,
+            title="session started",
+        ),
+    )
+    ev_late = await upsert_point_event(
+        chronicler_pool,
+        PointEvent(
+            source_name="core.sessions",
+            source_ref="evchain-late",
+            event_type=EVENT_TYPE_SESSION_COMPLETED,
+            occurred_at=now + timedelta(minutes=30),
+        ),
+    )
+    assert ep.id and ev_early.id and ev_late.id
+    await link_event_to_episode(
+        chronicler_pool,
+        episode_id=ep.id,
+        event_id=ev_early.id,
+        relation=LinkRelation.BOUNDARY_START,
+    )
+    await link_event_to_episode(
+        chronicler_pool,
+        episode_id=ep.id,
+        event_id=ev_late.id,
+        relation=LinkRelation.BOUNDARY_END,
+    )
+    await refresh_episode_evidence_refs(chronicler_pool, ep.id)
+
+    transport = _build_chronicler_api(chronicler_pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/chronicler/episodes/{ep.id}/evidence-chain")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["episode_id"] == str(ep.id)
+    assert body["layer"] == "activity"
+    assert body["confidence"] == "low"
+    # evidence_refs denormalized + occurrence-ordered.
+    assert body["evidence_refs"] == [str(ev_early.id), str(ev_late.id)]
+    # Links resolve to the underlying point-events with source + descriptor.
+    assert [link["event_id"] for link in body["links"]] == [str(ev_early.id), str(ev_late.id)]
+    first = body["links"][0]
+    assert first["source_name"] == "core.sessions"
+    assert first["relation"] == "boundary_start"
+    assert first["descriptor"] == "session started"  # event title
+    # Event with no title falls back to "{source_name} {event_type}".
+    last = body["links"][1]
+    assert last["descriptor"] == f"core.sessions {EVENT_TYPE_SESSION_COMPLETED}"
+
+
+async def test_evidence_chain_404_for_unknown_episode(chronicler_pool) -> None:
+    transport = _build_chronicler_api(chronicler_pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/chronicler/episodes/{uuid4()}/evidence-chain")
+    assert resp.status_code == 404
+
+
+async def test_correction_prompts_read_then_overlay_write_resolves(chronicler_pool) -> None:
+    """Low-confidence activities surface as prompts; an overlay write clears them.
+
+    The write path reuses the EXISTING corrections overlay endpoint
+    (POST /episodes/{id}/corrections), which records an ``overrides`` row; once
+    present the episode's ``corrected_at`` is non-NULL and it drops off the list.
+    """
+    now = datetime.now(UTC)
+    window_start = (now - timedelta(hours=1)).isoformat()
+    window_end = (now + timedelta(hours=2)).isoformat()
+
+    # Low-confidence activity → a prompt.
+    ep_low = await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="core.sessions",
+            source_ref="prompt-low",
+            episode_type="work",
+            start_at=now,
+            end_at=now + timedelta(minutes=20),
+            title="ambiguous block",
+            layer=Layer.ACTIVITY,
+            confidence=Confidence.LOW,
+        ),
+    )
+    # High-confidence activity → never a prompt.
+    await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="core.sessions",
+            source_ref="prompt-high",
+            episode_type="work",
+            start_at=now,
+            end_at=now + timedelta(minutes=20),
+            layer=Layer.ACTIVITY,
+            confidence=Confidence.HIGH,
+        ),
+    )
+    # Low-confidence but intent layer (calendar) → excluded by the layer filter.
+    await upsert_episode(
+        chronicler_pool,
+        Episode(
+            source_name="google_calendar.completed",
+            source_ref="prompt-intent",
+            episode_type="scheduled_block",
+            start_at=now,
+            end_at=now + timedelta(minutes=20),
+            layer=Layer.INTENT,
+            confidence=Confidence.LOW,
+        ),
+    )
+    assert ep_low.id
+
+    transport = _build_chronicler_api(chronicler_pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/chronicler/correction-prompts",
+            params={"start_at": window_start, "end_at": window_end},
+        )
+        assert resp.status_code == 200, resp.text
+        prompts = resp.json()["data"]["prompts"]
+        assert [p["episode_id"] for p in prompts] == [str(ep_low.id)]
+        only = prompts[0]
+        assert only["confidence"] == "low"
+        assert only["best_guess_lane"] == "work"
+        assert only["title"] == "ambiguous block"
+
+        # Write a correction through the EXISTING corrections overlay endpoint.
+        write = await client.post(
+            f"/api/chronicler/episodes/{ep_low.id}/corrections",
+            json={"note": "confirmed: this was focused work", "submitted_by": "user"},
+        )
+        assert write.status_code == 201, write.text
+
+        # The prompt is now addressed (corrected_at set) and drops off the list.
+        resp2 = await client.get(
+            "/api/chronicler/correction-prompts",
+            params={"start_at": window_start, "end_at": window_end},
+        )
+        assert resp2.status_code == 200, resp2.text
+        assert resp2.json()["data"]["prompts"] == []
+
+
+async def test_correction_prompts_param_validation(chronicler_pool) -> None:
+    transport = _build_chronicler_api(chronicler_pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/chronicler/correction-prompts",
+            params={"end_at": datetime.now(UTC).isoformat()},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "missing_parameter"

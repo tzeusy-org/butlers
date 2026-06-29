@@ -74,6 +74,7 @@ def _make_episode_row(
     retention_days: int | None = None,
     tombstone_at: datetime | None = None,
     layer: str = "activity",
+    confidence: str = "high",
 ) -> dict[str, Any]:
     return {
         "source_name": source_name,
@@ -86,6 +87,7 @@ def _make_episode_row(
         "retention_days": retention_days,
         "tombstone_at": tombstone_at,
         "layer": layer,
+        "confidence": confidence,
     }
 
 
@@ -746,6 +748,70 @@ async def test_by_category_response_envelope_fields():
     assert isinstance(data["buckets"], list)
 
 
+async def test_by_category_per_lane_low_confidence_breakdown():
+    """Each lane bucket reports how much of its time is low-confidence (S9a §9.1).
+
+    The Work lane gets one high-confidence 2h block and one low-confidence 1h
+    block (both fold into Work).  ``total_seconds`` covers all 3h; the
+    ``low_confidence_*`` fields surface only the 1h low-confidence slice so the
+    dashboard can flag it.
+    """
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        # High-confidence work block (2h, distinct window).
+        _make_episode_row(
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=2),
+            confidence="high",
+        ),
+        # Low-confidence work block (1h, non-overlapping so union == sum).
+        _make_episode_row(
+            start_at=day_start + timedelta(hours=3),
+            end_at=day_start + timedelta(hours=4),
+            confidence="low",
+        ),
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    buckets = resp.json()["data"]["buckets"]
+    work = next(b for b in buckets if b["category"] == "work")
+    assert work["total_seconds"] == pytest.approx(3 * 3600.0)
+    assert work["episode_count"] == 2
+    assert work["low_confidence_seconds"] == pytest.approx(3600.0)
+    assert work["low_confidence_episode_count"] == 1
+
+
+async def test_by_category_low_confidence_zero_when_all_high():
+    """A lane with no low-confidence rows reports a zero low-confidence slice."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
+            confidence="high",
+        ),
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    work = next(b for b in resp.json()["data"]["buckets"] if b["category"] == "work")
+    assert work["low_confidence_seconds"] == pytest.approx(0.0)
+    assert work["low_confidence_episode_count"] == 0
+
+
 # ---------------------------------------------------------------------------
 # OTel span tests
 # ---------------------------------------------------------------------------
@@ -819,6 +885,7 @@ def _make_otel_row(
     retention_days: int | None = None,
     tombstone_at: datetime | None = None,
     layer: str = "activity",
+    confidence: str = "high",
 ) -> dict[str, Any]:
     if end_at is None:
         end_at = _T1
@@ -833,6 +900,7 @@ def _make_otel_row(
         "retention_days": retention_days,
         "tombstone_at": tombstone_at,
         "layer": layer,
+        "confidence": confidence,
     }
 
 

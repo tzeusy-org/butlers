@@ -76,6 +76,10 @@ if _spec is not None and _spec.loader is not None:
     ChroniclesLaneHours = _models.ChroniclesLaneHours
     ChroniclesRecentDay = _models.ChroniclesRecentDay
     ChroniclesStreaks = _models.ChroniclesStreaks
+    EvidenceChainLink = _models.EvidenceChainLink
+    ActivityEvidenceChain = _models.ActivityEvidenceChain
+    CorrectionPrompt = _models.CorrectionPrompt
+    CorrectionPrompts = _models.CorrectionPrompts
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -1219,6 +1223,7 @@ async def aggregate_by_category(
                 retention_days,
                 tombstone_at,
                 layer,
+                confidence,
                 payload->>'trigger_source' AS trigger_source
             FROM v_episodes_corrected
             {where}
@@ -1243,6 +1248,8 @@ async def aggregate_by_category(
         cat_src: dict[tuple[str, str], dict[str, Any]] = defaultdict(
             lambda: {
                 "intervals": [],
+                "low_intervals": [],
+                "low_episode_count": 0,
                 "episode_count": 0,
                 "tombstoned": False,
                 "precision_values": [],
@@ -1260,6 +1267,7 @@ async def aggregate_by_category(
             is_tombstoned: bool = row["tombstone_at"] is not None
             row_trigger_source: str | None = row["trigger_source"]
             ep_layer: str = row["layer"]
+            ep_confidence: str = row["confidence"]
 
             # Only activity-layer episodes count; intent (calendar) and evidence
             # rows resolve to None and are dropped (the "calendar = 5h" fix).
@@ -1292,6 +1300,12 @@ async def aggregate_by_category(
             bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
             bucket["precision_values"].append(precision)
             bucket["retention_days_values"].append(retention_days)
+            # Track the low-confidence share separately so the dashboard can flag
+            # how much of a lane still needs owner confirmation. Collected as its
+            # own interval set and unioned, so it never exceeds the lane total.
+            if ep_confidence == "low":
+                bucket["low_intervals"].append((overlap_start, overlap_end))
+                bucket["low_episode_count"] += 1
 
         # Roll up per-(category, source) to per-category buckets. Intervals are
         # unioned at both levels: per-source for the breakdown, and across all
@@ -1299,6 +1313,8 @@ async def aggregate_by_category(
         cat_buckets: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
                 "intervals": [],
+                "low_intervals": [],
+                "low_episode_count": 0,
                 "episode_count": 0,
                 "source_breakdown": [],
                 "precision_values": [],
@@ -1309,6 +1325,8 @@ async def aggregate_by_category(
         for (ep_lane, source_name), src_data in cat_src.items():
             bucket = cat_buckets[ep_lane]
             bucket["intervals"].extend(src_data["intervals"])
+            bucket["low_intervals"].extend(src_data["low_intervals"])
+            bucket["low_episode_count"] += src_data["low_episode_count"]
             bucket["episode_count"] += src_data["episode_count"]
             bucket["precision_values"].extend(src_data["precision_values"])
             bucket["retention_days_values"].extend(src_data["retention_days_values"])
@@ -1330,6 +1348,8 @@ async def aggregate_by_category(
                     category=ep_lane,
                     total_seconds=union_seconds(data["intervals"]),
                     episode_count=data["episode_count"],
+                    low_confidence_seconds=union_seconds(data["low_intervals"]),
+                    low_confidence_episode_count=data["low_episode_count"],
                     source_breakdown=data["source_breakdown"],
                     precision=_least_precise(data["precision_values"]),
                     retention_floor_days=min(non_null_retentions) if non_null_retentions else None,
@@ -2294,3 +2314,214 @@ async def get_kpi(
     pool = _pool(db)
     payload = await compose_briefing_payload(pool, target, tz_name)
     return ApiResponse(data=_kpi_to_pydantic(payload.kpi))
+
+
+# ── Evidence chain + low-confidence correction prompts (IEA, tasks.md S9a) ──
+
+
+def _coerce_ref_list(value: Any) -> list[str]:
+    """Coerce a jsonb ``evidence_refs`` column into a list of strings.
+
+    Mirrors ``storage._coerce_ref_list``: the jsonb codec usually decodes to a
+    Python list already, but this guards NULL, a raw JSON string, and non-list
+    payloads defensively.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+        value = loaded
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return [str(value)]
+
+
+# ── GET /api/chronicler/episodes/{id}/evidence-chain ──────────────────────
+
+
+@router.get(
+    "/episodes/{episode_id}/evidence-chain",
+    response_model=ActivityEvidenceChain,
+)
+async def get_evidence_chain(
+    episode_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ActivityEvidenceChain:
+    """Return the evidence chain backing an activity — "why is this counted?".
+
+    Resolves the canonical ``episode_event_links`` chain to the underlying
+    point-events (via ``v_point_events_corrected`` so corrections are honoured)
+    and returns each with its source name, relation, and a human-readable
+    descriptor, alongside the activity's layer, confidence, and the denormalized
+    ``evidence_refs`` convenience list.
+
+    Returns 404 if the episode does not exist.
+    """
+    pool = _pool(db)
+
+    ep_row = await pool.fetchrow(
+        """
+        SELECT id, layer, confidence, evidence_refs
+        FROM v_episodes_corrected
+        WHERE id = $1 AND tombstone_at IS NULL
+        """,
+        episode_id,
+    )
+    if ep_row is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    link_rows = await pool.fetch(
+        """
+        SELECT v.id, v.source_name, v.event_type, v.occurred_at, v.title,
+               v.privacy, l.relation
+        FROM episode_event_links l
+        JOIN v_point_events_corrected v ON v.id = l.event_id
+        WHERE l.episode_id = $1
+        ORDER BY v.occurred_at ASC, v.id ASC
+        """,
+        episode_id,
+    )
+
+    links = [
+        EvidenceChainLink(
+            event_id=str(r["id"]),
+            source_name=r["source_name"],
+            event_type=r["event_type"],
+            occurred_at=r["occurred_at"],
+            relation=r["relation"],
+            descriptor=r["title"] or f"{r['source_name']} {r['event_type']}",
+            privacy=r["privacy"],
+        )
+        for r in link_rows
+    ]
+
+    return ActivityEvidenceChain(
+        episode_id=str(episode_id),
+        layer=ep_row["layer"],
+        confidence=ep_row["confidence"],
+        evidence_refs=_coerce_ref_list(ep_row["evidence_refs"]),
+        links=links,
+    )
+
+
+# ── GET /api/chronicler/correction-prompts ────────────────────────────────
+
+
+@router.get("/correction-prompts", response_model=ApiResponse[CorrectionPrompts])
+async def list_correction_prompts(
+    start_at: datetime | None = Query(None, description="Inclusive window start (UTC or tz-aware)"),
+    end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
+    tz: str = Query("UTC", description="IANA timezone for display purposes"),
+    limit: int = Query(100, ge=1, le=500),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CorrectionPrompts]:
+    """Surface the window's low-confidence activities as correction prompts.
+
+    Returns ``activity``-layer episodes with ``confidence='low'`` that overlap
+    the window and have NOT yet been addressed via the corrections overlay
+    (``corrected_at IS NULL``). Each prompt carries the activity's best-guess
+    lane and its evidence so the owner can confirm or relabel it.
+
+    The write path reuses the EXISTING corrections overlay — submit a correction
+    via ``POST /api/chronicler/episodes/{id}/corrections``; the resulting
+    ``overrides`` row sets ``corrected_at`` and the prompt drops off this list.
+    No new corrections mechanism is introduced.
+
+    Restricted episodes are excluded; tombstoned episodes are excluded.
+    """
+    if start_at is None or end_at is None:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="missing_parameter",
+                    message="start_at and end_at are required",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    if end_at <= start_at:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_time_range",
+                    message="end_at must be strictly after start_at",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    try:
+        zoneinfo.ZoneInfo(tz)
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError):
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_timezone",
+                    message=f"Unrecognized IANA timezone: {tz!r}",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    pool = _pool(db)
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            id, source_name, episode_type, title, start_at, end_at,
+            confidence, evidence_refs,
+            payload->>'trigger_source' AS trigger_source
+        FROM v_episodes_corrected
+        WHERE layer = 'activity'
+          AND confidence = 'low'
+          AND corrected_at IS NULL
+          AND tombstone_at IS NULL
+          AND privacy IN ('normal', 'sensitive')
+          AND start_at < $2
+          AND (end_at IS NULL OR end_at > $1)
+        ORDER BY start_at ASC, id ASC
+        LIMIT $3
+        """,
+        start_at,
+        end_at,
+        limit,
+    )
+
+    prompts: list[CorrectionPrompt] = []
+    for r in rows:
+        refs = _coerce_ref_list(r["evidence_refs"])
+        prompts.append(
+            CorrectionPrompt(
+                episode_id=str(r["id"]),
+                source_name=r["source_name"],
+                episode_type=r["episode_type"],
+                title=r["title"],
+                start_at=r["start_at"],
+                end_at=r["end_at"],
+                best_guess_lane=lane_for_activity(
+                    "activity",
+                    r["source_name"],
+                    r["episode_type"],
+                    trigger_source=r["trigger_source"],
+                ),
+                confidence=r["confidence"],
+                evidence_refs=refs,
+                evidence_count=len(refs),
+            )
+        )
+
+    return ApiResponse[CorrectionPrompts](
+        data=CorrectionPrompts(
+            start_at=start_at,
+            end_at=end_at,
+            tz=tz,
+            prompts=prompts,
+        )
+    )
