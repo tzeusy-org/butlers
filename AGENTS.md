@@ -220,7 +220,7 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 - The subscription_audit function in `roster/finance/tools/overview.py` implements batched query optimization for fetching subscription charge dates: use single LEFT JOIN with GROUP BY instead of per-subscription queries. This pattern should be replicated for any overview/analytics tool that needs to correlate multiple parent entities with their most recent related transactions or events. The key is `COALESCE(MAX(CASE WHEN condition THEN field END), fallback)` to handle entities with no related rows.
 
 ### Compose base-image invalidation contract
-- `scripts/compose.sh` rebuilds `butlers-base:latest` when the `butlers.base.dockerfile_sha` image label differs from the current `Dockerfile.base` SHA; app-image rebuilds alone are not enough to pick up base-layer tool additions like `gh`.
+- `scripts/compose.sh` rebuilds `butlers-base:latest` when the `butlers.base.dockerfile_sha` image label differs from the current `Dockerfile.base` SHA; pinned runtime CLI bumps must happen in `Dockerfile.base` (not live npm `latest` checks), and app-image rebuilds alone are not enough to pick up base-layer tool additions like `gh`.
 
 ### Owner entity bootstrap conflict contract
 - `_ensure_owner_entity` in `src/butlers/daemon.py` must first resolve an existing owner via `WHERE 'owner' = ANY(roles)` before attempting insert, and the insert must use `ON CONFLICT DO NOTHING` (no explicit conflict target) so the partial unique index `shared.ix_entities_owner_singleton` cannot raise `UniqueViolationError` during startup.
