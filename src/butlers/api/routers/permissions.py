@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
+from butlers.api.routers.webhooks import dispatch_event
 from butlers.api.security import validate_no_secrets
 from butlers.core.permissions import ENFORCED_PERMISSIONS, PERMISSION_DEFAULT_GRANTED
 
@@ -196,6 +197,11 @@ async def set_permission(
     )
 
     await audit.append(pool, "owner", "permission.set", target=f"{butler}.{perm}", note=body.reason)
+    dispatch_event(
+        pool,
+        "permission.set",
+        {"target": f"{butler}.{perm}", "granted": body.granted},
+    )
 
     return ApiResponse(
         data=PermissionSetResponse(

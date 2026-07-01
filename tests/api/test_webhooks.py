@@ -1,4 +1,4 @@
-"""Tests for webhook CRUD API.
+"""Tests for webhook CRUD API and production dispatch.
 
 Covers:
 - GET /api/webhooks returns list from DB.
@@ -8,6 +8,13 @@ Covers:
 - 503 when switchboard pool unavailable.
 - Signing uses the plaintext secret (decrypt then HMAC).
 - Missing WEBHOOK_SECRET_KEY causes encrypt to fail loudly.
+- dispatch_event: fires only subscribed webhooks.
+- dispatch_event: matches "*" catch-all subscriptions.
+- dispatch_event: skips webhooks with empty events list.
+- dispatch_event: records last_delivery_at / last_delivery_ok on success.
+- dispatch_event: records last_delivery_ok=False on exhausted retries.
+- dispatch_event: tolerates fetch errors without propagating.
+- Wiring: create_webhook spawns dispatch_event task for webhook.create.
 """
 
 from __future__ import annotations
@@ -504,3 +511,203 @@ async def test_list_webhooks_503_when_no_switchboard(app):
         resp = await client.get("/api/webhooks")
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Production dispatch: _dispatch_event_impl / dispatch_event
+# ---------------------------------------------------------------------------
+
+
+def _make_dispatch_row(
+    *,
+    wh_id: str | None = None,
+    endpoint: str = "https://example.com/hook",
+    events: list[str] | None = None,
+    secret_encrypted: bytes | None = None,
+    retry_policy: dict | None = None,
+) -> MagicMock:
+    """Build a mock asyncpg row for the dispatch SELECT query."""
+    row = MagicMock()
+    data = {
+        "id": uuid.UUID(wh_id or _WH_ID),
+        "endpoint": endpoint,
+        "events": json.dumps(events if events is not None else ["permission.set"]),
+        "secret_encrypted": secret_encrypted,
+        "retry_policy": json.dumps(retry_policy or {"max_attempts": 1, "backoff_seconds": 0}),
+    }
+    row.__getitem__ = MagicMock(side_effect=lambda k, _d=data: _d[k])
+    return row
+
+
+async def test_dispatch_event_fires_subscribed_webhook():
+    """dispatch_event delivers to webhooks subscribed to the event."""
+    from butlers.api.routers.webhooks import WebhookTestResult, _dispatch_event_impl
+
+    pool = AsyncMock()
+    row = _make_dispatch_row(events=["permission.set"])
+    pool.fetch = AsyncMock(return_value=[row])
+    pool.execute = AsyncMock()
+
+    ok_result = WebhookTestResult(
+        webhook_id=uuid.UUID(_WH_ID), status_code=200, latency_ms=5.0, ok=True
+    )
+
+    with patch(
+        "butlers.api.routers.webhooks._dispatch_webhook",
+        new_callable=AsyncMock,
+        return_value=ok_result,
+    ):
+        await _dispatch_event_impl(pool, "permission.set", {"target": "general.notify"})
+
+    pool.execute.assert_called_once()
+    call_args = pool.execute.call_args[0]
+    assert "last_delivery_at" in call_args[0]
+    assert call_args[1] is True  # ok=True
+
+
+async def test_dispatch_event_skips_unsubscribed_webhook():
+    """dispatch_event does not deliver to webhooks not subscribed to the event."""
+    from butlers.api.routers.webhooks import _dispatch_event_impl
+
+    pool = AsyncMock()
+    row = _make_dispatch_row(events=["data.export"])  # not permission.set
+    pool.fetch = AsyncMock(return_value=[row])
+    pool.execute = AsyncMock()
+
+    with patch("butlers.api.routers.webhooks._dispatch_webhook", new_callable=AsyncMock) as mock_d:
+        await _dispatch_event_impl(pool, "permission.set", {})
+
+    mock_d.assert_not_called()
+    pool.execute.assert_not_called()
+
+
+async def test_dispatch_event_catchall_wildcard():
+    """dispatch_event delivers to webhooks subscribed to '*' for any event."""
+    from butlers.api.routers.webhooks import WebhookTestResult, _dispatch_event_impl
+
+    pool = AsyncMock()
+    row = _make_dispatch_row(events=["*"])
+    pool.fetch = AsyncMock(return_value=[row])
+    pool.execute = AsyncMock()
+
+    ok_result = WebhookTestResult(
+        webhook_id=uuid.UUID(_WH_ID), status_code=200, latency_ms=5.0, ok=True
+    )
+
+    with patch(
+        "butlers.api.routers.webhooks._dispatch_webhook",
+        new_callable=AsyncMock,
+        return_value=ok_result,
+    ):
+        await _dispatch_event_impl(pool, "any.event", {})
+
+    pool.execute.assert_called_once()
+
+
+async def test_dispatch_event_skips_empty_events_list():
+    """dispatch_event does not deliver to webhooks with an empty events list."""
+    from butlers.api.routers.webhooks import _dispatch_event_impl
+
+    pool = AsyncMock()
+    row = _make_dispatch_row(events=[])
+    pool.fetch = AsyncMock(return_value=[row])
+    pool.execute = AsyncMock()
+
+    with patch("butlers.api.routers.webhooks._dispatch_webhook", new_callable=AsyncMock) as mock_d:
+        await _dispatch_event_impl(pool, "permission.set", {})
+
+    mock_d.assert_not_called()
+    pool.execute.assert_not_called()
+
+
+async def test_dispatch_event_records_failure_on_exhaustion():
+    """dispatch_event records last_delivery_ok=False when all retries fail."""
+    from butlers.api.routers.webhooks import WebhookTestResult, _dispatch_event_impl
+
+    pool = AsyncMock()
+    row = _make_dispatch_row(events=["permission.set"])
+    pool.fetch = AsyncMock(return_value=[row])
+    pool.execute = AsyncMock()
+
+    fail_result = WebhookTestResult(
+        webhook_id=uuid.UUID(_WH_ID),
+        status_code=500,
+        latency_ms=10.0,
+        ok=False,
+        error="HTTP 500",
+    )
+
+    with patch(
+        "butlers.api.routers.webhooks._dispatch_webhook",
+        new_callable=AsyncMock,
+        return_value=fail_result,
+    ):
+        await _dispatch_event_impl(pool, "permission.set", {})
+
+    pool.execute.assert_called_once()
+    call_args = pool.execute.call_args[0]
+    assert "last_delivery_ok" in call_args[0]
+    assert call_args[1] is False  # ok=False → exhausted
+
+
+async def test_dispatch_event_tolerates_fetch_error():
+    """dispatch_event does not propagate errors when fetching webhook rows fails."""
+    from butlers.api.routers.webhooks import _dispatch_event_impl
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("DB gone"))
+
+    # Must not raise
+    await _dispatch_event_impl(pool, "permission.set", {})
+
+
+async def test_dispatch_event_returns_task():
+    """dispatch_event returns an asyncio.Task (fire-and-forget)."""
+    import asyncio
+
+    from butlers.api.routers.webhooks import dispatch_event
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    task = dispatch_event(pool, "permission.set", {})
+    assert isinstance(task, asyncio.Task)
+    await task  # drain so no dangling tasks
+
+
+async def test_create_webhook_dispatches_webhook_create_event(app, monkeypatch):
+    """POST /api/webhooks spawns a dispatch_event task for webhook.create."""
+    monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
+
+    def _fetchrow(*args, **kwargs):
+        prefix = args[6]
+        return _make_record(_make_webhook_record({"secret_prefix": prefix}))
+
+    pool = _make_pool()
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    dispatched_events: list[str] = []
+
+    async def _noop():
+        pass
+
+    def fake_dispatch(p, event_name, payload=None):
+        dispatched_events.append(event_name)
+        import asyncio
+
+        return asyncio.ensure_future(_noop())
+
+    with (
+        patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock),
+        patch("butlers.api.routers.webhooks.dispatch_event", side_effect=fake_dispatch),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/webhooks",
+                json={"endpoint": "https://example.com/hook", "events": ["permission.set"]},
+            )
+
+    assert resp.status_code == 201
+    assert "webhook.create" in dispatched_events

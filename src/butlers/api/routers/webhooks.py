@@ -1,6 +1,7 @@
 """Webhook management endpoints.
 
-Provides full CRUD over ``public.webhooks`` plus a test-fire endpoint:
+Provides full CRUD over ``public.webhooks`` plus a test-fire endpoint and
+production event dispatch:
 
 * ``GET    /api/webhooks``           — list all webhook registrations.
 * ``POST   /api/webhooks``           — create a new registration.
@@ -8,6 +9,20 @@ Provides full CRUD over ``public.webhooks`` plus a test-fire endpoint:
 * ``PUT    /api/webhooks/{id}``      — update a registration.
 * ``DELETE /api/webhooks/{id}``      — delete a registration.
 * ``POST   /api/webhooks/{id}/test`` — synthesize a test event, dispatch, return result.
+
+Production dispatch
+-------------------
+:func:`dispatch_event` is the production entry-point.  Domain-event routers
+(permissions, data-ops, webhook CRUD) call it after each mutation.  It fetches
+all enabled webhooks whose ``events`` list contains the event name (or ``"*"``
+for catch-all subscriptions), fires each one via :func:`_dispatch_webhook` with
+full retry, and records the outcome on ``last_delivery_at`` /
+``last_delivery_ok`` so the Settings Console aggregator can surface a
+``kind="webhook_failure"`` attention item without mixing test results with real
+delivery failures.
+
+The call is fire-and-forget (an ``asyncio.Task`` is created) so domain
+endpoints are never blocked by webhook delivery.
 
 Payload signing
 ---------------
@@ -48,6 +63,11 @@ from butlers.core.crypto import aes_gcm
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
+
+#: Strong reference set that keeps background dispatch tasks alive until they
+#: complete.  Without this, CPython's GC may collect a task before the event
+#: loop finishes executing it.
+_background_tasks: set[asyncio.Task] = set()
 
 _DEFAULT_RETRY_POLICY = {"max_attempts": 3, "backoff_seconds": 2}
 _TEST_TIMEOUT_SECONDS = 10
@@ -273,6 +293,142 @@ async def _dispatch_webhook(
 
 
 # ---------------------------------------------------------------------------
+# Production event dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _dispatch_event_impl(
+    pool: object,
+    event_name: str,
+    payload: dict,
+) -> None:
+    """Deliver *event_name* to all matching enabled webhooks and record outcomes.
+
+    A webhook row matches when its ``events`` list contains *event_name* or the
+    literal string ``"*"`` (catch-all).  An empty ``events`` list does NOT match
+    -- the webhook must opt in to at least one event.
+
+    For each matching webhook the delivery is attempted via
+    :func:`_dispatch_webhook` (with full retry per ``retry_policy``).  The
+    outcome is written back to ``last_delivery_at`` / ``last_delivery_ok`` so
+    the Settings Console aggregator can surface a ``kind="webhook_failure"``
+    attention item that derives from real delivery failures rather than test
+    results.
+
+    Failures are logged at WARNING level but never propagate -- this is
+    fire-and-forget from the caller's perspective.
+    """
+    try:
+        rows = await pool.fetch(
+            "SELECT id, endpoint, secret_encrypted, retry_policy, events "
+            "FROM public.webhooks WHERE enabled = true"
+        )
+    except Exception as exc:
+        logger.warning("dispatch_event: failed to fetch webhook rows: %s", exc)
+        return
+
+    for row in rows:
+        try:
+            evts = row["events"]
+            if isinstance(evts, str):
+                evts = json.loads(evts)
+            if not isinstance(evts, list):
+                evts = []
+            if not evts:
+                # Empty subscription list: opt-out by default.
+                continue
+            if event_name not in evts and "*" not in evts:
+                continue
+
+            rp_raw = row["retry_policy"]
+            if isinstance(rp_raw, str):
+                rp_raw = json.loads(rp_raw)
+            if not isinstance(rp_raw, dict):
+                rp_raw = {}
+            retry_policy = RetryPolicy(
+                max_attempts=rp_raw.get("max_attempts", 3),
+                backoff_seconds=rp_raw.get("backoff_seconds", 2),
+            )
+
+            wh_id = row["id"]
+            delivery_payload = {"event": event_name, "webhook_id": str(wh_id), **payload}
+
+            try:
+                result = await _dispatch_webhook(
+                    endpoint=row["endpoint"],
+                    payload=delivery_payload,
+                    secret_encrypted=row["secret_encrypted"],
+                    retry_policy=retry_policy,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dispatch_event: unhandled error delivering %s to %s: %s",
+                    event_name,
+                    wh_id,
+                    exc,
+                )
+                ok = False
+            else:
+                ok = result.ok
+                if not ok:
+                    logger.warning(
+                        "dispatch_event: webhook %s exhausted retries for event %s: %s",
+                        wh_id,
+                        event_name,
+                        result.error,
+                    )
+
+            try:
+                await pool.execute(
+                    "UPDATE public.webhooks "
+                    "SET last_delivery_at = now(), last_delivery_ok = $1 "
+                    "WHERE id = $2::uuid",
+                    ok,
+                    str(wh_id),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dispatch_event: failed to record delivery outcome for %s: %s", wh_id, exc
+                )
+        except Exception as exc:
+            logger.warning("dispatch_event: failed to process webhook row: %s", exc)
+
+
+def dispatch_event(
+    pool: object,
+    event_name: str,
+    payload: dict | None = None,
+) -> asyncio.Task:
+    """Schedule production webhook dispatch for *event_name* as a background task.
+
+    Creates an ``asyncio.Task`` that delivers the event to all enabled,
+    subscribed webhooks.  Returns the task so callers can optionally await it
+    in tests; in production it is fire-and-forget.
+
+    Parameters
+    ----------
+    pool:
+        An asyncpg connection pool (e.g. ``db.pool("switchboard")``).
+    event_name:
+        Domain event name, e.g. ``"permission.set"`` or ``"data.export"``.
+    payload:
+        Optional extra fields merged into the webhook JSON body alongside
+        ``event`` and ``webhook_id``.  Use for event-specific context such as
+        ``{"target": "butler.perm", "granted": True}``.
+
+    Returns
+    -------
+    asyncio.Task
+        The background task.  Callers in production code should not await it;
+        tests may await it to drive the delivery synchronously.
+    """
+    task = asyncio.create_task(_dispatch_event_impl(pool, event_name, payload or {}))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+# ---------------------------------------------------------------------------
 # GET /api/webhooks
 # ---------------------------------------------------------------------------
 
@@ -340,6 +496,7 @@ async def create_webhook(
     )
 
     await audit.append(pool, "owner", "webhook.create", target=str(row_id))
+    dispatch_event(pool, "webhook.create", {"target": row_id})
 
     base = _row_to_model(row)
     return ApiResponse(data=WebhookWithSecret(**base.model_dump(), secret=secret))
@@ -445,6 +602,7 @@ async def update_webhook(
     )
 
     await audit.append(pool, "owner", "webhook.update", target=str(webhook_id))
+    dispatch_event(pool, "webhook.update", {"target": str(webhook_id)})
 
     base = _row_to_model(row)
     return ApiResponse(data=WebhookWithSecret(**base.model_dump(), secret=generated_secret))
@@ -483,6 +641,7 @@ async def delete_webhook(
         raise HTTPException(status_code=404, detail=f"Webhook {webhook_id} not found")
 
     await audit.append(pool, "owner", "webhook.delete", target=str(webhook_id))
+    dispatch_event(pool, "webhook.delete", {"target": str(webhook_id)})
 
     return ApiResponse(data=WebhookDeleteResponse(deleted=True, id=webhook_id))
 

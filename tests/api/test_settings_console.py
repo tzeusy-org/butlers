@@ -427,3 +427,72 @@ async def test_settings_stream_auth_accepted_with_correct_key(monkeypatch):
         with client.websocket_connect("/api/settings/stream?api_key=correct-key") as ws:
             msg = ws.receive_json()
             assert msg["type"] == "snapshot"
+
+
+# ---------------------------------------------------------------------------
+# _check_failed_webhooks: queries last_delivery_ok (production deliveries)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_failed_webhooks_returns_empty_when_no_failures():
+    """_check_failed_webhooks returns [] when all production deliveries succeeded."""
+    from butlers.api.routers.settings_console import _check_failed_webhooks
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=0)
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = pool
+
+    items = await _check_failed_webhooks(db)
+
+    assert items == []
+    # Verify the query targets last_delivery_ok, not last_test_ok.
+    call_sql = pool.fetchval.call_args[0][0]
+    assert "last_delivery_ok" in call_sql, "Should query last_delivery_ok not last_test_ok"
+    assert "last_test_ok" not in call_sql, "Must not query test state for production alert"
+
+
+@pytest.mark.asyncio
+async def test_check_failed_webhooks_returns_attention_item_on_exhaustion():
+    """_check_failed_webhooks returns an amber webhook_failure item when deliveries failed."""
+    from butlers.api.routers.settings_console import _check_failed_webhooks
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=2)
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = pool
+
+    items = await _check_failed_webhooks(db)
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.kind == "webhook_failure"
+    assert item.tone == "amber"
+    assert "2" in item.text
+    assert item.action_route == "/settings/permissions"
+
+
+@pytest.mark.asyncio
+async def test_check_failed_webhooks_returns_empty_when_no_db():
+    """_check_failed_webhooks returns [] without querying when db is None."""
+    from butlers.api.routers.settings_console import _check_failed_webhooks
+
+    items = await _check_failed_webhooks(None)
+
+    assert items == []
+
+
+@pytest.mark.asyncio
+async def test_check_failed_webhooks_swallows_db_errors():
+    """_check_failed_webhooks returns [] on DB error rather than raising."""
+    from butlers.api.routers.settings_console import _check_failed_webhooks
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(side_effect=RuntimeError("DB gone"))
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = pool
+
+    items = await _check_failed_webhooks(db)
+
+    assert items == []

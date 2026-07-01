@@ -11,6 +11,7 @@ Covers:
 - audit.append is called on successful mutation.
 - PUT returns 422 + {"error": "reason_contains_credential"} when reason matches a credential pattern.
 - No state change and no audit row when reason_contains_credential fires.
+- dispatch_event is called for permission.set on successful mutation.
 """
 
 from __future__ import annotations
@@ -416,11 +417,14 @@ async def test_put_permission_clean_reason_still_succeeds(app):
     with patch(
         "butlers.api.routers.permissions.audit.append", new_callable=AsyncMock
     ) as mock_audit:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.put(
-                "/api/permissions/chronicler/spawn",
-                json={"granted": True, "reason": "Granting access for automated scheduling"},
-            )
+        with patch("butlers.api.routers.permissions.dispatch_event") as mock_dispatch:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(
+                    "/api/permissions/chronicler/spawn",
+                    json={"granted": True, "reason": "Granting access for automated scheduling"},
+                )
 
     assert resp.status_code == 200
     pool.execute.assert_called_once()
@@ -428,3 +432,42 @@ async def test_put_permission_clean_reason_still_succeeds(app):
         c for c in mock_audit.call_args_list if len(c.args) >= 3 and c.args[2] == "permission.set"
     ]
     assert len(route_calls) == 1
+    # Production dispatch must be triggered for permission.set.
+    mock_dispatch.assert_called_once()
+    dispatch_call = mock_dispatch.call_args
+    assert dispatch_call[0][1] == "permission.set"
+
+
+async def test_put_permission_dispatches_event_on_success(app):
+    """PUT /api/permissions calls dispatch_event with permission.set on success."""
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    dispatched: list[tuple] = []
+
+    async def _noop():
+        pass
+
+    def fake_dispatch(p, event_name, payload=None):
+        dispatched.append((event_name, payload or {}))
+        import asyncio
+
+        return asyncio.ensure_future(_noop())
+
+    with (
+        patch("butlers.api.routers.permissions.audit.append", new_callable=AsyncMock),
+        patch("butlers.api.routers.permissions.dispatch_event", side_effect=fake_dispatch),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/permissions/general/notify",
+                json={"granted": True, "reason": "enabling notify"},
+            )
+
+    assert resp.status_code == 200
+    assert len(dispatched) == 1
+    event_name, payload = dispatched[0]
+    assert event_name == "permission.set"
+    assert payload.get("target") == "general.notify"
+    assert payload.get("granted") is True

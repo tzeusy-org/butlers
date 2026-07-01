@@ -346,7 +346,11 @@ async def _check_model_errors(db: DatabaseManager | None) -> list[AttentionItem]
 
 
 async def _check_failed_webhooks(db: DatabaseManager | None) -> list[AttentionItem]:
-    """Return attention item if there are failed webhook deliveries in the last 24h.
+    """Return attention item if production webhook deliveries exhausted in the last 24h.
+
+    Queries ``last_delivery_ok`` (set by the production dispatch path) rather
+    than ``last_test_ok`` (set only by the test-fire endpoint) so the attention
+    item derives from real delivery failures, not operator-initiated tests.
 
     Never raises.
     """
@@ -361,7 +365,7 @@ async def _check_failed_webhooks(db: DatabaseManager | None) -> list[AttentionIt
         count = await asyncio.wait_for(
             pool.fetchval(
                 "SELECT COUNT(*) FROM public.webhooks "
-                "WHERE last_test_ok = false AND last_test_at >= $1",
+                "WHERE last_delivery_ok = false AND last_delivery_at >= $1",
                 cutoff,
             ),
             timeout=_QUERY_TIMEOUT_S,

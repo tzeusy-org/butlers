@@ -92,6 +92,7 @@ from pydantic import BaseModel
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
+from butlers.api.routers.webhooks import dispatch_event
 
 logger = logging.getLogger(__name__)
 
@@ -395,10 +396,12 @@ async def export_data(
         f"?scope={body.scope}&issued_at={issued_at}&token={token}"
     )
 
-    # Audit — best effort; skip gracefully when pool or table is unavailable.
+    # Audit + production webhook dispatch — best effort; skip gracefully when
+    # pool or table is unavailable.
     try:
         pool = db.pool("switchboard")
         await audit.append(pool, "owner", "data.export", note=body.scope)
+        dispatch_event(pool, "data.export", {"scope": body.scope})
     except KeyError:
         logger.warning("audit.append skipped for data.export: switchboard pool unavailable")
     except audit.AuditTableNotAvailableError:
