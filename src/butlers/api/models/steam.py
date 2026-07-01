@@ -346,3 +346,159 @@ class SteamGamePlaytimeHistory(BaseModel):
 
     queried_at: datetime
     """Timestamp when this data was queried from the database."""
+
+
+# ---------------------------------------------------------------------------
+# Connector configuration models
+# ---------------------------------------------------------------------------
+
+
+class SteamPollIntervals(BaseModel):
+    """Per-data-type poll interval overrides (seconds).
+
+    Omitted fields retain their connector defaults. All values must be positive
+    integers (> 0).
+    """
+
+    recently_played: int | None = Field(
+        default=None,
+        gt=0,
+        description="How often to poll recently-played games (seconds). Default: 300.",
+    )
+    online_status: int | None = Field(
+        default=None,
+        gt=0,
+        description="How often to poll online/presence status (seconds). Default: 300.",
+    )
+    achievements: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "How often to poll achievements for tracked games (seconds). Default: 900. "
+            "Achievement polling is currently disabled by default; enable via the "
+            "connector config if desired."
+        ),
+    )
+    friends: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "How often to poll the friends list (seconds). Default: 3600. "
+            "Friends polling is currently disabled by default."
+        ),
+    )
+    game_library: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "How often to poll the owned game library (seconds). Default: 86400. "
+            "Game library polling is currently disabled by default."
+        ),
+    )
+
+
+class SteamConnectorConfigResponse(BaseModel):
+    """Response for GET /api/steam/connector/config.
+
+    Shows the effective connector configuration: the dashboard-stored value
+    when set, otherwise the compiled-in default. The connector picks up changes
+    on its next rescan cycle (no restart required).
+    """
+
+    account_rescan_s: int
+    """How often the connector re-scans steam_accounts for new/revoked accounts (seconds)."""
+
+    heartbeat_interval_s: int
+    """How often the connector sends a liveness heartbeat (seconds)."""
+
+    max_tracked_games: int
+    """Maximum number of games tracked for achievement polling per account."""
+
+    poll_intervals: SteamPollIntervals
+    """Per-data-type poll intervals (effective values, merging dashboard + defaults)."""
+
+    source: str
+    """Where effective values came from: 'dashboard' when any dashboard setting is active,
+    'defaults' when all values are the connector defaults."""
+
+
+class SteamConnectorConfigUpdateRequest(BaseModel):
+    """Request body for PATCH /api/steam/connector/config.
+
+    All fields are optional; only supplied fields are updated. Values are
+    shallow-merged with the existing configuration store.
+    """
+
+    account_rescan_s: int | None = Field(
+        default=None,
+        gt=0,
+        le=86400,
+        description="Account re-scan interval in seconds (1 – 86400).",
+    )
+    heartbeat_interval_s: int | None = Field(
+        default=None,
+        gt=0,
+        le=3600,
+        description="Heartbeat interval in seconds (1 – 3600).",
+    )
+    max_tracked_games: int | None = Field(
+        default=None,
+        gt=0,
+        le=100,
+        description="Maximum tracked games for achievement polling per account (1 – 100).",
+    )
+    poll_intervals: SteamPollIntervals | None = Field(
+        default=None,
+        description="Per-data-type poll interval overrides (seconds).",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-account configuration override models
+# ---------------------------------------------------------------------------
+
+
+class SteamAccountConfigOverrides(BaseModel):
+    """Per-account configuration overrides stored in steam_accounts.metadata.
+
+    Only supplied fields are applied; unset fields inherit global connector
+    settings. Overrides take effect on the connector's next rescan cycle.
+    """
+
+    poll_intervals: SteamPollIntervals | None = Field(
+        default=None,
+        description="Per-data-type poll interval overrides for this account.",
+    )
+    max_tracked_games: int | None = Field(
+        default=None,
+        gt=0,
+        le=100,
+        description="Override max tracked games for achievement polling for this account.",
+    )
+
+
+class SteamAccountConfigResponse(BaseModel):
+    """Response for GET /api/steam/accounts/{id}/config.
+
+    Shows the per-account configuration overrides stored in the account's
+    metadata column, plus the account ID for reference.
+    """
+
+    account_id: uuid.UUID
+    """UUID of the steam_accounts row."""
+
+    steam_id: int
+    """Steam 64-bit account ID."""
+
+    overrides: SteamAccountConfigOverrides
+    """Current per-account configuration overrides (may be empty if none set)."""
+
+
+class SteamAccountConfigUpdateResponse(BaseModel):
+    """Response for PATCH /api/steam/accounts/{id}/config."""
+
+    success: bool = True
+    message: str
+    account_id: uuid.UUID
+    steam_id: int
+    overrides: SteamAccountConfigOverrides

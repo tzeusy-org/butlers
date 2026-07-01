@@ -1543,6 +1543,10 @@ class SteamConnector:
             endpoint_identity="steam:multi",
         )
 
+        # Effective poll intervals — start from compiled-in defaults; refreshed from
+        # connector_registry.settings on each rescan cycle.
+        self._effective_poll_intervals: dict[str, int] = dict(_DEFAULT_INTERVALS)
+
         # Active pollers: endpoint_identity → SteamAccountPoller
         self._pollers: dict[str, SteamAccountPoller] = {}
         self._poller_states: dict[str, AccountPollerState] = {}
@@ -1567,6 +1571,9 @@ class SteamConnector:
         self._running = True
 
         await wait_for_switchboard_ready(self._switchboard_mcp_url)
+
+        # Load settings from config store before first account discovery.
+        await self._load_config_from_store()
 
         # Initial account discovery
         await self._discover_accounts()
@@ -1662,8 +1669,8 @@ class SteamConnector:
             if endpoint_identity in self._pollers:
                 continue  # Already polling
 
-            # Build per-account intervals from metadata overrides
-            intervals: dict[str, int] = dict(_DEFAULT_INTERVALS)
+            # Build per-account intervals from effective global intervals + metadata overrides
+            intervals: dict[str, int] = dict(self._effective_poll_intervals)
             overrides = metadata.get("poll_intervals", {})
             for dt_key, val in overrides.items():
                 if dt_key in intervals and isinstance(val, int) and val > 0:
@@ -1722,6 +1729,58 @@ class SteamConnector:
         # Purge cursors for accounts revoked more than 30 days ago.
         await purge_revoked_cursors(self._db_pool)
 
+    async def _load_config_from_store(self) -> None:
+        """Read connector settings from switchboard.connector_registry.settings.
+
+        Updates ``_account_rescan_s``, ``_heartbeat_interval_s``, and
+        ``_max_tracked_games`` from the dashboard-stored values (if any).
+        Falls back to compiled-in defaults for missing keys.
+
+        This is called on each rescan cycle so settings take effect without a
+        connector restart.
+        """
+        _CONFIG_ENDPOINT = "steam:config"
+        try:
+            from butlers.connectors.cursor_store import load_connector_settings
+
+            settings = await load_connector_settings(self._db_pool, "steam", _CONFIG_ENDPOINT)
+        except Exception:
+            logger.debug("Failed to load Steam connector settings from store (non-fatal)")
+            return
+
+        if not settings:
+            return
+
+        if "account_rescan_s" in settings:
+            val = settings["account_rescan_s"]
+            if isinstance(val, int) and val > 0:
+                self._account_rescan_s = val
+
+        if "heartbeat_interval_s" in settings:
+            val = settings["heartbeat_interval_s"]
+            if isinstance(val, int) and val > 0:
+                self._heartbeat_interval_s = val
+
+        if "max_tracked_games" in settings:
+            val = settings["max_tracked_games"]
+            if isinstance(val, int) and val > 0:
+                self._max_tracked_games = val
+
+        # Update effective poll intervals used for new account pollers.
+        pi_val = settings.get("poll_intervals")
+        pi: dict = pi_val if isinstance(pi_val, dict) else {}
+        if pi:
+            for dt_key in list(_DEFAULT_INTERVALS):
+                if dt_key in pi and isinstance(pi[dt_key], int) and pi[dt_key] > 0:
+                    self._effective_poll_intervals[dt_key] = pi[dt_key]
+
+        logger.debug(
+            "Steam connector config reloaded: rescan=%ds heartbeat=%ds max_tracked=%d",
+            self._account_rescan_s,
+            self._heartbeat_interval_s,
+            self._max_tracked_games,
+        )
+
     async def _rescan_loop(self) -> None:
         """Periodically re-discover accounts while running."""
         while not self._shutdown_event.is_set():
@@ -1731,6 +1790,8 @@ class SteamConnector:
             except TimeoutError:
                 pass  # rescan interval elapsed
 
+            # Reload settings from config store before discovering accounts.
+            await self._load_config_from_store()
             await self._discover_accounts()
 
     # ------------------------------------------------------------------

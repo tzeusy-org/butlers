@@ -107,6 +107,16 @@ WHERE connector_type = $1
   AND endpoint_identity = $2
 """
 
+_UPSERT_SETTINGS_SQL = """\
+INSERT INTO switchboard.connector_registry
+    (connector_type, endpoint_identity, settings)
+VALUES ($1, $2, $3::jsonb)
+ON CONFLICT (connector_type, endpoint_identity)
+DO UPDATE SET
+    settings = COALESCE(connector_registry.settings, '{}'::jsonb) || $3::jsonb
+RETURNING settings
+"""
+
 
 async def load_connector_settings(
     pool: asyncpg.Pool,
@@ -132,6 +142,38 @@ async def load_connector_settings(
     if isinstance(settings, str):
         settings = _json.loads(settings)
     return settings
+
+
+async def save_connector_settings(
+    pool: asyncpg.Pool,
+    connector_type: str,
+    endpoint_identity: str,
+    settings: dict,
+) -> dict:
+    """Shallow-merge ``settings`` into ``switchboard.connector_registry.settings``.
+
+    Upserts a row for (connector_type, endpoint_identity) if one does not exist,
+    then merges the provided ``settings`` dict at the top level (JSONB ``||``
+    operator — existing keys not present in ``settings`` are preserved).
+
+    Returns the merged settings dict after the update.
+    """
+    import json as _json
+
+    settings_json = _json.dumps(settings)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            _UPSERT_SETTINGS_SQL,
+            connector_type,
+            endpoint_identity,
+            settings_json,
+        )
+    if row is None or row["settings"] is None:
+        return {}
+    merged = row["settings"]
+    if isinstance(merged, str):
+        merged = _json.loads(merged)
+    return merged
 
 
 async def create_cursor_pool(

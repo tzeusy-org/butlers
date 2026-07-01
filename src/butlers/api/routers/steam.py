@@ -60,10 +60,15 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.models.steam import (
+    SteamAccountConfigOverrides,
+    SteamAccountConfigResponse,
+    SteamAccountConfigUpdateResponse,
     SteamAccountListResponse,
     SteamAccountResponse,
     SteamAccountStatusResponse,
     SteamConnectorAccountHealth,
+    SteamConnectorConfigResponse,
+    SteamConnectorConfigUpdateRequest,
     SteamConnectorDataTypeHealth,
     SteamConnectorHealthResponse,
     SteamConnectRequest,
@@ -74,6 +79,7 @@ from butlers.api.models.steam import (
     SteamGamePlaytimeHistory,
     SteamGamePlaytimeHistoryEntry,
     SteamPlaytimeAnalytics,
+    SteamPollIntervals,
     SteamSetPrimaryResponse,
 )
 from butlers.steam.client import SteamAPIClient, SteamAPIError, SteamRateLimitError
@@ -786,6 +792,353 @@ async def _probe_connector_account_health(steam_id: int) -> str | None:
             return acct.get("status")
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Connector config helpers
+# ---------------------------------------------------------------------------
+
+# Global sentinel identity used to store Steam connector settings in
+# switchboard.connector_registry.settings (distinct from per-account identities).
+_STEAM_CONFIG_ENDPOINT_IDENTITY = "steam:config"
+
+# Compiled-in defaults (mirrored from connectors/steam.py constants).
+_STEAM_DEFAULT_ACCOUNT_RESCAN_S = 300
+_STEAM_DEFAULT_HEARTBEAT_INTERVAL_S = 60
+_STEAM_DEFAULT_MAX_TRACKED_GAMES = 10
+_STEAM_DEFAULT_POLL_RECENTLY_PLAYED_S = 300
+_STEAM_DEFAULT_POLL_ONLINE_STATUS_S = 300
+_STEAM_DEFAULT_POLL_ACHIEVEMENTS_S = 900
+_STEAM_DEFAULT_POLL_FRIENDS_S = 3600
+_STEAM_DEFAULT_POLL_GAME_LIBRARY_S = 86400
+
+
+async def _get_switchboard_pool(db_manager: Any) -> Any | None:
+    """Resolve the switchboard asyncpg pool from a DatabaseManager.
+
+    Returns None when db_manager is None or the switchboard pool is unavailable.
+    """
+    if db_manager is None:
+        return None
+    try:
+        return db_manager.pool("switchboard")
+    except (KeyError, AttributeError, Exception):  # noqa: BLE001
+        logger.debug("Switchboard pool unavailable", exc_info=True)
+        return None
+
+
+def _settings_to_config_response(settings: dict | None) -> SteamConnectorConfigResponse:
+    """Build a SteamConnectorConfigResponse from a raw connector_registry.settings dict.
+
+    When settings is None (no dashboard overrides stored), returns the compiled-in defaults.
+    Effective values = dashboard setting when present, compiled-in default otherwise.
+    """
+    s: dict = settings or {}
+    pi_val = s.get("poll_intervals")
+    pi: dict = pi_val if isinstance(pi_val, dict) else {}
+
+    has_overrides = bool(s)
+
+    return SteamConnectorConfigResponse(
+        account_rescan_s=s.get("account_rescan_s", _STEAM_DEFAULT_ACCOUNT_RESCAN_S),
+        heartbeat_interval_s=s.get("heartbeat_interval_s", _STEAM_DEFAULT_HEARTBEAT_INTERVAL_S),
+        max_tracked_games=s.get("max_tracked_games", _STEAM_DEFAULT_MAX_TRACKED_GAMES),
+        poll_intervals=SteamPollIntervals(
+            recently_played=pi.get("recently_played"),
+            online_status=pi.get("online_status"),
+            achievements=pi.get("achievements"),
+            friends=pi.get("friends"),
+            game_library=pi.get("game_library"),
+        ),
+        source="dashboard" if has_overrides else "defaults",
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/steam/connector/config
+# ---------------------------------------------------------------------------
+
+
+@router.get("/connector/config", response_model=SteamConnectorConfigResponse)
+async def get_steam_connector_config(
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamConnectorConfigResponse:
+    """Return the current Steam connector configuration.
+
+    Shows effective values: the dashboard-stored value when set, otherwise the
+    compiled-in connector default. The connector re-reads these settings on its
+    next rescan cycle (no restart required).
+
+    Returns HTTP 503 when the connector registry is unavailable.
+    """
+    pool = await _get_switchboard_pool(db_manager)
+    if pool is None:
+        # Graceful degradation: return defaults when switchboard pool is not wired.
+        logger.debug("Switchboard pool unavailable — returning Steam config defaults")
+        return _settings_to_config_response(None)
+
+    try:
+        from butlers.connectors.cursor_store import load_connector_settings
+
+        settings = await load_connector_settings(pool, "steam", _STEAM_CONFIG_ENDPOINT_IDENTITY)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to read Steam connector config: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Failed to read Steam connector configuration from the registry. "
+                "Check the server logs and retry."
+            ),
+        ) from exc
+
+    return _settings_to_config_response(settings)
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/steam/connector/config
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/connector/config", response_model=SteamConnectorConfigResponse)
+async def update_steam_connector_config(
+    body: SteamConnectorConfigUpdateRequest,
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamConnectorConfigResponse:
+    """Update Steam connector configuration settings.
+
+    Supplied fields are shallow-merged with the existing configuration store.
+    Omitted fields are left unchanged. The connector picks up changes on its
+    next rescan cycle (no restart required).
+
+    Raises HTTP 503 when the connector registry is unavailable.
+    """
+    pool = await _get_switchboard_pool(db_manager)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Connector registry is unavailable. Ensure the Switchboard is running. "
+                "Cannot update Steam connector configuration."
+            ),
+        )
+
+    # Build the settings dict from the request body (omit None fields).
+    patch: dict[str, Any] = {}
+    if body.account_rescan_s is not None:
+        patch["account_rescan_s"] = body.account_rescan_s
+    if body.heartbeat_interval_s is not None:
+        patch["heartbeat_interval_s"] = body.heartbeat_interval_s
+    if body.max_tracked_games is not None:
+        patch["max_tracked_games"] = body.max_tracked_games
+    if body.poll_intervals is not None:
+        existing_pi: dict = {}
+        try:
+            from butlers.connectors.cursor_store import load_connector_settings
+
+            existing_settings = await load_connector_settings(
+                pool, "steam", _STEAM_CONFIG_ENDPOINT_IDENTITY
+            )
+            if existing_settings:
+                raw_pi = existing_settings.get("poll_intervals")
+                existing_pi = raw_pi if isinstance(raw_pi, dict) else {}
+        except Exception:  # noqa: BLE001
+            pass
+
+        pi_update = body.poll_intervals.model_dump(exclude_none=True)
+        merged_pi = {**existing_pi, **pi_update}
+        if merged_pi:
+            patch["poll_intervals"] = merged_pi
+
+    if not patch:
+        # Nothing to update; return current config.
+        return await get_steam_connector_config(db_manager=db_manager)
+
+    try:
+        from butlers.connectors.cursor_store import save_connector_settings
+
+        merged = await save_connector_settings(
+            pool, "steam", _STEAM_CONFIG_ENDPOINT_IDENTITY, patch
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to update Steam connector config: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Failed to update Steam connector configuration. Check the server logs and retry."
+            ),
+        ) from exc
+
+    logger.info(
+        "Steam connector config updated: keys=%s",
+        list(patch.keys()),
+    )
+    return _settings_to_config_response(merged)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/steam/accounts/{id}/config
+# ---------------------------------------------------------------------------
+
+
+@router.get("/accounts/{account_id}/config", response_model=SteamAccountConfigResponse)
+async def get_steam_account_config(
+    account_id: uuid.UUID,
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamAccountConfigResponse:
+    """Return per-account configuration overrides for a Steam account.
+
+    Reads the account's ``metadata`` JSONB column and returns any poll interval
+    or tracking overrides stored there. Returns an empty overrides object when
+    no per-account configuration has been set.
+
+    Raises HTTP 404 when the account ID is not found.
+    Raises HTTP 503 when the database is unavailable.
+    """
+    pool = _get_shared_pool(db_manager)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Database is unavailable. Ensure the database service is running. "
+                "Cannot retrieve Steam account configuration."
+            ),
+        )
+
+    try:
+        account = await resolve_steam_account(pool, account=account_id)
+    except SteamAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Steam account with id={account_id} was not found. "
+                "Verify the account ID via GET /api/steam/accounts."
+            ),
+        ) from exc
+
+    # Load metadata from the DB row directly (resolve_steam_account may not expose it).
+    async with pool.acquire() as conn:
+        meta_row = await conn.fetchrow(
+            "SELECT metadata FROM public.steam_accounts WHERE id = $1",
+            account_id,
+        )
+    metadata: dict[str, Any] = {}
+    if meta_row and meta_row["metadata"]:
+        raw = meta_row["metadata"]
+        if isinstance(raw, str):
+            import json as _json
+
+            metadata = _json.loads(raw)
+        else:
+            metadata = raw
+
+    pi_raw = metadata.get("poll_intervals")
+    pi_raw = pi_raw if isinstance(pi_raw, dict) else {}
+    overrides = SteamAccountConfigOverrides(
+        poll_intervals=SteamPollIntervals(**pi_raw) if pi_raw else None,
+        max_tracked_games=metadata.get("max_tracked_games"),
+    )
+
+    return SteamAccountConfigResponse(
+        account_id=account.id,
+        steam_id=account.steam_id,
+        overrides=overrides,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/steam/accounts/{id}/config
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/accounts/{account_id}/config", response_model=SteamAccountConfigUpdateResponse)
+async def update_steam_account_config(
+    account_id: uuid.UUID,
+    body: SteamAccountConfigOverrides,
+    db_manager: Any = Depends(_get_db_manager),
+) -> SteamAccountConfigUpdateResponse:
+    """Update per-account configuration overrides for a Steam account.
+
+    Writes poll interval and tracking overrides to the account's ``metadata``
+    JSONB column. The connector picks up changes on its next rescan cycle.
+
+    Raises HTTP 404 when the account ID is not found.
+    Raises HTTP 503 when the database is unavailable.
+    """
+    pool = _get_shared_pool(db_manager)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Database is unavailable. Ensure the database service is running. "
+                "Cannot update Steam account configuration."
+            ),
+        )
+
+    try:
+        account = await resolve_steam_account(pool, account=account_id)
+    except SteamAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Steam account with id={account_id} was not found. "
+                "Verify the account ID via GET /api/steam/accounts."
+            ),
+        ) from exc
+
+    # Build the metadata patch.
+    meta_patch: dict[str, Any] = {}
+    if body.poll_intervals is not None:
+        pi_dump = body.poll_intervals.model_dump(exclude_none=True)
+        if pi_dump:
+            meta_patch["poll_intervals"] = pi_dump
+    if body.max_tracked_games is not None:
+        meta_patch["max_tracked_games"] = body.max_tracked_games
+
+    # Merge into the existing metadata JSONB.
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE public.steam_accounts
+                SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+                WHERE id = $2
+                """,
+                __import__("json").dumps(meta_patch),
+                account_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to update Steam account config for id=%s: %s",
+            account_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to update Steam account configuration due to an internal error. "
+                "Check the server logs and retry."
+            ),
+        ) from exc
+
+    logger.info(
+        "Steam account config updated: id=%s keys=%s",
+        account_id,
+        list(meta_patch.keys()),
+    )
+
+    overrides = SteamAccountConfigOverrides(
+        poll_intervals=body.poll_intervals,
+        max_tracked_games=body.max_tracked_games,
+    )
+
+    return SteamAccountConfigUpdateResponse(
+        success=True,
+        message=f"Steam account '{account.display_name or account.steam_id}' configuration updated",
+        account_id=account.id,
+        steam_id=account.steam_id,
+        overrides=overrides,
+    )
 
 
 # ---------------------------------------------------------------------------
