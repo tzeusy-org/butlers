@@ -89,7 +89,10 @@ The QA Staffer SHALL ship with four discovery sources in v1.
 - **AND** extracts exception type, traceback, call site, and butler name from the session record
 - **AND** event summaries extracted from session records are passed through `anonymize()` before storage (session error messages may contain user data)
 - **AND** computes fingerprints using the same algorithm as log scanner findings
-- **AND** excludes only short (`<= 60s`) Switchboard mini-model classification timeout rows with `trigger_source = "tick"` as expected routing fallback telemetry; longer or non-`tick` Switchboard timeouts remain actionable
+- **AND** excludes rows that represent expected or controlled outcomes rather than product/runtime failures:
+  - short (`<= 60s`) Switchboard mini-model classification timeout rows with `trigger_source = "tick"` as expected routing fallback telemetry; longer or non-`tick` Switchboard timeouts remain actionable
+  - synthetic startup-recovery rows (`orphaned: daemon restart`)
+  - spawner guardrail terminations whose error text contains an intentional-stop marker (`token_budget_exceeded`, `tool_call_budget_exceeded`, `degenerate_tool_loop`) — the same markers the failover classifier treats as failover-ineligible; these remain visible in session history and the token ledger but do not spawn autonomous code-fix investigations
 
 #### Scenario: Butler report source (reactive relay via Switchboard)
 - **WHEN** the `butler_reports` source is enabled

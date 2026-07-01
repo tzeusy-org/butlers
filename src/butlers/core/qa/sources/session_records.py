@@ -65,6 +65,16 @@ _MAX_EVIDENCE_SESSION_IDS = 5
 #: Synthetic session errors written by startup recovery rather than runtime failures.
 _NON_ACTIONABLE_SESSION_ERRORS = frozenset({"orphaned: daemon restart"})
 
+# Spawner guardrails are intentional policy stops, not product crashes. The
+# spawner/failover classifier already treats these markers as failover-ineligible;
+# QA discovery should not turn the same controlled termination into an autonomous
+# code-fix investigation.
+_NON_ACTIONABLE_GUARDRAIL_MARKERS = (
+    "degenerate_tool_loop",
+    "tool_call_budget_exceeded",
+    "token_budget_exceeded",
+)
+
 # Switchboard classification sessions use trigger_source="tick" and a short
 # timeout cap before the pipeline falls back to General. Keep those expected
 # degradation rows out of autonomous QA dispatch; persistent routing quality
@@ -238,6 +248,8 @@ class SessionRecordsSource:
 
         if error_text in _NON_ACTIONABLE_SESSION_ERRORS:
             return None
+        if _is_guardrail_termination(error_text):
+            return None
         if _is_switchboard_classification_timeout(
             source_butler=source_butler,
             status=status,
@@ -316,6 +328,13 @@ def _status_to_exception_type(status: str, error_text: str | None) -> str:
         if match:
             return match.group(1)
     return "SessionError"
+
+
+def _is_guardrail_termination(error_text: str | None) -> bool:
+    if not error_text:
+        return False
+    error_lower = error_text.lower()
+    return any(marker in error_lower for marker in _NON_ACTIONABLE_GUARDRAIL_MARKERS)
 
 
 def _is_switchboard_classification_timeout(

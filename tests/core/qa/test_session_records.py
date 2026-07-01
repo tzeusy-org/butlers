@@ -230,6 +230,40 @@ async def test_orphaned_daemon_restart_rows_are_not_actionable_findings():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        (
+            "RuntimeError: token_budget_exceeded: session consumed 310,000 input tokens, "
+            "exceeding budget of 300,000 (+10,000 over)"
+        ),
+        "RuntimeError: tool_call_budget_exceeded: session made 51 tool calls",
+        "RuntimeError: degenerate_tool_loop: same tool call repeated",
+    ],
+)
+async def test_guardrail_termination_rows_are_not_actionable_findings(error: str):
+    """Spawner guardrail stops are controlled policy outcomes, not QA code-fix findings."""
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_asyncpg_record(
+                source_butler="relationship",
+                error=error,
+                status="error",
+                healing_fingerprint=None,
+            )
+        ]
+    )
+
+    findings = await SessionRecordsSource(pool=pool, repo_root=Path("/tmp")).discover(
+        lookback_minutes=15
+    )
+
+    assert findings == []
+
+
+@pytest.mark.asyncio
 async def test_switchboard_classification_timeout_rows_are_not_actionable_findings():
     """Switchboard classifier timeout rows already degrade through routing fallback."""
     pool = AsyncMock(spec=asyncpg.Pool)
