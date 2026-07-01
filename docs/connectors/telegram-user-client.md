@@ -217,6 +217,47 @@ Key metrics to monitor:
 - **Session expired:** Generate new session string, update owner entity_info, restart connector.
 - **Duplicate messages:** Normal during restarts (checkpoint replay), backfill, and retries. Switchboard handles deduplication.
 
+## Verification
+
+To confirm the Telegram user-client connector is operating as described:
+
+```bash
+# 1. Connector appears in the registry as a user-client (not a bot)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, state, last_heartbeat_at
+   FROM switchboard.connector_registry
+   WHERE connector_type='telegram_user_client';"
+# Expected: endpoint_identity is 'telegram:user:@<username>' (user, not bot);
+#           state=online; last_heartbeat_at < 2 minutes ago
+
+# 2. Per-chat buffers flush periodically (messages grouped by chat)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_thread_identity AS chat_id, COUNT(*) AS messages, MAX(received_at) AS last_seen
+   FROM switchboard.ingestion_events
+   WHERE source_channel='telegram' AND source_provider='telegram'
+     AND source_endpoint_identity LIKE 'telegram:user:%'
+   GROUP BY source_thread_identity
+   ORDER BY last_seen DESC LIMIT 10;"
+# Expected: messages grouped by chat_id; multiple messages per chat in single submissions
+#           (reflecting the per-chat buffer flush model rather than one-by-one ingestion)
+
+# 3. Discretion filter is active (some messages are intentionally NOT submitted)
+curl -s http://localhost:9090/api/v1/query?query=connector_user_client_discretion_ignored_total \
+  | python3 -m json.tool | grep value
+# Expected: non-zero counter for messages that failed the FORWARD/IGNORE filter
+
+# 4. Session continuity: checkpoint survives connector restart
+# Stop the connector, restart it, then verify it resumes from where it left off
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, cursor_value, updated_at
+   FROM switchboard.connector_registry WHERE connector_type='telegram_user_client';"
+# Expected: cursor_value is preserved across restarts; no messages skipped or double-processed
+
+# 5. Session expired detection is logged clearly
+grep -i "session.*expired\|FloodWait\|AuthKey" /var/log/butlers/telegram-user-client.log 2>/dev/null | tail -5
+# Expected: no session-expired errors in steady state; if present, remediation instructions are clear
+```
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)

@@ -203,6 +203,43 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 - `historyId` cursor is DB-backed via `cursor_store`.
 - Checkpoint advances only after ingest acceptance.
 
+## Verification
+
+To confirm the Gmail connector is operating as described:
+
+```bash
+# 1. Connector health endpoint reports healthy state
+curl -s http://localhost:40082/health | python3 -m json.tool
+# Expected: {"state": "healthy", ...} with per-account details; no "error" state
+
+# 2. historyId cursor is persisted and advances after new emails
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, cursor_value, updated_at
+   FROM switchboard.connector_registry
+   WHERE connector_type='gmail';"
+# Expected: cursor_value is a numeric Gmail historyId; updated_at advances as emails arrive
+
+# 3. Label filters are applied (SPAM and TRASH excluded by default)
+# Send a test message to the Gmail address, then verify it lands in ingestion_events
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_provider, source_endpoint_identity, received_at
+   FROM switchboard.ingestion_events
+   WHERE source_provider='gmail'
+   ORDER BY received_at DESC LIMIT 5;"
+# Expected: inbox emails appear; no rows with spam/trash labels
+
+# 4. Multi-account operation shows distinct endpoint identities
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity FROM switchboard.connector_registry
+   WHERE connector_type='gmail';"
+# Expected: one row per Gmail account being monitored (each with unique endpoint_identity)
+
+# 5. Tier assignment metric emits for ingested messages
+curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priority_tier_assigned_total" \
+  | python3 -m json.tool | grep -E "policy_tier|value"
+# Expected: non-zero counts for at least one tier (high_priority, interactive, or default)
+```
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)

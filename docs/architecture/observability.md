@@ -146,6 +146,40 @@ On startup, `ButlerMetrics.ensure_registered()` emits zero-value adds on key UpD
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | (unset) | OTLP HTTP base endpoint (e.g., `http://alloy:4318`). When unset, tracing and metrics are no-op. |
 | `ENV` | No | (unset) | Sets `deployment.environment` resource attribute for environment-scoped dashboards. |
 
+## Verification
+
+To confirm the OpenTelemetry integration described here is working correctly:
+
+```bash
+# 1. Traces reach Grafana Tempo when OTLP endpoint is configured
+# After triggering a butler session, search for butler traces in Tempo (port 3200)
+curl -s "http://localhost:3200/api/search?service.name=butlers&limit=5" | python3 -m json.tool | head -20
+# Expected: trace results appear within ~15 seconds of session completion;
+#           each result has a traceID and rootServiceName "butlers"
+
+# 2. OTLP no-op mode: butler still runs without errors when endpoint is unset
+OTEL_EXPORTER_OTLP_ENDPOINT="" butlers run --config roster/general &
+sleep 5 && kill %1
+# Expected: no "OTLP connection refused" errors; butler starts and stops cleanly
+
+# 3. Guard flag prevents duplicate provider installation
+# Start multiple butlers in the same process (via butlers up) and verify no warning about
+# duplicate TracerProvider installation appears in the log output
+butlers up 2>&1 | grep -i "duplicate\|provider.*already"
+# Expected: no such lines; single global provider serves all butlers
+
+# 4. Metrics reach Prometheus with butler label
+curl -s "http://localhost:9090/api/v1/label/butler/values" | python3 -m json.tool
+# Expected: all butler names (general, relationship, health, messenger, switchboard)
+#           appear as label values even before any activity (zero-value gauge registration)
+
+# 5. Trace context links daemon span to spawned LLM session
+# In Grafana Tempo, find a butler session trace and verify it has child spans
+# from tool calls made by the spawned Claude Code instance
+# Expected: a single trace ID spans both the butler daemon's session span
+#           and the tool-call spans inside the LLM runtime
+```
+
 ## Related Pages
 
 - [System Topology](system-topology.md) — where the observability pipeline fits

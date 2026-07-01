@@ -52,6 +52,50 @@ Implementation is phased: (A) schema -- add `attachment_refs` table and indexes;
 
 An extension point is defined for sender-specific HTML receipt extraction (e.g., Amazon, Uber) producing `structured_payload` (JSONB) alongside `normalized_text`. Concrete extractors are separate follow-up work.
 
+## Verification
+
+To confirm the attachment handling policy is enforced as specified:
+
+```bash
+# 1. ATTACHMENT_POLICY constants match the documented per-MIME size limits
+python3 - <<'EOF'
+from butlers.connectors.gmail import ATTACHMENT_POLICY
+for mime, policy in sorted(ATTACHMENT_POLICY.items()):
+    print(f"{mime}: max={policy['max_size_bytes']//1024//1024}MB fetch={policy['fetch_mode']}")
+EOF
+# Expected: jpeg/png/gif/webp at 5MB lazy, pdf at 15MB lazy,
+#           xlsx/xls/csv at 10MB lazy, docx/rfc822 at 10MB lazy,
+#           text/calendar at 1MB eager
+
+# 2. Attachment metrics emit after emails with attachments are processed
+curl -s "http://localhost:9090/api/v1/query?query=connector_attachment_type_distribution_total" \
+  | python3 -m json.tool | grep -E "media_type|value"
+# Expected: non-zero counts for MIME types seen in processed emails
+
+# 3. Oversized attachments are skipped and counted (not silently dropped)
+curl -s "http://localhost:9090/api/v1/query?query=connector_attachment_skipped_oversized_total" \
+  | python3 -m json.tool | grep value
+# Expected: counter exists; increments when attachments exceed per-type size limit
+
+# 4. Calendar .ics files are eagerly fetched (fetched=true in ingest payload)
+# After receiving a calendar invite email, check the attachment entry:
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT payload->'attachments' AS attachments FROM switchboard.ingestion_events
+   WHERE source_channel='email'
+   AND payload->'attachments' @> '[{\"media_type\": \"text/calendar\"}]'
+   ORDER BY received_at DESC LIMIT 1;" 2>/dev/null | python3 -m json.tool
+# Expected: attachment entry with fetched=true and non-null storage_ref
+
+# 5. Lazy fetch attachments have fetched=false until on-demand retrieval
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT payload->'attachments'->0->'fetched' AS fetched
+   FROM switchboard.ingestion_events
+   WHERE source_channel='email'
+   AND jsonb_array_length(payload->'attachments') > 0
+   ORDER BY received_at DESC LIMIT 3;" 2>/dev/null
+# Expected: false for non-calendar attachments; they are metadata-only until fetched on demand
+```
+
 ## Related Pages
 
 - [Gmail Connector](gmail.md) -- Gmail-specific ingestion details

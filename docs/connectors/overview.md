@@ -135,6 +135,46 @@ Connector authentication uses bearer tokens issued by the Switchboard. Token sco
 - [Gmail Ingestion Policy](gmail-ingestion-policy.md) -- Tiered email processing
 - [Metrics](metrics.md) -- Connector statistics and dashboard visibility
 
+## Verification
+
+To confirm connectors are operating within their defined responsibilities:
+
+```bash
+# 1. Active connectors appear in the registry with liveness state
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, state, last_heartbeat_at
+   FROM switchboard.connector_registry ORDER BY connector_type;"
+# Expected: each running connector (gmail, telegram_bot, etc.) shows state='online'
+#           with last_heartbeat_at within the last 2 minutes
+
+# 2. Cursor state is DB-backed (not file-based)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, cursor_value, updated_at
+   FROM switchboard.connector_registry ORDER BY updated_at DESC LIMIT 5;"
+# Expected: cursor_value is a non-null checkpoint (history ID, update_id, etc.)
+#           for each active connector; no file under /tmp or /var/lib/connectors
+
+# 3. Connectors never route directly to domain butlers (only to Switchboard)
+# Check ingestion_events source: all events should come through the ingest tool
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_provider, source_endpoint_identity, COUNT(*) as events
+   FROM switchboard.ingestion_events
+   WHERE received_at > NOW() - INTERVAL '1 hour'
+   GROUP BY source_provider, source_endpoint_identity;"
+# Expected: only known connector identities appear; no rows with source_provider='internal'
+#           from domain butlers bypassing the Switchboard
+
+# 4. Connector rate limiting is enforced (no 429 errors spike in metrics)
+curl -s "http://localhost:9090/api/v1/query?query=connector_errors_total{error_type='rate_limit'}" \
+  | python3 -m json.tool | grep value
+# Expected: zero or low count; spikes indicate rate limit misconfiguration
+
+# 5. Backpressure counter stays near zero under normal load
+curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_total{status='error'}" \
+  | python3 -m json.tool | grep value
+# Expected: error count is near zero; rising errors indicate Switchboard backpressure
+```
+
 ## Related Pages
 
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema

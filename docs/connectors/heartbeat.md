@@ -150,6 +150,39 @@ On receiving a heartbeat, the Switchboard:
 | `CONNECTOR_HEARTBEAT_INTERVAL_S` | No | 120 | Heartbeat interval (min: 30, max: 300) |
 | `CONNECTOR_HEARTBEAT_ENABLED` | No | true | Set to `false` for dev/testing only |
 
+## Verification
+
+To confirm the heartbeat protocol is functioning as specified:
+
+```bash
+# 1. Connectors appear in connector_registry after their first heartbeat
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, state,
+          NOW() - last_heartbeat_at AS heartbeat_age
+   FROM switchboard.connector_registry ORDER BY connector_type;"
+# Expected: all running connectors present; heartbeat_age < 2 minutes (online threshold)
+
+# 2. Liveness state transitions correctly (online/stale/offline)
+# Stop a connector and wait 3 minutes, then query liveness
+# Expected: state transitions from 'online' → 'stale' at 2 min → 'offline' at 4 min
+
+# 3. connector_heartbeat_log accumulates entries at ~2-minute intervals
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, received_at
+   FROM switchboard.connector_heartbeat_log
+   ORDER BY received_at DESC LIMIT 10;"
+# Expected: entries spaced ~120 seconds apart per connector; 7-day retention enforced
+
+# 4. Heartbeat acknowledgment includes server_time for clock-drift detection
+# (Observable via connector logs)
+grep "heartbeat.*server_time\|clock_drift" /var/log/butlers/gmail-connector.log 2>/dev/null | tail -5
+# Expected: server_time field present in acknowledgment; drift logged if > threshold
+
+# 5. Dashboard shows connector liveness derived from heartbeat recency
+curl -s http://localhost:41200/api/connectors | python3 -m json.tool | grep -E "state|last_heartbeat"
+# Expected: each connector shows state=online and a recent last_heartbeat_at timestamp
+```
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md) -- What connectors are and how they work

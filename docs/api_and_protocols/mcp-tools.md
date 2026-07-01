@@ -87,6 +87,60 @@ Modules declare dependencies by name. The framework performs a topological sort 
 
 Core tools (state store, scheduler) are registered by the daemon itself, not by modules. Module tools only add domain-specific capabilities. This separation means a butler with zero modules still has state management, scheduling, and spawner functionality.
 
+## Verification
+
+To confirm tool registration and the module lifecycle work as described:
+
+```bash
+# 1. List all registered MCP tools on a running butler
+python3 - <<'EOF'
+import asyncio, json
+from fastmcp import Client
+
+async def list_tools():
+    async with Client("http://localhost:41101/sse") as client:
+        tools = await client.list_tools()
+        for t in tools:
+            print(f"{t.name}: {t.description[:60] if t.description else '(no description)'}...")
+
+asyncio.run(list_tools())
+EOF
+# Expected: state_get, state_set, state_delete, state_list, trigger, status (core tools)
+#           plus module-specific tools (email_search, telegram_send_message, etc.)
+
+# 2. Module dependencies are resolved in topological order
+# Verify contacts module is loaded before email in a butler that has both
+butlers run --config roster/general 2>&1 | grep -E "module.*load|register_tools"
+# Expected: contacts (or its equivalent) appears before email in the load sequence
+
+# 3. Tool names follow the {domain}_{action} convention
+python3 - <<'EOF'
+import asyncio, re
+from fastmcp import Client
+
+async def check_names():
+    async with Client("http://localhost:41101/sse") as client:
+        tools = await client.list_tools()
+        bad = [t.name for t in tools if not re.match(r'^[a-z]+_[a-z_]+$', t.name)
+               and t.name not in ('status', 'trigger', 'tick', 'notify', 'remind', 'route.execute')]
+        print("Non-convention tools:", bad or "none")
+
+asyncio.run(check_names())
+EOF
+# Expected: "none" or a short list of legitimate exceptions (core tools like status/trigger)
+
+# 4. Session tool_calls column records tool invocations after a butler session
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT jsonb_array_length(tool_calls) AS tool_call_count, completed_at
+   FROM general.sessions WHERE tool_calls IS NOT NULL ORDER BY completed_at DESC LIMIT 3;"
+# Expected: non-null tool_calls with count > 0 for sessions that invoked tools
+
+# 5. Circular dependency detection fires on misconfigured modules
+# (Validate by checking module graph in tests rather than prod)
+uv run pytest tests/ -k "circular" -q --tb=short 2>&1 | tail -10
+# Expected: circular dependency test passes; error is caught at startup, not silently ignored
+```
+
 ## Related Pages
 
 - [Module System](../concepts/index.md) -- How modules work conceptually

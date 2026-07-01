@@ -116,6 +116,43 @@ Discovered from `roster/<name>/migrations/`. Individual butlers can define role-
 
 All chains are resolved and their version locations registered with Alembic so cross-chain revision references resolve correctly. Chains are upgraded in sequence: core first, then modules, then butler-specific. Each chain is upgraded to its head revision. Schema targeting ensures migrations create tables in the correct schema via the `butlers.target_schema` Alembic option.
 
+## Verification
+
+To confirm the database design described here matches the live schema:
+
+```bash
+# 1. Shared public tables exist with expected columns
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
+# Expected: contacts, contact_info, model_catalog, butler_model_overrides,
+#           token_limits, token_usage_ledger, provider_config present
+
+# 2. Per-butler schema isolation is enforced
+# The general butler should see its own tables but not the switchboard's
+psql -h localhost -U butlers -d butlers \
+  -c "SET search_path TO general,public; SELECT table_name FROM information_schema.tables WHERE table_schema='general';"
+# Expected: state, scheduled_tasks, sessions, session_process_logs — NO switchboard tables
+
+# 3. Core tables present in every butler schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT schemaname, tablename FROM pg_tables
+   WHERE tablename IN ('state','scheduled_tasks','sessions')
+   ORDER BY schemaname, tablename;"
+# Expected: each active butler schema (general, relationship, health, messenger, switchboard)
+#           has all three core tables
+
+# 4. JSONB value pattern works for state store
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, jsonb_typeof(value) AS value_type FROM general.state LIMIT 5;"
+# Expected: rows return without error; value_type is a valid JSONB type (object, string, etc.)
+
+# 5. Alembic migration chains are at head for all active butlers
+# Run alembic current to see the database's applied revision vs. head
+uv run alembic -c alembic.ini current
+# Expected: output lists the current applied revisions marked with "(head)"
+#           for each active chain; any chain not at "(head)" has pending migrations
+```
+
 ## Related Pages
 
 - [System Topology](system-topology.md) — how the database fits into the overall architecture

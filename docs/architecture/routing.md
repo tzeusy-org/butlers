@@ -105,6 +105,42 @@ Domain butlers never communicate with each other directly. All inter-butler comm
 - **Routed execution**: The Switchboard calls domain butlers via `route.execute`
 - **Registry participation**: Butlers register with the Switchboard on startup and send periodic liveness heartbeats
 
+## Verification
+
+To confirm the routing pipeline described here matches live system behavior:
+
+```bash
+# 1. Routing log captures all five routing stages for recent messages
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT request_id, source_channel, target_butler, contact_id, created_at
+   FROM switchboard.routing_log ORDER BY created_at DESC LIMIT 5;"
+# Expected: rows for recent messages; contact_id populated for known senders
+
+# 2. Ingestion events table shows accepted requests with UUID7 request_ids
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT request_id, source_channel, received_at, processing_state
+   FROM switchboard.ingestion_events ORDER BY received_at DESC LIMIT 5;"
+# Expected: request_ids look like UUIDv7 values (begin with recent timestamp-derived bits)
+
+# 3. Route inbox confirms durable envelope delivery to domain butlers
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT request_id, state, created_at, session_id
+   FROM general.route_inbox ORDER BY created_at DESC LIMIT 5;"
+# Expected: rows showing accepted → processing → processed state transitions
+
+# 4. Switchboard ingest metric tracks boundary outcomes
+curl -s "http://localhost:9090/api/v1/query?query=butlers_switchboard_ingest_result_total" \
+  | python3 -m json.tool | grep -E "source|outcome|value"
+# Expected: entries with outcome=accepted; any rejected or duplicate entries also visible
+
+# 5. Unknown-sender disambiguation notification fires for new senders
+# Send a message from an unknown Telegram account; the owner should receive a notification
+# Check the switchboard state for disambiguation tracking:
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, value FROM switchboard.state WHERE key LIKE '%disambiguation%';"
+# Expected: a state entry for the pending disambiguation with needs_disambiguation=true
+```
+
 ## Related Pages
 
 - [System Topology](system-topology.md) — service ports and inter-service communication

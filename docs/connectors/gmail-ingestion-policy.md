@@ -117,6 +117,43 @@ Connectors and Switchboard emit these counters:
 
 Recommended dimensions: `endpoint_identity`, `rule_id`, `reason`.
 
+## Verification
+
+To confirm the tiered ingestion policy is enforced as described:
+
+```bash
+# 1. Tier counters are emitted for each processed email
+curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_tier_1_ingested_total" \
+  | python3 -m json.tool | grep value
+curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_tier_2_metadata_total" \
+  | python3 -m json.tool | grep value
+curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_tier_3_skipped_total" \
+  | python3 -m json.tool | grep value
+# Expected: non-zero counts once emails have been processed;
+#           tier_3 grows when skipped senders are configured
+
+# 2. Tier 2 records land in email_metadata_refs, not ingestion_events
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT endpoint_identity, sender, subject, received_at
+   FROM switchboard.email_metadata_refs ORDER BY received_at DESC LIMIT 5;"
+# Expected: rows for newsletters/marketing emails; full body is NOT stored (payload.raw is null)
+
+# 3. Tier 2 bypasses LLM classification (no routing_log entry for these)
+# Tier 2 message IDs should NOT appear in routing_log
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT COUNT(*) FROM switchboard.routing_log rl
+   JOIN switchboard.email_metadata_refs mr ON rl.source_event_id = mr.gmail_message_id;"
+# Expected: 0 rows — tier 2 messages are never routed through the LLM classifier
+
+# 4. Default tier is Tier 1 (unknown senders get full processing)
+# Send an email from a new, unknown address with no matching triage rule
+# Expected: the email appears in ingestion_events with full payload; it goes through routing
+
+# 5. Dashboard filters page shows tier rule table
+curl -s "http://localhost:41200/api/switchboard/triage-rules" | python3 -m json.tool | grep action
+# Expected: metadata_only and skip actions appear for configured low-value senders/domains
+```
+
 ## Related Pages
 
 - [Gmail Connector](gmail.md) -- Connector runtime and configuration

@@ -112,6 +112,42 @@ Rule management is dashboard-first. The API surface includes:
 - `butlers.switchboard.triage.pass_through` (counter) — when no deterministic match occurs. Attributes: `source_channel`, `reason` (`no_match`, `cache_unavailable`, `rules_disabled`).
 - `butlers.switchboard.triage.evaluation_latency_ms` (histogram) — end-to-end triage evaluation latency. Attributes: `result` (`matched`, `pass_through`, `error`).
 
+## Verification
+
+To confirm the pre-classification triage layer is functioning as described:
+
+```bash
+# 1. Seed rules exist in the triage_rules table after Switchboard startup
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT priority, rule_type, action, created_by, enabled
+   FROM switchboard.triage_rules
+   WHERE created_by='seed'
+   ORDER BY priority;"
+# Expected: seed rules from the table above appear (finance, travel, newsletter rules)
+
+# 2. Triage match counter increments after processing email
+curl -s "http://localhost:9090/api/v1/query?query=butlers_switchboard_triage_rule_matched_total" \
+  | python3 -m json.tool | grep -E "rule_type|action|value"
+# Expected: counter entries for matched rules; action values match the rule table
+
+# 3. Pass-through counter distinguishes no-match from cache-unavailable
+curl -s "http://localhost:9090/api/v1/query?query=butlers_switchboard_triage_pass_through_total" \
+  | python3 -m json.tool | grep "reason"
+# Expected: reason="no_match" is the only reason in healthy operation;
+#           cache_unavailable appears only on rule reload errors
+
+# 4. Dashboard API returns current active rules
+curl -s "http://localhost:41200/api/switchboard/triage-rules" | python3 -m json.tool | grep -E "rule_type|action|enabled"
+# Expected: rules list matches what's in the DB; only enabled=true rows visible by default
+
+# 5. Test endpoint dry-runs a rule against a sample envelope without side effects
+curl -s -X POST http://localhost:41200/api/switchboard/triage-rules/test \
+  -H "Content-Type: application/json" \
+  -d '{"sender":"alerts@chase.com","subject":"Your statement is ready"}' \
+  | python3 -m json.tool
+# Expected: decision="route_to", target_butler="finance", matched_rule_type="sender_domain"
+```
+
 ## Related Pages
 
 - [Routing Architecture](routing.md) — how triage fits into the overall routing pipeline

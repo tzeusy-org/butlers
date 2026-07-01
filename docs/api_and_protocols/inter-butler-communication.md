@@ -89,6 +89,43 @@ The `public` schema is the only cross-cutting data surface:
 
 All butlers can read from `public` for identity resolution. Writes are controlled by specific modules (primarily the contacts module in the relationship butler).
 
+## Verification
+
+To confirm the inter-butler isolation model is correctly enforced:
+
+```bash
+# 1. No cross-butler schema access is possible from a butler's own connection
+# Attempt to query another butler's tables from the general butler's connection context
+psql -h localhost -U butlers -d butlers \
+  -c "SET search_path TO general,public; SELECT COUNT(*) FROM entity_facts;" 2>&1
+# Expected: ERROR: relation "entity_facts" does not exist
+#           (using an unqualified name tests search_path scoping; a fully-qualified
+#           name like relationship.entity_facts would bypass the search_path and
+#           succeed even when isolation is correctly enforced)
+
+# 2. routing_log records all inter-butler hops through the Switchboard
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_channel, target_butler, contact_id, created_at
+   FROM switchboard.routing_log ORDER BY created_at DESC LIMIT 5;"
+# Expected: every routed request appears; no direct butler-to-butler rows
+
+# 3. Domain butlers register with the Switchboard (not with each other)
+curl -s http://localhost:41200/api/butlers | python3 -m json.tool | grep -E "name|registered_at"
+# Expected: all domain butlers appear as registered; each shows a recent registered_at timestamp
+
+# 4. Notification flow uses Switchboard → Messenger (not direct butler delivery)
+# Trigger a notification from the general butler and confirm it goes through Messenger
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT target_butler FROM switchboard.routing_log
+   WHERE source_channel='internal' ORDER BY created_at DESC LIMIT 5;"
+# Expected: target_butler='messenger' for outbound notification routing
+
+# 5. public.contacts is readable from all butler schemas
+psql -h localhost -U butlers -d butlers -c \
+  "SET search_path TO relationship,public; SELECT id, roles FROM public.contacts WHERE 'owner'=ANY(roles);"
+# Expected: the owner contact row is returned; access works from any butler's search_path
+```
+
 ## Related Pages
 
 - [MCP Tools](mcp-tools.md) -- Tool registration and naming

@@ -122,6 +122,39 @@ The `butler.toml` file is the canonical configuration source, declaring the butl
 
 Non-switchboard butlers register with the Switchboard on startup and send periodic heartbeat pings (default every 30 seconds). The Switchboard maintains a registry of active butlers with their endpoints, capabilities, and last-seen timestamps. This registry drives routing decisions — only registered, live butlers receive dispatched requests.
 
+## Verification
+
+To confirm the service topology described here matches what is actually running:
+
+```bash
+# 1. All butler services are listening on their documented ports
+for port in 41100 41101 41102 41103 41104 41200; do
+  ss -tlnp | grep ":$port " && echo "port $port: OK" || echo "port $port: MISSING"
+done
+# Expected: all six ports show LISTEN; 41200 is the Dashboard API
+
+# 2. Butler registry shows all domain butlers as registered and live
+curl -s http://localhost:41200/api/butlers | python3 -m json.tool | grep -E "name|status|port"
+# Expected: general, relationship, health, messenger each appear with status=running
+
+# 3. Database has one schema per active butler plus public
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT schema_name FROM information_schema.schemata
+   WHERE schema_name NOT IN ('information_schema','pg_catalog','pg_toast','pg_temp_1')
+   ORDER BY schema_name;"
+# Expected: general, health, messenger, public, relationship, switchboard
+
+# 4. Heartbeat pings are flowing (last-seen within the last minute)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT butler_name, last_seen_at, NOW() - last_seen_at AS age
+   FROM switchboard.butler_registry ORDER BY butler_name;"
+# Expected: age < 60 seconds for all registered butlers
+
+# 5. OTLP trace export target is reachable (when configured)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:4318/v1/traces || echo "no alloy"
+# Expected: 200 or 405 (server reachable); "no alloy" is acceptable in dev without observability
+```
+
 ## Related Pages
 
 - [Butler Daemon](butler-daemon.md) — internal daemon architecture and startup sequence

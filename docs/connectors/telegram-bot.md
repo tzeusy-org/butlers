@@ -127,6 +127,43 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 - Polling cursor (`last_update_id`) is persisted in the database via `cursor_store`.
 - Checkpoint advances only after successful ingest acceptance.
 
+## Verification
+
+To confirm the Telegram bot connector is operating as described:
+
+```bash
+# 1. Connector health endpoint reports healthy
+curl -s http://localhost:40081/health | python3 -m json.tool
+# Expected: {"status": "healthy", "uptime": ..., "last_ingest_submit": "<recent ISO time>"}
+
+# 2. Polling cursor (last_update_id) is persisted in the database
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, cursor_value, updated_at
+   FROM switchboard.connector_registry WHERE connector_type='telegram_bot';"
+# Expected: cursor_value is the most recent processed update_id; advances with each batch
+
+# 3. Telegram messages land in ingestion_events with correct channel/provider
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_channel, source_provider, source_endpoint_identity, received_at
+   FROM switchboard.ingestion_events
+   WHERE source_channel='telegram'
+   ORDER BY received_at DESC LIMIT 5;"
+# Expected: rows with source_channel='telegram', source_provider='telegram',
+#           endpoint_identity='telegram:bot:@<botname>'
+
+# 4. Duplicate update_id submissions are deduplicated (idempotency)
+# Send the same update_id twice via a direct ingest call; only one row appears in ingestion_events
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT external_event_id, COUNT(*) FROM switchboard.ingestion_events
+   WHERE source_channel='telegram'
+   GROUP BY external_event_id HAVING COUNT(*) > 1;"
+# Expected: zero rows (no duplicate event IDs)
+
+# 5. Bot endpoint identity is auto-resolved (not manually configured)
+grep "endpoint_identity\|getMe" /var/log/butlers/telegram-bot-connector.log 2>/dev/null | head -5
+# Expected: log shows getMe() call on startup; endpoint_identity set to telegram:bot:@<username>
+```
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)

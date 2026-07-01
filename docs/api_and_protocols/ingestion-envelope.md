@@ -117,6 +117,51 @@ Canonical dedupe key guidance:
 
 Connectors send periodic `connector.heartbeat.v1` envelopes every 2 minutes via the `connector.heartbeat` MCP tool, carrying self-reported health state (`healthy`, `degraded`, `error`), monotonic counters, and checkpoint state. The Switchboard derives liveness from recency: `online` (< 2 min), `stale` (2-4 min), `offline` (> 4 min). See `docs/connectors/heartbeat.md` for the full specification.
 
+## Verification
+
+To confirm the ingestion envelope protocol is implemented as specified:
+
+```bash
+# 1. Submit a minimal valid ingest.v1 envelope and check acceptance
+# (Requires SWITCHBOARD_MCP_URL to be set; adjust as needed)
+python3 - <<'EOF'
+import asyncio, json
+from fastmcp import Client
+
+async def test_ingest():
+    async with Client("http://localhost:41100/sse") as client:
+        result = await client.call_tool("ingest", {
+            "schema_version": "ingest.v1",
+            "source": {"channel": "api", "provider": "internal", "endpoint_identity": "test:verify"},
+            "event": {"external_event_id": "verify-001", "observed_at": "2026-07-02T00:00:00Z"},
+            "sender": {"identity": "test-sender"},
+            "payload": {"raw": {}, "normalized_text": "verification test"},
+            "control": {}
+        })
+        print(json.dumps(result, indent=2))
+
+asyncio.run(test_ingest())
+EOF
+# Expected: response includes a canonical request_id (UUIDv7) and accepted status
+
+# 2. Duplicate submission returns same request_id (deduplication)
+# Submit the same envelope twice; both should return the same canonical reference
+# Expected: request_id matches on the second call; no double-processing
+
+# 3. ingestion_events table has the new row with correct source fields
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_channel, source_provider, source_endpoint_identity, received_at
+   FROM switchboard.ingestion_events ORDER BY received_at DESC LIMIT 3;"
+# Expected: most recent row reflects the envelope source fields submitted above
+
+# 4. Heartbeat endpoint accepts connector.heartbeat.v1 envelopes
+# Connectors should appear in connector_registry after their first heartbeat
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT connector_type, endpoint_identity, state, last_heartbeat_at
+   FROM switchboard.connector_registry ORDER BY last_heartbeat_at DESC LIMIT 5;"
+# Expected: active connectors listed with state=online and recent heartbeat timestamps
+```
+
 ## Related Pages
 
 - [Connector Interface](../connectors/overview.md) -- full connector contract

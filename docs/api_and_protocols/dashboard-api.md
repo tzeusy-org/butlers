@@ -112,6 +112,37 @@ Two health endpoints at `/api/health` and `/health` return `{"status": "ok"}`. A
 
 In production, when `static_dir` or `DASHBOARD_STATIC_DIR` is set, a `StaticFiles` handler is mounted at `/` with `html=True` for SPA fallback routing. This mount happens **after** all API routes, ensuring `/api/*` paths always take precedence.
 
+## Verification
+
+To confirm the dashboard API application is functioning as described:
+
+```bash
+# 1. Health endpoint always returns 200 (even without API key)
+curl -s http://localhost:41200/health | python3 -m json.tool
+# Expected: {"status": "ok"}
+
+# 2. All core router groups are reachable
+for route in butlers sessions schedules costs modules secrets state; do
+  status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:41200/api/$route")
+  echo "$route: $status"
+done
+# Expected: 200 for all routes (or 401 if API key auth is enabled and key is missing)
+
+# 3. Auto-discovered butler routers are mounted
+# Butler-specific routers from roster/{butler}/api/router.py should be accessible
+curl -s http://localhost:41200/api/switchboard/ | python3 -m json.tool
+# Expected: switchboard-specific endpoints respond (404 = no route, not a 500)
+
+# 4. SSE events stream connects and emits events
+curl -s -N --max-time 5 http://localhost:41200/api/events 2>&1 | head -5
+# Expected: SSE stream connects; "data:" lines appear as butler activity occurs
+
+# 5. Butler-specific DB pools are wired correctly
+# Verify each butler's data is accessible via the API (not just global data)
+curl -s "http://localhost:41200/api/butlers/general/sessions?limit=1" | python3 -m json.tool
+# Expected: session data for the general butler; no "butler pool not initialized" errors
+```
+
 ## Related Pages
 
 - [MCP Tools](mcp-tools.md) -- How tools are registered by modules

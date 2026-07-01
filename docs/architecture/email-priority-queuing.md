@@ -82,6 +82,33 @@ The dashboard exposes:
 - A read-only "Email priority tier rules" panel on the filters page showing current rules, starvation guard configuration, and contact cache freshness
 - Tier distribution visibility on the connector detail page with pie chart and counts by tier
 
+## Verification
+
+To confirm priority queuing and tier assignment work as described:
+
+```bash
+# 1. Tier assignment metric is emitted after email ingestion
+# After receiving emails, query Prometheus for the tier counter
+curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priority_tier_assigned_total" \
+  | python3 -m json.tool | grep -E "policy_tier|assignment_rule|value"
+# Expected: counter rows for each tier (high_priority, interactive, default)
+#           and each assignment_rule value
+
+# 2. Starvation guard counter records forced lower-tier dequeues
+curl -s "http://localhost:9090/api/v1/query?query=butlers_switchboard_queue_dequeue_by_tier_total" \
+  | python3 -m json.tool | grep -E "policy_tier|starvation_override"
+# Expected: starvation_override=true rows appear when sustained high-priority bursts occur
+
+# 3. Known-contact cache metadata is visible
+# The dashboard should show contact cache freshness under the filters page
+curl -s http://localhost:41200/api/switchboard/email-priority-config | python3 -m json.tool
+# Expected: contact_cache_generated_at is recent (< 15 minutes ago for healthy operation)
+
+# 4. Dashboard tier distribution panel reflects real traffic
+# Navigate to /ingestion?tab=connectors and open the Gmail connector detail
+# Expected: tier distribution pie chart shows counts for each tier (not all zero)
+```
+
 ## Related Pages
 
 - [Routing Architecture](routing.md) — how priority-queued messages flow through classification

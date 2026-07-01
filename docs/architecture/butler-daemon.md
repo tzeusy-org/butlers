@@ -107,6 +107,38 @@ The shutdown sequence is the inverse of startup:
 8. Shut down modules in reverse topological order via `on_shutdown()`.
 9. Close the database connection pool.
 
+## Verification
+
+To confirm the daemon startup sequence and core components match the running system:
+
+```bash
+# 1. All startup phases complete without error
+# Start a butler and check for the expected phase sequence in log output
+butlers run --config roster/general 2>&1 | grep -E "Phase|Loading|migration|FastMCP|startup"
+# Expected: phase markers appear in order; no "startup-blocking error" lines
+
+# 2. Core tables exist in the butler's schema after startup
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'general'
+   ORDER BY table_name;"
+# Expected: state, scheduled_tasks, sessions, session_process_logs present
+
+# 3. Schedules sync from TOML on startup
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, source, enabled, next_run_at FROM general.scheduled_tasks ORDER BY name;"
+# Expected: tasks listed in butler.toml appear with source='toml'
+
+# 4. Spawner concurrency limit is respected
+curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
+# Expected: active_sessions field; check it never exceeds the configured max_concurrent
+
+# 5. Graceful shutdown drains in-flight sessions
+kill -TERM $(pgrep -f "butlers run --config roster/general")
+# Expected: log shows each shutdown step; process exits cleanly (exit code 0)
+# No "active sessions dropped" error lines should appear
+```
+
 ## Related Pages
 
 - [System Topology](system-topology.md) — how butlers fit into the overall service architecture

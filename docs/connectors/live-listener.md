@@ -58,6 +58,45 @@ Per-mic `LiveListenerMetrics` track segment counts by outcome, stage latency his
 
 Each mic pipeline runs in a retry loop with exponential backoff. A single mic failure never takes down the whole connector. Transcription services fail by dropping segments (never buffering). Discretion and filter gate fail open. Backoff resets on successful reconnection.
 
+## Verification
+
+To confirm the live-listener connector is operating as described:
+
+```bash
+# 1. Health endpoint reports all mic pipelines active
+curl -s http://localhost:40091/health | python3 -m json.tool
+# Expected: {"state": "healthy", ...} with per-mic pipeline status;
+#           "degraded" if a mic or transcription service has failed
+
+# 2. VAD segments are being detected and reaching the transcription stage
+curl -s http://localhost:40091/metrics | grep live_listener_segment
+# Expected: live_listener_segment_total counter increasing as speech is detected;
+#           outcome labels: forwarded, prefilter_rejected, discretion_ignored, error
+
+# 3. Accepted utterances appear in ingestion_events as voice channel events
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_channel, source_provider, received_at
+   FROM switchboard.ingestion_events
+   WHERE source_channel='voice'
+   ORDER BY received_at DESC LIMIT 5;"
+# Expected: rows with source_channel='voice' and source_provider='live_listener'
+#           appear after speech is captured and passes the discretion filter
+
+# 4. Session continuity: utterances within the gap window share a session ID
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_endpoint_identity, source_thread_identity AS session_id, COUNT(*) AS utterances
+   FROM switchboard.ingestion_events
+   WHERE source_channel='voice'
+   GROUP BY source_endpoint_identity, source_thread_identity
+   ORDER BY MAX(received_at) DESC LIMIT 5;"
+# Expected: consecutive utterances within the session gap window share the same session_id
+
+# 5. Single-mic failure does not bring down the whole connector
+# (Observable via health endpoint — other mics should remain healthy)
+curl -s http://localhost:40091/health | python3 -m json.tool | grep -E "mic_id|state|error"
+# Expected: failed mic shows state=error; others remain active; top-level state=degraded (not error)
+```
+
 ## Related Pages
 
 - [Connector Interface](overview.md) -- Shared connector contract and lifecycle

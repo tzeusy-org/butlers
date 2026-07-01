@@ -125,6 +125,46 @@ Rollout sequence:
 
 No backfill required --- affinity starts from newly logged routed email threads.
 
+## Verification
+
+To confirm thread affinity routing is functioning as described:
+
+```bash
+# 1. routing_log table has thread_id and source_channel columns
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT column_name, data_type
+   FROM information_schema.columns
+   WHERE table_schema='switchboard' AND table_name='routing_log'
+   AND column_name IN ('thread_id','source_channel');"
+# Expected: both columns present with type text
+
+# 2. Affinity index exists
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT indexname, indexdef FROM pg_indexes
+   WHERE schemaname='switchboard' AND tablename='routing_log'
+   AND indexname='idx_routing_log_thread_affinity';"
+# Expected: one row with the partial index definition on (thread_id, created_at DESC)
+#           WHERE thread_id IS NOT NULL AND source_channel = 'email'
+
+# 3. Hit counter increments after a known thread receives a follow-up email
+curl -s "http://localhost:9090/api/v1/query?query=butlers_switchboard_thread_affinity_hit_total" \
+  | python3 -m json.tool | grep -E "destination_butler|value"
+# Expected: counter entries with the target butler name; count increases after replies
+#           in already-routed threads arrive
+
+# 4. Miss counter reflects expected miss reasons
+curl -s "http://localhost:9090/api/v1/query?query=butlers_switchboard_thread_affinity_miss_total" \
+  | python3 -m json.tool | grep "reason"
+# Expected: no_thread_id (non-email or missing ID), no_history (first message in thread),
+#           or conflict (multi-butler history)
+
+# 5. Thread-specific overrides persist and take effect
+# Set a force-override for a thread via the dashboard, then send another message in that thread
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT thread_id, override_type, target_butler FROM switchboard.thread_affinity_overrides;"
+# Expected: override row exists; subsequent routing for that thread skips history lookup
+```
+
 ## Related Pages
 
 - [Routing Architecture](routing.md) --- how thread affinity fits into the overall routing pipeline
