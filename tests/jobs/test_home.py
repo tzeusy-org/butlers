@@ -24,6 +24,7 @@ from butlers.jobs.home import (
     _build_health_check_notification,
     _load_battery_thresholds,
     _load_offline_hours_thresholds,
+    _NoOpEmbeddingEngine,
     build_notification_text,
     classify_battery,
     classify_item,
@@ -453,6 +454,16 @@ async def test_store_device_fact_sets_home_source_butler():
         )
 
     assert mock_store.await_args.kwargs["source_butler"] == "home"
+    assert mock_store.await_args.kwargs["embedding_engine"].model_name == "deterministic-noop"
+
+
+def test_noop_embedding_engine_matches_store_fact_interface():
+    """_NoOpEmbeddingEngine exposes the fields store_fact reads from real engines."""
+    eng = _NoOpEmbeddingEngine()
+
+    assert eng.model_name == "deterministic-noop"
+    assert eng.embed("hello") == [0.0] * 384
+    assert eng.embed_batch(["a", "b"]) == [[0.0] * 384, [0.0] * 384]
 
 
 # ---------------------------------------------------------------------------

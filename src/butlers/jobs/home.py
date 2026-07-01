@@ -220,6 +220,8 @@ class _NullEmbeddingEngine:
     vector-similarity searches simply skip these facts.
     """
 
+    model_name = "deterministic-null"
+
     def embed(self, text: str) -> list[float]:  # noqa: ARG002
         return []
 
@@ -232,6 +234,7 @@ class _NoOpEmbeddingEngine:
     Semantic search quality is degraded, but the fact is correctly stored.
     """
 
+    model_name = "deterministic-noop"
     _DIM = 384
 
     def embed(self, text: str) -> list[float]:  # noqa: ARG002

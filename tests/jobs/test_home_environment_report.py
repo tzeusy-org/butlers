@@ -226,10 +226,11 @@ async def test_run_environment_report_no_sensors_and_normal_run():
 
 
 def test_null_embedding_engine():
-    """_NullEmbeddingEngine.embed() returns [] synchronously for any input."""
+    """_NullEmbeddingEngine exposes the fields store_fact reads from real engines."""
     import inspect
 
     eng = _NullEmbeddingEngine()
+    assert eng.model_name == "deterministic-null"
     assert eng.embed("hello") == [] and eng.embed("") == []
     assert not inspect.iscoroutinefunction(eng.embed)
 
