@@ -1,7 +1,36 @@
 import path from "path"
+import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+// When the app is served under a non-root base (e.g. `--base /butlers-dev/`
+// behind the Tailscale `/butlers-dev` path mount), the Vite dev server 404s a
+// request for the bare base path *without* a trailing slash (`/butlers-dev`)
+// and only serves the app at `/butlers-dev/`. React Router's `useHref` emits
+// exactly that slashless form for a `to="/"` link under a basename (the
+// "Overview" nav item), so landing on / reloading that URL breaks. Redirect
+// the bare base path to its trailing-slash form so both work.
+function baseNoSlashRedirect(): Plugin {
+  return {
+    name: 'base-no-slash-redirect',
+    configureServer(server) {
+      const base = server.config.base
+      if (base === '/') return
+      const bare = base.replace(/\/$/, '')
+      server.middlewares.use((req, res, next) => {
+        const [pathname, query] = (req.url || '').split('?')
+        if (pathname === bare) {
+          res.statusCode = 301
+          res.setHeader('Location', query ? `${base}?${query}` : base)
+          res.end()
+          return
+        }
+        next()
+      })
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -22,7 +51,7 @@ export default defineConfig({
     // conflicts with vitest's own test() when picked up by vitest's file scan.
     exclude: ["**/tests/e2e/**", "**/node_modules/**"],
   },
-  plugins: [tailwindcss(), react()],
+  plugins: [tailwindcss(), react(), baseNoSlashRedirect()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
