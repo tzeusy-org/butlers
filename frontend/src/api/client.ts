@@ -2107,8 +2107,13 @@ export function getSleepLatest(): Promise<import("./types").SleepLatestResponse>
  *
  * GET /api/health/measurements/sources
  */
-export function getMeasurementSources(): Promise<import("./types").MeasurementSourcesResponse> {
-  return apiFetch<import("./types").MeasurementSourcesResponse>("/health/measurements/sources");
+export async function getMeasurementSources(): Promise<
+  import("./types").MeasurementSource[]
+> {
+  const res = await apiFetch<import("./types").MeasurementSourcesResponse>(
+    "/health/measurements/sources",
+  );
+  return res.sources ?? [];
 }
 
 /**

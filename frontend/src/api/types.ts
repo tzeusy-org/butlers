@@ -1901,8 +1901,10 @@ export interface MeasurementSource {
   sample_count: number;
 }
 
-/** Response shape for GET /api/health/measurements/sources. */
-export type MeasurementSourcesResponse = MeasurementSource[];
+/** Response envelope for GET /api/health/measurements/sources. */
+export interface MeasurementSourcesResponse {
+  sources: MeasurementSource[];
+}
 
 /** Query parameters for measurement endpoints. */
 export interface MeasurementParams {
