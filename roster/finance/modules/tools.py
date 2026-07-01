@@ -814,7 +814,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         async def import_transactions(
             storage_ref: str,
             account_id: str | None = None,
-            currency: str = "USD",
+            currency: str | None = None,
             column_map: str | None = None,
             dry_run: bool = False,
         ) -> dict[str, Any]:
@@ -827,11 +827,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
               Upload the CSV first via the dashboard or attachment ingestion flow, then pass
               the returned storage_ref here.
             account_id: Account to associate all imported transactions with.
-            currency: ISO-4217 currency code for the import (default "USD").
+            currency: ISO-4217 currency code for the import. When omitted, the currency is
+              inferred from the linked account's currency field; falls back to USD if unknown.
             column_map: JSON string — optional column name overrides for custom CSV formats.
             dry_run: If true, parse and validate without inserting; returns preview of first 10.
 
-            Returns: {total, imported, skipped, errors, import_batch_id, detected_format}
+            Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
+                      currency_warning (when currency fell back to USD)}
             """
             if module.blob_store is None:
                 return {
@@ -849,6 +851,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
                 currency=currency,
                 column_map=_parse_metadata(column_map),
                 dry_run=dry_run,
+                notify_fn=module.notify_fn,
             )
 
     if _data_import is not None and hasattr(_data_import, "import_transactions_from_file"):
@@ -857,7 +860,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         async def import_transactions_from_file(
             file_path: str,
             account_id: str | None = None,
-            currency: str = "USD",
+            currency: str | None = None,
             column_map: str | None = None,
             dry_run: bool = False,
         ) -> dict[str, Any]:
@@ -869,13 +872,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
             file_path: Absolute path to the CSV file on the local filesystem.
             account_id: Account to associate all imported transactions with.
-            currency: ISO-4217 currency code for the import (default "USD").
+            currency: ISO-4217 currency code for the import. When omitted, the currency is
+              inferred from the linked account's currency field; falls back to USD if unknown.
             column_map: JSON string — optional column name overrides for custom CSV formats.
             dry_run: If true, parse, validate, and detect duplicates without inserting;
               returns preview of first 10 transactions with is_duplicate flags.
 
             Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
-                      merchant_mappings_applied, mv_refreshed, baselines_triggered}
+                      merchant_mappings_applied, mv_refreshed, baselines_triggered,
+                      currency_warning (when currency fell back to USD)}
             """
             return await _data_import.import_transactions_from_file(
                 module._get_pool(),
@@ -884,6 +889,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
                 currency=currency,
                 column_map=_parse_metadata(column_map),
                 dry_run=dry_run,
+                notify_fn=module.notify_fn,
             )
 
     # =================================================================

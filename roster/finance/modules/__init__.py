@@ -56,6 +56,11 @@ class FinanceModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
         self.blob_store: Any = None
+        # Optional async callable for progress notifications during large imports.
+        # Signature matches the butler's notify() MCP tool:
+        #   notify_fn(channel, message, intent) -> Any
+        # Set by the daemon or tests; None disables progress reporting.
+        self.notify_fn: Any = None
 
     @property
     def name(self) -> str:

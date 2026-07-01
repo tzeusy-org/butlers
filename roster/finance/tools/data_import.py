@@ -5,8 +5,21 @@ Auto-detects format by inspecting column headers, normalizes dates and amounts,
 deduplicates against existing transactions, and processes in batches of 500.
 
 Public API:
-    import_transactions(pool, blob_store, storage_ref, account_id, currency, column_map, dry_run)
-    import_transactions_from_file(pool, file_path, account_id, currency, column_map, dry_run)
+    import_transactions(pool, blob_store, storage_ref, account_id, currency, column_map,
+                        dry_run, notify_fn)
+    import_transactions_from_file(pool, file_path, account_id, currency, column_map,
+                                  dry_run, notify_fn)
+
+Currency resolution (three-tier priority):
+    1. Explicit ``currency`` argument (any non-None value the caller passes)
+    2. Currency recorded on the linked ``accounts`` row (when ``account_id`` is provided)
+    3. USD fallback -- a ``currency_warning`` key is added to the response
+
+Progress reporting (``notify_fn``):
+    When a CSV contains more than 1,000 rows the optional ``notify_fn`` callable is
+    awaited at 25 / 50 / 75 / 100 % completion.  Each call receives keyword arguments
+    ``channel``, ``message`` (with processed/total/imported/skipped/errors), and
+    ``intent``.  Passing ``None`` (the default) silently skips progress updates.
 
 Internal helpers are prefixed with ``_`` and are not part of the public contract.
 """
@@ -34,6 +47,13 @@ logger = logging.getLogger(__name__)
 # Batch size for DB inserts; large enough for throughput, small enough to avoid
 # parameter-count limits and memory pressure on 1000+ row files.
 _BATCH_SIZE = 500
+
+# Row count above which progress notifications are emitted (spec: finance-data-import
+# "Progress reporting for large imports").
+_LARGE_IMPORT_THRESHOLD = 1000
+
+# Percentage milestones at which notify_fn is called for large imports.
+_PROGRESS_THRESHOLDS = (25, 50, 75, 100)
 
 # Canonical column names in the internal normalised representation.
 _COL_DATE = "date"
@@ -569,6 +589,108 @@ def _sample_date_values(content: str, date_col: str | None, n: int = 10) -> list
 
 
 # ---------------------------------------------------------------------------
+# Currency inference from linked account
+# ---------------------------------------------------------------------------
+
+
+async def _lookup_account_currency(pool: asyncpg.Pool, account_id: str) -> str | None:
+    """Return the ISO-4217 currency stored on *account_id* in ``accounts``, or None.
+
+    Returns None when the account is not found, has no currency value, or the
+    lookup fails (errors are logged as warnings so the import can continue).
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT currency FROM accounts WHERE id = $1::uuid",
+            account_id,
+        )
+        if row is not None:
+            raw = (row["currency"] or "").strip()
+            if raw:
+                return raw.upper()
+    except Exception as exc:
+        logger.warning(
+            "data_import: account currency lookup failed for account_id=%s: %s",
+            account_id,
+            exc,
+        )
+    return None
+
+
+async def _resolve_currency(
+    pool: asyncpg.Pool,
+    account_id: str | None,
+    requested: str | None,
+) -> tuple[str, str | None]:
+    """Resolve the effective currency and an optional warning string.
+
+    Priority:
+        1. ``requested`` -- explicit caller-provided value (any non-empty string)
+        2. ``accounts.currency`` for the linked account (when ``account_id`` is set)
+        3. USD fallback (emits a warning added to the response)
+
+    Returns
+    -------
+    tuple[str, str | None]
+        ``(currency_code, warning_or_None)``
+    """
+    if requested:
+        return requested.upper(), None
+
+    if account_id is not None:
+        account_currency = await _lookup_account_currency(pool, account_id)
+        if account_currency:
+            return account_currency, None
+        return "USD", (
+            "Account has no currency recorded; defaulting to USD. "
+            "Set a currency on the account to infer it automatically."
+        )
+
+    return "USD", ("No currency specified and no account linked; defaulting to USD.")
+
+
+# ---------------------------------------------------------------------------
+# Progress notifications for large imports
+# ---------------------------------------------------------------------------
+
+
+async def _emit_progress_notification(
+    notify_fn: Any,
+    processed: int,
+    total: int,
+    imported_so_far: int,
+    skipped_so_far: int,
+    errors_so_far: int,
+) -> None:
+    """Call *notify_fn* with a progress update message (best-effort, non-fatal).
+
+    Parameters
+    ----------
+    notify_fn:
+        Async callable with the same signature as the butler's ``notify()`` MCP
+        tool: ``notify_fn(channel, message, intent)`` or ``**kwargs`` form.
+    processed:
+        Number of CSV rows processed so far (parsed rows, including skipped/errors).
+    total:
+        Total parsed rows in the import.
+    imported_so_far, skipped_so_far, errors_so_far:
+        Running import counters at the time of the progress update.
+    """
+    if notify_fn is None:
+        return
+    pct = int(processed / total * 100) if total else 0
+    message = (
+        f"Import progress: {pct}% — "
+        f"{processed}/{total} rows processed, "
+        f"{imported_so_far} imported, {skipped_so_far} skipped, {errors_so_far} errors"
+    )
+    try:
+        await notify_fn(channel="telegram", message=message, intent="send")
+    except Exception as exc:
+        logger.warning("data_import: progress notify failed at %d%%: %s", pct, exc)
+
+
+# ---------------------------------------------------------------------------
 # Deduplication check
 # ---------------------------------------------------------------------------
 
@@ -829,9 +951,10 @@ async def import_transactions(
     blob_store: Any,
     storage_ref: str,
     account_id: str | None = None,
-    currency: str = "USD",
+    currency: str | None = None,
     column_map: dict[str, str] | None = None,
     dry_run: bool = False,
+    notify_fn: Any = None,
 ) -> dict[str, Any]:
     """Import transactions from a bank CSV export stored in blob storage.
 
@@ -851,8 +974,10 @@ async def import_transactions(
     account_id:
         UUID string of the account to associate all transactions with.
     currency:
-        ISO-4217 currency code.  Applied to all rows unless the CSV contains
-        a per-row currency column.
+        ISO-4217 currency code.  When ``None`` (the default), the currency is
+        inferred from the linked account's ``accounts.currency`` column; if that
+        is also unavailable the import falls back to ``"USD"`` and records a
+        ``currency_warning`` in the response.
     column_map:
         Optional mapping of canonical field names (``date``, ``merchant``,
         ``amount``, ``description``, ``category``) to actual CSV column names.
@@ -860,12 +985,18 @@ async def import_transactions(
     dry_run:
         When True, parses and validates without inserting; returns a preview
         of the first 10 transactions.
+    notify_fn:
+        Optional async callable invoked for progress updates when the import
+        exceeds ``_LARGE_IMPORT_THRESHOLD`` rows.  Called at 25/50/75/100%
+        completion with ``channel``, ``message``, and ``intent`` keyword args
+        (matching the butler's ``notify()`` MCP tool signature).
 
     Returns
     -------
     dict
         ``{total, imported, skipped, errors, import_batch_id, detected_format,
-           dry_run, categories_learned, preview (when dry_run=True)}``
+           dry_run, categories_learned, preview (when dry_run=True),
+           currency_warning (when currency fell back to USD)}``
 
     On a successful non-dry-run import where the rows carry category data,
     ``learn_merchant_categories()`` is triggered to upsert merchant->category
@@ -883,6 +1014,9 @@ async def import_transactions(
             "storage_ref": storage_ref,
             "import_batch_id": import_batch_id,
         }
+
+    # --- Resolve currency (three-tier: explicit > account > USD fallback) ---
+    resolved_currency, currency_warning = await _resolve_currency(pool, account_id, currency)
 
     # --- Detect format ---
     reader_probe = csv.DictReader(io.StringIO(content))
@@ -921,7 +1055,7 @@ async def import_transactions(
         }
 
     # --- Parse all rows ---
-    parsed, parse_errors = _parse_csv_rows(content, fmt, date_fmt, currency, column_map)
+    parsed, parse_errors = _parse_csv_rows(content, fmt, date_fmt, resolved_currency, column_map)
     total_rows = len(parsed) + len(parse_errors)
 
     if dry_run:
@@ -938,7 +1072,7 @@ async def import_transactions(
                     "description": txn.get("description"),
                 }
             )
-        return {
+        result: dict[str, Any] = {
             "dry_run": True,
             "total": total_rows,
             "parsed": len(parsed),
@@ -949,6 +1083,9 @@ async def import_transactions(
             "date_format_detected": date_fmt,
             "error_details": parse_errors[:20],
         }
+        if currency_warning:
+            result["currency_warning"] = currency_warning
+        return result
 
     # --- Process in batches of _BATCH_SIZE ---
     total_imported = 0
@@ -956,6 +1093,8 @@ async def import_transactions(
     all_errors: list[dict[str, Any]] = list(parse_errors)
     imported_txns: list[dict[str, Any]] = []
     batches_processed = 0
+    is_large_import = len(parsed) > _LARGE_IMPORT_THRESHOLD
+    fired_thresholds: set[int] = set()
 
     for batch_start in range(0, len(parsed), _BATCH_SIZE):
         batch = parsed[batch_start : batch_start + _BATCH_SIZE]
@@ -968,14 +1107,31 @@ async def import_transactions(
         imported_txns.extend(batch_txns)
         batches_processed += 1
 
+        processed_so_far = batch_start + len(batch)
         logger.info(
             "import_transactions: batch %d-%d — imported=%d skipped=%d errors=%d",
             batch_start,
-            batch_start + len(batch) - 1,
+            processed_so_far - 1,
             batch_imported,
             batch_skipped,
             len(batch_errors),
         )
+
+        # Progress notifications for large imports (spec: finance-data-import
+        # "Progress reporting for large imports").
+        if is_large_import and notify_fn is not None:
+            current_pct = int(processed_so_far / len(parsed) * 100)
+            for threshold in _PROGRESS_THRESHOLDS:
+                if threshold not in fired_thresholds and current_pct >= threshold:
+                    await _emit_progress_notification(
+                        notify_fn,
+                        processed=processed_so_far,
+                        total=len(parsed),
+                        imported_so_far=total_imported,
+                        skipped_so_far=total_skipped,
+                        errors_so_far=len(all_errors),
+                    )
+                    fired_thresholds.add(threshold)
 
     # --- Post-import merchant-category learning ---
     # Build merchant->category mappings from the imported category data so future
@@ -985,7 +1141,7 @@ async def import_transactions(
     if total_imported > 0 and _has_category_data(parsed):
         categories_learned = await _trigger_learn_merchant_categories(pool)
 
-    return {
+    result = {
         "total": total_rows,
         "imported": total_imported,
         "skipped": total_skipped,
@@ -998,6 +1154,9 @@ async def import_transactions(
         **_summarize_import(imported_txns, batches_processed),
         "error_details": all_errors[:50],  # cap to first 50 for response size
     }
+    if currency_warning:
+        result["currency_warning"] = currency_warning
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1262,9 +1421,10 @@ async def import_transactions_from_file(
     pool: asyncpg.Pool,
     file_path: str,
     account_id: str | None = None,
-    currency: str = "USD",
+    currency: str | None = None,
     column_map: dict[str, str] | None = None,
     dry_run: bool = False,
+    notify_fn: Any = None,
 ) -> dict[str, Any]:
     """Import transactions from a bank CSV file on the local filesystem.
 
@@ -1290,8 +1450,10 @@ async def import_transactions_from_file(
     account_id:
         UUID string of the account to associate all transactions with.
     currency:
-        ISO-4217 currency code.  Applied to all rows unless the CSV contains
-        a per-row currency column.
+        ISO-4217 currency code.  When ``None`` (the default), the currency is
+        inferred from the linked account's ``accounts.currency`` column; if that
+        is also unavailable the import falls back to ``"USD"`` and records a
+        ``currency_warning`` in the response.
     column_map:
         Optional mapping of canonical field names (``date``, ``merchant``,
         ``amount``, ``description``, ``category``) to actual CSV column names.
@@ -1300,13 +1462,19 @@ async def import_transactions_from_file(
         When True, parses, validates, checks for duplicates against the DB,
         and returns a preview of the first 10 transactions without inserting.
         Preview includes an ``is_duplicate`` flag per row.
+    notify_fn:
+        Optional async callable invoked for progress updates when the import
+        exceeds ``_LARGE_IMPORT_THRESHOLD`` rows.  Called at 25/50/75/100%
+        completion with ``channel``, ``message``, and ``intent`` keyword args
+        (matching the butler's ``notify()`` MCP tool signature).
 
     Returns
     -------
     dict
         ``{total, imported, skipped, errors, import_batch_id, detected_format,
            dry_run, merchant_mappings_applied, mv_refreshed,
-           baselines_triggered, categories_learned, preview (when dry_run=True)}``
+           baselines_triggered, categories_learned, preview (when dry_run=True),
+           currency_warning (when currency fell back to USD)}``
     """
     import_batch_id = str(uuid.uuid4())
 
@@ -1320,6 +1488,9 @@ async def import_transactions_from_file(
             "file_path": file_path,
             "import_batch_id": import_batch_id,
         }
+
+    # --- Resolve currency (three-tier: explicit > account > USD fallback) ---
+    resolved_currency, currency_warning = await _resolve_currency(pool, account_id, currency)
 
     # --- Detect format ---
     reader_probe = csv.DictReader(io.StringIO(content))
@@ -1352,7 +1523,7 @@ async def import_transactions_from_file(
         }
 
     # --- Parse all rows ---
-    parsed, parse_errors = _parse_csv_rows(content, fmt, date_fmt, currency, column_map)
+    parsed, parse_errors = _parse_csv_rows(content, fmt, date_fmt, resolved_currency, column_map)
     total_rows = len(parsed) + len(parse_errors)
 
     # --- Merchant mapping auto-apply ---
@@ -1365,7 +1536,7 @@ async def import_transactions_from_file(
     if dry_run:
         # Dry run: detect duplicates and return preview without inserting.
         preview = await _check_duplicates_for_preview(pool, parsed, account_id)
-        return {
+        result: dict[str, Any] = {
             "dry_run": True,
             "total": total_rows,
             "parsed": len(parsed),
@@ -1377,6 +1548,9 @@ async def import_transactions_from_file(
             "merchant_mappings_applied": merchant_mappings_applied,
             "error_details": parse_errors[:20],
         }
+        if currency_warning:
+            result["currency_warning"] = currency_warning
+        return result
 
     # --- Process in batches of _BATCH_SIZE ---
     total_imported = 0
@@ -1384,6 +1558,8 @@ async def import_transactions_from_file(
     all_errors: list[dict[str, Any]] = list(parse_errors)
     imported_txns: list[dict[str, Any]] = []
     batches_processed = 0
+    is_large_import = len(parsed) > _LARGE_IMPORT_THRESHOLD
+    fired_thresholds: set[int] = set()
 
     for batch_start in range(0, len(parsed), _BATCH_SIZE):
         batch = parsed[batch_start : batch_start + _BATCH_SIZE]
@@ -1396,14 +1572,31 @@ async def import_transactions_from_file(
         imported_txns.extend(batch_txns)
         batches_processed += 1
 
+        processed_so_far = batch_start + len(batch)
         logger.info(
             "import_from_file: batch %d-%d — imported=%d skipped=%d errors=%d",
             batch_start,
-            batch_start + len(batch) - 1,
+            processed_so_far - 1,
             batch_imported,
             batch_skipped,
             len(batch_errors),
         )
+
+        # Progress notifications for large imports (spec: finance-data-import
+        # "Progress reporting for large imports").
+        if is_large_import and notify_fn is not None:
+            current_pct = int(processed_so_far / len(parsed) * 100)
+            for threshold in _PROGRESS_THRESHOLDS:
+                if threshold not in fired_thresholds and current_pct >= threshold:
+                    await _emit_progress_notification(
+                        notify_fn,
+                        processed=processed_so_far,
+                        total=len(parsed),
+                        imported_so_far=total_imported,
+                        skipped_so_far=total_skipped,
+                        errors_so_far=len(all_errors),
+                    )
+                    fired_thresholds.add(threshold)
 
     # --- Post-import triggers ---
     mv_refreshed = False
@@ -1417,7 +1610,7 @@ async def import_transactions_from_file(
         if _has_category_data(parsed):
             categories_learned = await _trigger_learn_merchant_categories(pool)
 
-    return {
+    result = {
         "total": total_rows,
         "imported": total_imported,
         "skipped": total_skipped,
@@ -1433,3 +1626,6 @@ async def import_transactions_from_file(
         **_summarize_import(imported_txns, batches_processed),
         "error_details": all_errors[:50],  # cap to first 50 for response size
     }
+    if currency_warning:
+        result["currency_warning"] = currency_warning
+    return result

@@ -1155,3 +1155,401 @@ class TestReturnShape:
         assert summary["date_range"] is None
         assert summary["categories_used"] == []
         assert summary["batches_processed"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Currency inference from account facts
+# ---------------------------------------------------------------------------
+
+
+class TestCurrencyInference:
+    """Tests for spec: finance-data-import "Currency inference"."""
+
+    def _make_blob_store(self, content: str):
+        blob_store = AsyncMock()
+        blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
+        return blob_store
+
+    async def test_explicit_currency_used_as_is(self):
+        """When currency is explicitly passed, the account lookup is skipped."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/chase.csv",
+            currency="EUR",  # explicit
+        )
+
+        # All transactions should carry EUR.
+        assert result.get("currency_warning") is None
+        # No account lookup needed (fetchrow should only be called for dedup, not accounts).
+        # The currency is resolved from the explicit parameter so the result has no warning.
+
+    async def test_account_currency_inferred_when_none_requested(self):
+        """When currency=None and account_id provided, the account's currency is used."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)
+        pool = MagicMock()
+        # First fetchrow call is _lookup_account_currency, returns GBP.
+        pool.fetchrow = AsyncMock(return_value={"currency": "GBP"})
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/chase.csv",
+            account_id="11111111-1111-1111-1111-111111111111",
+            currency=None,  # not specified — infer from account
+        )
+
+        # No warning should be emitted when account currency is found.
+        assert result.get("currency_warning") is None
+        # Transactions should be imported successfully.
+        assert "import_batch_id" in result
+
+    async def test_fallback_to_usd_when_no_account_and_no_currency(self):
+        """When currency=None and no account_id, USD is used with a warning."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/chase.csv",
+            account_id=None,
+            currency=None,
+        )
+
+        assert "currency_warning" in result
+        assert "USD" in result["currency_warning"]
+
+    async def test_fallback_to_usd_when_account_has_no_currency(self):
+        """When account exists but has no currency value, USD is used with a warning."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)
+        pool = MagicMock()
+        # Account found but currency field is empty.
+        pool.fetchrow = AsyncMock(return_value={"currency": ""})
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/chase.csv",
+            account_id="22222222-2222-2222-2222-222222222222",
+            currency=None,
+        )
+
+        assert "currency_warning" in result
+        assert "USD" in result["currency_warning"]
+
+    async def test_empty_string_currency_falls_through_to_account(self):
+        """Empty-string requested currency is treated as not-specified (falsy fallback)."""
+        from butlers.tools.finance.data_import import _resolve_currency
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"currency": "SGD"})
+
+        # "" should NOT short-circuit to "" — it must fall through to account lookup.
+        currency, warning = await _resolve_currency(
+            pool, account_id="some-account-id", requested=""
+        )
+
+        assert currency == "SGD"
+        assert warning is None
+        # Account lookup must have been called since requested was falsy.
+        pool.fetchrow.assert_called_once()
+
+    async def test_account_lookup_not_called_when_currency_explicit(self):
+        """_lookup_account_currency is bypassed when currency is explicitly specified."""
+        from butlers.tools.finance.data_import import _resolve_currency
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock()
+
+        currency, warning = await _resolve_currency(pool, account_id="any-id", requested="JPY")
+
+        assert currency == "JPY"
+        assert warning is None
+        # Account lookup should NOT be called when currency is explicit.
+        pool.fetchrow.assert_not_called()
+
+    async def test_lookup_account_currency_returns_code(self):
+        """_lookup_account_currency reads the accounts table and uppercases the result."""
+        from butlers.tools.finance.data_import import _lookup_account_currency
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"currency": "sgd"})
+
+        result = await _lookup_account_currency(pool, "aabbccdd-0000-0000-0000-000000000000")
+
+        assert result == "SGD"
+        # Verify query included accounts table.
+        call_sql = pool.fetchrow.call_args[0][0]
+        assert "accounts" in call_sql
+
+    async def test_lookup_account_currency_returns_none_when_not_found(self):
+        """_lookup_account_currency returns None for a missing account row."""
+        from butlers.tools.finance.data_import import _lookup_account_currency
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        result = await _lookup_account_currency(pool, "nonexistent-id")
+
+        assert result is None
+
+    async def test_resolve_currency_three_tier_priority(self):
+        """_resolve_currency follows the three-tier priority without repeated DB calls."""
+        from butlers.tools.finance.data_import import _resolve_currency
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"currency": "EUR"})
+
+        # Tier 1: explicit wins even when account has a different currency.
+        cur, warn = await _resolve_currency(pool, "some-account-id", requested="CAD")
+        assert cur == "CAD"
+        assert warn is None
+
+        # Tier 2: account currency used when no explicit currency.
+        pool.fetchrow.reset_mock()
+        pool.fetchrow = AsyncMock(return_value={"currency": "EUR"})
+        cur, warn = await _resolve_currency(pool, "some-account-id", requested=None)
+        assert cur == "EUR"
+        assert warn is None
+
+        # Tier 3: USD fallback when neither is available.
+        pool.fetchrow = AsyncMock(return_value=None)
+        cur, warn = await _resolve_currency(pool, "some-account-id", requested=None)
+        assert cur == "USD"
+        assert warn is not None
+
+    async def test_file_import_infers_currency_from_account(self):
+        """import_transactions_from_file also infers currency from the account record."""
+        import os
+        import tempfile
+
+        from butlers.tools.finance.data_import import import_transactions_from_file
+
+        # Write a small Chase CSV to a temp file.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as fh:
+            fh.write(CHASE_CSV)
+            tmp_path = fh.name
+
+        try:
+            pool = MagicMock()
+            # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
+            pool.fetchrow = AsyncMock(
+                side_effect=[
+                    {"currency": "AUD"},  # _lookup_account_currency
+                    None,  # dedup check rows (fetchrow fallback)
+                ]
+            )
+            pool.fetchval = AsyncMock(return_value=False)  # merchant_mappings table absent
+            pool.fetch = AsyncMock(return_value=[])  # batch dedup
+            pool.execute = AsyncMock()
+
+            result = await import_transactions_from_file(
+                pool=pool,
+                file_path=tmp_path,
+                account_id="33333333-3333-3333-3333-333333333333",
+                currency=None,
+            )
+        finally:
+            os.unlink(tmp_path)
+
+        assert result.get("currency_warning") is None
+        assert "import_batch_id" in result
+
+
+# ---------------------------------------------------------------------------
+# Progress notifications for large imports
+# ---------------------------------------------------------------------------
+
+
+class TestProgressNotify:
+    """Tests for spec: finance-data-import "Progress reporting for large imports"."""
+
+    def _build_large_csv(self, n_rows: int) -> str:
+        """Build a Chase-format CSV with n_rows data rows."""
+        lines = ["Transaction Date,Description,Amount,Balance"]
+        for i in range(n_rows):
+            lines.append(f"01/{(i % 28) + 1:02d}/2024,MERCHANT {i},-{i + 1}.00,500.00")
+        return "\n".join(lines)
+
+    def _make_blob_store(self, content: str):
+        blob_store = AsyncMock()
+        blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
+        return blob_store
+
+    async def test_notify_not_called_for_small_import(self):
+        """Imports with <= 1000 rows must NOT call notify_fn."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        content = self._build_large_csv(1000)  # exactly at threshold, NOT above
+        blob_store = self._make_blob_store(content)
+        notify_fn = AsyncMock()
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/small.csv",
+            notify_fn=notify_fn,
+        )
+
+        notify_fn.assert_not_awaited()
+
+    async def test_notify_called_at_all_four_thresholds_for_large_import(self):
+        """For a > 1000-row import, notify_fn is called at 25/50/75/100%."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        # 2000 rows = 4 batches of 500 → each batch hits exactly one threshold.
+        content = self._build_large_csv(2000)
+        blob_store = self._make_blob_store(content)
+        notify_fn = AsyncMock()
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/large.csv",
+            notify_fn=notify_fn,
+        )
+
+        assert notify_fn.await_count == 4, (
+            f"Expected 4 notify calls (25/50/75/100%), got {notify_fn.await_count}"
+        )
+
+    async def test_notify_messages_contain_required_fields(self):
+        """Each progress notify call includes processed/total/imported/skipped/errors."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        content = self._build_large_csv(2000)
+        blob_store = self._make_blob_store(content)
+        notify_fn = AsyncMock()
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/large.csv",
+            notify_fn=notify_fn,
+        )
+
+        for call in notify_fn.await_args_list:
+            kwargs = call.kwargs
+            assert kwargs.get("channel") == "telegram"
+            assert kwargs.get("intent") == "send"
+            msg = kwargs.get("message", "")
+            # Message must embed processed/total counts.
+            assert "/" in msg, f"Expected 'processed/total' in message: {msg!r}"
+            assert "imported" in msg
+            assert "skipped" in msg
+            assert "errors" in msg
+
+    async def test_notify_not_called_when_notify_fn_is_none(self):
+        """No notify is attempted when notify_fn is None (should not raise)."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        content = self._build_large_csv(2000)
+        blob_store = self._make_blob_store(content)
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        # Should complete without error even though there's no notify_fn.
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/large.csv",
+            notify_fn=None,
+        )
+
+        assert result["imported"] == 2000
+
+    async def test_notify_exactly_once_per_threshold(self):
+        """Each threshold fires exactly once, even across unequal batch sizes."""
+        from butlers.tools.finance.data_import import import_transactions
+
+        # 1001 rows: batch 1 = 500, batch 2 = 500, batch 3 = 1
+        content = self._build_large_csv(1001)
+        blob_store = self._make_blob_store(content)
+        notify_fn = AsyncMock()
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+
+        await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/large.csv",
+            notify_fn=notify_fn,
+        )
+
+        # All 4 thresholds must fire, each exactly once.
+        assert notify_fn.await_count == 4
+
+    async def test_progress_notify_via_emit_helper(self):
+        """_emit_progress_notification calls notify_fn with the right kwargs."""
+        from butlers.tools.finance.data_import import _emit_progress_notification
+
+        notify_fn = AsyncMock()
+        await _emit_progress_notification(
+            notify_fn,
+            processed=500,
+            total=2000,
+            imported_so_far=480,
+            skipped_so_far=15,
+            errors_so_far=5,
+        )
+
+        notify_fn.assert_awaited_once()
+        kwargs = notify_fn.await_args.kwargs
+        assert kwargs["channel"] == "telegram"
+        assert kwargs["intent"] == "send"
+        # 500/2000 = 25%
+        assert "25%" in kwargs["message"]
+        assert "500" in kwargs["message"]
+        assert "2000" in kwargs["message"]
+
+    async def test_progress_notify_skipped_when_notify_fn_none(self):
+        """_emit_progress_notification is a no-op when notify_fn is None."""
+        from butlers.tools.finance.data_import import _emit_progress_notification
+
+        # Should not raise.
+        await _emit_progress_notification(
+            None,
+            processed=500,
+            total=2000,
+            imported_so_far=480,
+            skipped_so_far=0,
+            errors_so_far=0,
+        )

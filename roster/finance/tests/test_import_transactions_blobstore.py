@@ -113,6 +113,7 @@ class _FakeModule:
     def __init__(self, *, pool=None, blob_store=None) -> None:
         self._pool = pool
         self.blob_store = blob_store
+        self.notify_fn = None  # matches FinanceModule.notify_fn
 
     def _get_pool(self):
         return self._pool
