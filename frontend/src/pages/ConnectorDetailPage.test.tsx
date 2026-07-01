@@ -332,15 +332,16 @@ describe("ConnectorDetailPage — error state", () => {
     } as UseConnectorDetailResult);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("detail-error");
+    // The Page shell owns the error state — check for the error message text.
     expect(html).toContain("Network error");
+    expect(html).toContain("Something went wrong");
   });
 
   it("shows not-found state when connector data is missing after load", () => {
     setConnectorState(null);
     setStatsState();
     const html = renderPage();
-    expect(html).toContain("detail-not-found");
+    // The Page shell owns the empty state — check for the title/description text.
     expect(html).toContain("Connector not found");
   });
 });

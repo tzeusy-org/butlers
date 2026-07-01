@@ -1,18 +1,15 @@
 // ---------------------------------------------------------------------------
-// FactDetailPage — the fact's editorial detail page. (bu-2ix8d.7)
+// FactDetailPage — the fact's detail page. (bu-2ix8d.7)
 //
-// Shares the DetailSkeleton shape with the rule and episode pages. Fact-specific
-// pieces:
-//   - The decay-arithmetic line (mono, honest): confidence · decay · last
-//     confirmed · effective.
-//   - Entity anchors out: subject → /entities/:entity_id, object →
-//     /entities/:object_entity_id.
-//   - Supersession links, BOTH directions when present in the payload:
-//     `supersedes` (forward, the fact's own supersedes_id) AND `superseded by`
-//     (reverse, the payload's superseded_by from bu-awo8k.8). Either link is
-//     omitted when its id is absent.
-//   - The commit footer (Confirm / Retract). Both endpoints are LIVE on main
-//     (bu-awo8k.3 / .4), so the footer ALWAYS renders here — never a dead button.
+// Adopts <Page archetype="detail"> shell per the detail-page-archetype spec
+// (bu-1jh6i). The shell owns breadcrumbs, the h1 title (fact content),
+// description (subject · predicate), status pill (validity), and all
+// loading / error / empty states. The page body owns Tiers 3–5:
+//   - DetailEyebrow (kind + short id)
+//   - State line, decay-arithmetic line
+//   - KV band, metadata block
+//   - Provenance section (omitted when empty)
+//   - Commit footer (Confirm / Retract; both endpoints live)
 //
 // Binding docs:
 // - (memory house-ledger redesign, graduated) prompts/06-detail-pages.md "Fact" + "Commit footer"
@@ -24,8 +21,6 @@ import { Link, useParams } from "react-router";
 
 import {
   DetailEyebrow,
-  DetailHeading,
-  DetailSkeleton,
   KVBand,
   MetadataBlock,
   ProvenanceLink,
@@ -34,6 +29,8 @@ import {
 } from "@/components/memory/DetailSkeleton";
 import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
+import { Badge } from "@/components/ui/badge";
+import { Page } from "@/components/ui/page";
 import { useConfirmFact, useFact, useRetractFact } from "@/hooks/use-memory";
 import { decayArithmeticLine, permanenceTag } from "@/lib/memory-derived";
 import { cn } from "@/lib/utils";
@@ -171,110 +168,132 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
   const { data, isLoading } = useFact(factId ?? null);
   const fact = data?.data;
 
-  if (!fact) {
-    return (
-      <DetailSkeleton backHref="/memory" backLabel="ledger">
-        <Voice variant="italic" className="py-6 text-[var(--mfg)]">
-          {isLoading ? "Reading the ledger…" : "This fact is not in the ledger."}
-        </Voice>
-      </DetailSkeleton>
-    );
-  }
+  // Title: content is the record identity; truncate to 80 chars per spec.
+  const title = fact
+    ? fact.content.length > 80
+      ? fact.content.slice(0, 80)
+      : fact.content
+    : "Fact";
 
-  // The server owns the fading threshold — dim the whole page on validity.
-  const dimmed = fact.validity === "fading";
+  // The server owns the fading threshold — dim body elements on fading validity.
+  // The h1 is now owned by the Page shell; fading is surfaced via the status pill.
+  const dimmed = fact?.validity === "fading";
 
   // Supersession, both directions: forward from the fact's own supersedes_id,
   // reverse from the payload's superseded_by (bu-awo8k.8).
-  const supersededById = fact.superseded_by ?? null;
+  const supersededById = fact?.superseded_by ?? null;
 
   // Provenance children: only render the section when at least one chain link
   // exists. Empty provenance OMITS the section entirely (no empty shell).
-  const provenanceLinks = [
-    fact.source_episode_id != null ? (
-      <ProvenanceLink
-        key="episode"
-        to={`/memory/episodes/${fact.source_episode_id}`}
-        label={`derived from episode ${shortFragment(fact.source_episode_id)}`}
-      />
-    ) : null,
-    fact.supersedes_id != null ? (
-      <ProvenanceLink
-        key="supersedes"
-        to={`/memory/facts/${fact.supersedes_id}`}
-        label={`supersedes ${shortFragment(fact.supersedes_id)}`}
-      />
-    ) : null,
-    supersededById != null ? (
-      <ProvenanceLink
-        key="superseded-by"
-        to={`/memory/facts/${supersededById}`}
-        label={`superseded by ${shortFragment(supersededById)}`}
-      />
-    ) : null,
-  ].filter((x): x is ReactElement => x != null);
+  const provenanceLinks: ReactElement[] = [];
+  if (fact) {
+    if (fact.source_episode_id != null) {
+      provenanceLinks.push(
+        <ProvenanceLink
+          key="episode"
+          to={`/memory/episodes/${fact.source_episode_id}`}
+          label={`derived from episode ${shortFragment(fact.source_episode_id)}`}
+        />,
+      );
+    }
+    if (fact.supersedes_id != null) {
+      provenanceLinks.push(
+        <ProvenanceLink
+          key="supersedes"
+          to={`/memory/facts/${fact.supersedes_id}`}
+          label={`supersedes ${shortFragment(fact.supersedes_id)}`}
+        />,
+      );
+    }
+    if (supersededById != null) {
+      provenanceLinks.push(
+        <ProvenanceLink
+          key="superseded-by"
+          to={`/memory/facts/${supersededById}`}
+          label={`superseded by ${shortFragment(supersededById)}`}
+        />,
+      );
+    }
+  }
 
   return (
-    <DetailSkeleton backHref="/memory" backLabel="ledger">
-      <DetailEyebrow kind="fact" id={fact.id} />
+    <Page
+      archetype="detail"
+      title={title}
+      breadcrumbs={[{ label: "ledger", href: "/memory" }]}
+      description={fact ? `${fact.subject} · ${fact.predicate}` : undefined}
+      status={
+        fact ? (
+          <Badge variant="secondary">{fact.validity}</Badge>
+        ) : undefined
+      }
+      loading={isLoading}
+      empty={
+        !fact && !isLoading
+          ? {
+              title: "Fact not found",
+              description: "This fact is not in the ledger.",
+            }
+          : null
+      }
+    >
+      {fact && (
+        <div className="mx-auto flex max-w-[680px] flex-col gap-6">
+          <DetailEyebrow kind="fact" id={fact.id} />
 
-      {/* Heading: the content is the headline; subject · predicate is the
-          record-identity subtitle below it (per the detail-page archetype). */}
-      <DetailHeading dimmed={dimmed} subtitle={`${fact.subject} · ${fact.predicate}`}>
-        {fact.content}
-      </DetailHeading>
+          {/* State line — lifecycle in the API's words. */}
+          <StateLine
+            dimmed={dimmed}
+            fragments={[
+              fact.validity,
+              `${fact.permanence} permanence`,
+              fact.scope ? `${fact.scope} scope` : null,
+            ]}
+          />
 
-      {/* State line — lifecycle in the API's words. */}
-      <StateLine
-        dimmed={dimmed}
-        fragments={[
-          fact.validity,
-          `${fact.permanence} permanence`,
-          fact.scope ? `${fact.scope} scope` : null,
-        ]}
-      />
+          {/* Decay arithmetic — one honest mono line. */}
+          <Mono
+            muted={dimmed}
+            className={cn("tabular-nums", dimmed && "text-[var(--dim)]")}
+          >
+            {decayArithmeticLine(fact, now)}
+          </Mono>
 
-      {/* Decay arithmetic — one honest mono line. */}
-      <Mono
-        muted={dimmed}
-        className={cn("tabular-nums", dimmed && "text-[var(--dim)]")}
-      >
-        {decayArithmeticLine(fact, now)}
-      </Mono>
+          {/* KV band — empty keys omitted. */}
+          <KVBand
+            entries={[
+              { key: "subject", value: <EntityAnchor id={fact.entity_id} name={fact.entity_name} fallback={fact.subject} /> },
+              { key: "predicate", value: <span className="font-mono text-[11px]">{fact.predicate}</span> },
+              {
+                key: "object",
+                value:
+                  fact.object_entity_id != null || fact.object_entity_name != null ? (
+                    <EntityAnchor id={fact.object_entity_id} name={fact.object_entity_name} fallback={fact.content} />
+                  ) : null,
+              },
+              { key: "permanence", value: <span className="font-mono text-[11px] tabular-nums">{permanenceTag(fact.permanence)}</span> },
+              { key: "created", value: <Mono>{fmtDate(fact.created_at)}</Mono> },
+              { key: "last referenced", value: fact.last_referenced_at ? <Mono>{fmtDate(fact.last_referenced_at)}</Mono> : null },
+              { key: "last confirmed", value: fact.last_confirmed_at ? <Mono>{fmtDate(fact.last_confirmed_at)}</Mono> : null },
+              { key: "references", value: <Mono>{fact.reference_count}</Mono> },
+              { key: "source butler", value: fact.source_butler ? <Mono>{fact.source_butler}</Mono> : null },
+              { key: "tags", value: fact.tags.length > 0 ? fact.tags.join(", ") : null },
+            ]}
+          />
 
-      {/* KV band — empty keys omitted. */}
-      <KVBand
-        entries={[
-          { key: "subject", value: <EntityAnchor id={fact.entity_id} name={fact.entity_name} fallback={fact.subject} /> },
-          { key: "predicate", value: <span className="font-mono text-[11px]">{fact.predicate}</span> },
-          {
-            key: "object",
-            value:
-              fact.object_entity_id != null || fact.object_entity_name != null ? (
-                <EntityAnchor id={fact.object_entity_id} name={fact.object_entity_name} fallback={fact.content} />
-              ) : null,
-          },
-          { key: "permanence", value: <span className="font-mono text-[11px] tabular-nums">{permanenceTag(fact.permanence)}</span> },
-          { key: "created", value: <Mono>{fmtDate(fact.created_at)}</Mono> },
-          { key: "last referenced", value: fact.last_referenced_at ? <Mono>{fmtDate(fact.last_referenced_at)}</Mono> : null },
-          { key: "last confirmed", value: fact.last_confirmed_at ? <Mono>{fmtDate(fact.last_confirmed_at)}</Mono> : null },
-          { key: "references", value: <Mono>{fact.reference_count}</Mono> },
-          { key: "source butler", value: fact.source_butler ? <Mono>{fact.source_butler}</Mono> : null },
-          { key: "tags", value: fact.tags.length > 0 ? fact.tags.join(", ") : null },
-        ]}
-      />
+          {/* Metadata — raw bag as a mono code block; omitted when empty. */}
+          <MetadataBlock metadata={fact.metadata} />
 
-      {/* Metadata — raw bag as a mono code block; omitted when empty. */}
-      <MetadataBlock metadata={fact.metadata} />
+          {/* Provenance & cross-references — omitted when empty. */}
+          <ProvenanceSection>
+            {provenanceLinks.length > 0 ? <>{provenanceLinks}</> : null}
+          </ProvenanceSection>
 
-      {/* Provenance & cross-references — omitted when empty. */}
-      <ProvenanceSection>
-        {provenanceLinks.length > 0 ? <>{provenanceLinks}</> : null}
-      </ProvenanceSection>
-
-      {/* Commit footer — both endpoints live, always rendered. */}
-      <CommitFooter fact={fact} />
-    </DetailSkeleton>
+          {/* Commit footer — both endpoints live, always rendered. */}
+          <CommitFooter fact={fact} />
+        </div>
+      )}
+    </Page>
   );
 }
 

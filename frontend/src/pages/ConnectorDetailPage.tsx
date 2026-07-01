@@ -1,9 +1,10 @@
 /**
  * ConnectorDetailPage — /ingestion/connectors/:connectorType/:endpointIdentity
  *
- * Dispatch-language connector detail page. Wires data and renders the
- * ConnectorDetailView layout (two-zone editorial: header band + left narrative
- * + right index column).
+ * Adopts the <Page archetype="detail"> shell for loading, error, and empty
+ * states per the detail-page-archetype spec (bu-1jh6i). The shell handles
+ * chrome and state management; ConnectorDetailView owns the content body
+ * (Dispatch-language two-zone editorial layout).
  *
  * Uses existing hooks:
  * - useConnectorDetail — full connector metadata (liveness, state, counters, etc.)
@@ -45,6 +46,7 @@ import {
 } from '@/hooks/use-ingestion'
 import type { ConnectorScopeEntry } from '@/api/types'
 import { getProviderOAuthStartUrl } from '@/api/client'
+import { Page, type Breadcrumb } from '@/components/ui/page'
 
 /** Map backend ConnectorScopeEntry[] to the OAuthScope[] shape ScopeList consumes. */
 function _toOAuthScopes(scopes: ConnectorScopeEntry[] | null | undefined): OAuthScope[] | null {
@@ -78,6 +80,12 @@ function _scopeSetForConnectorType(connectorType: string): string | undefined {
   if (connectorType === 'google_health') return 'health'
   return undefined
 }
+
+/** Breadcrumbs for the connector detail page shell states. */
+const CONNECTOR_BREADCRUMBS: Breadcrumb[] = [
+  { label: 'ingestion', href: '/ingestion' },
+  { label: 'connectors', href: '/ingestion/connectors' },
+]
 
 export default function ConnectorDetailPage() {
   const { connectorType, endpointIdentity } = useParams<{
@@ -182,89 +190,78 @@ export default function ConnectorDetailPage() {
     navigate('/secrets?focus=u:google')
   }, [navigate])
 
+  // --- Shell-owned states (loading, error, not-found) ----------------------
+  // The Page shell handles these via its loading / error / empty props, replacing
+  // the bespoke inline LoadingSkeleton / ErrorState / NotFoundState components.
+
+  if (detailLoading || statsLoading) {
+    return (
+      <Page
+        archetype="detail"
+        title={connectorType ?? 'Connector'}
+        breadcrumbs={CONNECTOR_BREADCRUMBS}
+        loading
+      >
+        {null}
+      </Page>
+    )
+  }
+
+  if (detailError) {
+    return (
+      <Page
+        archetype="detail"
+        title={connectorType ?? 'Connector'}
+        breadcrumbs={CONNECTOR_BREADCRUMBS}
+        error={detailError}
+      >
+        {null}
+      </Page>
+    )
+  }
+
+  if (!connector) {
+    return (
+      <Page
+        archetype="detail"
+        title="Connector not found"
+        breadcrumbs={CONNECTOR_BREADCRUMBS}
+        empty={{
+          title: 'Connector not found',
+          description: connectorType
+            ? `No connector found for ${connectorType}/${endpointIdentity ?? ''}.`
+            : 'Connector not found.',
+        }}
+      >
+        {null}
+      </Page>
+    )
+  }
+
+  // --- Normal state: Dispatch-language layout (ConnectorDetailView) ---------
   return (
     <DispatchLayout>
       <IngestionSubNav />
       <DispatchSurface>
-        {detailLoading || statsLoading ? (
-          <LoadingSkeleton />
-        ) : detailError ? (
-          <ErrorState connectorType={connectorType} error={detailError} />
-        ) : connector ? (
-          <>
-            <ConnectorDetailView
+        <ConnectorDetailView
+          connector={connector}
+          stats={stats}
+          oauthScopes={_toOAuthScopes(connector.scopes)}
+          recentEvents={eventsResp ?? null}
+          incidents={incidentsResp ?? null}
+          routingRules={routingRulesResp ?? null}
+          onReauth={handleReauth}
+          onSetPrimaryAccount={handleSetPrimaryAccount}
+        />
+        {BATCH_CONNECTOR_TYPES.has(connector.connector_type) && (
+          <div className="mt-8" data-testid="batch-settings-section">
+            <BatchSettingsCard
               connector={connector}
-              stats={stats}
-              oauthScopes={_toOAuthScopes(connector.scopes)}
-              recentEvents={eventsResp ?? null}
-              incidents={incidentsResp ?? null}
-              routingRules={routingRulesResp ?? null}
-              onReauth={handleReauth}
-              onSetPrimaryAccount={handleSetPrimaryAccount}
+              settingsMutation={settingsMutation}
             />
-            {BATCH_CONNECTOR_TYPES.has(connector.connector_type) && (
-              <div className="mt-8" data-testid="batch-settings-section">
-                <BatchSettingsCard
-                  connector={connector}
-                  settingsMutation={settingsMutation}
-                />
-              </div>
-            )}
-          </>
-        ) : (
-          <NotFoundState connectorType={connectorType} endpointIdentity={endpointIdentity} />
+          </div>
         )}
       </DispatchSurface>
     </DispatchLayout>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Sub-states
-// ---------------------------------------------------------------------------
-
-function LoadingSkeleton() {
-  return (
-    <div className="space-y-4 animate-pulse" data-testid="detail-loading">
-      <div className="h-20 bg-foreground/5 rounded" />
-      <div className="h-40 bg-foreground/5 rounded" />
-      <div className="h-60 bg-foreground/5 rounded" />
-    </div>
-  )
-}
-
-function ErrorState({
-  connectorType,
-  error,
-}: {
-  connectorType: string | undefined
-  error: Error
-}) {
-  return (
-    <div data-testid="detail-error" className="py-8">
-      <p className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2">
-        error
-      </p>
-      <p className="font-serif italic text-[14px] text-muted-foreground">
-        Failed to load connector{connectorType ? ` ${connectorType}` : ''}: {error.message}
-      </p>
-    </div>
-  )
-}
-
-function NotFoundState({
-  connectorType,
-  endpointIdentity,
-}: {
-  connectorType: string | undefined
-  endpointIdentity: string | undefined
-}) {
-  return (
-    <div data-testid="detail-not-found" className="py-8">
-      <p className="font-serif italic text-[14px] text-muted-foreground">
-        Connector not found
-        {connectorType ? `: ${connectorType}/${endpointIdentity ?? ''}` : ''}.
-      </p>
-    </div>
   )
 }

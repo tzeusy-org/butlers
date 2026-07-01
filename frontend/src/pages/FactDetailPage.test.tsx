@@ -172,11 +172,15 @@ describe("FactDetailPage", () => {
     expect(text).toMatch(/effective 0\.9\d/);
   });
 
-  it("dims the heading when the fact is fading", () => {
+  it("shows a validity status badge on the title row when the fact is fading", () => {
     setFact(makeFact({ validity: "fading" }));
     mounted = render();
+    const text = mounted.container.textContent ?? "";
+    // The shell renders the validity as a status badge adjacent to the h1.
+    expect(text).toContain("fading");
+    // The h1 itself is owned by the Page shell and does not carry --dim class.
     const h1 = mounted.container.querySelector("h1");
-    expect(h1?.className).toContain("var(--dim)");
+    expect(h1).not.toBeNull();
   });
 
   it("omits the PROVENANCE section when there is no provenance", () => {

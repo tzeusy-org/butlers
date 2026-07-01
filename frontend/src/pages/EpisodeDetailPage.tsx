@@ -1,16 +1,15 @@
 // ---------------------------------------------------------------------------
-// EpisodeDetailPage — the episode's editorial detail page. (bu-2ix8d.7)
+// EpisodeDetailPage — the episode's detail page. (bu-2ix8d.7)
 //
-// Shares the DetailSkeleton shape with the fact and rule pages. Episode-specific
-// pieces:
-//   - The heading is the first line of content; full content renders below in a
-//     readable sans measure (~65ch) — the detail page is where the body lives.
-//   - Session id (mono) linking to the session log page when present.
-//   - Importance, retention class, and the consolidation glyph + WORD in mono
-//     (`◦ pending`). The detail page is the one place the glyph gets its word.
-//   - Provenance: facts derived from this episode (GET /facts?source_episode_id
-//     — bu-awo8k.6, LIVE). The section is OMITTED when no facts were derived
-//     (list nothing rather than fake it).
+// Adopts <Page archetype="detail"> shell per the detail-page-archetype spec
+// (bu-1jh6i). The shell owns breadcrumbs, the h1 title (first content line),
+// description (session reference), status pill (consolidation state), and all
+// loading / empty states. The page body owns Tiers 3–5:
+//   - DetailEyebrow (kind + short id)
+//   - State line (consolidation state + butler lane)
+//   - Full content body (~65ch)
+//   - KV band, metadata block
+//   - Provenance section (derived facts; omitted when none)
 //
 // No commit footer — mutations live only on the fact page.
 //
@@ -24,8 +23,6 @@ import { Link, useParams } from "react-router";
 
 import {
   DetailEyebrow,
-  DetailHeading,
-  DetailSkeleton,
   KVBand,
   MetadataBlock,
   ProvenanceLink,
@@ -34,6 +31,8 @@ import {
 } from "@/components/memory/DetailSkeleton";
 import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
+import { Badge } from "@/components/ui/badge";
+import { Page } from "@/components/ui/page";
 import { useEpisode, useFactsByEpisode } from "@/hooks/use-memory";
 import { consolidationGlyph } from "@/lib/memory-derived";
 import { cn } from "@/lib/utils";
@@ -75,18 +74,16 @@ export default function EpisodeDetailPage() {
     );
   }, [episode]);
 
-  if (!episode) {
-    return (
-      <DetailSkeleton backHref="/memory?register=episodes" backLabel="daybook">
-        <Voice variant="italic" className="py-6 text-[var(--mfg)]">
-          {isLoading ? "Turning to the daybook…" : "This episode is not in the daybook."}
-        </Voice>
-      </DetailSkeleton>
-    );
-  }
+  // Title: first content line; truncate to 80 chars per spec.
+  const title = heading.length > 80 ? heading.slice(0, 80) : heading || "Episode";
 
-  const status = episode.consolidation_status;
-  const isDead = status === "dead_letter" || status === "failed";
+  // Session reference for description: the record-identity subtitle per the spec.
+  // Falls back to the truncated episode id when the episode has no session.
+  const description = episode
+    ? episode.session_id
+      ? `session ${episode.session_id}`
+      : `Episode ${episode.id.slice(0, 8)}`
+    : undefined;
 
   // Provenance: derived facts only. Omit the section when there are none.
   const provenance =
@@ -103,65 +100,77 @@ export default function EpisodeDetailPage() {
     ) : null;
 
   return (
-    <DetailSkeleton backHref="/memory?register=episodes" backLabel="daybook">
-      <DetailEyebrow kind="episode" id={episode.id} />
+    <Page
+      archetype="detail"
+      title={title}
+      breadcrumbs={[{ label: "daybook", href: "/memory?register=episodes" }]}
+      description={description}
+      status={
+        episode ? (
+          <Badge variant="secondary">{episode.consolidation_status}</Badge>
+        ) : undefined
+      }
+      loading={isLoading}
+      empty={
+        !episode && !isLoading
+          ? {
+              title: "Episode not found",
+              description: "This episode is not in the daybook.",
+            }
+          : null
+      }
+    >
+      {episode && (
+        <div className="mx-auto flex max-w-[680px] flex-col gap-6">
+          <DetailEyebrow kind="episode" id={episode.id} />
 
-      {/* Heading: the episode's opening line; the session reference is the
-          record-identity subtitle below it (per the detail-page archetype —
-          a session-scoped record derives identity from its session). Falls
-          back to the truncated episode id when the episode has no session, so
-          the record-identity line is never absent (per the domain-pages spec). */}
-      <DetailHeading
-        subtitle={
-          episode.session_id ? `session ${episode.session_id}` : `Episode ${episode.id.slice(0, 8)}`
-        }
-      >
-        {heading}
-      </DetailHeading>
+          {/* State line — consolidation state + butler, in the API's words. */}
+          <StateLine fragments={[episode.consolidation_status, episode.butler ? `${episode.butler} lane` : null]} />
 
-      {/* State line — consolidation state + butler, in the API's words. */}
-      <StateLine fragments={[status, episode.butler ? `${episode.butler} lane` : null]} />
+          {/* Full content — readable sans measure (~65ch). The body lives here. */}
+          <Voice as="div" className="max-w-[65ch] whitespace-pre-wrap text-[14px] leading-relaxed">
+            {episode.content}
+          </Voice>
 
-      {/* Full content — readable sans measure (~65ch). The body lives here. */}
-      <Voice as="div" className="max-w-[65ch] whitespace-pre-wrap text-[14px] leading-relaxed">
-        {episode.content}
-      </Voice>
+          {/* KV band — empty keys omitted. */}
+          <KVBand
+            entries={[
+              {
+                key: "session",
+                value: episode.session_id ? (
+                  <Link
+                    to={`/sessions/${episode.session_id}`}
+                    className="font-mono text-[11px] underline [text-underline-offset:3px] hover:text-[var(--fg)]"
+                  >
+                    {episode.session_id}
+                  </Link>
+                ) : null,
+              },
+              { key: "importance", value: <Mono>{episode.importance.toFixed(1)}</Mono> },
+              {
+                key: "consolidation",
+                value: (
+                  <Mono className={cn(
+                    (episode.consolidation_status === "dead_letter" || episode.consolidation_status === "failed") && "text-[var(--red)]"
+                  )}>
+                    {consolidationGlyph(episode.consolidation_status)} {episode.consolidation_status}
+                  </Mono>
+                ),
+              },
+              { key: "references", value: <Mono>{episode.reference_count}</Mono> },
+              { key: "created", value: <Mono>{fmtDate(episode.created_at)}</Mono> },
+              { key: "last referenced", value: episode.last_referenced_at ? <Mono>{fmtDate(episode.last_referenced_at)}</Mono> : null },
+              { key: "expires", value: episode.expires_at ? <Mono>{fmtDate(episode.expires_at)}</Mono> : null },
+            ]}
+          />
 
-      {/* KV band — empty keys omitted. */}
-      <KVBand
-        entries={[
-          {
-            key: "session",
-            value: episode.session_id ? (
-              <Link
-                to={`/sessions/${episode.session_id}`}
-                className="font-mono text-[11px] underline [text-underline-offset:3px] hover:text-[var(--fg)]"
-              >
-                {episode.session_id}
-              </Link>
-            ) : null,
-          },
-          { key: "importance", value: <Mono>{episode.importance.toFixed(1)}</Mono> },
-          {
-            key: "consolidation",
-            value: (
-              <Mono className={cn(isDead && "text-[var(--red)]")}>
-                {consolidationGlyph(status)} {status}
-              </Mono>
-            ),
-          },
-          { key: "references", value: <Mono>{episode.reference_count}</Mono> },
-          { key: "created", value: <Mono>{fmtDate(episode.created_at)}</Mono> },
-          { key: "last referenced", value: episode.last_referenced_at ? <Mono>{fmtDate(episode.last_referenced_at)}</Mono> : null },
-          { key: "expires", value: episode.expires_at ? <Mono>{fmtDate(episode.expires_at)}</Mono> : null },
-        ]}
-      />
+          {/* Metadata — raw bag as a mono code block; omitted when empty. */}
+          <MetadataBlock metadata={episode.metadata} />
 
-      {/* Metadata — raw bag as a mono code block; omitted when empty. */}
-      <MetadataBlock metadata={episode.metadata} />
-
-      {/* Provenance — derived facts only; omitted when none. */}
-      <ProvenanceSection>{provenance}</ProvenanceSection>
-    </DetailSkeleton>
+          {/* Provenance — derived facts only; omitted when none. */}
+          <ProvenanceSection>{provenance}</ProvenanceSection>
+        </div>
+      )}
+    </Page>
   );
 }

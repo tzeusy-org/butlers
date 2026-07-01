@@ -516,14 +516,15 @@ test.describe("ingestion visual parity — route smoke", () => {
       test,
     );
 
-    // Either the KPI strip (loaded) or the loading/not-found state should appear.
-    // We accept kpi-strip OR detail-loading OR detail-not-found to handle both
-    // success and mock-miss paths. Use a combined locator (Playwright idiomatic)
-    // instead of Promise.race to avoid resource leaks.
+    // The KPI strip (data-testid='kpi-strip') must be visible when the connector
+    // data loads. The mocks above return FIXTURE_CONNECTOR_BACKEND so the normal
+    // Dispatch-language layout (ConnectorDetailView) renders.
+    // Note: legacy detail-loading / detail-not-found testids were removed in
+    // bu-1jh6i (Page archetype adoption); the Page shell's state elements have
+    // no named testids. With the mocks in place the connector always loads, so
+    // kpi-strip is the only expected element.
     await expect(
-      page.locator(
-        "[data-testid='kpi-strip'], [data-testid='detail-loading'], [data-testid='detail-not-found']",
-      ),
+      page.locator("[data-testid='kpi-strip']"),
     ).toBeVisible({ timeout: TIMEOUT_MS });
 
     // The page must not crash (no error boundary message)
