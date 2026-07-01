@@ -706,6 +706,34 @@ async def _insert_txn_v2(
     )
 
 
+async def _install_category_fk(pool) -> None:
+    """Install the finance_006 category taxonomy constraint for focused tests."""
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS categories (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name            TEXT NOT NULL UNIQUE,
+            display_name    TEXT NOT NULL,
+            is_system       BOOLEAN NOT NULL DEFAULT false,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    await pool.execute("""
+        INSERT INTO categories (name, display_name, is_system)
+        VALUES
+            ('groceries', 'Groceries', true),
+            ('uncategorized', 'Uncategorized', true)
+        ON CONFLICT DO NOTHING
+    """)
+    await pool.execute("""
+        ALTER TABLE transactions
+            ADD CONSTRAINT fk_txn_category
+            FOREIGN KEY (category)
+            REFERENCES categories(name)
+            ON UPDATE CASCADE ON DELETE RESTRICT
+    """)
+
+
 # ---------------------------------------------------------------------------
 # record_transaction enhanced features
 # ---------------------------------------------------------------------------
@@ -900,6 +928,50 @@ class TestRecordTransactionEnhanced:
             category="entertainment",  # explicit override
         )
         assert txn["category"] == "entertainment"
+
+    async def test_unknown_category_falls_back_when_category_fk_exists(self, pool_v2):
+        """record_transaction stores unknown categories as uncategorized under the FK schema."""
+        from butlers.tools.finance.transactions import record_transaction
+
+        await _install_category_fk(pool_v2)
+
+        txn = await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Unknown Category Merchant",
+            amount=-12.34,
+            currency="USD",
+            category="misc",
+        )
+
+        assert txn["category"] == "uncategorized"
+        assert txn["category_source"] == "manual"
+        assert txn["metadata"]["original_category"] == "misc"
+        assert txn["metadata"]["warnings"] == [
+            {
+                "code": "unknown_category",
+                "field": "category",
+                "stored_as": "uncategorized",
+            }
+        ]
+
+    async def test_category_is_canonicalized_case_insensitively_for_fk_schema(self, pool_v2):
+        """record_transaction accepts display-style casing when categories are FK-backed."""
+        from butlers.tools.finance.transactions import record_transaction
+
+        await _install_category_fk(pool_v2)
+
+        txn = await record_transaction(
+            pool=pool_v2,
+            posted_at=_utcnow(),
+            merchant="Grocery Merchant",
+            amount=-45.67,
+            currency="USD",
+            category="Groceries",
+        )
+
+        assert txn["category"] == "groceries"
+        assert txn["metadata"] == {}
 
 
 # ---------------------------------------------------------------------------

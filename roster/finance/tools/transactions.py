@@ -85,6 +85,10 @@ async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None
 # weak references.
 _column_existence_cache: dict[int, dict[tuple[str, str], bool]] = {}
 
+# Module-level cache for _has_table results, mirroring _column_existence_cache.
+# Avoids an information_schema round-trip per insert (hot on bulk imports).
+_table_existence_cache: dict[int, dict[str, bool]] = {}
+
 
 async def _mirror_to_spo(
     pool: asyncpg.Pool,
@@ -347,7 +351,15 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
 
 
 async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
-    """Return True if the given table exists in the current schema."""
+    """Return True if the given table exists in the current schema.
+
+    Results are cached per pool for the lifetime of the process to avoid
+    repeated ``information_schema`` queries on every insert / dedup call
+    (hot during bulk imports).
+    """
+    per_pool = _table_existence_cache.setdefault(id(pool), {})
+    if table in per_pool:
+        return per_pool[table]
     count = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.tables
@@ -355,7 +367,9 @@ async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
         """,
         table,
     )
-    return bool(count)
+    result = bool(count)
+    per_pool[table] = result
+    return result
 
 
 async def _lookup_merchant_category(pool: asyncpg.Pool, merchant: str) -> str | None:
@@ -380,6 +394,63 @@ async def _lookup_merchant_category(pool: asyncpg.Pool, merchant: str) -> str | 
     if row is None:
         return None
     return row["category"]
+
+
+async def _resolve_category_for_insert(
+    pool: asyncpg.Pool,
+    category: str | None,
+    metadata: dict[str, Any],
+) -> tuple[str, bool]:
+    """Return a category value that is valid for the current schema.
+
+    Older test and development schemas allow free-form ``transactions.category``
+    text. Migrated schemas enforce ``transactions.category -> categories.name``;
+    in those schemas an LLM-supplied free-form category should not leak a raw FK
+    violation from the tool layer. Unknown categories are preserved in metadata
+    and stored under the canonical ``uncategorized`` bucket.
+    """
+    candidate = str(category or "").strip() or "uncategorized"
+    if not await _has_table(pool, "categories"):
+        return candidate, False
+
+    row = await pool.fetchrow(
+        """
+        SELECT name FROM categories
+        WHERE lower(name) = lower($1)
+        LIMIT 1
+        """,
+        candidate,
+    )
+    if row is not None:
+        return row["name"], False
+
+    fallback = await pool.fetchrow(
+        """
+        SELECT name FROM categories
+        WHERE name = 'uncategorized'
+        LIMIT 1
+        """
+    )
+    if fallback is None:
+        return candidate, False
+
+    metadata.setdefault("original_category", candidate)
+    warning = {
+        "code": "unknown_category",
+        "field": "category",
+        "stored_as": fallback["name"],
+    }
+    existing_warnings = metadata.get("warnings")
+    if isinstance(existing_warnings, list):
+        # Assign a new list rather than appending in place: ``metadata`` is only
+        # a shallow copy of the caller's dict, so its list values may be shared.
+        metadata["warnings"] = [*existing_warnings, warning]
+    elif existing_warnings is None:
+        metadata["warnings"] = [warning]
+    else:
+        metadata["warnings"] = [existing_warnings, warning]
+
+    return fallback["name"], True
 
 
 async def _record_correction(
@@ -540,6 +611,13 @@ async def record_transaction(
             category_source = "manual"
 
     meta_dict = dict(metadata or {})
+    effective_category, used_category_fallback = await _resolve_category_for_insert(
+        pool,
+        effective_category,
+        meta_dict,
+    )
+    if used_category_fallback:
+        category_source = "manual"
 
     # Check for optional new columns from finance_002 migration.
     has_category_source = await _has_column(pool, "transactions", "category_source")

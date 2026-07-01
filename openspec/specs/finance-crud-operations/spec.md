@@ -16,6 +16,13 @@ Creating a single transaction SHALL check for duplicates, apply merchant mapping
 - **AND** if a mapping is found, the category SHALL be set from the mapping with `category_source = 'auto'`
 - **AND** if no mapping is found, the category SHALL remain `'uncategorized'`
 
+#### Scenario: Unknown category fallback under the category foreign-key schema
+- **WHEN** `record_transaction` is called with a category and the migrated `categories` taxonomy table exists (enforcing `transactions.category -> categories.name`)
+- **THEN** the tool SHALL resolve the supplied category against `categories` case-insensitively and store the canonical `name` when a match is found
+- **AND** if no match is found, the category SHALL be stored as the seeded `'uncategorized'` bucket instead of leaking a raw `ForeignKeyViolationError` from the tool layer, with `category_source = 'manual'`
+- **AND** the original supplied value SHALL be preserved in `metadata.original_category`, and a structured warning `{code: 'unknown_category', field: 'category', stored_as: 'uncategorized'}` SHALL be appended to `metadata.warnings`
+- **AND** on legacy schemas without the `categories` table, the free-form category value SHALL be preserved unchanged
+
 #### Scenario: Post-insert SPO mirror write
 - **WHEN** a transaction is successfully inserted into `finance.transactions`
 - **THEN** a background task SHALL mirror the transaction to `public.facts` with the appropriate predicate (`'transaction_debit'` or `'transaction_credit'`)

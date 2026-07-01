@@ -103,6 +103,76 @@ def _make_pool(*, fetchrow_return=None, fetchval_return=None, fetch_return=None)
     return pool
 
 
+class _CategoryTaxonomyPool:
+    def __init__(self, categories: set[str] | None):
+        self.categories = categories
+
+    async def fetchval(self, _query, *_args):
+        return int(self.categories is not None)
+
+    async def fetchrow(self, query, *args):
+        if self.categories is None:
+            return None
+        if "lower(name) = lower($1)" in query:
+            candidate = str(args[0]).lower()
+            match = next(
+                (category for category in self.categories if category.lower() == candidate), None
+            )
+            return {"name": match} if match is not None else None
+        if "name = 'uncategorized'" in query and "uncategorized" in self.categories:
+            return {"name": "uncategorized"}
+        return None
+
+
+async def test_unknown_category_falls_back_to_uncategorized_when_taxonomy_exists():
+    """Unknown categories are converted before the category FK can reject the insert."""
+    metadata: dict = {}
+    category, used_fallback = await _txn_module._resolve_category_for_insert(
+        _CategoryTaxonomyPool({"groceries", "uncategorized"}),
+        "misc",
+        metadata,
+    )
+
+    assert category == "uncategorized"
+    assert used_fallback is True
+    assert metadata == {
+        "original_category": "misc",
+        "warnings": [
+            {
+                "code": "unknown_category",
+                "field": "category",
+                "stored_as": "uncategorized",
+            }
+        ],
+    }
+
+
+async def test_category_lookup_is_case_insensitive_when_taxonomy_exists():
+    metadata: dict = {}
+    category, used_fallback = await _txn_module._resolve_category_for_insert(
+        _CategoryTaxonomyPool({"groceries", "uncategorized"}),
+        "Groceries",
+        metadata,
+    )
+
+    assert category == "groceries"
+    assert used_fallback is False
+    assert metadata == {}
+
+
+async def test_freeform_category_is_preserved_when_taxonomy_is_absent():
+    metadata: dict = {}
+    category, used_fallback = await _txn_module._resolve_category_for_insert(
+        _CategoryTaxonomyPool(None),
+        "misc",
+        metadata,
+    )
+
+    assert category == "misc"
+    assert used_fallback is False
+    assert metadata == {}
+
+
 async def test_record_and_list_transactions():
     """Dedup returns existing without INSERT; list excludes soft-deleted rows."""
     existing_row = _make_txn_row(id=_TXN_ID, merchant="Netflix")
