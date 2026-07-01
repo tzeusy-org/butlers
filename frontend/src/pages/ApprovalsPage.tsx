@@ -34,6 +34,7 @@ import {
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import type {
+  ApiResponse,
   ApprovalDetail,
   ApprovalSummary,
   ApprovalsPolicy,
@@ -230,15 +231,22 @@ function RailItem({
 
 function Dossier({
   actionId,
-  onDecision,
+  onApprove,
+  onDeny,
+  onDefer,
+  approvePending,
+  denyPending,
+  deferPending,
 }: {
   actionId: string;
-  onDecision: () => void;
+  onApprove: () => void;
+  onDeny: () => void;
+  onDefer: (hours: number) => void;
+  approvePending: boolean;
+  denyPending: boolean;
+  deferPending: boolean;
 }) {
-  const qc = useQueryClient();
   const [deferHours, setDeferHours] = useState("24");
-  const [denyReason, setDenyReason] = useState("");
-  const [showDeny, setShowDeny] = useState(false);
   const [showDefer, setShowDefer] = useState(false);
 
   const { data, isLoading, error } = useQuery({
@@ -247,57 +255,14 @@ function Dossier({
     enabled: !!actionId,
   });
 
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["approvals", "flat", "waiting"] });
-    qc.invalidateQueries({ queryKey: Q.history() });
-    qc.invalidateQueries({ queryKey: Q.detail(actionId) });
-    onDecision();
-  };
-
-  const approveMut = useMutation({
-    mutationFn: () => approveApproval(actionId),
-    onSuccess: (res) => {
-      // Honest outcome: the action only ran if the backend dispatched it
-      // (status "executed" / dispatched=true). Otherwise it is approved but
-      // un-run and stays retry-able — do not claim success.
-      const action = res?.data;
-      const ran = action?.dispatched === true || action?.status === "executed";
-      if (ran) {
-        toast.success("Approved & dispatched");
-      } else {
-        toast.warning("Approved. Queued, not yet run. Retry from History.");
-      }
-      invalidate();
-    },
-    onError: (e: Error) => toast.error(`Approve failed: ${e.message}`),
-  });
-
-  const denyMut = useMutation({
-    mutationFn: () =>
-      denyApproval(actionId, { reason: denyReason || undefined }),
-    onSuccess: () => {
-      toast.success("Denied");
-      setShowDeny(false);
-      invalidate();
-    },
-    onError: (e: Error) => toast.error(`Deny failed: ${e.message}`),
-  });
-
-  const deferMut = useMutation({
-    mutationFn: () => {
-      const h = parseInt(deferHours, 10);
-      if (isNaN(h) || h < 1 || h > 168) {
-        throw new Error("Hours must be 1–168");
-      }
-      return deferApproval(actionId, { hours: h });
-    },
-    onSuccess: () => {
-      toast.success("Deferred");
-      setShowDefer(false);
-      invalidate();
-    },
-    onError: (e: Error) => toast.error(`Defer failed: ${e.message}`),
-  });
+  function handleDefer() {
+    const h = parseInt(deferHours, 10);
+    if (isNaN(h) || h < 1 || h > 168) {
+      toast.error("Hours must be 1–168");
+      return;
+    }
+    onDefer(h);
+  }
 
   if (isLoading) {
     return (
@@ -331,34 +296,30 @@ function Dossier({
           <div className="absolute right-0 top-0 flex flex-col items-end gap-2">
             <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
               <button
-                onClick={() => approveMut.mutate()}
-                disabled={approveMut.isPending}
+                onClick={onApprove}
+                disabled={approvePending}
                 className={[
                   "py-1.5 px-4 rounded font-medium text-sm",
                   "bg-foreground text-background",
                   "hover:opacity-90 disabled:opacity-50 transition-opacity",
                 ].join(" ")}
               >
-                {approveMut.isPending ? "Approving…" : "Approve"}
+                {approvePending ? "Approving…" : "Approve"}
               </button>
               <button
-                onClick={() => {
-                  setShowDeny(!showDeny);
-                  setShowDefer(false);
-                }}
+                onClick={onDeny}
+                disabled={denyPending}
                 className={[
                   "py-1.5 px-3 rounded text-sm border transition-colors",
-                  "border-border text-foreground hover:border-foreground/40",
-                  showDeny ? "border-foreground/40 bg-foreground/5" : "",
+                  "border-border text-foreground",
+                  "hover:border-destructive/60 hover:text-destructive",
+                  "disabled:opacity-50",
                 ].join(" ")}
               >
-                Deny
+                {denyPending ? "Denying…" : "Deny"}
               </button>
               <button
-                onClick={() => {
-                  setShowDefer(!showDefer);
-                  setShowDeny(false);
-                }}
+                onClick={() => setShowDefer(!showDefer)}
                 className={[
                   "py-1.5 px-3 rounded text-sm border transition-colors",
                   "border-border text-foreground hover:border-foreground/40",
@@ -412,31 +373,6 @@ function Dossier({
               </div>
             )}
 
-            {/* Deny expansion — drops down under the cluster */}
-            {showDeny && (
-              <div className="pointer-events-auto w-72 space-y-2 p-3 rounded-lg border border-border bg-background shadow-md">
-                <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-                  Reason (optional)
-                </label>
-                <input
-                  value={denyReason}
-                  onChange={(e) => setDenyReason(e.target.value)}
-                  placeholder="No reason given"
-                  className={[
-                    "w-full px-2 py-1.5 text-sm border border-border rounded",
-                    "bg-background focus:outline-none focus:border-foreground/40",
-                  ].join(" ")}
-                />
-                <button
-                  onClick={() => denyMut.mutate()}
-                  disabled={denyMut.isPending}
-                  className="w-full py-1.5 px-3 rounded text-sm bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
-                >
-                  {denyMut.isPending ? "Denying…" : "Confirm Deny"}
-                </button>
-              </div>
-            )}
-
             {/* Defer expansion — drops down under the cluster */}
             {showDefer && (
               <div className="pointer-events-auto w-72 space-y-2 p-3 rounded-lg border border-border bg-background shadow-md">
@@ -455,11 +391,11 @@ function Dossier({
                   ].join(" ")}
                 />
                 <button
-                  onClick={() => deferMut.mutate()}
-                  disabled={deferMut.isPending}
+                  onClick={handleDefer}
+                  disabled={deferPending}
                   className="w-full py-1.5 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors"
                 >
-                  {deferMut.isPending ? "Deferring…" : "Confirm Defer"}
+                  {deferPending ? "Deferring…" : "Confirm Defer"}
                 </button>
               </div>
             )}
@@ -945,6 +881,7 @@ function AutonomySuggestionsSection() {
 // ---------------------------------------------------------------------------
 
 export default function ApprovalsPage() {
+  const qc = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
 
@@ -968,9 +905,75 @@ export default function ApprovalsPage() {
   // Show "Load more" only when the last response was full (may be more results).
   const hasMore = pending.length === pendingLimit;
 
-  function handleDecision() {
+  // Optimistic decision flow (bu-approvals-fast-deny): a decision drops the row
+  // from every "waiting" cache immediately and clears the explicit selection so
+  // the rail advances to the next pending item without waiting on the network.
+  // The mutation observers live here (never in the unmounting Dossier) so their
+  // success/error callbacks — including rollback — always fire. onSettled
+  // reconciles against server truth (also covered by the WS stream + refetch).
+  type PendingSnapshot = [readonly unknown[], unknown][];
+  const dropFromPending = (id: string): PendingSnapshot => {
+    const key = ["approvals", "flat", "waiting"];
+    const prev = qc.getQueriesData({ queryKey: key });
+    qc.setQueriesData<ApiResponse<ApprovalSummary[]>>({ queryKey: key }, (old) =>
+      old?.data
+        ? { ...old, data: old.data.filter((a) => a.id !== id) }
+        : old,
+    );
     setSelectedId(null);
-  }
+    return prev;
+  };
+  const rollback = (prev: PendingSnapshot | undefined) =>
+    prev?.forEach(([key, snap]) => qc.setQueryData(key, snap));
+  const reconcile = () => {
+    qc.invalidateQueries({ queryKey: ["approvals", "flat", "waiting"] });
+    qc.invalidateQueries({ queryKey: Q.history() });
+  };
+
+  const approveMut = useMutation({
+    mutationFn: (id: string) => approveApproval(id),
+    onMutate: (id: string) => ({ prev: dropFromPending(id) }),
+    onSuccess: (res) => {
+      // Honest outcome: the action only ran if the backend dispatched it
+      // (status "executed" / dispatched=true). Otherwise it is approved but
+      // un-run and stays retry-able — do not claim success.
+      const action = res?.data;
+      const ran = action?.dispatched === true || action?.status === "executed";
+      if (ran) {
+        toast.success("Approved & dispatched");
+      } else {
+        toast.warning("Approved. Queued, not yet run. Retry from History.");
+      }
+    },
+    onError: (e: Error, _id, ctx) => {
+      rollback(ctx?.prev);
+      toast.error(`Approve failed: ${e.message}`);
+    },
+    onSettled: reconcile,
+  });
+
+  const denyMut = useMutation({
+    mutationFn: (id: string) => denyApproval(id),
+    onMutate: (id: string) => ({ prev: dropFromPending(id) }),
+    onSuccess: () => toast.success("Denied"),
+    onError: (e: Error, _id, ctx) => {
+      rollback(ctx?.prev);
+      toast.error(`Deny failed: ${e.message}`);
+    },
+    onSettled: reconcile,
+  });
+
+  const deferMut = useMutation({
+    mutationFn: ({ id, hours }: { id: string; hours: number }) =>
+      deferApproval(id, { hours }),
+    onMutate: ({ id }) => ({ prev: dropFromPending(id) }),
+    onSuccess: () => toast.success("Deferred"),
+    onError: (e: Error, _vars, ctx) => {
+      rollback(ctx?.prev);
+      toast.error(`Defer failed: ${e.message}`);
+    },
+    onSettled: reconcile,
+  });
 
   function handleLoadMore() {
     setPendingLimit((prev) => prev + PENDING_PAGE_SIZE);
@@ -1037,7 +1040,12 @@ export default function ApprovalsPage() {
           <Dossier
             key={effectiveSelected}
             actionId={effectiveSelected}
-            onDecision={handleDecision}
+            onApprove={() => approveMut.mutate(effectiveSelected)}
+            onDeny={() => denyMut.mutate(effectiveSelected)}
+            onDefer={(hours) => deferMut.mutate({ id: effectiveSelected, hours })}
+            approvePending={approveMut.isPending}
+            denyPending={denyMut.isPending}
+            deferPending={deferMut.isPending}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">

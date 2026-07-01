@@ -58,6 +58,7 @@ vi.mock("@/api/index.ts", () => ({
 import {
   approveApproval,
   confirmAutonomySuggestion,
+  denyApproval,
   dismissAutonomySuggestion,
   getApprovalDetail,
   getApprovalsFlat,
@@ -431,6 +432,41 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
 
     expect(toast.success).toHaveBeenCalledWith("Approved & dispatched");
     expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("denies in a single click — no 'Confirm Deny' step (optimistic)", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("d1")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("d1") as AnyMock,
+    );
+    vi.mocked(denyApproval).mockReturnValue(
+      makeApiResponse({
+        id: "d1",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "denied",
+        requested_at: "2026-05-17T10:00:00Z",
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Deny") !== undefined);
+
+    // The deny button is a direct action — there is no two-step confirm panel.
+    expect(findButton(container, "Confirm Deny")).toBeUndefined();
+
+    const denyBtn = findButton(container, "Deny");
+    await act(async () => {
+      denyBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    // Called with just the id (no reason payload) and success toasts.
+    expect(denyApproval).toHaveBeenCalledWith("d1");
+    expect(toast.success).toHaveBeenCalledWith("Denied");
   });
 
   it("renders a 'Retry dispatch' affordance for approved-but-un-run history rows", async () => {
