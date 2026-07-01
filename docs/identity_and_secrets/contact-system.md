@@ -128,6 +128,60 @@ The module registers four tools:
 - **`contacts_source_list`** -- List connected source accounts with status.
 - **`contacts_source_reconcile`** -- Trigger re-evaluation of source links.
 
+## Verification
+
+To confirm the contact system's data model, identity resolution, and sync machinery are operating as described:
+
+```bash
+# 1. Verify the three shared identity tables exist in the public schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'public'
+   AND table_name IN ('contacts', 'contact_info', 'entities')
+   ORDER BY table_name;"
+# Expected: all three tables present
+
+# 2. Confirm the UNIQUE constraint on contact_info(type, value)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT indexname, indexdef FROM pg_indexes
+   WHERE schemaname = 'public' AND tablename = 'contact_info'
+   AND indexdef ILIKE '%type%value%';"
+# Expected: unique index covering (type, value) to prevent duplicate channel identifiers
+
+# 3. Test identity resolution for the owner's Telegram chat ID
+# Replace 'YOUR_CHAT_ID' with the actual numeric Telegram chat ID
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT c.id, c.name, e.roles
+   FROM public.contact_info ci
+   JOIN public.contacts c ON c.id = ci.contact_id
+   LEFT JOIN public.entities e ON e.id = c.entity_id
+   WHERE ci.type = 'telegram_chat_id' AND ci.value = 'YOUR_CHAT_ID';"
+# Expected: one row with the owner's contact_id and roles including 'owner'
+
+# 4. Verify sync state is persisted for each configured provider
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, updated_at FROM general.state
+   WHERE key LIKE 'contacts_sync%'
+   ORDER BY key;"
+# Expected: sync cursors for google and/or telegram providers updated within the past 15 minutes
+
+# 5. Confirm temporary contacts are created for unknown senders
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT c.id, c.name, c.metadata->>'needs_disambiguation' AS pending
+   FROM public.contacts c
+   WHERE c.metadata->>'needs_disambiguation' = 'true'
+   LIMIT 5;"
+# Expected: rows for any messages received from unidentified senders
+
+# 6. Verify entity metadata.unidentified flag on temp contacts
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT e.id, e.canonical_name, e.metadata->>'unidentified' AS unidentified
+   FROM public.entities e
+   WHERE e.metadata->>'unidentified' = 'true'
+   LIMIT 5;"
+# Expected: one entity per temporary contact with unidentified = 'true'
+```
+
 ## Related Pages
 
 - [Owner Identity](owner-identity.md) -- Owner bootstrap and credential storage

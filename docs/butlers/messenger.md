@@ -78,6 +78,50 @@ Default approval expiry is 48 hours.
 
 **Delivery contract.** Messenger accepts `notify.v1` envelopes via Switchboard-dispatched `route.v1` transport. It validates the envelope, resolves the target, executes delivery, and returns a canonical response with a stable `delivery_id` on success or a typed error with `retryable` flag on failure.
 
+## Verification
+
+To confirm the Messenger Butler's delivery infrastructure, approval gating, and caller authentication are operating as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41104/health | python3 -m json.tool
+# Expected: {"status": "ok", ...} with no scheduled task entries (Messenger has none)
+
+# 2. Verify approval gates are configured for outbound delivery tools
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT tool_name, risk_tier, expiry_hours
+   FROM messenger.approval_gates
+   ORDER BY tool_name;"
+# Expected: telegram_send_message and email_send_message at 'medium' tier;
+# telegram_react_to_message at 'low' tier; default expiry = 48h
+
+# 3. Confirm Messenger has no scheduled tasks (it is demand-driven only)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT COUNT(*) FROM messenger.scheduled_tasks;"
+# Expected: 0 rows
+
+# 4. Verify caller authentication: unknown callers are rejected
+# The trusted_route_callers list should only contain 'switchboard'
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, value FROM messenger.state
+   WHERE key LIKE '%trusted%' OR key LIKE '%caller%';"
+# Expected: trusted_route_callers setting present with value including 'switchboard'
+
+# 5. Confirm delivery record tables exist for idempotency tracking
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'messenger'
+   ORDER BY table_name;"
+# Expected: messenger schema tables including delivery tracking (e.g., deliveries or delivery_log)
+
+# 6. Verify a recent notify.v1 envelope was dispatched successfully
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT delivery_id, channel, status, created_at
+   FROM messenger.deliveries
+   ORDER BY created_at DESC LIMIT 5;"
+# Expected: rows with status='delivered' and populated delivery_id values
+```
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- dispatches `notify.v1` envelopes to Messenger

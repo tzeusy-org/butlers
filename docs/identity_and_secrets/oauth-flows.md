@@ -115,6 +115,56 @@ Resolution:
 - `GoogleCredentials.__str__()` is aliased to `__repr__()` to prevent Pydantic's default from exposing values.
 - Log messages never include secret material.
 
+## Verification
+
+To confirm the Google OAuth credential split, account registry, and token loading are operating as described:
+
+```bash
+# 1. Verify the google_accounts table exists and has the expected shape
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT column_name, data_type FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'google_accounts'
+   ORDER BY ordinal_position;"
+# Expected: id, entity_id, email, display_name, is_primary, granted_scopes, status, connected_at
+
+# 2. Confirm at most one primary account is enforced at the DB level
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT indexname, indexdef FROM pg_indexes
+   WHERE schemaname = 'public' AND tablename = 'google_accounts'
+   AND indexdef ILIKE '%is_primary%';"
+# Expected: a partial unique index on is_primary WHERE is_primary = true
+
+# 3. Verify app credentials are stored in butler_secrets with the google category
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, category, is_sensitive FROM public.butler_secrets
+   WHERE category = 'google'
+   ORDER BY key;"
+# Expected: GOOGLE_OAUTH_CLIENT_ID (not sensitive) and GOOGLE_OAUTH_CLIENT_SECRET (sensitive)
+
+# 4. Confirm refresh tokens are stored in entity_info, not butler_secrets
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT e.canonical_name, ei.type, ei.secured
+   FROM public.entity_info ei
+   JOIN public.entities e ON e.id = ei.entity_id
+   WHERE ei.type = 'google_oauth_refresh';"
+# Expected: one row per connected Google account with secured = true
+
+# 5. Verify the companion entity has roles = ['google_account']
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT e.id, e.canonical_name, e.roles
+   FROM public.entities e
+   WHERE 'google_account' = ANY(e.roles);"
+# Expected: one entity per connected Google account with the google_account role
+
+# 6. Confirm credentials load without exposing secrets in repr/str
+python3 -c "
+from butlers.google_credentials import GoogleCredentials
+c = GoogleCredentials(client_id='id', client_secret='s3cr3t', refresh_token='tok3n')
+print(repr(c))
+"
+# Expected: repr shows '[REDACTED]' for client_secret and refresh_token -- no raw secret values
+```
+
 ## Related Pages
 
 - [Credential Store](../data_and_storage/credential-store.md) -- `butler_secrets` table

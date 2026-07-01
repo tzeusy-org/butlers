@@ -83,6 +83,50 @@ The Education Butler does not deliver video content, connect to external learnin
 
 **Progress queries.** Users ask "How am I doing on Python?" and receive a data-backed answer with mastery percentages, retention rates, and estimated completion dates.
 
+## Verification
+
+To confirm the Education Butler's mind map tables, spaced repetition engine, and scheduled tasks are operating as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41107/health | python3 -m json.tool
+# Expected: {"status": "ok", ...}
+
+# 2. Verify mind map domain tables exist in the education schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'education'
+   ORDER BY table_name;"
+# Expected: mind_maps, mind_map_nodes, mind_map_edges, teaching_flows,
+# mastery_records, spaced_repetition_schedules, diagnostic_sessions present
+
+# 3. Confirm DAG acyclicity constraint exists on mind_map_edges
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT constraint_name, constraint_type
+   FROM information_schema.table_constraints
+   WHERE table_schema = 'education' AND table_name = 'mind_map_edges';"
+# Expected: constraints including unique and/or check constraints to enforce DAG structure
+
+# 4. Verify every mind map node is backed by a public entity (entity_id not null)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT COUNT(*) AS nodes_without_entity FROM education.mind_map_nodes
+   WHERE entity_id IS NULL;"
+# Expected: 0 -- all nodes have a canonical entity for memory deduplication
+
+# 5. Confirm SM-2 fields exist on spaced repetition records
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT column_name FROM information_schema.columns
+   WHERE table_schema = 'education' AND table_name = 'spaced_repetition_schedules'
+   ORDER BY column_name;"
+# Expected: columns including next_review_at, interval_days, ease_factor (SM-2 parameters)
+
+# 6. Verify scheduled tasks match butler.toml
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, enabled FROM education.scheduled_tasks ORDER BY name;"
+# Expected: daily-spaced-repetition-nudge (0 17 * * *), nightly-analytics (0 3 * * *),
+# weekly-progress-digest (0 9 * * 0), weekly-stale-flow-check (0 4 * * 1)
+```
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes learning-related messages here

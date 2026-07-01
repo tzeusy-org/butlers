@@ -109,6 +109,58 @@ On application startup, `restore_tokens()`:
 
 This restore happens during the dashboard API lifespan startup, ensuring tokens are available before any butler attempts to spawn a CLI instance.
 
+## Verification
+
+To confirm CLI auth provider registration, token persistence, and health probe behavior are operating as described:
+
+```bash
+# 1. Verify the provider registry is importable and contains expected entries
+python3 -c "
+from butlers.cli_auth.registry import PROVIDER_REGISTRY
+for name, p in PROVIDER_REGISTRY.items():
+    print(name, p.auth_mode, p.binary)
+"
+# Expected: codex (device_code, codex), opencode-openai (device_code, opencode),
+# opencode-go (api_key, opencode)
+
+# 2. Confirm tokens are stored in butler_secrets under the cli-auth/ namespace
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, category, length(value) > 0 AS has_value
+   FROM public.butler_secrets
+   WHERE key LIKE 'cli-auth/%';"
+# Expected: one row per authenticated provider with non-empty value
+
+# 3. Verify health probe reports correct state for each provider
+python3 -c "
+import asyncio
+from butlers.cli_auth.health import probe_all
+results = asyncio.run(probe_all())
+for name, result in results.items():
+    print(name, result.state)
+"
+# Expected: 'authenticated' for providers with valid tokens, 'unavailable' if binary not on PATH
+
+# 4. Confirm token restore writes files with correct permissions on startup
+# (Run after application startup to check token file permissions)
+python3 -c "
+import os, stat
+from butlers.cli_auth.registry import PROVIDER_REGISTRY
+for name, p in PROVIDER_REGISTRY.items():
+    if p.token_path and os.path.exists(p.token_path):
+        mode = oct(stat.S_IMODE(os.stat(p.token_path).st_mode))
+        print(name, p.token_path, mode)
+"
+# Expected: each existing token file has mode 0o600
+
+# 5. Verify session cap is enforced (max 20 concurrent auth sessions)
+python3 -c "
+from butlers.cli_auth.session import CLIAuthSessionStore
+store = CLIAuthSessionStore()
+print('Max sessions:', store.max_sessions)
+"
+# Expected: max_sessions = 20
+```
+
 ## Related Pages
 
 - [Credential Store](../data_and_storage/credential-store.md) -- Where tokens are persisted

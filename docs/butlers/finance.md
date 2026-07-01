@@ -77,6 +77,49 @@ A `finance.budgets` table is defined for future implementation of category-perio
 
 **Spending queries.** Users ask "How much did I spend last month?" or "What are my active subscriptions?" and receive data-backed answers from the transaction ledger and subscription registry.
 
+## Verification
+
+To confirm the Finance Butler's domain tables, scheduled tasks, and ingestion pipeline are working as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41105/health | python3 -m json.tool
+# Expected: {"status": "ok", ...} with no error fields
+
+# 2. Verify the four core finance domain tables exist in the finance schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'finance'
+   ORDER BY table_name;"
+# Expected: accounts, bills, subscriptions, transactions (plus budgets for future use)
+
+# 3. Confirm amount precision is NUMERIC(14,2) not float
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT column_name, data_type, numeric_precision, numeric_scale
+   FROM information_schema.columns
+   WHERE table_schema = 'finance' AND table_name = 'transactions'
+   AND column_name = 'amount';"
+# Expected: data_type = 'numeric', numeric_precision = 14, numeric_scale = 2
+
+# 4. Verify scheduled tasks are seeded from butler.toml
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, source, enabled FROM finance.scheduled_tasks ORDER BY name;"
+# Expected: monthly-spending-summary, subscription-renewal-alerts, upcoming-bills-check
+# all present with source='toml' and enabled=true
+
+# 5. Confirm source_message_id deduplication is indexed for email provenance
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT indexname FROM pg_indexes
+   WHERE schemaname = 'finance' AND tablename = 'transactions'
+   AND indexdef ILIKE '%source_message_id%';"
+# Expected: at least one index covering source_message_id
+
+# 6. Verify bills urgency classification works (pending/paid/overdue status values)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT status, COUNT(*) FROM finance.bills GROUP BY status;"
+# Expected: rows show 'pending', 'paid', and/or 'overdue' — no unexpected status values
+```
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes financial emails and messages here

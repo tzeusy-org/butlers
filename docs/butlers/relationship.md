@@ -76,6 +76,48 @@ Key invariant: every contact must link to an entity, and facts must be stored on
 
 **Important date reminders.** Every Sunday evening, the butler checks for birthdays and anniversaries in the coming week and sends proactive reminders via Telegram.
 
+## Verification
+
+To confirm the Relationship Butler's entity-contact hierarchy, scheduled tasks, and fact storage are operating as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41102/health | python3 -m json.tool
+# Expected: {"status": "ok", ...}
+
+# 2. Verify entity-contact linkage: every contact must have an entity_id
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT COUNT(*) AS contacts_without_entity
+   FROM public.contacts
+   WHERE entity_id IS NULL;"
+# Expected: 0 -- all contacts link to an entity (the entity-first invariant)
+
+# 3. Confirm facts are stored on entities, not contacts directly
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT predicate, COUNT(*) FROM relationship.entity_facts
+   GROUP BY predicate ORDER BY count DESC LIMIT 10;"
+# Expected: key-value facts are present; predicates use kebab-case naming (e.g. 'job-title', 'interests')
+
+# 4. Verify relationship types are seeded (15 types across Love/Family/Friend/Work/Custom)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT type_name, category FROM relationship.relationship_types
+   ORDER BY category, type_name;"
+# Expected: ≥ 15 rows across Love, Family, Friend, Work, and Custom categories
+
+# 5. Confirm scheduled tasks are seeded from butler.toml
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, enabled FROM relationship.scheduled_tasks
+   ORDER BY name;"
+# Expected: relationship-maintenance (Mon 09:00) and upcoming-dates-check (Sun 21:25) present
+
+# 6. Verify contacts module syncs every 15 minutes
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, value FROM relationship.state
+   WHERE key LIKE 'contacts_sync%'
+   ORDER BY key;"
+# Expected: sync cursor and last_synced_at entries updated within the past 15 minutes
+```
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes people-related messages here

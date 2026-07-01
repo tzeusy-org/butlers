@@ -100,6 +100,68 @@ public.entity_info (for the owner entity)
 └── ...
 ```
 
+## Verification
+
+To confirm the owner entity bootstrap, identity fields, and credential resolution are operating as described:
+
+```bash
+# 1. Verify exactly one owner entity exists in public.entities
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, canonical_name, entity_type, roles
+   FROM public.entities
+   WHERE 'owner' = ANY(roles);"
+# Expected: exactly one row with roles including 'owner' and entity_type = 'person'
+
+# 2. Confirm the owner contact is linked to the owner entity
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT c.id, c.name, c.entity_id
+   FROM public.contacts c
+   JOIN public.entities e ON e.id = c.entity_id
+   WHERE 'owner' = ANY(e.roles);"
+# Expected: one row -- the owner contact linked to the owner entity
+
+# 3. Verify identity fields are configured (email and Telegram chat ID are critical)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT ci.type, ci.is_primary, ci.secured,
+          CASE WHEN ci.secured THEN '[REDACTED]' ELSE ci.value END AS display_value
+   FROM public.contact_info ci
+   JOIN public.contacts c ON c.id = ci.contact_id
+   JOIN public.entities e ON e.id = c.entity_id
+   WHERE 'owner' = ANY(e.roles)
+   ORDER BY ci.type;"
+# Expected: at minimum 'email' and 'telegram_chat_id' entries;
+# secured entries (api_id, api_hash, telegram_user_session) show [REDACTED]
+
+# 4. Confirm secured credentials are stored in entity_info with secured=true
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT ei.type, ei.secured
+   FROM public.entity_info ei
+   JOIN public.entities e ON e.id = ei.entity_id
+   WHERE 'owner' = ANY(e.roles)
+   ORDER BY ei.type;"
+# Expected: telegram_api_id, telegram_api_hash, telegram_user_session all have secured = true
+
+# 5. Verify credential resolution works for the owner's entity_info entries
+python3 -c "
+import asyncio
+# This illustrates the resolve_owner_entity_info call structure
+# Run in an async context with a live DB connection
+print('resolve_owner_entity_info(pool, \"telegram_api_id\") should return the API ID')
+print('Returns None gracefully if not yet configured')
+"
+
+# 6. Confirm setup banner disappears once essential identity fields are present
+# Check for the minimum required fields (email + telegram_chat_id)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT COUNT(*) AS required_fields_present
+   FROM public.contact_info ci
+   JOIN public.contacts c ON c.id = ci.contact_id
+   JOIN public.entities e ON e.id = c.entity_id
+   WHERE 'owner' = ANY(e.roles)
+   AND ci.type IN ('email', 'telegram_chat_id');"
+# Expected: 2 -- both required fields configured (banner should not show in dashboard)
+```
+
 ## Related Pages
 
 - [Contact System](contact-system.md) -- Full contact model

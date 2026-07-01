@@ -70,6 +70,51 @@ All entities link to a trip via `trip_id`. Status transitions follow `planned ->
 
 **Document management.** Users upload boarding passes, visas, and insurance documents which are attached to the relevant trip for tracking and expiry monitoring.
 
+## Verification
+
+To confirm the Travel Butler's trip container model, deduplication invariants, and scheduled alerts are operating as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41106/health | python3 -m json.tool
+# Expected: {"status": "ok", ...}
+
+# 2. Verify the five travel domain tables exist in the travel schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'travel'
+   ORDER BY table_name;"
+# Expected: accommodations, documents, legs, reservations, trips
+
+# 3. Confirm the trip container invariant: no orphaned entities without a trip_id
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT 'legs' AS entity_type, COUNT(*) AS orphaned
+   FROM travel.legs WHERE trip_id IS NULL
+   UNION ALL
+   SELECT 'accommodations', COUNT(*) FROM travel.accommodations WHERE trip_id IS NULL
+   UNION ALL
+   SELECT 'reservations', COUNT(*) FROM travel.reservations WHERE trip_id IS NULL;"
+# Expected: all three rows show 0 orphaned entities
+
+# 4. Verify itinerary changes preserve prior values in metadata.prior_values
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, metadata->'prior_values' AS prior
+   FROM travel.legs
+   WHERE metadata ? 'prior_values'
+   LIMIT 3;"
+# Expected: rows where prior_values contains the previous field values before an update
+
+# 5. Confirm scheduled tasks are seeded from butler.toml
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, enabled FROM travel.scheduled_tasks ORDER BY name;"
+# Expected: trip-document-expiry (0 9 * * 1), upcoming-travel-check (0 0 * * *) both enabled
+
+# 6. Verify trip lifecycle status values are constrained
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT status, COUNT(*) FROM travel.trips GROUP BY status ORDER BY status;"
+# Expected: only 'planned', 'active', 'completed', 'cancelled' status values present
+```
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes travel-related emails and messages here

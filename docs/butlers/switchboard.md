@@ -58,6 +58,49 @@ Switchboard exposes the standard core tool surface plus routing-specific tools:
 
 **Buffer system.** Switchboard uses a buffer queue (capacity 100, 3 workers) with a scanner that processes messages in batches of 50 every 30 seconds, providing backpressure when the system is under load.
 
+## Verification
+
+To confirm the Switchboard Butler's routing pipeline, registry liveness, and ingestion persistence are operating as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41100/health | python3 -m json.tool
+# Expected: {"status": "ok", ...} with switchboard-specific fields
+
+# 2. Verify the butler registry is populated and eligibility sweep has run
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT butler_name, healthy, last_checked_at FROM switchboard.butler_registry
+   ORDER BY butler_name;"
+# Expected: one row per registered downstream butler; last_checked_at within the past 5 minutes
+
+# 3. Confirm the eligibility_sweep task is scheduled at 5-minute intervals
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, enabled FROM switchboard.scheduled_tasks
+   WHERE name = 'eligibility_sweep';"
+# Expected: cron = '*/5 * * * *', enabled = true
+
+# 4. Verify request IDs in routing log are UUID7 (starts with high timestamp bits)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT request_id, target_butler, routed_at
+   FROM switchboard.routing_log
+   ORDER BY routed_at DESC LIMIT 5;"
+# Expected: request_id values are UUIDs; rows are populated as messages arrive
+
+# 5. Confirm ingestion_events table holds hot data for the current month partition
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_provider, COUNT(*) as event_count
+   FROM switchboard.ingestion_events
+   WHERE received_at >= date_trunc('month', now())
+   GROUP BY source_provider ORDER BY event_count DESC;"
+# Expected: rows grouped by provider (telegram, gmail, etc.) for this month
+
+# 6. Verify safe fallback: any routing failure should have target_butler = 'general'
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT routing_reason, COUNT(*) FROM switchboard.routing_log
+   WHERE target_butler = 'general' GROUP BY routing_reason;"
+# Expected: entries showing fallback routing with reason codes like 'parse_failure' or 'low_confidence'
+```
+
 ## Related Pages
 
 - [Architecture: Routing](../architecture/routing.md) -- routing pipeline internals

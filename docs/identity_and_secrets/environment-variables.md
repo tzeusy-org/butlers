@@ -96,6 +96,59 @@ When a module calls `store.resolve("TELEGRAM_BOT_TOKEN")`, the resolution order 
 
 Dashboard-stored credentials always take precedence over environment variables.
 
+## Verification
+
+To confirm environment variable resolution, credential store precedence, and `.env.example` completeness are operating as described:
+
+```bash
+# 1. Verify .env.example contains only infrastructure bootstrap variables (no secrets)
+grep -E '(TOKEN|SECRET|PASSWORD|KEY|HASH|SESSION)' .env.example
+# Expected: no matches -- .env.example should contain only POSTGRES_* and OTEL_* variables
+# If any secrets appear, they must be removed
+
+# 2. Confirm the credential store reads from the database first (not just env)
+python3 -c "
+import asyncio, os
+os.environ['TEST_CRED_FALLBACK'] = 'from-env'
+from butlers.credential_store import CredentialStore
+# This is illustrative: CredentialStore.resolve() checks DB before falling back to env
+print('DB-first resolution is coded in CredentialStore.resolve()')
+"
+
+# 3. Verify POSTGRES_* vars can connect to the database (using current env)
+psql -h "${POSTGRES_HOST:-localhost}" \
+     -p "${POSTGRES_PORT:-5432}" \
+     -U "${POSTGRES_USER:-butlers}" \
+     -d "${POSTGRES_DB:-butlers}" \
+     -c "SELECT current_database(), current_user;"
+# Expected: current_database = 'butlers', current_user = 'butlers'
+
+# 4. Confirm OTEL tracing is active when OTEL_EXPORTER_OTLP_ENDPOINT is set
+python3 -c "
+import os
+endpoint = os.environ.get('OTEL_EXPORTER_OTLP_ENDPOINT', '')
+print('OTLP endpoint:', endpoint or '(not set -- no-op tracer in use)')
+"
+# Expected: if set, value is an HTTP URL like 'http://localhost:4318';
+# if unset, the tracer is in no-op mode (no error, just no traces exported)
+
+# 5. Verify DASHBOARD_API_KEY is enforced when set
+if [ -n "${DASHBOARD_API_KEY:-}" ]; then
+  curl -s -o /dev/null -w "%{http_code}" http://localhost:40200/api/butlers
+  # Expected: 401 (Unauthorized) without the header
+  curl -s -o /dev/null -w "%{http_code}" \
+    -H "X-API-Key: ${DASHBOARD_API_KEY}" http://localhost:40200/api/butlers
+  # Expected: 200 with the header
+else
+  echo "DASHBOARD_API_KEY not set -- authentication is disabled (opt-in feature)"
+fi
+
+# 6. Confirm connector variables are present in the running connector environment
+docker compose exec connector-gmail env | grep -E '^(SWITCHBOARD|CONNECTOR)_'
+# Expected: SWITCHBOARD_MCP_URL, CONNECTOR_PROVIDER=gmail, CONNECTOR_CHANNEL=email,
+# and polling/heartbeat interval variables present
+```
+
 ## Related Pages
 
 - [Credential Store](../data_and_storage/credential-store.md) -- DB-first secret resolution

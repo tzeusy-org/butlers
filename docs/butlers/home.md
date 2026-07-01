@@ -79,6 +79,47 @@ The Home Butler uses a domain-specific memory taxonomy:
 - **Service providers** (plumber, electrician, cleaning company) must be resolved to shared entities before storing facts.
 - **Permanence**: `stable` for long-term preferences (temperature, lighting), `standard` for current patterns (scene usage, energy baselines), `volatile` for alerts and device issues (low battery, firmware updates).
 
+## Verification
+
+To confirm the Home Butler's Home Assistant integration, memory taxonomy, and scheduled tasks are operating as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41108/health | python3 -m json.tool
+# Expected: {"status": "ok", ...}
+
+# 2. Verify Home Assistant entity state is reachable via the butler's HA tool
+# (requires a running Home Assistant instance connected to the butler)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, value FROM home.state
+   WHERE key LIKE 'ha_%' OR key LIKE 'home_assistant_%'
+   ORDER BY key LIMIT 5;"
+# Expected: HA connection config or last-probe timestamp present
+
+# 3. Confirm ha_call_service is registered (Home Butler owns write access, unlike Health Butler)
+curl -s http://localhost:41108/sse 2>/dev/null | head -5 || \
+  echo "Inspect tool list via MCP client: ha_call_service and ha_activate_scene should be present"
+# Expected: ha_call_service and ha_activate_scene available -- these are absent from Health Butler
+
+# 4. Verify scheduled tasks are seeded from butler.toml
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, enabled FROM home.scheduled_tasks ORDER BY name;"
+# Expected: device-health-check, environment-report, memory_consolidation,
+# memory_episode_cleanup, memory_purge_superseded, weekly-energy-digest all present
+
+# 5. Confirm memory permanence taxonomy is in use (stable/standard/volatile)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT permanence, COUNT(*) FROM home.memory_facts
+   GROUP BY permanence ORDER BY permanence;"
+# Expected: entries under 'stable' (preferences), 'standard' (baselines), 'volatile' (alerts)
+
+# 6. Verify destructive action confirmation is enforced (approvals module present)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'home' AND table_name LIKE '%approval%';"
+# Expected: approvals-related table present (Home Butler uses the approvals module)
+```
+
 ## Related Pages
 
 - [Health Butler](health.md) -- has read-only access to Home Assistant sensors for health correlation

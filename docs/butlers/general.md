@@ -58,6 +58,46 @@ Items support deep-merge on update, meaning nested objects merge recursively rat
 
 **Interactive response modes** range from quick emoji reactions (for simple additions) to substantive answers (for queries about stored data) to follow-up suggestions (for organizing patterns).
 
+## Verification
+
+To confirm the General Butler's collection store, schedule, and fallback routing are operating as described:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41101/health | python3 -m json.tool
+# Expected: {"status": "ok", ...}
+
+# 2. Verify the general schema has collections and items tables
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'general'
+   ORDER BY table_name;"
+# Expected: collections, items (plus core tables: state, scheduled_tasks, sessions, session_process_logs)
+
+# 3. Confirm items store arbitrary JSON (schema-free)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT column_name, data_type FROM information_schema.columns
+   WHERE table_schema = 'general' AND table_name = 'items'
+   AND column_name = 'data';"
+# Expected: data_type = 'jsonb' -- not a fixed typed column
+
+# 4. Verify the eod-tomorrow-prep task is seeded at 15:00 UTC (23:00 SGT)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, enabled FROM general.scheduled_tasks
+   WHERE name = 'eod-tomorrow-prep';"
+# Expected: cron = '0 15 * * *', enabled = true
+
+# 5. Confirm Switchboard routes unknown messages to General as fallback
+# Inspect routing_log for rows where target_butler = 'general' from uncertain classifications
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT target_butler, routing_reason, COUNT(*)
+   FROM switchboard.routing_log
+   WHERE target_butler = 'general'
+   GROUP BY target_butler, routing_reason
+   ORDER BY count DESC LIMIT 5;"
+# Expected: rows present showing General as the fallback target for unclassified requests
+```
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes messages here as the default fallback

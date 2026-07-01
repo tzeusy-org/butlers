@@ -80,6 +80,48 @@ The Health Butler also has read-only access to Home Assistant sensor data, enabl
 
 **Question answering.** Users can ask "What was my blood pressure yesterday?" or "How has my weight been this month?" and get data-backed answers from measurement history and trend analysis.
 
+## Verification
+
+To confirm the Health Butler's schema, tools, and Home Assistant integration are operational:
+
+```bash
+# 1. Confirm the butler is listening on the expected port
+curl -s http://localhost:41103/health | python3 -m json.tool
+# Expected: {"status": "ok", ...} with no error fields
+
+# 2. Verify health domain tables exist in the health schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'health'
+   ORDER BY table_name;"
+# Expected: measurements (or equivalent), medications, conditions, symptoms, meals, research_items present
+
+# 3. Confirm compound JSONB measurement values are stored correctly (e.g. blood pressure)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT metric, value, recorded_at FROM health.measurements
+   WHERE value ? 'systolic'
+   ORDER BY recorded_at DESC LIMIT 3;"
+# Expected: rows with JSON objects like {"systolic": 120, "diastolic": 80} -- not flat numeric values
+
+# 4. Verify the weekly-health-summary task is seeded from butler.toml
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, source, enabled FROM health.scheduled_tasks
+   WHERE name = 'weekly-health-summary';"
+# Expected: cron = '0 9 * * 0', source = 'toml', enabled = true
+
+# 5. Confirm memory consolidation tasks are present
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron FROM health.scheduled_tasks
+   WHERE name LIKE 'memory%' ORDER BY name;"
+# Expected: memory_consolidation, memory_episode_cleanup, memory_purge_superseded
+
+# 6. Verify Home Assistant integration is read-only (no write service tools in list)
+curl -s http://localhost:41103/sse 2>/dev/null | head -5 || \
+  echo "Check tool list via MCP: ha_get_entity_state, ha_list_entities, ha_get_history should be present"
+# Expected: HA tools are present but only read (ha_get_*, ha_list_*, ha_render_template) --
+# ha_call_service should NOT appear on the Health Butler (it belongs to Home Butler only)
+```
+
 ## Related Pages
 
 - [Home Butler](home.md) -- owns the Home Assistant integration; Health Butler has read-only sensor access
