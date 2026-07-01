@@ -127,6 +127,37 @@ Module failures during startup are handled with a cascade model. When a module f
 
 At runtime, module states can be queried via the `module.states` tool and modules can be toggled via `module.set_enabled`.
 
+## Verification
+
+To confirm the lifecycle described here matches the running system:
+
+```bash
+# 1. Startup log shows the expected phase sequence
+# Start a butler and check its startup output for these phases:
+#   "Loading config", "Initializing telemetry", "Running migrations",
+#   "Registering tools", "FastMCP server starting"
+butlers run --config roster/general 2>&1 | head -40
+
+# 2. Module states are healthy after startup
+# Call the butler's status MCP tool (via dashboard or MCP client):
+#   Expected: all enabled modules show status "active"
+curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
+
+# 3. Triggered state: session created in DB
+# After triggering the butler, check the sessions table:
+curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool
+# Expected: a session with trigger_source "trigger", completed_at set
+
+# 4. Shutdown drains in-flight sessions
+# Send SIGTERM to the butler process; it should wait for active sessions to finish:
+kill -TERM $(pgrep -f "butlers run --config roster/general")
+# Expected: log lines for each shutdown step; no "active sessions dropped" errors
+
+# 5. Module cascade failure model
+# Temporarily break a module credential and restart; the butler should start
+# with that module marked failed but all others healthy.
+```
+
 ## Related Pages
 
 - [Trigger Flow](trigger-flow.md) --- details on how triggers are sourced and dispatched

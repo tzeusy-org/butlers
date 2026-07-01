@@ -102,6 +102,42 @@ Since each butler has its own schema and pool, there is no cross-butler contenti
 
 The state store is exposed to LLM CLI instances through core MCP tools (`state_get`, `state_set`, `state_list`, `state_delete`), allowing the AI runtime to persist and retrieve data across sessions.
 
+## Verification
+
+To confirm the state store described here matches the running system:
+
+```bash
+# 1. State table exists in each butler's schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, updated_at, version FROM general.state ORDER BY updated_at DESC LIMIT 5;"
+# Expected: rows with namespaced keys (e.g., "contacts::sync::google", "scheduler::last_tick")
+
+# 2. Version increments on each write
+# Record the current version for a key, then write to it via the MCP state_set tool,
+# then re-query:
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key, version FROM general.state WHERE key = 'scheduler::last_tick';"
+# Expected: version number increases by 1 on each write
+
+# 3. state_list MCP tool returns keys accessible to the LLM
+# Trigger a butler session that calls state_list() and check its output.
+# Expected: returns key strings (with keys_only=True), matching what's in the DB above
+
+# 4. CAS conflict detection: state_compare_and_set rejects stale version
+# In Python with a running pool, call state_compare_and_set with the wrong version:
+#   from butlers.core.state import state_compare_and_set, CASConflictError
+#   try:
+#       await state_compare_and_set(pool, "scheduler::last_tick", expected_version=0, new_value={})
+#   except CASConflictError as e:
+#       print(f"Rejected: expected {e.expected_version}, actual {e.actual_version}")
+# Expected: CASConflictError raised with correct version values
+
+# 5. State is scoped per-butler (general's state is not visible to health)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT key FROM health.state ORDER BY key LIMIT 5;"
+# Expected: different keys from general.state, no cross-butler leakage
+```
+
 ## Related Pages
 
 - [Schema Topology](schema-topology.md) -- Where the state table lives

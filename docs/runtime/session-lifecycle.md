@@ -68,6 +68,39 @@ The session log supports several query patterns:
 
 JSONB columns (`tool_calls`, `cost`) are stored as JSON strings in PostgreSQL. The `_decode_row()` helper deserializes these when reading session records, ensuring callers always receive Python dicts/lists rather than raw JSON strings.
 
+## Verification
+
+To confirm the session lifecycle described here matches the running system:
+
+```bash
+# 1. Session row is created with expected creation fields
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, trigger_source, model, complexity, resolution_source, started_at, completed_at
+   FROM general.sessions ORDER BY started_at DESC LIMIT 3;"
+# Expected: completed sessions show completed_at set; running sessions have completed_at NULL
+
+# 2. Active sessions (running but not completed)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, trigger_source, started_at FROM general.sessions WHERE completed_at IS NULL;"
+# Expected: empty when no sessions are running; rows appear during active LLM invocations
+
+# 3. Session completion fields are populated
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, success, input_tokens, output_tokens, duration_ms,
+          (result IS NOT NULL) AS has_result, (tool_calls IS NOT NULL) AS has_tool_calls
+   FROM general.sessions ORDER BY started_at DESC LIMIT 3;"
+# Expected: success=true, token counts populated, result and tool_calls non-null
+
+# 4. Trigger source conventions are followed
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT DISTINCT trigger_source FROM general.sessions;"
+# Expected: values from the set: tick, external, trigger, route, healing, schedule:<name>
+
+# 5. Sessions API endpoint returns the same data
+curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool | head -50
+# Expected: matches the SQL query results above
+```
+
 ## Related Pages
 
 - [LLM CLI Spawner](spawner.md) --- the component that creates and completes sessions

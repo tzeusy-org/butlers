@@ -124,6 +124,26 @@ The main dashboard API application is defined in `src/butlers/api/app.py` and in
 | Dashboard API | 41200 | Configurable via `--port` flag |
 | Frontend (dev) | 41173 | Vite default; configurable in `vite.config.ts` |
 
+## Verification
+
+To confirm the dashboard is running and wired correctly:
+
+```bash
+# 1. Backend API health check
+curl -s http://localhost:41200/api/health
+# Expected: {"status": "ok"} or similar
+
+# 2. Butler discovery endpoint returns known butlers
+curl -s http://localhost:41200/api/butlers | python3 -m json.tool
+# Expected: array of butler objects with name, port, and status
+
+# 3. Frontend is reachable (when Vite dev server is running)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:41173/
+# Expected: 200
+```
+
+If the API returns butler records and the frontend serves HTTP 200, the dashboard matches what this page describes. Session records appear in `GET /api/butlers/<name>/sessions` after triggering a butler. If auto-discovery of butler-specific API routes is not loading, check that `router.py` exports a module-level `router` variable.
+
 ## Related Pages
 
 - [Dev Environment](dev-environment.md) --- full dev stack setup

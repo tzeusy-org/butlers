@@ -168,6 +168,41 @@ The spawner can be wired to a self-healing module via `wire_healing_module()`. W
 
 The spawner maintains a cache of `RuntimeAdapter` instances keyed by `runtime_type`. The TOML-configured adapter is seeded at construction. When the model catalog resolves a different runtime type, a new adapter is lazily instantiated via the adapter registry (`get_adapter()`). Provider-specific configuration (e.g., Ollama base URL from `public.provider_config`) is forwarded to adapters that accept it.
 
+## Verification
+
+To confirm the spawner behavior described here matches the running system:
+
+```bash
+# 1. Session record shows model, trigger_source, and resolution_source
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, model, trigger_source, resolution_source, complexity, success
+   FROM general.sessions ORDER BY started_at DESC LIMIT 5;"
+# Expected: model populated, resolution_source is "catalog" or "toml_fallback"
+
+# 2. Dispatch attempt provenance is recorded
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT catalog_entry_id, outcome, failure_reason, attempt_index
+   FROM public.model_dispatch_attempts ORDER BY created_at DESC LIMIT 10;"
+# Expected: rows with outcome "success" for sessions that completed normally;
+# "quota_skip" or "runtime_failure" for any failover attempts
+
+# 3. Tool calls are merged into the session record
+curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool
+# Expected: tool_calls array on completed sessions with tool_name, module_name, outcome
+
+# 4. Concurrency metrics are exported (if Prometheus is wired)
+curl -s http://localhost:41101/metrics 2>/dev/null | grep butlers_spawner
+# Expected: butlers.spawner.queued_triggers, global_queue_depth, failover_attempts_total
+
+# 5. Failover: a missing runtime binary causes immediate failure without DB rows
+# Temporarily rename the claude binary and trigger a session.
+# Expected: session record with success=false, error containing "RuntimeBinaryNotFoundError"
+
+# 6. Self-healing wiring: check if healing module is configured
+curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool | grep healing
+# Expected: healing module present with status "active" if configured
+```
+
 ## Related Pages
 
 - [Trigger Flow](../concepts/trigger-flow.md) --- the two trigger sources that invoke the spawner

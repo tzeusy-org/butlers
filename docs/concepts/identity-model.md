@@ -92,6 +92,39 @@ Identity resolution is called at several points in the system:
 - **Approval gate** --- to replace name-heuristic target resolution with role-based checks
 - **Memory module** --- to anchor facts and episodes to the correct entity
 
+## Verification
+
+To confirm the identity model described here matches the running system:
+
+```bash
+# 1. Owner entity exists in public.entities with "owner" role
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, canonical_name, roles FROM public.entities WHERE 'owner' = ANY(roles);"
+# Expected: exactly one row with roles including "owner"
+
+# 2. Owner's channel handles are stored in relationship.entity_facts
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT subject, predicate, object FROM relationship.entity_facts
+   WHERE object LIKE 'telegram:%' AND validity = 'active' LIMIT 5;"
+# Expected: row(s) with predicate "has-handle" and object "telegram:<chat_id>"
+
+# 3. Identity resolution returns the owner for a known Telegram chat ID
+# In Python (with a running pool), call:
+#   from butlers.identity import resolve_contact_by_channel
+#   result = await resolve_contact_by_channel(pool, "telegram", "telegram:<your_chat_id>")
+#   assert "owner" in result.roles
+
+# 4. public.contact_info and public.contacts tables no longer exist
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT to_regclass('public.contact_info'), to_regclass('public.contacts');"
+# Expected: both values NULL (dropped in core_115 and core_134)
+
+# 5. Unknown sender creates a temporary entity with unidentified metadata
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT COUNT(*) FROM public.entities WHERE metadata->>'unidentified' = 'true';"
+# Expected: count matches the number of unrecognized senders seen by the Switchboard
+```
+
 ## Related Pages
 
 - [Switchboard Routing](switchboard-routing.md) --- how identity preambles are injected during routing

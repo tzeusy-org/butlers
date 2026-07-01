@@ -14,8 +14,7 @@ Butlers uses a **single PostgreSQL database** with **per-butler schemas** plus a
 
 ```
 PostgreSQL Database: butlers
-├── public          -- PostgreSQL default schema (extensions live here)
-├── public          -- PostgreSQL default schema (extensions + cross-butler identity tables)
+├── public          -- Extensions + cross-butler identity tables (entities, entity_info, …)
 ├── switchboard     -- Switchboard butler's private tables
 ├── general         -- General butler's private tables
 ├── relationship    -- Relationship butler's private tables
@@ -27,12 +26,12 @@ PostgreSQL Database: butlers
 
 The `public` schema contains tables that multiple butlers need to read. It is the canonical location for identity resolution data:
 
-- **`public.contacts`** -- Canonical contact registry. One row per known person/actor. Includes a `roles` array (e.g., `['owner']`) and optional `entity_id` FK to the entity graph.
-- **`public.contact_info`** -- Per-channel identifiers linked to contacts (e.g., Telegram chat ID, email address). UNIQUE on `(type, value)`. `secured=true` marks credential entries.
 - **`public.entities`** -- Entity graph nodes. Each entity has a `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB.
 - **`public.entity_info`** -- Key-value pairs attached to entities. Used for credential storage (e.g., `google_oauth_refresh` tokens). UNIQUE on `(entity_id, type)`.
 - **`public.google_accounts`** -- Connected Google account registry with companion entities.
 - **`public.memory_catalog`** -- Shared predicate/schema definitions for the memory module.
+
+> **Note:** `public.contacts` and `public.contact_info` were dropped in migrations `core_115` / `core_134` and replaced by the entity graph above.
 
 ### Per-Butler Schemas
 
@@ -59,7 +58,7 @@ For a butler named `general`, the search path is `general,public`. This means:
 2. If not found there, they resolve to `public` (identity tables).
 3. Finally, `public` is checked (where PostgreSQL extensions like `vector` and `uuid-ossp` are installed).
 
-This allows modules to reference `contacts` without schema-qualifying it -- the search path resolves to `public.contacts` automatically.
+This allows modules to reference `entities` without schema-qualifying it -- the search path resolves to `public.entities` automatically.
 
 ## Database Provisioning
 
@@ -115,9 +114,47 @@ The `Database` class exposes `fetch()`, `fetchrow()`, `fetchval()`, and `execute
 
 ## Schema Isolation Guarantees
 
-- Each butler can only see its own schema plus `public` and `public`.
+- Each butler can only see its own schema plus `public`.
 - Inter-butler communication is MCP-only through the Switchboard -- no direct cross-schema SQL.
 - The `public` schema is read-accessible by all butlers but write patterns are controlled by the core migration chain and identity resolution code.
+
+## Verification
+
+To confirm the schema topology described here matches the running system:
+
+```bash
+# 1. Per-butler schemas exist in the database
+psql -h localhost -U butlers -d butlers -c "\dn"
+# Expected: schemas listed include "public", "switchboard", "general",
+#           "relationship", "health" (plus any other configured butlers)
+
+# 2. Core tables exist in each butler's schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_schema, table_name FROM information_schema.tables
+   WHERE table_schema = 'general'
+   ORDER BY table_name;"
+# Expected: state, scheduled_tasks, sessions, butler_secrets,
+#           plus module tables if modules are enabled
+
+# 3. Cross-butler tables are in public schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'public' ORDER BY table_name;"
+# Expected: entities, entity_info, google_accounts, model_catalog,
+#           token_usage_ledger, model_dispatch_attempts, etc.
+# Note: contacts and contact_info should NOT appear (dropped in core_115 / core_134)
+
+# 4. Search path resolves butler-schema tables first, then public
+# From a butler's connection context, unqualified references resolve correctly:
+psql -h localhost -U butlers -d butlers \
+  -c "SET search_path = general, public; SELECT COUNT(*) FROM state;"
+# Expected: count from general.state, not an error
+
+# 5. PostgreSQL extensions installed in public schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT extname FROM pg_extension ORDER BY extname;"
+# Expected: pgcrypto, uuid-ossp, vector, pg_trgm
+```
 
 ## Related Pages
 

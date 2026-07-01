@@ -80,6 +80,44 @@ Each scheduled task can specify a `complexity` value that influences model selec
 | `last_result` | jsonb | Result or error from last dispatch |
 | `until_at` | timestamptz | Auto-disable after this time |
 
+## Verification
+
+To confirm the scheduler behavior described here matches the running system:
+
+```bash
+# 1. Scheduled tasks are synced from TOML on startup
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, dispatch_mode, source, enabled, next_run_at, last_run_at
+   FROM general.scheduled_tasks ORDER BY next_run_at;"
+# Expected: tasks with source="toml" matching entries in roster/general/butler.toml
+
+# 2. Task last_run_at advances after each tick
+# Wait for the next tick interval (check butler.toml for tick interval, typically 60s).
+# Then re-run the query above and confirm last_run_at changed for due tasks.
+
+# 3. trigger_source follows "schedule:<task-name>" convention
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT trigger_source, COUNT(*) FROM general.sessions
+   WHERE trigger_source LIKE 'schedule:%'
+   GROUP BY trigger_source ORDER BY count DESC LIMIT 10;"
+# Expected: rows for each scheduled task that has fired
+
+# 4. Stagger offsets differ between butlers on the same cron
+# Compare next_run_at for the same cron expression across two butlers:
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT 'general' AS butler, name, cron, next_run_at FROM general.scheduled_tasks WHERE source='toml'
+   UNION ALL
+   SELECT 'health' AS butler, name, cron, next_run_at FROM health.scheduled_tasks WHERE source='toml'
+   ORDER BY cron, butler;"
+# Expected: matching cron tasks show different next_run_at values (stagger applied)
+
+# 5. Auto-disabled tasks have enabled=false and next_run_at=NULL
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, enabled, next_run_at, until_at FROM general.scheduled_tasks
+   WHERE until_at IS NOT NULL;"
+# Expected: tasks past their until_at show enabled=false, next_run_at=NULL
+```
+
 ## Related Pages
 
 - [Trigger Flow](../concepts/trigger-flow.md) --- the broader trigger model that the scheduler participates in

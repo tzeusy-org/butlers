@@ -75,6 +75,37 @@ Once the spawner acquires its concurrency slot:
 4. On return, the session is marked complete with output, tool call records, duration, token usage, and success/failure status.
 5. Concurrency slots are released.
 
+## Verification
+
+To confirm the trigger flow described here matches the running system:
+
+```bash
+# 1. External trigger: session appears with trigger_source "trigger"
+# After calling the MCP trigger tool, check the session log:
+curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool
+# Expected: most recent session has "trigger_source": "trigger"
+
+# 2. Scheduled trigger: trigger_source follows "schedule:<task-name>" pattern
+# Inspect an existing scheduled task by name:
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, last_run_at, last_result FROM general.scheduled_tasks ORDER BY last_run_at DESC LIMIT 5;"
+# Compare session trigger_source values: should match "schedule:<name>"
+
+# 3. Route inbox durable queue: rows are written before processing
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT state, created_at, processed_at FROM general.route_inbox ORDER BY created_at DESC LIMIT 5;"
+# Expected: all recent rows show state "processed"; "accepted" rows older than 10s indicate stalled dispatch
+
+# 4. Concurrency control: per-butler semaphore limits concurrent sessions
+# Default is 1; attempting a second trigger while one is running should queue it.
+# Check dashboard or Prometheus metrics: butlers.spawner.queued_triggers > 0 during load.
+
+# 5. Stagger offsets differ between butlers sharing the same cron
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT name, cron, next_run_at FROM general.scheduled_tasks WHERE source='toml' LIMIT 10;"
+# Two butlers with the same cron expression should show different next_run_at times.
+```
+
 ## Related Pages
 
 - [Spawner](../runtime/spawner.md) --- detailed spawner mechanics

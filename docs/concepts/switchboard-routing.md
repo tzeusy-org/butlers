@@ -120,6 +120,36 @@ Routed messages are wrapped in `<routed_message>` tags to clearly delineate untr
 
 The Switchboard persists canonical ingress payloads in month-partitioned PostgreSQL tables. Stored artifacts per request include the raw payload, normalized content, LLM routing output, dispatch outcomes, and final lifecycle state. The retention target is one month of hot data.
 
+## Verification
+
+To confirm the routing flow described here matches the running system:
+
+```bash
+# 1. Ingestion events are recorded for each message through the Switchboard
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT source_channel, lifecycle_state, received_at FROM switchboard.ingestion_events ORDER BY received_at DESC LIMIT 5;"
+# Expected: rows with your connector's channel (e.g., "telegram") and lifecycle_state "dispatched"
+
+# 2. Identity preamble is injected into routed messages
+# In a session triggered via Telegram from the owner's account, check the session prompt:
+curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool
+# Expected: prompt contains "[Source: Owner (contact_id: ..., entity_id: ...), via telegram]"
+
+# 3. Unknown senders create temporary entities
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT id, canonical_name, metadata FROM public.entities WHERE metadata->>'unidentified' = 'true' LIMIT 5;"
+# Expected: temporary entities for unrecognized senders
+
+# 4. Route inbox durable queue: target butler persists before returning "accepted"
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT state, created_at FROM general.route_inbox ORDER BY created_at DESC LIMIT 5;"
+# Expected: rows in "processed" state; any "accepted" rows older than 10s indicate dispatch stall
+
+# 5. Content safety: routed prompt is wrapped in <routed_message> tags
+# Check a recent session prompt in the dashboard for the presence of these fences:
+#   Expected: "<routed_message>...user message...</routed_message>" present in prompt
+```
+
 ## Related Pages
 
 - [Modules and Connectors](modules-and-connectors.md) --- how connectors feed messages into the system

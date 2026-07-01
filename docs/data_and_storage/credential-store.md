@@ -125,6 +125,44 @@ Butlers runs as a **user-federated platform** where each user owns their instanc
 - `is_sensitive=True` secrets are excluded from list responses; a "Reveal" button provides on-demand access.
 - Secret values are never logged -- even at DEBUG level.
 
+## Verification
+
+To confirm the credential store described here matches the running system:
+
+```bash
+# 1. butler_secrets table exists in each butler's schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT secret_key, category, is_sensitive, (secret_value IS NOT NULL) AS has_value,
+          created_at, expires_at
+   FROM general.butler_secrets ORDER BY category, secret_key;"
+# Expected: rows for configured credentials; secret_value not shown here (use Reveal in dashboard)
+
+# 2. CLI auth tokens are stored under the cli-auth category
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT secret_key, category, updated_at FROM general.butler_secrets
+   WHERE category = 'cli-auth';"
+# Expected: rows like "cli-auth/claude", "cli-auth/codex" after OAuth flow completes
+
+# 3. DB-first resolution: DB value takes precedence over environment variable
+# In Python (with a running pool and CredentialStore instance), call:
+#   from butlers.core.credential_store import CredentialStore
+#   value = await store.resolve('BUTLER_TEST_KEY', env_fallback=False)
+#   # Returns the DB value (or None) — env var is NOT consulted unless env_fallback=True
+
+# 4. Sensitive secrets are masked in dashboard API list responses
+curl -s http://localhost:41200/api/butlers/general/secrets | python3 -m json.tool | grep -i "value"
+# Expected: no raw secret values in list response; "is_set": true/false instead
+
+# 5. Entity-based credentials exist in public.entity_info for the owner
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT ei.type, (ei.value IS NOT NULL) AS has_value, ei.is_primary
+   FROM public.entity_info ei
+   JOIN public.entities e ON e.id = ei.entity_id
+   WHERE 'owner' = ANY(e.roles)
+   ORDER BY ei.type;"
+# Expected: rows for google_oauth_refresh, telegram_api_id, etc. if configured
+```
+
 ## Related Pages
 
 - [Schema Topology](schema-topology.md) -- Where `butler_secrets` lives

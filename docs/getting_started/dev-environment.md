@@ -178,6 +178,33 @@ For quick feedback during development, prefer targeted test runs:
 uv run pytest tests/test_foo.py -q --tb=short
 ```
 
+## Verification
+
+After completing setup, confirm the dev environment is healthy:
+
+```bash
+# 1. Python, uv, and Node versions meet minimums
+python3 --version    # Must be 3.12+
+uv --version
+node --version       # Must be 22+
+
+# 2. Dependencies installed
+uv run python -c "import butlers; print('import ok')"
+
+# 3. PostgreSQL reachable and migrations applied
+uv run butlers db migrate  # Should print "Running migrations..." with no errors
+
+# 4. Butler discovery works
+butlers list  # Should list available butlers from roster/
+
+# 5. Dashboard API starts without errors
+uv run butlers dashboard --port 41200 &
+sleep 2 && curl -s http://localhost:41200/api/health | python3 -m json.tool
+kill %1  # Stop the background API
+```
+
+If the dashboard responds with `{"status": "ok"}`, the database and API are functioning. If `butlers list` shows butlers with correct ports and statuses, the dev environment matches what this page describes.
+
 ## Related Pages
 
 - [First Butler Launch](first-butler-launch.md) --- triggering a butler and viewing its session log

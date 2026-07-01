@@ -123,6 +123,36 @@ butlers db migrate [--only ...]  Run Alembic migrations for butler schemas
 butlers db provision [--only ...] Provision PostgreSQL databases
 ```
 
+## Verification
+
+To confirm a butler launched correctly and sessions are being recorded:
+
+```bash
+# 1. Butler shows as running in the discovery list
+butlers list
+# Expected: "general" (or whichever butler you started) shows a running status
+
+# 2. Butler's MCP status tool responds
+# (requires an MCP client; using curl as a quick sanity check on the SSE port)
+response=$(curl -s --max-time 2 -N http://localhost:41101/sse 2>&1)
+echo "$response" | head -5
+# Expected: "data: ..." SSE stream lines (not ECONNREFUSED)
+
+# 3. After triggering, session appears in the dashboard
+curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool
+# Expected: array with at least one session row; "trigger_source": "trigger"
+
+# 4. Session log contains tool calls and output
+# Use the session ID from above:
+curl -s http://localhost:41200/api/butlers/general/sessions/<session-id> | python3 -m json.tool
+# Expected: non-null "result", "tool_calls" array, "success": true
+
+# 5. Scaffolding test: init command creates expected files
+butlers init testbutler --port 41199
+ls roster/testbutler/  # Should contain butler.toml, CLAUDE.md, AGENTS.md
+rm -rf roster/testbutler  # Clean up
+```
+
 ## Related Pages
 
 - [Butler Lifecycle](../concepts/butler-lifecycle.md) --- detailed explanation of the daemon startup and session cycle

@@ -63,6 +63,36 @@ When the spawner invokes an LLM session, it generates a temporary MCP configurat
 
 The `ToolMeta` dataclass allows modules to declare per-argument sensitivity information via `arg_sensitivities`. This is used by the approvals module to determine which tool calls require human approval before execution. Arguments not explicitly listed fall back to a heuristic-based sensitivity classifier.
 
+## Verification
+
+To confirm the MCP model described here matches the running system:
+
+```bash
+# 1. Butler's SSE endpoint accepts connections on the expected port
+curl -s --max-time 2 -N http://localhost:41101/sse 2>&1 | head -3
+# Expected: "data: ..." SSE stream, not ECONNREFUSED
+
+# 2. Core tools are registered and respond
+# Call the status tool via an MCP client, or inspect the dashboard:
+curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
+# Expected: "name", "modules", "uptime", "health" fields present
+
+# 3. Module tools appear in tool listings
+# Use an MCP client to list tools on the general butler's MCP server.
+# Expected: core tools (status, trigger, route.execute) plus module tools
+# (e.g., memory_store, memory_search if memory module is loaded)
+
+# 4. Tool call logging proxy captured calls in session records
+# After triggering a session, inspect tool_calls in the session record:
+curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool
+# Expected: tool_calls array with tool_name, module_name, outcome, duration_ms fields
+
+# 5. Ephemeral MCP config points only at this butler
+# Check that a spawned LLM session cannot call tools on another butler.
+# In session output, any attempt to reach another MCP server should fail
+# (the ephemeral config has no other server entries).
+```
+
 ## Related Pages
 
 - [Trigger Flow](trigger-flow.md) --- how triggers create sessions that connect to the MCP server

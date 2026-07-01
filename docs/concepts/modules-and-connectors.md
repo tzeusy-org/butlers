@@ -142,6 +142,40 @@ Plus provider-specific credentials (e.g., `BUTLER_TELEGRAM_TOKEN` for the Telegr
 
 If you are adding a new *capability* that a butler's LLM should be able to use (query a database, send a message, look up a calendar), write a **module**. If you are adding a new *input channel* that should feed messages into the Switchboard for classification and routing, write a **connector**.
 
+## Verification
+
+To confirm the module and connector model described here matches the running system:
+
+```bash
+# 1. Module states after startup (healthy modules show status "active")
+curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
+# Expected: "modules" array with each enabled module showing "status": "active"
+# Failed modules show "status": "failed" with a "phase" and "error" field
+
+# 2. Module tools are registered on the MCP server
+# Connect an MCP client to a butler and list tools.
+# Memory module adds: memory_store, memory_search, memory_list, memory_delete
+# Email module adds: email_send, email_search, email_read, etc.
+
+# 3. Module config validation: invalid config prevents module from loading
+# Add an invalid section to butler.toml (e.g., wrong type for a required field)
+# and restart the butler. The module should fail at phase "config" while
+# the butler continues with other modules.
+
+# 4. Connector process is separate from butler daemon
+ps aux | grep -E "telegram_bot|gmail_connector"
+# Expected: separate process(es) for each running connector, not inside the butler PID
+
+# 5. Connector health socket responds
+# Connectors expose a health endpoint (CONNECTOR_HEALTH_PORT):
+curl -s http://localhost:<CONNECTOR_HEALTH_PORT>/health
+# Expected: HTTP 200 with health status
+
+# 6. Module-vs-connector distinction: module adds MCP tools; connector submits events
+# Confirm no MCP tool registrations exist in src/butlers/connectors/ source:
+grep -r "mcp.tool" src/butlers/connectors/ && echo "Found (unexpected)" || echo "None (expected)"
+```
+
 ## Related Pages
 
 - [Butler Lifecycle](butler-lifecycle.md) --- how modules are loaded during startup

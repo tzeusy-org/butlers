@@ -157,6 +157,48 @@ Three counters track failover at the process level:
 | `butlers.spawner.failover_suppressed_total` | `butler, reason` | Failover suppressed by classifier |
 | `butlers.spawner.failover_exhausted_total` | `butler, tier` | All same-tier candidates exhausted |
 
+## Verification
+
+To confirm the model routing behavior described here matches the running system:
+
+```bash
+# 1. Catalog entries exist and are enabled
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT runtime_type, model_id, complexity_tier, priority, enabled
+   FROM public.model_catalog ORDER BY priority DESC, created_at;"
+# Expected: at least one enabled entry per complexity tier you use
+
+# 2. Resolution source recorded on sessions
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT model, complexity, resolution_source, COUNT(*) as sessions
+   FROM general.sessions WHERE completed_at IS NOT NULL
+   GROUP BY model, complexity, resolution_source ORDER BY sessions DESC LIMIT 10;"
+# Expected: resolution_source is "catalog" for catalog-resolved sessions,
+#           "toml_fallback" when no catalog entry matched the tier
+
+# 3. Token quota ledger records usage
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT catalog_entry_id, SUM(input_tokens + output_tokens) AS total_tokens,
+          MAX(recorded_at) AS last_record
+   FROM public.token_usage_ledger
+   WHERE recorded_at > now() - interval '24 hours'
+   GROUP BY catalog_entry_id;"
+# Expected: rows with non-zero totals for models used today
+
+# 4. Failover attempts are tracked (if any occurred)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT outcome, failure_reason, error_code, attempt_index
+   FROM public.model_dispatch_attempts ORDER BY created_at DESC LIMIT 10;"
+# Expected: "success" rows for normal sessions; "quota_skip" or "runtime_failure" for failovers
+
+# 5. Per-butler overrides apply (if configured)
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT butler, catalog_entry_id, enabled, priority, complexity_tier
+   FROM public.butler_model_overrides;"
+# Expected: override rows for any butler with custom model settings;
+#           NULL columns fall back to catalog defaults via COALESCE
+```
+
 ## Related Pages
 
 - [LLM CLI Spawner](spawner.md) --- where model resolution integrates into the spawn pipeline, including same-tier failover flow

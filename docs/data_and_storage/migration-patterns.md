@@ -121,6 +121,43 @@ To create a new module migration chain:
 3. Create the first migration with `branch_labels = ("<name>",)` and `down_revision = None`.
 4. Return the branch label from the module's `migration_revisions()` method.
 
+## Verification
+
+To confirm the migration chain structure described here matches the running system:
+
+```bash
+# 1. Core migration chain is at head in each butler's schema
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT version_num FROM general.alembic_version;"
+# Expected: the latest core_NNN revision (check alembic/versions/core/ for the highest number)
+
+# 2. Module migration chains are tracked separately
+psql -h localhost -U butlers -d butlers -c \
+  "SELECT version_num FROM general.alembic_version;"
+# Expected: multiple rows if module chains are active (one per chain at head)
+
+# 3. Migration runner applies all chains at startup without error
+butlers db migrate --only general 2>&1
+# Expected: output for each chain (core, memory, etc.) showing "Already at head" or migration steps
+
+# 4. Discovered module chains match source directories
+python3 -c "
+from butlers.migrations import get_all_chains
+chains = get_all_chains()
+print(chains)
+"
+# Expected: list starting with "core" followed by module names and butler names
+
+# 5. Module migration file follows the branch-label convention
+grep -r "branch_labels" src/butlers/modules/memory/migrations/ | head -5
+# Expected: only the FIRST (root) migration file contains branch_labels = ("memory",);
+# subsequent files have no branch_labels
+
+# 6. New migration does not break existing butler on upgrade
+uv run pytest tests/test_migrations.py -q --tb=short 2>&1 | tail -20
+# Expected: all migration integrity tests pass
+```
+
 ## Related Pages
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
