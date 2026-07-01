@@ -247,15 +247,37 @@ The route map SHALL include the Settings Console sub-routes and the ingestion di
   - `/approvals` -- Approvals queue (rendered by `ApprovalsPage`)
   - `/approvals/rules` -- Approval standing rules
   - `/calendar` -- Calendar workspace
-  - `/contacts` -- Contacts list
-  - `/contacts/:contactId` -- Contact detail (parameterized)
+  - `/contacts` -- Redirect to `/entities?has=contact` (legacy bookmark compatibility; `public.contacts` was dropped in core_134)
+  - `/contacts/:contactId` -- Redirect to `/entities?has=contact` (legacy per-contact bookmark compatibility)
   - `/groups` -- Groups list (not in sidebar; reachable via the relationship butler's CRM tab Quick Links)
   - `/costs` -- Costs and usage (not in sidebar)
   - `/memory` -- Memory system
+  - `/memory/facts/:factId` -- Fact detail (parameterized)
+  - `/memory/rules/:ruleId` -- Rule detail (parameterized)
+  - `/memory/episodes/:episodeId` -- Episode detail (parameterized)
+  - `/entities` -- Entities index (`EntitiesIndexPage`)
+  - `/entities/hop` -- Entity hop explorer
+  - `/entities/columns` -- Entity columns view
+  - `/entities/concentration` -- Entity concentration view
+  - `/entities/social-map` -- Social map view
+  - `/entities/:entityId` -- Entity detail (parameterized)
+  - `/health` -- Health overview (`HealthOverviewPage`)
+  - `/health/measurements` -- Health measurements
+  - `/health/medications` -- Health medications
+  - `/health/conditions` -- Health conditions
+  - `/health/symptoms` -- Health symptoms
+  - `/health/meals` -- Health meals
+  - `/health/research` -- Health research
+  - `/education` -- Education (`EducationPage`)
   - `/ingestion` -- Ingestion Timeline ledger
   - `/ingestion/connectors` -- Ingestion connector roster
   - `/ingestion/connectors/:connectorType/:endpointIdentity` -- Ingestion connector detail (parameterized)
   - `/ingestion/filters` -- Ingestion Filters pipeline
+  - `/qa` -- QA overview (`QaOverviewPage`)
+  - `/qa/patrols/:patrolId` -- QA patrol detail (parameterized)
+  - `/qa/investigations` -- QA investigations list
+  - `/qa/investigations/:attemptId` -- QA investigation detail (parameterized)
+  - `/system` -- System overview (`SystemPage`; version, uptime, DB state, backup state, egress catalog, butler heartbeats)
   - `/settings` -- Settings Console (`SettingsConsolePage`; system-side only)
   - `/settings/models` -- Settings model catalog (`SettingsModelsPage`)
   - `/settings/spend` -- Settings spend (`SettingsSpendPage`)
@@ -695,29 +717,37 @@ Pages with live data SHALL provide a user-controllable auto-refresh mechanism wi
 - **AND** a Pause/Resume button toggles the enabled state
 - **AND** the component uses `Button` size `sm` at height `h-8` with `text-xs`
 
-#### Scenario: Settings page control
+### Requirement: Settings Console Page
+
+The Settings Console page (`SettingsConsolePage`) SHALL serve as the system-configuration root, aggregating attention items and sub-page summaries for the dashboard operator. It is system-side only; per-user preferences are not surfaced here.
+
+#### Scenario: Settings Console renders header KPI strip
 
 - **WHEN** the user visits `/settings`
-- **THEN** the "Live Refresh Defaults" card shows the `AutoRefreshToggle` component
-- **AND** changes to enabled state and interval are persisted and apply as defaults to all pages using `useAutoRefresh`
+- **THEN** a KPI strip shows four cells: Active Butlers, Spend MTD (USD), Open Approvals, and Models OK (verified count / total enabled count)
+- **AND** the Open Approvals cell renders in red when the count is greater than zero
+- **AND** each cell shows a skeleton placeholder while its data loads from `GET /api/settings/console`
 
-### Requirement: Settings Page
-
-The settings page SHALL provide local-only (browser-scoped) preferences for the dashboard operator.
-
-#### Scenario: Appearance settings
+#### Scenario: Settings Console renders AttentionStrip
 
 - **WHEN** the user visits `/settings`
-- **THEN** the Appearance card shows a theme selector with options: System, Light, Dark
-- **AND** the currently resolved theme is displayed as text below the selector
-- **AND** theme changes take immediate effect
+- **THEN** an attention strip is populated from `GET /api/settings/console`
+- **AND** each attention item displays a tone-coloured indicator dot (red or amber), descriptive text, and a "Review" link that navigates to the item's `action_route`
+- **AND** when the attention list is empty the strip shows "Everything is in hand."
+- **AND** a truncated-count footer row appears when the server omits additional items for brevity, linking to `/audit-log`
 
-#### Scenario: Command palette settings
+#### Scenario: Settings Console renders panel grid
 
 - **WHEN** the user visits `/settings`
-- **THEN** the Command Palette card shows the count of saved recent searches
-- **AND** a "Clear recent searches" button removes all saved searches from `localStorage`
-- **AND** the button is disabled when the count is 0
+- **THEN** a panel grid renders one panel per sub-surface: Models, Spend, Approvals, Permissions, and Secrets
+- **AND** clicking a panel navigates to its corresponding route: `/settings/models`, `/settings/spend`, `/approvals`, `/settings/permissions`, and `/secrets` respectively
+- **AND** panels with a live data summary fetch independently so a slow or failing panel does not block the others
+
+#### Scenario: Settings Console live stream
+
+- **WHEN** the user visits `/settings`
+- **THEN** the page subscribes to the settings WebSocket stream for live updates to header counts and attention items
+- **AND** when the WebSocket connection is closed the page falls back to polling `GET /api/settings/console` every five minutes
 
 ### Requirement: Utility Infrastructure
 
