@@ -207,28 +207,82 @@ describe("Per-account health revoke: revoke button on granted rows [bu-kma08]", 
   });
 });
 
-// ── 2. Revoke click calls API with the correct account_email ─────────────────
+// ── 2. Revoke confirm modal — required copy + two-step flow [bu-5ta0k] ──────────
 
-describe("Per-account 'revoke' calls disconnectGoogleHealth with that account's email [bu-kma08]", () => {
-  it("clicking 'revoke' on the secondary account row calls the API with work@example.com", async () => {
+// Required copy from spec dashboard-google-accounts §Revoking a scope set:
+const REQUIRED_COPY =
+  "This revokes Google Health access only. Calendar and Drive remain connected.";
+
+describe("Health revoke confirmation modal [bu-5ta0k]", () => {
+  it("clicking 'revoke' opens the confirm panel with the required spec copy", () => {
     mockAccountsOnce(makeAccounts());
     const Wrapper = queryClientWrapper();
-    render(
-      <Wrapper>
-        <PageGoogleAccounts />
-      </Wrapper>,
+    render(<Wrapper><PageGoogleAccounts /></Wrapper>);
+
+    const secondaryRow = document.querySelector('[data-google-account-row="acc-secondary"]');
+    expect(secondaryRow).not.toBeNull();
+    const revokeBtn = secondaryRow!.querySelector('[data-revoke-health="acc-secondary"]');
+    expect(revokeBtn).not.toBeNull();
+
+    fireEvent.click(revokeBtn!);
+
+    // Confirm panel must be in the DOM with the required copy
+    const confirmPanel = document.querySelector('[data-revoke-health-confirm="acc-secondary"]');
+    expect(confirmPanel).not.toBeNull();
+    expect(confirmPanel!.textContent).toContain(REQUIRED_COPY);
+
+    // DELETE must NOT have been called yet — modal is not a no-op guard
+    expect(disconnectGoogleHealthMock).not.toHaveBeenCalled();
+  });
+
+  it("clicking 'cancel' in the confirm panel dismisses it without calling the API", () => {
+    mockAccountsOnce(makeAccounts());
+    const Wrapper = queryClientWrapper();
+    render(<Wrapper><PageGoogleAccounts /></Wrapper>);
+
+    const secondaryRow = document.querySelector('[data-google-account-row="acc-secondary"]');
+    const revokeBtn = secondaryRow!.querySelector('[data-revoke-health="acc-secondary"]');
+    fireEvent.click(revokeBtn!);
+
+    const confirmPanel = document.querySelector('[data-revoke-health-confirm="acc-secondary"]');
+    expect(confirmPanel).not.toBeNull();
+
+    const cancelBtn = Array.from(confirmPanel!.querySelectorAll("button")).find(
+      (b) => b.textContent === "cancel",
     );
+    expect(cancelBtn).not.toBeNull();
+    fireEvent.click(cancelBtn!);
+
+    // Panel dismissed, mutation not called
+    expect(document.querySelector('[data-revoke-health-confirm="acc-secondary"]')).toBeNull();
+    expect(disconnectGoogleHealthMock).not.toHaveBeenCalled();
+  });
+
+  it("clicking 'yes, revoke' calls disconnectGoogleHealth with the correct account email", () => {
+    mockAccountsOnce(makeAccounts());
+    const Wrapper = queryClientWrapper();
+    render(<Wrapper><PageGoogleAccounts /></Wrapper>);
 
     // Both rows have health → two revoke buttons in the account rows
     // (plus potentially one in ScopeSetPicker for primary).
     // Find the one associated with the secondary account row.
     const secondaryRow = document.querySelector('[data-google-account-row="acc-secondary"]');
     expect(secondaryRow).not.toBeNull();
-
     const revokeBtn = secondaryRow!.querySelector('[data-revoke-health="acc-secondary"]');
     expect(revokeBtn).not.toBeNull();
 
+    // Step 1: open the confirm panel
     fireEvent.click(revokeBtn!);
+
+    const confirmPanel = document.querySelector('[data-revoke-health-confirm="acc-secondary"]');
+    expect(confirmPanel).not.toBeNull();
+
+    // Step 2: confirm the revoke
+    const confirmBtn = Array.from(confirmPanel!.querySelectorAll("button")).find(
+      (b) => b.textContent === "yes, revoke",
+    );
+    expect(confirmBtn).not.toBeNull();
+    fireEvent.click(confirmBtn!);
 
     // The mock should have been called with { accountEmail: "work@example.com" }
     expect(disconnectGoogleHealthMock).toHaveBeenCalledWith({

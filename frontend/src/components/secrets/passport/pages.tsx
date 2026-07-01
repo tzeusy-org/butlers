@@ -314,6 +314,7 @@ function GoogleAccountRow({
 
   const [disconnectOpen, setDisconnectOpen] = React.useState(false);
   const [hardDelete, setHardDelete] = React.useState(false);
+  const [revokeHealthOpen, setRevokeHealthOpen] = React.useState(false);
 
   // Re-authorize this account: uses account_hint (pre-selects the email in
   // Google's account chooser) + forceConsent (always shows the consent screen
@@ -418,8 +419,8 @@ function GoogleAccountRow({
             <Mono size={9} color="var(--dim)">health</Mono>
             <PillBtn
               variant="danger"
-              onClick={() => revokeHealthMutation.mutate()}
-              disabled={revokeHealthMutation.isPending}
+              onClick={() => setRevokeHealthOpen(true)}
+              disabled={revokeHealthMutation.isPending || revokeHealthOpen}
               data-revoke-health={account.id}
             >
               {revokeHealthMutation.isPending ? "revoking…" : "revoke"}
@@ -493,6 +494,45 @@ function GoogleAccountRow({
           </div>
         </div>
       )}
+
+      {/* Health revoke inline confirm — spec dashboard-google-accounts §Revoking a scope set */}
+      {revokeHealthOpen && (
+        <div
+          className="flex flex-col gap-2.5 p-3.5 ml-[14px]"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-revoke-health-confirm={account.id}
+        >
+          <Mono size={11} color="var(--red)">
+            This revokes Google Health access only. Calendar and Drive remain connected.
+          </Mono>
+          {revokeHealthMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {revokeHealthMutation.error instanceof Error
+                ? revokeHealthMutation.error.message
+                : "Health revoke failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={() => {
+                revokeHealthMutation.mutate(undefined, {
+                  onSuccess: () => setRevokeHealthOpen(false),
+                });
+              }}
+              disabled={revokeHealthMutation.isPending}
+            >
+              {revokeHealthMutation.isPending ? "revoking…" : "yes, revoke"}
+            </PillBtn>
+            <PillBtn
+              onClick={() => { revokeHealthMutation.reset(); setRevokeHealthOpen(false); }}
+              disabled={revokeHealthMutation.isPending}
+            >
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -529,6 +569,7 @@ function ScopeSetPicker({
   });
   const [grantPending, setGrantPending] = React.useState<string | null>(null);
   const [grantError, setGrantError] = React.useState<string | null>(null);
+  const [revokeHealthOpen, setRevokeHealthOpen] = React.useState(false);
 
   const healthGranted = hasHealthScopes(grantedScopes);
 
@@ -547,11 +588,6 @@ function ScopeSetPicker({
       accountHint: primaryAccountEmail,
     });
     window.location.assign(url);
-  }
-
-  function handleRevokeHealth() {
-    if (disconnectHealthMutation.isPending) return;
-    disconnectHealthMutation.mutate();
   }
 
   return (
@@ -588,8 +624,9 @@ function ScopeSetPicker({
                       <Mono size={9} color="var(--dim)">primary</Mono>
                       <PillBtn
                         variant="danger"
-                        onClick={handleRevokeHealth}
-                        disabled={disconnectHealthMutation.isPending}
+                        onClick={() => setRevokeHealthOpen(true)}
+                        disabled={disconnectHealthMutation.isPending || revokeHealthOpen}
+                        data-scope-revoke-health="true"
                       >
                         {disconnectHealthMutation.isPending ? "revoking…" : "revoke"}
                       </PillBtn>
@@ -618,7 +655,47 @@ function ScopeSetPicker({
       {grantError && (
         <Mono size={11} color="var(--red)">{grantError}</Mono>
       )}
-      {disconnectHealthMutation.error && (
+
+      {/* Health revoke inline confirm — spec dashboard-google-accounts §Revoking a scope set */}
+      {revokeHealthOpen && (
+        <div
+          className="flex flex-col gap-2.5 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-revoke-health-confirm="primary"
+        >
+          <Mono size={11} color="var(--red)">
+            This revokes Google Health access only. Calendar and Drive remain connected.
+          </Mono>
+          {disconnectHealthMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {disconnectHealthMutation.error instanceof Error
+                ? disconnectHealthMutation.error.message
+                : "Health revoke failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={() => {
+                disconnectHealthMutation.mutate(undefined, {
+                  onSuccess: () => setRevokeHealthOpen(false),
+                });
+              }}
+              disabled={disconnectHealthMutation.isPending}
+            >
+              {disconnectHealthMutation.isPending ? "revoking…" : "yes, revoke"}
+            </PillBtn>
+            <PillBtn
+              onClick={() => { disconnectHealthMutation.reset(); setRevokeHealthOpen(false); }}
+              disabled={disconnectHealthMutation.isPending}
+            >
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
+      {!revokeHealthOpen && disconnectHealthMutation.error && (
         <Mono size={11} color="var(--red)">
           {disconnectHealthMutation.error instanceof Error
             ? disconnectHealthMutation.error.message
