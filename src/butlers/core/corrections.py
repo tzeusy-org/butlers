@@ -114,6 +114,10 @@ FAILURE_MESSAGES: dict[str, str] = {
         "Cannot reach Switchboard for misroute re-dispatch."
         " Try again later or escalate to the user."
     ),
+    "invalid_json_corrected_value": (
+        "corrected_value is not valid JSON."
+        " Provide a JSON-serializable value (dict, list, string, number, boolean, or null)."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -357,6 +361,11 @@ async def check_data_correction_preconditions(
     if state_row is None:
         return FAILURE_MESSAGES["state_key_not_found"].format(key=state_key)
 
+    try:
+        _dumps(corrected_value)
+    except (TypeError, ValueError):
+        return FAILURE_MESSAGES["invalid_json_corrected_value"]
+
     return None
 
 
@@ -462,7 +471,7 @@ async def check_misroute_preconditions(
     *,
     target_session_id: uuid.UUID,
     correct_butler: str,
-    registered_butlers: list[str],
+    registered_butlers: list[str] | None,
     schema: str | None = None,
 ) -> str | None:
     """Validate preconditions for a misroute correction.
@@ -485,7 +494,7 @@ async def check_misroute_preconditions(
             id=str(target_session_id), source=trigger_source
         )
 
-    if correct_butler not in registered_butlers:
+    if registered_butlers is not None and correct_butler not in registered_butlers:
         return FAILURE_MESSAGES["butler_not_registered"].format(
             name=correct_butler,
             comma_separated_list=", ".join(sorted(registered_butlers)),
@@ -651,6 +660,7 @@ async def handle_data_correction(
     # Cross-schema validation: if target_butler is given but no target_pool, validate
     # that the butler exists in the registered list before proceeding.
     if target_butler is not None:
+        _validate_identifier(target_butler)
         effective_pool = target_pool if target_pool is not None else pool
         if registered_butlers is not None and target_butler not in registered_butlers:
             err = FAILURE_MESSAGES["butler_not_registered"].format(
@@ -769,18 +779,28 @@ async def handle_memory_deletion(
     description: str,
     memory_type: str,
     memory_id: uuid.UUID,
+    target_butler: str | None = None,
+    target_pool: Any | None = None,
+    registered_butlers: list[str] | None = None,
     schema: str | None = None,
 ) -> dict[str, Any]:
     """Handle a memory_deletion: retract a memory and record the correction.
 
+    Cross-schema support: if *target_butler* is provided, reads and retracts the
+    memory via *target_pool* (the target butler's DB pool). The correction record
+    is always written to the CURRENT butler's corrections table (*pool*).
+
     Args:
-        pool: asyncpg connection pool.
+        pool: The correcting butler's connection pool (correction record goes here).
         target_session_id: Session whose memory is being corrected.
         correcting_session_id: Session performing the correction.
         description: What was wrong and why.
         memory_type: One of 'fact', 'episode', 'rule'.
         memory_id: UUID of the memory to retract.
-        schema: Optional schema prefix.
+        target_butler: If provided, the name of the butler schema to target.
+        target_pool: If provided, the asyncpg pool for the target butler.
+        registered_butlers: List of registered butler names (for validation).
+        schema: Optional schema prefix for the current butler.
 
     Returns:
         Dict with keys: status, correction_id, summary, original_data_snapshot,
@@ -809,13 +829,45 @@ async def handle_memory_deletion(
             "correction_details": None,
         }
 
+    # Cross-schema validation: if target_butler is given, validate it exists.
+    if target_butler is not None:
+        _validate_identifier(target_butler)
+        effective_pool = target_pool if target_pool is not None else pool
+        if registered_butlers is not None and target_butler not in registered_butlers:
+            err = FAILURE_MESSAGES["butler_not_registered"].format(
+                name=target_butler,
+                comma_separated_list=", ".join(sorted(registered_butlers)),
+            )
+            cid = await create_correction(
+                pool,
+                correction_type=CorrectionType.MEMORY_DELETION,
+                target_session_id=target_session_id,
+                correcting_session_id=correcting_session_id,
+                description=description,
+                status="failed",
+                summary=err,
+                original_data_snapshot=None,
+                correction_details={"target_butler": target_butler},
+                schema=schema,
+            )
+            return {
+                "status": "failed",
+                "correction_id": str(cid),
+                "summary": err,
+                "original_data_snapshot": None,
+                "correction_details": {"target_butler": target_butler},
+            }
+    else:
+        effective_pool = pool
+
     # Precondition checks
+    target_schema = target_butler if target_butler else schema
     precond_error = await check_memory_deletion_preconditions(
-        pool,
+        effective_pool,
         target_session_id=target_session_id,
         memory_type=memory_type,
         memory_id=memory_id,
-        schema=schema,
+        schema=target_schema,
     )
     if precond_error:
         if not _is_session_not_found_error(precond_error):
@@ -846,22 +898,24 @@ async def handle_memory_deletion(
     # check_memory_deletion_preconditions, so only allowlisted values reach here.
     memory_table_map = {"fact": "facts", "episode": "episodes", "rule": "rules"}
     raw_table = memory_table_map.get(memory_type, "facts")  # fallback is unreachable
-    memory_table = f"{schema}.{raw_table}" if schema else raw_table
+    memory_table = f"{target_schema}.{raw_table}" if target_schema else raw_table
 
     # Snapshot original memory content before retraction
-    memory_row = await pool.fetchrow(
+    memory_row = await effective_pool.fetchrow(
         f"SELECT * FROM {memory_table} /* memory snapshot */ WHERE id = $1",
         memory_id,
     )
     snapshot = dict(memory_row) if memory_row else {}
 
     # Retract the memory via memory_forget
-    await memory_forget(pool, memory_type, str(memory_id))
+    await memory_forget(effective_pool, memory_type, str(memory_id))
 
     correction_details = {
         "memory_type": memory_type,
         "memory_id": str(memory_id),
     }
+    if target_butler:
+        correction_details["target_butler"] = target_butler
     cid = await create_correction(
         pool,
         correction_type=CorrectionType.MEMORY_DELETION,
@@ -890,15 +944,21 @@ async def handle_misroute(
     correcting_session_id: uuid.UUID,
     description: str,
     correct_butler: str,
-    registered_butlers: list[str],
+    registered_butlers: list[str] | None = None,
     switchboard_client: Any,
     original_butler: str | None = None,
+    target_butler: str | None = None,
+    target_pool: Any | None = None,
     schema: str | None = None,
 ) -> dict[str, Any]:
     """Handle a misroute correction: re-dispatch a message to the correct butler.
 
+    Cross-schema support: if *target_butler* is provided, reads the session from
+    *target_pool* (the target butler's DB pool). The correction record is always
+    written to the CURRENT butler's corrections table (*pool*).
+
     Args:
-        pool: asyncpg connection pool.
+        pool: The correcting butler's connection pool (correction record goes here).
         target_session_id: Session that received the incorrectly-routed message.
         correcting_session_id: Session performing the correction.
         description: What was wrong and why.
@@ -906,7 +966,9 @@ async def handle_misroute(
         registered_butlers: List of registered butler names.
         switchboard_client: Client with a call_tool(tool_name, **kwargs) method.
         original_butler: Name of the butler that originally received the message.
-        schema: Optional schema prefix.
+        target_butler: If provided, the name of the butler schema to read the session from.
+        target_pool: If provided, the asyncpg pool for the target butler.
+        schema: Optional schema prefix for the current butler.
 
     Returns:
         Dict with keys: status, correction_id, summary, original_data_snapshot,
@@ -935,13 +997,45 @@ async def handle_misroute(
             "correction_details": None,
         }
 
+    # Cross-schema validation: if target_butler is given, validate it exists.
+    if target_butler is not None:
+        _validate_identifier(target_butler)
+        effective_pool = target_pool if target_pool is not None else pool
+        if registered_butlers is not None and target_butler not in registered_butlers:
+            err = FAILURE_MESSAGES["butler_not_registered"].format(
+                name=target_butler,
+                comma_separated_list=", ".join(sorted(registered_butlers)),
+            )
+            cid = await create_correction(
+                pool,
+                correction_type=CorrectionType.MISROUTE,
+                target_session_id=target_session_id,
+                correcting_session_id=correcting_session_id,
+                description=description,
+                status="failed",
+                summary=err,
+                original_data_snapshot=None,
+                correction_details={"target_butler": target_butler},
+                schema=schema,
+            )
+            return {
+                "status": "failed",
+                "correction_id": str(cid),
+                "summary": err,
+                "original_data_snapshot": None,
+                "correction_details": {"target_butler": target_butler},
+            }
+    else:
+        effective_pool = pool
+
     # Precondition checks
+    target_schema = target_butler if target_butler else schema
     precond_error = await check_misroute_preconditions(
-        pool,
+        effective_pool,
         target_session_id=target_session_id,
         correct_butler=correct_butler,
         registered_butlers=registered_butlers,
-        schema=schema,
+        schema=target_schema,
     )
     if precond_error:
         if not _is_session_not_found_error(precond_error):
@@ -969,8 +1063,8 @@ async def handle_misroute(
         }
 
     # Snapshot original routing
-    sessions_table = f"{schema}.sessions" if schema else "sessions"
-    session_row = await pool.fetchrow(
+    sessions_table = f"{target_schema}.sessions" if target_schema else "sessions"
+    session_row = await effective_pool.fetchrow(
         f"SELECT id, trigger_source, ingestion_event_id FROM {sessions_table} WHERE id = $1",
         target_session_id,
     )
@@ -1053,6 +1147,8 @@ async def handle_misroute(
         "original_butler": original_butler,
         "original_request_id": original_request_id,
     }
+    if target_butler:
+        correction_details["target_butler"] = target_butler
     summary = f"Message re-dispatched to butler '{correct_butler}'. New session: {new_session_id}."
     cid = await create_correction(
         pool,
@@ -1082,19 +1178,29 @@ async def handle_action_reversal(
     correcting_session_id: uuid.UUID,
     description: str,
     action_description: str,
+    target_butler: str | None = None,
+    target_pool: Any | None = None,
+    registered_butlers: list[str] | None = None,
     schema: str | None = None,
 ) -> dict[str, Any]:
     """Handle an action_reversal: attempt to reverse actions taken by a session.
 
     Best-effort reversal. Reports full/partial/failed outcomes.
 
+    Cross-schema support: if *target_butler* is provided, reads the session from
+    *target_pool* (the target butler's DB pool). The correction record is always
+    written to the CURRENT butler's corrections table (*pool*).
+
     Args:
-        pool: asyncpg connection pool.
+        pool: The correcting butler's connection pool (correction record goes here).
         target_session_id: Session whose actions are being reversed.
         correcting_session_id: Session performing the correction.
         description: What was wrong and why.
         action_description: Human description of which action(s) to reverse.
-        schema: Optional schema prefix.
+        target_butler: If provided, the name of the butler schema to target.
+        target_pool: If provided, the asyncpg pool for the target butler.
+        registered_butlers: List of registered butler names (for validation).
+        schema: Optional schema prefix for the current butler.
 
     Returns:
         Dict with keys: status, correction_id, summary, original_data_snapshot,
@@ -1123,12 +1229,44 @@ async def handle_action_reversal(
             "correction_details": None,
         }
 
+    # Cross-schema validation: if target_butler is given, validate it exists.
+    if target_butler is not None:
+        _validate_identifier(target_butler)
+        effective_pool = target_pool if target_pool is not None else pool
+        if registered_butlers is not None and target_butler not in registered_butlers:
+            err = FAILURE_MESSAGES["butler_not_registered"].format(
+                name=target_butler,
+                comma_separated_list=", ".join(sorted(registered_butlers)),
+            )
+            cid = await create_correction(
+                pool,
+                correction_type=CorrectionType.ACTION_REVERSAL,
+                target_session_id=target_session_id,
+                correcting_session_id=correcting_session_id,
+                description=description,
+                status="failed",
+                summary=err,
+                original_data_snapshot=None,
+                correction_details={"target_butler": target_butler},
+                schema=schema,
+            )
+            return {
+                "status": "failed",
+                "correction_id": str(cid),
+                "summary": err,
+                "original_data_snapshot": None,
+                "correction_details": {"target_butler": target_butler},
+            }
+    else:
+        effective_pool = pool
+
     # Precondition checks
+    target_schema = target_butler if target_butler else schema
     precond_error = await check_action_reversal_preconditions(
-        pool,
+        effective_pool,
         target_session_id=target_session_id,
         action_description=action_description,
-        schema=schema,
+        schema=target_schema,
     )
     if precond_error:
         if not _is_session_not_found_error(precond_error):
@@ -1156,8 +1294,8 @@ async def handle_action_reversal(
         }
 
     # Fetch session tool calls
-    sessions_table = f"{schema}.sessions" if schema else "sessions"
-    session_row = await pool.fetchrow(
+    sessions_table = f"{target_schema}.sessions" if target_schema else "sessions"
+    session_row = await effective_pool.fetchrow(
         f"SELECT id, tool_calls FROM {sessions_table} WHERE id = $1",
         target_session_id,
     )
@@ -1198,6 +1336,8 @@ async def handle_action_reversal(
         "reversed": reversed_tools,
         "irreversible": irreversible_tools,
     }
+    if target_butler:
+        correction_details["target_butler"] = target_butler
     snapshot = {"tool_calls": tool_calls}
 
     cid = await create_correction(

@@ -197,6 +197,8 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
                 description=description,
                 memory_type=memory_type,
                 memory_id=mem_id,
+                target_butler=target_butler,
+                registered_butlers=None,
             )
         elif correction_type == CorrectionType.MISROUTE:
             if correct_butler is None:
@@ -221,9 +223,10 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
                 correcting_session_id=correcting_sid,
                 description=description,
                 correct_butler=correct_butler,
-                registered_butlers=[],
+                registered_butlers=None,
                 switchboard_client=client,
                 original_butler=butler_name,
+                target_butler=target_butler,
             )
         elif correction_type == CorrectionType.ACTION_REVERSAL:
             if action_description is None:
@@ -242,6 +245,8 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
                 correcting_session_id=correcting_sid,
                 description=description,
                 action_description=action_description,
+                target_butler=target_butler,
+                registered_butlers=None,
             )
         else:
             from butlers.core.corrections import FAILURE_MESSAGES
