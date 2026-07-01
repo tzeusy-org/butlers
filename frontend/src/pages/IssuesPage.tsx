@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import IssuesPanel from "@/components/issues/IssuesPanel";
 import { Button } from "@/components/ui/button";
+import { Page } from "@/components/ui/page";
 import { useDismissIssue, useIssues, useUndismissIssue } from "@/hooks/use-issues";
 
 export default function IssuesPage() {
@@ -12,16 +13,15 @@ export default function IssuesPage() {
   const issues = data?.data ?? [];
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-row items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Issues</h1>
-          <p className="text-muted-foreground mt-1">
-            {showDismissed
-              ? "Dismissed issues. Restore one to return it to the active feed."
-              : "Grouped errors and warnings across all butlers, newest first."}
-          </p>
-        </div>
+    <Page
+      archetype="list"
+      title="Issues"
+      description={
+        showDismissed
+          ? "Dismissed issues. Restore one to return it to the active feed."
+          : "Grouped errors and warnings across all butlers, newest first."
+      }
+      actions={
         <Button
           variant="outline"
           size="sm"
@@ -29,8 +29,8 @@ export default function IssuesPage() {
         >
           {showDismissed ? "Show active" : "Show dismissed"}
         </Button>
-      </div>
-
+      }
+    >
       <IssuesPanel
         issues={issues}
         isLoading={isLoading}
@@ -41,6 +41,6 @@ export default function IssuesPage() {
         onRestore={(issueKey) => undismiss.mutate(issueKey)}
         isRestoring={undismiss.isPending}
       />
-    </div>
+    </Page>
   );
 }

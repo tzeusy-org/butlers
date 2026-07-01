@@ -6,6 +6,7 @@ import { RulesTable } from "@/components/approvals/rules-table";
 import { RuleDetailDialog } from "@/components/approvals/rule-detail-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Page } from "@/components/ui/page";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -80,23 +81,19 @@ export default function ApprovalRulesPage() {
     filters.tool_name !== "" || filters.active !== "true" || filters.butler !== "";
 
   return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Approval Rules</h1>
-          <p className="text-muted-foreground mt-1">
-            Manage standing approval rules for automatic action approval.
-          </p>
-        </div>
+    <Page
+      archetype="list"
+      title="Approval Rules"
+      description="Manage standing approval rules for automatic action approval."
+      actions={
         <div className="flex gap-2">
           <Button onClick={() => setCreateOpen(true)}>Create rule</Button>
           <Button variant="outline" asChild>
             <Link to="/approvals">Back to actions</Link>
           </Button>
         </div>
-      </div>
-
+      }
+    >
       {/* Filters */}
       <Card>
         <CardHeader>
@@ -202,6 +199,6 @@ export default function ApprovalRulesPage() {
       {/* Rule detail dialog */}
       <RuleDetailDialog rule={selectedRule} open={dialogOpen} onOpenChange={setDialogOpen} />
       <CreateRuleDialog open={createOpen} onOpenChange={setCreateOpen} />
-    </div>
+    </Page>
   );
 }

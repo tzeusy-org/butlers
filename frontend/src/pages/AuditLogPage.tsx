@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Page } from "@/components/ui/page";
 import { useAuditLog } from "@/hooks/use-audit-log";
 
 // ---------------------------------------------------------------------------
@@ -114,15 +115,11 @@ export default function AuditLogPage() {
     filters.since !== "";
 
   return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Audit Log</h1>
-        <p className="text-muted-foreground mt-1">
-          Browse audit log entries across all butlers.
-        </p>
-      </div>
-
+    <Page
+      archetype="list"
+      title="Audit Log"
+      description="Browse audit log entries across all butlers."
+    >
       {/* Deep-link filter chips — shown when ?key= or ?actor= are present */}
       {(keyFilter || actorFilter) && (
         <div className="flex flex-wrap items-center gap-2" data-testid="deep-link-filters">
@@ -267,6 +264,6 @@ export default function AuditLogPage() {
           </div>
         </div>
       )}
-    </div>
+    </Page>
   );
 }

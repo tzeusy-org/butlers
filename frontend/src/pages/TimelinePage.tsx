@@ -9,6 +9,7 @@ import { useTimeline } from "@/hooks/use-timeline.ts";
 import { cn } from "@/lib/utils";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
+import { Page } from "@/components/ui/page";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -87,23 +88,19 @@ export default function TimelinePage() {
   const displayEvents = cursor === undefined ? (response?.data ?? []) : currentEvents;
 
   return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Timeline</h1>
-          <p className="text-muted-foreground mt-1">
-            Unified event stream across all butlers.
-          </p>
-        </div>
+    <Page
+      archetype="list"
+      title="Timeline"
+      description="Unified event stream across all butlers."
+      actions={
         <AutoRefreshToggle
           enabled={autoRefreshControl.enabled}
           interval={autoRefreshControl.interval}
           onToggle={autoRefreshControl.setEnabled}
           onIntervalChange={autoRefreshControl.setInterval}
         />
-      </div>
-
+      }
+    >
       {/* Filters */}
       <Card>
         <CardContent className="py-4">
@@ -181,6 +178,6 @@ export default function TimelinePage() {
           />
         </CardContent>
       </Card>
-    </div>
+    </Page>
   );
 }

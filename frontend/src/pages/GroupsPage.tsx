@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { categoryHueVar } from "@/components/ui/ButlerMark";
+import { Page } from "@/components/ui/page";
 import {
   useGroups,
   useLabels,
@@ -297,18 +298,12 @@ export default function GroupsPage() {
   const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
 
   return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Groups</h1>
-          <p className="text-muted-foreground mt-1">
-            Organize contacts into groups.
-          </p>
-        </div>
-        <CreateLabelDialog />
-      </div>
-
+    <Page
+      archetype="list"
+      title="Groups"
+      description="Organize contacts into groups."
+      actions={<CreateLabelDialog />}
+    >
       {/* Groups table */}
       <Card>
         <CardHeader>
@@ -385,6 +380,6 @@ export default function GroupsPage() {
           </div>
         </div>
       )}
-    </div>
+    </Page>
   );
 }

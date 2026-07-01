@@ -7,6 +7,7 @@ import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Page } from "@/components/ui/page";
 import {
   Select,
   SelectContent,
@@ -156,30 +157,25 @@ export default function NotificationsPage() {
   const failedCount = statsResponse?.data?.failed ?? 0;
 
   return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
-          <p className="text-muted-foreground mt-1">
-            Monitor notification delivery across all butlers.
-          </p>
-        </div>
-        {failedCount > 0 && (
+    <Page
+      archetype="list"
+      title="Notifications"
+      description="Monitor notification delivery across all butlers."
+      actions={
+        failedCount > 0 ? (
           <Button
             variant="outline"
             size="sm"
             disabled={ackAllMutation.isPending}
             onClick={handleAcknowledgeAll}
-            className="shrink-0 mt-1"
           >
             {ackAllMutation.isPending
               ? "Acknowledging…"
               : `Acknowledge all failed (${failedCount})`}
           </Button>
-        )}
-      </div>
-
+        ) : undefined
+      }
+    >
       {/* Stats bar */}
       <NotificationStatsBar
         stats={statsResponse?.data}
@@ -347,6 +343,6 @@ export default function NotificationsPage() {
           </div>
         </div>
       )}
-    </div>
+    </Page>
   );
 }
