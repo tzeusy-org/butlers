@@ -69,6 +69,7 @@ vi.mock("sonner", () => ({
 
 import {
   useCreateModelCatalogEntry,
+  useDeleteModelCatalogEntry,
   useModelCatalog,
   useResetModelUsage,
   useSetModelTokenLimits,
@@ -604,13 +605,19 @@ describe("SettingsModelsPage — EditModelDialog", () => {
     expect(vi.mocked(useUpdateModelCatalogEntry)().mutate).not.toHaveBeenCalled();
   });
 
-  it("shows validation error for invalid JSON in args field", async () => {
+  it("shows validation error for invalid JSON in args field (raw-JSON mode)", async () => {
+    // The default mode is the KV editor. Users must toggle to raw-JSON mode to type raw JSON.
     mountPage();
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
     });
 
-    const argsField = screen.getByLabelText(/args/i);
+    // Toggle to raw-JSON mode
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Switch to raw JSON editor"));
+    });
+
+    const argsField = screen.getByLabelText("Args (JSON array)");
     await act(async () => {
       fireEvent.change(argsField, { target: { value: "not-valid-json" } });
     });
@@ -624,13 +631,18 @@ describe("SettingsModelsPage — EditModelDialog", () => {
     expect(vi.mocked(useUpdateModelCatalogEntry)().mutate).not.toHaveBeenCalled();
   });
 
-  it("shows validation error when args is not a JSON array", async () => {
+  it("shows validation error when args is not a JSON array (raw-JSON mode)", async () => {
     mountPage();
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
     });
 
-    const argsField = screen.getByLabelText(/args/i);
+    // Toggle to raw-JSON mode
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Switch to raw JSON editor"));
+    });
+
+    const argsField = screen.getByLabelText("Args (JSON array)");
     await act(async () => {
       fireEvent.change(argsField, { target: { value: '{"key": "val"}' } });
     });
@@ -1126,6 +1138,370 @@ describe("SettingsModelsPage — token-usage columns", () => {
         // Preserves the untouched 30d limit, updates 24h.
         body: { limit_24h: 750000, limit_30d: 9_000_000 },
       }),
+      expect.any(Object),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExtraArgsEditor — KV editor serialize/deserialize, add/remove, raw-JSON toggle
+// ---------------------------------------------------------------------------
+
+describe("SettingsModelsPage — ExtraArgsEditor (bu-6jxcw)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setHookState({ entries: [makeModel()] });
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as AnyMock);
+  });
+
+  it("renders 'Raw JSON →' toggle button when in KV mode", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    expect(screen.getByLabelText("Switch to raw JSON editor")).toBeTruthy();
+  });
+
+  it("switching to raw-JSON mode reveals the Args (JSON array) textarea", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Switch to raw JSON editor"));
+    });
+    // Textarea now visible with args aria-label
+    expect(screen.getByLabelText("Args (JSON array)")).toBeTruthy();
+    // Toggle label changed to "← KV editor"
+    expect(screen.getByLabelText("Switch to key-value editor")).toBeTruthy();
+  });
+
+  it("'+ Add arg' button appends a new row input", async () => {
+    // Model starts with one existing arg so we can see two after adding
+    setHookState({ entries: [makeModel({ extra_args: ["--foo"] })] });
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    // Should start with one row ("Arg 1")
+    expect(screen.getByLabelText("Arg 1")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /add arg/i }));
+    });
+    // Should now have two rows
+    expect(screen.getByLabelText("Arg 1")).toBeTruthy();
+    expect(screen.getByLabelText("Arg 2")).toBeTruthy();
+  });
+
+  it("remove-arg button removes the corresponding row", async () => {
+    setHookState({ entries: [makeModel({ extra_args: ["--foo", "--bar"] })] });
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    // Should start with two rows
+    expect(screen.getByLabelText("Arg 1")).toBeTruthy();
+    expect(screen.getByLabelText("Arg 2")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Remove arg 1"));
+    });
+    // One row left
+    expect(screen.getByLabelText("Arg 1")).toBeTruthy();
+    expect(screen.queryByLabelText("Arg 2")).toBeNull();
+  });
+
+  it("KV rows serialize correctly into extra_args on save", async () => {
+    // setHookState sets useUpdateModelCatalogEntry internally; override AFTER it.
+    setHookState({ entries: [makeModel({ extra_args: [] })] });
+    const mutate = vi.fn();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    // Add a row and type a CLI token
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /add arg/i }));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Arg 1"), { target: { value: "--max-turns" } });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ extra_args: ["--max-turns"] }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("raw-JSON mode valid input deserializes and includes correct extra_args on save", async () => {
+    // setHookState sets useUpdateModelCatalogEntry internally; override AFTER it.
+    setHookState({ entries: [makeModel({ extra_args: [] })] });
+    const mutate = vi.fn();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Switch to raw JSON editor"));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Args (JSON array)"), {
+        target: { value: '["--config","model_reasoning_effort=high"]' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          extra_args: ["--config", "model_reasoning_effort=high"],
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("raw-JSON mode rejects arrays with non-string elements", async () => {
+    // Arrays like [1, 2] pass Array.isArray() but extra_args requires string[].
+    // The editor must show an error and NOT call mutate.
+    setHookState({ entries: [makeModel({ extra_args: [] })] });
+    const mutate = vi.fn();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Switch to raw JSON editor"));
+    });
+
+    // Type a JSON array with numeric elements — invalid for extra_args: string[]
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Args (JSON array)"), {
+        target: { value: "[1, 2]" },
+      });
+    });
+
+    // Error message must be visible
+    expect(screen.getByText(/all elements must be strings/i)).toBeTruthy();
+
+    // Attempting to save must be blocked — mutate must not be called
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Template dropdown — selecting a template pre-fills runtimeType + extraArgs
+// ---------------------------------------------------------------------------
+
+describe("SettingsModelsPage — template dropdown (bu-6jxcw)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useCreateModelCatalogEntry).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as AnyMock);
+    setHookState({ entries: [] });
+  });
+
+  it("renders the 'Use template' label in the Add Model dialog", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+    });
+    // Template section should be visible
+    expect(screen.getByText(/use template/i)).toBeTruthy();
+  });
+
+  it("template dropdown is not rendered in the Edit dialog", async () => {
+    setHookState({ entries: [makeModel()] });
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    // Should not have a template label in the edit dialog
+    expect(screen.queryByText(/use template/i)).toBeNull();
+  });
+
+  it("renders the template Select trigger placeholder in the Add Model dialog", async () => {
+    // Radix SelectContent (the dropdown options) is only mounted when the Select
+    // is open — which requires pointer-event interactions not supported in JSDOM.
+    // We verify the Select trigger (always mounted) renders with the correct placeholder.
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+    });
+    // The placeholder text must appear in the closed Select trigger.
+    expect(screen.getByText("— pick a template (optional)")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edit-alias warning (bu-6jxcw)
+// ---------------------------------------------------------------------------
+
+describe("SettingsModelsPage — edit-alias warning (bu-6jxcw)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as AnyMock);
+    setHookState({ entries: [makeModel({ alias: "claude-sonnet" })] });
+  });
+
+  it("does NOT show alias warning when dialog first opens (alias unchanged)", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+    expect(screen.queryByText(/changing the alias may break/i)).toBeNull();
+  });
+
+  it("shows alias warning when the alias field is changed", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const aliasInput = screen.getByLabelText(/^alias$/i);
+    await act(async () => {
+      fireEvent.change(aliasInput, { target: { value: "claude-sonnet-v2" } });
+    });
+
+    expect(screen.getByText(/changing the alias may break/i)).toBeTruthy();
+  });
+
+  it("hides the alias warning when the alias is changed back to original", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Edit claude-sonnet"));
+    });
+
+    const aliasInput = screen.getByLabelText(/^alias$/i);
+    await act(async () => {
+      fireEvent.change(aliasInput, { target: { value: "different-alias" } });
+    });
+    expect(screen.getByText(/changing the alias may break/i)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.change(aliasInput, { target: { value: "claude-sonnet" } });
+    });
+    expect(screen.queryByText(/changing the alias may break/i)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Delete confirmation dialog — replaces window.confirm() (bu-6jxcw)
+// ---------------------------------------------------------------------------
+
+describe("SettingsModelsPage — delete confirmation dialog (bu-6jxcw)", () => {
+  // Use an alias that doesn't contain "delete" to avoid aria-label collisions.
+  const ALIAS = "my-catalog-entry";
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setHookState({ entries: [makeModel({ alias: ALIAS })] });
+    vi.mocked(useUpdateModelCatalogEntry).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as AnyMock);
+  });
+
+  it("opens a confirmation dialog when Delete is clicked (not window.confirm)", async () => {
+    // window.confirm should NOT be called (we use a Dialog instead)
+    const confirmSpy = vi.spyOn(window, "confirm");
+
+    mountPage();
+    await act(async () => {
+      // Use the row delete button's aria-label for unambiguous targeting.
+      fireEvent.click(screen.getByLabelText(`Delete ${ALIAS}`));
+    });
+
+    // A dialog should appear — "Delete model:" title is the most specific indicator
+    expect(screen.getByText(/delete model/i)).toBeTruthy();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("Cancel button closes the dialog without calling mutate", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useDeleteModelCatalogEntry).mockReturnValue({
+      mutate,
+      isPending: false,
+    } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(`Delete ${ALIAS}`));
+    });
+
+    // Dialog open — click Cancel
+    const cancelBtn = screen.getByRole("button", { name: /^cancel$/i });
+    await act(async () => {
+      fireEvent.click(cancelBtn);
+    });
+
+    expect(mutate).not.toHaveBeenCalled();
+    // Dialog closed — title gone
+    expect(screen.queryByText(/delete model/i)).toBeNull();
+  });
+
+  it("the confirmation dialog mentions cascade-delete of butler overrides", async () => {
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(`Delete ${ALIAS}`));
+    });
+    expect(screen.getByText(/cascade-delete/i)).toBeTruthy();
+  });
+
+  it("clicking the Delete button in the dialog calls mutate with the model id", async () => {
+    const mutate = vi.fn();
+    vi.mocked(useDeleteModelCatalogEntry).mockReturnValue({
+      mutate,
+      isPending: false,
+    } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(`Delete ${ALIAS}`));
+    });
+
+    // Find the destructive "Delete →" button inside the confirmation dialog.
+    // Both the row trigger and dialog confirm have text "Delete →", but only the
+    // dialog one is visible while the dialog is open and it is the SECOND element.
+    const deleteBtns = screen.getAllByRole("button", { name: /^delete →$/i });
+    // Last one is the dialog's action button (dialog renders after row in the DOM).
+    const dialogDeleteBtn = deleteBtns[deleteBtns.length - 1];
+    await act(async () => {
+      fireEvent.click(dialogDeleteBtn);
+    });
+
+    expect(mutate).toHaveBeenCalledWith(
+      "model-1",
       expect.any(Object),
     );
   });

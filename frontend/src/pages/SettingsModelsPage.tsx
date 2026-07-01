@@ -101,6 +101,23 @@ const RUNTIME_TYPES = ["claude", "codex", "gemini", "opencode"] as const;
 /** Default per-session timeout (seconds) for a brand-new catalog entry. */
 const DEFAULT_SESSION_TIMEOUT_S = 1800;
 
+/**
+ * Pre-configured alias templates for the "Add Model" dialog.
+ * Each template pre-fills runtime_type and extra_args; form fields remain editable.
+ */
+const ALIAS_TEMPLATES = [
+  {
+    label: "Codex with reasoning effort",
+    runtimeType: "codex",
+    extraArgs: ["--config", "model_reasoning_effort=high"],
+  },
+  {
+    label: "Claude with extended thinking",
+    runtimeType: "claude",
+    extraArgs: ["--thinking-budget", "8000"],
+  },
+] as const;
+
 type StateFilter = "all" | "verified" | "attention" | "offline" | "deprecated";
 
 // ---------------------------------------------------------------------------
@@ -145,6 +162,249 @@ function relativeTimeAgo(iso: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// ExtraArgsEditor — key-value editor for CLI args with a raw-JSON toggle
+//
+// Spec (§ "Extra args key-value editor"):
+//   - Each row has a single text input for one CLI token (e.g. "--config" or "key=value")
+//   - "Add arg" button appends a new empty row
+//   - Each row has a remove (×) button
+//   - A "Raw JSON" toggle switches to a textarea for direct JSON-array editing
+//
+// Design contract:
+//   - The component is fully controlled via `value: string[]` / `onChange`.
+//   - In raw-JSON mode, edits are applied live when the JSON parses correctly.
+//   - While raw-JSON has a parse error, `onErrorChange(true)` is called so the
+//     parent can block form submission. ExtraArgsEditor renders its own error
+//     message so the parent must NOT duplicate it.
+// ---------------------------------------------------------------------------
+
+interface ExtraArgsEditorProps {
+  value: string[];
+  onChange: (args: string[]) => void;
+  /** Called whenever the raw-mode parse state changes (true = has error). */
+  onErrorChange?: (hasError: boolean) => void;
+  /** Prefix used for unique element IDs. */
+  idPrefix?: string;
+}
+
+function ExtraArgsEditor({
+  value,
+  onChange,
+  onErrorChange,
+  idPrefix = "args",
+}: ExtraArgsEditorProps) {
+  const [rawMode, setRawMode] = useState(false);
+  const [rawText, setRawText] = useState("");
+  const [rawError, setRawError] = useState("");
+
+  // Detect externally-driven value changes (e.g., a template applied from the parent)
+  // while the user is in raw-JSON mode and sync rawText accordingly.
+  // Pattern: track `prevValue` in state, compare on every render, and call setState
+  // inside the conditional to schedule an immediate re-render with the corrected text.
+  // See https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [prevValue, setPrevValue] = useState(value);
+  if (value !== prevValue) {
+    setPrevValue(value);
+    if (rawMode) {
+      // Guard: skip reset if rawText already encodes the new value — that means the
+      // change came from our own typing (handleRawChange → onChange → parent setState).
+      let alreadySynced = false;
+      try {
+        const parsed = JSON.parse(rawText);
+        if (Array.isArray(parsed) && JSON.stringify(parsed) === JSON.stringify(value)) {
+          alreadySynced = true;
+        }
+      } catch {
+        // rawText is invalid JSON — fall through to reset
+      }
+      if (!alreadySynced) {
+        setRawText(value.length > 0 ? JSON.stringify(value) : "");
+        setRawError("");
+      }
+    }
+  }
+
+  // Enter raw mode: serialize current string[] to JSON text.
+  const enterRawMode = () => {
+    setRawText(value.length > 0 ? JSON.stringify(value) : "");
+    setRawError("");
+    setRawMode(true);
+  };
+
+  // Leave raw mode: only if no current parse error.
+  const exitRawMode = () => {
+    if (rawError) return; // block exit while invalid
+    setRawMode(false);
+  };
+
+  // Live-validate raw text and propagate parsed value to parent.
+  const handleRawChange = (text: string) => {
+    setRawText(text);
+    if (!text.trim()) {
+      setRawError("");
+      onErrorChange?.(false);
+      onChange([]);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) {
+        setRawError("Must be a JSON array");
+        onErrorChange?.(true);
+      } else if (!parsed.every((item) => typeof item === "string")) {
+        setRawError("All elements must be strings");
+        onErrorChange?.(true);
+      } else {
+        setRawError("");
+        onErrorChange?.(false);
+        onChange(parsed as string[]);
+      }
+    } catch {
+      setRawError("Invalid JSON");
+      onErrorChange?.(true);
+    }
+  };
+
+  const addRow = () => onChange([...value, ""]);
+  const removeRow = (i: number) => onChange(value.filter((_, idx) => idx !== i));
+  const updateRow = (i: number, v: string) => {
+    const next = [...value];
+    next[i] = v;
+    onChange(next);
+  };
+
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex items-center justify-between">
+        <Label className="font-mono text-[11px] uppercase tracking-widest">Args</Label>
+        <button
+          type="button"
+          onClick={rawMode ? exitRawMode : enterRawMode}
+          aria-label={rawMode ? "Switch to key-value editor" : "Switch to raw JSON editor"}
+          className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground
+            hover:text-foreground transition-colors"
+        >
+          {rawMode ? "← KV editor" : "Raw JSON →"}
+        </button>
+      </div>
+
+      {rawMode ? (
+        <>
+          <Textarea
+            id={`${idPrefix}-raw`}
+            aria-label="Args (JSON array)"
+            value={rawText}
+            onChange={(e) => handleRawChange(e.target.value)}
+            placeholder='e.g. ["--max-turns", "10"]'
+            rows={3}
+            aria-invalid={!!rawError}
+            className="font-mono text-xs resize-y"
+          />
+          {rawError && (
+            <p className="font-mono text-[10px] text-destructive">{rawError}</p>
+          )}
+        </>
+      ) : (
+        <div className="grid gap-2">
+          {value.map((token, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input
+                value={token}
+                onChange={(e) => updateRow(i, e.target.value)}
+                placeholder="CLI arg or key=value"
+                aria-label={`Arg ${i + 1}`}
+                className="font-mono text-xs flex-1"
+              />
+              <button
+                type="button"
+                onClick={() => removeRow(i)}
+                aria-label={`Remove arg ${i + 1}`}
+                className="w-5 h-5 flex items-center justify-center text-muted-foreground
+                  hover:text-destructive transition-colors shrink-0"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={addRow}
+            className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground
+              hover:text-foreground transition-colors text-left"
+          >
+            + Add arg
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DeleteConfirmDialog — replaces window.confirm() for catalog entry deletion.
+//
+// Spec (§ "Delete with dependency check"):
+//   A confirmation dialog warns that butler overrides referencing the entry will
+//   be cascade-deleted, so the operator makes an informed choice.
+// ---------------------------------------------------------------------------
+
+interface DeleteConfirmDialogProps {
+  model: ModelCatalogEntry;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+  isPending: boolean;
+}
+
+function DeleteConfirmDialog({
+  model,
+  open,
+  onOpenChange,
+  onConfirm,
+  isPending,
+}: DeleteConfirmDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[440px]">
+        <DialogHeader>
+          <DialogTitle className="font-mono text-sm">
+            Delete model: <span className="text-muted-foreground">{model.alias}</span>
+          </DialogTitle>
+          <DialogDescription className="font-mono text-[11px] leading-relaxed">
+            <span className="text-destructive font-medium">
+              This action is permanent and cannot be undone.
+            </span>{" "}
+            Removing <span className="font-medium">{model.alias}</span> from the catalog will
+            cascade-delete any butler override entries that reference it. Butlers that relied on
+            this entry will revert to their next eligible tier model.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            disabled={isPending}
+            className="font-mono text-[10px] uppercase tracking-widest"
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={onConfirm}
+            disabled={isPending}
+            className="font-mono text-[10px] uppercase tracking-widest"
+          >
+            {isPending ? "Deleting…" : "Delete →"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Edit model dialog
 // ---------------------------------------------------------------------------
 
@@ -175,9 +435,10 @@ function EditModelForm({
   const [priority, setPriority] = useState(String(model.priority));
   const [sessionTimeoutS, setSessionTimeoutS] = useState(String(model.session_timeout_s));
   const [enabled, setEnabled] = useState(model.enabled);
-  const [args, setArgs] = useState(
-    model.extra_args.length > 0 ? JSON.stringify(model.extra_args) : "",
-  );
+  // args is stored as string[] — ExtraArgsEditor serializes/deserializes raw JSON internally.
+  const [args, setArgs] = useState<string[]>(model.extra_args);
+  // True when ExtraArgsEditor's raw-JSON mode has a parse error.
+  const [argsHasError, setArgsHasError] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const validate = (): boolean => {
@@ -193,14 +454,9 @@ function EditModelForm({
     const parsedTimeout = parseInt(sessionTimeoutS, 10);
     if (isNaN(parsedTimeout) || parsedTimeout <= 0)
       errors.session_timeout_s = "Session timeout must be a positive integer (seconds)";
-    if (args.trim()) {
-      try {
-        const parsed = JSON.parse(args);
-        if (!Array.isArray(parsed)) errors.args = "Must be a JSON array";
-      } catch {
-        errors.args = "Invalid JSON";
-      }
-    }
+    // args is already string[]; raw-mode parse errors are shown by ExtraArgsEditor
+    // and tracked via argsHasError. Block submission but don't show a duplicate message.
+    if (argsHasError) errors._argsRaw = "invalid";
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -208,16 +464,8 @@ function EditModelForm({
   const handleSave = () => {
     if (!validate()) return;
 
-    let extraArgs: string[] | undefined;
-    if (args.trim()) {
-      try {
-        extraArgs = JSON.parse(args) as string[];
-      } catch {
-        return;
-      }
-    } else {
-      extraArgs = [];
-    }
+    // args is already a valid string[]; no JSON.parse needed.
+    const extraArgs = args;
 
     updateEntry.mutate(
       {
@@ -254,7 +502,7 @@ function EditModelForm({
   return (
     <>
       <div className="grid gap-4 py-2">
-        {/* Alias */}
+        {/* Alias — warning shown when the alias is changed from its original value */}
         <div className="grid gap-1.5">
           <Label htmlFor="edit-alias" className="font-mono text-[11px] uppercase tracking-widest">
             Alias
@@ -269,6 +517,11 @@ function EditModelForm({
           />
           {fieldErrors.alias && (
             <p className="font-mono text-[10px] text-destructive">{fieldErrors.alias}</p>
+          )}
+          {alias !== model.alias && !fieldErrors.alias && (
+            <p className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
+              Warning: Changing the alias may break existing butler override references.
+            </p>
           )}
         </div>
 
@@ -413,24 +666,13 @@ function EditModelForm({
           </Label>
         </div>
 
-        {/* Args (JSON array) */}
-        <div className="grid gap-1.5">
-          <Label htmlFor="edit-args" className="font-mono text-[11px] uppercase tracking-widest">
-            Args (JSON array)
-          </Label>
-          <Textarea
-            id="edit-args"
-            value={args}
-            onChange={(e) => setArgs(e.target.value)}
-            placeholder='e.g. ["--max-turns", "10"]'
-            rows={3}
-            aria-invalid={!!fieldErrors.args}
-            className="font-mono text-xs resize-y"
-          />
-          {fieldErrors.args && (
-            <p className="font-mono text-[10px] text-destructive">{fieldErrors.args}</p>
-          )}
-        </div>
+        {/* Args — key-value editor; "Raw JSON →" toggle switches to textarea */}
+        <ExtraArgsEditor
+          value={args}
+          onChange={setArgs}
+          onErrorChange={setArgsHasError}
+          idPrefix="edit-args"
+        />
       </div>
 
       <DialogFooter>
@@ -495,8 +737,19 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   const [priority, setPriority] = useState("0");
   const [sessionTimeoutS, setSessionTimeoutS] = useState(String(DEFAULT_SESSION_TIMEOUT_S));
   const [enabled, setEnabled] = useState(true);
-  const [args, setArgs] = useState("");
+  // args is stored as string[] — ExtraArgsEditor serializes/deserializes raw JSON internally.
+  const [args, setArgs] = useState<string[]>([]);
+  // True when ExtraArgsEditor's raw-JSON mode has a parse error.
+  const [argsHasError, setArgsHasError] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  /** Apply a pre-configured alias template to the form fields. */
+  const applyTemplate = (label: string) => {
+    const tpl = ALIAS_TEMPLATES.find((t) => t.label === label);
+    if (!tpl) return;
+    setRuntimeType(tpl.runtimeType);
+    setArgs([...tpl.extraArgs]);
+  };
 
   const validate = (): boolean => {
     const errors: Record<string, string> = {};
@@ -511,14 +764,8 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
     const parsedTimeout = parseInt(sessionTimeoutS, 10);
     if (isNaN(parsedTimeout) || parsedTimeout <= 0)
       errors.session_timeout_s = "Session timeout must be a positive integer (seconds)";
-    if (args.trim()) {
-      try {
-        const parsed = JSON.parse(args);
-        if (!Array.isArray(parsed)) errors.args = "Must be a JSON array";
-      } catch {
-        errors.args = "Invalid JSON";
-      }
-    }
+    // args is already string[]; raw-mode parse errors are shown by ExtraArgsEditor.
+    if (argsHasError) errors._argsRaw = "invalid";
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -526,14 +773,8 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   const handleCreate = () => {
     if (!validate()) return;
 
-    let extraArgs: string[] = [];
-    if (args.trim()) {
-      try {
-        extraArgs = JSON.parse(args) as string[];
-      } catch {
-        return;
-      }
-    }
+    // args is already a valid string[]; no JSON.parse needed.
+    const extraArgs = args;
 
     createEntry.mutate(
       {
@@ -571,6 +812,25 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   return (
     <>
       <div className="grid gap-4 py-2">
+        {/* Template selector — pre-fills runtimeType and extraArgs; fields remain editable */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-template" className="font-mono text-[11px] uppercase tracking-widest">
+            Use template
+          </Label>
+          <Select onValueChange={applyTemplate}>
+            <SelectTrigger id="add-template" className="font-mono text-sm w-full">
+              <SelectValue placeholder="— pick a template (optional)" />
+            </SelectTrigger>
+            <SelectContent>
+              {ALIAS_TEMPLATES.map((tpl) => (
+                <SelectItem key={tpl.label} value={tpl.label} className="font-mono text-sm">
+                  {tpl.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
         {/* Alias */}
         <div className="grid gap-1.5">
           <Label htmlFor="add-alias" className="font-mono text-[11px] uppercase tracking-widest">
@@ -720,24 +980,13 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
           </Label>
         </div>
 
-        {/* Args (JSON array) */}
-        <div className="grid gap-1.5">
-          <Label htmlFor="add-args" className="font-mono text-[11px] uppercase tracking-widest">
-            Args (JSON array)
-          </Label>
-          <Textarea
-            id="add-args"
-            value={args}
-            onChange={(e) => setArgs(e.target.value)}
-            placeholder='e.g. ["--max-turns", "10"]'
-            rows={3}
-            aria-invalid={!!fieldErrors.args}
-            className="font-mono text-xs resize-y"
-          />
-          {fieldErrors.args && (
-            <p className="font-mono text-[10px] text-destructive">{fieldErrors.args}</p>
-          )}
-        </div>
+        {/* Args — key-value editor; "Raw JSON →" toggle switches to textarea */}
+        <ExtraArgsEditor
+          value={args}
+          onChange={setArgs}
+          onErrorChange={setArgsHasError}
+          idPrefix="add-args"
+        />
       </div>
 
       <DialogFooter>
@@ -1093,6 +1342,7 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
   const testEntry = useTestModelCatalogEntry();
   const deleteEntry = useDeleteModelCatalogEntry();
   const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const toggleEnabled = () => {
     updateEntry.mutate(
@@ -1114,10 +1364,12 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
     });
   };
 
-  const handleDelete = () => {
-    if (!confirm(`Delete model "${model.alias}"? This cannot be undone.`)) return;
+  const handleDeleteConfirm = () => {
     deleteEntry.mutate(model.id, {
-      onSuccess: () => toast.success(`Deleted ${model.alias}`),
+      onSuccess: () => {
+        toast.success(`Deleted ${model.alias}`);
+        setDeleteOpen(false);
+      },
       onError: () => toast.error(`Failed to delete ${model.alias}`),
     });
   };
@@ -1196,10 +1448,11 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
         Edit →
       </button>
 
-      {/* Delete action */}
+      {/* Delete action — opens confirmation dialog (not window.confirm) */}
       <button
-        onClick={handleDelete}
+        onClick={() => setDeleteOpen(true)}
         disabled={deleteEntry.isPending}
+        aria-label={`Delete ${model.alias}`}
         className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground
           hover:text-destructive transition-colors disabled:opacity-40 whitespace-nowrap"
       >
@@ -1208,6 +1461,15 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
 
       {/* Edit dialog — rendered outside the grid row to avoid stacking context issues */}
       <EditModelDialog model={model} open={editOpen} onOpenChange={setEditOpen} />
+
+      {/* Delete confirmation dialog */}
+      <DeleteConfirmDialog
+        model={model}
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        onConfirm={handleDeleteConfirm}
+        isPending={deleteEntry.isPending}
+      />
     </div>
   );
 }
