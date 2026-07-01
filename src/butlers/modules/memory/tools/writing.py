@@ -315,7 +315,18 @@ async def memory_store_episode(
         request_context: Optional dict with 'tenant_id' and 'request_id' for
             multi-tenant isolation and request trace correlation.
     """
-    parsed_session_id = uuid.UUID(session_id) if session_id is not None else None
+    session_id_str = session_id.strip() if session_id else None
+    if session_id_str in (None, ""):
+        parsed_session_id = None
+    else:
+        try:
+            parsed_session_id = uuid.UUID(session_id_str)
+        except ValueError as exc:
+            raise ValueError(
+                "session_id must be a UUID string for a stored memory episode. "
+                "Omit session_id when storing an ad-hoc episode or pass the runtime "
+                "session UUID, not a connector message id or other external identifier."
+            ) from exc
     tenant_id, request_id = _extract_request_context(request_context)
     result = await _storage.store_episode(
         pool,

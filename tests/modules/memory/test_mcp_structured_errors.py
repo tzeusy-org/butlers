@@ -96,15 +96,15 @@ class TestInferRecoverySteps:
 # ---------------------------------------------------------------------------
 
 
-class TestMemoryStoreFactStructuredErrors:
-    """Verify memory_store_fact MCP closure catches ValueError and returns structured dicts.
+class TestMemoryMcpStructuredErrors:
+    """Verify memory MCP closures catch ValueError and return structured dicts.
 
     The structured dict must have 'error', 'message', and 'recovery' keys.
     isError is implicitly False since we return a normal dict (not raise an exception).
     """
 
-    async def _setup_and_get_fact_tool(self):
-        """Register tools with mocked implementations and return memory_store_fact."""
+    async def _setup_and_get_tools(self):
+        """Register tools with mocked implementations and return captured memory tools."""
         mod = MemoryModule()
         fake_db = MagicMock()
         fake_db.pool = MagicMock(name="fake_pool")
@@ -140,7 +140,12 @@ class TestMemoryStoreFactStructuredErrors:
             await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
         mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
-        return mod, registered_tools["memory_store_fact"], fake_db.pool, mock_writing
+        return mod, registered_tools, fake_db.pool, mock_writing
+
+    async def _setup_and_get_fact_tool(self):
+        """Register tools with mocked implementations and return memory_store_fact."""
+        mod, registered_tools, pool, mock_writing = await self._setup_and_get_tools()
+        return mod, registered_tools["memory_store_fact"], pool, mock_writing
 
     def _patch_routing(self, entity_id: str):
         """Helper: patch routing context to provide a valid entity_id."""
@@ -297,3 +302,25 @@ class TestMemoryStoreFactStructuredErrors:
         assert result == {"id": "fact-abc"}
         assert "error" not in result
         assert "recovery" not in result
+
+    async def test_store_episode_invalid_session_id_returns_structured_dict(self) -> None:
+        """Invalid episode session_id should not escape to the MCP wrapper."""
+        mod, registered_tools, pool, writing = await self._setup_and_get_tools()
+        episode_tool = registered_tools["memory_store_episode"]
+        original_msg = (
+            "session_id must be a UUID string for a stored memory episode. "
+            "Omit session_id when storing an ad-hoc episode or pass the runtime "
+            "session UUID, not a connector message id or other external identifier."
+        )
+        writing.memory_store_episode = AsyncMock(side_effect=ValueError(original_msg))
+
+        result = await episode_tool(
+            content="episode content",
+            butler="lifestyle",
+            session_id="telegram:123:456",
+        )
+
+        assert result["error"] == original_msg
+        assert result["message"] == original_msg
+        assert "Omit session_id" in result["recovery"]
+        assert "runtime session UUID" in result["recovery"]

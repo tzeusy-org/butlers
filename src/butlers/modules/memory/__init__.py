@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def _infer_recovery_steps(exc: ValueError) -> str:
-    """Infer actionable recovery steps from a ValueError raised by memory_store_fact.
+    """Infer actionable recovery steps from a memory tool ValueError.
 
     Pattern-matches the error message to return specific next steps that an LLM
     caller can follow to self-recover without human intervention.
@@ -51,6 +51,14 @@ def _infer_recovery_steps(exc: ValueError) -> str:
         A human-readable string with specific recovery instructions.
     """
     msg = str(exc)
+
+    # Invalid episode session_id.
+    if "session_id" in msg and "UUID" in msg:
+        return (
+            "Omit session_id unless you have a runtime session UUID. "
+            "Connector message ids, thread ids, and other external identifiers "
+            "do not belong in session_id; store them in content or metadata if needed."
+        )
 
     # Invalid entity_id — entity does not exist in the entities table.
     if (
@@ -435,15 +443,22 @@ class MemoryModule(Module):
             ] = None,
         ) -> dict[str, Any]:
             """Store a raw episode from a runtime session."""
-            return await _writing.memory_store_episode(
-                module._get_pool(),
-                content,
-                butler,
-                embedding_engine=module._get_embedding_engine(),
-                session_id=session_id,
-                importance=importance,
-                request_context=request_context,
-            )
+            try:
+                return await _writing.memory_store_episode(
+                    module._get_pool(),
+                    content,
+                    butler,
+                    embedding_engine=module._get_embedding_engine(),
+                    session_id=session_id,
+                    importance=importance,
+                    request_context=request_context,
+                )
+            except ValueError as exc:
+                return {
+                    "error": str(exc),
+                    "message": str(exc),
+                    "recovery": _infer_recovery_steps(exc),
+                }
 
         @_tool("core")
         async def memory_store_fact(

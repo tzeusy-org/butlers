@@ -110,6 +110,49 @@ class TestMemoryStoreEpisode:
             result = await memory_store_episode(pool, "some content", "butler")
         assert result == {"id": str(episode_id), "expires_at": expires_at.isoformat()}
 
+    async def test_invalid_session_id_raises_actionable_value_error(self, pool: AsyncMock) -> None:
+        with patch.object(_helpers._storage, "store_episode", new_callable=AsyncMock) as store:
+            with pytest.raises(ValueError) as excinfo:
+                await memory_store_episode(
+                    pool,
+                    "some content",
+                    "butler",
+                    session_id="telegram:123:456",
+                )
+
+        assert "session_id must be a UUID string" in str(excinfo.value)
+        assert "Omit session_id" in str(excinfo.value)
+        store.assert_not_called()
+
+    async def test_session_id_whitespace_and_empty_handled_robustly(self, pool: AsyncMock) -> None:
+        episode_id = uuid.uuid4()
+        expires_at = datetime(2025, 6, 15, 12, 0, 0, tzinfo=UTC)
+        with patch.object(
+            _helpers._storage,
+            "store_episode",
+            new_callable=AsyncMock,
+            return_value={"id": episode_id, "expires_at": expires_at},
+        ) as store:
+            # Whitespace-padded UUID is stripped and parsed successfully.
+            result = await memory_store_episode(
+                pool,
+                "some content",
+                "butler",
+                session_id=f"  {episode_id}  ",
+            )
+            assert result == {"id": str(episode_id), "expires_at": expires_at.isoformat()}
+            assert store.await_args.kwargs["session_id"] == episode_id
+
+            # Whitespace-only session_id is treated as None (stored as NULL).
+            result_blank = await memory_store_episode(
+                pool,
+                "some content",
+                "butler",
+                session_id="   ",
+            )
+            assert result_blank == {"id": str(episode_id), "expires_at": expires_at.isoformat()}
+            assert store.await_args.kwargs["session_id"] is None
+
 
 # ---------------------------------------------------------------------------
 # memory_store_fact
