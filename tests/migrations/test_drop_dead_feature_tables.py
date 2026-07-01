@@ -1,7 +1,8 @@
-"""Unit tests for the 4 guarded drop migrations (bu-brbil).
+"""Unit tests for the guarded drop migrations (bu-brbil, bu-zquce.2).
 
 Migrations under test:
   - sw_014       roster/switchboard/migrations/014_drop_dead_feature_tables.py
+  - sw_017       roster/switchboard/migrations/017_drop_triage_rules.py
   - finance_007  roster/finance/migrations/007_drop_import_batches.py
   - contacts_002 src/butlers/modules/contacts/migrations/002_drop_contacts_source_accounts.py
   - mem_005      src/butlers/modules/memory/migrations/005_drop_embedding_versions.py
@@ -24,6 +25,7 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _SW_014 = _REPO_ROOT / "roster" / "switchboard" / "migrations" / "014_drop_dead_feature_tables.py"
+_SW_017 = _REPO_ROOT / "roster" / "switchboard" / "migrations" / "017_drop_triage_rules.py"
 _FINANCE_007 = _REPO_ROOT / "roster" / "finance" / "migrations" / "007_drop_import_batches.py"
 _CONTACTS_002 = (
     _REPO_ROOT
@@ -77,6 +79,7 @@ def _has_create(sqls: list[str], table: str) -> bool:
 # (path, mod_name, revision, down_revision)
 _MIGRATIONS = [
     (_SW_014, "sw_014", "sw_014", "sw_013"),
+    (_SW_017, "sw_017", "sw_017", "sw_016"),
     (_FINANCE_007, "finance_007", "finance_007", "finance_006"),
     (_CONTACTS_002, "contacts_002", "contacts_002", "contacts_001"),
     (_MEM_005, "mem_005", "mem_005", "mem_004"),
@@ -101,6 +104,7 @@ _DROP_TARGETS = [
     (_SW_014, "sw_014", "source_filters"),
     (_SW_014, "sw_014", "email_metadata_refs"),
     (_SW_014, "sw_014", "fanout_execution_log"),
+    (_SW_017, "sw_017", "triage_rules"),
     (_FINANCE_007, "finance_007", "import_batches"),
     (_CONTACTS_002, "contacts_002", "contacts_source_accounts"),
     (_MEM_005, "mem_005", "embedding_versions"),
@@ -120,6 +124,7 @@ _RECREATE_TARGETS = [
     (_SW_014, "sw_014", "email_metadata_refs"),
     (_SW_014, "sw_014", "source_filters"),
     (_SW_014, "sw_014", "connector_source_filters"),
+    (_SW_017, "sw_017", "triage_rules"),
     (_FINANCE_007, "finance_007", "import_batches"),
     (_CONTACTS_002, "contacts_002", "contacts_source_accounts"),
     (_MEM_005, "mem_005", "embedding_versions"),
@@ -136,6 +141,7 @@ def test_downgrade_recreates_table(path, mod_name, table) -> None:
 # (path, mod_name, table) — in-use tables that must NOT be dropped (scope guard)
 _PROTECTED = [
     (_SW_014, "sw_014", "routing_rules"),
+    (_SW_017, "sw_017", "ingestion_rules"),
     (_FINANCE_007, "finance_007", "transactions"),
     (_CONTACTS_002, "contacts_002", "contacts_sync_state"),
     (_CONTACTS_002, "contacts_002", "contacts_source_links"),
