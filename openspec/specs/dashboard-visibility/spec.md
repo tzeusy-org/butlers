@@ -1,7 +1,7 @@
 # Dashboard Visibility and Traceability
 
 ## Purpose
-Specifies the operator-facing dashboard surfaces that provide end-to-end visibility into the Butlers system: session history, distributed trace exploration, unified timeline, notification audit trail, audit log, issue detection, and topology visualization. Together these surfaces answer the operator's core questions: "What is every butler doing right now?", "What happened to this specific request?", and "Is the system healthy?" Every requirement below is grounded in the implemented frontend code and its backend data contracts.
+Specifies the operator-facing dashboard surfaces that provide end-to-end visibility into the Butlers system: session history, unified timeline, notification audit trail, audit log, issue detection, and topology visualization. Together these surfaces answer the operator's core questions: "What is every butler doing right now?", "What happened to this specific request?", and "Is the system healthy?" Every requirement below is grounded in the implemented frontend code and its backend data contracts.
 
 ## ADDED Requirements
 
@@ -131,7 +131,7 @@ The `SessionDetailDrawer` is a slide-over sheet that provides full session conte
 - **THEN** a check icon replaces the copy icon for 2 seconds before reverting
 
 ### Requirement: Session Detail Full Page
-The `SessionDetailPage` (`/sessions/:id?butler=<name>`) provides a full-page view of a single session. It serves as the deep-link target for session references from other surfaces (notifications, traces).
+The `SessionDetailPage` (`/sessions/:id?butler=<name>`) provides a full-page view of a single session. It serves as the deep-link target for session references from other surfaces (notifications, timeline).
 
 #### Scenario: Butler-scoped vs global session fetch
 - **WHEN** the URL contains a `?butler=<name>` query parameter
@@ -150,86 +150,6 @@ The `SessionDetailPage` (`/sessions/:id?butler=<name>`) provides a full-page vie
 #### Scenario: Error display
 - **WHEN** the session has an `error` field
 - **THEN** an "Error" card renders with `text-destructive` title and the error in a preformatted block with `bg-destructive/10` background
-
-### Requirement: End-to-End Request Traceability via Distributed Traces
-The Traces pages (`/traces` and `/traces/:traceId`) provide the distributed tracing view that lets operators follow a request from initial ingestion through switchboard routing, butler execution, sub-session delegation, tool calls, and final delivery. Traces are the mechanism for correlating work that spans multiple butlers.
-
-#### Scenario: Trace list page
-- **WHEN** an operator navigates to `/traces`
-- **THEN** a paginated table displays traces ordered by `started_at` descending with columns: Trace ID (monospace, truncated to 12 chars), Root Butler (color-coded badge), Spans (count), Status (badge), Duration, Started (relative time)
-- **AND** page size is 20 rows per page
-
-#### Scenario: Trace status badges
-- **WHEN** a trace has status "success"
-- **THEN** a green badge is shown
-- **WHEN** status is "failed"
-- **THEN** a red destructive badge is shown
-- **WHEN** status is "running"
-- **THEN** a blue outlined badge is shown
-- **WHEN** status is "partial"
-- **THEN** an amber outlined badge is shown (indicating some spans succeeded and some failed or are still running)
-
-#### Scenario: Trace row click navigates to detail
-- **WHEN** the operator clicks a trace row
-- **THEN** navigation occurs to `/traces/{trace_id}` using `useNavigate`
-
-#### Scenario: Failed trace row highlighting
-- **WHEN** a trace has `status === "failed"`
-- **THEN** its table row receives the `bg-destructive/5` background class
-
-### Requirement: Trace Detail and Span Waterfall
-The `TraceDetailPage` (`/traces/:traceId`) is the core traceability surface. It shows a trace's metadata and renders a waterfall visualization of all spans (sessions) in the trace, revealing the parent-child execution tree across butler boundaries.
-
-#### Scenario: Trace metadata card
-- **WHEN** the trace detail page loads
-- **THEN** a Metadata card displays: Trace ID (monospace), Root Butler (link to `/butlers/{root_butler}`), Span Count, Status (badge), Total Duration (human-formatted), and Started (absolute timestamp)
-
-#### Scenario: Breadcrumb navigation
-- **WHEN** the trace detail page loads
-- **THEN** a breadcrumb trail shows: Traces (link to `/traces`) > `{traceId.slice(0, 8)}` (current page)
-
-### Requirement: Trace Waterfall Visualization
-The `TraceWaterfall` component renders a timeline-based waterfall diagram of spans within a trace. Each span maps to a session execution (potentially on a different butler), and child spans are nested to show the delegation tree.
-
-#### Scenario: Waterfall layout structure
-- **WHEN** the waterfall renders a trace with N spans
-- **THEN** it displays a header row with "Span", "Timeline", and "Duration" columns
-- **AND** each span row contains: a label section (butler badge + truncated prompt), a proportional timeline bar, and a duration label
-
-#### Scenario: Span bar positioning and scaling
-- **WHEN** a span row is rendered
-- **THEN** the bar's left offset is calculated as `(spanStartMs - traceStartMs) / totalDurationMs * 100` percent
-- **AND** the bar's width is calculated as `max(1%, spanDurationMs / totalDurationMs * 100)` percent (minimum 1% for visibility)
-- **AND** the trace start time is derived from the earliest `started_at` across all root spans
-
-#### Scenario: Span nesting via indentation
-- **WHEN** a span has children (sub-sessions delegated to other butlers)
-- **THEN** child span rows are indented by `depth * 24px` from the left
-- **AND** children are rendered recursively using the `SpanRow` component
-
-#### Scenario: Span bar color coding
-- **WHEN** a span has `success === true`
-- **THEN** the bar is `bg-emerald-500` (green)
-- **WHEN** `success === false`
-- **THEN** the bar is `bg-red-500` (red)
-- **WHEN** `success === null` (still running)
-- **THEN** the bar is `bg-blue-500` (blue)
-
-#### Scenario: Span expandable detail panel
-- **WHEN** the operator clicks a span row
-- **THEN** an inline detail panel expands below the row, indented to match the span depth + 32px
-- **AND** the panel shows: Session ID (monospace), Butler, Status (badge), Trigger source, Duration, Model (if present), Tokens in/out (if present), and full Prompt text
-
-#### Scenario: Cross-butler delegation visibility
-- **WHEN** a trace includes spans from multiple butlers (e.g. switchboard delegates to a domain butler which sub-delegates)
-- **THEN** each span row shows its butler's color-coded badge
-- **AND** the nesting visually reveals the delegation chain (switchboard -> domain butler -> sub-butler)
-- **AND** the operator can see the full execution tree in a single waterfall view
-
-#### Scenario: Keyboard accessibility
-- **WHEN** a span row has focus
-- **THEN** pressing Enter or Space toggles the expanded state (via `onKeyDown` handler)
-- **AND** the row has `tabIndex={0}` and `role="button"` for accessibility
 
 ### Requirement: Unified Timeline
 The Timeline page (`/timeline`) merges events from all butlers into a single reverse-chronological stream. It answers "what has been happening across the entire system?" and is the primary surface for detecting anomalous patterns spanning multiple butlers.
@@ -405,27 +325,39 @@ The `TopologyGraph` component renders a force-directed graph of butler nodes and
 - **AND** a subtle background grid pattern is rendered
 
 ### Requirement: Overview Dashboard
-The `DashboardPage` (`/`) is the operator's landing page, aggregating the most critical visibility signals from all other surfaces into a single view.
+The `DashboardPage` (`/`) is the operator's triage cockpit and the system's landing page. It uses an editorial two-column layout to surface the most critical signals at a glance without navigation to individual domain pages.
 
-#### Scenario: Aggregate stats bar
-- **WHEN** the dashboard loads
-- **THEN** four stat cards display: Total Butlers (count from `/api/butlers`), Healthy (count of butlers with `status === "ok"`, with percentage), Sessions Today (count from sessions API filtered to today, with 60-second auto-refresh), and Est. Cost Today (USD from cost summary API)
+#### Scenario: Editorial two-column layout
+- **WHEN** the overview page loads at a viewport width of 1024px or wider
+- **THEN** content is arranged in a two-column editorial grid: a wider narrative column (1.4fr) on the left and an index column (1fr) on the right, with a 56px gap
+- **WHEN** the viewport is narrower than 1024px
+- **THEN** the layout collapses to a single column with the narrative above the index
 
-#### Scenario: Topology graph inclusion
+#### Scenario: Left column -- briefing narrative
 - **WHEN** the dashboard loads
-- **THEN** a full-width `TopologyGraph` component is rendered showing all butlers and their health status
+- **THEN** the left column displays, from top to bottom: a `DateEyebrow` with an inline `BriefingStatus` pill, a `Headline` (greet + display headline from the active briefing), an `Elaboration` paragraph (voice paragraph from the briefing), a "Needs attention" `AttentionList` section, and a `RuntimeSummaryKpi` strip
+- **AND** while a briefing refetch is in progress, the `Elaboration` text shows a loading indicator
+- **AND** a manual refetch control on the `BriefingStatus` pill allows triggering a fresh briefing on demand
 
-#### Scenario: Failed notifications panel
-- **WHEN** the dashboard loads
-- **THEN** a "Failed Notifications" card shows the 5 most recent failed notifications
-- **AND** a badge shows the total count of failed notifications
-- **AND** a "View all notifications" link navigates to `/notifications`
-- **AND** if no failed notifications exist, a success message reads "No failed notifications. All systems healthy."
+#### Scenario: AttentionList items
+- **WHEN** the `AttentionList` renders
+- **THEN** it derives items from `useIssues()` ordered by severity and staleness (client-side)
 
-#### Scenario: Issues panel inclusion
+#### Scenario: RuntimeSummaryKpi strip
+- **WHEN** the `RuntimeSummaryKpi` renders
+- **THEN** it shows KPI cells derived from butler runtime state (`useButlers()`, `useButlerHeartbeats()`), and approval count (`useApprovalMetrics()`)
+- **AND** the approvals KPI cell is visible only when approval metrics data is available (not shown on error)
+
+#### Scenario: Right column -- operations index
 - **WHEN** the dashboard loads
-- **THEN** the `IssuesPanel` component is rendered alongside the failed notifications card in a 2-column grid
-- **AND** it shows all current issues with dismiss capability
+- **THEN** the right column shows a `ButlerIndex` followed by an `OperationsNowList`
+- **AND** the `ButlerIndex` shows all butlers from `useButlers()` enriched with per-butler cost from `useSpendSummary("today")`
+- **AND** the `OperationsNowList` shows signal rows for: pending approvals (`useApprovalMetrics()`), notification pressure (`useNotificationStats()`), QA state (`useQaSummary()`), and the five most recent timeline entries (`useTimeline({ limit: 5 })`)
+
+#### Scenario: Cost surface
+- **WHEN** the page loads
+- **THEN** a full-width cost band below the editorial grid shows a `CostWidget` (aggregate cost today plus the top-cost butler) in a half-width column, followed by a `TopSessionsTable` listing the most-expensive recent sessions
+- **AND** both surfaces draw from `useSpendSummary("today")` and `useTopSessions()` respectively
 
 ### Requirement: Real-Time Polling and Auto-Refresh
 All visibility surfaces use TanStack Query (React Query) for data fetching with configurable polling intervals to provide near-real-time updates without WebSocket infrastructure.
@@ -435,8 +367,6 @@ All visibility surfaces use TanStack Query (React Query) for data fetching with 
 - **THEN** sessions list data refetches every 10 seconds by default (overridable by auto-refresh control)
 - **WHEN** the Timeline page is active
 - **THEN** timeline data refetches at the user-selected interval (default 10 seconds)
-- **WHEN** the Traces list is active
-- **THEN** trace data refetches every 30 seconds
 - **WHEN** the Audit Log is active
 - **THEN** audit entries refetch every 30 seconds
 - **WHEN** the Issues page is active
@@ -452,14 +382,13 @@ All visibility surfaces use TanStack Query (React Query) for data fetching with 
 
 #### Scenario: Dashboard overview refresh
 - **WHEN** the dashboard is active
-- **THEN** the "Sessions Today" stat card refreshes every 60 seconds
-- **AND** butler list, cost summary, issues, and failed notifications use their respective default intervals
+- **THEN** the briefing, butler list, cost summary, issues, heartbeats, notification stats, QA summary, approval metrics, top sessions, and timeline data each refresh at their respective default TanStack Query refetch intervals
 
 ### Requirement: Pagination Consistency
 Offset-paginated surfaces share the same offset-based pattern using backend `PaginationMeta` responses. The cross-butler Sessions list (`GET /api/sessions`) is the one exception: it uses keyset (cursor) pagination, to avoid the cross-butler count fan-out.
 
 #### Scenario: Offset-based pagination contract
-- **WHEN** an offset-paginated surface (Traces, Notifications, Audit Log, and the per-butler `GET /api/butlers/{name}/sessions` list) renders data
+- **WHEN** an offset-paginated surface (Notifications, Audit Log, and the per-butler `GET /api/butlers/{name}/sessions` list) renders data
 - **THEN** it sends `offset` and `limit` parameters derived from `page * PAGE_SIZE`
 - **AND** the response `meta` object contains `total`, `offset`, `limit`, and `has_more`
 - **AND** Previous/Next buttons are disabled at the start/end of the result set
@@ -491,10 +420,6 @@ The visibility surfaces are interconnected through contextual links that allow o
 - **WHEN** a notification row has a `trace_id`
 - **THEN** a "Trace {shortId}" link navigates to `/ingestion?tab=timeline`
 
-#### Scenario: Trace detail to butler navigation
-- **WHEN** a trace detail page shows the root butler
-- **THEN** the butler name is a link to `/butlers/{root_butler}`
-
 #### Scenario: Session detail to butler navigation
 - **WHEN** a session detail page shows the butler name
 - **THEN** the butler name is a link to `/butlers/{butler}`
@@ -521,23 +446,21 @@ The system supports tracing a request from initial ingestion through final deliv
   1. The **Timeline** shows a "session" event for the Switchboard butler's classification session
   2. The **Sessions** page shows the Switchboard session with `trigger_source="external"` and a `request_id` from the connector
   3. Filtering sessions by that `request_id` reveals all sessions in the request's lifecycle
-  4. The **Traces** page shows a trace with the Switchboard as root butler
-  5. The **Trace Detail** waterfall shows: Switchboard span (root) -> domain butler span (child), with each span showing its butler badge, duration bar, and status
-  6. The session detail drawer for each span shows tool calls (e.g. route classification, state lookups)
-  7. If the domain butler sends a notification, the **Notifications** page shows it with links back to both the session and the trace
-  8. The **Audit Log** records each operation (trigger, session, etc.) with full request context
+  4. The session detail drawer for each session shows tool calls (e.g. route classification, state lookups)
+  5. If the domain butler sends a notification, the **Notifications** page shows it with a link back to the session
+  6. The **Audit Log** records each operation (trigger, session, etc.) with full request context
 
 #### Scenario: Request ID as correlation key
 - **WHEN** an operator has a request ID (e.g. from a user report or external system)
 - **THEN** they can paste it into the Sessions page Request ID filter
 - **AND** see all sessions involved in processing that request across all butlers
-- **AND** from any session, navigate to the trace waterfall to see the full execution tree
+- **AND** from any session, open the session detail drawer to inspect tool calls and execution detail
 
 ### Requirement: Loading and Error States
 All visibility surfaces handle loading and error states consistently to prevent operator confusion.
 
 #### Scenario: Skeleton loading states
-- **WHEN** data is loading for any table (Sessions, Traces, Notifications, Audit Log)
+- **WHEN** data is loading for any table (Sessions, Notifications, Audit Log)
 - **THEN** skeleton rows are displayed with animated placeholder bars matching the column layout
 - **WHEN** data is loading for the Timeline
 - **THEN** 8 skeleton rows with timestamp, badge, and text placeholders are shown
@@ -552,8 +475,6 @@ All visibility surfaces handle loading and error states consistently to prevent 
 #### Scenario: Error states
 - **WHEN** the session detail API call fails
 - **THEN** a destructive-styled error message is shown with a suggestion to add `?butler=name` if the butler parameter is missing
-- **WHEN** the trace detail API call fails
-- **THEN** a destructive-styled error message is shown with a "Back to traces" navigation button
 - **WHEN** the notification feed fails to load
 - **THEN** a destructive-styled message reads "Failed to load notifications. Please try refreshing the page."
 
@@ -567,14 +488,6 @@ The frontend TypeScript interfaces define the data contracts that all visibility
 #### Scenario: SessionDetail contract (drill-down views)
 - **WHEN** the session detail API responds
 - **THEN** the item conforms to: all `SessionSummary` fields plus `result` (string | null), `tool_calls` (array of unknown), `trace_id` (string | null), `cost` (object | null), `error` (string | null), `model` (string | null), `parent_session_id` (string | null)
-
-#### Scenario: TraceSummary contract
-- **WHEN** the traces list API responds
-- **THEN** each item conforms to: `trace_id` (string), `root_butler` (string), `span_count` (number), `total_duration_ms` (number | null), `started_at` (ISO 8601 string), `status` (string: "success" | "failed" | "running" | "partial")
-
-#### Scenario: SpanNode contract (trace waterfall)
-- **WHEN** the trace detail API responds
-- **THEN** each span conforms to: `id` (string, session ID), `butler` (string), `prompt` (string), `trigger_source` (string), `success` (boolean | null), `started_at` (ISO 8601 string), `completed_at` (string | null), `duration_ms` (number | null), `model` (string | null), `input_tokens` (number | null), `output_tokens` (number | null), `parent_session_id` (string | null), `children` (recursive array of `SpanNode`)
 
 #### Scenario: TimelineEvent contract
 - **WHEN** the timeline API responds
