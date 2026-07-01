@@ -20,20 +20,28 @@ async def item_create(
     data: dict[str, Any],
     tags: list[str] | None = None,
 ) -> uuid.UUID:
-    """Create an item in a collection (by collection name).
+    """Create an item in a collection, creating the collection if needed."""
+    tags_value = list(tags) if tags is not None else []
 
-    Raises ValueError if collection not found.
-    """
+    # Resolve the collection with a lightweight read on the common path so we
+    # avoid taking a row-level write lock (and generating a dead tuple) on the
+    # collections row for every item insert. Only fall back to an upsert when
+    # the collection does not exist yet, which also stays safe against a
+    # concurrent create race via ON CONFLICT.
     collection_id = await pool.fetchval(
         "SELECT id FROM collections WHERE name = $1", collection_name
     )
     if collection_id is None:
-        raise ValueError(
-            f"Collection '{collection_name}' not found. "
-            "Use collection_list() to see available collections."
+        collection_id = await pool.fetchval(
+            """
+            INSERT INTO collections (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+            """,
+            collection_name,
         )
 
-    tags_value = list(tags) if tags is not None else []
     item_id = await pool.fetchval(
         """INSERT INTO collection_items (collection_id, data, tags)
            VALUES ($1, $2, $3)

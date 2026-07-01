@@ -32,7 +32,7 @@ It also serves as the safe fallback for Switchboard routing. When the classifier
 The General Butler exposes collection and item management tools alongside standard core tools:
 
 - **`collection_create / list / delete`** -- Manage named collections that group related items.
-- **`item_create`** -- Store any freeform JSON data in a collection.
+- **`item_create`** -- Store any freeform JSON data in a collection, creating the collection first when needed.
 - **`item_get / update / delete`** -- CRUD on individual items within collections.
 - **`item_search`** -- Find items using JSONB containment queries.
 - **`collection_export`** -- Export all items from a collection.

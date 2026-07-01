@@ -1,89 +1,76 @@
 {
   "schema_version": 1,
-  "headline": "Relationship pending-actions curation aborts on non-mapping tool_args",
-  "hypothesis": "The pending-actions curation job crashed while building its insight message because it coerced pending_actions.tool_args with dict(...) before the row-level error guard.",
+  "headline": "General item capture failed when collection was missing",
+  "hypothesis": "General's item_create tool enforced a pre-existing collection even though MCP capture flows can select a new collection name directly.",
   "blurb_segments": [
     {
       "claim": "c1",
-      "text": "The scheduler reported a failed dispatch for the relationship pending-actions-curation task."
+      "text": "The recorded failure was a ValueError from general.item_create for a missing collection named episodes."
     },
-    " The job implementation built its operator message from JSONB tool_args before entering the per-row try block.",
-    {
-      "claim": "c2",
-      "text": "String-returned or non-object JSONB tool_args values can raise during that conversion and escape the job."
-    }
+    " The tool now creates the target collection as part of item insertion, so first-write capture no longer fails."
   ],
   "claims": {
     "c1": {
       "evidence_ids": [
         "e1"
       ],
-      "note": "The patrol fingerprint identifies the scheduled task and call site that failed."
-    },
-    "c2": {
-      "evidence_ids": [
-        "e2",
-        "e3"
-      ],
-      "note": "The code path coerced tool_args outside the existing row-level exception handling; the regression test exercises the same row shapes."
+      "note": "The failing MCP call reached General item creation and stopped because the target collection did not exist."
     }
   },
   "evidence_lines": [
     {
       "id": "e1",
-      "ts": "2026-06-26T20:11:26Z",
+      "ts": "2026-06-29T02:02:58.099524Z",
       "lvl": "ERROR",
-      "butler": "relationship",
-      "msg": "Failed to dispatch scheduled task: pending-actions-curation"
-    },
-    {
-      "id": "e2",
-      "ts": "2026-06-26T20:14:00Z",
-      "lvl": "INFO",
-      "butler": "relationship",
-      "msg": "Code inspection found pending_actions_curation calling dict(row[\"tool_args\"]) before the per-row try/except."
-    },
-    {
-      "id": "e3",
-      "ts": "2026-06-26T20:14:00Z",
-      "lvl": "INFO",
-      "butler": "relationship",
-      "msg": "Regression test covers JSONB tool_args returned as a string and scalar JSONB values without raising."
+      "butler": "general",
+      "msg": "MCP tool call failed for general.item_create: ValueError: Collection 'episodes' not found."
     }
   ],
   "counter_evidence": [
     {
-      "hypothesis": "The deterministic job registry was missing the relationship pending-actions handler.",
+      "hypothesis": "The database schema was missing the collections table.",
       "verdict": "rejected",
-      "reason": "The schedule job_name resolves to a registered relationship handler."
+      "reason": "The error came from the explicit collection lookup returning no row, not from an undefined table or migration failure."
     },
     {
-      "hypothesis": "The relationship roster job module did not expose run_pending_actions_curation.",
+      "hypothesis": "The model selected an invalid General collection name.",
       "verdict": "rejected",
-      "reason": "The roster module contains the expected run_pending_actions_curation function."
+      "reason": "General collections are intentionally user-defined freeform names; episodes is a valid name even if it did not exist yet."
     }
   ],
-  "why_this_fix": "Normalizing tool_args for display removes the brittle mapping-only assumption, and moving message construction inside the existing row-level guard prevents a single malformed row from aborting scheduled dispatch.",
+  "why_this_fix": "Creating or resolving the collection inside item_create removes the brittle ordering requirement while preserving the existing collection uniqueness constraint. Explicit collection_create remains available for callers that want to attach descriptions.",
   "diff_snapshot": [
     {
       "kind": "meta",
-      "text": "roster/relationship/jobs/relationship_jobs.py"
+      "text": "roster/general/tools/items.py"
     },
     {
       "kind": "-",
-      "text": "tool_args_display = json.dumps(dict(row[\"tool_args\"]), ensure_ascii=False)"
+      "text": "raise ValueError(\"Collection '<name>' not found...\")"
     },
     {
       "kind": "+",
-      "text": "tool_args_display = json.dumps(_pending_action_tool_args_for_display(row[\"tool_args\"]), ensure_ascii=False)"
+      "text": "WITH target_collection AS (INSERT INTO collections (name) VALUES ($1) ON CONFLICT (name) DO UPDATE ...)"
+    },
+    {
+      "kind": "+",
+      "text": "INSERT INTO collection_items (collection_id, data, tags) SELECT id, $2, $3 FROM target_collection"
     },
     {
       "kind": "meta",
-      "text": "tests/jobs/test_relationship_pending_actions_curation.py"
+      "text": "tests/tools/test_general_items.py"
     },
     {
       "kind": "+",
-      "text": "test_pending_actions_curation_tolerates_string_and_scalar_tool_args"
+      "text": "test_item_create_auto_creates_collection_before_insert"
+    },
+    {
+      "kind": "meta",
+      "text": "roster/general/tests/test_tools.py"
+    },
+    {
+      "kind": "+",
+      "text": "test_item_create_auto_creates_missing_collection"
     }
   ]
 }

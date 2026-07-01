@@ -54,10 +54,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         data: dict[str, Any],
         tags: list[str] | None = None,
     ) -> uuid.UUID:
-        """Create an item in a collection (by collection name).
-
-        Raises ValueError if collection not found.
-        """
+        """Create an item in a collection, creating the collection if needed."""
         return await _items.item_create(
             module._get_pool(),
             collection_name,

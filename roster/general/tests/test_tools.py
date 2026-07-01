@@ -180,12 +180,24 @@ async def test_item_create(pool):
     assert entity["data"]["age"] == 30
 
 
-async def test_item_create_collection_not_found(pool):
-    """item_create raises ValueError for non-existent collection."""
-    from butlers.tools.general import item_create
+async def test_item_create_auto_creates_missing_collection(pool):
+    """item_create auto-creates a collection so capture does not fail."""
+    from butlers.tools.general import collection_list, item_create, item_get
 
-    with pytest.raises(ValueError, match="not found"):
-        await item_create(pool, "nonexistent_collection", {"a": 1})
+    eid = await item_create(
+        pool,
+        "episodes",
+        {"summary": "Captured note"},
+        tags=["auto-created"],
+    )
+
+    entity = await item_get(pool, eid)
+    assert entity is not None
+    assert entity["data"] == {"summary": "Captured note"}
+    assert entity["tags"] == ["auto-created"]
+
+    collections = await collection_list(pool)
+    assert [c["name"] for c in collections] == ["episodes"]
 
 
 async def test_item_create_with_tags(pool):
