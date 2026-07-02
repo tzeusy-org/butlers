@@ -49,7 +49,6 @@ import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import HopPage from './components/relationship/HopPage.tsx'
 import ColumnsPage from './components/relationship/ColumnsPage.tsx'
 import ConcentrationPage from './components/relationship/ConcentrationPage.tsx'
-import SocialMapPage from './pages/SocialMapPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
 import IngestionConnectorsPage from './pages/IngestionConnectorsPage.tsx'
 import IngestionFiltersPage from './pages/IngestionFiltersPage.tsx'
@@ -116,7 +115,6 @@ export const router = createBrowserRouter(
         { path: '/entities/hop', element: <HopPage /> },
         { path: '/entities/columns', element: <ColumnsPage /> },
         { path: '/entities/concentration', element: <ConcentrationPage /> },
-        { path: '/entities/social-map', element: <SocialMapPage /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsConsolePage /> },
         { path: '/settings/spend', element: <SettingsSpendPage /> },

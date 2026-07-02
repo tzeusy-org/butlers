@@ -2,39 +2,64 @@
  * PlexPage — /entities landing: the owner ego-graph ("plex").
  *
  * PROTOTYPE (proto/entities-plex). Reimagines the /entities landing per the
- * 2026-07-02 critique: exploration-first instead of curation-first.
+ * 2026-07-02 critique: exploration-first instead of curation-first. Replaces
+ * the retired Social map tab.
  *
- * Layout: full-bleed radial canvas + quiet right rail.
+ * Layout: full-bleed radial canvas; the horizontal flanks carry overlays.
  *   - Owner mode (default): contacts on concentric Dunbar tier rings around
- *     the owner; tier 1500 summarized as a periphery count, not drawn.
+ *     the owner; tier 1500 summarized as a periphery count, not drawn. Left
+ *     flank: Worth attention. Right flank: capacity meters.
  *   - Neighbour mode (?center=<id>): the centered entity's neighbours fanned
  *     into predicate sectors; edge opacity carries confidence, node
- *     desaturation carries staleness (two separate manifesto axes).
- *   - Right rail: "Worth attention" (tier-weighted overdue contacts, with
- *     reasons) and per-tier capacity meters ("21 / 50").
+ *     desaturation carries staleness (two separate manifesto axes). Right
+ *     flank: the entity dossier (sparkline, dates, facts, latest touches).
+ *
+ * Interaction:
+ *   - Click a mark to re-center; the hop trail persists in the URL.
+ *   - Wheel zooms toward the cursor, dragging empty canvas pans; outer-tier
+ *     labels fade in past ~1.35x zoom. "0" or the reset affordance restores.
+ *   - Hovering a mark opens a micro-dossier card (tier, last seen, 90-day
+ *     sparkline) and, in owner mode, lights up that person's edges to other
+ *     visible people while the rest recede.
+ *   - Dragging a person to another ring pins their Dunbar tier (the one
+ *     manual override the manifesto allows); dashed border marks the pin.
  *
  * URL contract:
  *   ?center=<entityId>   re-centered entity (absent = owner)
  *   ?trail=<id,id,...>   hop trail (breadcrumb), oldest first
  *
- * Keyboard (scoped to the canvas container, never window):
+ * Keyboard (scoped to the canvas container, never window-global):
  *   Esc     pop one hop off the trail
  *   Enter   open the centered entity's record
+ *   0       reset zoom and pan
  */
 
-import { useCallback, useLayoutEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
+import { toast } from "sonner";
 
 import type { DunbarEntry } from "@/api/types";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
+import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
+import { LatestInteractionsBlock } from "@/components/relationship/LatestInteractionsBlock";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useDunbarRanking } from "@/hooks/use-memory";
 import {
+  useEntityCoreDates,
+  useEntityFacts,
   useEntityNeighbours,
   useRelationshipEntitiesByIds,
+  useUpdateEntityDunbarTier,
 } from "@/hooks/use-entities";
 import {
   daysSince,
@@ -49,14 +74,15 @@ import {
   TIERS,
   type NeighbourPlexNode,
   type OwnerPlexNode,
+  type PlexNodeTier,
   type Staleness,
   type Tier,
 } from "@/components/relationship/plex-layout";
 import { TIER_NAMES } from "@/components/memory/concentric-circles-constants";
 
 // ---------------------------------------------------------------------------
-// Sizing hooks (same pattern as SocialMapView: the overview archetype wrapper
-// has auto height, so the canvas needs an explicit viewport-fill height).
+// Sizing hooks (the overview archetype wrapper has auto height, so the canvas
+// needs an explicit viewport-fill height).
 // ---------------------------------------------------------------------------
 
 const FILL_BOTTOM_GUTTER = 24;
@@ -91,7 +117,7 @@ function useElementSize() {
     ro.observe(el);
     return () => ro.disconnect();
   }, [el]);
-  return { ref, size };
+  return { ref, size, el };
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +127,26 @@ function useElementSize() {
 function parseTrail(raw: string | null): string[] {
   if (!raw) return [];
   return raw.split(",").filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Camera (zoom + pan)
+// ---------------------------------------------------------------------------
+
+interface PlexView {
+  zoom: number;
+  x: number;
+  y: number;
+}
+
+const VIEW_IDENTITY: PlexView = { zoom: 1, x: 0, y: 0 };
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2.5;
+/** Zoom level past which the outer tiers' name labels fade in. */
+const ZOOM_LABEL_THRESHOLD = 1.35;
+
+function isIdentity(view: PlexView): boolean {
+  return view.zoom === 1 && view.x === 0 && view.y === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +168,27 @@ function stalenessStyle(staleness: Staleness): React.CSSProperties {
 }
 
 // ---------------------------------------------------------------------------
+// Hover info (micro-dossier card)
+// ---------------------------------------------------------------------------
+
+interface HoverInfo {
+  entityId: string;
+  name: string;
+  entityType: string;
+  tier: number | null;
+  pinned: boolean;
+  staleDays: number | null;
+  /** Node position in canvas coordinates (pre-camera). */
+  x: number;
+  y: number;
+}
+
+// ---------------------------------------------------------------------------
 // Plex node (shared by both modes)
 // ---------------------------------------------------------------------------
+
+/** Pointer travel (px) past which a press becomes a drag, not a click. */
+const DRAG_THRESHOLD = 6;
 
 interface PlexNodeProps {
   entityId: string;
@@ -134,10 +199,22 @@ interface PlexNodeProps {
   entityType?: string;
   showLabel: boolean;
   attention?: boolean;
+  pinned?: boolean;
+  /** Recede while another node's connections are spotlighted. */
+  dimmed?: boolean;
   staleness: Staleness;
   /** Extra opacity multiplier (confidence axis in neighbour mode). */
   conf?: number;
+  /** True while this node is being dragged (parent overrides x/y). */
+  dragging?: boolean;
+  /** Enable drag-to-retier (owner mode only). */
+  draggable?: boolean;
   onCenter: (id: string) => void;
+  onHoverStart?: () => void;
+  onHoverEnd?: () => void;
+  toCanvas?: (clientX: number, clientY: number) => { x: number; y: number };
+  onDragMove?: (id: string, x: number, y: number) => void;
+  onDragEnd?: (id: string, x: number, y: number) => void;
 }
 
 function PlexNode({
@@ -149,31 +226,90 @@ function PlexNode({
   entityType = "person",
   showLabel,
   attention = false,
+  pinned = false,
+  dimmed = false,
   staleness,
   conf,
+  dragging = false,
+  draggable = false,
   onCenter,
+  onHoverStart,
+  onHoverEnd,
+  toCanvas,
+  onDragMove,
+  onDragEnd,
 }: PlexNodeProps) {
+  const dragRef = useRef<{ startX: number; startY: number; active: boolean } | null>(
+    null,
+  );
+  const suppressClick = useRef(false);
+
+  function handlePointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!draggable || e.button !== 0) return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, active: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function handlePointerMove(e: React.PointerEvent<HTMLButtonElement>) {
+    const d = dragRef.current;
+    if (!d || !toCanvas) return;
+    if (!d.active) {
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD)
+        return;
+      d.active = true;
+      onHoverEnd?.();
+    }
+    const p = toCanvas(e.clientX, e.clientY);
+    onDragMove?.(entityId, p.x, p.y);
+  }
+
+  function handlePointerUp(e: React.PointerEvent<HTMLButtonElement>) {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (d?.active && toCanvas) {
+      suppressClick.current = true;
+      const p = toCanvas(e.clientX, e.clientY);
+      onDragEnd?.(entityId, p.x, p.y);
+    }
+  }
+
+  const markWrapClasses = [
+    "rounded-full p-0.5",
+    attention ? "outline outline-1 outline-[var(--amber)]" : "",
+    pinned ? "border border-dashed border-[var(--role-owner)]" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <button
       type="button"
       data-testid="plex-node"
       aria-label={`Center plex on ${name}`}
       title={name}
-      onClick={() => onCenter(entityId)}
-      className="group absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 transition-transform duration-slow ease-out-quart focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      onClick={() => {
+        if (suppressClick.current) {
+          suppressClick.current = false;
+          return;
+        }
+        onCenter(entityId);
+      }}
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      className={`group absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+        dragging
+          ? "z-20 cursor-grabbing"
+          : "transition-transform duration-slow ease-out-quart"
+      }`}
       style={{
         transform: `translate(${x}px, ${y}px) translate(-50%, -50%)`,
-        opacity: conf !== undefined ? Math.max(0.45, conf) : undefined,
+        opacity: dimmed ? 0.2 : conf !== undefined ? Math.max(0.45, conf) : undefined,
       }}
     >
-      <span
-        className={
-          attention
-            ? "rounded-full p-0.5 outline outline-1 outline-[var(--amber)]"
-            : "p-0.5"
-        }
-        style={stalenessStyle(staleness)}
-      >
+      <span className={markWrapClasses} style={stalenessStyle(staleness)}>
         <EntityMark name={name} entityType={entityType} size={size} />
       </span>
       {showLabel && (
@@ -198,22 +334,83 @@ function OwnerPlexCanvas({
   ownerName,
   width,
   height,
+  zoom,
   attentionIds,
+  hoveredId,
+  connectedIds,
+  toCanvas,
   onCenter,
+  onHover,
+  onHoverEnd,
+  onRetier,
 }: {
   nodes: OwnerPlexNode[];
   tierCounts: Record<Tier, number>;
   ownerName: string;
   width: number;
   height: number;
+  zoom: number;
   attentionIds: Set<string>;
+  hoveredId: string | null;
+  /** Neighbour ids of the hovered node; null until the fetch resolves. */
+  connectedIds: Set<string> | null;
+  toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
   onCenter: (id: string) => void;
+  onHover: (info: HoverInfo) => void;
+  onHoverEnd: () => void;
+  onRetier: (id: string, tier: PlexNodeTier, name: string) => void;
 }) {
   const cx = width / 2;
   const cy = height / 2;
   const r = Math.min(width, height) / 2 - 32;
-  const rx = r;
-  const ry = r;
+
+  // Drag-to-retier: the dragged node follows the pointer; the nearest ring
+  // lights up as the drop target.
+  const [drag, setDrag] = useState<{ id: string; x: number; y: number } | null>(
+    null,
+  );
+
+  const nearestTier = useCallback(
+    (x: number, y: number): PlexNodeTier | null => {
+      const dist = Math.hypot(x - cx, y - cy) / r;
+      let best: PlexNodeTier | null = null;
+      let bestDelta = 0.085;
+      for (const tier of PLEX_NODE_TIERS) {
+        const delta = Math.abs(dist - PLEX_RING_FRACTIONS[tier]);
+        if (delta < bestDelta) {
+          best = tier;
+          bestDelta = delta;
+        }
+      }
+      return best;
+    },
+    [cx, cy, r],
+  );
+  const dropTier = drag ? nearestTier(drag.x, drag.y) : null;
+
+  function handleDragMove(id: string, x: number, y: number) {
+    setDrag({ id, x, y });
+  }
+
+  function handleDragEnd(id: string, x: number, y: number) {
+    setDrag(null);
+    const tier = nearestTier(x, y);
+    const node = nodes.find((n) => n.entityId === id);
+    if (tier !== null && node && tier !== node.tier) {
+      onRetier(id, tier, node.name);
+    }
+  }
+
+  const nodePos = (node: OwnerPlexNode) =>
+    drag?.id === node.entityId
+      ? { x: drag.x, y: drag.y }
+      : polar(cx, cy, r * node.radiusFrac, r * node.radiusFrac, node.angle);
+
+  // Connection spotlight: only once the hovered node's neighbours resolved.
+  const spotlight = hoveredId !== null && connectedIds !== null;
+  const hoveredNode = spotlight
+    ? nodes.find((n) => n.entityId === hoveredId)
+    : undefined;
 
   return (
     <>
@@ -224,33 +421,58 @@ function OwnerPlexCanvas({
         aria-hidden="true"
       >
         {PLEX_NODE_TIERS.map((tier) => (
-          <ellipse
+          <circle
             key={tier}
             cx={cx}
             cy={cy}
-            rx={rx * PLEX_RING_FRACTIONS[tier]}
-            ry={ry * PLEX_RING_FRACTIONS[tier]}
+            r={r * PLEX_RING_FRACTIONS[tier]}
             fill="none"
             stroke={TIER_RING_COLORS[tier]}
-            strokeOpacity={0.28}
+            strokeOpacity={dropTier === tier ? 0.9 : 0.28}
+            strokeWidth={dropTier === tier ? 1.5 : 1}
           />
         ))}
         {/* Periphery: tier 1500 summarized, never drawn as nodes. */}
-        <ellipse
+        <circle
           cx={cx}
           cy={cy}
-          rx={rx * PLEX_PERIPHERY_FRACTION}
-          ry={ry * PLEX_PERIPHERY_FRACTION}
+          r={r * PLEX_PERIPHERY_FRACTION}
           fill="none"
           stroke={TIER_RING_COLORS[1500]}
           strokeOpacity={0.35}
           strokeDasharray="3 7"
         />
+        {/* Connection spotlight edges: hovered person to visible peers. */}
+        {hoveredNode &&
+          connectedIds &&
+          nodes
+            .filter((n) => connectedIds.has(n.entityId))
+            .map((n) => {
+              const a = nodePos(hoveredNode);
+              const b = nodePos(n);
+              return (
+                <line
+                  key={`spot-${n.entityId}`}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke="var(--fg, currentColor)"
+                  strokeOpacity={0.35}
+                />
+              );
+            })}
       </svg>
 
       {/* Ring capacity labels, stacked up the 12 o'clock axis. */}
       {PLEX_NODE_TIERS.map((tier) => {
-        const p = polar(cx, cy, rx * PLEX_RING_FRACTIONS[tier], ry * PLEX_RING_FRACTIONS[tier], 0);
+        const p = polar(
+          cx,
+          cy,
+          r * PLEX_RING_FRACTIONS[tier],
+          r * PLEX_RING_FRACTIONS[tier],
+          0,
+        );
         const over = tierCounts[tier] > tier;
         return (
           <span
@@ -269,7 +491,13 @@ function OwnerPlexCanvas({
         );
       })}
       {(() => {
-        const p = polar(cx, cy, rx * PLEX_PERIPHERY_FRACTION, ry * PLEX_PERIPHERY_FRACTION, 0);
+        const p = polar(
+          cx,
+          cy,
+          r * PLEX_PERIPHERY_FRACTION,
+          r * PLEX_PERIPHERY_FRACTION,
+          0,
+        );
         return (
           <span
             className="absolute left-0 top-0 bg-background px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--dim)]"
@@ -285,7 +513,8 @@ function OwnerPlexCanvas({
 
       {/* Contact nodes */}
       {nodes.map((node) => {
-        const p = polar(cx, cy, rx * node.radiusFrac, ry * node.radiusFrac, node.angle);
+        const p = nodePos(node);
+        const isHovered = node.entityId === hoveredId;
         return (
           <PlexNode
             key={node.entityId}
@@ -294,13 +523,47 @@ function OwnerPlexCanvas({
             x={p.x}
             y={p.y}
             size={node.size}
-            showLabel={node.tier <= 50}
+            showLabel={node.tier <= 50 || zoom >= ZOOM_LABEL_THRESHOLD}
             attention={attentionIds.has(node.entityId)}
+            pinned={node.pinned}
+            dimmed={
+              spotlight && !isHovered && !(connectedIds?.has(node.entityId) ?? false)
+            }
             staleness={node.staleness}
+            dragging={drag?.id === node.entityId}
+            draggable
+            toCanvas={toCanvas}
+            onDragMove={handleDragMove}
+            onDragEnd={handleDragEnd}
             onCenter={onCenter}
+            onHoverStart={() =>
+              onHover({
+                entityId: node.entityId,
+                name: node.name,
+                entityType: "person",
+                tier: node.tier,
+                pinned: node.pinned,
+                staleDays: node.staleDays,
+                x: p.x,
+                y: p.y,
+              })
+            }
+            onHoverEnd={onHoverEnd}
           />
         );
       })}
+
+      {/* Drop hint while dragging */}
+      {drag && (
+        <p
+          className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--mfg)]"
+          data-testid="plex-drop-hint"
+        >
+          {dropTier !== null
+            ? `Drop to pin: ${TIER_NAMES[dropTier]}`
+            : "Drop on a ring to pin a tier"}
+        </p>
+      )}
 
       {/* Owner at center: not a hop target, just you. */}
       <div
@@ -328,6 +591,8 @@ function NeighbourPlexCanvas({
   width,
   height,
   onCenter,
+  onHover,
+  onHoverEnd,
 }: {
   nodes: NeighbourPlexNode[];
   sectors: ReturnType<typeof layoutNeighbourPlex>["sectors"];
@@ -337,6 +602,8 @@ function NeighbourPlexCanvas({
   width: number;
   height: number;
   onCenter: (id: string) => void;
+  onHover: (info: HoverInfo) => void;
+  onHoverEnd: () => void;
 }) {
   const cx = width / 2;
   const cy = height / 2;
@@ -344,8 +611,6 @@ function NeighbourPlexCanvas({
   // the corners of a large canvas.
   const spread = Math.min(1, 0.45 + nodes.length / 18);
   const r = (Math.min(width, height) / 2 - 48) * spread;
-  const rx = r;
-  const ry = r;
 
   return (
     <>
@@ -357,7 +622,13 @@ function NeighbourPlexCanvas({
       >
         {/* Edges: opacity carries assertion confidence. */}
         {nodes.map((node) => {
-          const p = polar(cx, cy, rx * node.radiusFrac, ry * node.radiusFrac, node.angle);
+          const p = polar(
+            cx,
+            cy,
+            r * node.radiusFrac,
+            r * node.radiusFrac,
+            node.angle,
+          );
           return (
             <line
               key={`edge-${node.predicate}-${node.entityId}`}
@@ -374,7 +645,7 @@ function NeighbourPlexCanvas({
 
       {/* Sector labels: the predicate names this slice of the fan. */}
       {sectors.map((sector) => {
-        const p = polar(cx, cy, rx * 0.92, ry * 0.92, sector.midAngle);
+        const p = polar(cx, cy, r * 0.92, r * 0.92, sector.midAngle);
         return (
           <span
             key={`sector-${sector.predicate}`}
@@ -400,7 +671,13 @@ function NeighbourPlexCanvas({
 
       {/* Neighbour nodes */}
       {nodes.map((node) => {
-        const p = polar(cx, cy, rx * node.radiusFrac, ry * node.radiusFrac, node.angle);
+        const p = polar(
+          cx,
+          cy,
+          r * node.radiusFrac,
+          r * node.radiusFrac,
+          node.angle,
+        );
         return (
           <PlexNode
             key={`${node.predicate}-${node.entityId}`}
@@ -413,6 +690,19 @@ function NeighbourPlexCanvas({
             staleness={node.staleness}
             conf={node.conf}
             onCenter={onCenter}
+            onHoverStart={() =>
+              onHover({
+                entityId: node.entityId,
+                name: node.name,
+                entityType: "person",
+                tier: null,
+                pinned: false,
+                staleDays: node.staleDays,
+                x: p.x,
+                y: p.y,
+              })
+            }
+            onHoverEnd={onHoverEnd}
           />
         );
       })}
@@ -491,7 +781,226 @@ function TrailBreadcrumb({
 }
 
 // ---------------------------------------------------------------------------
-// Right rail: worth attention + capacity
+// Hover card (micro-dossier)
+// ---------------------------------------------------------------------------
+
+function PlexHoverCard({
+  info,
+  left,
+  top,
+  onKeep,
+  onRelease,
+  onUnpin,
+}: {
+  info: HoverInfo;
+  left: number;
+  top: number;
+  onKeep: () => void;
+  onRelease: () => void;
+  onUnpin: (id: string, name: string) => void;
+}) {
+  return (
+    <div
+      data-plex-overlay
+      data-testid="plex-hover-card"
+      className="absolute z-30 w-64 space-y-2 border border-border bg-background/95 p-3"
+      style={{ left, top }}
+      onMouseEnter={onKeep}
+      onMouseLeave={onRelease}
+    >
+      <div className="flex items-center gap-2">
+        <EntityMark name={info.name} entityType={info.entityType} size={22} />
+        <span className="min-w-0 truncate text-sm font-medium">{info.name}</span>
+      </div>
+      <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--dim)]">
+        {info.entityType}
+        {info.tier !== null && (
+          <>
+            {" · tier "}
+            <span className="tabular-nums">{info.tier}</span>
+            {info.pinned && " (pinned)"}
+          </>
+        )}
+        {info.staleDays !== null ? (
+          <>
+            {" · "}
+            <span className="tabular-nums">{info.staleDays}</span>d since contact
+          </>
+        ) : (
+          " · no contact recorded"
+        )}
+      </p>
+      <ActivitySparkline entityId={info.entityId} />
+      <div className="flex items-center gap-3 pt-0.5">
+        <Link
+          to={`/entities/${info.entityId}`}
+          className="text-xs text-primary hover:underline"
+        >
+          Open record
+        </Link>
+        {info.pinned && (
+          <button
+            type="button"
+            onClick={() => onUnpin(info.entityId, info.name)}
+            className="font-mono text-[10px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground"
+          >
+            Unpin tier
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Entity dossier (neighbour mode, right flank)
+// ---------------------------------------------------------------------------
+
+function EntityDossier({
+  entityId,
+  name,
+  entityType,
+  tier,
+  pinned,
+  lastSeen,
+  onUnpin,
+}: {
+  entityId: string;
+  name: string;
+  entityType: string;
+  tier: number | null;
+  pinned: boolean;
+  lastSeen: string | null;
+  onUnpin: (id: string, name: string) => void;
+}) {
+  const { data: factsData, isLoading: factsLoading } = useEntityFacts(entityId, {
+    limit: 12,
+  });
+  const { data: datesData } = useEntityCoreDates(entityId);
+
+  // Literal facts only: entity-valued facts are already on the canvas as
+  // neighbours; repeating their UUIDs here is noise.
+  const facts = (factsData?.items ?? []).filter(
+    (f) => f.object_kind === "literal",
+  );
+  const dates = datesData?.items ?? [];
+
+  return (
+    <aside
+      data-plex-overlay
+      data-testid="plex-dossier"
+      aria-label={`${name} dossier`}
+      className="pointer-events-auto absolute bottom-0 right-0 top-0 z-10 w-72 space-y-5 overflow-y-auto border-l border-border bg-background/95 py-1 pl-4"
+    >
+      <section className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <EntityMark name={name} entityType={entityType} size={26} />
+          <span className="min-w-0 truncate text-sm font-medium">{name}</span>
+        </div>
+        <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--dim)]">
+          {entityType}
+          {tier !== null && (
+            <>
+              {" · tier "}
+              <span className="tabular-nums">{tier}</span>
+              {pinned && " (pinned)"}
+            </>
+          )}
+          {lastSeen && (
+            <>
+              {" · seen "}
+              <Time value={lastSeen} mode="relative" />
+            </>
+          )}
+        </p>
+        <div className="flex items-center gap-3">
+          <Link
+            to={`/entities/${entityId}`}
+            className="text-xs text-primary hover:underline"
+          >
+            Open record
+          </Link>
+          {pinned && (
+            <button
+              type="button"
+              onClick={() => onUnpin(entityId, name)}
+              className="font-mono text-[10px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground"
+            >
+              Unpin tier
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section>
+        <p className="mb-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
+          90-day activity
+        </p>
+        <ActivitySparkline entityId={entityId} />
+      </section>
+
+      {dates.length > 0 && (
+        <section>
+          <p className="mb-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
+            Dates
+          </p>
+          <ul className="space-y-1">
+            {dates.map((d) => (
+              <li key={d.id} className="flex items-baseline justify-between gap-2">
+                <span className="min-w-0 truncate text-xs">
+                  {prettyPredicate(d.predicate)}
+                </span>
+                <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--dim)]">
+                  in {d.days_until}d
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section>
+        <p className="mb-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
+          Facts
+        </p>
+        {factsLoading && (
+          <div className="space-y-1.5">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-4/5" />
+          </div>
+        )}
+        {!factsLoading && facts.length === 0 && (
+          <p className="font-serif text-sm italic text-muted-foreground">
+            Nothing recorded yet.
+          </p>
+        )}
+        {!factsLoading && facts.length > 0 && (
+          <ul className="space-y-1.5">
+            {facts.map((f) => (
+              <li
+                key={f.id}
+                className={f.staleness_band === "stale" ? "opacity-50" : undefined}
+              >
+                <p className="font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--mfg)]">
+                  {prettyPredicate(f.predicate)}
+                </p>
+                <p className="truncate text-xs" title={f.object}>
+                  {f.object}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Latest touch per channel; the block hides itself when empty. */}
+      <LatestInteractionsBlock entityId={entityId} />
+    </aside>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Flank overlays: worth attention (left) + capacity (right). Owner mode only.
 // ---------------------------------------------------------------------------
 
 function AttentionRail({
@@ -507,123 +1016,129 @@ function AttentionRail({
 }) {
   return (
     <>
-    <aside
-      className="pointer-events-auto absolute left-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
-      aria-label="Worth attention"
-      data-testid="plex-rail"
-    >
-      <section>
-        <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
-          Worth attention
-        </p>
-        {attentionLoading && (
-          <div className="space-y-2">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-4/5" />
-          </div>
-        )}
-        {!attentionLoading && attention.length === 0 && (
-          <p className="font-serif text-sm italic text-muted-foreground">
-            No one is owed a call.
-          </p>
-        )}
-        {!attentionLoading && attention.length > 0 && (
-          <ul className="space-y-2.5">
-            {attention.map((item) => (
-              <li key={item.entityId} className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => onCenter(item.entityId)}
-                    className="block max-w-full truncate text-left text-sm text-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-foreground"
-                  >
-                    {item.name}
-                  </button>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--dim)]">
-                    tier <span className="tabular-nums">{item.tier}</span>
-                    {" · "}
-                    <span className="tabular-nums">{item.sinceDays}</span>d since contact
-                  </p>
-                </div>
-                <Link
-                  to={`/entities/${item.entityId}`}
-                  aria-label={`Open ${item.name}`}
-                  className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground"
-                >
-                  open
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </aside>
-
-    <aside
-      className="pointer-events-auto absolute right-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
-      aria-label="Capacity"
-    >
-      {tierCounts && (
+      <aside
+        data-plex-overlay
+        className="pointer-events-auto absolute left-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
+        aria-label="Worth attention"
+        data-testid="plex-rail"
+      >
         <section>
           <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
-            Capacity
+            Worth attention
           </p>
-          <ul className="space-y-1.5">
-            {TIERS.filter((t) => t !== 1500).map((tier) => {
-              const count = tierCounts[tier];
-              const over = count > tier;
-              const frac = Math.min(1, count / tier);
-              return (
-                <li key={tier} className="flex items-center gap-2">
-                  <span className="w-24 truncate text-xs text-muted-foreground">
-                    {TIER_NAMES[tier]}
-                  </span>
-                  <span className="h-px flex-1 overflow-hidden rounded bg-border">
-                    <span
-                      className="block h-full"
-                      style={{
-                        width: `${frac * 100}%`,
-                        backgroundColor: over
-                          ? "var(--amber)"
-                          : TIER_RING_COLORS[tier],
-                      }}
-                    />
-                  </span>
-                  <span
-                    className="font-mono text-[10px] tabular-nums"
-                    style={{ color: over ? "var(--amber)" : "var(--dim)" }}
+          {attentionLoading && (
+            <div className="space-y-2">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-4/5" />
+            </div>
+          )}
+          {!attentionLoading && attention.length === 0 && (
+            <p className="font-serif text-sm italic text-muted-foreground">
+              No one is owed a call.
+            </p>
+          )}
+          {!attentionLoading && attention.length > 0 && (
+            <ul className="space-y-2.5">
+              {attention.map((item) => (
+                <li
+                  key={item.entityId}
+                  className="flex items-start justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => onCenter(item.entityId)}
+                      className="block max-w-full truncate text-left text-sm text-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-foreground"
+                    >
+                      {item.name}
+                    </button>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--dim)]">
+                      tier <span className="tabular-nums">{item.tier}</span>
+                      {" · "}
+                      <span className="tabular-nums">{item.sinceDays}</span>d since
+                      contact
+                    </p>
+                  </div>
+                  <Link
+                    to={`/entities/${item.entityId}`}
+                    aria-label={`Open ${item.name}`}
+                    className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground"
                   >
-                    {count}/{tier}
-                  </span>
+                    open
+                  </Link>
                 </li>
-              );
-            })}
-            <li className="flex items-center gap-2 pt-1">
-              <span className="w-24 truncate text-xs text-muted-foreground">
-                {TIER_NAMES[1500]}
-              </span>
-              <span className="flex-1" />
-              <span className="font-mono text-[10px] tabular-nums text-[var(--dim)]">
-                {tierCounts[1500]}
-              </span>
-            </li>
-          </ul>
-          <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
-            Layer sizes are cognitive limits, not settings. Over-capacity reads
-            amber.
-          </p>
+              ))}
+            </ul>
+          )}
         </section>
-      )}
+      </aside>
 
-      <section className="border-t border-border pt-3">
-        <Link
-          to="/entities/index"
-          className="font-mono text-[10px] uppercase tracking-[0.06em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground"
-        >
-          Curation and full index
-        </Link>
-      </section>
-    </aside>
+      <aside
+        data-plex-overlay
+        className="pointer-events-auto absolute right-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
+        aria-label="Capacity"
+      >
+        {tierCounts && (
+          <section>
+            <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
+              Capacity
+            </p>
+            <ul className="space-y-1.5">
+              {TIERS.filter((t) => t !== 1500).map((tier) => {
+                const count = tierCounts[tier];
+                const over = count > tier;
+                const frac = Math.min(1, count / tier);
+                return (
+                  <li key={tier} className="flex items-center gap-2">
+                    <span className="w-24 truncate text-xs text-muted-foreground">
+                      {TIER_NAMES[tier]}
+                    </span>
+                    <span className="h-px flex-1 overflow-hidden rounded bg-border">
+                      <span
+                        className="block h-full"
+                        style={{
+                          width: `${frac * 100}%`,
+                          backgroundColor: over
+                            ? "var(--amber)"
+                            : TIER_RING_COLORS[tier],
+                        }}
+                      />
+                    </span>
+                    <span
+                      className="font-mono text-[10px] tabular-nums"
+                      style={{ color: over ? "var(--amber)" : "var(--dim)" }}
+                    >
+                      {count}/{tier}
+                    </span>
+                  </li>
+                );
+              })}
+              <li className="flex items-center gap-2 pt-1">
+                <span className="w-24 truncate text-xs text-muted-foreground">
+                  {TIER_NAMES[1500]}
+                </span>
+                <span className="flex-1" />
+                <span className="font-mono text-[10px] tabular-nums text-[var(--dim)]">
+                  {tierCounts[1500]}
+                </span>
+              </li>
+            </ul>
+            <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
+              Layer sizes are cognitive limits, not settings. Over-capacity reads
+              amber.
+            </p>
+          </section>
+        )}
+
+        <section className="border-t border-border pt-3">
+          <Link
+            to="/entities/index"
+            className="font-mono text-[10px] uppercase tracking-[0.06em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground"
+          >
+            Curation and full index
+          </Link>
+        </section>
+      </aside>
     </>
   );
 }
@@ -659,6 +1174,9 @@ const TIER_URGENCY_WEIGHT: Record<number, number> = {
   500: 2,
   1500: 1,
 };
+
+const HOVER_SHOW_DELAY_MS = 220;
+const HOVER_HIDE_DELAY_MS = 250;
 
 export default function PlexPage() {
   const navigate = useNavigate();
@@ -702,7 +1220,7 @@ export default function PlexPage() {
     [neighbours],
   );
 
-  // Centered entity summary (name/type/tier/last seen) for the focus card.
+  // Centered entity summary (name/type/tier/last seen) for the dossier.
   const { data: centerSummaryData } = useRelationshipEntitiesByIds({
     ids: isOwnerMode || centerParam === null ? [] : [centerParam],
     limit: 1,
@@ -763,10 +1281,208 @@ export default function PlexPage() {
     [entriesById, neighbourLayout],
   );
 
+  // -------------------------------------------------------------------------
+  // Camera: wheel zooms toward the cursor, dragging empty canvas pans.
+  // -------------------------------------------------------------------------
+
+  const { ref: fillRef, height: fillHeight } = useFillViewportHeight();
+  const { ref: stageRef, size: stageSize, el: stageEl } = useElementSize();
+
+  const [view, setView] = useState<PlexView>(VIEW_IDENTITY);
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  useEffect(() => {
+    if (!stageEl) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = stageEl.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      setView((prev) => {
+        const nz = Math.min(
+          ZOOM_MAX,
+          Math.max(ZOOM_MIN, prev.zoom * Math.exp(-e.deltaY * 0.0015)),
+        );
+        if (nz === prev.zoom) return prev;
+        return {
+          zoom: nz,
+          x: px - (px - prev.x) * (nz / prev.zoom),
+          y: py - (py - prev.y) * (nz / prev.zoom),
+        };
+      });
+    };
+    stageEl.addEventListener("wheel", onWheel, { passive: false });
+    return () => stageEl.removeEventListener("wheel", onWheel);
+  }, [stageEl]);
+
+  const panRef = useRef<{
+    px: number;
+    py: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const [panning, setPanning] = useState(false);
+
+  function handleStagePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button, a, [data-plex-overlay]")) return;
+    panRef.current = {
+      px: viewRef.current.x,
+      py: viewRef.current.y,
+      startX: e.clientX,
+      startY: e.clientY,
+    };
+    setPanning(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function handleStagePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const p = panRef.current;
+    if (!p) return;
+    const dx = e.clientX - p.startX;
+    const dy = e.clientY - p.startY;
+    setView((prev) => ({ ...prev, x: p.px + dx, y: p.py + dy }));
+  }
+
+  function handleStagePointerUp() {
+    panRef.current = null;
+    setPanning(false);
+  }
+
+  const resetView = useCallback(() => setView(VIEW_IDENTITY), []);
+
+  /** Client (screen) coordinates to canvas coordinates, inverting the camera. */
+  const toCanvas = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!stageEl) return { x: clientX, y: clientY };
+      const rect = stageEl.getBoundingClientRect();
+      const v = viewRef.current;
+      return {
+        x: (clientX - rect.left - v.x) / v.zoom,
+        y: (clientY - rect.top - v.y) / v.zoom,
+      };
+    },
+    [stageEl],
+  );
+
+  // -------------------------------------------------------------------------
+  // Hover: micro-dossier card + connection spotlight (owner mode).
+  // -------------------------------------------------------------------------
+
+  const [hover, setHover] = useState<HoverInfo | null>(null);
+  const showTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTimers = useCallback(() => {
+    if (showTimer.current) clearTimeout(showTimer.current);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    showTimer.current = null;
+    hideTimer.current = null;
+  }, []);
+  useEffect(() => clearTimers, [clearTimers]);
+
+  const scheduleHover = useCallback(
+    (info: HoverInfo) => {
+      clearTimers();
+      // Enrich from the ranking when the canvas could not supply tier data
+      // (neighbour mode).
+      const entry = entriesById.get(info.entityId);
+      const enriched: HoverInfo =
+        entry && info.tier === null
+          ? {
+              ...info,
+              tier: entry.dunbar_tier,
+              pinned: entry.dunbar_tier_override,
+              staleDays: info.staleDays ?? daysSince(entry.last_interaction_at),
+            }
+          : info;
+      showTimer.current = setTimeout(
+        () => setHover(enriched),
+        HOVER_SHOW_DELAY_MS,
+      );
+    },
+    [clearTimers, entriesById],
+  );
+
+  const scheduleHide = useCallback(() => {
+    if (showTimer.current) clearTimeout(showTimer.current);
+    showTimer.current = null;
+    hideTimer.current = setTimeout(() => setHover(null), HOVER_HIDE_DELAY_MS);
+  }, []);
+
+  const keepHover = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = null;
+  }, []);
+
+  const clearHoverNow = useCallback(() => {
+    clearTimers();
+    setHover(null);
+  }, [clearTimers]);
+
+  // Connection spotlight: fetch the hovered person's neighbours (owner mode).
+  const { data: hoverNeighbours } = useEntityNeighbours(
+    isOwnerMode && hover ? hover.entityId : undefined,
+    { rank: "weight", per_predicate: 24 },
+  );
+  const connectedIds = useMemo(() => {
+    if (!hoverNeighbours) return null;
+    const ids = new Set<string>();
+    for (const list of Object.values(hoverNeighbours.neighbours)) {
+      for (const entry of list) ids.add(entry.entity_id);
+    }
+    return ids;
+  }, [hoverNeighbours]);
+
+  // -------------------------------------------------------------------------
+  // Drag-to-retier: pin the Dunbar tier by moving a person across rings.
+  // -------------------------------------------------------------------------
+
+  const retierMutation = useUpdateEntityDunbarTier();
+
+  const handleRetier = useCallback(
+    async (entityId: string, tier: PlexNodeTier, name: string) => {
+      clearHoverNow();
+      try {
+        await retierMutation.mutateAsync({ entityId, tier });
+        toast.success(`Pinned ${name} to ${TIER_NAMES[tier]}`);
+      } catch (err) {
+        toast.error(
+          `Pin failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        );
+      }
+    },
+    [retierMutation, clearHoverNow],
+  );
+
+  const handleUnpin = useCallback(
+    async (entityId: string, name: string) => {
+      clearHoverNow();
+      try {
+        await retierMutation.mutateAsync({ entityId, tier: null });
+        toast.success(`Cleared pin for ${name}`);
+      } catch (err) {
+        toast.error(
+          `Unpin failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        );
+      }
+    },
+    [retierMutation, clearHoverNow],
+  );
+
+  // -------------------------------------------------------------------------
+  // Hop navigation
+  // -------------------------------------------------------------------------
+
   // Re-center on a node: push the current center onto the trail. Hopping
   // back onto the owner resets to the home plex (no trail).
   const handleCenter = useCallback(
     (id: string) => {
+      clearHoverNow();
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         if (id === ownerEntityId) {
@@ -783,7 +1499,7 @@ export default function PlexPage() {
         return next;
       });
     },
-    [setSearchParams, ownerEntityId],
+    [setSearchParams, ownerEntityId, clearHoverNow],
   );
 
   const handleTrailJump = useCallback(
@@ -830,13 +1546,13 @@ export default function PlexPage() {
       } else if (e.key === "Enter" && !isOwnerMode && centerParam) {
         e.preventDefault();
         void navigate(`/entities/${centerParam}`);
+      } else if (e.key === "0" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        resetView();
       }
     },
-    [handlePop, isOwnerMode, centerParam, navigate],
+    [handlePop, isOwnerMode, centerParam, navigate, resetView],
   );
-
-  const { ref: fillRef, height: fillHeight } = useFillViewportHeight();
-  const { ref: stageRef, size: stageSize } = useElementSize();
 
   const isLoading = isOwnerMode ? rankingLoading : neighboursLoading;
   const isError = isOwnerMode ? rankingError : neighboursError;
@@ -848,8 +1564,31 @@ export default function PlexPage() {
 
   const focusEntry = isOwnerMode ? null : entriesById.get(centerParam ?? "");
   const focusTier = centerSummary?.tier ?? focusEntry?.dunbar_tier ?? null;
+  const focusPinned = focusEntry?.dunbar_tier_override ?? false;
   const focusLastSeen =
     centerSummary?.last_seen ?? focusEntry?.last_interaction_at ?? null;
+
+  // Hover card screen position (canvas coords through the camera), flipped
+  // when it would clip the right edge.
+  const hoverScreen = hover
+    ? {
+        x: hover.x * view.zoom + view.x,
+        y: hover.y * view.zoom + view.y,
+      }
+    : null;
+  const hoverCardLeft =
+    hoverScreen === null
+      ? 0
+      : hoverScreen.x > stageSize.width - 300
+        ? hoverScreen.x - 280
+        : hoverScreen.x + 24;
+  const hoverCardTop =
+    hoverScreen === null
+      ? 0
+      : Math.min(
+          Math.max(hoverScreen.y - 40, 8),
+          Math.max(8, stageSize.height - 190),
+        );
 
   return (
     <Page
@@ -872,8 +1611,13 @@ export default function PlexPage() {
           role="application"
           aria-label="Life graph plex"
           onKeyDown={handleKeyDown}
+          onPointerDown={handleStagePointerDown}
+          onPointerMove={handleStagePointerMove}
+          onPointerUp={handleStagePointerUp}
           data-testid="plex-canvas"
-          className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className={`relative min-h-0 min-w-0 flex-1 select-none overflow-hidden rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+            panning ? "cursor-grabbing" : "cursor-grab"
+          }`}
         >
           {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
@@ -896,38 +1640,69 @@ export default function PlexPage() {
             </div>
           )}
 
+          {/* Camera layer: everything spatial pans and zooms together. */}
           {!isLoading &&
             !isError &&
             stageSize.width > 0 &&
-            stageSize.height > 0 &&
-            (isOwnerMode ? (
-              <OwnerPlexCanvas
-                nodes={ownerLayout.nodes}
-                tierCounts={ownerLayout.tierCounts}
-                ownerName={ownerName}
-                width={stageSize.width}
-                height={stageSize.height}
-                attentionIds={attentionEntityIds}
-                onCenter={handleCenter}
-              />
-            ) : (
-              neighbourLayout &&
-              !neighbourEmpty && (
-                <NeighbourPlexCanvas
-                  nodes={neighbourLayout.nodes}
-                  sectors={neighbourLayout.sectors}
-                  centerId={centerParam!}
-                  centerName={centerName}
-                  centerType={centerType}
-                  width={stageSize.width}
-                  height={stageSize.height}
-                  onCenter={handleCenter}
-                />
-              )
-            ))}
+            stageSize.height > 0 && (
+              <div
+                className="absolute inset-0"
+                style={{
+                  transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
+                  transformOrigin: "0 0",
+                }}
+              >
+                {isOwnerMode ? (
+                  <OwnerPlexCanvas
+                    nodes={ownerLayout.nodes}
+                    tierCounts={ownerLayout.tierCounts}
+                    ownerName={ownerName}
+                    width={stageSize.width}
+                    height={stageSize.height}
+                    zoom={view.zoom}
+                    attentionIds={attentionEntityIds}
+                    hoveredId={hover?.entityId ?? null}
+                    connectedIds={connectedIds}
+                    toCanvas={toCanvas}
+                    onCenter={handleCenter}
+                    onHover={scheduleHover}
+                    onHoverEnd={scheduleHide}
+                    onRetier={handleRetier}
+                  />
+                ) : (
+                  neighbourLayout &&
+                  !neighbourEmpty && (
+                    <NeighbourPlexCanvas
+                      nodes={neighbourLayout.nodes}
+                      sectors={neighbourLayout.sectors}
+                      centerId={centerParam!}
+                      centerName={centerName}
+                      centerType={centerType}
+                      width={stageSize.width}
+                      height={stageSize.height}
+                      onCenter={handleCenter}
+                      onHover={scheduleHover}
+                      onHoverEnd={scheduleHide}
+                    />
+                  )
+                )}
+              </div>
+            )}
+
+          {/* Hover card: outside the camera so it never scales. */}
+          {hover && hoverScreen && (
+            <PlexHoverCard
+              info={hover}
+              left={hoverCardLeft}
+              top={hoverCardTop}
+              onKeep={keepHover}
+              onRelease={scheduleHide}
+              onUnpin={handleUnpin}
+            />
+          )}
 
           {/* Trail: top-left overlay. */}
-          <div className="pointer-events-none absolute left-0 top-0 p-1">
+          <div className="pointer-events-none absolute left-0 top-0 z-10 p-1">
             <TrailBreadcrumb
               trail={trail}
               centerName={isOwnerMode ? null : centerName}
@@ -937,53 +1712,45 @@ export default function PlexPage() {
             />
           </div>
 
-          {/* Focus card: bottom-left overlay, only when re-centered. */}
-          {!isOwnerMode && centerParam && (
-            <div
-              className="absolute bottom-0 left-0 max-w-64 space-y-1 border-t border-border bg-background/90 py-2 pr-4"
-              data-testid="plex-focus-card"
+          {/* Reset-view affordance: only while the camera is moved. */}
+          {!isIdentity(view) && (
+            <button
+              type="button"
+              data-plex-overlay
+              onClick={resetView}
+              className="absolute right-0 top-0 z-10 p-1 font-mono text-[10px] uppercase tracking-[0.06em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground"
             >
-              <div className="flex items-center gap-2">
-                <EntityMark name={centerName} entityType={centerType} size={22} />
-                <span className="truncate text-sm font-medium">{centerName}</span>
-              </div>
-              <p className="font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--dim)]">
-                {centerType}
-                {focusTier !== null && (
-                  <>
-                    {" · tier "}
-                    <span className="tabular-nums">{focusTier}</span>
-                  </>
-                )}
-                {focusLastSeen && (
-                  <>
-                    {" · seen "}
-                    <Time value={focusLastSeen} mode="relative" />
-                  </>
-                )}
-              </p>
-              <Link
-                to={`/entities/${centerParam}`}
-                className="inline-block text-xs text-primary hover:underline"
-              >
-                Open record
-              </Link>
-            </div>
+              reset view
+            </button>
           )}
 
           {/* Key legend: bottom-right, one quiet line. */}
-          <p className="pointer-events-none absolute bottom-0 right-0 p-1 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--dim)]">
-            esc back · enter open record
+          <p className="pointer-events-none absolute bottom-0 right-0 z-10 p-1 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--dim)]">
+            esc back · enter open · 0 reset · drag a person to pin a tier
           </p>
 
-          {/* Flank overlays: attention left, capacity right. The circular
-              plex is height-bound, so the horizontal flanks carry content. */}
-          <AttentionRail
-            tierCounts={isOwnerMode && !rankingLoading ? ownerLayout.tierCounts : null}
-            onCenter={handleCenter}
-            attention={attention}
-            attentionLoading={rankingLoading}
-          />
+          {/* Owner mode: attention + capacity flanks. */}
+          {isOwnerMode && (
+            <AttentionRail
+              tierCounts={!rankingLoading ? ownerLayout.tierCounts : null}
+              onCenter={handleCenter}
+              attention={attention}
+              attentionLoading={rankingLoading}
+            />
+          )}
+
+          {/* Neighbour mode: the centered entity's dossier on the right flank. */}
+          {!isOwnerMode && centerParam && (
+            <EntityDossier
+              entityId={centerParam}
+              name={centerName}
+              entityType={centerType}
+              tier={focusTier}
+              pinned={focusPinned}
+              lastSeen={focusLastSeen}
+              onUnpin={handleUnpin}
+            />
+          )}
         </div>
       </div>
     </Page>

@@ -3,7 +3,7 @@
  * Component tests for SubpageTabs (§8.6).
  *
  * Covers:
- * - All 6 tabs render with correct labels and to paths
+ * - All 5 tabs render with correct labels and to paths
  * - Active tab gets aria-current="page" based on pathname
  * - Plex tab uses end matching (not active on /entities/hop etc.)
  * - Tab links have proper hrefs in the rendered <a> elements
@@ -63,7 +63,7 @@ describe("SubpageTabs — accessibility and structure", () => {
     expect(nav).toBeTruthy();
   });
 
-  it("renders all 6 tabs with correct labels", () => {
+  it("renders all 5 tabs with correct labels", () => {
     renderTabs();
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
@@ -74,7 +74,6 @@ describe("SubpageTabs — accessibility and structure", () => {
     expect(labels).toContain("Hop");
     expect(labels).toContain("Columns");
     expect(labels).toContain("Concentration");
-    expect(labels).toContain("Social map");
   });
 });
 
@@ -95,7 +94,6 @@ describe("SubpageTabs — tab links and routing", () => {
     expect(hrefMap.get("Hop")).toBe("/entities/hop");
     expect(hrefMap.get("Columns")).toBe("/entities/columns");
     expect(hrefMap.get("Concentration")).toBe("/entities/concentration");
-    expect(hrefMap.get("Social map")).toBe("/entities/social-map");
   });
 });
 
@@ -149,15 +147,6 @@ describe("SubpageTabs — active tab styling", () => {
     );
 
     expect(concentrationLink?.getAttribute("aria-current")).toBe("page");
-  });
-
-  it("Social map tab has aria-current='page' when at /entities/social-map", () => {
-    renderTabs("/entities/social-map");
-    const nav = container.querySelector("nav[aria-label='Entity views']");
-    const links = nav?.querySelectorAll("a") ?? [];
-    const socialMapLink = Array.from(links).find((a) => a.textContent?.trim() === "Social map");
-
-    expect(socialMapLink?.getAttribute("aria-current")).toBe("page");
   });
 
   it("Plex tab does not stay active on /entities/hop (end matching)", () => {

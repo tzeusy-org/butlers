@@ -260,7 +260,7 @@ describe("EntitiesIndexPage — route mount", () => {
     expect(nav).toBeTruthy();
   });
 
-  it("renders Index, Hop, Columns, Concentration, Social map tabs", () => {
+  it("renders Plex, Index, Hop, Columns, Concentration tabs", () => {
     renderPage();
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
@@ -269,7 +269,7 @@ describe("EntitiesIndexPage — route mount", () => {
     expect(labels).toContain("Hop");
     expect(labels).toContain("Columns");
     expect(labels).toContain("Concentration");
-    expect(labels).toContain("Social map");
+    expect(labels).toContain("Plex");
   });
 
   it("renders the queue right rail", () => {
