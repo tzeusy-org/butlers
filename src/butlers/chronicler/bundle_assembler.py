@@ -95,6 +95,12 @@ _EPISODE_KEEP_FIELDS: tuple[str, ...] = (
     # lat/lon kept when present — useful for location episodes.
     "lat",
     "lon",
+    # IEA layer/confidence (tasks.md §7): the day-close reconciler has already
+    # decided which blocks count (see reconciliation.py); these fields let the
+    # LLM narrate honestly ("Gym was scheduled but not corroborated") instead
+    # of re-deriving attendance from episode_type string-matching.
+    "layer",
+    "confidence",
 )
 
 _EVENT_KEEP_FIELDS: tuple[str, ...] = (
@@ -319,6 +325,7 @@ def assemble_day_close_bundle(
     events: Sequence[dict[str, Any]],
     timezone: str = "UTC",
     config: BundleConfig | None = None,
+    dropped_intents: Sequence[dict[str, Any]] | None = None,
 ) -> TierTwoInput:
     """Assemble a token-bounded day-close bundle.
 
@@ -333,9 +340,20 @@ def assemble_day_close_bundle(
             closed day.
         episodes: Sequence of row dicts from the corrected episodes view.
             Dicts should have at minimum the keys used by
-            :data:`_EPISODE_KEEP_FIELDS`.
+            :data:`_EPISODE_KEEP_FIELDS`. Callers SHOULD pass the already
+            reconciled set (see ``reconciliation.reconcile_day``) — merged
+            ``activity`` candidates and un-contradicted ``intent`` blocks —
+            not raw unreconciled rows.
         events: Sequence of row dicts from the corrected point-events view.
         config: Optional tuning overrides.  Defaults to ``BundleConfig()``.
+        dropped_intents: Optional small summary list of calendar ``intent``
+            blocks the deterministic reconciler dropped as contradicted by
+            activity evidence (each a dict with e.g. ``title``, ``start_at``,
+            ``end_at``, ``reason``). Surfaced in the bundle under
+            ``dropped_intents`` so the day-close narration can mention the
+            contradiction honestly without asserting attendance either way.
+            Never masked/capped — this list is already small (day-close scale)
+            by construction.
 
     Returns
         :class:`~butlers.chronicler.interpretation.TierTwoInput` with
@@ -402,6 +420,9 @@ def assemble_day_close_bundle(
                 bundle_payload["episodes_truncated"] = True
             else:
                 break
+
+    if dropped_intents:
+        bundle_payload["dropped_intents"] = list(dropped_intents)
 
     return TierTwoInput(
         path=TierTwoPath.DAY_CLOSE,

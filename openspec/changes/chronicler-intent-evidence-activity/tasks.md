@@ -59,10 +59,10 @@
 
 ## 7. Day-close reconciliation upgrade (depends on §6)
 
-- [ ] 7.1 Upgrade the `chronicler_day_close` prompt + bundle from "summarize" to
+- [x] 7.1 Upgrade the `chronicler_day_close` prompt + bundle from "summarize" to
   "reconcile": merge duplicate candidates, resolve intent-vs-evidence conflicts,
   label ambiguous blocks, write narrative. Preserve no-per-event-LLM (§4.8).
-- [ ] 7.2 Tests: conflicting intent dropped against evidence; duplicate
+- [x] 7.2 Tests: conflicting intent dropped against evidence; duplicate
   candidates merged with combined evidence; token bound respected.
 
 ## 8. Memory write-back loop (depends on §1.2 doctrine + §7)

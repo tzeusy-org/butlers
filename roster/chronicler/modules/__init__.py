@@ -23,6 +23,37 @@ from butlers.modules.base import Module
 logger = logging.getLogger(__name__)
 
 
+def _serialise_dropped_intents(dropped_intents: Any) -> list[dict[str, Any]]:
+    """Convert ``reconcile_day``'s ``DroppedIntent`` objects into a JSON-safe
+    summary for the day-close bundle payload.
+
+    ``dropped.intent`` is the raw reconciled episode dict, which still carries
+    ``datetime`` objects for its window fields (unlike ``episodes``/``events``,
+    which go through ``bundle_assembler._serialise_items``'s ISO-8601
+    conversion). Convert here so the MCP tool never returns a raw ``datetime``
+    that the framework's JSON serialization of the tool result would reject.
+    """
+    from datetime import datetime
+
+    def _to_iso(val: Any) -> Any:
+        return val.isoformat() if isinstance(val, datetime) else val
+
+    return [
+        {
+            "title": dropped.intent.get("canonical_title") or dropped.intent.get("title"),
+            "start_at": _to_iso(
+                dropped.intent.get("canonical_start_at") or dropped.intent.get("start_at")
+            ),
+            "end_at": _to_iso(
+                dropped.intent.get("canonical_end_at") or dropped.intent.get("end_at")
+            ),
+            "reason": dropped.reason,
+            "overlap_fraction": round(dropped.overlap_fraction, 2),
+        }
+        for dropped in dropped_intents
+    ]
+
+
 class ChroniclerModuleConfig(BaseModel):
     """Configuration for the Chronicler read/bundle tools module."""
 
@@ -356,6 +387,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         from zoneinfo import ZoneInfo
 
         from butlers.chronicler.bundle_assembler import BundleConfig, assemble_day_close_bundle
+        from butlers.chronicler.reconciliation import reconcile_day
         from butlers.chronicler.storage import list_episodes, list_point_events
 
         # Parse date_label to a local calendar-day window, then query UTC instants.
@@ -390,6 +422,19 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         episode_dicts = [asdict(ep) for ep in episodes]
         event_dicts = [asdict(ev) for ev in events]
 
+        # Deterministic reconciliation core (tasks.md §7): merge duplicate
+        # same-lane activity candidates and drop calendar intents contradicted
+        # by activity evidence, BEFORE the LLM ever sees this bundle. Aggregate
+        # correctness (what counts, what's dropped) is decided entirely here;
+        # the day-close LLM only narrates over the result.
+        reconciled = reconcile_day(episode_dicts)
+        reconciled_episodes = [
+            *reconciled.activities,
+            *reconciled.kept_intents,
+            *reconciled.passthrough,
+        ]
+        dropped_intents_payload = _serialise_dropped_intents(reconciled.dropped_intents)
+
         cfg = BundleConfig(
             max_episodes=max_episodes,
             max_events=max_events,
@@ -398,10 +443,11 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         )
         bundle_input = assemble_day_close_bundle(
             date_label=date_label,
-            episodes=episode_dicts,
+            episodes=reconciled_episodes,
             events=event_dicts,
             timezone=timezone,
             config=cfg,
+            dropped_intents=dropped_intents_payload,
         )
 
         return {

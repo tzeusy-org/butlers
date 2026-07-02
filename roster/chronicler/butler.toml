@@ -117,13 +117,19 @@ cron = "5 1 * * *"
 dispatch_mode = "prompt"
 complexity = "reasoning"
 prompt = """
-Run the Chronicler day-close interpretation for yesterday:
+Run the Chronicler day-close RECONCILIATION + narration for yesterday. The
+deterministic reconciliation (which activity blocks are merged, which
+calendar blocks are dropped as contradicted) is ALREADY DECIDED before you
+run — your job is to narrate over that result, not to re-derive it.
 1. Use the owner's configured timezone from your system prompt. Compute
    yesterday's local date in that timezone, not in UTC.
 2. Call `chronicler_day_close_bundle(date_label="<local-yesterday>", timezone="<owner-IANA-timezone>")`
-   to fetch a pre-truncated, token-bounded bundle. Do NOT call
-   chronicler_list_episodes or chronicler_list_events directly — the bundle
-   tool enforces the hard cap and sensitive-event masking.
+   to fetch a pre-truncated, token-bounded, ALREADY-RECONCILED bundle. Do NOT
+   call chronicler_list_episodes or chronicler_list_events directly — the
+   bundle tool enforces the hard cap, sensitive-event masking, and the
+   deterministic reconciliation pass (duplicate merge, contradicted-intent
+   drop). Trust the bundle's `layer`/`confidence` fields and its
+   `dropped_intents` list as final; do not second-guess which blocks count.
 3. If the bundle contains no episodes and no events, exit silently.
 4. Produce a brief day-close summary (3-10 bullet points) that:
    - Uses local display timestamps from the bundle when mentioning times.
@@ -132,17 +138,32 @@ Run the Chronicler day-close interpretation for yesterday:
      call; the human-facing message should cite only readable names such as
      "Spotify", "Steam", or a conversation channel when useful.
    - Notes any roll-up entries (sources with rollup=true) by count.
+   - Labels ambiguous or low-confidence blocks (`confidence="low"`) as
+     tentative (e.g. "possibly", "a short, uncorroborated block") rather than
+     stating them as fact — they are still counted, just flagged for the
+     owner to correct if wrong.
+   - If the bundle's `dropped_intents` list is non-empty, mention each briefly
+     and honestly: it was scheduled but activity evidence contradicted it
+     (e.g. "Gym was on the calendar for 9-10am, but you were home") — never
+     assert either attendance or non-attendance beyond what the contradiction
+     itself shows.
    - Does not mention bundle internals such as episodes_truncated,
      events_truncated, "token-bounded", or "capped inventory". If the user
      explicitly asks about completeness, explain plainly that a very busy day
      may be condensed into representative highlights.
    - Does NOT echo or infer sensitive payloads.
    - CALENDAR ATTENDANCE RULE: Calendar blocks (episode_type=scheduled_block,
-     source_name=google_calendar.completed) are scheduled appointments — NOT
-     confirmed attendances. A past calendar block is NOT evidence of attendance.
-     Phrase as "Calendar had X scheduled" or "X was on the calendar" —
-     NEVER as "the user attended X" or "record that the user attended".
-     Do NOT route calendar blocks to domain butlers as attended events, and do
-     NOT instruct any butler to record attendance from a calendar block alone.
+     source_name=google_calendar.completed, layer="intent") are scheduled
+     appointments — NOT confirmed attendances. A past calendar block still in
+     the bundle is NOT evidence of attendance (contradicted ones were already
+     dropped in step 2). Phrase as "Calendar had X scheduled" or "X was on
+     the calendar" — NEVER as "the user attended X" or "record that the user
+     attended". Do NOT route calendar blocks to domain butlers as attended
+     events, and do NOT instruct any butler to record attendance from a
+     calendar block alone.
 5. Send the summary via notify(channel="telegram", intent="send", message=<summary>).
+   This is the single sanctioned once-daily owner-facing day-close message —
+   send it even on an ordinary day. Do NOT add any other proactive message,
+   coaching nudge, or correction prompt from this task; those are separate,
+   explicitly-opted-in surfaces, not part of day-close.
 """

@@ -11,6 +11,7 @@ Scanned files
 - src/butlers/chronicler/aggregations.py — category taxonomy + category_for()
 - src/butlers/chronicler/day_close_writer.py — day-close cache reader/writer
 - src/butlers/chronicler/storage.py      — low-level tier2_cache helpers
+- src/butlers/chronicler/reconciliation.py — deterministic day-close reconciliation core
 
 Forbidden tokens
 ----------------
@@ -47,6 +48,7 @@ _SCAN_FILES: list[Path] = [
     _REPO_ROOT / "src" / "butlers" / "chronicler" / "aggregations.py",
     _REPO_ROOT / "src" / "butlers" / "chronicler" / "day_close_writer.py",
     _REPO_ROOT / "src" / "butlers" / "chronicler" / "storage.py",
+    _REPO_ROOT / "src" / "butlers" / "chronicler" / "reconciliation.py",
 ]
 
 # ---------------------------------------------------------------------------
@@ -155,6 +157,18 @@ def test_day_close_writer_no_llm() -> None:
 def test_storage_no_llm() -> None:
     """src/butlers/chronicler/storage.py must not import or call LLM helpers."""
     path = _REPO_ROOT / "src" / "butlers" / "chronicler" / "storage.py"
+    violations = _violations_in_file(path)
+    assert not violations, _format(violations)
+
+
+def test_reconciliation_no_llm() -> None:
+    """src/butlers/chronicler/reconciliation.py must not import or call LLM helpers.
+
+    Aggregate correctness must not depend on LLM output (spec: "Deterministic
+    Reconciliation Core With LLM Narration") — the day-close LLM narrates over
+    this module's result; it never feeds back into it.
+    """
+    path = _REPO_ROOT / "src" / "butlers" / "chronicler" / "reconciliation.py"
     violations = _violations_in_file(path)
     assert not violations, _format(violations)
 
