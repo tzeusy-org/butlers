@@ -3,7 +3,7 @@
  * Component tests for SubpageTabs (§8.6).
  *
  * Covers:
- * - All 5 tabs render with correct labels and to paths
+ * - All 3 tabs render with correct labels and to paths
  * - Active tab gets aria-current="page" based on pathname
  * - Plex tab uses end matching (not active on /entities/hop etc.)
  * - Tab links have proper hrefs in the rendered <a> elements
@@ -63,7 +63,7 @@ describe("SubpageTabs — accessibility and structure", () => {
     expect(nav).toBeTruthy();
   });
 
-  it("renders all 5 tabs with correct labels", () => {
+  it("renders all 3 tabs with correct labels", () => {
     renderTabs();
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
@@ -71,8 +71,6 @@ describe("SubpageTabs — accessibility and structure", () => {
 
     expect(labels).toContain("Plex");
     expect(labels).toContain("Index");
-    expect(labels).toContain("Hop");
-    expect(labels).toContain("Columns");
     expect(labels).toContain("Concentration");
   });
 });
@@ -91,8 +89,6 @@ describe("SubpageTabs — tab links and routing", () => {
 
     expect(hrefMap.get("Plex")).toBe("/entities");
     expect(hrefMap.get("Index")).toBe("/entities/index");
-    expect(hrefMap.get("Hop")).toBe("/entities/hop");
-    expect(hrefMap.get("Columns")).toBe("/entities/columns");
     expect(hrefMap.get("Concentration")).toBe("/entities/concentration");
   });
 });
@@ -120,24 +116,6 @@ describe("SubpageTabs — active tab styling", () => {
     expect(indexLink?.getAttribute("aria-current")).toBe("page");
   });
 
-  it("Hop tab has aria-current='page' when at /entities/hop", () => {
-    renderTabs("/entities/hop");
-    const nav = container.querySelector("nav[aria-label='Entity views']");
-    const links = nav?.querySelectorAll("a") ?? [];
-    const hopLink = Array.from(links).find((a) => a.textContent?.trim() === "Hop");
-
-    expect(hopLink?.getAttribute("aria-current")).toBe("page");
-  });
-
-  it("Columns tab has aria-current='page' when at /entities/columns", () => {
-    renderTabs("/entities/columns");
-    const nav = container.querySelector("nav[aria-label='Entity views']");
-    const links = nav?.querySelectorAll("a") ?? [];
-    const columnsLink = Array.from(links).find((a) => a.textContent?.trim() === "Columns");
-
-    expect(columnsLink?.getAttribute("aria-current")).toBe("page");
-  });
-
   it("Concentration tab has aria-current='page' when at /entities/concentration", () => {
     renderTabs("/entities/concentration");
     const nav = container.querySelector("nav[aria-label='Entity views']");
@@ -149,8 +127,8 @@ describe("SubpageTabs — active tab styling", () => {
     expect(concentrationLink?.getAttribute("aria-current")).toBe("page");
   });
 
-  it("Plex tab does not stay active on /entities/hop (end matching)", () => {
-    renderTabs("/entities/hop");
+  it("Plex tab does not stay active on /entities/concentration (end matching)", () => {
+    renderTabs("/entities/concentration");
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
     const plexLink = Array.from(links).find((a) => a.textContent?.trim() === "Plex");

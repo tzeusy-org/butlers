@@ -618,7 +618,7 @@ describe("EntityFinder", () => {
     expect(previewText).not.toContain("Acquaintance");
   });
 
-  it("hops (navigates to /entities/hop?center=) when Tab is pressed on an active result", async () => {
+  it("hops (centers the Plex via /entities?center=) when Tab is pressed on an active result", async () => {
     mockSearchResults({
       results: [
         {
@@ -683,7 +683,7 @@ describe("EntityFinder", () => {
     });
 
     const loc = document.body.querySelector("[data-testid='loc']")?.textContent;
-    expect(loc).toBe("/entities/hop?center=uuid-fox");
+    expect(loc).toBe("/entities?center=uuid-fox");
     // Finder closes on hop.
     expect(
       document.body.querySelector("[data-testid='entity-finder-input']"),

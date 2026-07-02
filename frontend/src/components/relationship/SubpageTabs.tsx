@@ -1,7 +1,7 @@
 /**
  * SubpageTabs — horizontal nav strip for the /entities sub-route family.
  *
- * Renders links to: Plex / Index / Hop / Columns / Concentration.
+ * Renders links to: Plex / Index / Concentration.
  * The active tab is determined by the current pathname (exact match on the
  * canonical path for each tab).
  *
@@ -17,8 +17,6 @@ import { NavLink } from "react-router";
 const TABS = [
   { label: "Plex", to: "/entities" },
   { label: "Index", to: "/entities/index" },
-  { label: "Hop", to: "/entities/hop" },
-  { label: "Columns", to: "/entities/columns" },
   { label: "Concentration", to: "/entities/concentration" },
 ] as const;
 

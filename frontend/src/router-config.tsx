@@ -46,8 +46,6 @@ import EducationPage from './pages/EducationPage.tsx'
 import { EntitiesIndexPage } from './components/relationship/EntitiesIndexPage.tsx'
 import PlexPage from './components/relationship/PlexPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
-import HopPage from './components/relationship/HopPage.tsx'
-import ColumnsPage from './components/relationship/ColumnsPage.tsx'
 import ConcentrationPage from './components/relationship/ConcentrationPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
 import IngestionConnectorsPage from './pages/IngestionConnectorsPage.tsx'
@@ -61,7 +59,9 @@ import QaInvestigationsPage from './pages/QaInvestigationsPage.tsx'
 import ChroniclesPage from './pages/ChroniclesPage.tsx'
 import SystemPage from './pages/SystemPage.tsx'
 import {
+  ColumnsToPlexRedirect,
   ConnectorDetailRedirect,
+  HopToPlexRedirect,
   IngestionTabRedirect,
   RelationshipContactRedirect,
   RelationshipEntityRedirect,
@@ -112,8 +112,9 @@ export const router = createBrowserRouter(
         { path: '/memory/episodes/:episodeId', element: <EpisodeDetailPage /> },
         { path: '/entities', element: <PlexPage /> },
         { path: '/entities/index', element: <EntitiesIndexPage /> },
-        { path: '/entities/hop', element: <HopPage /> },
-        { path: '/entities/columns', element: <ColumnsPage /> },
+        // Hop and Columns were absorbed by the Plex; deep links carry over.
+        { path: '/entities/hop', element: <HopToPlexRedirect /> },
+        { path: '/entities/columns', element: <ColumnsToPlexRedirect /> },
         { path: '/entities/concentration', element: <ConcentrationPage /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsConsolePage /> },

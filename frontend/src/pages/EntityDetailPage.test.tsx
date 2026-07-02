@@ -1091,7 +1091,7 @@ describe("EntityDetailPage — BreadcrumbStrip", () => {
     expect(html).not.toContain("Concentration");
   });
 
-  it("?from=hop: renders Hop crumb between Index and entity name", () => {
+  it("?from=hop (retired origin): falls back to Index + entity name", () => {
     setEntityState({ ...BASE_ENTITY, canonical_name: "Hop Entity" });
     vi.mocked(useSearchParams).mockReturnValue([
       new URLSearchParams("from=hop"),
@@ -1099,22 +1099,8 @@ describe("EntityDetailPage — BreadcrumbStrip", () => {
     ]);
     const html = renderPage();
     expect(html).toContain("Index");
-    expect(html).toContain("Hop");
-    expect(html).toContain('href="/entities/hop"');
+    expect(html).not.toContain('href="/entities/hop"');
     expect(html).toContain("Hop Entity");
-  });
-
-  it("?from=columns: renders Columns crumb between Index and entity name", () => {
-    setEntityState({ ...BASE_ENTITY, canonical_name: "Columns Entity" });
-    vi.mocked(useSearchParams).mockReturnValue([
-      new URLSearchParams("from=columns"),
-      vi.fn(),
-    ]);
-    const html = renderPage();
-    expect(html).toContain("Index");
-    expect(html).toContain("Columns");
-    expect(html).toContain('href="/entities/columns"');
-    expect(html).toContain("Columns Entity");
   });
 
   it("?from=concentration: renders Concentration crumb between Index and entity name", () => {
