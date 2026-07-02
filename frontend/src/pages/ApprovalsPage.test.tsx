@@ -464,9 +464,54 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
       await flush();
     });
 
-    // Called with just the id (no reason payload) and success toasts.
-    expect(denyApproval).toHaveBeenCalledWith("d1");
+    // Denies with no reason payload when the optional field is left blank.
+    expect(denyApproval).toHaveBeenCalledWith("d1", undefined);
     expect(toast.success).toHaveBeenCalledWith("Denied");
+  });
+
+  it("passes the optional inline reason to deny when provided", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("d2")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("d2") as AnyMock,
+    );
+    vi.mocked(denyApproval).mockReturnValue(
+      makeApiResponse({
+        id: "d2",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "denied",
+        requested_at: "2026-05-17T10:00:00Z",
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Deny") !== undefined);
+
+    const reasonInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Deny reason (optional)"]',
+    );
+    expect(reasonInput).not.toBeNull();
+    await act(async () => {
+      // Set value via the native setter so React's onChange fires.
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(reasonInput, "spammy");
+      reasonInput?.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+
+    const denyBtn = findButton(container, "Deny");
+    await act(async () => {
+      denyBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(denyApproval).toHaveBeenCalledWith("d2", { reason: "spammy" });
   });
 
   it("renders a 'Retry dispatch' affordance for approved-but-un-run history rows", async () => {

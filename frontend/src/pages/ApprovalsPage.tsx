@@ -240,7 +240,7 @@ function Dossier({
 }: {
   actionId: string;
   onApprove: () => void;
-  onDeny: () => void;
+  onDeny: (reason?: string) => void;
   onDefer: (hours: number) => void;
   approvePending: boolean;
   denyPending: boolean;
@@ -248,6 +248,7 @@ function Dossier({
 }) {
   const [deferHours, setDeferHours] = useState("24");
   const [showDefer, setShowDefer] = useState(false);
+  const [denyReason, setDenyReason] = useState("");
 
   const { data, isLoading, error } = useQuery({
     queryKey: Q.detail(actionId),
@@ -307,7 +308,7 @@ function Dossier({
                 {approvePending ? "Approving…" : "Approve"}
               </button>
               <button
-                onClick={onDeny}
+                onClick={() => onDeny(denyReason.trim() || undefined)}
                 disabled={denyPending}
                 className={[
                   "py-1.5 px-3 rounded text-sm border transition-colors",
@@ -329,6 +330,25 @@ function Dossier({
                 Defer
               </button>
             </div>
+
+            {/* Optional deny reason — always available, never gates the click.
+              Leave it blank for a one-tap deny, or jot a note that rides along
+              with the Deny button. Approve/Defer ignore it. */}
+            <input
+              value={denyReason}
+              onChange={(e) => setDenyReason(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !denyPending) {
+                  onDeny(denyReason.trim() || undefined);
+                }
+              }}
+              placeholder="Deny reason (optional)"
+              className={[
+                "pointer-events-auto w-72 max-w-[80vw] px-2 py-1 text-xs rounded",
+                "border border-border bg-background/85 backdrop-blur-sm shadow-sm",
+                "focus:outline-none focus:border-destructive/50",
+              ].join(" ")}
+            />
 
             {/* Digest + referenced entities — pinned under the buttons so the
               "who/what" of the decision stays visible without scrolling. */}
@@ -953,10 +973,11 @@ export default function ApprovalsPage() {
   });
 
   const denyMut = useMutation({
-    mutationFn: (id: string) => denyApproval(id),
-    onMutate: (id: string) => ({ prev: dropFromPending(id) }),
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      denyApproval(id, reason ? { reason } : undefined),
+    onMutate: ({ id }) => ({ prev: dropFromPending(id) }),
     onSuccess: () => toast.success("Denied"),
-    onError: (e: Error, _id, ctx) => {
+    onError: (e: Error, _vars, ctx) => {
       rollback(ctx?.prev);
       toast.error(`Deny failed: ${e.message}`);
     },
@@ -1041,7 +1062,7 @@ export default function ApprovalsPage() {
             key={effectiveSelected}
             actionId={effectiveSelected}
             onApprove={() => approveMut.mutate(effectiveSelected)}
-            onDeny={() => denyMut.mutate(effectiveSelected)}
+            onDeny={(reason) => denyMut.mutate({ id: effectiveSelected, reason })}
             onDefer={(hours) => deferMut.mutate({ id: effectiveSelected, hours })}
             approvePending={approveMut.isPending}
             denyPending={denyMut.isPending}
