@@ -697,6 +697,13 @@ describe("ButlerDetailPage — Gate-B B2 getAllTabs helper", () => {
     expect(getAllTabs("general", "resident")).toContain("collections");
   });
 
+  it("general butler appends the entities tab in both modes", () => {
+    // bu-nfmci: EntityBrowser (general-butler JSONB entities) is wired into
+    // the router via this tab so it is actually reachable.
+    expect(getAllTabs("general", "operator")).toContain("entities");
+    expect(getAllTabs("general", "resident")).toContain("entities");
+  });
+
   it("health butler appends the health tab in both modes", () => {
     expect(getAllTabs("health", "operator")).toContain("health");
     expect(getAllTabs("health", "resident")).toContain("health");
@@ -1166,6 +1173,17 @@ describe("ButlerDetailPage — deep-linking: conditional tab keys", () => {
   it("trips tab is NOT a valid deep-link for a non-travel butler", () => {
     expect(isValidTab("trips", "general", "operator")).toBe(false);
     expect(isValidTab("trips", "health", "resident")).toBe(false);
+  });
+
+  // entities → EntityBrowser (bu-nfmci)
+  it("entities tab is a valid deep-link for general butler in both modes", () => {
+    expect(isValidTab("entities", "general", "operator")).toBe(true);
+    expect(isValidTab("entities", "general", "resident")).toBe(true);
+  });
+
+  it("entities tab is NOT a valid deep-link for a non-general butler", () => {
+    expect(isValidTab("entities", "health", "operator")).toBe(false);
+    expect(isValidTab("entities", "relationship", "resident")).toBe(false);
   });
 });
 
@@ -2178,6 +2196,17 @@ describe("Spec scenario 11 -- resident mode renders 7-tab Dispatch vocabulary + 
   it("Collections bespoke tab is part of getAllTabs for general in resident mode", () => {
     const tabs = getAllTabs("general", "resident");
     expect(tabs).toContain("collections");
+  });
+
+  it("Entities bespoke tab trigger renders alongside resident vocab tabs for general butler", () => {
+    // bu-nfmci: EntityBrowser is reachable via /butlers/general?tab=entities
+    const html = renderPage();
+    expect(html).toContain(">Entities<");
+  });
+
+  it("Entities bespoke tab is part of getAllTabs for general in resident mode", () => {
+    const tabs = getAllTabs("general", "resident");
+    expect(tabs).toContain("entities");
   });
 });
 

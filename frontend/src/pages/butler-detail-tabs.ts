@@ -51,7 +51,7 @@ const EDUCATION_TABS = ["reviews"] as const;
 // Bespoke tabs for domain butlers (stub UI — full implementation tracked separately).
 const CHRONICLER_TABS = ["timelines"] as const;
 const FINANCE_TABS = ["finances"] as const;
-const GENERAL_TABS = ["collections"] as const;
+const GENERAL_TABS = ["collections", "entities"] as const;
 const HOME_TABS = ["devices"] as const;
 const LIFESTYLE_TABS = ["taste"] as const;
 const MESSENGER_TABS = ["conversations"] as const;
