@@ -2487,10 +2487,16 @@ async def _emit_oauth_audit(
     provider: str,
     note: str | None = None,
 ) -> None:
-    """Best-effort append to ``public.audit_log`` for OAuth lifecycle events.
+    """Append to ``public.audit_log`` for OAuth lifecycle events.
 
-    Swallows all errors (including AuditTableNotAvailableError) so that
-    missing migrations or DB downtime never block the OAuth flow.
+    Best-effort for transient infra issues (pool unreachable, network blips)
+    so those never block the OAuth flow — but per the dashboard-audit-log
+    spec, ``AuditTableNotAvailableError`` (the audit table itself missing) is
+    NOT swallowed: it propagates to the app-level handler, which returns 503
+    {"error": "audit_unavailable"}. This call happens after the credential
+    write it accompanies, so there is no state to transactionally roll back
+    here; propagating still surfaces the missing-audit condition explicitly
+    rather than silently dropping it, per spec.
 
     Parameters
     ----------
@@ -2517,6 +2523,8 @@ async def _emit_oauth_audit(
             target=target,
             note=note,
         )
+    except _audit.AuditTableNotAvailableError:
+        raise
     except Exception:  # noqa: BLE001
         logger.debug(
             "OAuth audit write swallowed (action=%s, provider=%s)", action, provider, exc_info=True

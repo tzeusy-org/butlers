@@ -90,6 +90,34 @@ def _make_inspect_row(
     return m
 
 
+class _NullTxCtx:
+    """No-op async context manager standing in for ``conn.transaction()``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False  # never suppress — let exceptions propagate/rollback
+
+
+class _AcquireCtx:
+    """Async context manager standing in for ``pool.acquire()``.
+
+    Yields *conn* (the same mock as the pool itself) so existing assertions
+    against ``pool.fetchrow``/``pool.execute`` keep working unchanged even
+    though the route now issues those calls via an acquired connection.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 def _wire_memory_mock(
     app,
     *,
@@ -130,6 +158,8 @@ def _wire_memory_mock(
     mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock(return_value="OK")
+    mock_pool.acquire = MagicMock(return_value=_AcquireCtx(mock_pool))
+    mock_pool.transaction = MagicMock(return_value=_NullTxCtx())
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool = MagicMock(side_effect=lambda name: mock_pool)

@@ -48,6 +48,34 @@ def _now_str() -> str:
     return str(datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC))
 
 
+class _NullTxCtx:
+    """No-op async context manager standing in for ``conn.transaction()``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False  # never suppress — let exceptions propagate/rollback
+
+
+class _AcquireCtx:
+    """Async context manager standing in for ``pool.acquire()``.
+
+    Yields *conn* (the same mock as the pool itself) so existing assertions
+    against ``pool.fetchrow``/``pool.execute`` keep working unchanged even
+    though the routes now issue those calls via an acquired connection.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 def _make_pool(
     fetchrow_return=None,
     fetch_return: list[dict] | None = None,
@@ -58,6 +86,8 @@ def _make_pool(
     pool.fetch = AsyncMock(return_value=_make_records(fetch_return or []))
     pool.fetchval = AsyncMock(return_value=fetchval_return)
     pool.execute = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=_AcquireCtx(pool))
+    pool.transaction = MagicMock(return_value=_NullTxCtx())
     return pool
 
 

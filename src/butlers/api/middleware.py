@@ -8,6 +8,9 @@ Status code mapping:
 - ``ButlerUnreachableError`` → 502 Bad Gateway
 - ``ButlerNotFoundError`` (unknown butler lookup) → 404 Not Found
 - ``ValueError`` → 400 Bad Request
+- ``AuditTableNotAvailableError`` → 503 Service Unavailable, body ``{"error": "audit_unavailable"}``
+  (dashboard-audit-log spec: mutation endpoints must propagate this rather than
+  swallow it, so the state-change transaction they ran inside rolls back)
 - Any other ``Exception`` → 500 Internal Server Error
 
 Note: Only ``ButlerNotFoundError`` (a named subclass of ``KeyError``) is mapped
@@ -43,6 +46,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from butlers.api.deps import ButlerNotFoundError, ButlerUnreachableError
 from butlers.api.models import ErrorDetail, ErrorResponse
+from butlers.api.routers.audit import AuditTableNotAvailableError
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +101,22 @@ async def _handle_value_error(
         )
     )
     return JSONResponse(status_code=400, content=body.model_dump())
+
+
+async def _handle_audit_table_unavailable(
+    request: Request,
+    exc: AuditTableNotAvailableError,
+) -> JSONResponse:
+    """Return 503 ``{"error": "audit_unavailable"}`` per the dashboard-audit-log spec.
+
+    Raised by ``audit.append()`` when ``public.audit_log`` does not exist.
+    Mutation endpoints must let this propagate (not catch-log-and-continue) so
+    that it reaches here: the audit insert runs inside the same transaction as
+    the state change it accompanies, so an uncaught exception here means that
+    transaction already rolled back before this handler ever ran.
+    """
+    logger.warning("Audit table unavailable on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=503, content={"error": "audit_unavailable"})
 
 
 class CatchAllErrorMiddleware(BaseHTTPMiddleware):
@@ -230,4 +250,8 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ButlerUnreachableError, _handle_butler_unreachable)  # type: ignore[arg-type]
     app.add_exception_handler(ButlerNotFoundError, _handle_butler_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ValueError, _handle_value_error)  # type: ignore[arg-type]
+    app.add_exception_handler(
+        AuditTableNotAvailableError,  # type: ignore[arg-type]
+        _handle_audit_table_unavailable,  # type: ignore[arg-type]
+    )
     app.add_middleware(CatchAllErrorMiddleware)

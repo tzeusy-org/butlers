@@ -1884,7 +1884,15 @@ async def update_retention_policies(
     body: UpdateRetentionPoliciesRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[MemoryRetentionPolicy]]:
-    """Bulk-update retention policies; one audit entry per changed row."""
+    """Bulk-update retention policies; one audit entry per changed row.
+
+    Each row's UPSERT and its audit entry run inside the same transaction
+    (acquired connection + ``conn.transaction()``) so that if the audit table
+    is unavailable, that row's state change rolls back too instead of
+    persisting un-audited. ``AuditTableNotAvailableError`` is intentionally
+    NOT caught here — it propagates to the app-level handler, which returns
+    ``503 {"error": "audit_unavailable"}`` (dashboard-audit-log spec).
+    """
     pool = _any_pool(db)
 
     if not body.policies:
@@ -1902,20 +1910,28 @@ async def update_retention_policies(
 
     updated: list[MemoryRetentionPolicy] = []
     for entry in body.policies:
-        row = await pool.fetchrow(
-            "INSERT INTO public.memory_retention_policies"
-            " (kind, ttl_days, max_rows, updated_by)"
-            " VALUES ($1, $2, $3, 'owner')"
-            " ON CONFLICT (kind) DO UPDATE"
-            "  SET ttl_days = EXCLUDED.ttl_days,"
-            "      max_rows = EXCLUDED.max_rows,"
-            "      updated_at = now(),"
-            "      updated_by = 'owner'"
-            " RETURNING kind, ttl_days, max_rows, updated_at, updated_by",
-            entry.kind,
-            entry.ttl_days,
-            entry.max_rows,
-        )
+        async with pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO public.memory_retention_policies"
+                " (kind, ttl_days, max_rows, updated_by)"
+                " VALUES ($1, $2, $3, 'owner')"
+                " ON CONFLICT (kind) DO UPDATE"
+                "  SET ttl_days = EXCLUDED.ttl_days,"
+                "      max_rows = EXCLUDED.max_rows,"
+                "      updated_at = now(),"
+                "      updated_by = 'owner'"
+                " RETURNING kind, ttl_days, max_rows, updated_at, updated_by",
+                entry.kind,
+                entry.ttl_days,
+                entry.max_rows,
+            )
+            await _audit.append(
+                conn,
+                "owner",
+                "memory.retention_policy",
+                target=f"kind:{entry.kind}",
+                note=f"ttl_days={entry.ttl_days} max_rows={entry.max_rows}",
+            )
         updated.append(
             MemoryRetentionPolicy(
                 kind=row["kind"],
@@ -1925,19 +1941,6 @@ async def update_retention_policies(
                 updated_by=row["updated_by"],
             )
         )
-        try:
-            await _audit.append(
-                pool,
-                "owner",
-                "memory.retention_policy",
-                target=f"kind:{entry.kind}",
-                note=f"ttl_days={entry.ttl_days} max_rows={entry.max_rows}",
-            )
-        except _audit.AuditTableNotAvailableError:
-            raise HTTPException(
-                status_code=503,
-                detail="Audit log is not available — migration core_092 may not have run",
-            )
 
     return ApiResponse[list[MemoryRetentionPolicy]](data=updated)
 

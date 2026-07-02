@@ -32,7 +32,6 @@ from butlers.api.deps import (
     get_mcp_manager,
 )
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.routers.audit import AuditTableNotAvailableError
 from butlers.api.routers.audit import append as audit_append
 
 logger = logging.getLogger(__name__)
@@ -217,36 +216,38 @@ async def update_butler_prompt(
     _assert_butler_exists(name, configs)
     pool = await _get_shared_pool(db)
 
-    # Insert new version atomically — no separate SELECT to avoid races.
-    row = await pool.fetchrow(
-        """
-        INSERT INTO public.system_prompt_history (butler_name, prompt, version, updated_by)
-        VALUES (
-            $1,
-            $2,
-            (SELECT COALESCE(MAX(version), 0) + 1
-             FROM public.system_prompt_history
-             WHERE butler_name = $1),
-            $3
+    # Insert new version + audit entry inside one transaction so a missing
+    # audit table rolls back the prompt insert too, instead of persisting an
+    # un-audited prompt change. AuditTableNotAvailableError is intentionally
+    # NOT caught here — it propagates to the app-level handler, which returns
+    # 503 {"error": "audit_unavailable"} (dashboard-audit-log spec).
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """
+            INSERT INTO public.system_prompt_history (butler_name, prompt, version, updated_by)
+            VALUES (
+                $1,
+                $2,
+                (SELECT COALESCE(MAX(version), 0) + 1
+                 FROM public.system_prompt_history
+                 WHERE butler_name = $1),
+                $3
+            )
+            RETURNING butler_name, prompt, version, updated_at, updated_by
+            """,
+            name,
+            body.prompt,
+            body.actor,
         )
-        RETURNING butler_name, prompt, version, updated_at, updated_by
-        """,
-        name,
-        body.prompt,
-        body.actor,
-    )
-    new_version: int = row["version"]
+        new_version: int = row["version"]
 
-    try:
         await audit_append(
-            pool,
+            conn,
             body.actor,
             "butler.prompt_set",
             target=name,
             note=f"v{new_version}",
         )
-    except AuditTableNotAvailableError:
-        logger.warning("audit_log not available; skipping audit for butler.prompt_set on %s", name)
 
     pv = PromptVersion(
         butler_name=row["butler_name"],
@@ -367,35 +368,36 @@ async def update_butler_tool(
     _assert_butler_exists(name, configs)
     pool = await _get_shared_pool(db)
 
-    row = await pool.fetchrow(
-        """
-        INSERT INTO public.butler_tools (butler_name, tool_name, allowed, scope, updated_by)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (butler_name, tool_name) DO UPDATE
-            SET allowed    = EXCLUDED.allowed,
-                scope      = EXCLUDED.scope,
-                updated_at = now(),
-                updated_by = EXCLUDED.updated_by
-        RETURNING tool_name, description, allowed, scope
-        """,
-        name,
-        tool,
-        body.allowed,
-        body.scope,
-        body.actor,
-    )
+    # Upsert + audit entry inside one transaction so a missing audit table
+    # rolls back the tool-grant change too, instead of persisting un-audited.
+    # AuditTableNotAvailableError is intentionally NOT caught here — it
+    # propagates to the app-level handler, which returns
+    # 503 {"error": "audit_unavailable"} (dashboard-audit-log spec).
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """
+            INSERT INTO public.butler_tools (butler_name, tool_name, allowed, scope, updated_by)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (butler_name, tool_name) DO UPDATE
+                SET allowed    = EXCLUDED.allowed,
+                    scope      = EXCLUDED.scope,
+                    updated_at = now(),
+                    updated_by = EXCLUDED.updated_by
+            RETURNING tool_name, description, allowed, scope
+            """,
+            name,
+            tool,
+            body.allowed,
+            body.scope,
+            body.actor,
+        )
 
-    try:
         await audit_append(
-            pool,
+            conn,
             body.actor,
             "butler.tool_set",
             target=f"{name}.{tool}",
             note=f"allowed={body.allowed}",
-        )
-    except AuditTableNotAvailableError:
-        logger.warning(
-            "audit_log not available; skipping audit for butler.tool_set on %s.%s", name, tool
         )
 
     bt = ButlerTool(
@@ -493,16 +495,18 @@ async def kill_butler(
 
     pool = await _get_shared_pool(db)
 
-    try:
-        await audit_append(
-            pool,
-            body.actor,
-            "butler.kill",
-            target=name,
-            note=f"grace={body.grace_seconds}s",
-        )
-    except AuditTableNotAvailableError:
-        logger.warning("audit_log not available; skipping audit for butler.kill on %s", name)
+    # Audit before dispatching the shutdown call: if the audit table is
+    # unavailable, fail fast and never fire the (irreversible) kill. Do NOT
+    # catch AuditTableNotAvailableError — it propagates to the app-level
+    # handler, which returns 503 {"error": "audit_unavailable"}
+    # (dashboard-audit-log spec).
+    await audit_append(
+        pool,
+        body.actor,
+        "butler.kill",
+        target=name,
+        note=f"grace={body.grace_seconds}s",
+    )
 
     try:
         client = await asyncio.wait_for(

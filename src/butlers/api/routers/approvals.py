@@ -1647,7 +1647,7 @@ async def update_approvals_policy(
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
     try:
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 """
                 INSERT INTO public.approvals_policy
@@ -1663,11 +1663,13 @@ async def update_approvals_policy(
                 request.quiet_end_hour,
                 request.timezone,
             )
-            try:
-                await audit_router.append(conn, _ACTOR_DASHBOARD, "approvals.policy")
-            except audit_router.AuditTableNotAvailableError:
-                logger.warning("audit_log table not available; skipping audit for policy update")
+            await audit_router.append(conn, _ACTOR_DASHBOARD, "approvals.policy")
     except HTTPException:
+        raise
+    except audit_router.AuditTableNotAvailableError:
+        # Propagate to the app-level handler, which returns 503
+        # {"error": "audit_unavailable"} (dashboard-audit-log spec) — do NOT
+        # let the generic `except Exception` below fold it into a 500.
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to update policy: {exc}") from exc
@@ -2080,9 +2082,13 @@ async def approve_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
-    # Use a single connection for the read, optional edits update, approve, and audit
-    # so that an edits UPDATE cannot succeed while the approve transition fails.
-    async with target_pool.acquire() as conn:
+    # Use a single connection + transaction for the read, optional edits update,
+    # approve, and audit so that an edits UPDATE / approve transition cannot
+    # persist while the audit append fails. AuditTableNotAvailableError is
+    # intentionally NOT caught here — it propagates to the app-level handler,
+    # which returns 503 {"error": "audit_unavailable"} (dashboard-audit-log
+    # spec), rolling this transaction back.
+    async with target_pool.acquire() as conn, conn.transaction():
         action_row = await conn.fetchrow(
             "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
         )
@@ -2103,13 +2109,10 @@ async def approve_approval(
             action_id=action_id,
             create_rule=False,
         )
-        try:
-            edits_note = json.dumps(request.edits) if request.edits else None
-            await audit_router.append(
-                conn, _ACTOR_DASHBOARD, "approval.approve", target=action_id, note=edits_note
-            )
-        except audit_router.AuditTableNotAvailableError:
-            logger.warning("audit_log table not available; skipping audit for approve")
+        edits_note = json.dumps(request.edits) if request.edits else None
+        await audit_router.append(
+            conn, _ACTOR_DASHBOARD, "approval.approve", target=action_id, note=edits_note
+        )
 
     if "error" in result:
         error_msg = result["error"]
@@ -2177,18 +2180,19 @@ async def deny_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
-    async with target_pool.acquire() as conn:
+    # AuditTableNotAvailableError is intentionally NOT caught here — it
+    # propagates to the app-level handler, which returns 503
+    # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
+    # deny transition back with it.
+    async with target_pool.acquire() as conn, conn.transaction():
         result = await approvals_ops.reject_action(
             conn,
             action_id=action_id,
             reason=request.reason,
         )
-        try:
-            await audit_router.append(
-                conn, _ACTOR_DASHBOARD, "approval.deny", target=action_id, note=request.reason
-            )
-        except audit_router.AuditTableNotAvailableError:
-            logger.warning("audit_log table not available; skipping audit for deny")
+        await audit_router.append(
+            conn, _ACTOR_DASHBOARD, "approval.deny", target=action_id, note=request.reason
+        )
 
     if "error" in result:
         error_msg = result["error"]
@@ -2235,7 +2239,11 @@ async def defer_approval(
     now = datetime.now(UTC)
     new_expires_at = now + timedelta(hours=request.hours)
 
-    async with target_pool.acquire() as conn:
+    # AuditTableNotAvailableError is intentionally NOT caught here — it
+    # propagates to the app-level handler, which returns 503
+    # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
+    # expiry-extension UPDATE back with it.
+    async with target_pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
         if row is None:
             raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
@@ -2254,12 +2262,9 @@ async def defer_approval(
             new_expires_at,
             parsed_id,
         )
-        try:
-            await audit_router.append(
-                conn, _ACTOR_DASHBOARD, "approval.defer", target=action_id, note=str(request.hours)
-            )
-        except audit_router.AuditTableNotAvailableError:
-            logger.warning("audit_log table not available; skipping audit for defer")
+        await audit_router.append(
+            conn, _ACTOR_DASHBOARD, "approval.defer", target=action_id, note=str(request.hours)
+        )
 
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to defer approval")
