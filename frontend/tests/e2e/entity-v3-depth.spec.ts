@@ -561,7 +561,7 @@ test.describe("entity-v3: queue → compare → dismiss/merge", () => {
       });
     });
 
-    await page.goto("/entities", { timeout: TIMEOUT_MS });
+    await page.goto("/entities/index", { timeout: TIMEOUT_MS });
 
     // Queue rail with the duplicate-candidate pair is present.
     await expect(page.getByTestId("queue-rail")).toBeVisible({
@@ -620,7 +620,7 @@ test.describe("entity-v3: queue → compare → dismiss/merge", () => {
       },
     );
 
-    await page.goto("/entities", { timeout: TIMEOUT_MS });
+    await page.goto("/entities/index", { timeout: TIMEOUT_MS });
     await page.getByTestId("queue-duplicate-peer").first().click();
     await expect(page.getByTestId("merge-compare-dialog")).toBeVisible({
       timeout: TIMEOUT_MS,
@@ -934,7 +934,7 @@ test.describe("entity-v3: closeout gaps (PR #2239)", () => {
     await page.route("**/api/relationship/entities?**", (route) =>
       json(route, entityList()),
     );
-    await page.goto("/entities", { timeout: TIMEOUT_MS });
+    await page.goto("/entities/index", { timeout: TIMEOUT_MS });
 
     // The table renders ≥2 rows.
     await expect(page.getByTestId("entity-table")).toBeVisible({
