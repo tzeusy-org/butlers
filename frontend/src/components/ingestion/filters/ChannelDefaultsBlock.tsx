@@ -1,9 +1,16 @@
 /**
  * ChannelDefaultsBlock — per-channel default routing policy.
  *
- * Shows what happens to unmatched events for each channel. Backed by
- * IngestionRule records with scope="channel_default" or derived from
- * the scope field of rules.
+ * The row list shows what happens to unmatched events for each channel,
+ * derived from IngestionRule records with scope="channel_default". The
+ * "edit" affordance opens an inline editor that reads/writes the actual
+ * runtime policy document at GET/PATCH /api/ingestion/channel-defaults/:channel
+ * (public.channel_defaults) — a distinct store from the rule rows above it.
+ * There is no DELETE surface (the backend always 405s that verb).
+ *
+ * Labels use the runtime priority-action vocabulary (pass_through / block /
+ * skip / metadata_only / low_priority_queue) rather than the retired DSL
+ * verbs (drop / preserve / tier / route) — bu-4utdw.9.
  *
  * Mutation errors are visible (inline error state). Edits validate the
  * per-channel schema before mutation and do NOT optimistically hide the
@@ -14,27 +21,52 @@
  * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §ChannelDefaultsBlock
  */
 
+import { useState } from 'react'
 import type { IngestionRule } from '@/api/types'
+import type { ChannelDefaultPolicy, ChannelDefaultPriorityAction } from '@/api/index.ts'
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Runtime vocabulary
 // ---------------------------------------------------------------------------
 
+const PRIORITY_ACTIONS: { value: ChannelDefaultPriorityAction; label: string }[] = [
+  { value: 'pass_through', label: 'pass through' },
+  { value: 'block', label: 'block' },
+  { value: 'skip', label: 'skip' },
+  { value: 'metadata_only', label: 'metadata only' },
+  { value: 'low_priority_queue', label: 'low priority queue' },
+]
+
+/** Map a stored action (runtime verb, or a retired DSL alias) to a display label. */
 function policyLabel(action: string): string {
-  const verb = action.toLowerCase().split(' ')[0]
+  const verb = action.toLowerCase().split(/[ :.]/)[0]
   switch (verb) {
-    case 'route': return 'route → butler'
-    case 'drop': return 'drop'
-    case 'preserve': return 'preserve'
-    case 'tier': return 'tier'
-    default: return action
+    case 'pass_through':
+    case 'preserve':
+    case 'allow':
+      return 'pass through'
+    case 'block':
+    case 'drop':
+      return 'block'
+    case 'skip':
+      return 'skip'
+    case 'metadata_only':
+      return 'metadata only'
+    case 'low_priority_queue':
+    case 'tier':
+      return 'low priority queue'
+    case 'route':
+    case 'route_to':
+      return 'route → butler'
+    default:
+      return action
   }
 }
 
 function policyColor(action: string): string {
-  const verb = action.toLowerCase().split(' ')[0]
-  if (verb === 'drop') return 'text-[color:var(--filter-red,oklch(0.62_0.20_25))]'
-  if (verb === 'preserve') return 'text-[color:var(--filter-amber,oklch(0.72_0.12_70))]'
+  const verb = action.toLowerCase().split(/[ :.]/)[0]
+  if (verb === 'block' || verb === 'drop') return 'text-[var(--red)]'
+  if (verb === 'low_priority_queue' || verb === 'tier') return 'text-[var(--amber)]'
   return 'text-foreground'
 }
 
@@ -50,6 +82,169 @@ function groupByChannel(rules: IngestionRule[]): Record<string, IngestionRule[]>
 }
 
 // ---------------------------------------------------------------------------
+// Inline editor
+// ---------------------------------------------------------------------------
+
+const labelCls =
+  'block font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70 mb-1'
+const inputCls =
+  'w-full bg-transparent border border-border px-2 py-1 font-mono text-[11px] focus:outline-none focus:border-foreground'
+
+export interface ChannelDefaultEditorState {
+  loading: boolean
+  /** True when the channel has no configured policy yet (GET 404). */
+  notFound: boolean
+  /** True on a real fetch failure (not a 404). */
+  error: boolean
+  policy: ChannelDefaultPolicy | null
+}
+
+function ChannelDefaultEditor({
+  channel,
+  state,
+  saving,
+  onSave,
+  onCancel,
+}: {
+  channel: string
+  state: ChannelDefaultEditorState
+  saving: boolean
+  onSave: (policy: ChannelDefaultPolicy) => void
+  onCancel: () => void
+}) {
+  const initial = state.policy ?? { priority_action: 'pass_through' as ChannelDefaultPriorityAction }
+  const [priorityAction, setPriorityAction] = useState<ChannelDefaultPriorityAction>(
+    initial.priority_action,
+  )
+  const [maxAgeDays, setMaxAgeDays] = useState<string>(
+    initial.max_age_days !== undefined ? String(initial.max_age_days) : '',
+  )
+  const [localError, setLocalError] = useState<string | null>(null)
+
+  const isEmail = channel === 'email'
+
+  function handleSave() {
+    setLocalError(null)
+    const policy: ChannelDefaultPolicy = { priority_action: priorityAction }
+    if (isEmail && maxAgeDays.trim() !== '') {
+      const parsed = Number(maxAgeDays)
+      if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+        setLocalError('Max age must be a positive integer.')
+        return
+      }
+      policy.max_age_days = parsed
+    }
+    onSave(policy)
+  }
+
+  if (state.loading) {
+    return (
+      <div
+        className="col-span-3 py-2 font-mono text-[10.5px] text-muted-foreground"
+        data-testid={`channel-default-editor-loading-${channel}`}
+      >
+        loading current policy…
+      </div>
+    )
+  }
+
+  if (state.error) {
+    return (
+      <div
+        className="col-span-3 py-2 font-mono text-[10.5px] text-[var(--red)]"
+        data-testid={`channel-default-editor-error-${channel}`}
+      >
+        Failed to load current policy for '{channel}'.{' '}
+        <button
+          type="button"
+          className="underline underline-offset-2"
+          onClick={onCancel}
+        >
+          cancel
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="col-span-3 py-3" data-testid={`channel-default-editor-${channel}`}>
+      {state.notFound && (
+        <p
+          className="mb-2 font-mono text-[9.5px] tracking-[0.04em] text-muted-foreground/60"
+          data-testid={`channel-default-editor-notfound-${channel}`}
+        >
+          no policy configured yet — showing defaults
+        </p>
+      )}
+      <div
+        className="grid gap-3 items-end"
+        style={{ gridTemplateColumns: isEmail ? '1fr 140px auto' : '1fr auto' }}
+      >
+        <label className="block">
+          <span className={labelCls}>policy</span>
+          <select
+            className={inputCls}
+            value={priorityAction}
+            onChange={(e) => setPriorityAction(e.target.value as ChannelDefaultPriorityAction)}
+            data-testid={`channel-default-editor-policy-${channel}`}
+          >
+            {PRIORITY_ACTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {isEmail && (
+          <label className="block">
+            <span className={labelCls}>max age (days)</span>
+            <input
+              type="number"
+              min={1}
+              className={inputCls}
+              value={maxAgeDays}
+              onChange={(e) => setMaxAgeDays(e.target.value)}
+              placeholder="e.g. 30"
+              data-testid={`channel-default-editor-max-age-${channel}`}
+            />
+          </label>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="font-mono text-[10px] border border-foreground px-2.5 py-1 hover:bg-foreground hover:text-background transition-colors disabled:opacity-50"
+            onClick={handleSave}
+            disabled={saving}
+            data-testid={`channel-default-editor-save-${channel}`}
+          >
+            {saving ? 'saving…' : 'save'}
+          </button>
+          <button
+            type="button"
+            className="font-mono text-[10px] text-muted-foreground hover:text-foreground"
+            onClick={onCancel}
+            disabled={saving}
+            data-testid={`channel-default-editor-cancel-${channel}`}
+          >
+            cancel
+          </button>
+        </div>
+      </div>
+      {localError && (
+        <p
+          className="mt-2 font-mono text-[10.5px] text-[var(--red)]"
+          data-testid={`channel-default-editor-local-error-${channel}`}
+        >
+          {localError}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ChannelDefaultsBlock
 // ---------------------------------------------------------------------------
 
@@ -58,7 +253,15 @@ export interface ChannelDefaultsBlockProps {
   loaded: boolean
   error: boolean
   mutationError?: string | null
-  onEdit?: (id: string) => void
+  /** Channel currently open for editing (null = none). */
+  editingChannel?: string | null
+  /** Fetch state for the channel currently open for editing. */
+  editingState?: ChannelDefaultEditorState
+  /** True while a save is in flight. */
+  saving?: boolean
+  onEdit?: (channel: string) => void
+  onSaveEdit?: (channel: string, policy: ChannelDefaultPolicy) => void
+  onCancelEdit?: () => void
 }
 
 export function ChannelDefaultsBlock({
@@ -66,7 +269,12 @@ export function ChannelDefaultsBlock({
   loaded,
   error,
   mutationError,
+  editingChannel = null,
+  editingState,
+  saving = false,
   onEdit,
+  onSaveEdit,
+  onCancelEdit,
 }: ChannelDefaultsBlockProps) {
   const channelGroups = groupByChannel(rules)
   const channels = Object.keys(channelGroups).sort()
@@ -86,14 +294,14 @@ export function ChannelDefaultsBlock({
       {/* Gloss */}
       <p className="font-serif text-sm text-muted-foreground leading-[1.5] mt-3.5 max-w-[46ch]">
         When no rule matches, this is what the channel does. Most channels
-        route to a butler; some channels are preserve-only when the volume
-        is too high to dispatch on by default.
+        pass events through to routing; some are metadata-only or
+        low-priority when the volume is too high to dispatch on by default.
       </p>
 
       {/* Mutation error */}
       {mutationError && (
         <div
-          className="mt-3 font-mono text-[11px] text-[color:var(--filter-red,oklch(0.62_0.20_25))] border border-[color:var(--filter-red,oklch(0.62_0.20_25))]/30 px-3 py-2"
+          className="mt-3 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="channel-defaults-mutation-error"
         >
           {mutationError}
@@ -135,6 +343,7 @@ export function ChannelDefaultsBlock({
           {channels.map((channel) => {
             const channelRules = channelGroups[channel]
             const primary = channelRules[0]
+            const isEditing = editingChannel === channel
             return (
               <div
                 key={channel}
@@ -147,29 +356,41 @@ export function ChannelDefaultsBlock({
                   <span className="font-mono text-[11.5px]">{channel}</span>
                 </div>
 
-                {/* Policy */}
-                <span
-                  className={`font-mono text-[11px] ${policyColor(primary.action)}`}
-                  data-testid={`channel-default-policy-${channel}`}
-                >
-                  {policyLabel(primary.action)}
-                </span>
+                {isEditing && editingState ? (
+                  <ChannelDefaultEditor
+                    channel={channel}
+                    state={editingState}
+                    saving={saving}
+                    onSave={(policy) => onSaveEdit?.(channel, policy)}
+                    onCancel={() => onCancelEdit?.()}
+                  />
+                ) : (
+                  <>
+                    {/* Policy */}
+                    <span
+                      className={`font-mono text-[11px] ${policyColor(primary.action)}`}
+                      data-testid={`channel-default-policy-${channel}`}
+                    >
+                      {policyLabel(primary.action)}
+                    </span>
 
-                {/* Note */}
-                <span className="font-serif italic text-[12.5px] text-muted-foreground leading-snug">
-                  {primary.description ?? `${channelRules.length} rule${channelRules.length !== 1 ? 's' : ''}`}
-                </span>
+                    {/* Note */}
+                    <span className="font-serif italic text-[12.5px] text-muted-foreground leading-snug">
+                      {primary.description ?? `${channelRules.length} rule${channelRules.length !== 1 ? 's' : ''}`}
+                    </span>
 
-                {/* Edit */}
-                <button
-                  type="button"
-                  className="font-mono text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2 decoration-muted-foreground/30"
-                  onClick={() => onEdit?.(primary.id)}
-                  aria-label={`Edit default for ${channel}`}
-                  data-testid={`channel-default-edit-${channel}`}
-                >
-                  edit
-                </button>
+                    {/* Edit */}
+                    <button
+                      type="button"
+                      className="font-mono text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2 decoration-muted-foreground/30"
+                      onClick={() => onEdit?.(channel)}
+                      aria-label={`Edit default for ${channel}`}
+                      data-testid={`channel-default-edit-${channel}`}
+                    >
+                      edit
+                    </button>
+                  </>
+                )}
               </div>
             )
           })}

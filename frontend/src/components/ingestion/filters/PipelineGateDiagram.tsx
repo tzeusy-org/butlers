@@ -69,7 +69,7 @@ function GateNode({ def, count, index }: GateNodeProps) {
         </span>
         {hasDrop && (
           <span
-            className="font-mono text-[10px] tracking-[0.04em] text-[color:var(--filter-red,oklch(0.62_0.20_25))]"
+            className="font-mono text-[10px] tracking-[0.04em] text-[var(--red)]"
             data-testid={`gate-drop-${def.key}`}
           >
             −{fmt(count.dropped)}
@@ -77,7 +77,7 @@ function GateNode({ def, count, index }: GateNodeProps) {
         )}
         {hasPreserved && (
           <span
-            className="font-mono text-[10px] tracking-[0.04em] text-[color:var(--filter-amber,oklch(0.72_0.12_70))]"
+            className="font-mono text-[10px] tracking-[0.04em] text-[var(--amber)]"
             data-testid={`gate-preserved-${def.key}`}
           >
             −{fmt(count.preserved)} pres.
@@ -93,11 +93,6 @@ function GateNode({ def, count, index }: GateNodeProps) {
           </span>
         )}
       </div>
-
-      {/* Gloss */}
-      <p className="font-mono text-[9.5px] text-muted-foreground/60 mt-1 leading-tight">
-        {def.gloss.slice(0, 60)}…
-      </p>
     </div>
   )
 }
@@ -157,7 +152,7 @@ function FunnelBar({ counts, totalIn }: FunnelBarProps) {
             {/* Preserved-without-dispatch (amber) — route gate only */}
             {preservedPct > 0 && (
               <div
-                className="absolute inset-y-0 bg-[color:var(--filter-amber,oklch(0.72_0.12_70))]/60"
+                className="absolute inset-y-0 bg-[var(--amber)]/60"
                 style={{ left: `${passPct}%`, width: `${preservedPct}%` }}
                 data-testid="funnel-preserved-segment"
               />
@@ -165,7 +160,7 @@ function FunnelBar({ counts, totalIn }: FunnelBarProps) {
             {/* Hard drops (red) — accept gate */}
             {droppedPct > 0 && (
               <div
-                className="absolute inset-y-0 bg-[color:var(--filter-red,oklch(0.62_0.20_25))]/60"
+                className="absolute inset-y-0 bg-[var(--red)]/60"
                 style={{ left: `${passPct + preservedPct}%`, width: `${droppedPct}%` }}
                 data-testid="funnel-dropped-segment"
               />
@@ -225,11 +220,11 @@ export function PipelineGateDiagram({ counts, available }: PipelineGateDiagramPr
             dispatched
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 bg-[color:var(--filter-amber,oklch(0.72_0.12_70))]/60 rounded-sm" />
+            <span className="inline-block w-2 h-2 bg-[var(--amber)]/60 rounded-sm" />
             preserved
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 bg-[color:var(--filter-red,oklch(0.62_0.20_25))]/60 rounded-sm" />
+            <span className="inline-block w-2 h-2 bg-[var(--red)]/60 rounded-sm" />
             dropped
           </span>
         </span>

@@ -53,9 +53,20 @@ const mockUsePriorityContacts = vi.fn()
 const mockUseContacts = vi.fn()
 const mockAddPriorityMutate = vi.fn()
 const mockRemovePriorityMutate = vi.fn()
+const mockUseChannelDefault = vi.fn()
+const mockUpdateChannelDefaultMutate = vi.fn()
 
 vi.mock('@/hooks/use-ingestion', () => ({
   usePipelineStats: () => mockUsePipelineStats(),
+}))
+
+vi.mock('@/hooks/use-channel-defaults', () => ({
+  useChannelDefault: (channel: string, options?: { enabled?: boolean }) =>
+    mockUseChannelDefault(channel, options),
+  useUpdateChannelDefault: () => ({
+    mutate: mockUpdateChannelDefaultMutate,
+    isPending: false,
+  }),
 }))
 
 vi.mock('@/hooks/use-ingestion-rules', () => ({
@@ -93,6 +104,7 @@ import type {
   PriorityContactEntry,
   ContactSummary,
 } from '@/api/types'
+import { ApiError } from '@/api/index.ts'
 import { FiltersPipeline } from './FiltersPipeline'
 import {
   PipelineGateDiagram,
@@ -256,6 +268,13 @@ function setupDefaultMocks(
   mockUseContacts.mockReturnValue({
     data: { contacts: [], total: 0 },
     isLoading: false,
+  })
+
+  mockUseChannelDefault.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
   })
 }
 
@@ -1161,5 +1180,499 @@ describe('AC4: old card-based filter content is absent', () => {
 
     const pipeline = container.querySelector('[data-testid="filters-pipeline"]')
     expect(pipeline).not.toBeNull()
+  })
+})
+
+// ============================================================================
+// bu-4utdw.9: --filter-* tokens never existed in index.css (silent fallback,
+// no light/dark parity). The real tokens --red / --amber / --green DO exist
+// with dark-mode overrides. Regression: rendered output must reference the
+// real tokens and must never reference the retired --filter- prefix.
+// ============================================================================
+
+describe('bu-4utdw.9: color tokens resolve to real --red/--amber/--green', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => { ;({ container, root } = makeRoot()) })
+  afterEach(() => cleanup(root, container))
+
+  it('renders no --filter-* token anywhere on the filters pipeline surface', () => {
+    setupDefaultMocks(
+      { ingested: 800, filtered: 200 },
+      [
+        makeRule({ id: 'rule-drop', action: 'drop', name: 'Drop rule' }),
+        makeRule({ id: 'rule-tier', action: 'tier.priority', name: 'Tier rule' }),
+      ],
+      [makeArchivedRule({ id: 'arch-001' })],
+    )
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    expect(container.innerHTML).not.toContain('--filter-red')
+    expect(container.innerHTML).not.toContain('--filter-amber')
+    expect(container.innerHTML).not.toContain('--filter-green')
+  })
+
+  it('the accept gate drop badge references the real --red token', () => {
+    setupDefaultMocks({ ingested: 800, filtered: 200 })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    expect(container.innerHTML).toContain('var(--red)')
+  })
+
+  it('the route gate preserved badge references the real --amber token', () => {
+    setupDefaultMocks({ ingested: 1000, routed_by_butler: { general: 600 } })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    expect(container.innerHTML).toContain('var(--amber)')
+  })
+
+  it('an enabled rule row dot references the real --green token', () => {
+    setupDefaultMocks({}, [makeRule({ id: 'rule-001', enabled: true })])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const dot = container.querySelector('[aria-label="enabled"]')
+    expect(dot?.className).toContain('var(--green)')
+  })
+})
+
+// ============================================================================
+// bu-4utdw.9: RuleRow toggle uses the shared shadcn Switch
+// ============================================================================
+
+describe('bu-4utdw.9: RuleRow uses the shared Switch component', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => { ;({ container, root } = makeRoot()) })
+  afterEach(() => cleanup(root, container))
+
+  it('renders a shadcn Switch (data-slot="switch") for the enable toggle', () => {
+    setupDefaultMocks({}, [makeRule({ id: 'rule-001' })])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const toggle = container.querySelector('[data-testid="rule-toggle-rule-001"]')
+    expect(toggle, 'toggle missing').not.toBeNull()
+    expect(toggle?.getAttribute('data-slot')).toBe('switch')
+    // No more hand-rolled inline oklch background style on the toggle itself.
+    expect((toggle as HTMLElement).getAttribute('style')).toBeNull()
+  })
+
+  it('clicking the toggle calls handleToggleRule via useUpdateIngestionRule', () => {
+    setupDefaultMocks({}, [makeRule({ id: 'rule-001', enabled: true })])
+    mockUpdateMutate.mockClear()
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const toggle = container.querySelector('[data-testid="rule-toggle-rule-001"]') as HTMLButtonElement
+    act(() => { toggle.click() })
+
+    expect(mockUpdateMutate).toHaveBeenCalledTimes(1)
+    const [arg] = mockUpdateMutate.mock.calls[0] as [{ id: string; body: { enabled: boolean } }]
+    expect(arg.id).toBe('rule-001')
+    expect(arg.body.enabled).toBe(false)
+  })
+})
+
+// ============================================================================
+// bu-4utdw.9: RuleRow delete is a two-step inline confirm, not one click
+// ============================================================================
+
+describe('bu-4utdw.9: RuleRow delete requires inline confirmation', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    mockDeleteMutate.mockReset()
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('does not delete on the first click — shows a confirm affordance instead', () => {
+    setupDefaultMocks({}, [makeRule({ id: 'rule-001' })])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const deleteBtn = container.querySelector('[data-testid="rule-delete-rule-001"]') as HTMLButtonElement
+    act(() => { deleteBtn.click() })
+
+    expect(mockDeleteMutate).not.toHaveBeenCalled()
+    expect(
+      container.querySelector('[data-testid="rule-delete-confirm-rule-001"]'),
+      'confirm affordance should appear after first click',
+    ).not.toBeNull()
+  })
+
+  it('deletes only after the confirm click', () => {
+    setupDefaultMocks({}, [makeRule({ id: 'rule-001' })])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="rule-delete-rule-001"]') as HTMLButtonElement).click()
+    })
+    act(() => {
+      ;(container.querySelector('[data-testid="rule-delete-confirm-rule-001"]') as HTMLButtonElement).click()
+    })
+
+    expect(mockDeleteMutate).toHaveBeenCalledTimes(1)
+    expect(mockDeleteMutate.mock.calls[0][0]).toBe('rule-001')
+  })
+
+  it('cancel reverts to the single delete affordance without deleting', () => {
+    setupDefaultMocks({}, [makeRule({ id: 'rule-001' })])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="rule-delete-rule-001"]') as HTMLButtonElement).click()
+    })
+    act(() => {
+      ;(container.querySelector('[data-testid="rule-delete-cancel-rule-001"]') as HTMLButtonElement).click()
+    })
+
+    expect(mockDeleteMutate).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="rule-delete-rule-001"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="rule-delete-confirm-rule-001"]')).toBeNull()
+  })
+})
+
+// ============================================================================
+// bu-4utdw.9: copy dedup — condition summary once, gate gloss in one place
+// ============================================================================
+
+describe('bu-4utdw.9: RuleRow renders the condition summary exactly once', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => { ;({ container, root } = makeRoot()) })
+  afterEach(() => cleanup(root, container))
+
+  it('shows the condition summary text a single time in the row', () => {
+    setupDefaultMocks({}, [
+      makeRule({ id: 'rule-001', condition: { source_channel: 'gmail' } }),
+    ])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const row = container.querySelector('[data-testid="rule-row-rule-001"]') as HTMLElement
+    const occurrences = row.textContent?.split('source_channel: gmail').length ?? 1
+    // split() on N occurrences yields N+1 parts.
+    expect(occurrences - 1).toBe(1)
+  })
+})
+
+describe('bu-4utdw.9: gate gloss renders in exactly one place', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => { ;({ container, root } = makeRoot()) })
+  afterEach(() => cleanup(root, container))
+
+  it('the accept gate gloss text appears once on the page, not duplicated in the diagram', () => {
+    setupDefaultMocks()
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const glossFragment = 'First contact: channel authentication'
+    const occurrences =
+      (container.textContent?.split(glossFragment).length ?? 1) - 1
+    expect(occurrences).toBe(1)
+  })
+
+  it('PipelineGateDiagram gate nodes do not render any gloss text', () => {
+    setupDefaultMocks()
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const diagram = container.querySelector('[data-testid="pipeline-gate-diagram"]') as HTMLElement
+    expect(diagram.textContent).not.toContain('First contact: channel authentication')
+  })
+})
+
+// ============================================================================
+// bu-4utdw.9: archived-rule restore round-trips through the backend contract
+// (PATCH {enabled: true} on a soft-deleted rule clears deleted_at server-side
+// — see roster/switchboard/api/router.py update_ingestion_rule / bu-rnljv.3).
+// The frontend must send exactly that shape; it must not attempt to clear
+// deleted_at itself client-side.
+// ============================================================================
+
+describe('bu-4utdw.9: restore round-trips via PATCH {enabled: true}', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    mockUpdateMutate.mockReset()
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('clicking restore on an archived rule sends {id, body: {enabled: true}} and nothing else', () => {
+    setupDefaultMocks({}, [], [makeArchivedRule({ id: 'arch-001' })])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="archived-rules-toggle"]') as HTMLButtonElement).click()
+    })
+    act(() => {
+      ;(container.querySelector('[data-testid="archived-rule-restore-arch-001"]') as HTMLButtonElement).click()
+    })
+
+    expect(mockUpdateMutate).toHaveBeenCalledTimes(1)
+    const [arg] = mockUpdateMutate.mock.calls[0] as [{ id: string; body: Record<string, unknown> }]
+    expect(arg.id).toBe('arch-001')
+    // Exactly {enabled: true} — no client-side deleted_at manipulation. The
+    // backend is solely responsible for clearing deleted_at on restore.
+    expect(arg.body).toEqual({ enabled: true })
+  })
+})
+
+// ============================================================================
+// bu-4utdw.9: channel defaults inline editor wires GET/PATCH
+// /api/ingestion/channel-defaults/:channel (public.channel_defaults)
+// ============================================================================
+
+describe('bu-4utdw.9: channel defaults inline editor', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  function channelRule(overrides: Partial<IngestionRule> = {}) {
+    return makeRule({
+      id: 'ch-email',
+      scope: 'email',
+      rule_type: 'channel_default',
+      action: 'pass_through',
+      description: 'Default for email',
+      ...overrides,
+    })
+  }
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    mockUpdateChannelDefaultMutate.mockReset()
+    mockUseChannelDefault.mockReset()
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('no longer shows the "not yet available" apology on edit', () => {
+    setupDefaultMocks({}, [channelRule()])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="channel-default-edit-email"]') as HTMLButtonElement).click()
+    })
+
+    expect(container.textContent).not.toContain('not yet available')
+    expect(
+      container.querySelector('[data-testid="channel-default-editor-email"]'),
+      'inline editor should render',
+    ).not.toBeNull()
+  })
+
+  it('requests the current policy for the channel being edited via useChannelDefault', () => {
+    setupDefaultMocks({}, [channelRule()])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="channel-default-edit-email"]') as HTMLButtonElement).click()
+    })
+
+    const calls = mockUseChannelDefault.mock.calls
+    const enabledCall = calls.find((c) => c[1]?.enabled === true)
+    expect(enabledCall?.[0]).toBe('email')
+  })
+
+  it('treats a 404 (no policy configured yet) as an empty form, not an error', () => {
+    setupDefaultMocks({}, [channelRule()])
+    mockUseChannelDefault.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new ApiError('NOT_FOUND', 'No channel defaults found', 404),
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="channel-default-edit-email"]') as HTMLButtonElement).click()
+    })
+
+    expect(container.querySelector('[data-testid="channel-default-editor-error-email"]')).toBeNull()
+    expect(container.querySelector('[data-testid="channel-default-editor-policy-email"]')).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="channel-default-editor-notfound-email"]'),
+      'should note that no policy is configured yet',
+    ).not.toBeNull()
+  })
+
+  it('shows an error state on a genuine fetch failure (non-404)', () => {
+    setupDefaultMocks({}, [channelRule()])
+    mockUseChannelDefault.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new ApiError('SERVER_ERROR', 'boom', 500),
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="channel-default-edit-email"]') as HTMLButtonElement).click()
+    })
+
+    expect(container.querySelector('[data-testid="channel-default-editor-error-email"]')).not.toBeNull()
+  })
+
+  it('save calls useUpdateChannelDefault with the selected policy and max_age_days', async () => {
+    setupDefaultMocks({}, [channelRule()])
+    mockUseChannelDefault.mockReturnValue({
+      data: {
+        channel: 'email',
+        default_policy_json: { priority_action: 'pass_through' },
+        updated_at: '2026-01-01T00:00:00Z',
+        updated_by: 'dashboard',
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="channel-default-edit-email"]') as HTMLButtonElement).click()
+    })
+
+    const select = container.querySelector(
+      '[data-testid="channel-default-editor-policy-email"]',
+    ) as HTMLSelectElement
+    act(() => { setInputValue(select, 'metadata_only') })
+
+    const maxAge = container.querySelector(
+      '[data-testid="channel-default-editor-max-age-email"]',
+    ) as HTMLInputElement
+    expect(maxAge, 'email channel should show max_age_days field').not.toBeNull()
+    act(() => { setInputValue(maxAge, '45') })
+
+    await act(async () => {
+      ;(
+        container.querySelector('[data-testid="channel-default-editor-save-email"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockUpdateChannelDefaultMutate).toHaveBeenCalledTimes(1)
+    const [arg] = mockUpdateChannelDefaultMutate.mock.calls[0] as [
+      { channel: string; body: { default_policy_json: Record<string, unknown>; updated_by: string } },
+    ]
+    expect(arg.channel).toBe('email')
+    expect(arg.body.default_policy_json.priority_action).toBe('metadata_only')
+    expect(arg.body.default_policy_json.max_age_days).toBe(45)
+  })
+
+  it('rejects a non-positive-integer max_age_days without saving', async () => {
+    setupDefaultMocks({}, [channelRule()])
+    mockUseChannelDefault.mockReturnValue({
+      data: {
+        channel: 'email',
+        default_policy_json: { priority_action: 'pass_through' },
+        updated_at: '2026-01-01T00:00:00Z',
+        updated_by: 'dashboard',
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="channel-default-edit-email"]') as HTMLButtonElement).click()
+    })
+
+    const maxAge = container.querySelector(
+      '[data-testid="channel-default-editor-max-age-email"]',
+    ) as HTMLInputElement
+    act(() => { setInputValue(maxAge, '-5') })
+
+    await act(async () => {
+      ;(
+        container.querySelector('[data-testid="channel-default-editor-save-email"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockUpdateChannelDefaultMutate).not.toHaveBeenCalled()
+    const errorEl = container.querySelector('[data-testid="channel-default-editor-local-error-email"]')
+    expect(errorEl, 'validation error should be rendered').not.toBeNull()
+    expect(errorEl?.textContent).toMatch(/positive integer/i)
+  })
+
+  it('does not show a max_age_days field for non-email channels', () => {
+    setupDefaultMocks({}, [
+      channelRule({ id: 'ch-telegram', scope: 'telegram', action: 'skip' }),
+    ])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(
+        container.querySelector('[data-testid="channel-default-edit-telegram"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(
+      container.querySelector('[data-testid="channel-default-editor-max-age-telegram"]'),
+    ).toBeNull()
+  })
+
+  it('cancel closes the editor without saving', () => {
+    setupDefaultMocks({}, [channelRule()])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="channel-default-edit-email"]') as HTMLButtonElement).click()
+    })
+    act(() => {
+      ;(
+        container.querySelector('[data-testid="channel-default-editor-cancel-email"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockUpdateChannelDefaultMutate).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="channel-default-editor-email"]')).toBeNull()
+    expect(container.querySelector('[data-testid="channel-default-edit-email"]')).not.toBeNull()
+  })
+
+  it('reconciles the retired legacy verb labels to the runtime vocabulary', () => {
+    setupDefaultMocks({}, [
+      channelRule({ id: 'ch-legacy', scope: 'discord', action: 'preserve' }),
+    ])
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const policyLabel = container.querySelector('[data-testid="channel-default-policy-discord"]')
+    expect(policyLabel?.textContent?.toLowerCase()).toContain('pass through')
+    expect(policyLabel?.textContent?.toLowerCase()).not.toBe('preserve')
+  })
+
+  it('footer DSL gloss uses the runtime verdict vocabulary, not the retired DSL verbs', () => {
+    setupDefaultMocks()
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const footer = container.querySelector('[data-testid="filters-footer"]') as HTMLElement
+    expect(footer.textContent).toContain('pass_through')
+    expect(footer.textContent).toContain('skip')
+    expect(footer.textContent).not.toMatch(/\bdrop\b/)
+    expect(footer.textContent).not.toMatch(/\bpreserve\b/)
   })
 })

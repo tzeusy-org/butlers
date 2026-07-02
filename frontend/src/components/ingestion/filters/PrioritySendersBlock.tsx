@@ -157,7 +157,7 @@ export function PrioritySendersBlock({
       {/* Mutation error */}
       {mutationError && (
         <div
-          className="mt-3 font-mono text-[11px] text-[color:var(--filter-red,oklch(0.62_0.20_25))] border border-[color:var(--filter-red,oklch(0.62_0.20_25))]/30 px-3 py-2"
+          className="mt-3 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="priority-senders-mutation-error"
         >
           {mutationError}
@@ -234,7 +234,7 @@ export function PrioritySendersBlock({
                 {/* Remove */}
                 <button
                   type="button"
-                  className="font-mono text-[12px] text-muted-foreground hover:text-[color:var(--filter-red,oklch(0.62_0.20_25))]"
+                  className="font-mono text-[12px] text-muted-foreground hover:text-[var(--red)]"
                   onClick={() => onRemove?.(entry.contact_id)}
                   aria-label={`Remove priority sender ${entry.name ?? entry.contact_id}`}
                   data-testid={`priority-sender-remove-${entry.contact_id}`}
@@ -246,7 +246,7 @@ export function PrioritySendersBlock({
               {/* Inert warning badge — shown only when this entry would match nothing at runtime */}
               {entry.is_inert && (
                 <div
-                  className="mt-1.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--filter-amber,oklch(0.72_0.15_85))] border border-[color:var(--filter-amber,oklch(0.72_0.15_85))]/40 px-2 py-0.5 inline-flex items-center gap-1.5"
+                  className="mt-1.5 font-mono text-[9.5px] tracking-[0.06em] text-[var(--amber)] border border-[var(--amber)]/40 px-2 py-0.5 inline-flex items-center gap-1.5"
                   data-testid={`priority-sender-inert-${entry.contact_id}`}
                   title="This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact. Without one, this entry matches nothing."
                 >

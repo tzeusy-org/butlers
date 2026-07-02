@@ -694,6 +694,15 @@ export type {
   IngestionRuleUpdate,
 } from "./types.ts";
 
+export { getChannelDefault, updateChannelDefault } from "./client.ts";
+
+export type {
+  ChannelDefaultEntry,
+  ChannelDefaultPolicy,
+  ChannelDefaultPriorityAction,
+  ChannelDefaultUpdate,
+} from "./types.ts";
+
 export {
   addPriorityContact,
   getPriorityContacts,

@@ -58,7 +58,7 @@ export function ArchivedRulesSection({ rules, onRestore, restoreError }: Archive
       {/* Restore error */}
       {restoreError && (
         <div
-          className="mt-2 font-mono text-[11px] text-[color:var(--filter-red,oklch(0.62_0.20_25))] border border-[color:var(--filter-red,oklch(0.62_0.20_25))]/30 px-3 py-2"
+          className="mt-2 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="archived-rules-restore-error"
         >
           {restoreError}

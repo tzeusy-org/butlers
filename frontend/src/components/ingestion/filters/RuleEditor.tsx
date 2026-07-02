@@ -457,7 +457,7 @@ function DslTestPanel() {
 
       {error && (
         <div
-          className="font-mono text-[11px] text-[color:var(--filter-red,oklch(0.62_0.20_25))] border border-[color:var(--filter-red,oklch(0.62_0.20_25))]/30 px-3 py-2"
+          className="font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="rule-editor-test-error"
         >
           {error}
@@ -697,7 +697,7 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
 
       {error && (
         <div
-          className="mt-4 font-mono text-[11px] text-[color:var(--filter-red,oklch(0.62_0.20_25))] border border-[color:var(--filter-red,oklch(0.62_0.20_25))]/30 px-3 py-2"
+          className="mt-4 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="rule-editor-error"
         >
           {error}

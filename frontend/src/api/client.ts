@@ -200,6 +200,8 @@ import type {
   IngestionRuleListParams,
   IngestionRuleTestRequest,
   IngestionRuleTestResponse,
+  ChannelDefaultEntry,
+  ChannelDefaultUpdate,
   PriorityContactEntry,
   PriorityContactAddRequest,
   PriorityContactAddResponse,
@@ -4674,6 +4676,35 @@ export function testIngestionRule(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Channel defaults (GET/PATCH /api/ingestion/channel-defaults/:channel)
+//
+// Per-channel fallback ingestion policy — public.channel_defaults. No DELETE
+// surface; the backend always returns 405 for that verb.
+// ---------------------------------------------------------------------------
+
+/** Fetch a channel's default policy. Throws ApiError with status 404 if unset. */
+export function getChannelDefault(channel: string): Promise<ChannelDefaultEntry> {
+  return apiFetch<ChannelDefaultEntry>(
+    `/ingestion/channel-defaults/${encodeURIComponent(channel)}`,
+  );
+}
+
+/** Upsert a channel's default policy. */
+export function updateChannelDefault(
+  channel: string,
+  body: ChannelDefaultUpdate,
+): Promise<ChannelDefaultEntry> {
+  return apiFetch<ChannelDefaultEntry>(
+    `/ingestion/channel-defaults/${encodeURIComponent(channel)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

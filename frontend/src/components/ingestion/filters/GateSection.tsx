@@ -5,6 +5,10 @@
  * If no rules exist, shows the code-resident policy note for gates that
  * have one, or a plain "no rules at this gate" serif italic.
  *
+ * This is the ONLY place the full gate gloss renders — PipelineGateDiagram's
+ * compact node above intentionally omits it (was a truncated duplicate of
+ * this same text; bu-4utdw.9).
+ *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline" gate sections
  * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §GateSection
@@ -81,12 +85,12 @@ export function GateSection({
           <span className="mx-1">·</span>
           <span>out {fmt(count.out)}</span>
           {hasDrop && (
-            <span className="ml-1.5 text-[color:var(--filter-red,oklch(0.62_0.20_25))]">
+            <span className="ml-1.5 text-[var(--red)]">
               · −{fmt(count.dropped)}
             </span>
           )}
           {hasPreserved && (
-            <span className="ml-1.5 text-[color:var(--filter-amber,oklch(0.72_0.12_70))]">
+            <span className="ml-1.5 text-[var(--amber)]">
               · −{fmt(count.preserved)} pres.
             </span>
           )}

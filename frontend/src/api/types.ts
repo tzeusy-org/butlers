@@ -3800,6 +3800,44 @@ export interface IngestionRuleListParams {
 }
 
 // ---------------------------------------------------------------------------
+// Channel defaults — per-channel fallback ingestion policy, public.channel_defaults.
+//
+// Distinct from the ingestion_rules-backed "channel_default" rows shown in
+// the Filters pipeline list: this is the runtime policy document itself,
+// read/written via GET/PATCH /api/ingestion/channel-defaults/:channel.
+// There is no DELETE surface (the backend always returns 405).
+// ---------------------------------------------------------------------------
+
+/** Runtime priority-action vocabulary (src/butlers/ingestion_policy.py). */
+export type ChannelDefaultPriorityAction =
+  | "pass_through"
+  | "block"
+  | "skip"
+  | "metadata_only"
+  | "low_priority_queue";
+
+/** A channel's default policy document. */
+export interface ChannelDefaultPolicy {
+  priority_action: ChannelDefaultPriorityAction;
+  /** Email-only: drop messages older than this many days. */
+  max_age_days?: number;
+}
+
+/** GET/PATCH response for a single channel's defaults. */
+export interface ChannelDefaultEntry {
+  channel: string;
+  default_policy_json: ChannelDefaultPolicy;
+  updated_at: string;
+  updated_by: string;
+}
+
+/** Request body for PATCH /api/ingestion/channel-defaults/:channel. */
+export interface ChannelDefaultUpdate {
+  default_policy_json: ChannelDefaultPolicy;
+  updated_by?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Priority contacts — runtime source of truth for priority senders.
 //
 // Unlike ingestion rules (a DSL proxy), these rows live in

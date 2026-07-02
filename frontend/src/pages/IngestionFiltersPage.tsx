@@ -21,29 +21,43 @@ import { usePipelineStats } from '@/hooks/use-ingestion'
 // Header aside — event count KPI strip
 // ---------------------------------------------------------------------------
 
-function FiltersHeaderAside() {
+export function FiltersHeaderAside() {
   const { data: stats } = usePipelineStats('24h')
   if (!stats) return null
 
   const total = stats.ingested + stats.filtered
-  const dispatched = Object.values(stats.routed_by_butler).reduce((a, b) => a + b, 0)
+  const dispatched =
+    stats.routed_by_butler != null
+      ? Object.values(stats.routed_by_butler).reduce((a, b) => a + b, 0)
+      : 0
+  const available = stats.aggregates_available
 
   return (
-    <div className="flex gap-8">
-      {[
-        { label: 'received · 24h', value: total.toLocaleString() },
-        { label: 'dispatched', value: dispatched.toLocaleString() },
-        { label: 'filtered', value: stats.filtered.toLocaleString() },
-      ].map(({ label, value }) => (
-        <div key={label} className="text-right">
-          <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70">
-            {label}
+    <div className="flex items-baseline gap-8">
+      {!available && (
+        <span
+          className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70"
+          data-testid="filters-header-metrics-unavailable"
+        >
+          metrics unavailable
+        </span>
+      )}
+      <div className="flex gap-8">
+        {[
+          { label: 'received · 24h', value: total.toLocaleString() },
+          { label: 'dispatched', value: dispatched.toLocaleString() },
+          { label: 'filtered', value: stats.filtered.toLocaleString() },
+        ].map(({ label, value }) => (
+          <div key={label} className="text-right">
+            <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70">
+              {label}
+            </div>
+            <div className="font-mono text-lg font-medium tabular-nums tracking-[-0.02em]">
+              {available ? value : '—'}
+            </div>
           </div>
-          <div className="font-mono text-lg font-medium tabular-nums tracking-[-0.02em]">
-            {stats.aggregates_available ? value : '—'}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   )
 }

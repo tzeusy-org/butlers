@@ -18,8 +18,12 @@
  * Priority senders: rules with action starting with "route" and
  * rule_type="priority_sender" (or scope="priority").
  *
- * Channel defaults: rules with scope matching a channel name and
- * rule_type="channel_default".
+ * Channel defaults: the row list reads rules with scope matching a channel
+ * name and rule_type="channel_default"; the inline "edit" affordance reads
+ * and writes the actual runtime policy at GET/PATCH
+ * /api/ingestion/channel-defaults/:channel (public.channel_defaults) via
+ * useChannelDefault/useUpdateChannelDefault — a distinct store from the rule
+ * rows above it.
  *
  * Mutation errors are always visible (inline). This component does not
  * optimistically hide previous state on failure.
@@ -37,15 +41,18 @@ import {
   useRemovePriorityContact,
 } from '@/hooks/use-priority-contacts'
 import { useContacts } from '@/hooks/use-contacts'
+import { useChannelDefault, useUpdateChannelDefault } from '@/hooks/use-channel-defaults'
 import { GATE_DEFS, groupRulesByGate, deriveGateCounts } from './gate-state'
 import type { GateKey } from './gate-state'
 import { PipelineGateDiagram } from './PipelineGateDiagram'
 import { GateSection } from './GateSection'
 import { PrioritySendersBlock } from './PrioritySendersBlock'
-import { ChannelDefaultsBlock } from './ChannelDefaultsBlock'
+import { ChannelDefaultsBlock, type ChannelDefaultEditorState } from './ChannelDefaultsBlock'
 import { ArchivedRulesSection } from './ArchivedRulesSection'
 import { RuleEditor, type EditorMode } from './RuleEditor'
 import type { IngestionRule } from '@/api/types'
+import type { ChannelDefaultPolicy } from '@/api/index.ts'
+import { ApiError } from '@/api/index.ts'
 
 // ---------------------------------------------------------------------------
 // Rule classification helpers
@@ -68,6 +75,10 @@ export function FiltersPipeline() {
   const [priorityMutationError, setPriorityMutationError] = useState<string | null>(null)
   const [channelMutationError, setChannelMutationError] = useState<string | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+
+  // Channel defaults inline editor (public.channel_defaults, distinct from
+  // the ingestion_rules-backed row list) — null means no channel is being edited.
+  const [editingChannel, setEditingChannel] = useState<string | null>(null)
 
   // Rule editor (create / edit / DSL) — wires the footer + per-rule edit
   // affordances to a real create/update flow.
@@ -112,6 +123,17 @@ export function FiltersPipeline() {
   // Contact candidates for the add picker.
   const { data: contactsResp, isLoading: contactsLoading } = useContacts({ limit: 200 })
 
+  // Channel defaults edit — fetch the current policy only while a channel is
+  // actively being edited (the backend 404s for unset channels; that's an
+  // expected "not configured yet" state, not a fetch error).
+  const {
+    data: editingPolicyResp,
+    isLoading: editingPolicyLoading,
+    isError: editingPolicyIsError,
+    error: editingPolicyError,
+  } = useChannelDefault(editingChannel ?? '', { enabled: editingChannel !== null })
+  const updateChannelDefault = useUpdateChannelDefault()
+
   // -------------------------------------------------------------------------
   // Derived data
   // -------------------------------------------------------------------------
@@ -140,6 +162,17 @@ export function FiltersPipeline() {
   const totalReceived = pipelineStats
     ? pipelineStats.ingested + pipelineStats.filtered
     : 0
+
+  // A 404 means the channel has no policy row yet — treat as "not configured"
+  // (empty form), not a fetch error. Any other failure surfaces as an error.
+  const editingPolicyNotFound =
+    editingPolicyIsError && editingPolicyError instanceof ApiError && editingPolicyError.status === 404
+  const editingState: ChannelDefaultEditorState = {
+    loading: editingPolicyLoading,
+    notFound: editingPolicyNotFound,
+    error: editingPolicyIsError && !editingPolicyNotFound,
+    policy: editingPolicyResp?.default_policy_json ?? null,
+  }
 
   // -------------------------------------------------------------------------
   // Mutation handlers
@@ -200,11 +233,28 @@ export function FiltersPipeline() {
     )
   }
 
-  function handleEditChannelDefault(id: string) {
-    // Edit is a future concern; wire the handler once a form exists.
-    // Surface a note so the button is not silently a no-op.
-    setChannelMutationError('Editing channel defaults is not yet available.')
-    void id
+  function handleEditChannelDefault(channel: string) {
+    setChannelMutationError(null)
+    setEditingChannel(channel)
+  }
+
+  function handleCancelEditChannelDefault() {
+    setEditingChannel(null)
+  }
+
+  function handleSaveChannelDefault(channel: string, policy: ChannelDefaultPolicy) {
+    setChannelMutationError(null)
+    updateChannelDefault.mutate(
+      { channel, body: { default_policy_json: policy, updated_by: 'dashboard' } },
+      {
+        onSuccess: () => setEditingChannel(null),
+        onError: (err) => {
+          setChannelMutationError(
+            err instanceof Error ? err.message : 'Failed to update channel default.',
+          )
+        },
+      },
+    )
   }
 
   function handleRestoreRule(id: string) {
@@ -264,7 +314,7 @@ export function FiltersPipeline() {
       {/* Error banners */}
       {(toggleError || deleteError) && (
         <div
-          className="mb-4 font-mono text-[11px] text-[color:var(--filter-red,oklch(0.62_0.20_25))] border border-[color:var(--filter-red,oklch(0.62_0.20_25))]/30 px-3 py-2"
+          className="mb-4 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="filters-mutation-error"
         >
           {toggleError ?? deleteError}
@@ -319,7 +369,12 @@ export function FiltersPipeline() {
           loaded={!rulesLoading}
           error={rulesError}
           mutationError={channelMutationError}
+          editingChannel={editingChannel}
+          editingState={editingState}
+          saving={updateChannelDefault.isPending}
           onEdit={handleEditChannelDefault}
+          onSaveEdit={handleSaveChannelDefault}
+          onCancelEdit={handleCancelEditChannelDefault}
         />
       </div>
 
@@ -344,10 +399,11 @@ export function FiltersPipeline() {
           <p className="mt-1.5 font-serif text-[13.5px] text-muted-foreground leading-[1.55]">
             Rules are written in a small DSL: channel matchers, sender / kind /
             header predicates, and one verdict per rule:{' '}
-            <code className="font-mono text-[11px]">drop</code>,{' '}
-            <code className="font-mono text-[11px]">preserve</code>,{' '}
-            <code className="font-mono text-[11px]">tier</code>,{' '}
-            <code className="font-mono text-[11px]">route</code>.
+            <code className="font-mono text-[11px]">skip</code>,{' '}
+            <code className="font-mono text-[11px]">metadata_only</code>,{' '}
+            <code className="font-mono text-[11px]">low_priority_queue</code>,{' '}
+            <code className="font-mono text-[11px]">pass_through</code>,{' '}
+            <code className="font-mono text-[11px]">route_to:&lt;butler&gt;</code>.
           </p>
         </div>
         <span className="ml-auto" />

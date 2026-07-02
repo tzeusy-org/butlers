@@ -6,12 +6,22 @@
  *
  * Design: hairline-divided, same density as ConnectorsRoster rows.
  *
+ * Delete is a two-step inline confirm (click -> "delete?" / "cancel" ->
+ * confirm) rather than a single-click destructive action. No modal — the
+ * confirm state lives inline in the same row (bu-4utdw.9).
+ *
+ * Condition summary renders in exactly ONE place (the when-clause
+ * pseudocode below the rule name); a duplicate compact column was removed
+ * (bu-4utdw.9).
+ *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline" rule rows
  * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §RuleRow
  */
 
+import { useState } from 'react'
 import type { IngestionRule } from '@/api/types'
+import { Switch } from '@/components/ui/switch'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,8 +42,8 @@ function conditionSummary(condition: Record<string, unknown>): string {
 /** Map action string to a color token. */
 function actionColor(action: string): string {
   const verb = action.toLowerCase().split(' ')[0]
-  if (verb === 'drop') return 'text-[color:var(--filter-red,oklch(0.62_0.20_25))]'
-  if (verb === 'tier') return 'text-[color:var(--filter-amber,oklch(0.72_0.12_70))]'
+  if (verb === 'drop') return 'text-[var(--red)]'
+  if (verb === 'tier') return 'text-[var(--amber)]'
   if (verb === 'route') return 'text-foreground'
   return 'text-muted-foreground'
 }
@@ -50,15 +60,16 @@ export interface RuleRowProps {
 }
 
 export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const colorClass = actionColor(rule.action)
   const dotColor = rule.enabled
-    ? 'bg-[color:var(--filter-green,oklch(0.72_0.17_150))]'
+    ? 'bg-[var(--green)]'
     : 'bg-muted-foreground/30'
 
   return (
     <div
       className="grid items-start gap-4 py-4 border-b border-border/50"
-      style={{ gridTemplateColumns: '12px 1fr 160px 100px 40px 56px' }}
+      style={{ gridTemplateColumns: '12px 1fr 100px 40px auto' }}
       data-testid={`rule-row-${rule.id}`}
     >
       {/* Enabled dot */}
@@ -85,11 +96,6 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
         </code>
       </div>
 
-      {/* Condition (compact) */}
-      <div className="font-mono text-[10.5px] text-muted-foreground self-start pt-0.5 truncate">
-        {conditionSummary(rule.condition)}
-      </div>
-
       {/* Action badge */}
       <div
         className={`font-mono text-[11px] tracking-[0.04em] self-start pt-0.5 ${colorClass}`}
@@ -99,24 +105,13 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
       </div>
 
       {/* Toggle */}
-      <button
-        type="button"
-        className="self-start mt-0.5 w-8 h-[18px] rounded-full border border-foreground/30 relative cursor-pointer focus-visible:ring-1 focus-visible:ring-foreground"
-        style={{ background: rule.enabled ? 'oklch(0.35 0 0)' : 'transparent' }}
-        aria-checked={rule.enabled}
-        role="switch"
+      <Switch
+        checked={rule.enabled}
+        onCheckedChange={(checked) => onToggle?.(rule.id, checked)}
         aria-label={`${rule.enabled ? 'Disable' : 'Enable'} rule ${rule.name ?? rule.id}`}
-        onClick={() => onToggle?.(rule.id, !rule.enabled)}
         data-testid={`rule-toggle-${rule.id}`}
-      >
-        <span
-          className="absolute top-[1px] w-[14px] h-[14px] rounded-full transition-[left] duration-100"
-          style={{
-            left: rule.enabled ? '15px' : '1px',
-            background: rule.enabled ? 'oklch(0.95 0 0)' : 'oklch(0.55 0 0)',
-          }}
-        />
-      </button>
+        className="self-start mt-0.5"
+      />
 
       {/* Edit + delete */}
       <div className="flex items-center gap-2 self-start pt-0.5">
@@ -129,15 +124,41 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
         >
           edit
         </button>
-        <button
-          type="button"
-          className="font-mono text-[12px] text-muted-foreground hover:text-[color:var(--filter-red,oklch(0.62_0.20_25))]"
-          onClick={() => onDelete?.(rule.id)}
-          aria-label={`Delete rule ${rule.name ?? rule.id}`}
-          data-testid={`rule-delete-${rule.id}`}
-        >
-          ×
-        </button>
+        {confirmingDelete ? (
+          <span className="flex items-center gap-1.5 whitespace-nowrap">
+            <button
+              type="button"
+              className="font-mono text-[10px] text-[var(--red)] underline underline-offset-2"
+              onClick={() => {
+                onDelete?.(rule.id)
+                setConfirmingDelete(false)
+              }}
+              aria-label={`Confirm delete rule ${rule.name ?? rule.id}`}
+              data-testid={`rule-delete-confirm-${rule.id}`}
+            >
+              delete?
+            </button>
+            <button
+              type="button"
+              className="font-mono text-[10px] text-muted-foreground hover:text-foreground"
+              onClick={() => setConfirmingDelete(false)}
+              aria-label="Cancel delete"
+              data-testid={`rule-delete-cancel-${rule.id}`}
+            >
+              cancel
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="font-mono text-[12px] text-muted-foreground hover:text-[var(--red)]"
+            onClick={() => setConfirmingDelete(true)}
+            aria-label={`Delete rule ${rule.name ?? rule.id}`}
+            data-testid={`rule-delete-${rule.id}`}
+          >
+            ×
+          </button>
+        )}
       </div>
     </div>
   )
