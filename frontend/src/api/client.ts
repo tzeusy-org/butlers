@@ -447,12 +447,19 @@ export class ApiError extends Error {
   readonly code: string;
   /** HTTP status code of the response. */
   readonly status: number;
+  /**
+   * Structured error detail body, when the backend returned a JSON object
+   * `detail` (e.g. the 409 bulk-retry `{error, unsafe_events}` rejection).
+   * `undefined` when the backend returned a plain string/array detail.
+   */
+  readonly detail?: unknown;
 
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, detail?: unknown) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -482,6 +489,7 @@ export async function apiFetch<T>(
   if (!response.ok) {
     let code = "UNKNOWN_ERROR";
     let message = response.statusText || "Request failed";
+    let detail: unknown;
 
     try {
       const body = await response.json();
@@ -499,14 +507,18 @@ export async function apiFetch<T>(
       } else if (body.detail !== null && typeof body.detail === "object") {
         // FastAPI HTTPException with a dict detail (e.g. 409 unsafe-channel rejection).
         // Surface the "error" field if present, otherwise JSON-stringify the whole detail.
+        // Keep the raw dict on `detail` too, so callers that need structured
+        // fields (e.g. bulk-retry's `unsafe_events`) don't have to re-parse
+        // the message string.
         const det = body.detail as Record<string, unknown>;
         message = typeof det.error === "string" ? det.error : JSON.stringify(det);
+        detail = det;
       }
     } catch {
       // Response body is not valid JSON — fall through to defaults.
     }
 
-    throw new ApiError(code, message, response.status);
+    throw new ApiError(code, message, response.status, detail);
   }
 
   if (response.status === 204) {

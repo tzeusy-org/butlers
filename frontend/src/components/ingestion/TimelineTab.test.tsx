@@ -12,7 +12,8 @@
  *   keyboard focus + Enter opens a row, no filled status pills render in rows
  * - §2.5 Drawer: session anchor IDs, session index rail, copy-session-id button
  * - §2.6 Sender identity resolution (resolved / unresolved)
- * - §2.8 Saved Views: selector renders, view changes apply statuses, Priority is placeholder
+ * - §2.8 Saved Views: selector renders, view changes apply statuses, Priority
+ *   placeholder retired (bu-4utdw.5)
  * - §2.9 Connector Attention Strip: strip renders on unhealthy connectors, hidden when all healthy
  */
 
@@ -547,7 +548,11 @@ describe("TimelineTab — Replay button interaction", () => {
     await act(async () => {
       btn.click();
     });
-    expect(container.textContent).toContain("replay pending");
+    // Scoped to the ledger (not the whole container) — the toolbar's status
+    // filter chips always render the literal word "replay pending" as a
+    // label, regardless of row state.
+    const ledger = container.querySelector("[data-testid='timeline-ledger']") as HTMLElement;
+    expect(ledger.textContent).toContain("replay pending");
 
     // Server refetch returns replay_complete — override should be evicted
     vi.mocked(useIngestionEvents).mockReturnValue(
@@ -567,8 +572,9 @@ describe("TimelineTab — Replay button interaction", () => {
 
     // Row status should now show "replay complete" (the badge vocabulary word
     // for replay_complete, bu-4utdw.4), not the stale "replay pending".
-    expect(container.textContent).toContain("replay complete");
-    expect(container.textContent).not.toContain("replay pending");
+    const ledgerAfter = container.querySelector("[data-testid='timeline-ledger']") as HTMLElement;
+    expect(ledgerAfter.textContent).toContain("replay complete");
+    expect(ledgerAfter.textContent).not.toContain("replay pending");
   });
 
   it("shows error toast when replay API call fails", async () => {
@@ -634,10 +640,40 @@ describe("TimelineTab — Status filter", () => {
 
     const filterEl = container.querySelector("[data-testid='status-filter']");
     expect(filterEl).not.toBeNull();
-    // Status filter buttons use short Dispatch-language labels
-    expect(filterEl!.textContent).toContain("ok");
+    // Status filter chips use the exact badge vocabulary (bu-4utdw.5) —
+    // "ingested", not the historical short-hand "ok".
+    expect(filterEl!.textContent).toContain("ingested");
     expect(filterEl!.textContent).toContain("filtered");
     expect(filterEl!.textContent).toContain("error");
+  });
+
+  it("status filter chips share one vocabulary with the row status word (bu-4utdw.5)", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const filterEl = container.querySelector("[data-testid='status-filter']") as HTMLElement;
+    for (const word of [
+      "ingested",
+      "skipped",
+      "filtered",
+      "error",
+      "replay pending",
+      "replay complete",
+      "replay failed",
+    ]) {
+      expect(filterEl.textContent).toContain(word);
+    }
+    // The old, now-retired chip vocabulary must not survive anywhere in the toolbar.
+    const toolbar = container.querySelector("[data-testid='timeline-toolbar']") as HTMLElement;
+    expect(toolbar.textContent).not.toContain("ok");
+    expect(toolbar.textContent).not.toContain("replayed");
   });
 });
 
@@ -1060,8 +1096,11 @@ describe("TimelineTab — §2.8 Saved Views", () => {
     expect(selector).not.toBeNull();
     expect(selector!.textContent).toContain("All");
     expect(selector!.textContent).toContain("Errors");
-    expect(selector!.textContent).toContain("Priority");
-    expect(selector!.textContent).toContain("Spend");
+    // "Priority" was a disabled "(soon)" placeholder — retired entirely
+    // (bu-4utdw.5: roadmap is not UI).
+    expect(selector!.textContent).not.toContain("Priority");
+    expect(selector!.textContent).not.toContain("soon");
+    expect(selector!.textContent).toContain("spend");
   });
 
   it("All view is active by default", () => {
@@ -1080,7 +1119,7 @@ describe("TimelineTab — §2.8 Saved Views", () => {
     expect(allBtn!.getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("Priority view is marked as a placeholder with '(soon)' hint", () => {
+  it("Priority view (disabled roadmap placeholder) was removed entirely (bu-4utdw.5)", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -1091,12 +1130,9 @@ describe("TimelineTab — §2.8 Saved Views", () => {
       );
     });
 
-    const priorityBtn = container.querySelector("[data-view='priority']");
-    expect(priorityBtn).not.toBeNull();
-    // Placeholder hint visible to users
-    expect(priorityBtn!.textContent).toContain("soon");
-    // Title attribute explains the placeholder status
-    expect(priorityBtn!.getAttribute("title")).toContain("Wave 2");
+    expect(container.querySelector("[data-view='priority']")).toBeNull();
+    const toolbar = container.querySelector("[data-testid='timeline-toolbar']") as HTMLElement;
+    expect(toolbar.textContent).not.toContain("(soon)");
   });
 
   it("selecting Errors view updates aria-pressed", () => {
@@ -1563,6 +1599,36 @@ describe("TimelineTab — BulkActionBar", () => {
     );
   });
 
+  it("409 rejection with unsafe_events detail offers one-click deselect (bu-4utdw.5)", async () => {
+    const unsafeId = EVENT_ID_1;
+    vi.mocked(bulkRetryEvents).mockRejectedValueOnce(
+      new ApiError("UNSAFE_CHANNEL", "Batch contains replay-unsafe events", 409, {
+        error: "Batch contains replay-unsafe events",
+        unsafe_events: [{ id: unsafeId, source_channel: "email", reason: "source_channel='email' is not replay-safe" }],
+      }),
+    );
+
+    renderAndSelectEvents(
+      [makeEvent({ id: EVENT_ID_1, source_channel: "email" }), makeEvent({ id: EVENT_ID_2 })],
+      2,
+    );
+
+    const btn = container.querySelector("[data-testid='bulk-retry-button']") as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+
+    const deselectBtn = container.querySelector(
+      "[data-testid='bulk-deselect-ineligible-button']",
+    ) as HTMLButtonElement;
+    expect(deselectBtn).not.toBeNull();
+    expect(deselectBtn.textContent).toContain("1");
+
+    await act(async () => { deselectBtn.click(); });
+
+    // The bar still shows the one remaining eligible selection.
+    expect(container.textContent).toContain("1 selected");
+    expect(container.querySelector("[data-testid='bulk-deselect-ineligible-button']")).toBeNull();
+  });
+
   it("Copy IDs button copies selected event IDs to clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -1585,8 +1651,10 @@ describe("TimelineTab — BulkActionBar", () => {
 
     // Should have called clipboard.writeText with newline-joined IDs
     expect(writeText).toHaveBeenCalledWith(`${EVENT_ID_1}\n${EVENT_ID_2}`);
-    // Button text should change to "Copied!"
-    expect(copyBtn.textContent).toContain("Copied!");
+    // Button text should change to "Copied" — no exclamation mark (voice
+    // doctrine bans them, bu-4utdw.5).
+    expect(copyBtn.textContent).toContain("Copied");
+    expect(copyBtn.textContent).not.toContain("Copied!");
   });
 
   it("Copy IDs button shows error toast when Clipboard API is unavailable", async () => {

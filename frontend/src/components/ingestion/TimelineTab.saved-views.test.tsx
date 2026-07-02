@@ -59,6 +59,7 @@ vi.mock("@/hooks/use-ingestion", () => ({
 vi.mock("@/hooks/use-timeline-saved-views", () => ({
   useTimelineSavedViews: vi.fn(),
   useCreateTimelineSavedView: vi.fn(),
+  useUpdateTimelineSavedView: vi.fn(),
   useDeleteTimelineSavedView: vi.fn(),
 }));
 
@@ -75,6 +76,7 @@ import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import {
   useTimelineSavedViews,
   useCreateTimelineSavedView,
+  useUpdateTimelineSavedView,
   useDeleteTimelineSavedView,
 } from "@/hooks/use-timeline-saved-views";
 import type {
@@ -189,6 +191,10 @@ function setupDefaultMocks() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useCreateTimelineSavedView>);
+  vi.mocked(useUpdateTimelineSavedView).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useUpdateTimelineSavedView>);
   vi.mocked(useDeleteTimelineSavedView).mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
@@ -211,7 +217,7 @@ describe("TimelineTab — §2.8 custom saved views list", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     setupDefaultMocks();
   });
 
@@ -349,7 +355,7 @@ describe("TimelineTab — §2.8 save current view", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     setupDefaultMocks();
   });
 
@@ -476,7 +482,7 @@ describe("TimelineTab — §2.8 apply custom view restores filter_spec", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     setupDefaultMocks();
   });
 
@@ -525,6 +531,221 @@ describe("TimelineTab — §2.8 apply custom view restores filter_spec", () => {
 });
 
 // ---------------------------------------------------------------------------
+// bu-4utdw.5 — view-modified state (amber dot, re-apply, update view)
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — bu-4utdw.5 view-modified state", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = makeQueryClient();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    localStorage.clear();
+    vi.resetAllMocks();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+  });
+
+  it("shows no modified dot on a built-in view until its chips diverge", () => {
+    act(() => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultViewId="errors" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='view-modified-dot-errors']")).toBeNull();
+
+    // Toggle a status chip off — diverges from the "Errors only" definition.
+    const errorChip = container.querySelector(
+      "[data-testid='status-filter-error']",
+    ) as HTMLButtonElement;
+    act(() => { errorChip.click(); });
+
+    expect(container.querySelector("[data-testid='view-modified-dot-errors']")).not.toBeNull();
+
+    // Clicking the (now modified) view pill re-applies its baseline and clears the dot.
+    const errorsBtn = container.querySelector("[data-view='errors']") as HTMLButtonElement;
+    act(() => { errorsBtn.click(); });
+
+    expect(container.querySelector("[data-testid='view-modified-dot-errors']")).toBeNull();
+    expect(errorChip.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("shows 'update view' next to a modified custom view and persists the current filters", () => {
+    const viewId = "550e8400-e29b-41d4-a716-446655440000";
+    const mockUpdateMutate = vi.fn();
+    vi.mocked(useUpdateTimelineSavedView).mockReturnValue({
+      mutate: mockUpdateMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useUpdateTimelineSavedView>);
+    vi.mocked(useTimelineSavedViews).mockReturnValue({
+      data: {
+        data: [makeSavedViewEntry({
+          id: viewId,
+          name: "Error view",
+          filter_spec: { statuses: ["error"], range: "1h" },
+        })],
+        meta: {},
+      },
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useTimelineSavedViews>);
+
+    act(() => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const viewBtn = container.querySelector(`[data-testid='custom-view-${viewId}']`) as HTMLButtonElement;
+    act(() => { viewBtn.click(); });
+
+    expect(container.querySelector(`[data-testid='update-view-${viewId}']`)).toBeNull();
+
+    // Diverge: toggle an additional status on top of the view's ["error"].
+    const filteredChip = container.querySelector(
+      "[data-testid='status-filter-filtered']",
+    ) as HTMLButtonElement;
+    act(() => { filteredChip.click(); });
+
+    const updateBtn = container.querySelector(
+      `[data-testid='update-view-${viewId}']`,
+    ) as HTMLButtonElement;
+    expect(updateBtn).not.toBeNull();
+
+    act(() => { updateBtn.click(); });
+
+    expect(mockUpdateMutate).toHaveBeenCalledOnce();
+    const call = mockUpdateMutate.mock.calls[0][0];
+    expect(call.id).toBe(viewId);
+    expect(call.body.filter_spec.statuses).toEqual(
+      expect.arrayContaining(["error", "filtered"]),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bu-4utdw.5 — "+ channel" adder and row click-to-filter
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — bu-4utdw.5 channel adder", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = makeQueryClient();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    localStorage.clear();
+    vi.resetAllMocks();
+    setupDefaultMocks();
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: [
+          {
+            connector_type: "telegram",
+            endpoint_identity: "bot",
+            liveness: "online",
+            state: "healthy",
+            error_message: null,
+            version: null,
+            uptime_s: null,
+            last_heartbeat_at: null,
+            first_seen_at: "2026-01-01T00:00:00Z",
+            today: { messages_ingested: 4, messages_failed: 0, uptime_pct: 100 },
+            hourly_events: [],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+  });
+
+  it("lists distinct channels from connector summaries and adds one to the filter on selection", () => {
+    act(() => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const adderBtn = container.querySelector("[data-testid='channel-adder-button']") as HTMLButtonElement;
+    expect(adderBtn).not.toBeNull();
+    act(() => { fireEvent.pointerDown(adderBtn); adderBtn.click(); });
+
+    const option = document.querySelector("[data-testid='channel-option-telegram']") as HTMLElement;
+    expect(option).not.toBeNull();
+    expect(option.textContent).toContain("4");
+
+    act(() => { fireEvent.pointerDown(option); fireEvent.pointerUp(option); option.click(); });
+
+    expect(container.querySelector("[data-testid='channel-chip-telegram']")).not.toBeNull();
+  });
+
+  it("row channel cell click-to-filter adds that channel (idempotent, never removes)", () => {
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ source_channel: "gmail" })]) as unknown as ReturnType<
+        typeof useIngestionEvents
+      >,
+    );
+
+    act(() => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='channel-chip-gmail']")).toBeNull();
+
+    const channelCell = container.querySelector("[data-testid='row-channel-filter']") as HTMLButtonElement;
+    expect(channelCell).not.toBeNull();
+    act(() => { channelCell.click(); });
+
+    expect(container.querySelector("[data-testid='channel-chip-gmail']")).not.toBeNull();
+
+    // Clicking again is a no-op (idempotent add, not a toggle) — the chip
+    // for this channel is unaffected and no second filter entry appears.
+    act(() => { channelCell.click(); });
+    expect(container.querySelectorAll("[data-testid='channel-chip-gmail']").length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §2.8 custom saved views — delete
 // ---------------------------------------------------------------------------
 
@@ -538,7 +759,7 @@ describe("TimelineTab — §2.8 delete custom view", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     setupDefaultMocks();
   });
 

@@ -103,17 +103,21 @@ It SHALL include:
 
 - header band with eyebrow, live freshness/status pill, range-aware headline,
   one-sentence serif summary, and event/session/cost KPIs;
-- sticky toolbar with range picker, search, saved views, channel chips, and
-  status filters;
+- sticky toolbar with range picker, search, saved views (with a
+  filters-diverged indicator and a re-apply/update path), status filter chips
+  (the badge vocabulary exactly), and an "add channel" control alongside any
+  active channel chips;
 - bulk-action bar when rows are selected, including a select-all-visible
-  action (capped at the bulk replay batch limit);
+  action (capped at the bulk replay batch limit) and, on a replay-unsafe
+  (409) rejection, a one-click action to deselect exactly the ineligible
+  events;
 - hour-group headers with event count and cost rollup;
 - ledger rows with time (leftmost column, mono `HH:mm:ss` via the shared Time
-  primitive), channel glyph, sender summary with an inline filter/error
-  reason, quiet dot-and-word status, cost, and an expand control; a demoted
-  selection checkbox (hidden by default, revealed on hover/focus or once
-  selection mode is active); token totals live in the expanded drawer, not
-  the row;
+  primitive), a click-to-filter channel glyph, sender summary with an inline
+  filter/error reason, quiet dot-and-word status, cost, and an expand
+  control; a demoted selection checkbox (hidden by default, revealed on
+  hover/focus or once selection mode is active); token totals live in the
+  expanded drawer, not the row;
 - in-place expanded drawer with step ledger, raw payload, replay history,
   request metadata, session index, and copy/open actions;
 - footer rollup band for the active filter window.

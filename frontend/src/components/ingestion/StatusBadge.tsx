@@ -131,10 +131,14 @@ export function StatusBadge({ status, filterReason, errorDetail }: StatusBadgePr
 // Word choice deliberately matches the badge vocabulary listed in bu-4utdw.4
 // exactly ("replay complete", not the historical StatusBadge/STATUS_LABELS
 // "replayed") — the two word lists are intentionally decoupled so this
-// vocabulary correction doesn't perturb StatusBadge's own callers/tests
-// (toolbar chip vocabulary alignment is a separate bead, bu-4utdw.5).
-
-const ROW_STATUS_WORDS: Record<IngestionEventStatus, string> = {
+// vocabulary correction doesn't perturb StatusBadge's own callers/tests.
+//
+// Exported so the Timeline toolbar's status filter chips (bu-4utdw.5) can
+// import this exact map instead of maintaining a second, driftable word
+// list — "one vocabulary" is enforced by sharing the constant, not by
+// convention.
+// eslint-disable-next-line react-refresh/only-export-components
+export const ROW_STATUS_WORDS: Record<IngestionEventStatus, string> = {
   ingested: "ingested",
   skipped: "skipped",
   filtered: "filtered",

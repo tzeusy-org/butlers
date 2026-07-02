@@ -36,7 +36,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
-import { AlertTriangle, BookmarkPlus, Copy, Loader2, RotateCw, Search, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  BookmarkPlus,
+  Copy,
+  Loader2,
+  Plus,
+  RotateCw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -47,6 +58,12 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -57,9 +74,11 @@ import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import {
   useTimelineSavedViews,
   useCreateTimelineSavedView,
+  useUpdateTimelineSavedView,
   useDeleteTimelineSavedView,
 } from "@/hooks/use-timeline-saved-views";
 import type {
+  ConnectorSummary,
   IngestionEventSummary,
   IngestionEventStatus,
   TimelineSavedViewEntry,
@@ -67,7 +86,7 @@ import type {
 } from "@/api/index.ts";
 import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
 import { Time } from "@/components/ui/time";
-import { RowStatus } from "./StatusBadge";
+import { RowStatus, ROW_STATUS_WORDS } from "./StatusBadge";
 import { isBulkEligible, bulkIneligibleReason } from "./bulkEligibility";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { deriveMinuteCounts } from "./timeline/deriveMinuteCounts";
@@ -115,7 +134,7 @@ function hourGroupKey(receivedAt: string | null): string {
 const SAVED_VIEWS_STORAGE_KEY = "ingestion-saved-views";
 
 /** Built-in view IDs. */
-type BuiltInViewId = "all" | "errors" | "priority" | "spend";
+type BuiltInViewId = "all" | "errors" | "spend";
 
 /**
  * Active view ID — either a built-in preset or a custom view's UUID string.
@@ -126,9 +145,7 @@ type ViewId = BuiltInViewId | string;
 interface SavedView {
   id: BuiltInViewId;
   label: string;
-  statuses: IngestionEventStatus[] | null;
-  /** Tooltip shown when statuses is null (disabled/placeholder). */
-  disabledTitle?: string;
+  statuses: IngestionEventStatus[];
 }
 
 const BUILT_IN_VIEWS: SavedView[] = [
@@ -145,14 +162,10 @@ const BUILT_IN_VIEWS: SavedView[] = [
     statuses: ["error", "replay_pending", "replay_failed"],
   },
   {
-    id: "priority",
-    label: "Priority",
-    statuses: null, // placeholder — no backend priority_contacts yet
-    disabledTitle: "Priority view available in Wave 2 (§3.3)",
-  },
-  {
     id: "spend",
-    label: "Spend",
+    // Lowercase — declares itself as a sort, not a filter preset (paired
+    // with the down-arrow-and-$ sort indicator rendered next to the label).
+    label: "spend",
     // Same statuses as "All" — cost sort applies to dispatched events.
     // Enabled by core_126: cost_usd is now denormalized onto ingestion_events.
     statuses: ["ingested", "error", "replay_pending", "replay_complete", "replay_failed"],
@@ -200,15 +213,9 @@ const ALL_STATUSES: IngestionEventStatus[] = [
   "replay_failed",
 ];
 
-const STATUS_LABELS: Record<IngestionEventStatus, string> = {
-  ingested: "ok",
-  skipped: "skipped",
-  filtered: "filtered",
-  error: "error",
-  replay_pending: "replay",
-  replay_complete: "replayed",
-  replay_failed: "failed",
-};
+// Status filter chips use the exact badge vocabulary (ROW_STATUS_WORDS,
+// imported from StatusBadge.tsx) rather than a second, driftable word list —
+// "ok"/"replay"/"replayed"/"failed" from the old chip labels are gone.
 
 // "skipped" (stored but not dispatched — e.g. home_assistant sensor streams)
 // and "filtered" are noise statuses, hidden by default.
@@ -226,17 +233,34 @@ const RANGE_OPTIONS: { id: IngestionRange; label: string }[] = [
   { id: "7d", label: "7d" },
 ];
 
+/** One selectable entry in the "+ channel" adder popover. */
+export interface ChannelOption {
+  channel: string;
+  /** Cheap count sourced from the already-fetched connector summaries (today's
+   *  total, not window-scoped — no per-chip request is made for this). Null
+   *  when unavailable. */
+  count: number | null;
+}
+
 interface ToolbarProps {
   range: IngestionRange;
   onRangeChange: (r: IngestionRange) => void;
   activeViewId: ViewId;
   onViewSelect: (v: ViewId) => void;
+  /** True when the active filter state (statuses/range/search/channels) has
+   *  diverged from whatever the active saved view defines. */
+  isViewModified: boolean;
+  /** Persist the current filter state onto an existing custom view. */
+  onUpdateView: (id: string) => void;
   enabledStatuses: Set<IngestionEventStatus>;
   onStatusToggle: (s: IngestionEventStatus) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   activeChannels: string[];
-  onChannelRemove: (channel: string) => void;
+  /** Add or remove a channel from the active filter (toggle). */
+  onChannelToggle: (channel: string) => void;
+  /** Channels available in the "+ channel" adder popover. */
+  channelOptions: ChannelOption[];
   /** Custom saved views from the backend (undefined = loading/unavailable). */
   customViews?: TimelineSavedViewEntry[];
   /** Whether the custom-views list is loading. */
@@ -252,12 +276,15 @@ function Toolbar({
   onRangeChange,
   activeViewId,
   onViewSelect,
+  isViewModified,
+  onUpdateView,
   enabledStatuses,
   onStatusToggle,
   searchQuery,
   onSearchChange,
   activeChannels,
-  onChannelRemove,
+  onChannelToggle,
+  channelOptions,
   customViews,
   customViewsLoading,
   onSaveView,
@@ -320,30 +347,42 @@ function Toolbar({
         {/* Saved views: built-in presets + custom views */}
         <div className="flex items-center gap-1" data-testid="saved-view-selector">
           {/* Built-in presets */}
-          {BUILT_IN_VIEWS.map((view) => (
-            <button
-              key={view.id}
-              type="button"
-              onClick={() => {
-                if (view.statuses !== null) onViewSelect(view.id);
-              }}
-              className={[
-                "rounded px-2.5 py-1 font-mono text-[11px] transition-colors",
-                activeViewId === view.id
-                  ? "bg-foreground/10 text-foreground border border-border"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                view.statuses === null ? "opacity-50 cursor-default" : "cursor-pointer",
-              ].join(" ")}
-              title={view.statuses === null ? view.disabledTitle : undefined}
-              data-view={view.id}
-              aria-pressed={activeViewId === view.id}
-            >
-              {view.label}
-              {view.statuses === null && (
-                <span className="ml-1 text-[9px] text-muted-foreground">(soon)</span>
-              )}
-            </button>
-          ))}
+          {BUILT_IN_VIEWS.map((view) => {
+            const active = activeViewId === view.id;
+            const modified = active && isViewModified;
+            return (
+              <button
+                key={view.id}
+                type="button"
+                onClick={() => onViewSelect(view.id)}
+                className={[
+                  "relative rounded px-2.5 py-1 font-mono text-[11px] transition-colors cursor-pointer",
+                  active
+                    ? "bg-foreground/10 text-foreground border border-border"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                ].join(" ")}
+                title={modified ? "Filters differ from this view — click to re-apply it" : undefined}
+                data-view={view.id}
+                aria-pressed={active}
+              >
+                <span className="inline-flex items-center gap-1">
+                  {view.label}
+                  {view.id === "spend" && (
+                    <span className="inline-flex items-center text-current" aria-hidden>
+                      <ArrowDown className="size-2.5" />$
+                    </span>
+                  )}
+                </span>
+                {modified && (
+                  <span
+                    className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-amber-500"
+                    data-testid={`view-modified-dot-${view.id}`}
+                    aria-label="Filters differ from this saved view"
+                  />
+                )}
+              </button>
+            );
+          })}
 
           {/* Separator between built-ins and custom views */}
           {(customViewsLoading || (customViews && customViews.length > 0)) && (
@@ -354,43 +393,76 @@ function Toolbar({
           {customViewsLoading && (
             <Skeleton className="h-6 w-16 rounded" data-testid="custom-views-loading" />
           )}
-          {!customViewsLoading && customViews?.map((view) => (
-            <div key={view.id} className="relative flex items-center group">
-              <button
-                type="button"
-                onClick={() => onViewSelect(view.id)}
-                className={[
-                  "rounded px-2.5 py-1 font-mono text-[11px] transition-colors pr-6",
-                  activeViewId === view.id
-                    ? "bg-foreground/10 text-foreground border border-border"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                ].join(" ")}
-                data-view={view.id}
-                data-testid={`custom-view-${view.id}`}
-                aria-pressed={activeViewId === view.id}
-                title={view.name}
-              >
-                {view.name}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteCustomView(view.id);
-                }}
-                className={[
-                  "absolute right-0.5 p-0.5 rounded transition-colors",
-                  "text-muted-foreground/40 hover:text-destructive",
-                  "opacity-0 group-hover:opacity-100 focus:opacity-100",
-                ].join(" ")}
-                aria-label={`Delete saved view: ${view.name}`}
-                data-testid={`custom-view-delete-${view.id}`}
-                title={`Delete "${view.name}"`}
-              >
-                <Trash2 className="size-2.5" aria-hidden />
-              </button>
-            </div>
-          ))}
+          {!customViewsLoading && customViews?.map((view) => {
+            const active = activeViewId === view.id;
+            const modified = active && isViewModified;
+            return (
+              <div key={view.id} className="flex items-center gap-1">
+                <div className="relative flex items-center group">
+                  <button
+                    type="button"
+                    onClick={() => onViewSelect(view.id)}
+                    className={[
+                      "relative rounded px-2.5 py-1 font-mono text-[11px] transition-colors pr-6",
+                      active
+                        ? "bg-foreground/10 text-foreground border border-border"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                    ].join(" ")}
+                    data-view={view.id}
+                    data-testid={`custom-view-${view.id}`}
+                    aria-pressed={active}
+                    title={modified ? `Filters differ from "${view.name}" — click to re-apply it` : view.name}
+                  >
+                    {view.name}
+                    {modified && (
+                      <span
+                        className="absolute top-1 right-2 size-1.5 rounded-full bg-amber-500"
+                        data-testid={`view-modified-dot-${view.id}`}
+                        aria-label="Filters differ from this saved view"
+                      />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteCustomView(view.id);
+                    }}
+                    className={[
+                      "absolute right-0.5 p-0.5 rounded transition-colors",
+                      "text-muted-foreground/60 hover:text-destructive",
+                      // Visible (not opacity-0) by default so touch users — who
+                      // never get a hover state — can still discover and tap
+                      // this; hover/focus just brightens it further.
+                      "opacity-60 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100",
+                    ].join(" ")}
+                    aria-label={`Delete saved view: ${view.name}`}
+                    data-testid={`custom-view-delete-${view.id}`}
+                    title={`Delete "${view.name}"`}
+                  >
+                    <Trash2 className="size-2.5" aria-hidden />
+                  </button>
+                </div>
+                {modified && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUpdateView(view.id);
+                    }}
+                    className={[
+                      "rounded px-1.5 py-1 font-mono text-[10px] transition-colors",
+                      "text-amber-600 hover:bg-amber-500/10",
+                    ].join(" ")}
+                    data-testid={`update-view-${view.id}`}
+                    title={`Update "${view.name}" with the current filters`}
+                  >
+                    update view
+                  </button>
+                )}
+              </div>
+            );
+          })}
 
           {/* Save current view button */}
           <button
@@ -406,6 +478,7 @@ function Toolbar({
             title="Save current filter combination as a named view"
           >
             <BookmarkPlus className="size-3" aria-hidden />
+            save view
           </button>
         </div>
 
@@ -430,15 +503,15 @@ function Toolbar({
                 data-testid={`status-filter-${status}`}
                 aria-pressed={active}
               >
-                {STATUS_LABELS[status]}
+                {ROW_STATUS_WORDS[status]}
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* Channel filter chips row — only rendered when channels are active */}
-      {activeChannels.length > 0 && (
+      {/* Channel filter chips row — active channel chips plus the "+ channel" adder */}
+      {(activeChannels.length > 0 || channelOptions.length > 0) && (
         <div className="flex items-center gap-1.5 flex-wrap pb-2" data-testid="channel-chips">
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
             channels:
@@ -447,7 +520,7 @@ function Toolbar({
             <button
               key={channel}
               type="button"
-              onClick={() => onChannelRemove(channel)}
+              onClick={() => onChannelToggle(channel)}
               className={[
                 "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
                 "font-mono text-[11px] border border-border/60 bg-muted/40 text-foreground",
@@ -460,6 +533,42 @@ function Toolbar({
               <X className="size-2.5" aria-hidden />
             </button>
           ))}
+          {channelOptions.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className={[
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
+                    "font-mono text-[11px] border border-dashed border-border/60 text-muted-foreground",
+                    "hover:bg-muted hover:border-border hover:text-foreground transition-colors",
+                  ].join(" ")}
+                  aria-label="Add channel filter"
+                  data-testid="channel-adder-button"
+                >
+                  <Plus className="size-2.5" aria-hidden />
+                  channel
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" data-testid="channel-adder-menu">
+                {channelOptions.map(({ channel, count }) => (
+                  <DropdownMenuCheckboxItem
+                    key={channel}
+                    checked={activeChannels.includes(channel)}
+                    onCheckedChange={() => onChannelToggle(channel)}
+                    onSelect={(e) => e.preventDefault()}
+                    className="font-mono text-[11px] gap-2"
+                    data-testid={`channel-option-${channel}`}
+                  >
+                    <span className="flex-1 truncate">{channel}</span>
+                    {count !== null && (
+                      <span className="text-muted-foreground tabular-nums">{count}</span>
+                    )}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       )}
     </div>
@@ -493,6 +602,10 @@ function BulkActionBar({
   const [isRetrying, setIsRetrying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
+  // Populated from the 409 response's `unsafe_events` detail so "deselect
+  // ineligible" can remove exactly the offending ids in one click, instead
+  // of forcing the owner to hunt for email/replay-unsafe rows by hand.
+  const [ineligibleIds, setIneligibleIds] = useState<string[]>([]);
 
   if (selectedCount === 0) return null;
 
@@ -503,6 +616,7 @@ function BulkActionBar({
     if (disabled) return;
     setIsRetrying(true);
     setErrorMsg(null);
+    setIneligibleIds([]);
     try {
       const result = await bulkRetryEvents(selectedIds);
 
@@ -523,11 +637,14 @@ function BulkActionBar({
         toast.error(failedMsg);
       }
     } catch (err: unknown) {
-      // 409 means the batch contains email or replay-unsafe events — surface a clear message.
+      // 409 means the batch contains email or replay-unsafe events — surface a clear message
+      // and let the owner deselect exactly the offending ids in one click.
       if (err instanceof ApiError && err.status === 409) {
         const msg = "Selection contains email or replay-unsafe events. Remove them and retry";
         setErrorMsg(msg);
         toast.error(msg);
+        const detail = err.detail as { unsafe_events?: { id: string }[] } | undefined;
+        setIneligibleIds(detail?.unsafe_events?.map((u) => u.id) ?? []);
       } else {
         const msg = err instanceof Error ? err.message : "Bulk replay failed";
         setErrorMsg(msg);
@@ -535,6 +652,12 @@ function BulkActionBar({
     } finally {
       setIsRetrying(false);
     }
+  }
+
+  function handleDeselectIneligible() {
+    onDeselectIds(ineligibleIds);
+    setIneligibleIds([]);
+    setErrorMsg(null);
   }
 
   async function handleCopyIds() {
@@ -600,7 +723,7 @@ function BulkActionBar({
         data-testid="bulk-copy-ids-button"
       >
         <Copy className="size-3 mr-1" />
-        {copySuccess ? "Copied!" : "Copy IDs"}
+        {copySuccess ? "Copied" : "Copy IDs"}
       </Button>
       <Button
         variant="ghost"
@@ -617,9 +740,23 @@ function BulkActionBar({
         </p>
       )}
       {errorMsg && (
-        <p className="font-mono text-[10px] text-destructive ml-auto" data-testid="bulk-error-msg">
-          {errorMsg}
-        </p>
+        <div className="flex items-center gap-2 ml-auto">
+          <p className="font-mono text-[10px] text-destructive" data-testid="bulk-error-msg">
+            {errorMsg}
+          </p>
+          {ineligibleIds.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="font-mono text-[10px] h-6 px-1.5 text-destructive"
+              onClick={handleDeselectIneligible}
+              title="Remove the email/replay-unsafe events from the selection"
+              data-testid="bulk-deselect-ineligible-button"
+            >
+              Deselect ineligible ({ineligibleIds.length})
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -692,6 +829,8 @@ interface LedgerRowProps {
   onToggleExpand: () => void;
   onToggleSelect: () => void;
   onOptimisticUpdate: (id: string, newStatus: IngestionEventStatus) => void;
+  /** Add this row's channel to the active channel filter (click-to-filter). */
+  onChannelClick: (channel: string) => void;
 }
 
 function LedgerRow({
@@ -702,6 +841,7 @@ function LedgerRow({
   onToggleExpand,
   onToggleSelect,
   onOptimisticUpdate,
+  onChannelClick,
 }: LedgerRowProps) {
   const eligible = isBulkEligible(event.status);
   const ineligibleReason = bulkIneligibleReason(event.status);
@@ -802,8 +942,21 @@ function LedgerRow({
         <span className="font-mono tabular-nums text-[11px] text-muted-foreground">—</span>
       )}
 
-      {/* Channel glyph + name */}
-      <div className="flex items-center gap-1.5 min-w-0">
+      {/* Channel glyph + name — click-to-filter by this channel */}
+      <button
+        type="button"
+        className={[
+          "flex items-center gap-1.5 min-w-0 rounded transition-opacity",
+          event.source_channel ? "hover:opacity-70 cursor-pointer" : "cursor-default",
+        ].join(" ")}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (event.source_channel) onChannelClick(event.source_channel);
+        }}
+        disabled={!event.source_channel}
+        title={event.source_channel ? `Filter by ${event.source_channel}` : undefined}
+        data-testid="row-channel-filter"
+      >
         <span
           className="inline-flex size-5 items-center justify-center rounded text-[10px] font-medium text-white shrink-0"
           style={{ backgroundColor: "var(--muted-foreground)" }}
@@ -811,13 +964,10 @@ function LedgerRow({
         >
           {(event.source_channel ?? "?").charAt(0).toUpperCase()}
         </span>
-        <span
-          className="font-mono text-[11px] text-muted-foreground truncate"
-          title={event.source_channel ?? undefined}
-        >
+        <span className="font-mono text-[11px] text-muted-foreground truncate">
           {event.source_channel ?? "—"}
         </span>
-      </div>
+      </button>
 
       {/* Sender + inline filter/error reason (no more tooltip-only pattern) */}
       <div className="min-w-0 pr-2 flex items-baseline gap-2">
@@ -892,6 +1042,7 @@ interface HourGroupProps {
   onOptimisticUpdate: (id: string, newStatus: IngestionEventStatus) => void;
   drawerEvent: IngestionEventSummary | null;
   onCloseDrawer: () => void;
+  onChannelClick: (channel: string) => void;
 }
 
 function HourGroup({
@@ -905,6 +1056,7 @@ function HourGroup({
   onOptimisticUpdate,
   drawerEvent,
   onCloseDrawer,
+  onChannelClick,
 }: HourGroupProps) {
   const hourStart = hourKey !== "unknown" ? hourKey + ":00:00Z" : "";
   const minuteCounts = useMemo(
@@ -940,6 +1092,7 @@ function HourGroup({
             }
             onToggleSelect={() => onToggleSelect(event.id)}
             onOptimisticUpdate={onOptimisticUpdate}
+            onChannelClick={onChannelClick}
           />
 
           {/* Inline drawer below this row when it's the focused event */}
@@ -1094,6 +1247,15 @@ export function TimelineTab({
   const [activeViewId, setActiveViewId] = useState<ViewId>(
     () => defaultViewId ?? readPersistedView(),
   );
+  // Guards for the "apply this view's filters on (re)selection" effects
+  // below: track the view id each effect has already applied for, so a
+  // later re-render caused by something unrelated (e.g. the custom-views
+  // list refetching in the background) doesn't silently re-stomp filters
+  // the owner has since diverged from the active view — that divergence is
+  // exactly what the amber "modified" dot needs to persist until the owner
+  // re-applies or updates the view.
+  const appliedBuiltInViewRef = useRef<ViewId | null>(null);
+  const appliedCustomViewIdRef = useRef<ViewId | null>(null);
 
   // Custom saved views from backend
   const {
@@ -1106,40 +1268,45 @@ export function TimelineTab({
   );
 
   const createSavedView = useCreateTimelineSavedView();
+  const updateSavedView = useUpdateTimelineSavedView();
   const deleteSavedView = useDeleteTimelineSavedView();
 
   // "Save current view" dialog state
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState("");
 
+  // Built-in view statuses baseline. Custom views' statuses are handled
+  // separately by applyCustomViewFilterSpec (below) as part of their full
+  // filter_spec, so this only needs to cover built-ins (plus the
+  // defaultStatuses test override).
   const viewStatuses = useMemo((): Set<IngestionEventStatus> => {
     if (defaultStatuses) return new Set(defaultStatuses);
-    // Check built-in views first
     if (isBuiltInViewId(activeViewId)) {
       const view = BUILT_IN_VIEWS.find((v) => v.id === activeViewId);
-      if (!view || view.statuses === null) return new Set(DEFAULT_STATUSES);
-      return new Set(view.statuses);
-    }
-    // Custom view — apply filter_spec.statuses if present
-    const customView = customViews.find((v) => v.id === activeViewId);
-    if (customView?.filter_spec.statuses) {
-      return new Set(customView.filter_spec.statuses as IngestionEventStatus[]);
+      return new Set(view ? view.statuses : DEFAULT_STATUSES);
     }
     return new Set(DEFAULT_STATUSES);
-  }, [activeViewId, defaultStatuses, customViews]);
+  }, [activeViewId, defaultStatuses]);
 
   const [enabledStatuses, setEnabledStatuses] = useState<Set<IngestionEventStatus>>(
     () => viewStatuses,
   );
 
+  // Re-apply the built-in baseline only the first time a given built-in view
+  // becomes active (mount, or switching from a different view) — not on
+  // every render where `viewStatuses` is merely a new-but-equal Set
+  // (defaultStatuses/customViews churn), which would otherwise silently
+  // revert a chip toggle the owner just made. Syncing local state to the
+  // "which view is active" id is the documented useEffect exception (see
+  // EducationPage.tsx's identical auto-select-on-load pattern).
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    if (!isBuiltInViewId(activeViewId)) return;
+    if (appliedBuiltInViewRef.current === activeViewId) return;
+    appliedBuiltInViewRef.current = activeViewId;
     setEnabledStatuses(viewStatuses);
-  }, [viewStatuses]);
-
-  const handleViewSelect = useCallback((viewId: ViewId) => {
-    setActiveViewId(viewId);
-    persistView(viewId);
-  }, []);
+  }, [activeViewId, viewStatuses]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleStatusToggle = useCallback((status: IngestionEventStatus) => {
     setEnabledStatuses((prev) => {
@@ -1227,21 +1394,50 @@ export function TimelineTab({
     [urlChannels],
   );
 
-  const handleChannelRemove = useCallback(
+  // Add or remove a single channel from the active filter (used by the chip's
+  // own remove button and the "+ channel" adder popover — both just flip
+  // membership).
+  const handleChannelToggle = useCallback(
     (channel: string) => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
-        const remaining = activeChannels.filter((c) => c !== channel);
-        if (remaining.length > 0) next.set("channels", remaining.join(","));
+        const prevChannels = (prev.get("channels") ?? "")
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean);
+        const isActive = prevChannels.includes(channel);
+        const updated = isActive
+          ? prevChannels.filter((c) => c !== channel)
+          : [...prevChannels, channel];
+        if (updated.length > 0) next.set("channels", updated.join(","));
         else next.delete("channels");
         return next;
       });
     },
-    [activeChannels, setSearchParams],
+    [setSearchParams],
+  );
+
+  // Row channel-cell click-to-filter: idempotent add (never removes) so
+  // clicking a row that's already within the active channel filter is a
+  // harmless no-op instead of surprising the owner by clearing the filter.
+  const handleChannelAdd = useCallback(
+    (channel: string) => {
+      setSearchParams((prev) => {
+        const prevChannels = (prev.get("channels") ?? "")
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean);
+        if (prevChannels.includes(channel)) return prev;
+        const next = new URLSearchParams(prev);
+        next.set("channels", [...prevChannels, channel].join(","));
+        return next;
+      });
+    },
+    [setSearchParams],
   );
 
   // ---------------------------------------------------------------------------
-  // Custom saved views — apply filter_spec, save, delete
+  // Custom saved views — apply filter_spec, select, update, save, delete
   // All handlers are defined here so that search/channel state setters are
   // already declared above.
   // ---------------------------------------------------------------------------
@@ -1279,14 +1475,111 @@ export function TimelineTab({
     [setSearchParams, setEnabledStatuses, setRange, setSearchInputValue, setDebouncedQ],
   );
 
-  // When a custom view is selected, apply its filter_spec
+  // Covers the case where a custom view id was persisted (localStorage) and
+  // is already `activeViewId` at mount, but `customViews` hasn't loaded yet —
+  // once it arrives, apply that view's filter_spec exactly once. Does NOT
+  // re-fire on every later `customViews` refetch (e.g. after "update view"
+  // invalidates the list), which would otherwise stomp a fresh divergence.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (isBuiltInViewId(activeViewId)) return;
+    if (appliedCustomViewIdRef.current === activeViewId) return;
     const customView = customViews.find((v) => v.id === activeViewId);
     if (customView) {
+      appliedCustomViewIdRef.current = activeViewId;
       applyCustomViewFilterSpec(customView.filter_spec);
     }
   }, [activeViewId, customViews, applyCustomViewFilterSpec]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Select (or re-select) a view. Explicitly re-applies its filters every
+  // time it's clicked — including when it's already the active view — so
+  // clicking a modified view's pill is the "re-apply" action the amber dot
+  // promises, not a no-op.
+  const handleViewSelect = useCallback(
+    (viewId: ViewId) => {
+      setActiveViewId(viewId);
+      persistView(viewId);
+
+      if (isBuiltInViewId(viewId)) {
+        appliedBuiltInViewRef.current = viewId;
+        const view = BUILT_IN_VIEWS.find((v) => v.id === viewId);
+        setEnabledStatuses(new Set(view ? view.statuses : DEFAULT_STATUSES));
+        return;
+      }
+
+      appliedCustomViewIdRef.current = viewId;
+      const customView = customViews.find((v) => v.id === viewId);
+      if (customView) {
+        applyCustomViewFilterSpec(customView.filter_spec);
+      }
+    },
+    [customViews, applyCustomViewFilterSpec],
+  );
+
+  // True when the active filter state has diverged from whatever the active
+  // saved view actually defines. Built-ins only define `statuses`; custom
+  // views compare each field their filter_spec actually captured (a view
+  // saved without a channel filter doesn't claim "no channels" forever).
+  const isViewModified = useMemo(() => {
+    if (isBuiltInViewId(activeViewId)) {
+      const view = BUILT_IN_VIEWS.find((v) => v.id === activeViewId);
+      if (!view) return false;
+      return (
+        enabledStatuses.size !== view.statuses.length ||
+        view.statuses.some((s) => !enabledStatuses.has(s))
+      );
+    }
+    const customView = customViews.find((v) => v.id === activeViewId);
+    if (!customView) return false;
+    const spec = customView.filter_spec;
+    if (spec.statuses) {
+      const specStatuses = spec.statuses as IngestionEventStatus[];
+      if (
+        enabledStatuses.size !== specStatuses.length ||
+        specStatuses.some((s) => !enabledStatuses.has(s))
+      ) {
+        return true;
+      }
+    }
+    if (spec.range && spec.range !== range) return true;
+    if (typeof spec.q === "string" && spec.q !== debouncedQ) return true;
+    if (typeof spec.channels === "string") {
+      const specChannels = [...spec.channels.split(",").map((c) => c.trim()).filter(Boolean)].sort();
+      const curChannels = [...activeChannels].sort();
+      if (
+        specChannels.length !== curChannels.length ||
+        specChannels.some((c, i) => c !== curChannels[i])
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }, [activeViewId, customViews, enabledStatuses, range, debouncedQ, activeChannels]);
+
+  // Persist the current filter state onto an existing custom view ("update
+  // view" — offered inline next to the amber dot instead of forcing a
+  // delete-and-resave round trip).
+  const handleUpdateView = useCallback(
+    (id: string) => {
+      const spec: TimelineSavedViewFilterSpec = {
+        statuses: [...enabledStatuses],
+        range,
+        ...(debouncedQ ? { q: debouncedQ } : {}),
+        ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
+      };
+      updateSavedView.mutate(
+        { id, body: { filter_spec: spec } },
+        {
+          onSuccess: () => toast.success("Saved view updated"),
+          onError: (err) => {
+            toast.error(err instanceof Error ? err.message : "Failed to update view");
+          },
+        },
+      );
+    },
+    [enabledStatuses, range, debouncedQ, activeChannels, updateSavedView],
+  );
 
   const handleSaveView = useCallback(() => {
     setSaveViewName("");
@@ -1339,6 +1632,30 @@ export function TimelineTab({
     },
     [activeViewId, deleteSavedView],
   );
+
+  // Connector summaries — already fetched for the attention strip; reused
+  // (same query key, no extra request) to build the "+ channel" adder's
+  // option list so it stays cheap (no per-chip requests).
+  const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
+
+  const channelOptions = useMemo((): ChannelOption[] => {
+    const connectors: ConnectorSummary[] = connectorsResp?.data ?? [];
+    const counts = new Map<string, number | null>();
+    for (const c of connectors) {
+      const today = c.today?.messages_ingested ?? null;
+      const prev = counts.get(c.connector_type);
+      if (prev === undefined) {
+        counts.set(c.connector_type, today);
+      } else if (prev !== null && today !== null) {
+        counts.set(c.connector_type, prev + today);
+      } else if (prev === null && today !== null) {
+        counts.set(c.connector_type, today);
+      }
+    }
+    return Array.from(counts.entries())
+      .map(([channel, count]) => ({ channel, count }))
+      .sort((a, b) => a.channel.localeCompare(b.channel));
+  }, [connectorsResp?.data]);
 
   // Compute ISO-8601 bounds from the range picker selection.
   // The rollup band uses these to scope its aggregate; the events list is
@@ -1420,7 +1737,11 @@ export function TimelineTab({
     }
   }, [latestReceivedAt, isLoading, onFreshnessChange]);
 
-  // Evict stale overrides
+  // Evict stale overrides — syncing optimistic overrides to freshly-fetched
+  // server state (external system) is the sanctioned effect use case; the
+  // functional updater already no-ops (returns `prev`) when nothing needs
+  // evicting.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setOptimisticOverrides((prev) => {
       if (prev.size === 0) return prev;
@@ -1431,6 +1752,7 @@ export function TimelineTab({
       return next.size === prev.size ? prev : next;
     });
   }, [rawEvents]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const allEvents: IngestionEventSummary[] = rawEvents.map((e) => {
     const override = optimisticOverrides.get(e.id);
@@ -1487,12 +1809,15 @@ export function TimelineTab({
         onRangeChange={handleRangeChange}
         activeViewId={activeViewId}
         onViewSelect={handleViewSelect}
+        isViewModified={isViewModified}
+        onUpdateView={handleUpdateView}
         enabledStatuses={enabledStatuses}
         onStatusToggle={handleStatusToggle}
         searchQuery={searchInputValue}
         onSearchChange={handleSearchChange}
         activeChannels={activeChannels}
-        onChannelRemove={handleChannelRemove}
+        onChannelToggle={handleChannelToggle}
+        channelOptions={channelOptions}
         customViews={customViewsLoading ? undefined : customViews}
         customViewsLoading={customViewsLoading}
         onSaveView={handleSaveView}
@@ -1601,6 +1926,7 @@ export function TimelineTab({
                 onOptimisticUpdate={handleOptimisticUpdate}
                 drawerEvent={drawerEvent}
                 onCloseDrawer={closeDrawer}
+                onChannelClick={handleChannelAdd}
               />
             ))}
           </>
