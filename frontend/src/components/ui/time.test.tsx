@@ -559,6 +559,60 @@ describe("precision=ms (bu-2tlvh)", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// 11c. precision=time-seconds (bu-4utdw.4)
+//      Second-precision time-only for the timeline ledger's leftmost column.
+//      Format: "HH:mm:ss" — 24-hour clock, no milliseconds.
+//      compact flag is a no-op (same as precision=time / ms).
+// ---------------------------------------------------------------------------
+
+describe("precision=time-seconds (bu-4utdw.4)", () => {
+  const SGT = "Asia/Singapore"
+  // 2026-05-03T00:00:07.000Z = 08:00:07 SGT (UTC+8)
+  const SECONDS_ISO = "2026-05-03T00:00:07.000Z"
+
+  it("renders HH:mm:ss matching the expected pattern", () => {
+    const { text } = parseTime(
+      render({ value: SECONDS_ISO, mode: "absolute", precision: "time-seconds" }, SGT),
+    )
+    expect(text).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+  })
+
+  it("renders the correct time for a known timestamp", () => {
+    const { text } = parseTime(
+      render({ value: SECONDS_ISO, mode: "absolute", precision: "time-seconds" }, SGT),
+    )
+    expect(text).toBe("08:00:07")
+  })
+
+  it("reflects the correct timezone", () => {
+    // 2026-05-03T00:00:07.000Z = 20:00:07 EDT (America/New_York, UTC-4)
+    const { text } = parseTime(
+      render({ value: SECONDS_ISO, mode: "absolute", precision: "time-seconds", timezone: "America/New_York" }),
+    )
+    expect(text).toBe("20:00:07")
+  })
+
+  it("does not include date, year, or timezone abbreviation", () => {
+    const { text } = parseTime(
+      render({ value: SECONDS_ISO, mode: "absolute", precision: "time-seconds" }, SGT),
+    )
+    expect(text).not.toContain("May")
+    expect(text).not.toContain("2026")
+    expect(text).not.toMatch(/SGT|GMT/)
+  })
+
+  it("compact flag is a no-op for time-seconds precision (same output)", () => {
+    const { text: plain } = parseTime(
+      render({ value: SECONDS_ISO, mode: "absolute", precision: "time-seconds" }, SGT),
+    )
+    const { text: compactText } = parseTime(
+      render({ value: SECONDS_ISO, mode: "absolute", precision: "time-seconds", compact: true }, SGT),
+    )
+    expect(plain).toBe(compactText)
+  })
+})
+
 describe("compact flag (mode=smart)", () => {
   beforeEach(() => {
     vi.useFakeTimers()

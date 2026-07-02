@@ -149,8 +149,10 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
     expect(container.querySelector('[data-testid="live-status-badge-live"]')).toBeNull()
   })
 
-  it('renders the page headline', async () => {
+  it('renders the range-driven page headline, defaulting to the 24h range', async () => {
+    // TimelineTab is mocked and never calls onRangeReport, so the page falls
+    // back to its own default ("24h") — matching TimelineTab's own default range.
     await renderPage()
-    expect(container.querySelector('h1')?.textContent).toBe('Today, in order of arrival.')
+    expect(container.querySelector('h1')?.textContent).toBe('Last 24 hours, newest first.')
   })
 })

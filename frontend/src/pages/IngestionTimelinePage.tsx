@@ -22,7 +22,19 @@
 import { useCallback, useMemo, useState } from 'react'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
-import { TimelineTab } from '@/components/ingestion/TimelineTab'
+import { TimelineTab, type IngestionRange } from '@/components/ingestion/TimelineTab'
+
+// ---------------------------------------------------------------------------
+// Range-driven headline (bu-4utdw.4 honesty fix — replaces the hardcoded
+// "Today, in order of arrival." with copy that reflects the active range
+// picker selection, reported up via TimelineTab's onRangeReport).
+// ---------------------------------------------------------------------------
+
+const RANGE_HEADLINE: Record<IngestionRange, string> = {
+  '1h': 'Last 1 hour, newest first.',
+  '24h': 'Last 24 hours, newest first.',
+  '7d': 'Last 7 days, newest first.',
+}
 
 // ---------------------------------------------------------------------------
 // LiveStatusBadge — driven by real event freshness
@@ -108,17 +120,28 @@ export default function IngestionTimelinePage() {
     setLatestReceivedAt(ra)
   }, [])
 
+  // Range-driven headline: defaults to TimelineTab's own default ("24h")
+  // until the first onRangeReport call confirms the actual active range.
+  const [activeRange, setActiveRange] = useState<IngestionRange>('24h')
+  const handleRangeReport = useCallback((r: IngestionRange) => {
+    setActiveRange(r)
+  }, [])
+
   return (
     <DispatchLayout>
       <DispatchHeader
         eyebrow="Ingestion · timeline"
-        headline="Today, in order of arrival."
+        headline={RANGE_HEADLINE[activeRange]}
         description="Every external signal the house received, with end-to-end pipeline detail behind each row."
         aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} />}
       />
       <IngestionSubNav />
       <DispatchSurface>
-        <TimelineTab isActive={true} onFreshnessChange={handleFreshnessChange} />
+        <TimelineTab
+          isActive={true}
+          onFreshnessChange={handleFreshnessChange}
+          onRangeReport={handleRangeReport}
+        />
       </DispatchSurface>
     </DispatchLayout>
   )

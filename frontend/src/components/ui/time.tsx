@@ -43,6 +43,10 @@
 //                 Used for log entry timestamps where sub-second resolution matters.
 //                 compact flag ignored. Timezone label intentionally suppressed.
 //                 Uses the SSS token via formatInTimeZone() for full TZ-correct output.
+//   - time-seconds: second-precision time-only (24-hour clock), e.g. "08:30:07"
+//                 Used for dense log/ledger timestamp columns that need
+//                 second resolution but not milliseconds (bu-4utdw.4).
+//                 compact flag ignored. Timezone label intentionally suppressed.
 //   All precisions still use the owner timezone via formatInTimeZone().
 //
 // Date-only strings (YYYY-MM-DD):
@@ -69,7 +73,16 @@ import { useTimezone } from "@/components/ui/timezone-context"
 // ---------------------------------------------------------------------------
 
 export type TimeMode = "absolute" | "relative" | "smart" | "clock-24h-mono" | "relative-compact"
-export type TimePrecision = "second" | "minute" | "hour" | "day" | "weekday" | "time" | "short-date" | "ms"
+export type TimePrecision =
+  | "second"
+  | "minute"
+  | "hour"
+  | "day"
+  | "weekday"
+  | "time"
+  | "short-date"
+  | "ms"
+  | "time-seconds"
 
 export interface TimeProps {
   /** The date value to render. Accepts an ISO 8601 string or a Date object. */
@@ -113,6 +126,9 @@ export interface TimeProps {
    *   - ms:         "08:30:42.123"  (24-hour clock with milliseconds, time-only;
    *                 compact has no effect; no tz label). Used for log entry timestamps
    *                 where sub-second resolution matters.
+   *   - time-seconds: "08:30:07"  (24-hour clock, time-only with seconds;
+   *                 compact has no effect; no tz label). Used for dense
+   *                 ledger/log timestamp columns needing second resolution.
    * @default "minute"
    */
   precision?: TimePrecision
@@ -146,12 +162,14 @@ export interface TimeProps {
 // Format strings per precision
 // ---------------------------------------------------------------------------
 
-// Note: `weekday`, `time`, `short-date`, and `ms` precisions intentionally omit
-// the timezone abbreviation (zzz). `weekday` renders a calendar-date heading where
-// the tz label adds no value; `time` renders a compact 24-hour column cell;
-// `short-date` renders a brief header date (e.g. "Sun 3 May 2026"); `ms` renders
-// a log timestamp where space is tight. All four still consume the owner timezone
-// via formatInTimeZone() so output is TZ-correct.
+// Note: `weekday`, `time`, `short-date`, `ms`, and `time-seconds` precisions
+// intentionally omit the timezone abbreviation (zzz). `weekday` renders a
+// calendar-date heading where the tz label adds no value; `time` renders a
+// compact 24-hour column cell; `short-date` renders a brief header date
+// (e.g. "Sun 3 May 2026"); `ms` renders a log timestamp where space is tight;
+// `time-seconds` renders a dense ledger/log time-only cell with second
+// resolution. All still consume the owner timezone via formatInTimeZone() so
+// output is TZ-correct.
 const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   second:     "MMM d, yyyy 'at' h:mm:ss a zzz",
   minute:     "MMM d, yyyy 'at' h:mm a zzz",
@@ -161,6 +179,7 @@ const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   time:       "HH:mm",
   "short-date": "EEE d MMM yyyy",
   ms:         "HH:mm:ss.SSS",
+  "time-seconds": "HH:mm:ss",
 }
 
 // Compact format omits year and timezone — used in dense table cells.
@@ -173,6 +192,7 @@ const COMPACT_FORMAT: Record<TimePrecision, string> = {
   time:       "HH:mm",      // compact has no effect, same format
   "short-date": "EEE d MMM", // compact omits year: "Sun 3 May"
   ms:         "HH:mm:ss.SSS",  // compact has no effect; same format
+  "time-seconds": "HH:mm:ss",  // compact has no effect; same format
 }
 
 // 24-hour threshold in ms — smart mode crossover point.

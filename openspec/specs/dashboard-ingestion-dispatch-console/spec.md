@@ -105,18 +105,23 @@ It SHALL include:
   one-sentence serif summary, and event/session/cost KPIs;
 - sticky toolbar with range picker, search, saved views, channel chips, and
   status filters;
-- bulk-action bar when rows are selected;
+- bulk-action bar when rows are selected, including a select-all-visible
+  action (capped at the bulk replay batch limit);
 - hour-group headers with event count and cost rollup;
-- ledger rows with selection, short request id, time, channel glyph, sender
-  summary, pipeline flame/duration, token totals, cost, replay, and expand
-  controls;
+- ledger rows with time (leftmost column, mono `HH:mm:ss` via the shared Time
+  primitive), channel glyph, sender summary with an inline filter/error
+  reason, quiet dot-and-word status, cost, and an expand control; a demoted
+  selection checkbox (hidden by default, revealed on hover/focus or once
+  selection mode is active); token totals live in the expanded drawer, not
+  the row;
 - in-place expanded drawer with step ledger, raw payload, replay history,
   request metadata, session index, and copy/open actions;
 - footer rollup band for the active filter window.
 
-#### Scenario: Event row expands into full request detail
+#### Scenario: Every ledger row can expand into full request detail
 
-- **WHEN** the owner expands an event row
+- **WHEN** the owner clicks or keyboard-activates (focus + Enter) any event
+  row, regardless of its status — including `filtered` and `error` rows
 - **THEN** an in-place drawer opens below that row
 - **AND** the drawer includes a step-ledger tab for every session associated
   with the event
@@ -124,6 +129,24 @@ It SHALL include:
   token totals, and step rows
 - **AND** the drawer includes raw-payload and replay-history tabs
 - **AND** the right rail exposes request metadata and a session index
+- **AND** for `filtered` or `error` rows with no sessions, the drawer states
+  the honest reason (skip-triage rule, filter reason, or dispatch failure)
+  instead of a bare "no sessions" message
+
+#### Scenario: Row status never renders as a filled pill
+
+- **WHEN** the owner views the ledger
+- **THEN** each row's status renders as a small dot plus a mono status word
+  (state color as foreground/border only)
+- **AND** no row renders a background-filled status badge
+- **AND** the status word matches the badge vocabulary exactly: `ingested`,
+  `skipped`, `filtered`, `error`, `replay pending`, `replay complete`,
+  `replay failed`
+- **AND** `filtered` rows are visually de-emphasized (reduced opacity) rather
+  than distinguished by a gray pill
+- **AND** `filtered`/`error` rows show their `filter_reason`/`error_detail`
+  inline next to the sender, truncated with a title tooltip, instead of only
+  on hover of the status control
 
 #### Scenario: Raw payload access is audited
 

@@ -29,6 +29,7 @@ import { toast } from 'sonner'
 import { Check, Copy, Download, Loader2, RotateCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Time } from '@/components/ui/time'
 import { butlerHueVar } from '@/components/ui/ButlerMark'
 import {
   useIngestionEventLineage,
@@ -109,22 +110,6 @@ function formatCost(usd: number | undefined | null): string {
 function fmtNum(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—'
   return n.toLocaleString()
-}
-
-function formatTimestamp(ts: string | null): string {
-  if (!ts) return '—'
-  try {
-    return new Date(ts).toLocaleString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  } catch {
-    return ts
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +491,7 @@ function DrawerReplaysTab({ requestId, enabled }: { requestId: string; enabled: 
         {entries.map((e, i) => (
           <div key={i} className="contents">
             <div className="tabular-nums text-muted-foreground">
-              {formatTimestamp(e.ts)}
+              <Time value={e.ts} mode="absolute" precision="second" />
             </div>
             <div className="truncate">{e.actor}</div>
             <div className="text-right">{e.result ?? '—'}</div>
@@ -625,7 +610,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
           {event.source_channel ?? '—'}
         </span>
         <span className="font-mono text-[11px] text-muted-foreground">
-          {formatTimestamp(event.received_at)}
+          {event.received_at ? <Time value={event.received_at} mode="absolute" precision="second" /> : '—'}
         </span>
         <button
           type="button"
@@ -689,7 +674,10 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
               request
             </p>
             <KVRow label="id" value={<CopyButton value={event.id} label={truncateId(event.id)} />} />
-            <KVRow label="received" value={formatTimestamp(event.received_at)} />
+            <KVRow
+              label="received"
+              value={event.received_at ? <Time value={event.received_at} mode="absolute" precision="second" /> : '—'}
+            />
             <KVRow label="channel" value={event.source_channel ?? '—'} />
             <KVRow label="tier" value={event.policy_tier ?? event.ingestion_tier ?? '—'} />
             <KVRow label="sender" value={event.source_sender_identity ?? '—'} />

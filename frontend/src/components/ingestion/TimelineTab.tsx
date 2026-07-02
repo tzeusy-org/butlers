@@ -66,7 +66,8 @@ import type {
   TimelineSavedViewFilterSpec,
 } from "@/api/index.ts";
 import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
-import { StatusBadge } from "./StatusBadge";
+import { Time } from "@/components/ui/time";
+import { RowStatus } from "./StatusBadge";
 import { isBulkEligible, bulkIneligibleReason } from "./bulkEligibility";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { deriveMinuteCounts } from "./timeline/deriveMinuteCounts";
@@ -77,20 +78,11 @@ import { useEventDrawerState } from "./timeline/useEventDrawerState";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function truncateId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) + "…" : id;
-}
-
 function formatCost(usd: number | undefined | null): string {
   if (usd === undefined || usd === null) return "—";
   if (usd === 0) return "$0.00";
   if (usd < 0.001) return "<$0.001";
   return `$${usd.toFixed(4)}`;
-}
-
-function fmtNum(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  return n.toLocaleString();
 }
 
 function isReplayable(status: IngestionEventStatus): boolean {
@@ -106,24 +98,6 @@ function isReplayPending(status: IngestionEventStatus): boolean {
   return status === "replay_pending";
 }
 
-
-function hourGroupLabel(receivedAt: string | null): string {
-  if (!receivedAt) return "Unknown time";
-  try {
-    const d = new Date(receivedAt);
-    const hourStart = new Date(d);
-    hourStart.setMinutes(0, 0, 0);
-    return hourStart.toLocaleString(undefined, {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "Unknown time";
-  }
-}
 
 function hourGroupKey(receivedAt: string | null): string {
   if (!receivedAt) return "unknown";
@@ -244,7 +218,7 @@ const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered" && s !== "s
 // Toolbar — range picker, search input, saved views, channel chips, status filter
 // ---------------------------------------------------------------------------
 
-type IngestionRange = "1h" | "24h" | "7d";
+export type IngestionRange = "1h" | "24h" | "7d";
 
 const RANGE_OPTIONS: { id: IngestionRange; label: string }[] = [
   { id: "1h", label: "1h" },
@@ -503,9 +477,19 @@ interface BulkActionBarProps {
   selectedIds: string[];
   onClearSelection: () => void;
   onDeselectIds: (ids: string[]) => void;
+  /** Eligible event ids currently visible under the active filters (capped by the caller). */
+  visibleEligibleIds: string[];
+  onSelectAllVisible: (ids: string[]) => void;
 }
 
-function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselectIds }: BulkActionBarProps) {
+function BulkActionBar({
+  selectedCount,
+  selectedIds,
+  onClearSelection,
+  onDeselectIds,
+  visibleEligibleIds,
+  onSelectAllVisible,
+}: BulkActionBarProps) {
   const [isRetrying, setIsRetrying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
@@ -573,6 +557,18 @@ function BulkActionBar({ selectedCount, selectedIds, onClearSelection, onDeselec
       data-testid="bulk-action-bar"
     >
       <span className="font-mono text-[11px] text-muted-foreground">{selectedCount} selected</span>
+      {visibleEligibleIds.some((id) => !selectedIds.includes(id)) && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="font-mono text-[11px] h-7 text-muted-foreground"
+          onClick={() => onSelectAllVisible(visibleEligibleIds)}
+          title={`Select all ${visibleEligibleIds.length} eligible visible event${visibleEligibleIds.length !== 1 ? "s" : ""} (max ${MAX_BULK_RETRY_BATCH})`}
+          data-testid="bulk-select-all-visible-button"
+        >
+          Select all visible ({visibleEligibleIds.length})
+        </Button>
+      )}
       <Button
         variant="outline"
         size="sm"
@@ -669,9 +665,19 @@ function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
 
 // ---------------------------------------------------------------------------
 // Shared layout constant — keep LedgerRow and LedgerColumnHeaders in sync
+//
+// bu-4utdw.4 recompose: time takes the left edge (leftmost, mono HH:mm:ss via
+// the shared Time primitive); the 8-char id column is dropped (id stays
+// available via the row's title attr and the drawer's copy affordance);
+// token in/out columns move to the drawer only. The selection checkbox
+// column is always in the grid (for alignment) but its content is visually
+// demoted — see `showCheckboxColumn` on LedgerRow / LedgerColumnHeaders. A
+// dispatch-ticks column is intentionally omitted until that bead lands
+// (bu-4utdw's sequencing note: leave it as empty space or omit, whichever
+// keeps the diff cleaner — omitting keeps this diff smaller).
 // ---------------------------------------------------------------------------
 
-const LEDGER_GRID_COLUMNS = "20px 80px 160px 1fr 80px 60px 60px 80px 32px"
+const LEDGER_GRID_COLUMNS = "20px 72px 150px 1fr 112px 64px 28px"
 
 // ---------------------------------------------------------------------------
 // LedgerRow — one row in the event ledger
@@ -681,6 +687,8 @@ interface LedgerRowProps {
   event: IngestionEventSummary;
   isExpanded: boolean;
   isSelected: boolean;
+  /** Selection column is always visible (errors view active, or ≥1 row already selected). */
+  showCheckboxColumn: boolean;
   onToggleExpand: () => void;
   onToggleSelect: () => void;
   onOptimisticUpdate: (id: string, newStatus: IngestionEventStatus) => void;
@@ -690,6 +698,7 @@ function LedgerRow({
   event,
   isExpanded,
   isSelected,
+  showCheckboxColumn,
   onToggleExpand,
   onToggleSelect,
   onOptimisticUpdate,
@@ -698,10 +707,15 @@ function LedgerRow({
   const ineligibleReason = bulkIneligibleReason(event.status);
   // bu-4utdw.3: tokens/cost/sender are now list-provided fields (one grouped
   // fan-out for the whole page server-side) — no per-row hook mounts here.
-  const resolvedName = event.sender_display ?? null;
+  const resolvedName = event.sender_display ?? event.source_sender_identity ?? null;
 
   const [isReplaying, setIsReplaying] = useState(false);
-  const canExpand = event.status !== "filtered" && event.status !== "error";
+
+  // bu-4utdw.4: every row expands now — filtered/error rows used to be
+  // excluded (their detail was tooltip-only). The drawer already renders an
+  // honest reason for those statuses (EventDrawer's emptySessionsReason).
+  const reasonText =
+    event.status === "filtered" ? event.filter_reason : event.status === "error" ? event.error_detail : null;
 
   async function handleReplay(e: React.MouseEvent) {
     e.stopPropagation();
@@ -716,57 +730,77 @@ function LedgerRow({
     }
   }
 
+  function handleRowClick(e: React.MouseEvent<HTMLDivElement>) {
+    // Shift-click enters selection mode without opening the drawer.
+    if (e.shiftKey && eligible) {
+      onToggleSelect();
+      return;
+    }
+    onToggleExpand();
+  }
+
+  function handleRowKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    // Only react when the row itself is focused (not a nested checkbox/button —
+    // those already handle their own activation and stop propagation).
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onToggleExpand();
+    }
+  }
+
   return (
     <div
       className={[
-        "grid items-center gap-x-3 px-3 py-2 border-b border-border/50 text-[13px] transition-colors",
-        canExpand ? "cursor-pointer" : "",
+        "grid items-center gap-x-3 px-3 py-2 border-b border-border/50 text-[13px] transition-colors cursor-pointer group",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+        event.status === "filtered" ? "opacity-60" : "",
         isExpanded ? "bg-muted/20" : "hover:bg-muted/10",
       ].join(" ")}
       style={{ gridTemplateColumns: LEDGER_GRID_COLUMNS }}
-      onClick={() => canExpand && onToggleExpand()}
-      aria-expanded={canExpand ? isExpanded : undefined}
+      onClick={handleRowClick}
+      onKeyDown={handleRowKeyDown}
+      tabIndex={0}
+      aria-expanded={isExpanded}
+      title={event.id}
       data-testid="ledger-row"
       data-event-id={event.id}
     >
-      {/* Checkbox — disabled and titled with reason for ineligible-status rows */}
-      <div
-        onClick={(e) => {
-          e.stopPropagation();
+      {/* Checkbox — hidden by default (opacity-0), revealed on row hover/focus
+          or whenever selection mode is active (errors view, or ≥1 selected).
+          A direct grid child (not wrapped) so it's the row's first element
+          child, matching the row-selection convention used elsewhere. */}
+      <input
+        type="checkbox"
+        checked={isSelected}
+        disabled={!eligible}
+        onChange={() => {
           if (eligible) onToggleSelect();
         }}
-        onKeyDown={(e) => {
-          if (eligible && (e.key === " " || e.key === "Enter")) {
-            e.preventDefault();
-            e.stopPropagation();
-            onToggleSelect();
-          }
-        }}
+        onClick={(e) => e.stopPropagation()}
         tabIndex={eligible ? 0 : -1}
-        className={["flex items-center", eligible ? "" : "cursor-not-allowed"].join(" ")}
+        className={[
+          "size-3.5 rounded border-border/60 accent-foreground cursor-pointer transition-opacity justify-self-start",
+          "disabled:cursor-not-allowed disabled:opacity-30",
+          showCheckboxColumn ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+        ].join(" ")}
         title={eligible ? undefined : (ineligibleReason ?? undefined)}
         data-testid={eligible ? "row-checkbox" : "row-checkbox-disabled"}
         aria-disabled={eligible ? undefined : true}
-        role="checkbox"
-        aria-checked={isSelected}
         aria-label={eligible ? "Select event" : (ineligibleReason ?? "Ineligible for bulk replay")}
-      >
-        <div className={[
-          "size-4 rounded border flex items-center justify-center transition-colors",
-          eligible
-            ? isSelected
-              ? "border-border/60 bg-foreground"
-              : "border-border/60 hover:border-foreground/40"
-            : "border-border/30 bg-muted/20 opacity-40",
-        ].join(" ")}>
-          {isSelected && eligible && <div className="size-2 rounded-sm bg-background" />}
-        </div>
-      </div>
+      />
 
-      {/* Short ID */}
-      <span className="font-mono text-[11px] text-muted-foreground truncate" title={event.id}>
-        {truncateId(event.id)}
-      </span>
+      {/* Time — leftmost visible column, mono HH:mm:ss via the shared Time primitive */}
+      {event.received_at ? (
+        <Time
+          value={event.received_at}
+          mode="absolute"
+          precision="time-seconds"
+          className="font-mono tabular-nums text-[11px] text-muted-foreground"
+        />
+      ) : (
+        <span className="font-mono tabular-nums text-[11px] text-muted-foreground">—</span>
+      )}
 
       {/* Channel glyph + name */}
       <div className="flex items-center gap-1.5 min-w-0">
@@ -785,38 +819,36 @@ function LedgerRow({
         </span>
       </div>
 
-      {/* Sender + summary */}
-      <div className="min-w-0 pr-2">
-        <span className="truncate block font-serif text-[13px] leading-[1.5]">
-          {resolvedName ?? event.source_sender_identity ?? "—"}
+      {/* Sender + inline filter/error reason (no more tooltip-only pattern) */}
+      <div className="min-w-0 pr-2 flex items-baseline gap-2">
+        <span
+          className="truncate font-serif text-[13px] leading-[1.5] shrink-0 max-w-[55%]"
+          title={resolvedName ?? undefined}
+        >
+          {resolvedName ?? "—"}
         </span>
+        {reasonText && (
+          <span
+            className={[
+              "truncate min-w-0 font-mono text-[11px]",
+              event.status === "error" ? "text-destructive" : "text-muted-foreground",
+            ].join(" ")}
+            title={reasonText}
+          >
+            {reasonText}
+          </span>
+        )}
       </div>
 
-      {/* Status */}
-      <div>
-        <StatusBadge
-          status={event.status}
-          filterReason={event.filter_reason}
-          errorDetail={event.error_detail}
-        />
-      </div>
-
-      {/* Tokens in */}
-      <span className="text-right tabular-nums font-mono text-[11px] text-muted-foreground">
-        {fmtNum(event.tokens_in)}
-      </span>
-
-      {/* Tokens out */}
-      <span className="text-right tabular-nums font-mono text-[11px] text-muted-foreground">
-        {fmtNum(event.tokens_out)}
-      </span>
+      {/* Status — quiet dot + word, never a filled pill in rows */}
+      <RowStatus status={event.status} />
 
       {/* Cost */}
       <span className="text-right tabular-nums font-mono text-[11px]">
         {formatCost(event.cost_usd)}
       </span>
 
-      {/* Replay / chevron */}
+      {/* Replay / chevron — chevron on every row now */}
       <div className="flex items-center justify-end gap-0" onClick={(e) => e.stopPropagation()}>
         {isReplayPending(event.status) ? (
           <Loader2 className="size-3 animate-spin text-muted-foreground" data-testid="replay-pending-spinner" />
@@ -835,11 +867,11 @@ function LedgerRow({
               <RotateCw className="size-3" />
             )}
           </button>
-        ) : canExpand ? (
+        ) : (
           <span className="font-mono text-[10px] text-muted-foreground select-none">
             {isExpanded ? "▲" : "▼"}
           </span>
-        ) : null}
+        )}
       </div>
     </div>
   );
@@ -850,11 +882,11 @@ function LedgerRow({
 // ---------------------------------------------------------------------------
 
 interface HourGroupProps {
-  label: string;
   hourKey: string;
   events: IngestionEventSummary[];
   drawerEventId: string | null;
   selectedIds: Set<string>;
+  showCheckboxColumn: boolean;
   onOpenDrawer: (id: string) => void;
   onToggleSelect: (id: string) => void;
   onOptimisticUpdate: (id: string, newStatus: IngestionEventStatus) => void;
@@ -863,11 +895,11 @@ interface HourGroupProps {
 }
 
 function HourGroup({
-  label,
   hourKey,
   events,
   drawerEventId,
   selectedIds,
+  showCheckboxColumn,
   onOpenDrawer,
   onToggleSelect,
   onOptimisticUpdate,
@@ -885,7 +917,7 @@ function HourGroup({
       {/* Hour group header */}
       <div className="flex items-center gap-3 px-3 py-1.5 bg-muted/10 border-b border-border/50">
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-          {label}
+          {hourStart ? <Time value={hourStart} mode="absolute" precision="hour" compact /> : "Unknown time"}
         </span>
         <span className="font-mono text-[10px] text-muted-foreground">
           {events.length} {events.length === 1 ? "event" : "events"}
@@ -902,6 +934,7 @@ function HourGroup({
             event={event}
             isExpanded={drawerEventId === event.id}
             isSelected={selectedIds.has(event.id)}
+            showCheckboxColumn={showCheckboxColumn}
             onToggleExpand={() =>
               drawerEventId === event.id ? onCloseDrawer() : onOpenDrawer(event.id)
             }
@@ -948,12 +981,10 @@ function LedgerColumnHeaders() {
       style={{ gridTemplateColumns: LEDGER_GRID_COLUMNS }}
     >
       <div />
-      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">id</span>
+      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">time</span>
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">channel</span>
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">sender</span>
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">status</span>
-      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right">in</span>
-      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right">out</span>
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right">cost</span>
       <div />
     </div>
@@ -1017,9 +1048,21 @@ interface TimelineTabProps {
    * Passes null when no events have loaded yet.
    */
   onFreshnessChange?: (latestReceivedAt: string | null) => void;
+  /**
+   * Called whenever the active range changes (and once on mount). The parent
+   * page uses this to make the header headline range-driven instead of a
+   * hardcoded "Today" string (bu-4utdw.4 honesty fix).
+   */
+  onRangeReport?: (range: IngestionRange) => void;
 }
 
-export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshnessChange }: TimelineTabProps) {
+export function TimelineTab({
+  isActive,
+  defaultStatuses,
+  defaultViewId,
+  onFreshnessChange,
+  onRangeReport,
+}: TimelineTabProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // ?event=<id> — drawer URL state
@@ -1042,6 +1085,10 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
     },
     [setSearchParams],
   );
+
+  useEffect(() => {
+    onRangeReport?.(range);
+  }, [range, onRangeReport]);
 
   // Saved views
   const [activeViewId, setActiveViewId] = useState<ViewId>(
@@ -1337,6 +1384,7 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
+    refetch,
   } = useIngestionEvents(eventsFilters, { enabled: isActive });
 
   // Window rollup — fires with the same filter shape plus the active range window.
@@ -1399,7 +1447,6 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
   // Group events by hour
   interface HourGroup {
     key: string;
-    label: string;
     events: IngestionEventSummary[];
   }
 
@@ -1410,13 +1457,27 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
     for (const event of events) {
       const hKey = hourGroupKey(event.received_at);
       if (hKey !== currentKey) {
-        groups.push({ key: hKey, label: hourGroupLabel(event.received_at), events: [] });
+        groups.push({ key: hKey, events: [] });
         currentKey = hKey;
       }
       groups[groups.length - 1].events.push(event);
     }
     return groups;
   }, [events]);
+
+  // bu-4utdw.4: selection checkbox column is demoted — hidden by default,
+  // shown once the errors view is active or the user has started selecting
+  // rows (shift-click on a row, or the bulk bar's "select all visible").
+  const showCheckboxColumn = activeViewId === "errors" || selectedIds.size > 0;
+
+  const visibleEligibleIds = useMemo(
+    () => events.filter((e) => isBulkEligible(e.status)).map((e) => e.id).slice(0, MAX_BULK_RETRY_BATCH),
+    [events],
+  );
+
+  const handleSelectAllVisible = useCallback((ids: string[]) => {
+    setSelectedIds(new Set(ids.slice(0, MAX_BULK_RETRY_BATCH)));
+  }, []);
 
   return (
     <div className="space-y-3" data-testid="timeline-tab">
@@ -1490,6 +1551,8 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
         selectedIds={selectedIdsArray}
         onClearSelection={handleClearSelection}
         onDeselectIds={handleDeselectIds}
+        visibleEligibleIds={visibleEligibleIds}
+        onSelectAllVisible={handleSelectAllVisible}
       />
 
       {/* Connector attention strip */}
@@ -1500,9 +1563,21 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
         <LedgerColumnHeaders />
 
         {isError ? (
-          <p className="px-6 py-4 font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
-            Failed to load ingestion events.
-          </p>
+          <div className="px-6 py-4 space-y-2">
+            <p className="font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
+              Failed to load ingestion events.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetch()}
+              className="font-mono text-[11px]"
+              data-testid="events-retry-button"
+            >
+              <RotateCw className="size-3 mr-1" />
+              Retry
+            </Button>
+          </div>
         ) : isLoading ? (
           <LedgerSkeleton />
         ) : events.length === 0 ? (
@@ -1516,11 +1591,11 @@ export function TimelineTab({ isActive, defaultStatuses, defaultViewId, onFreshn
             {hourGroups.map((group) => (
               <HourGroup
                 key={group.key}
-                label={group.label}
                 hourKey={group.key}
                 events={group.events}
                 drawerEventId={drawerEventId}
                 selectedIds={selectedIds}
+                showCheckboxColumn={showCheckboxColumn}
                 onOpenDrawer={(id) => openDrawer(id)}
                 onToggleSelect={handleToggleSelect}
                 onOptimisticUpdate={handleOptimisticUpdate}

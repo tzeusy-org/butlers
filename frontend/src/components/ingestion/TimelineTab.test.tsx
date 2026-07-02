@@ -3,12 +3,13 @@
  * Tests for TimelineTab component.
  *
  * Covers:
- * - StatusBadge rendering per event status
+ * - Row status rendering per event status (RowStatus: quiet dot + word, bu-4utdw.4)
  * - Replay button states (filtered/error/replay_failed/replay_pending/ingested/replay_complete)
  * - Optimistic update on Replay click + override eviction
  * - Error toast on replay failure
  * - Status filter checkboxes
- * - Non-expandable rows (filtered/error)
+ * - Every row is expandable (bu-4utdw.4): filtered/error rows open the drawer too,
+ *   keyboard focus + Enter opens a row, no filled status pills render in rows
  * - §2.5 Drawer: session anchor IDs, session index rail, copy-session-id button
  * - §2.6 Sender identity resolution (resolved / unresolved)
  * - §2.8 Saved Views: selector renders, view changes apply statuses, Priority is placeholder
@@ -134,6 +135,7 @@ function makeInfiniteEventsResult(events: IngestionEventSummary[]) {
     hasNextPage: false,
     isFetchingNextPage: false,
     fetchNextPage: vi.fn(),
+    refetch: vi.fn(),
   };
 }
 
@@ -354,10 +356,10 @@ describe("TimelineTab — status filter passes statuses= CSV to useIngestionEven
 });
 
 // ---------------------------------------------------------------------------
-// TimelineTab — StatusBadge rendering
+// TimelineTab — row status rendering (RowStatus: quiet dot + word, bu-4utdw.4)
 // ---------------------------------------------------------------------------
 
-describe("TimelineTab — StatusBadge rendering", () => {
+describe("TimelineTab — row status rendering", () => {
   let container: HTMLDivElement;
   let root: Root;
   let queryClient: QueryClient;
@@ -563,8 +565,9 @@ describe("TimelineTab — Replay button interaction", () => {
       );
     });
 
-    // Badge should now show "replayed" (the label for replay_complete), not the stale "replay pending"
-    expect(container.textContent).toContain("replayed");
+    // Row status should now show "replay complete" (the badge vocabulary word
+    // for replay_complete, bu-4utdw.4), not the stale "replay pending".
+    expect(container.textContent).toContain("replay complete");
     expect(container.textContent).not.toContain("replay pending");
   });
 
@@ -639,10 +642,16 @@ describe("TimelineTab — Status filter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TimelineTab — filtered events non-expandable
+// TimelineTab — every row is expandable (bu-4utdw.4)
+//
+// filtered/error rows used to be excluded from expansion entirely (their
+// detail was tooltip-only). Now every row opens the drawer — filtered/error
+// rows just also happen to render a Replay button in place of the chevron
+// (they're both expandable AND replayable), while ingested/skipped/etc. rows
+// show the chevron directly.
 // ---------------------------------------------------------------------------
 
-describe("TimelineTab — filtered events non-expandable", () => {
+describe("TimelineTab — every row is expandable", () => {
   let container: HTMLDivElement;
   let root: Root;
   let queryClient: QueryClient;
@@ -662,9 +671,9 @@ describe("TimelineTab — filtered events non-expandable", () => {
     vi.clearAllMocks();
   });
 
-  it("filtered rows have no expand chevron", () => {
+  function render(events: IngestionEventSummary[]) {
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ status: "filtered" })]) as unknown as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -676,47 +685,76 @@ describe("TimelineTab — filtered events non-expandable", () => {
         </QueryClientProvider>,
       );
     });
+  }
 
-    // Chevron characters ▼/▲ should not be present for filtered rows
-    expect(container.textContent).not.toContain("▼");
-    expect(container.textContent).not.toContain("▲");
+  it("clicking a filtered row opens the drawer", () => {
+    render([makeEvent({ id: "filtered-evt", status: "filtered", filter_reason: "rule matched" })]);
+
+    expect(container.querySelector("[data-testid='event-drawer']")).toBeNull();
+
+    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
+    act(() => {
+      row.click();
+    });
+
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
   });
 
-  it("error rows have no expand chevron", () => {
-    vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ status: "error" })]) as unknown as ReturnType<typeof useIngestionEvents>,
-    );
+  it("clicking an error row opens the drawer", () => {
+    render([makeEvent({ id: "error-evt", status: "error", error_detail: "boom" })]);
 
+    expect(container.querySelector("[data-testid='event-drawer']")).toBeNull();
+
+    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
     act(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter>
-            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
-          </MemoryRouter>
-        </QueryClientProvider>,
-      );
+      row.click();
     });
 
-    expect(container.textContent).not.toContain("▼");
-    expect(container.textContent).not.toContain("▲");
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
   });
 
-  it("ingested rows have expand chevron", () => {
-    vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ status: "ingested" })]) as unknown as ReturnType<typeof useIngestionEvents>,
-    );
-
-    act(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter>
-            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
-          </MemoryRouter>
-        </QueryClientProvider>,
-      );
-    });
-
+  it("ingested rows show the expand chevron", () => {
+    render([makeEvent({ status: "ingested" })]);
     expect(container.textContent).toContain("▼");
+  });
+
+  it("all rows have aria-expanded reflecting drawer state", () => {
+    render([makeEvent({ id: "aria-evt", status: "filtered" })]);
+    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      row.click();
+    });
+
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("pressing Enter on a focused row opens the drawer (keyboard access)", () => {
+    render([makeEvent({ id: "kbd-evt", status: "ingested" })]);
+    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
+    expect(row.getAttribute("tabIndex") ?? row.tabIndex.toString()).toBeDefined();
+
+    act(() => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
+  });
+
+  it("no ledger row renders a filled status pill (shadcn Badge slot)", () => {
+    render([
+      makeEvent({ id: "evt-1", status: "ingested" }),
+      makeEvent({ id: "evt-2", status: "filtered" }),
+      makeEvent({ id: "evt-3", status: "error" }),
+      makeEvent({ id: "evt-4", status: "replay_pending" }),
+    ]);
+
+    const ledger = container.querySelector("[data-testid='timeline-ledger']") as HTMLElement;
+    expect(ledger.querySelector("[data-slot='badge']")).toBeNull();
+    // Every row instead renders the quiet dot+word status primitive.
+    const statuses = ledger.querySelectorAll("[data-testid='row-status']");
+    expect(statuses.length).toBe(4);
   });
 });
 
@@ -1724,5 +1762,329 @@ describe("TimelineTab — ineligible-status rows are non-selectable", () => {
     const disabledCbs = container.querySelectorAll("[data-testid='row-checkbox-disabled']");
     expect(enabledCbs.length).toBe(1);
     expect(disabledCbs.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TimelineTab — failed-load retry button (bu-4utdw.4 honesty fix)
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — failed-load retry button", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("shows a retry button when the events query errors, which calls refetch on click", () => {
+    const refetch = vi.fn();
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+      refetch,
+    } as unknown as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Failed to load ingestion events.");
+    const retryBtn = container.querySelector("[data-testid='events-retry-button']") as HTMLButtonElement;
+    expect(retryBtn).not.toBeNull();
+
+    act(() => {
+      retryBtn.click();
+    });
+
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TimelineTab — sender title attribute (bu-4utdw.4 honesty fix)
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — sender cell title attribute", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("sender cell exposes the resolved name via a title attribute", () => {
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([
+        makeEvent({ source_sender_identity: "alice@example.com", sender_display: "Alice Smith" }),
+      ]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const senderEl = Array.from(container.querySelectorAll("span")).find(
+      (el) => el.textContent === "Alice Smith",
+    );
+    expect(senderEl).toBeDefined();
+    expect(senderEl!.getAttribute("title")).toBe("Alice Smith");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TimelineTab — selection checkbox column demotion (bu-4utdw.4)
+//
+// The checkbox column is hidden by default (opacity-0, revealed on
+// hover/focus) and forced visible once selection mode is active: the
+// built-in "Errors only" view, or ≥1 row already selected.
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — selection checkbox column demotion", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("checkbox is visually demoted (opacity-0) when no view/selection forces it visible", () => {
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ status: "ingested" })]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultViewId="all" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const checkbox = container.querySelector("[data-testid='row-checkbox']") as HTMLElement;
+    expect(checkbox.className).toContain("opacity-0");
+  });
+
+  it("checkbox is forced visible (opacity-100) when the Errors view is active", () => {
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ status: "error" })]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultViewId="errors" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const checkbox = container.querySelector("[data-testid='row-checkbox']") as HTMLElement;
+    expect(checkbox.className).toContain("opacity-100");
+  });
+
+  it("checkbox becomes forced-visible on every row once one row is selected (shift-click enters selection mode)", () => {
+    const events = [
+      makeEvent({ id: "evt-a", status: "ingested" }),
+      makeEvent({ id: "evt-b", status: "ingested" }),
+    ];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultViewId="all" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const rows = container.querySelectorAll("[data-testid='ledger-row']");
+    // Shift-click the first row's body (not the checkbox) — enters selection
+    // mode without opening the drawer.
+    act(() => {
+      rows[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }));
+    });
+
+    expect(container.querySelector("[data-testid='event-drawer']")).toBeNull();
+    const checkboxes = container.querySelectorAll("[data-testid='row-checkbox']");
+    checkboxes.forEach((cb) => expect(cb.className).toContain("opacity-100"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TimelineTab — BulkActionBar select-all-visible (bu-4utdw.4)
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — BulkActionBar select-all-visible", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  const EVENT_ID_1 = "aabbccdd-0000-0000-0000-000000000001";
+  const EVENT_ID_2 = "aabbccdd-0000-0000-0000-000000000002";
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("selecting all visible expands the selection to every eligible visible row (capped at 100)", () => {
+    const events = [
+      makeEvent({ id: EVENT_ID_1, status: "ingested" }),
+      makeEvent({ id: EVENT_ID_2, status: "error" }),
+    ];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab
+              isActive={true}
+              defaultStatuses={["ingested", "error"]}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    // Select just the first row to open the bulk bar.
+    const checkboxes = container.querySelectorAll("[data-testid='row-checkbox']");
+    act(() => {
+      (checkboxes[0] as HTMLElement).click();
+    });
+
+    const selectAllBtn = container.querySelector(
+      "[data-testid='bulk-select-all-visible-button']",
+    ) as HTMLButtonElement;
+    expect(selectAllBtn).not.toBeNull();
+    expect(selectAllBtn.textContent).toContain("2");
+
+    act(() => {
+      selectAllBtn.click();
+    });
+
+    expect(container.querySelector("[data-testid='bulk-action-bar']")!.textContent).toContain("2 selected");
+  });
+
+  it("still shows select-all-visible when a selected id falls outside the current view", () => {
+    // Regression for a visibility bug: the button used to be gated on
+    // `visibleEligibleIds.length > selectedCount`, so a stale selection made
+    // under a previous filter (an id no longer in the current view) could
+    // make `selectedCount` >= the visible count even though a visible,
+    // unselected, eligible row still exists — incorrectly hiding the button.
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID_1, status: "ingested" })]) as unknown as ReturnType<
+        typeof useIngestionEvents
+      >,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "error"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    act(() => {
+      (container.querySelector("[data-testid='row-checkbox']") as HTMLElement).click();
+    });
+
+    // Simulate a filter change: the previously-selected event scrolls out of
+    // view and a different, unselected eligible event takes its place.
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID_2, status: "ingested" })]) as unknown as ReturnType<
+        typeof useIngestionEvents
+      >,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "error"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const selectAllBtn = container.querySelector(
+      "[data-testid='bulk-select-all-visible-button']",
+    ) as HTMLButtonElement | null;
+    expect(selectAllBtn).not.toBeNull();
   });
 });

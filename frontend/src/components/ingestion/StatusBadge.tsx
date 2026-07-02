@@ -117,3 +117,72 @@ export function StatusBadge({ status, filterReason, errorDetail }: StatusBadgePr
     </TooltipProvider>
   );
 }
+
+// ---------------------------------------------------------------------------
+// RowStatus — quiet dot + status word for dense ledger rows (bu-4utdw.4)
+// ---------------------------------------------------------------------------
+//
+// The ledger row grid has no room for a filled pill, and the dispatch design
+// language forbids background-color fills in rows (state colors are
+// foreground/border only — the hour strip and dispatch ticks are the
+// sanctioned data-viz color carriers). This renders a 6px dot plus a mono
+// status word instead of a <Badge>.
+//
+// Word choice deliberately matches the badge vocabulary listed in bu-4utdw.4
+// exactly ("replay complete", not the historical StatusBadge/STATUS_LABELS
+// "replayed") — the two word lists are intentionally decoupled so this
+// vocabulary correction doesn't perturb StatusBadge's own callers/tests
+// (toolbar chip vocabulary alignment is a separate bead, bu-4utdw.5).
+
+const ROW_STATUS_WORDS: Record<IngestionEventStatus, string> = {
+  ingested: "ingested",
+  skipped: "skipped",
+  filtered: "filtered",
+  error: "error",
+  replay_pending: "replay pending",
+  replay_complete: "replay complete",
+  replay_failed: "replay failed",
+};
+
+interface RowStatusStyle {
+  /** Dot fill/border classes. Filled dots for primary states; hollow (border-only) for secondary/noise states. */
+  dot: string;
+  /** Foreground text color class. */
+  text: string;
+}
+
+const ROW_STATUS_STYLE: Record<IngestionEventStatus, RowStatusStyle> = {
+  ingested: { dot: "bg-emerald-500", text: "text-emerald-600" },
+  skipped: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
+  filtered: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
+  error: { dot: "bg-destructive", text: "text-destructive" },
+  replay_pending: { dot: "border border-blue-500", text: "text-blue-600" },
+  replay_complete: { dot: "border border-emerald-500", text: "text-emerald-600" },
+  replay_failed: { dot: "border border-destructive", text: "text-destructive" },
+};
+
+export interface RowStatusProps {
+  status: IngestionEventStatus;
+  className?: string;
+}
+
+/** Quiet 6px-dot + mono status word for ledger rows. Never a filled pill. */
+export function RowStatus({ status, className }: RowStatusProps) {
+  const style = ROW_STATUS_STYLE[status];
+  return (
+    <span
+      className={[
+        "inline-flex items-center gap-1.5 font-mono text-[11px] whitespace-nowrap",
+        style.text,
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-testid="row-status"
+      data-status={status}
+    >
+      <span className={["inline-block size-1.5 rounded-full shrink-0", style.dot].join(" ")} aria-hidden />
+      {ROW_STATUS_WORDS[status]}
+    </span>
+  );
+}

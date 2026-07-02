@@ -262,8 +262,9 @@ describe('IngestionTimelinePage', () => {
         </MemoryRouter>,
       )
     })
-    // Headline updated to Dispatch-language range-aware copy
-    expect(container.querySelector('h1')?.textContent).toBe('Today, in order of arrival.')
+    // Headline is range-driven (bu-4utdw.4); defaults to the 24h range copy
+    // until TimelineTab reports the active range via onRangeReport.
+    expect(container.querySelector('h1')?.textContent).toBe('Last 24 hours, newest first.')
     expect(container.querySelector('[data-testid="timeline-tab-stub"]')).not.toBeNull()
   })
 })
