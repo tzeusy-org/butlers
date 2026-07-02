@@ -6,7 +6,7 @@
 
 ## Overview
 
-Butlers follows a milestone-driven development plan. The project has grown from initial prototyping to a functional alpha with 10 butler roles, 8+ modules, 6+ connectors, a React dashboard, E2E benchmarking, and an OpenSpec planning system. Development is guided by `PROJECT_PLAN.md` (core infrastructure) and `MEMORY_PROJECT_PLAN.md` (tiered memory subsystem).
+Butlers follows a milestone-driven development plan. The project has grown from initial prototyping to a functional alpha with 10 butler roles, 8+ modules, 6+ connectors, a React dashboard, E2E benchmarking, and an OpenSpec planning system. Development is guided by the OpenSpec tree (`openspec/`) and project doctrine (`about/heart-and-soul/`).
 
 ## Current State
 
@@ -59,7 +59,7 @@ The project has reached a functional alpha state with substantial implementation
 
 ## Memory Subsystem Plan
 
-The tiered memory subsystem follows a separate plan (`MEMORY_PROJECT_PLAN.md`):
+The tiered memory subsystem's design (documented in `docs/modules/memory.md`):
 
 - **Eden tier:** Hot storage for recent episodes and facts.
 - **Mid-Term tier:** Consolidated knowledge promoted from Eden via LRU.

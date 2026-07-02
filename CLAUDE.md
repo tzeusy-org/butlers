@@ -178,7 +178,7 @@ See `AGENTS.md` for full beads workflow details.
 
 ## Implementation Plan
 
-Development follows milestones defined in `PROJECT_PLAN.md`. Use the `superpowers:executing-plans` skill to implement tasks from that plan. A separate `MEMORY_PROJECT_PLAN.md` covers the tiered memory subsystem (Eden → Mid-Term → Long-Term, LRU-based promotion/eviction).
+Development is spec-driven: normative requirements live in `openspec/` (see the `spec-and-spine` skill), project doctrine in `about/heart-and-soul/`, and work items in beads (`bd`). The memory subsystem's design is documented in `docs/modules/memory.md`.
 
 ## API Conventions
 

@@ -171,9 +171,9 @@ Dry-run logs candidate count without deleting.
 **Decision: RETENTION-CLASS GOVERNED**
 
 The memory subsystem has a `retention_class` column on episodes and a
-`memory_policies` table.  These are governed by the memory butler's own
-retention logic (LRU-based promotion/eviction per MEMORY_PROJECT_PLAN.md).
-Not covered by this audit — defer to the memory butler's policy framework.
+`memory_policies` table.  These are governed by the memory module's own
+retention logic (LRU-based promotion/eviction; see `docs/modules/memory.md`).
+Not covered by this audit — defer to the memory module's policy framework.
 
 ---
 
