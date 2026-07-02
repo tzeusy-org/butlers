@@ -273,46 +273,15 @@ done
 
 # ── Ensure base image is current ───────────────────────────────────────
 # The base image (butlers-base) contains system deps, Node.js, LLM CLIs,
-# and uv. Rebuild it when Dockerfile.base changes — or when any LLM CLI
-# has a new release on npm — so app rebuilds cannot silently inherit a
-# stale toolchain. Without the CLI check, codex (and friends) would stay
-# pinned to whatever was current at the last base build, breaking newer
-# model IDs the runtime tries to use.
+# and uv. Rebuild it when Dockerfile.base changes, including pinned LLM CLI
+# version bumps, so app rebuilds cannot silently inherit a stale toolchain.
 if command -v sha256sum &>/dev/null; then
   _hasher() { sha256sum; }
 else
   _hasher() { shasum -a 256; }
 fi
 
-DOCKERFILE_HASH=$(_hasher < Dockerfile.base | awk '{print $1}')
-
-# Query npm registry for the latest version of each CLI installed in
-# Dockerfile.base. Hashing these into the cache key forces a base rebuild
-# whenever any CLI publishes a new version, so `npm install -g <pkg>`
-# picks up the new version on next run.
-CLI_PKGS=(@anthropic-ai/claude-code @google/gemini-cli @openai/codex opencode-ai)
-CLI_VERSIONS=""
-CLI_QUERY_FAILED=false
-for pkg in "${CLI_PKGS[@]}"; do
-  ver=$(curl -fsSL --max-time 5 "https://registry.npmjs.org/${pkg}/latest" 2>/dev/null \
-        | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null) || ver=""
-  if [ -z "$ver" ]; then
-    CLI_QUERY_FAILED=true
-    break
-  fi
-  CLI_VERSIONS+="${pkg}@${ver};"
-done
-
-if [ "$CLI_QUERY_FAILED" = "false" ] && [ -n "$CLI_VERSIONS" ]; then
-  CLI_HASH=$(printf '%s' "$CLI_VERSIONS" | _hasher | awk '{print $1}')
-  BASE_DOCKERFILE_SHA="${DOCKERFILE_HASH}-${CLI_HASH:0:12}"
-  echo "LLM CLIs (latest on npm): ${CLI_VERSIONS%;}"
-else
-  # Registry unreachable — fall back to Dockerfile-only hash so the build
-  # still proceeds offline. Existing image will be reused if it exists.
-  BASE_DOCKERFILE_SHA="$DOCKERFILE_HASH"
-  echo "Note: could not query npm registry; skipping CLI freshness check."
-fi
+BASE_DOCKERFILE_SHA=$(_hasher < Dockerfile.base | awk '{print $1}')
 
 BASE_IMAGE_SHA=$(
   docker image inspect butlers-base:latest     --format '{{ index .Config.Labels "butlers.base.dockerfile_sha" }}'     2>/dev/null || true
@@ -326,7 +295,7 @@ if [ -z "$BASE_IMAGE_SHA" ]; then
   }
   echo ""
 elif [ "$BASE_IMAGE_SHA" != "$BASE_DOCKERFILE_SHA" ]; then
-  echo "Rebuilding butlers-base image because Dockerfile.base changed..."
+  echo "Rebuilding butlers-base image because Dockerfile.base or pinned runtime CLI versions changed..."
   docker build     --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}"     -f Dockerfile.base     -t butlers-base . || {
     echo "ERROR: Failed to rebuild butlers-base image" >&2
     exit 1
