@@ -115,6 +115,7 @@ export const router = createBrowserRouter(
         // Hop and Columns were absorbed by the Plex; deep links carry over.
         { path: '/entities/hop', element: <HopToPlexRedirect /> },
         { path: '/entities/columns', element: <ColumnsToPlexRedirect /> },
+        { path: '/entities/social-map', element: <Navigate to="/entities" replace /> },
         { path: '/entities/concentration', element: <ConcentrationPage /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsConsolePage /> },

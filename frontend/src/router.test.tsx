@@ -262,6 +262,130 @@ describe('/butlers/relationship/entities/:entityId → /entities/:entityId (lega
 })
 
 // ---------------------------------------------------------------------------
+// /entities/hop and /entities/columns → /entities (the Plex absorbed both).
+// The REAL redirect components are imported so the param-mapping logic in
+// router.tsx is what's under test, not a re-inlined copy.
+// ---------------------------------------------------------------------------
+
+import { ColumnsToPlexRedirect, HopToPlexRedirect } from './router.tsx'
+
+function PlexStub() {
+  const [searchParams] = useSearchParams()
+  return (
+    <div
+      data-testid="plex-page"
+      data-center={searchParams.get('center') ?? ''}
+      data-trail={searchParams.get('trail') ?? ''}
+      data-has-params={String([...searchParams.keys()].length > 0)}
+    />
+  )
+}
+
+function renderPlexRedirect(
+  container: HTMLDivElement,
+  root: Root,
+  initialPath: string,
+) {
+  act(() => {
+    root.render(
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route path="/entities/hop" element={<HopToPlexRedirect />} />
+          <Route path="/entities/columns" element={<ColumnsToPlexRedirect />} />
+          <Route path="/entities" element={<PlexStub />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+  })
+  return container.querySelector('[data-testid="plex-page"]')
+}
+
+describe('/entities/hop → /entities redirect', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+    document.body.innerHTML = ''
+  })
+
+  it('passes ?center and ?trail through to the plex', () => {
+    const el = renderPlexRedirect(container, root, '/entities/hop?center=A&trail=B,C')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-center')).toBe('A')
+    expect(el?.getAttribute('data-trail')).toBe('B,C')
+  })
+
+  it('redirects a bare /entities/hop to /entities with no params', () => {
+    const el = renderPlexRedirect(container, root, '/entities/hop')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-has-params')).toBe('false')
+  })
+
+  it('preserves a trail even when center is absent', () => {
+    const el = renderPlexRedirect(container, root, '/entities/hop?trail=B,C')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-center')).toBe('')
+    expect(el?.getAttribute('data-trail')).toBe('B,C')
+  })
+})
+
+describe('/entities/columns → /entities redirect', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+    document.body.innerHTML = ''
+  })
+
+  it('maps ?path=a,b,c to center=c with the earlier hops as the trail', () => {
+    const el = renderPlexRedirect(container, root, '/entities/columns?path=a,b,c')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-center')).toBe('c')
+    expect(el?.getAttribute('data-trail')).toBe('a,b')
+  })
+
+  it('maps a single-node ?path=a to center=a with no trail param', () => {
+    const el = renderPlexRedirect(container, root, '/entities/columns?path=a')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-center')).toBe('a')
+    expect(el?.getAttribute('data-trail')).toBe('')
+  })
+
+  it('redirects a bare /entities/columns to /entities with no params', () => {
+    const el = renderPlexRedirect(container, root, '/entities/columns')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-has-params')).toBe('false')
+  })
+
+  it('ignores empty path segments (?path=a,,b)', () => {
+    const el = renderPlexRedirect(container, root, '/entities/columns?path=a,,b')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-center')).toBe('b')
+    expect(el?.getAttribute('data-trail')).toBe('a')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // nav-config: Contacts entry must not appear (§8.10)
 // ---------------------------------------------------------------------------
 

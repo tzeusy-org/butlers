@@ -2,7 +2,7 @@
 // EntityPrimitives.stories — shared entity + provenance primitives (bu-ovq7t)
 //
 // Visual gallery for the single-source entity UI primitives consumed by every
-// entity view (Index, Hop, Columns, Concentration, Detail, Finder):
+// entity view (Index, Plex, Concentration, Detail, Finder):
 //   EntityMark · TierBadge · StateDot · Row · StalenessBand · ProvenanceMarks.
 //
 // Note: ConfBar was removed (bu-8j0ir) — conf is hardcoded 1.0 at every write

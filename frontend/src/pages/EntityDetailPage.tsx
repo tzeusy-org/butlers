@@ -2930,8 +2930,8 @@ export default function EntityDetailPage() {
 
   // Build breadcrumbs based on origin page.
   // The optional `?from=` query param signals which entities sub-page the user
-  // arrived from (concentration). Links in those pages that
-  // navigate to an entity detail page may include e.g. `?from=hop` so that
+  // arrived from (only `concentration` is a live origin today). Links there
+  // navigate to an entity detail page with `?from=concentration` so that
   // the crumb trail reflects the real navigation path.
   // Direct URL access (no ?from=) shows only: Index → Entity name.
   const originFrom = searchParams.get("from");

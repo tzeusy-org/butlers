@@ -180,7 +180,7 @@ export function useEntityCoreDates(entityId: string | undefined) {
  *
  * Pass ``params.rank = "weight"`` (with optional ``per_predicate``) to request
  * ranked truncation; the response then carries a ``remainders`` map driving the
- * "+N more" affordance for Hop / Columns.
+ * "+N more" affordance in the Plex.
  */
 export function useEntityNeighbours(
   entityId: string | undefined,

@@ -5102,7 +5102,7 @@ export function getWhatsAppHealth(): Promise<WhatsAppHealthResponse> {
   return apiFetch<WhatsAppHealthResponse>("/connectors/whatsapp/health");
 }
 
-/** GET /api/relationship/dunbar/ranking — Dunbar tier ranking for social map visualization. */
+/** GET /api/relationship/dunbar/ranking — Dunbar tier ranking for the Plex and contacts views. */
 export function getDunbarRanking(): Promise<DunbarRankingResponse> {
   return apiFetch<DunbarRankingResponse>("/relationship/dunbar/ranking");
 }

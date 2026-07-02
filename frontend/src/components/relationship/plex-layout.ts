@@ -168,8 +168,10 @@ export function layoutOwnerPlex(
     bucket.forEach((entry, i) => {
       const staleDays = daysSince(entry.last_interaction_at);
       // Fractional per-tier rotation keeps rings from forming radial spokes
-      // while every node stays inside the notched span.
-      const pos = (((i + tierIndex * 0.37) % n) + 0.5) / Math.max(1, n);
+      // while every node stays inside the notched span. The rotation offset is
+      // folded into the modulo so pos stays in [0, 1) — adding 0.5 after the
+      // modulo could push pos past 1 and spill nodes into the top notch.
+      const pos = ((i + 0.5 + tierIndex * 0.37) % Math.max(1, n)) / Math.max(1, n);
       nodes.push({
         entityId: entry.entity_id,
         name: entry.canonical_name,

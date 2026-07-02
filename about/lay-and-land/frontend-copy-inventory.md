@@ -5,8 +5,6 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/pages/ApprovalRulesPage.tsx`
 
-- Approval Rules
-- Manage standing approval rules for automatic action approval.
 - Create rule
 - Back to actions
 - Filter Rules
@@ -17,39 +15,57 @@ Do **not** edit manually: re-run the script to refresh.
 - Loading...
 - Previous
 - Next
+- Approval Rules
+- Manage standing approval rules for automatic action approval.
 - Filter by tool...
 - Filter by butler...
 
 ## `frontend/src/pages/ApprovalsPage.tsx`
 
+- loading…
+- failed to load dossier
+- Defer
+- Approve:
+- Referenced Entities
+- Hours to defer (1–168)
+- Why
+- No rationale provided.
+- Evidence
+- Proposed Action
+- Target Contact
+- Quiet Hours Policy
+- Suppress approval paging during these hours
+- Edit
+- Start:
+- End:
+- Timezone:
+- Start hour (0–23)
+- End hour (0–23)
+- Timezone (IANA)
+- Cancel
+- History (last 30)
+- No decided approvals yet.
+- system · approvals
 - Approvals
-- Manage approval-gated actions and standing rules.
-- Standing Rules
-- Filter Actions
-- Tool Name
-- Status
-- Butler
-- Clear
-- Expire stale
-- Loading...
-- Previous
-- Next
-- History
-- Filter by tool...
-- Filter by butler...
+- No pending approvals.
+- Select a pending approval to review.
+- Deny reason (optional)
+- None
+- UTC
 
 ## `frontend/src/pages/AuditLogPage.tsx`
 
-- Audit Log
-- Browse audit log entries across all butlers.
-- Butler
-- All
-- Operation
+- &times;
+- Actor
+- Action
 - From
-- To
 - Clear filters
 - Previous
 - Next
+- Audit Log
+- Browse audit log entries across all butlers.
+- e.g. owner
+- e.g. model.priority
 
 ## `frontend/src/pages/ButlerDetailPage.stories.tsx`
 
@@ -63,20 +79,8 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/pages/ButlerDetailPage.tsx`
 
-- Sessions
-- Session history for this butler
-- Previous
-- Next
-- CRM features are only available for the relationship butler.
-- Upcoming Dates
-- Birthdays, anniversaries, and other important dates in the next 30 days
-- No upcoming dates in the next 30 days.
-- Quick Links
-- Contacts
-- Groups
-- Health features are only available for the health butler.
-- View
 - Overview
+- Sessions
 - Activity
 - Logs
 - Approvals
@@ -90,81 +94,102 @@ Do **not** edit manually: re-run the script to refresh.
 - CRM
 - Memory
 - Models
-- Health
+- Manage
+- Collections
+- Measurements
 - Routing Log
 - Registry
-- Activity view coming soon.
-- Logs view coming soon.
-- Approvals view coming soon.
-- Spend view coming soon.
+- Reviews
+- Timelines
+- Finances
+- Devices
+- Taste
+- Conversations
+- Investigations
+- Contacts
+- Trips
 - routing log
 
 ## `frontend/src/pages/ButlersPage.tsx`
 
-- Up
-- Down
-- Degraded
-- Unavailable
-- Active
-- Quarantined
-- Stale
-- open →
-- Total Agents
-- Healthy
 - Butlers
-- Staffers
-- Infrastructure services that support butler operations.
-- Browse all registered butlers and jump directly to detail views.
-- No butlers found.
-- Check daemon status and try again.
+- Butler status board
 
 ## `frontend/src/pages/CalendarWorkspacePage.tsx`
 
-- Calendar Workspace
-- Unified user and butler calendar surface backed by workspace APIs.
+- Recurrence scope
+- Snooze
+- Set
+- Duration
+- When
+- Window
+- Avoid weekends
+- Failed to find open time slots.
+- Choose a duration and search for open time.
+- No open slots match those constraints in the selected window.
+- Loading activity log…
+- No calendar mutations logged yet.
+- ‹ Prev
+- Next ›
+- session ›
+- Event detail
+- Title
+- Source
+- Provenance
+- Attendees
+- Description
+- Location
+- Delete event
+- Search events
+- Type to search across all events.
+- Searching…
+- No matching events.
+- Search
+- Agenda
+- Export / Import
 - Create butler event
 - Create event
 - View
 - Range
-- Prev
 - Today
-- Next
+- Activity
+- Find time
+- Proposals
+- Duplicates
+- Status
+- All statuses
+- Type
+- All types
+- · none
 - Calendar
 - All calendars
-- Source
 - All sources
-- Loading calendar workspace...
+- Drawing the calendar…
+- No butler lanes yet.
 - Add event
 - No events in this lane.
-- Time
-- Title
-- Type
-- Status
-- Actions
 - Edit
+- Dismiss
 - Delete
-- all day
-- No events in the selected range.
+- All day
+- Undo
+- No events in this range.
+- Detail
 - Configure Sources
-- Toggle sources to include or exclude them from the calendar view. Per-source sync and primary calendar controls.
-- Loading source metadata...
-- No connected sources reported.
-- On
-- Name
-- Account / Calendar ID
-- Lane
-- Freshness
-- Primary
+- Accounts
+- Reading source metadata…
+- No connected sources.
 - Set as primary
+- Recover
+- Reconnect
 - Close
 - Calendar Source
 - Start
 - End
 - Timezone
-- Description
-- Location
+- Suggested times:
+- Book anyway (overlap)
 - Cancel
-- Create or update schedule/reminder events in butler lanes, including recurring-until boundaries.
 - Butler lane
 - No butlers available
 - Event type
@@ -179,68 +204,46 @@ Do **not** edit manually: re-run the script to refresh.
 - Yearly
 - Set until boundary
 - Until
+- No occurrences in the next 90 days.
+- Calculating…
 - Delete Event
+- Edit recurring event
+- Close detail panel
+- Search calendar…
+- Search calendar events
 - Sync all sources now
+- Open printable agenda
+- Export or import calendar
 - Configure sources
 - Create user event
 - Previous range
 - Jump to today
 - Next range
-- No butler lanes found.
-- Butler lanes appear when a butler has scheduled events.
+- Cross-domain overlays
+- Domain overlays: finance bills/renewals, travel, relationship dates, health appointments
+- Undo move
+- Connected accounts
+- Full re-sync from scratch (cursor recovery)
+- This source needs re-authorization
 - e.g. Daily medication
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
 
 - Chronicles
 - Retrospective view of lived past time reconstructed from butler evidence.
+- Previous day
+- Next day
+- The day-close summary may be out of date.
+- Day-close summary may be out of date
 
 ## `frontend/src/pages/ConditionsPage.tsx`
 
 - Conditions
-- Health conditions and their current status.
-- All Conditions
-- Name
-- Status
-- Diagnosed
-- Notes
-- Updated
-- Previous
-- Next
-- No conditions found.
-- Health conditions appear as the Health butler tracks them.
+- What you're carrying, and where each one stands. In sync with your Health butler.
 
 ## `frontend/src/pages/ConnectorDetailPage.tsx`
 
-- Status
-- Last seen
-- First seen
-- Registered via
-- Connector not found.
-- Lifetime Counters
-- Discretion Settings
-- LLM-based filter thresholds. Changes take effect on next connector restart.
-- Weight Bypass Threshold
-- Fail-Open Threshold
-- Weight tiers: Owner=1.0, Family/Close-friends=0.9, Known=0.7, Unknown=0.3
-- Period Summary
-- Checkpoint Cursor
-- Takes effect on next connector restart.
-- Cancel
-- Edit cursor
-- Change checkpoint cursor?
-- Continue
-- Volume Trend
-
-## `frontend/src/pages/ContactsPage.tsx`
-
-- Contacts
-- Manage your personal and professional contacts.
-- Show archived
-- Previous
-- Next
-- Sync from Telegram
-- Sync from Google
+- Connector not found
 
 ## `frontend/src/pages/CostsPage.tsx`
 
@@ -255,7 +258,8 @@ Do **not** edit manually: re-run the script to refresh.
 
 - Overview
 - Briefing
-- Butler index
+- Operations and now
+- Cost
 
 ## `frontend/src/pages/EducationPage.tsx`
 
@@ -270,46 +274,9 @@ Do **not** edit manually: re-run the script to refresh.
 - Request one to start adaptive learning.
 - Select a curriculum
 
-## `frontend/src/pages/EntitiesPage.tsx`
-
-- Merge Entity
-- Merge
-- Search for target entity
-- No entities found.
-- Merge into:
-- Cancel
-- Unidentified Entities
-- Name
-- Facts
-- Source Butler
-- Source Scope
-- Created
-- Actions
-- Promote
-- Edit
-- Delete
-- Select the target entity. All other selected entities will be merged into it.
-- Delete entity?
-- This will soft-delete
-- Entities
-- Browse the knowledge graph: people, organizations, places, and more.
-- Social Map
-- All Entities
-- Show archived
-- Type
-- Tier
-- Owner
-- Unidentified
-- Archived
-- Previous
-- Next
-- Search by name or ID...
-- Select all
-- Entities appear as the butler builds the knowledge graph.
-
 ## `frontend/src/pages/EntityDetailPage.tsx`
 
-- Telegram User Session
+- Telegram user session
 - Connected
 - API ID
 - API Hash
@@ -323,7 +290,7 @@ Do **not** edit manually: re-run the script to refresh.
 - Two-factor authentication is enabled. Enter your 2FA password.
 - 2FA Password
 - Done
-- Linked Contact
+- Linked contact
 - Unlink
 - No contacts found.
 - No linked contact.
@@ -333,69 +300,115 @@ Do **not** edit manually: re-run the script to refresh.
 - Gifts
 - Loans
 - Message threads
-- Linked contacts
 - Facts
 - No facts linked to this entity.
 - → this entity
+- Provenance
+- Active
+- History
+- Object
+- Kind
+- Store
+- Freshness
+- Source
+- top relations
+- No relations yet.
+- introduced via
+- shares identifiers with
+- duplicate candidate
+- Review &amp; merge →
+- No facts to inspect.
+- Secrets → User
+- . Switch identity there to view this entity's credentials.
+- Forget
+- Shares identifiers with another entity. This may be a duplicate.
+- Review merge
+- (m)
 - Owner
 - Unidentified
 - Aliases
 - Add
 - Roles
-- Secrets → User
-- . Switch identity there to view this entity's credentials.
+- First seen
+- Last seen
+- Forget this entity?
 - Search contacts...
-- Birthday
 - Lives in
 - Works at
 - Family
-- Upcoming
+- Fact validity
+- Predicate
+- Weight
+- Last Observed
+- Context
+- touches 90d
+- Curation
+- Merge
+- Promote
+- Promote tier
+- Demote tier
+- Edit names
+- Edit contacts
+- Archive
+- Forget this entity
+- Forget this entity: irreversible hard delete
 - Remove alias
 - New alias...
 - Remove role
 - New role...
 
-## `frontend/src/pages/EpisodeDetailPage.tsx`
-
-- Content
-- Importance
-- Consolidated
-- Yes
-- No
-- Session ID:
-- Expires:
-- Metadata
-- Provenance
-- Created:
-
 ## `frontend/src/pages/FactDetailPage.tsx`
 
-- Content
-- Validity
-- Scope
-- Decay rate:
-- Provenance
-- No provenance data.
-- Tags
-- Metadata
-- Created:
-- Confidence
-- Permanence
+- Confirm
+- Re-inks the fact: resets decay from today.
+- Marks the record incorrect; agents stop retrieving it.
 
 ## `frontend/src/pages/GroupsPage.tsx`
 
-- Groups
-- Organize contacts into groups.
-- All Groups
+- New label
+- Create label
 - Name
+- Color
+- (optional hex)
+- Cancel
+- Assign label to group
+- Select a label to assign to this group.
+- Loading labels…
+- All labels are already assigned, or no labels exist yet.
+- Close
+- All Groups
 - Description
 - Members
-- Labels
 - Created
+- Labels
 - Previous
 - Next
+- e.g. VIP
+- #e63946
+- Assign label
 - No groups found.
 - Groups appear as you organize contacts into categories.
+- Groups
+- Organize contacts into groups.
+
+## `frontend/src/pages/HealthOverviewPage.tsx`
+
+- Data freshness
+- Health briefing
+- Health attention index
+
+## `frontend/src/pages/IngestionConnectorsPage.tsx`
+
+- Every channel the house listens on: status, health, and credential state.
+
+## `frontend/src/pages/IngestionFiltersPage.tsx`
+
+- Five gates between arriving and acting. Rules at each gate decide whether the system stores, drops, tiers, routes, or replays.
+
+## `frontend/src/pages/IngestionHistoryPage.tsx`
+
+- History
+- Backfill and replay history. Track and manage historical ingestion runs.
 
 ## `frontend/src/pages/IngestionPage.tsx`
 
@@ -406,53 +419,39 @@ Do **not** edit manually: re-run the script to refresh.
 - Filters
 - History
 
+## `frontend/src/pages/IngestionTimelinePage.tsx`
+
+- checking…
+- Live
+- Idle
+- Every external signal the house received, with end-to-end pipeline detail behind each row.
+
 ## `frontend/src/pages/IssuesPage.tsx`
 
 - Issues
-- Grouped errors and warnings across all butlers, newest first.
 
 ## `frontend/src/pages/MealsPage.tsx`
 
+- No nutrition data for this window.
+- health · meals
 - Meals
-- Track meals, nutrition, and eating patterns.
-- All Meals
-- All
-- From
-- To
-- Clear
-- Type
-- Description
-- Nutrition
-- Time
-- Notes
-- Previous
-- Next
-- No meals found.
-- Meals appear as they are logged with nutrition data and eating patterns.
+- Daily nutrition totals
 
 ## `frontend/src/pages/MeasurementsPage.tsx`
 
+- Health · Measurements
 - Measurements
-- Track and visualize health measurements over time.
-- Measurement Trends
-- Select a measurement type and date range to view trends.
+- Reading log
+- Trends
 
 ## `frontend/src/pages/MedicationsPage.tsx`
 
+- health · medications
 - Medications
-- Manage medications and track dose adherence.
-- Medication Tracker
-- Click a medication to view its dose history and adherence.
-
-## `frontend/src/pages/MemoryPage.tsx`
-
-- Memory
 
 ## `frontend/src/pages/NotificationsPage.tsx`
 
 - 0 && page * PAGE_SIZE + PAGE_SIZE
-- Notifications
-- Monitor notification delivery across all butlers.
 - Butler
 - Channel
 - Status
@@ -462,198 +461,65 @@ Do **not** edit manually: re-run the script to refresh.
 - Failed to load notifications. Please try refreshing the page.
 - Previous
 - Next
+- Notifications
+- Monitor notification delivery across all butlers.
 - Filter by butler...
 
 ## `frontend/src/pages/QaInvestigationDetailPage.tsx`
 
-- Dispatch Reason
-- Why the QA patrol flagged this and queued an investigation.
-- Source
-- Summary
-- Occurrences
-- Patrol
-- Dedup
-- Trigger
-- Evidence
-- Triggering Sessions
-- GitHub PR created by the investigation agent.
-- Open on GitHub
-- Investigation Detail
-- No investigation ID provided.
-- Back to QA
-- Investigation not found or failed to load.
-- Metadata
-- Butler
-- Fingerprint
-- Created
-- Updated
-- Closed
-- Duration
-- Timeline
-- Error Context
-- Exception
-- Call site
-- Error detail
-- Agent Session
+- Investigation not found.
 
 ## `frontend/src/pages/QaInvestigationsPage.tsx`
 
-- Investigations
-- All QA investigation attempts across butlers.
-- Status
-- Clear filter
-- Failed to load investigations.
-- ID
-- Severity
+- Nothing matches.
+- Dispatch case index
+- Rule-separated QA cases
 - Butler
-- Exception
-- PR
-- Created
-- Previous
-- Next
-- No investigations found.
-- Patrol cycles dispatch investigations when novel issues are detected.
+- Butlers
+- Failed to load QA cases.
+- Load more
+- State
+- Severity
+- Time range
 
 ## `frontend/src/pages/QaOverviewPage.tsx`
 
-- Started
-- Duration
-- Status
-- Sources
-- Findings
-- Novel
-- Dispatched
-- Failed to load known issues.
-- View investigation
-- Restore
-- Dismiss
-- Failed to load investigations.
-- Empty
-- No patrol data in the last 7 days.
-- No finding data in the last 7 days.
-- Last patrol errored
-- View patrol error
-- Circuit Breaker: closed
-- Failed to load QA summary.
-- Last patrol
-- Sources:
-- View patrol
-- Investigation Pipeline
-- Active and recent investigations grouped by pipeline status.
-- Success Rate (7d)
-- Percentage of patrol cycles that completed cleanly.
-- No trend data available.
-- Source Breakdown (7d)
-- Total findings per discovery source over the last 7 days.
-- Known Issues
-- Active issues tracked across patrol cycles. Dismiss to suppress future investigations.
-- Recent Patrols
-- Patrol cycle history with findings and dispatch counts.
-- Failed to load patrols.
-- Previous
-- Next
-- No patrol cycles recorded yet.
-- The QA staffer records a cycle each time it runs.
-- No investigations found.
-- Patrol cycles dispatch investigations when novel issues are detected.
-- QA Staffer
-- System-wide quality patrol, investigation pipeline, and known issue tracking.
-- No patrol cycles recorded.
-- The QA staffer may not be running yet.
-- Patrols (24h)
-- Findings (24h)
-- Dispatched (24h)
-- All-time patrols
+- QA Staffer · dossier
+- What the staff caught and fixed
+- Loading cases…
+- Couldn't reach the staffer.
+- Nothing in the dossier.
+- Loading…
+- Select a case to inspect the dossier.
+- Filter by severity
+- Time range
+- Force patrol
+- Toggle theme
 
 ## `frontend/src/pages/QaPatrolDetailPage.tsx`
 
 - No findings in this patrol.
-- Severity
-- Source
-- Butler
-- Exception
-- Summary
-- Count
-- Dedup
-- Investigation
-- Patrol Detail
-- No patrol ID provided.
-- Back to QA
-- Patrol not found or failed to load.
-- Metadata
-- Started
-- Completed
-- Duration
-- Lookback
-- Sources polled
-- Total findings
-- Novel findings
-- Dispatched
+- View
+- Patrol not found.
+- QA Patrol
+- Patrol ·
 - Error
-- Dispatched Investigations
-- View investigation
+- Findings
+- Dispatched investigations
+- Patrol error
 
 ## `frontend/src/pages/ResearchPage.tsx`
 
 - Research
-- Health research notes, articles, and references.
-- Research Notes
-- All tags
-- Clear
-- Title
-- Tags
-- Source
-- Updated
-- Link
-- Previous
-- Next
-- No research found.
-- Research notes appear as the Health butler tracks articles and references.
-- Search research...
-
-## `frontend/src/pages/RuleDetailPage.tsx`
-
-- Content
-- Maturity
-- Scope
-- Permanence
-- Applied:
-- Successes:
-- Harmful:
-- Decay rate:
-- Provenance
-- No provenance data.
-- Tags
-- Metadata
-- Created:
-- Effectiveness
-- Confidence
+- Notes, articles, and references you've gathered. In sync with your Health butler.
 
 ## `frontend/src/pages/SecretsPage.tsx`
 
-- System Secrets
-- Add secret
-- No secret target available. Check dashboard DB configuration.
-- (you)
-- No matches.
-- Integrations
-- Account-login integrations that bind external services to your identity.
-- Credentials
-- Raw credential entries managed on this entity's record.
-- Add credential
-- No owner entity found. Create one in the Entities page first.
-- Secrets
-- Manage system-wide and user-specific credentials.
-- System
-- User
-- Select target
-- Search identities...
+- Loading credentials…
+- Failed to load credentials.
 
 ## `frontend/src/pages/SessionDetailPage.tsx`
 
-- Success
-- Failed
-- Running
 - Session Detail
 - No session ID provided.
 - Back to sessions
@@ -676,8 +542,6 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/pages/SessionsPage.tsx`
 
-- Sessions
-- Browse session history across all butlers.
 - Butler
 - All
 - Trigger
@@ -686,84 +550,189 @@ Do **not** edit manually: re-run the script to refresh.
 - From
 - To
 - Clear filters
-- Previous
-- Next
+- Newer
+- Older
+- Sessions
+- Browse session history across all butlers.
 - Filter by trigger...
 - Filter by request ID...
 
-## `frontend/src/pages/SettingsPage.tsx`
+## `frontend/src/pages/SettingsConsolePage.tsx`
 
-- Copy
-- Cancel
-- Delete
-- API key saved successfully.
-- OpenCode (Ollama)
-- Local LLM inference via Ollama
-- Testing...
-- Test
-- Edit
-- Configure Ollama
-- Remove Ollama Provider?
-- Display Name
-- Base URL
-- Enabled
-- CLI runtime authentication required
-- Fix now
-- CLI Runtime Authentication
-- Failed to load CLI auth providers. Ensure the dashboard API is running.
+- Everything is in hand.
+- Review →
+- Retry →
+- MTD
+- Manage access policies, webhook integrations, and export or wipe controls.
+- system · console
 - Settings
-- System configuration and dashboard preferences.
-- Appearance
-- Set the UI theme preference.
-- Theme
-- System
-- Light
-- Dark
-- Active theme:
-- Live Refresh Defaults
-- Default behavior used by pages with live auto-refresh controls.
-- This currently applies to Sessions and Timeline.
-- Command Palette
-- Manage local quick-search history.
-- Saved recent searches:
-- Clear recent searches
-- Enter API key
-- Ollama
+- System configuration, model catalog, spend controls, and access management.
+- Could not load console status.
+- Current time
+- Active Butlers
+- Spend MTD
+- Open Approvals
+- Models OK
+- Models
+- Catalog health and verification status.
+- Spend
+- Monthly cost tracking and forecast.
+- Approvals
+- Pending actions awaiting your decision.
+- Permissions
+- Butler × permission matrix, webhooks, and data ops.
+- Secrets
+- Credential inventory, probes, and audit history.
 
-## `frontend/src/pages/SocialMapPage.tsx`
+## `frontend/src/pages/SettingsModelsPage.tsx`
 
-- Showing all:
-- Reset all
-- Jump to:
-- Entities
-- Your Social Map
-- Dashed border means manually pinned tier.
-- Loading social map...
-- Couldn't load your social map. Try refreshing.
-- Sizing canvas...
-- Expanded tiers
-- Collapse all expanded tiers
-- Search contacts... (/)
-- Search contacts
+- Args
+- + Add arg
+- Delete model:
+- This action is permanent and cannot be undone.
+- Cancel
+- Alias
+- Warning: Changing the alias may break existing butler override references.
+- Runtime type
+- Model ID
+- Complexity tier
+- Priority
+- Per-session timeout (s)
+- Edit model:
+- Edit the configuration for this model catalog entry.
+- Use template
+- Add model
+- Register a new entry in the shared model catalog.
+- BLOCKED
+- Test →
+- Edit →
+- Delete →
+- Nothing in this tier.
+- dev · api wire
+- model catalog
+- settings · §1 · model catalog
+- Every model the staff can call.
+- New model →
+- Loading catalog…
+- Failed to load model catalog.
+- verify all now →
+- Args (JSON array)
+- CLI arg or key=value
+- e.g. claude-sonnet
+- e.g. claude-sonnet-4-6
+- Enabled
+- — pick a template (optional)
+- Decrease priority
+- Increase priority
+
+## `frontend/src/pages/SettingsPermissionsPage.tsx`
+
+- Promise
+- Reason (required)
+- A non-empty reason is required before submitting.
+- Cancel
+- No permissions or butlers found.
+- No recent audit entries.
+- Full audit log
+- Export data
+- DASHBOARD_EXPORT_ENCRYPTION_KEY
+- All data
+- Memory
+- Audit log
+- Config
+- Wipe all data
+- Temporarily disabled. A safer implementation is in progress.
+- Wipe everything
+- Copy your signing secret
+- This secret is shown
+- X-Butler-Signature
+- HMAC.
+- Signing secret
+- Copy secret
+- Done
+- Add webhook
+- Endpoint URL
+- Events (comma-separated)
+- A signing secret is generated automatically and shown once after creation.
+- Copy your new signing secret
+- Edit webhook
+- Enabled
+- Max attempts
+- Backoff (s)
+- Rotating replaces the signing secret. It is shown once.
+- Add webhook →
+- No webhooks registered.
+- Endpoint
+- Events
+- Status
+- Secret
+- Last test
+- Actions
+- Edit →
+- system · permissions
+- Permissions &amp; data
+- Failed to load matrix.
+- Why are you changing this permission?
+- permission.set, data.export
+- Test webhook
+- Delete webhook
+- Permissions matrix
+- Flip cells to grant or revoke per-butler permissions. A reason is required for every change and is recorded in the audit log.
+- Audit reel
+- Last 15 privileged-action entries: permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.
+- Data operations
+- Webhooks
+- Outbound webhook registrations. Events are signed with HMAC-SHA256.
+
+## `frontend/src/pages/SettingsSpendPage.tsx`
+
+- action: Record
+- Spend Breakdown
+- No spend has been recorded yet.
+- No routing rules are configured; rules evaluate top-to-bottom and the first match wins.
+- Pos
+- Condition
+- Action
+- Saved 7d
+- Remove
+- Condition (all optional, ANDed)
+- Butler
+- Complexity
+- any tier
+- Trigger
+- any trigger
+- Action (set at least one effect)
+- Route to model
+- no re-route
+- Max cost per call (USD)
+- Matches dispatches where
+- Create rule
+- Cancel
+- Routing Rules
+- Evaluated top-to-bottom; first match wins. Drag rows to reorder.
+- + Add rule
+- Save
+- Forecast
+- No forecast data is available yet.
+- MTD Spend
+- Projected EOM
+- Monthly Ceiling
+- Days in Month
+- Spend forecast chart
+- Butler condition
+- any butler
+- Complexity condition
+- Trigger condition
+- Target model
+- Max cost per call
+- no cap
+- Spend
+- Projected spend exceeds the monthly ceiling
 
 ## `frontend/src/pages/SymptomsPage.tsx`
 
 - Symptoms
-- Track symptoms with severity ratings and occurrence dates.
-- All Symptoms
-- From
-- To
-- Clear
-- Name
-- Severity
-- Occurred
-- Notes
-- Condition
-- Previous
-- Next
-- No symptoms found.
-- Symptoms appear as they are logged with severity ratings and occurrence dates.
-- Filter by name...
+- A log of what you've felt, and how hard. In sync with your Health butler.
 
 ## `frontend/src/pages/SystemPage.tsx`
 
@@ -774,37 +743,35 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/pages/TimelinePage.tsx`
 
-- Timeline
-- Unified event stream across all butlers.
 - Filter by butler
 - No butlers available
 - Filter by event type
+- Timeline
+- Unified event stream across all butlers.
+
+## `frontend/src/pages/calendar/QuickAddBar.tsx`
+
+- Promise
+- Quick add
+- Dismiss
+- Title
+- Starts
+- Ends
+- Location
+- Discard
+- Quick add event
+- lunch with Sarah Fri 1pm at Tartine
+- Parsed event preview
+- Draft title
+- Draft start
+- ISO 8601
+- Draft end
+- Draft location
 
 ## `frontend/src/components/ErrorBoundary.tsx`
 
 - Something went wrong
 - Try again
-
-## `frontend/src/components/GeneralSettingsCard.tsx`
-
-- General
-- Failed to load general settings.
-- Shared defaults injected into every butler prompt.
-- Default timezone
-- Offsets reflect the current instant, so DST-aware zones may shift between GMT values.
-- Language
-- Currency
-- Date format
-- Time format
-- Week starts on
-- Measurement system
-- Current prompt assumption
-- Use metric measurements.
-- Active timezone:
-- Saving...
-- Select timezone
-- en-US
-- USD
 
 ## `frontend/src/components/activity/ActivityFeed.tsx`
 
@@ -925,24 +892,273 @@ Do **not** edit manually: re-run the script to refresh.
 ## `frontend/src/components/audit/AuditLogTable.tsx`
 
 - Time
-- Butler
-- Operation
-- Result
-- Request Summary
-- Request:
-- User Context:
-- Error:
+- Actor
+- Action
+- Target
+- IP
+- Request ID
+- Note
+- Audit log unavailable.
+- Failed to load audit log entries. The audit log may be temporarily unavailable. Try again shortly.
 - No audit entries found.
 - Audit log entries appear as butlers perform operations.
 
+## `frontend/src/components/butler-detail/ButlerActivityTab.tsx`
+
+- Could not load activity metrics.
+- Activity
+- = 0 && idx
+- Could not load hourly activity.
+- Could not load daily activity.
+- Could not load session kind breakdown.
+- No sessions in this window.
+- Sessions
+- p50 ms
+- p95 ms
+- Errors
+- By kind
+
+## `frontend/src/components/butler-detail/ButlerApprovalsTab.tsx`
+
+- Review
+- Loading…
+- No items pending review.
+- View all approvals →
+- Pending approvals
+
+## `frontend/src/components/butler-detail/ButlerChroniclerTimelinesTab.tsx`
+
+- No episodes recorded for today.
+- (private)
+- No sources configured.
+- Today events
+- Sources live
+- Longest gap
+- Next assembly
+- Today's episode timeline
+- Source health
+- Today timeline
+- Sources
+
 ## `frontend/src/components/butler-detail/ButlerConfigTab.tsx`
 
+- No schedules.
+- Next:
+- reauth needed
+- not required
+- Could not load module OAuth status.
+- No modules with OAuth.
+- Could not load integrations.
+- No modules enabled.
+- &#x25BE;
 - Not found
-- Configuration
-- No configuration data available
+- scopes and oauth
 - CLAUDE.md
 - AGENTS.md
 - MANIFESTO.md
+
+## `frontend/src/components/butler-detail/ButlerCrmTab.tsx`
+
+- No upcoming dates in the next 30 days.
+- CRM features are only available for the relationship butler.
+- Contacts
+- Groups
+- upcoming dates
+- quick links
+
+## `frontend/src/components/butler-detail/ButlerDetailActions.tsx`
+
+- Logs
+- Config
+
+## `frontend/src/components/butler-detail/ButlerEducationReviewsTab.tsx`
+
+- Loading…
+- Mind maps
+- No active mind maps (start learning to see progress here).
+- Pending reviews
+- No reviews scheduled: keep learning and reviews will appear here.
+- Ready to learn
+- No frontier nodes yet. Keep mastering prerequisites!
+- Retention · 7d
+- Could not load retention trend.
+- Select a mind map to see retention trend.
+- No retention data in this window.
+- new Date(e.next_review_at)
+
+## `frontend/src/components/butler-detail/ButlerFinanceFinancesTab.tsx`
+
+- Loading...
+- No upcoming bills -- you are all clear!
+- No spending data for the last 30 days.
+- Set category
+- Normalize merchant
+- No transactions recorded yet.
+- Date
+- Merchant
+- Category
+- Amount
+- No subscriptions tracked yet.
+- No accounts on file yet -- connect or add an account to see net-worth context.
+- Upcoming bills
+- Spending by category
+- e.g. groceries
+- e.g. Whole Foods Market
+- Recent transactions
+- Select all transactions
+- Subscriptions
+- Accounts
+- Monthly spend
+- Active subscriptions
+- Next bill
+- Top category · 30d
+
+## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
+
+- Collections overview
+- Could not load collections overview.
+- Collections
+- Could not load collections.
+- No collections yet.
+- Name
+- Items
+- Created
+- Previous
+- Next
+- Recent items
+- Could not load recent items.
+- No items yet.
+- Collection sizes
+- Could not load size histogram.
+- No collections to display.
+- Quick actions
+- Create collection
+- Add a new collection to store related items.
+- Description
+- (optional)
+- Cancel
+- Create
+- Some data failed to load. Displayed values may be incomplete.
+- Total collections
+- Total items
+- Recently modified
+- Largest collection
+- Search collections...
+- Collection name
+- What is this collection for?
+
+## `frontend/src/components/butler-detail/ButlerHealthMeasurementsTab.tsx`
+
+- Loading…
+- No readings in window
+- View all
+- No sleep data recorded.
+- Measurement sources
+- Could not load sources.
+- No sources connected.
+- Last sample:
+- No samples yet
+- Active medications
+- No active medications.
+- Recent conditions
+- No conditions recorded.
+- Diagnosed
+- Google Health Connector
+- Sleep stage distribution
+- Sleep stage legend
+- Glucose
+- Heart rate
+- HRV
+- Weight
+
+## `frontend/src/components/butler-detail/ButlerHomeDevicesTab.tsx`
+
+- Loading...
+- Failed to load device count.
+- Failed to load offline count.
+- Failed to load maintenance count.
+- Failed to load snapshot time.
+- Failed to load device inventory.
+- No devices in snapshot cache.
+- Device
+- Domain
+- Area
+- State
+- Health
+- Failed to load maintenance queue.
+- No maintenance items.
+- Failed to load command log.
+- No commands logged.
+- kWh
+- Failed to load energy data.
+- No energy data available.
+- Failed to load top consumers.
+- No consumer data available.
+- Total devices
+- Offline
+- Overdue maintenance
+- Last snapshot
+- Maintenance queue
+- HA command log
+- Active devices
+- Recent commands
+- Energy
+- Top consumers
+
+## `frontend/src/components/butler-detail/ButlerLifestyleTasteTab.tsx`
+
+- Taste overview
+- Could not load taste overview.
+- Could not load taste preferences.
+- No taste preferences recorded yet.
+- Could not load consumption state.
+- No active consumption tracked.
+- Could not load recent additions.
+- No facts logged yet.
+- No weekly digests yet.
+- Lifestyle data failed to load. All panels are unavailable until the next successful fetch.
+- Taste summary
+- Consumption state
+- Recent additions
+- Weekly digest archive
+- Active preferences
+- Currently consuming
+- Recently logged
+- Weekly digest
+
+## `frontend/src/components/butler-detail/ButlerLogsTab.tsx`
+
+- Auto-scroll
+- Failed to load logs. Retrying...
+- No logs yet.
+- raw log
+- Log lines
+
+## `frontend/src/components/butler-detail/ButlerManagementTab.tsx`
+
+- model · medium tier
+- edit in models →
+- resolved ·
+- No system prompt configured.
+- edit prompt →
+- Could not load both versions to diff.
+- No tool grants configured for this butler.
+- open audit log →
+- kill switch · 30s grace →
+- sends shutdown signal; butler processes current session before exiting
+- confirm kill
+- Shutdown
+- Identity & routing
+- Session timeout
+- System prompt
+- Enter system prompt…
+- Tools & integrations
+- Memory access
+- Namespace · owned
+- Embed model
+- Drops · 7d
+- Activity · last 24 hours
+- Kill switch
 
 ## `frontend/src/components/butler-detail/ButlerMcpTab.tsx`
 
@@ -953,6 +1169,41 @@ Do **not** edit manually: re-run the script to refresh.
 - Arguments
 - Parsed Result
 - Raw Text
+
+## `frontend/src/components/butler-detail/ButlerMemoryTab.tsx`
+
+- Could not load memory stats.
+- Could not load recent writes.
+- No memory writes recorded yet.
+- Episodes
+- Facts
+- Entities
+- Rules
+- recent writes
+
+## `frontend/src/components/butler-detail/ButlerMessengerConversationsTab.tsx`
+
+- Could not load delivery stats.
+- half open
+- Could not load circuit status.
+- Circuit state is DB-derived (not live in-memory state).
+- No channel activity in the last 15 min.
+- Could not load dead letters.
+- No dead letters.
+- Could not load queue depth.
+- By channel
+- Queue empty.
+- By priority
+- No priority data.
+- Some data failed to load. Displayed values may be incomplete.
+- Active channels
+- Recent failures
+- Delivery pipeline
+- Deliveries (24h)
+- Success rate
+- Dead letters
+- Avg latency
+- Queue depth
 
 ## `frontend/src/components/butler-detail/ButlerModelOverridesTab.tsx`
 
@@ -989,30 +1240,75 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/butler-detail/ButlerOverviewTab.tsx`
 
-- Active
-- Port
-- Status
-- Eligibility
-- 24h History
-- Module Health
-- No modules registered
-- Cost Today
-- Share:
-- Global total:
-- No cost data
-- Recent Notifications
-- View all
-- Click to restore to active
+- Could not load recent events.
+- no recent events
+- Could not load approvals.
+- no items pending review
+- 24-hour activity
+- awaiting your action
+
+## `frontend/src/components/butler-detail/ButlerQaInvestigationsTab.tsx`
+
+- Recent patrols
+- No patrols recorded.
+- Recent investigations
+- No investigations found.
+- ID
+- Sev
+- Title
+- Butler
+- Age
+- State
+- Investigation detail
+- Close
+- Exception
+- Call site
+- Message
+- Created
+- Pull request
+- Open full investigation page
+- Circuit breaker: open
+- Circuit breaker: closed
+- Some data failed to load. Displayed values may be incomplete.
+- Patrol cadence
+- View patrol detail
+- Close investigation detail
 
 ## `frontend/src/components/butler-detail/ButlerRegistryTab.tsx`
 
-- Butler Registry
-- All butlers registered in the Switchboard
+- butler registry
+
+## `frontend/src/components/butler-detail/ButlerRelationshipContactsTab.tsx`
+
+- Relationship overview
+- Could not load relationship overview.
+- Could not load tier distribution.
+- No tier data available.
+- Could not load overdue contacts.
+- No overdue contacts. Cadence all clear.
+- Could not load watchlist.
+- No T1 or T2 contacts yet.
+- Name
+- Tier
+- Last contact
+- Warmth
+- Select a contact from the watchlist above to see their recent messages.
+- Could not load thread.
+- Select a contact to see facts.
+- No facts recorded yet.
+- Tier distribution
+- Overdue · 14d threshold
+- Watchlist · T1 + T2
+- Known facts
+- Tracked contacts
+- T1 warmth avg
+- Warm / tracked
+- Overdue
+- Manually pinned
 
 ## `frontend/src/components/butler-detail/ButlerRoutingLogTab.tsx`
 
-- Routing Log
-- Inter-butler routing activity through the Switchboard
+- routing log
 
 ## `frontend/src/components/butler-detail/ButlerSchedulesTab.tsx`
 
@@ -1022,6 +1318,11 @@ Do **not** edit manually: re-run the script to refresh.
 - Delete Schedule
 - Cancel
 
+## `frontend/src/components/butler-detail/ButlerSessionsTab.tsx`
+
+- Previous
+- Next
+
 ## `frontend/src/components/butler-detail/ButlerSkillsTab.tsx`
 
 - Full SKILL.md content
@@ -1030,6 +1331,19 @@ Do **not** edit manually: re-run the script to refresh.
 - No skills registered
 - View
 - Trigger
+
+## `frontend/src/components/butler-detail/ButlerSpendTab.tsx`
+
+- Could not load spend trend.
+- No spend data for this period.
+- Could not load model breakdown.
+- No model usage data available.
+- Daily spend trend
+- Model breakdown
+- Spend today
+- Spend 30d
+- Cost / session · 30d
+- Tokens today
 
 ## `frontend/src/components/butler-detail/ButlerStateTab.tsx`
 
@@ -1046,6 +1360,33 @@ Do **not** edit manually: re-run the script to refresh.
 - Up
 - Degraded
 - Down
+
+## `frontend/src/components/butler-detail/ButlerTravelTripsTab.tsx`
+
+- Loading…
+- = now && ms
+- No legs or check-ins in the next 7 days.
+- All clear. No pre-trip actions required.
+- No trips found.
+- Previous
+- Next
+- Trip detail, including timeline, alerts, and accommodations.
+- Close
+- Trip data unavailable.
+- Destination
+- Dates
+- Alerts
+- Timeline
+- No timeline entries yet.
+- Accommodations
+- Next departure
+- Active trips
+- Planned trips
+- Open actions
+- Week ahead
+- Week ahead schedule
+- Upcoming checklist
+- Trips roster
 
 ## `frontend/src/components/butler-detail/ButlerTriggerTab.tsx`
 
@@ -1064,6 +1405,13 @@ Do **not** edit manually: re-run the script to refresh.
 
 - No data
 
+## `frontend/src/components/butler-detail/GoogleHealthStatusCard.tsx`
+
+- Scopes
+- Last ingest
+- Sleep sessions · 7d
+- Daily summaries · 7d
+
 ## `frontend/src/components/butler-detail/RuntimeConfigCard.tsx`
 
 - Runtime Config
@@ -1074,9 +1422,117 @@ Do **not** edit manually: re-run the script to refresh.
 - Core Groups
 - All groups enabled (no filter set)
 
-## `frontend/src/components/chat/ChatPanel.tsx`
+## `frontend/src/components/butler-detail/SiblingButlerNav.tsx`
 
-- Chat
+- Navigate to butler
+
+## `frontend/src/components/butler-detail/atoms.tsx`
+
+- Loading...
+
+## `frontend/src/components/butlers/BoardFooter.tsx`
+
+- Active
+- Offline
+- Quarantined
+- Sessions·24h
+- Spend·today
+- Avg load
+
+## `frontend/src/components/butlers/BoardHeader.tsx`
+
+- Butlers, status board
+- The staff, at a glance
+
+## `frontend/src/components/butlers/StatusBoardCell.tsx`
+
+- 24H ACTIVITY
+- past 24 h
+- open →
+- data unavailable
+- // is not nested inside an
+- SESS 24H
+- SPEND
+- LOAD
+- LAST
+- Activity data unavailable
+
+## `frontend/src/components/calendar/CalendarAgendaView.tsx`
+
+- Print
+- Close
+- No events in this range.
+- Printable agenda
+- Close agenda
+
+## `frontend/src/components/calendar/CalendarDuplicatesPanel.tsx`
+
+- Reviewing duplicates…
+- Duplicate review
+- Match strategy
+- Noisy threshold
+- No cross-source duplicates in this range. Nothing is being collapsed.
+- Noisy threshold (minimum cluster size)
+
+## `frontend/src/components/calendar/CalendarPortabilityDialog.tsx`
+
+- Export / Import calendar
+- Export .ics
+- Download .ics
+- Subscribe (live feed)
+- Copy
+- Open in calendar app (webcal://)
+- Import .ics
+- File
+- Import into
+- Parsed
+- Imported
+- Skipped duplicates
+- Download calendar as ICS
+- Subscribe feed URL
+- Copy subscribe URL
+- Choose .ics file
+- Import target calendar
+- Import calendar file
+- Import result
+
+## `frontend/src/components/calendar/CalendarProposalsPanel.tsx`
+
+- Loading proposals…
+- Proposals
+- No pending proposals. Nothing awaiting your review.
+- Title
+- Start
+- End
+- Save &amp; accept
+- Cancel
+- Accept
+- Dismiss
+- Edit
+
+## `frontend/src/components/calendar/ConflictRadarBanner.tsx`
+
+- Accept fix
+- Decline
+- No suggested fix yet. The radar will propose one shortly.
+- Calendar conflict radar
+- Dismiss conflict radar
+
+## `frontend/src/components/calendar/DayBriefingCard.tsx`
+
+- At a glance
+- Loading…
+- No domain context for this day. Tomorrow is clear.
+- Nothing scheduled across your domains. Tomorrow is clear.
+- Day briefing
+
+## `frontend/src/components/calendar/MeetingPrepRail.tsx`
+
+- Last met
+- Recent messages
+- Meeting prep
+- Loading…
+- No relationship tier
 
 ## `frontend/src/components/chat/ConversationList.tsx`
 
@@ -1123,11 +1579,7 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/chronicles/ChroniclesDrilldownPanel.tsx`
 
-- Drilldown
-- Gantt area
-- Aggregations area
-- Chronicles drilldown
-- Scrubber
+- Day detail
 
 ## `frontend/src/components/chronicles/EpisodeDrawer.tsx`
 
@@ -1268,7 +1720,7 @@ Do **not** edit manually: re-run the script to refresh.
 
 - Total
 - Failed to load session data.
-- No sessions in the past 24 hours
+- No sessions in the selected window.
 
 ## `frontend/src/components/education/CrossTopicChart.tsx`
 
@@ -1280,6 +1732,10 @@ Do **not** edit manually: re-run the script to refresh.
 - Re-activate
 - Cancel
 - Confirm
+
+## `frontend/src/components/education/MasterySummaryCards.tsx`
+
+- Couldn't load mastery summary.
 
 ## `frontend/src/components/education/MasteryTrendChart.tsx`
 
@@ -1339,29 +1795,170 @@ Do **not** edit manually: re-run the script to refresh.
 - Entities appear as the General butler stores structured data.
 - Search entities...
 
+## `frontend/src/components/health/ConditionForm.tsx`
+
+- Name
+- Status
+- Onset / diagnosed (optional)
+- Notes (optional)
+- Cancel
+- e.g. Hypertension
+- Anything worth remembering about this condition.
+
+## `frontend/src/components/health/ConditionTracker.tsx`
+
+- Edit
+- Delete
+- Cancel
+- Add condition
+- Nothing on record yet. Add a condition above, or tell your Health butler.
+- Previous
+- Next
+
+## `frontend/src/components/health/MealForm.tsx`
+
+- Type
+- Eaten (optional)
+- Description
+- Calories
+- Protein (g)
+- Carbs (g)
+- Fat (g)
+- Notes (optional)
+- Cancel
+- e.g. Grilled chicken salad
+- Anything worth remembering about this meal.
+
+## `frontend/src/components/health/MealTracker.tsx`
+
+- Edit
+- Delete
+- Cancel
+- From
+- To
+- Clear
+- Log meal
+- No meals found.
+- Previous
+- Next
+- Filter by meal type
+
 ## `frontend/src/components/health/MeasurementChart.tsx`
 
 - From
 - To
 - Clear
 - Date
-- Type
 - Value
 - Notes
-- No measurements found.
-- No data available for this type and date range.
+- Measurement type
+- Measurement trend
+
+## `frontend/src/components/health/MeasurementForm.tsx`
+
+- Type
+- Measured (optional)
+- Notes (optional)
+- Cancel
+- e.g. 120
+- e.g. 80
+- Anything worth remembering about this reading.
+
+## `frontend/src/components/health/MeasurementTracker.tsx`
+
+- Edit
+- Delete
+- Cancel
+- From
+- To
+- Clear
+- Log measurement
+- Previous
+- Next
+- Filter by type
+
+## `frontend/src/components/health/MedicationForm.tsx`
+
+- Name
+- Dosage
+- Frequency
+- Schedule (optional)
+- Notes (optional)
+- Active
+- Cancel
+- e.g. Vitamin D
+- e.g. 1000IU
+- e.g. daily
+- Comma-separated times, e.g. 08:00, 20:00
+- Anything worth remembering about this medication.
 
 ## `frontend/src/components/health/MedicationTracker.tsx`
 
-- No dose records yet.
-- Adherence:
-- Date
-- Status
-- Notes
+- No doses logged yet
+- = 50 && data.adherence_rate
+- Dose history
+- Log skipped
+- No doses recorded yet.
+- Log dose
+- Edit
+- Delete
+- Cancel
+- Next doses
+- No scheduled doses.
 - Active
 - All
-- No medications found.
-- Medications appear here once they are added to your health record.
+- Add medication
+- Filter medications
+
+## `frontend/src/components/health/ResearchForm.tsx`
+
+- Title
+- Content
+- Tags (optional)
+- Source URL (optional)
+- Cancel
+- e.g. Magnesium and sleep
+- Summary, findings, or notes about this research.
+- comma, separated, tags
+
+## `frontend/src/components/health/ResearchTracker.tsx`
+
+- Source ↗
+- Edit
+- Delete
+- Open source ↗
+- Cancel
+- All tags
+- Clear
+- Add research
+- Nothing saved yet. Add a research note above, or tell your Health butler.
+- Previous
+- Next
+- Search research...
+
+## `frontend/src/components/health/SymptomForm.tsx`
+
+- Name
+- Severity (1-10)
+- Occurred (optional)
+- Notes (optional)
+- Cancel
+- e.g. Headache
+- Anything worth remembering about this symptom.
+
+## `frontend/src/components/health/SymptomTracker.tsx`
+
+- Edit
+- Delete
+- Cancel
+- From
+- To
+- Clear
+- Log symptom
+- Nothing logged yet. Log a symptom above, or tell your Health butler.
+- Previous
+- Next
+- Filter by name...
 
 ## `frontend/src/components/ingestion/BatchSettingsCard.tsx`
 
@@ -1392,49 +1989,6 @@ Do **not** edit manually: re-run the script to refresh.
 
 - No connectors registered.
 
-## `frontend/src/components/ingestion/ConnectorRulesSection.tsx`
-
-- Ingestion Rules
-- Add rule
-- Failed to load ingestion rules.
-- Priority
-- Rule
-- Condition
-- Action
-- Enabled
-- Add one
-- Delete rule
-- Domain
-- Match type
-- Exact
-- Suffix (includes subdomains)
-- Email address
-- Header name
-- Operator
-- is present
-- Value
-- MIME type
-- Chat ID
-- Channel
-- Condition (JSON)
-- Name (optional)
-- Rule type
-- Connector-scoped rules always block matching messages.
-- Priority (lower = higher priority)
-- Description (optional)
-- Cancel
-- Promise
-- Delete block rule?
-- This action cannot be undone.
-- e.g. noreply.example.com
-- e.g. alerts@example.com
-- e.g. List-Unsubscribe
-- e.g. text/calendar or image/*
-- e.g. 123456789
-- e.g. telegram, gmail
-- e.g. Block marketing emails
-- Why this rule exists
-
 ## `frontend/src/components/ingestion/ConnectorSummaryBar.tsx`
 
 - Total
@@ -1445,9 +1999,22 @@ Do **not** edit manually: re-run the script to refresh.
 - Failed
 - Error rate
 
+## `frontend/src/components/ingestion/ConnectorsListPage.tsx`
+
+- metrics unavailable: aggregate statistics are temporarily unavailable
+- No connectors registered.
+- Available: not yet configured
+- Supports backfill
+- connect →
+- Ingestion Volume
+
 ## `frontend/src/components/ingestion/ConnectorsTab.tsx`
 
+- metrics unavailable: aggregate statistics are temporarily unavailable
 - No connectors registered.
+- Available: not yet configured
+- Supports backfill
+- connect →
 - Ingestion Volume
 
 ## `frontend/src/components/ingestion/FanoutMatrix.tsx`
@@ -1470,6 +2037,10 @@ Do **not** edit manually: re-run the script to refresh.
 - Error Rate
 - Active Connectors
 
+## `frontend/src/components/ingestion/IngestionSubNav.tsx`
+
+- Ingestion views
+
 ## `frontend/src/components/ingestion/TierBreakdownDonut.tsx`
 
 - Tier Breakdown
@@ -1477,47 +2048,174 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/ingestion/TimelineTab.tsx`
 
-- Failed to load session lineage details. Please try again.
-- Butler
-- Session
-- Model
-- Started At
-- Duration
-- In Tokens
-- Out Tokens
-- Status
-- Rollup
-- Sessions:
-- Input tokens:
-- Output tokens:
-- Total cost:
-- Ingestion Events
-- Status:
+- (soon)
+- status:
+- channels:
+- Clear
+- Connector issues:
+- Save current view
+- Name this filter combination to restore it later.
+- Cancel
 - Failed to load ingestion events.
-- Request ID
-- Received At
-- Channel
-- Sender
-- Tier
-- Tokens In
-- Tokens Out
-- Cost
-- Action
-- No ingestion events.
-- Events appear once the system receives incoming messages.
+- No events match the current filters.
+- search events…
+- Search events
+- Clear search
+- Save current filter combination as a named view
+- Copy selected event IDs to clipboard
+- Connectors requiring attention
+- Filter window aggregate counts
+- View name…
 
 ## `frontend/src/components/ingestion/VolumeTrendChart.tsx`
 
 - No data available
 - Volume Trend
 
+## `frontend/src/components/ingestion/connectors/AttentionStrip.tsx`
+
+- needs attention
+
+## `frontend/src/components/ingestion/connectors/ConnectorDetailView.tsx`
+
+- ← ingestion / connectors
+- throughput · 24h
+- messages per hour
+- lifetime counters
+- pause poll
+- run now
+- recent events
+- view all
+- No recent events.
+- No incidents recorded.
+- routing rules
+- No routing rules reference this connector.
+- last checkpoint
+
+## `frontend/src/components/ingestion/connectors/ConnectorHistogram.tsx`
+
+- no throughput recorded
+
+## `frontend/src/components/ingestion/connectors/ConnectorRosterRow.tsx`
+
+- last · never
+
+## `frontend/src/components/ingestion/connectors/ConnectorsRoster.tsx`
+
+- No connectors registered.
+- + add connector
+
+## `frontend/src/components/ingestion/connectors/DormantList.tsx`
+
+- available · not connected
+- connect →
+
+## `frontend/src/components/ingestion/connectors/ReauthCallout.tsx`
+
+- set primary account
+
+## `frontend/src/components/ingestion/connectors/ScopeList.tsx`
+
+- Reauthorising will request the updated scopes and resume ingestion.
+
+## `frontend/src/components/ingestion/filters/ChannelDefaultsBlock.tsx`
+
+- channel · defaults
+- fallback policy per connector
+- Channel defaults unavailable. Check connectivity and reload.
+- No channel defaults configured.
+
+## `frontend/src/components/ingestion/filters/FiltersPipeline.tsx`
+
+- add rule
+- + add rule
+- open DSL
+
+## `frontend/src/components/ingestion/filters/PipelineGateDiagram.tsx`
+
+- metrics unavailable · counts are zero
+- Estimated: no per-gate measurement available from this endpoint
+- Proportional pipeline funnel
+
+## `frontend/src/components/ingestion/filters/PrioritySendersBlock.tsx`
+
+- priority · senders
+- Mail from these contacts is tagged with a
+- Priority senders unavailable. Check connectivity and reload.
+- No priority senders configured.
+- name · handle
+- no email fact: entry matches nothing
+- This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact. Without one, this entry matches nothing.
+
+## `frontend/src/components/ingestion/filters/RuleEditor.tsx`
+
+- suffix (includes subdomains)
+- is present
+- test against active rules
+- Build a sample envelope and see which verdict the live rule set returns.
+- headers (one per line: Key: Value)
+- matched:
+- decision:
+- target:
+- rule type
+- priority (lower = higher)
+- e.g. noreply.example.com
+- email address
+- e.g. alerts@example.com
+- header name
+- e.g. List-Unsubscribe
+- mime type
+- e.g. text/calendar or image/*
+- chat id
+- e.g. 123456789
+- e.g. telegram, gmail
+- sender address
+- alerts@example.com
+- source channel
+- mime parts (comma-separated)
+- text/calendar, image/png
+- raw key (optional)
+- e.g. message-id or calendar UID
+- Close rule editor
+- name (optional)
+- e.g. Block marketing mail
+- target butler
+- e.g. finance
+- description (optional)
+- Why this rule exists
+- List-Unsubscribe: <mailto:unsub@example.com>\nX-Mailer: Outlook
+
+## `frontend/src/components/ingestion/timeline/EventDrawer.tsx`
+
+- Session lineage unavailable.
+- No sessions were triggered by this event.
+- Bars are proportional to session duration, not actual token cost.
+- open →
+- session total
+- Raw payload not loaded.
+- Payload access requires elevated permission.
+- Each access is recorded in the audit log. Request access from your administrator.
+- Raw payload unavailable.
+- No payload recorded for this event.
+- truncated · full payload larger than displayed
+- Replay history not loaded.
+- Replay history access requires elevated permission.
+- Replay history unavailable.
+- No replay attempts recorded.
+- Retry policy: up to 3 attempts with exponential backoff, then held for manual review.
+- Download raw payload
+- Event detail drawer
+- Close drawer
+- copy id
+
 ## `frontend/src/components/issues/IssuesPanel.tsx`
 
 - Issues
 - View
+- Restore
 - Dismiss
-- No issues recorded.
-- Issues appear when butlers report errors or warnings.
+- Could not load issues.
+- The issues feed is unavailable right now. Retrying automatically; check the backend if this persists.
 
 ## `frontend/src/components/layout/CommandPalette.tsx`
 
@@ -1531,8 +2229,22 @@ Do **not** edit manually: re-run the script to refresh.
 - Enter
 - Search pages, butlers, entities, contacts...
 
+## `frontend/src/components/layout/EntityFinder.tsx`
+
+- Select a result to preview.
+- Top relations
+- No relations.
+- ESC
+- Search failed. Try again in a moment.
+- Searching…
+- inner circle
+- Entity Finder
+- Search entities, pages…
+
 ## `frontend/src/components/layout/PageHeader.tsx`
 
+- &larr;
+- Butlers
 - Open command palette
 - Cmd/Ctrl+K
 - Toggle dark mode
@@ -1545,80 +2257,62 @@ Do **not** edit manually: re-run the script to refresh.
 ## `frontend/src/components/layout/Sidebar.tsx`
 
 - Butlers
+- Expand sidebar
 - Today&apos;s spend
+- Collapse sidebar
 - Main navigation
 
-## `frontend/src/components/memory/ConcentricCirclesCanvas.tsx`
+## `frontend/src/components/memory/AttentionRail.tsx`
 
-- block. This replaces the per-node
-- which created N
-- Scroll to zoom &middot; drag to pan
-- Reset
-- You
-- Dunbar social map -- concentric rings of contacts
+- Needs attention
+- Nothing waiting.
+- Recent activity
+- Nothing observed yet.
 
-## `frontend/src/components/memory/EmptyStatePanel.tsx`
+## `frontend/src/components/memory/DetailSkeleton.tsx`
 
-- Your circle is quiet.
-- Connect a service so the butler can learn who matters most to you.
-- Connect a service
+- PROVENANCE
+- METADATA
 
-## `frontend/src/components/memory/HorizontalStrataCanvas.tsx`
+## `frontend/src/components/memory/EpisodesRegister.tsx`
 
-- You · center
-- No contacts yet
-- You
+- open ↗
 
-## `frontend/src/components/memory/MemoryActivityTimeline.tsx`
+## `frontend/src/components/memory/HousekeepingBand.tsx`
 
-- Episode
-- Fact
-- Rule
-- Recent Activity
-- Latest memory events across all tiers
-- No recent activity.
+- Retention
+- loading…
+- No retention policies set.
+- ttl days
+- max rows
+- save failed, try again
+- Compaction
+- No sweeps recorded.
+- Embeddings
+- All embeddings current.
+- composing…
+- re-embed failed, try again
+- Housekeeping
+- Retention policies
+- Compaction log
 
-## `frontend/src/components/memory/MemoryBrowser.tsx`
+## `frontend/src/components/memory/MemoryOverture.tsx`
 
-- Previous
-- Next
-- No facts found.
-- Subject
-- Predicate
-- Content
-- Confidence
-- Permanence
-- Validity
-- Scope
-- No rules found.
-- Maturity
-- Effectiveness
-- Applied
-- No episodes found.
-- Butler
-- Importance
-- Consolidated
-- Created
-- Yes
-- No
-- Episode Content
-- Memory Browser
-- Browse facts, rules, and episodes across the memory subsystem
-- Facts
-- Rules
-- Episodes
-- Search facts...
-- Search rules...
+- Memory
+- What the house believes.
+- Pending
+- Active facts
+- Proven rules
+- Last write-up
 
-## `frontend/src/components/memory/MemoryTierCards.tsx`
+## `frontend/src/components/memory/MemorySearch.tsx`
 
-- Memory stats unavailable.
-- Episodes
-- Eden tier: raw session memories
-- Facts
-- Mid-term tier: consolidated knowledge
-- Rules
-- Long-term tier: behavioral patterns
+- Search memory
+- Clear search
+
+## `frontend/src/components/memory/SearchResults.tsx`
+
+- Nothing in the books.
 
 ## `frontend/src/components/notifications/notification-feed.tsx`
 
@@ -1632,6 +2326,7 @@ Do **not** edit manually: re-run the script to refresh.
 - Channel
 - Message
 - Time
+- Dismiss
 - No notifications found.
 
 ## `frontend/src/components/notifications/notification-stats-bar.tsx`
@@ -1649,8 +2344,9 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/overview/ButlerIndex.tsx`
 
+- Butler health source unavailable.
 - No butlers active.
-- Butler index
+- Operations
 
 ## `frontend/src/components/overview/KpiStrip.tsx`
 
@@ -1659,52 +2355,128 @@ Do **not** edit manually: re-run the script to refresh.
 ## `frontend/src/components/overview/NextList.tsx`
 
 - Nothing scheduled.
-- Upcoming items
+- Now
+
+## `frontend/src/components/overview/OperationsNowList.tsx`
+
+- Nothing scheduled.
+- Operations now
 
 ## `frontend/src/components/overview/RuntimeSummaryKpi.tsx`
 
 - System runtime summary
 
-## `frontend/src/components/relationship/ContactDetailView.tsx`
+## `frontend/src/components/qa/CaseDossier.tsx`
 
-- &mdash;
+- Select a QA case to inspect the dossier.
+- Loading QA dossier…
+- QA dossier unavailable.
+- Diagnosis
+- Hypothesis
+- Evidence · log fragments
+- Considered & ruled out
+- No investigation notes were captured for this case.
+- Diagnosing…
+- Investigation notes have not been emitted yet.
+- Proposed fix
+
+## `frontend/src/components/qa/CaseDossierHeader.tsx`
+
+- remove dismissal
+- Dismiss case
+- Retry investigation
+- Remove dismissal
+
+## `frontend/src/components/qa/CaseList.tsx`
+
+- QA cases
+
+## `frontend/src/components/qa/CounterEvidence.tsx`
+
+- Counter evidence
+
+## `frontend/src/components/qa/DiffPreview.tsx`
+
+- Diff preview
+
+## `frontend/src/components/qa/EvidenceLog.tsx`
+
+- QA evidence log
+
+## `frontend/src/components/qa/PRPanel.tsx`
+
+- No PR. Escalated to user.
+- Open PR
+- Why this fix
+- Diff preview
+- Pull request fix
+
+## `frontend/src/components/qa/PatrolJournal.tsx`
+
+- Patrol journal · every QA decision on this case
+- Patrol journal
+
+## `frontend/src/components/qa/QaKpiStrip.tsx`
+
+- QA key performance indicators
+
+## `frontend/src/components/qa/StateTrack.tsx`
+
+- · escalated
+
+## `frontend/src/components/relationship/ActivitySparkline.tsx`
+
+- No activity in the last 90 days.
+
+## `frontend/src/components/relationship/ConcentrationPage.tsx`
+
+- empty hidden
+- top-3 share
+- (e.share != null && e.share
+- Retry
+- Predicate filter
+- total touches
+- top entity
+- tail < 1%
+- Could not load concentration data
+- Owner access is required, or no relational predicates are registered.
+- No entities yet.
+- Concentration
+- Balance-sheet of relationship weight by predicate. See which entities dominate each relationship type.
+
+## `frontend/src/components/relationship/ContactChannelCard.tsx`
+
+- Hide
 - (primary)
-- Email
-- Phone
-- Address
-- Birthday
+- (legacy)
 - Type
-- Account
 - Value
 - Primary
-- Preferred channel
+- Preferred
 - None
-- Telegram
-- First name
-- Last name
-- Nickname
-- Company
-- Job title
-- Cancel
-- View entity →
-- Unlink
-- This contact is not linked to an entity. Activity history is unavailable.
+- No channel entries.
 - Add contact info
-- Edit
+- Channels
+- No linked contacts. Link a contact to see their channel info here.
+- Link contact
+- Save
+- Cancel
+- Unverified: owner has not confirmed this channel
+- Mark as verified
 - Delete
-- Select account...
-- Optional
-- Edit contact
-- Delete contact
+- Legacy channel: no entity-keyed write path available (read-only)
 
 ## `frontend/src/components/relationship/ContactTable.tsx`
 
 - Merge Contact
 - Merge
+- This contact is not linked to an entity yet, so it cannot be merged.
 - Searching...
 - No matching contacts found.
+- (no entity)
 - Will merge into:
 - Cancel
+- Review &amp; merge
 - All
 - Name
 - Email
@@ -1719,8 +2491,72 @@ Do **not** edit manually: re-run the script to refresh.
 - Delete contact?
 - No contacts found.
 - Contacts appear as they are added through the Relationship butler.
-- Search by name or ID...
+- Search by name...
 - Search contacts...
+
+## `frontend/src/components/relationship/CoreDatesBlock.tsx`
+
+- Core dates
+
+## `frontend/src/components/relationship/EntitiesIndexPage.tsx`
+
+- Delete entity
+- Cancel
+- Merge entity
+- Search failed. Try again in a moment.
+- No matching entity found.
+- Compare
+- Has contact
+- Name
+- Tier
+- Last seen
+- Contacts
+- Aliases
+- Actions
+- Owner
+- Unidentified
+- Nothing waiting.
+- last seen
+- New entity
+- Create a new entity in the relationship graph.
+- Type
+- Merge
+- Archive
+- Forget
+- Clear
+- Previous
+- Next
+- Queue
+- Promote
+- Dismiss
+- Search merge target
+- Search target entity
+- Search failed.
+- The entity search could not be completed. Try again in a moment.
+- No entities found.
+- Entities appear as the butler builds the knowledge graph.
+- Select
+- Duplicate candidate
+- Stale
+- Full name or organisation name
+- Entities
+- Browse the relationship graph: people, organizations, and more.
+- Search entities
+- Search entities…
+- Entity list
+- Curation queue
+
+## `frontend/src/components/relationship/LatestInteractionsBlock.tsx`
+
+- Latest interactions
+
+## `frontend/src/components/relationship/MergeCompareDialog.tsx`
+
+- Review merge
+- Identity facts
+- Narrative facts
+- Shared evidence
+- Divergences
 
 ## `frontend/src/components/relationship/OwnerSetupBanner.tsx`
 
@@ -1743,10 +2579,13 @@ Do **not** edit manually: re-run the script to refresh.
 
 - Merge Contact
 - Merge
+- This pending contact is not linked to an entity yet, so it cannot be merged.
 - Search for target contact
+- (no entity)
 - No contacts found.
 - Selected:
 - Cancel
+- Review &amp; merge
 - Pending Identities
 - Contacts awaiting identity resolution
 - Name
@@ -1758,13 +2597,37 @@ Do **not** edit manually: re-run the script to refresh.
 - Archive
 - Type a name or email...
 
+## `frontend/src/components/relationship/PlexPage.tsx`
+
+- You
+- d since contact
+- Open record
+- Unpin tier
+- 90-day activity
+- Dates
+- Facts
+- Nothing recorded yet.
+- Worth attention
+- No one is owed a call.
+- Capacity
+- Curation and full index
+- Loading the plex...
+- Failed to load the graph.
+- No relational facts yet. The record view may hold more.
+- reset view
+- esc back · enter open · 0 reset · drag a person to pin a tier
+- Hop trail
+- Entities
+- The life graph, centered on you. Click a mark to hop; the trail keeps the way back.
+- Life graph plex
+
 ## `frontend/src/components/relationship/PracticalDrawer.tsx`
 
 - Created
 - Updated
 - Raw metadata
 - (action needed)
-- Practical details
+- Contact Details
 
 ## `frontend/src/components/relationship/PulseStrip.tsx`
 
@@ -1774,6 +2637,10 @@ Do **not** edit manually: re-run the script to refresh.
 - Last interaction
 - Last 30 days
 - Open loops
+
+## `frontend/src/components/relationship/SubpageTabs.tsx`
+
+- Entity views
 
 ## `frontend/src/components/relationship/UnlinkedEntitiesSection.tsx`
 
@@ -1885,12 +2752,150 @@ Do **not** edit manually: re-run the script to refresh.
 - Select credential type
 - Optional display label
 
+## `frontend/src/components/secrets/passport/BlockHead.tsx`
+
+- Audit
+
+## `frontend/src/components/secrets/passport/DirectionPassport.tsx`
+
+- |s:
+- |c:
+
+## `frontend/src/components/secrets/passport/GoogleAppCredentials.tsx`
+
+- Could not load Google status.
+- loading…
+- client id
+- client secret
+- enter a new client secret
+- refresh token
+
+## `frontend/src/components/secrets/passport/ProviderConfigDrawer.tsx`
+
+- configure provider
+- loading…
+- home assistant · url + token
+- long-lived token
+- Remove Home Assistant credentials? This cannot be undone.
+- webhook url
+- last event
+- Regenerate token? The OwnTracks app will need to be reconfigured with the new token.
+- regenerate token
+- steam accounts
+- no accounts connected
+- connect steam account
+- api key
+- 17-digit SteamID64 · find at steamid.io
+- connect account
+- client id
+- Error — re-authorization needed
+- spotify · client id
+- from developer.spotify.com/dashboard
+- Disconnect Spotify? Removes client ID, access token, and refresh token.
+- whatsapp · scan qr code to pair
+- paired successfully
+- qr code expired, try again
+- last sync
+- Disconnect WhatsApp? Removes pairing and all stored credentials.
+- Home Assistant
+- paste long-lived access token
+- OwnTracks
+- Steam Web API key
+- Steam
+- Spotify app client_id
+- Spotify
+- WhatsApp pairing QR code
+- WhatsApp
+
+## `frontend/src/components/secrets/passport/Spine.tsx`
+
+- sort ·
+- + add
+- Search credentials
+- Clear search
+- Add credential or connect provider
+- Credentials index
+
+## `frontend/src/components/secrets/passport/WhatBreaks.tsx`
+
+- loading…
+- Nothing depends on this credential.
+
+## `frontend/src/components/secrets/passport/atoms.tsx`
+
+- never probed
+- run probe
+- probe again
+
+## `frontend/src/components/secrets/passport/pages.tsx`
+
+- grant health
+- also delete account record (hard delete)
+- This revokes Google Health access only. Calendar and Drive remain connected.
+- scope grants · calendar / drive / health
+- grant per account above
+- re-consent (Google Health)
+- health connector
+- last ingest
+- sleep · 7d
+- summaries · 7d
+- google accounts
+- loading…
+- no Google account connected
+- connect Google
+- add another account
+- passport no.
+- no scope set
+- No stamps yet.
+- open /audit-log
+- new credential value
+- Remove this credential? This cannot be undone.
+- used by
+- nobody yet
+- every butler that talks to a model.
+- what breaks
+- Nothing routed here yet.
+- per-butler override
+- loading butlers…
+- no registered butlers
+- try again in a moment
+- Managed in the shared credential store · read-only here
+- set value
+- override · per butler
+- how to use
+- scope · session-bound
+- new token: copy now, won't be shown again
+- Revoke this CLI token? The credential will be deleted and cannot be recovered.
+- set token
+- No page selected.
+- add credential
+- What would you like to add?
+- credential family
+- system secret
+- user credential
+- connect provider
+- user credential creation requires the owner entity to be set up
+- new system secret
+- "shared" for global · butler name for per-butler override
+- new user credential
+- label (optional)
+- owner entity ID not available: cannot create user credential
+- oauth · connect now
+- owner entity ID not available: cannot connect provider
+- other integrations
+- incoming url
+- last seen
+- last verified
+- last used
+- paste token here
+- paste value here
+- paste override value here
+- SECRET_KEY_NAME
+- human-readable label
+
 ## `frontend/src/components/sessions/SessionDetailDrawer.tsx`
 
-- Success
-- Failed
-- Running
-- Session Detail
+- Session detail
 - Loading session information...
 - Metadata
 - Prompt
@@ -1917,9 +2922,6 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/sessions/SessionTable.tsx`
 
-- Success
-- Failed
-- Running
 - Time
 - Butler
 - Trigger
@@ -1934,6 +2936,14 @@ Do **not** edit manually: re-run the script to refresh.
 - No sessions found.
 - Sessions appear as butlers process triggers and scheduled tasks.
 
+## `frontend/src/components/sessions/SessionsKpiStrip.tsx`
+
+- Matching filters
+
+## `frontend/src/components/sessions/StatusBadge.tsx`
+
+- Failed
+
 ## `frontend/src/components/sessions/ToolCallTimeline.tsx`
 
 - No tool calls recorded.
@@ -1942,247 +2952,26 @@ Do **not** edit manually: re-run the script to refresh.
 - Error
 - Raw Payload
 
-## `frontend/src/components/settings/BlobStorageCard.tsx`
+## `frontend/src/components/settings/QaStafferCard.tsx`
 
-- Blob Storage
-- S3-compatible object storage for media and file attachments.
-- Endpoint URL
-- S3-compatible endpoint (Garage, MinIO, AWS S3)
-- Bucket
-- Region
-- Access Key ID
-- Secret Access Key
-- Saving...
-- Testing...
-- Test
-
-## `frontend/src/components/settings/GoogleHealthStatusCard.tsx`
-
-- Re-grant Google Health
-- Learn more
-- Connection state
-- Last ingest
-- Last token refresh
-- Sleep sessions (7d)
-- Daily summaries (7d)
-- Rate limit remaining
-- Estimated expiry
-
-## `frontend/src/components/settings/GoogleOAuthSection.tsx`
-
-- Disconnect Google account?
-- This will disconnect
-- Permanently delete account record (hard delete)
-- Cancel
-- Granted
-- Not granted
-- Disconnect
-- via full disconnect
-- Scope sets
-- Primary
-- &middot; Last refresh:
-- Re-authorize
-- Google
-- Manage connected Google accounts for Calendars, Emails, and Contacts.
-- Unavailable
-- Connected accounts
-- Connect new Google account
-- Secrets
-- Failed to load account status. Ensure the dashboard API is running.
-- No Google accounts connected yet.
-- Click &quot;Connect new Google account&quot; to start the OAuth flow.
-
-## `frontend/src/components/settings/HomeAssistantSetupCard.tsx`
-
-- Home Assistant URL
-- Long-lived access token
-- Profile → Security → Long-lived access tokens
-- Cancel
-- Disconnect Home Assistant?
-- Home Assistant
-- Error
-- Failed to fetch Home Assistant status. Please refresh to try again.
-- URL
-- Re-configure
-- Disconnect
-- Enter your long-lived access token
-
-## `frontend/src/components/settings/ModelCatalogCard.tsx`
-
-- BLOCKED
-- Set a rolling token budget for
-- Token limit
-- Cancel
-- Use template
-- Alias
-- Runtime Type
-- Model ID
-- Extra Args (JSON array)
-- JSON array of CLI arguments passed to the runtime.
-- Complexity Tier
-- Priority
-- Higher = higher priority.
-- Session Timeout (s)
-- Per-session runtime budget for this catalog row.
-- Enabled
-- Delete Model?
-- Are you sure you want to delete
-- Model Catalog
-- Add Model
-- Runtime
-- Extra Args
-- Price
-- USD per 1M tokens: input / output
-- 24h usage
-- Rolling 24-hour token usage. Click the limit to edit.
-- 30d usage
-- Rolling 30-day token usage. Click the limit to edit.
-- Timeout
-- Actions
-- Failed to load model catalog. Ensure the dashboard API is running.
-- No models in the catalog yet. Add one to get started.
-- &mdash;
-- Free
-- On
-- Off
-- Edit
-- Delete
-- e.g. 500000 (blank = unlimited)
-- Select a preset...
-- e.g. claude-default
-- e.g. claude-sonnet-4-5
-- Increase priority (+5)
-- Decrease priority (-5)
-
-## `frontend/src/components/settings/OwnTracksSetupCard.tsx`
-
-- Webhook URL
-- Regenerate OwnTracks token?
-- Cancel
-- Platform
-- iOS
-- Android
-- (info) button → Settings.
-- Mode
-- HTTP
-- URL
-- Authentication
-- Username
-- Password
-- HTTP private
-- Host
-- Identification
-- No location events received yet
-- • Confirm the webhook URL and bearer token match the app settings.
-- • Ensure the app is not in low-power/background-restricted mode.
-- • Tap the send icon in the app to trigger a manual update.
-- OwnTracks
-- Error
-- Retry
-- Last event
-- Events today
-- Regenerate token
-- Connector actions are disabled until status can be fetched.
-- webhook URL
-- bearer token
-
-## `frontend/src/components/settings/QASettingsCard.tsx`
-
+- system · qa staffer
 - QA Staffer
-- Repository, credentials, and PR whitelist for automated QA investigations.
-- Repository
-- Repository URL
-- Last synced:
-- Saving...
-- Syncing...
-- GitHub Token
-- BUTLERS_QA_GH_TOKEN
-- Git Author Identity
-- Author name
-- Author email
-- Used as
-- GIT_AUTHOR_*
-- GIT_COMMITTER_*
-- for QA-generated commits.
-- Allowed Repositories
-- format or as full GitHub URLs.
-- No repositories whitelisted. QA PR creation is blocked.
-- owner/repo or GitHub URL
+- Retry →
+- edit commit identity
+- Could not save commit identity. Try again.
+- allowed repositories
+- No repositories whitelisted.
 - Remove
-
-## `frontend/src/components/settings/SpotifySetupCard.tsx`
-
-- , then paste your app's Client ID below.
-- Client ID
-- Client ID must be a 32-character hexadecimal string.
-- Disconnect Spotify?
-- Cancel
-- Spotify
-- Error
-- Failed to fetch Spotify status. Please refresh to try again.
-- Account
-- Type
-- Last sync
-- Re-authorization required
-- Disconnect
-- Set client ID
-- 32-character hex string
-- Connect Spotify
-- Re-authorize
-- Re-authorize Spotify
-- Re-connect Spotify
-
-## `frontend/src/components/settings/SteamSetupCard.tsx`
-
-- Steam Web API key
-- API Key
-- API key must be a 32-character hexadecimal string.
-- SteamID64
-- Display Name (optional)
-- Disconnect Steam account?
-- Cancel
-- Primary
-- Show playtime analytics
-- Retry
-- Hide
-- Top games
-- No game playtime data available yet.
-- Steam
-- Error
-- Failed to fetch Steam accounts. Please refresh to try again.
-- Not configured
-- 32-character hex string
-- 17-digit number (e.g. 76561198000000000)
-- Leave blank to use Steam persona name
-- Disconnect account
-
-## `frontend/src/components/settings/WhatsAppPairModal.tsx`
-
-- Generating QR code…
-- Refreshing QR code…
-- Open WhatsApp on your phone
-- Tap Settings → Linked Devices
-- Tap Link a Device
-- Scan this QR code
-- WhatsApp paired successfully!
-- Pairing timed out. The QR code was not scanned within 2 minutes.
-- Try again
-- Retry
-- Link WhatsApp Account
-- Scan the QR code with your phone to connect your WhatsApp account.
-- WhatsApp QR code
-
-## `frontend/src/components/settings/WhatsAppSetupCard.tsx`
-
-- Disconnect WhatsApp?
-- Cancel
-- WhatsApp
-- Phone
-- Paired
-- Last sync
-- WhatsApp bridge is not running. The connector service may be stopped.
-- Disconnect
-- Promise
+- QA Staffer settings
+- QA repository URL
+- Sync QA repository
+- GitHub token · BUTLERS_QA_GH_TOKEN
+- Git author name · BUTLERS_QA_GIT_AUTHOR_NAME
+- Git author email · BUTLERS_QA_GIT_AUTHOR_EMAIL
+- Git author name
+- Git author email
+- Save git author identity
+- Add allowed repository
 
 ## `frontend/src/components/skeletons/chart-skeleton.tsx`
 
@@ -2393,6 +3182,28 @@ Do **not** edit manually: re-run the script to refresh.
 - No external egress recorded yet.
 - Last seen
 
+## `frontend/src/components/system/InsightDeliveryTile.tsx`
+
+- Insight Delivery
+- Proactive insight pipeline state
+- Could not load insight delivery state.
+- if (isError) return
+- Queued
+- Delivered
+- Failed
+- Last delivery
+
+## `frontend/src/components/system/SecurityPostureTile.tsx`
+
+- Security Posture
+- Auth and secrets configuration
+- Could not load security posture.
+- if (isError) return
+- API key auth
+- Export secret
+- Infra credentials
+- DB role enforcement
+
 ## `frontend/src/components/system/UptimeTile.tsx`
 
 - Uptime
@@ -2413,14 +3224,58 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/timeline/UnifiedTimeline.tsx`
 
+- Retry
 - Load more
 - No events found.
 - Events appear as butlers process sessions and tasks.
+- Could not load the timeline.
+- The event stream failed to load. This is not the same as having no activity. Please try again.
 
 ## `frontend/src/components/topology/TopologyGraph.tsx`
 
 - Ecosystem Topology
 - No butlers discovered
+
+## `frontend/src/components/ui/Display.tsx`
+
+- Secrets
+
+## `frontend/src/components/ui/EntityPrimitives.stories.tsx`
+
+- has-email · alice@example.com
+- EntityMark · neutral
+- EntityMark · fill (active)
+- EntityMark · ownership / state borders
+- TierBadge · Dunbar ramp
+- StateDot · curation states
+- Row · the canonical list primitive
+- StalenessBand · staleness axis
+- ProvenanceMarks · src + verified
+- Staleness + provenance marks (stale fact)
+
+## `frontend/src/components/ui/Eyebrow.tsx`
+
+- Overview · Wed, 7 May 2026 · 14:21
+- Credentials
+
+## `frontend/src/components/ui/Mono.tsx`
+
+- sha256:7a3f…
+- BUTLER_TELEGRAM_TOKEN
+
+## `frontend/src/components/ui/Row.tsx`
+
+- Alice Johnson
+
+## `frontend/src/components/ui/Title.tsx`
+
+- Secrets
+- Google OAuth
+
+## `frontend/src/components/ui/Voice.tsx`
+
+- Inventory of every credential the system holds.
+- Nothing waiting.
 
 ## `frontend/src/components/ui/auto-refresh-toggle.tsx`
 
@@ -2443,6 +3298,10 @@ Do **not** edit manually: re-run the script to refresh.
 - Something went wrong
 - Retry
 - Loading
+
+## `frontend/src/components/ui/range-toggle.tsx`
+
+- Time range
 
 ## `frontend/src/components/ui/sheet.tsx`
 
@@ -2467,4 +3326,4 @@ Do **not** edit manually: re-run the script to refresh.
 - Preset windows
 
 ---
-*Total strings: 1917*
+*Total strings: 2500*
