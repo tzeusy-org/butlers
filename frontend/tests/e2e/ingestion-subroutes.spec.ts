@@ -13,8 +13,9 @@
  * The preview server is managed by playwright.config.ts `webServer`; tests
  * rely on it being available and will fail hard (not skip) if it is not.
  *
- * Note: Requires VITE_INGESTION_DISPATCH_CONSOLE=true at build time
- * (set automatically in CI) for the redirect logic to be active.
+ * Note: the redirect logic is on by default (dispatch console default-on
+ * since 2026-07-03); CI still sets VITE_INGESTION_DISPATCH_CONSOLE=true
+ * explicitly for clarity/future-proofing.
  *
  * Prerequisites:
  *   npm run build && npm run preview  (or Playwright starts preview automatically)

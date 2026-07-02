@@ -142,9 +142,11 @@ export const router = createBrowserRouter(
         { path: '/qa/investigations/:attemptId', element: <QaInvestigationDetailPage /> },
         // Ingestion routes — behaviour depends on INGESTION_DISPATCH_CONSOLE flag.
         //
-        // Flag ON (default in dev): first-class sub-routes + 301-equivalent redirects
-        //   from legacy ?tab= URLs per dashboard-ingestion-dispatch-console spec.
-        // Flag OFF (default in prod): legacy single-route IngestionPage with ?tab= param.
+        // Flag ON (default in both dev and prod): first-class sub-routes +
+        //   301-equivalent redirects from legacy ?tab= URLs per
+        //   dashboard-ingestion-dispatch-console spec.
+        // Flag OFF (VITE_INGESTION_DISPATCH_CONSOLE=false kill switch):
+        //   legacy single-route IngestionPage with ?tab= param.
         //
         // Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
         //       dashboard-ingestion-dispatch-console/spec.md

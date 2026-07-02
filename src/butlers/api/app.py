@@ -150,12 +150,20 @@ async def lifespan(app: FastAPI):
     # INGESTION_DISPATCH_CONSOLE feature flag.
     # Controls the ingestion sub-route hierarchy (/ingestion/connectors,
     # /ingestion/filters, /ingestion/history) and 301 redirects from ?tab=
-    # URLs. Default: on in dev, off in prod for staged rollout.
-    # Set INGESTION_DISPATCH_CONSOLE=true in production to enable.
+    # URLs. Default: on in both dev and prod (owner decision 2026-07-03;
+    # legacy ingestion tab surface is orphaned by this flip).
+    # Set INGESTION_DISPATCH_CONSOLE=false to force the legacy surface.
     # The frontend reads VITE_INGESTION_DISPATCH_CONSOLE at build/serve time;
-    # this env var governs docker-compose and server-side awareness.
+    # this env var governs docker-compose and server-side awareness. An
+    # unset/empty value here is treated as the default-on state below;
+    # explicit falsy values ("0", "false", "no", "off") disable it.
     _ingestion_flag_raw = os.environ.get("INGESTION_DISPATCH_CONSOLE", "")
-    _ingestion_flag_enabled = _ingestion_flag_raw.lower() in ("1", "true", "yes", "on")
+    _ingestion_flag_enabled = _ingestion_flag_raw.strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
     logger.info(
         "Feature flag INGESTION_DISPATCH_CONSOLE=%s (raw=%r)",
         "enabled" if _ingestion_flag_enabled else "disabled",
