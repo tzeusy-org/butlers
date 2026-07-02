@@ -12,6 +12,7 @@ Functions
 ---------
 ingestion_event_get             — fetch a single event by id
 ingestion_events_list           — paginated list; sort="recent" keyset, sort="cost" offset
+ingestion_events_histogram      — grouped per-bucket status counts for a time window (bu-4utdw.6)
 encode_cursor                   — encode (received_at, id) tuple to opaque cursor string
 decode_cursor                   — decode opaque cursor string to (received_at, id) tuple
 encode_cost_cursor              — encode page offset for cost-sort cursor
@@ -31,7 +32,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -146,6 +147,46 @@ _SESSION_COLUMNS = (
 # Cap on sessions embedded per event in the list-enrichment response
 # (dispatch-ticks cell only needs enough entries to render a compact strip).
 _MAX_LIST_SESSIONS_PER_EVENT = 8
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/histogram support (bu-4utdw.6)
+# ---------------------------------------------------------------------------
+
+# Bucket granularities accepted by ingestion_events_histogram, mapped to the
+# interval literal passed to Postgres' date_bin(). date_bin (not date_trunc)
+# is used because date_trunc only supports fixed calendar units — it cannot
+# express a 5-minute stride. A constant epoch origin keeps bucket boundaries
+# stable and aligned to whole-minute marks regardless of the query window.
+_HISTOGRAM_BUCKET_INTERVALS: dict[str, str] = {
+    "1m": "1 minute",
+    "5m": "5 minutes",
+    "1h": "1 hour",
+}
+_HISTOGRAM_BUCKET_DELTAS: dict[str, timedelta] = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "1h": timedelta(hours=1),
+}
+
+# Guardrail: caps the number of buckets a single request can force Postgres to
+# GROUP BY, independent of bucket granularity. 2880 buckets bounds the scan to
+# 48h at 1m, 10 days at 5m, or 120 days at 1h — a request whose (to - from) /
+# bucket exceeds this must pick a coarser bucket.
+_HISTOGRAM_MAX_BUCKETS = 2880
+
+# Every status the unified timeline can surface (mirrors _SKIP_AWARE_STATUS's
+# output plus connectors.filtered_events' own status values). Used to
+# zero-fill each present bucket's counts dict so callers never see a missing
+# key — only whole buckets with zero events across every status are omitted.
+_HISTOGRAM_STATUSES: tuple[str, ...] = (
+    "ingested",
+    "skipped",
+    "filtered",
+    "error",
+    "replay_pending",
+    "replay_complete",
+    "replay_failed",
+)
 
 
 def _decode_event_row(row: asyncpg.Record) -> dict[str, Any]:
@@ -495,6 +536,136 @@ async def ingestion_events_list(
         next_cursor_out = encode_cursor(last_ra_dt, last_id_uuid)
 
     return {"items": items, "next_cursor": next_cursor_out, "has_more": has_more}
+
+
+async def ingestion_events_histogram(
+    pool: asyncpg.Pool,
+    *,
+    from_dt: datetime,
+    to_dt: datetime,
+    bucket: str = "1m",
+    channels: list[str] | None = None,
+    statuses: list[str] | None = None,
+    q: str | None = None,
+) -> dict[str, Any]:
+    """Return per-bucket, per-status ingestion event counts for a time window.
+
+    Powers the status-aware timeline hour strip (bu-4utdw.6/bu-4utdw.7). Runs
+    exactly ONE grouped query (``date_bin`` bucketing) over the same
+    ``public.ingestion_events`` UNION ALL ``connectors.filtered_events`` union
+    :func:`ingestion_events_list` reads — no per-bucket queries, no N+1, no
+    Prometheus dependency. This is DB truth, distinct from the
+    ``aggregates_available`` degraded-mode surface used by the
+    Prometheus-backed pipeline endpoints.
+
+    Args:
+        pool: asyncpg connection pool.
+        from_dt: Inclusive lower bound on ``received_at``.
+        to_dt: Exclusive upper bound on ``received_at``. Must be after ``from_dt``.
+        bucket: Bucket granularity — one of ``"1m"`` (default), ``"5m"``, ``"1h"``.
+        channels: Optional list of source_channel values to include.
+        statuses: Optional list of status values to include (same vocabulary
+            as :func:`ingestion_events_list`'s ``statuses`` filter).
+        q: Optional freetext search (ILIKE %q%), same fields as
+            :func:`ingestion_events_list`.
+
+    Returns:
+        A dict with:
+        - ``buckets``: list of ``{"ts": datetime, "counts": {status: count, ...}}``,
+          ordered oldest-first. A bucket only appears when at least one event
+          fell into it; present buckets always carry all seven status keys
+          (:data:`_HISTOGRAM_STATUSES`), zero-filled for statuses with no events.
+        - ``bucket``: the resolved bucket granularity string, echoed back.
+
+    Raises:
+        ValueError: ``bucket`` is not a recognized granularity, ``to_dt`` is
+            not after ``from_dt``, or the requested range would exceed
+            :data:`_HISTOGRAM_MAX_BUCKETS` buckets at the chosen granularity
+            (the guardrail that bounds the scan — callers should retry with a
+            coarser bucket).
+    """
+    if bucket not in _HISTOGRAM_BUCKET_INTERVALS:
+        raise ValueError(
+            f"Invalid bucket '{bucket}'; must be one of {sorted(_HISTOGRAM_BUCKET_INTERVALS)}"
+        )
+    if to_dt <= from_dt:
+        raise ValueError("'to' must be after 'from'")
+
+    bucket_delta = _HISTOGRAM_BUCKET_DELTAS[bucket]
+    span = to_dt - from_dt
+    bucket_count = span / bucket_delta
+    if bucket_count > _HISTOGRAM_MAX_BUCKETS:
+        raise ValueError(
+            f"Range {span} is too wide for bucket '{bucket}' "
+            f"({bucket_count:.0f} buckets exceeds the {_HISTOGRAM_MAX_BUCKETS} cap); "
+            "use a coarser bucket (5m or 1h) or a narrower range"
+        )
+
+    # asyncpg encodes Python timedelta objects to Postgres `interval` natively —
+    # binding the interval as text (e.g. "1 minute") instead raises
+    # ``DataError: ... ('str' object has no attribute 'days')`` because asyncpg
+    # infers the wire type from Postgres' own parameter type inference for
+    # date_bin()'s first argument and then tries to encode the Python value as
+    # an interval directly, without going through a SQL text->interval cast.
+    args: list[Any] = [from_dt, to_dt, bucket_delta]
+    where_parts: list[str] = ["received_at >= $1", "received_at < $2"]
+
+    if statuses:
+        args.append(statuses)
+        where_parts.append(f"status = ANY(${len(args)}::text[])")
+    if channels:
+        args.append(channels)
+        where_parts.append(f"source_channel = ANY(${len(args)}::text[])")
+    if q is not None and q.strip():
+        q_pattern = f"%{q}%"
+        args.append(q_pattern)
+        n = len(args)
+        where_parts.append(
+            f"(id::text ILIKE ${n}"
+            f" OR source_channel ILIKE ${n}"
+            f" OR source_sender_identity ILIKE ${n}"
+            f" OR source_endpoint_identity ILIKE ${n}"
+            f" OR external_event_id ILIKE ${n}"
+            f" OR triage_target ILIKE ${n}"
+            f" OR triage_decision ILIKE ${n}"
+            f" OR filter_reason ILIKE ${n}"
+            f" OR error_detail ILIKE ${n})"
+        )
+
+    where_clause = " AND ".join(where_parts)
+
+    sql = (
+        f"SELECT date_bin($3, received_at, TIMESTAMPTZ 'epoch') AS bucket_ts, "
+        f"status, COUNT(*) AS cnt "
+        f"FROM ("
+        f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
+        f"UNION ALL "
+        f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
+        f") AS combined "
+        f"WHERE {where_clause} "
+        f"GROUP BY bucket_ts, status "
+        f"ORDER BY bucket_ts ASC"
+    )
+
+    rows = await pool.fetch(sql, *args)
+
+    buckets_map: dict[datetime, dict[str, int]] = {}
+    for row in rows:
+        ts = row["bucket_ts"]
+        status = row["status"]
+        cnt = int(row["cnt"])
+        counts = buckets_map.setdefault(ts, dict.fromkeys(_HISTOGRAM_STATUSES, 0))
+        if status in counts:
+            counts[status] += cnt
+        else:
+            # Defensive: a status outside the known vocabulary should not occur
+            # (the union query only ever emits _HISTOGRAM_STATUSES values), but
+            # fail open rather than dropping the row's count entirely.
+            logger.warning("ingestion_events_histogram: unrecognized status %r", status)
+
+    buckets = [{"ts": ts, "counts": counts} for ts, counts in sorted(buckets_map.items())]
+
+    return {"buckets": buckets, "bucket": bucket}
 
 
 async def ingestion_event_get_inbox_lifecycle(

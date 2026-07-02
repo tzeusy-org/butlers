@@ -102,6 +102,41 @@ class IngestionEventDetail(IngestionEventSummary):
     decomposition_output: dict[str, Any] | None = None
 
 
+class IngestionHistogramCounts(BaseModel):
+    """Per-status event counts for one histogram bucket.
+
+    Mirrors the unified timeline's status vocabulary (see ``_HISTOGRAM_STATUSES``
+    in ``butlers.core.ingestion_events``). Every field defaults to 0 so callers
+    never have to guard against a missing key.
+    """
+
+    ingested: int = 0
+    skipped: int = 0
+    filtered: int = 0
+    error: int = 0
+    replay_pending: int = 0
+    replay_complete: int = 0
+    replay_failed: int = 0
+
+
+class IngestionHistogramBucket(BaseModel):
+    """One bucket of the ingestion events histogram."""
+
+    ts: datetime
+    counts: IngestionHistogramCounts
+
+
+class IngestionHistogramResponse(BaseModel):
+    """Response body for GET /api/ingestion/events/histogram.
+
+    ``buckets`` omits zero-count buckets — a bucket only appears when at
+    least one event fell into it during the requested window.
+    """
+
+    buckets: list[IngestionHistogramBucket] = Field(default_factory=list)
+    bucket: str
+
+
 class IngestionEventSession(BaseModel):
     """A butler session linked to an ingestion event."""
 

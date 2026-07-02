@@ -25,6 +25,7 @@ import {
   getIngestionEventSessions,
   getIngestionEventRollup,
   getIngestionWindowRollup,
+  getIngestionEventsHistogram,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
   getIngestionEventPayload,
@@ -33,6 +34,8 @@ import type {
   CursorPaginatedResponse,
   IngestionEventsParams,
   IngestionEventSummary,
+  IngestionHistogramParams,
+  IngestionHistogramResponse,
   IngestionWindowRollup,
   IngestionWindowRollupParams,
 } from "@/api/index.ts";
@@ -62,6 +65,8 @@ export const ingestionEventKeys = {
     [...ingestionEventKeys.all, requestId, "payload"] as const,
   windowRollup: (params: IngestionWindowRollupParams) =>
     ["ingestion", "window-rollup", params] as const,
+  histogram: (params: IngestionHistogramParams) =>
+    ["ingestion", "events-histogram", params] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -261,5 +266,31 @@ export function useIngestionWindowRollup(
     queryFn: () => getIngestionWindowRollup(params),
     staleTime: 30_000,
     enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Per-minute (or coarser) ingestion event counts by status for a time window.
+ *
+ * Fetches from GET /api/ingestion/events/histogram — the data source for a
+ * status-aware timeline hour strip (bu-4utdw.7 wires this into HourFlameStrip;
+ * this hook is plumbing only). `params.from` and `params.to` are required;
+ * the query is disabled whenever either is missing so callers never fire an
+ * unbounded aggregate scan.
+ *
+ * The backend enforces a bucket-count guardrail and returns 422 when the
+ * range/bucket combination is too wide (e.g. '1m' over >48h) — callers
+ * should retry with a coarser `bucket` on error rather than treating it as a
+ * generic failure.
+ */
+export function useIngestionEventsHistogram(
+  params: IngestionHistogramParams,
+  options?: { enabled?: boolean },
+) {
+  return useQuery<IngestionHistogramResponse>({
+    queryKey: ingestionEventKeys.histogram(params),
+    queryFn: () => getIngestionEventsHistogram(params),
+    staleTime: 30_000,
+    enabled: !!params.from && !!params.to && options?.enabled !== false,
   });
 }

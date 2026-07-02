@@ -42,6 +42,7 @@ from butlers.api.models.ingestion_event import (
     IngestionEventRollup,
     IngestionEventSession,
     IngestionEventSummary,
+    IngestionHistogramResponse,
     IngestionWindowRollup,
     ReplayHistoryEntry,
     SenderContactResolution,
@@ -57,6 +58,7 @@ from butlers.core.ingestion_events import (
     ingestion_event_rollup,
     ingestion_event_sessions,
     ingestion_event_set_cost_usd,
+    ingestion_events_histogram,
     ingestion_events_list,
     ingestion_events_list_enrichment,
     ingestion_events_sessions_for_ids,
@@ -333,6 +335,110 @@ async def _enrich_list_summaries(
             resolved = sender_map.get((summary.source_channel, summary.source_sender_identity))
             if resolved is not None:
                 summary.sender_display = resolved.name
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/histogram
+#
+# Registered BEFORE /{request_id} — Starlette matches routes in registration
+# order and /{request_id} is a single-path-segment catch-all that would
+# otherwise swallow /histogram (treating "histogram" as a request_id).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/histogram", response_model=IngestionHistogramResponse)
+async def get_ingestion_events_histogram(
+    from_: str = Query(
+        ...,
+        alias="from",
+        description="ISO-8601 inclusive lower bound on received_at (required).",
+    ),
+    to: str = Query(
+        ...,
+        description="ISO-8601 exclusive upper bound on received_at (required).",
+    ),
+    bucket: Literal["1m", "5m", "1h"] = Query(
+        "1m",
+        description=(
+            "Bucket granularity. '1m' (default) is capped at 48h ranges; wider "
+            "ranges must use '5m' (up to 10 days) or '1h' (up to 120 days) — "
+            "see the guardrail note below."
+        ),
+    ),
+    channels: str | None = Query(
+        None,
+        description="Comma-separated source_channel values (e.g. 'email,telegram').",
+    ),
+    statuses: str | None = Query(
+        None,
+        description="Comma-separated status values to include (e.g. 'ingested,error').",
+    ),
+    q: str | None = Query(
+        None,
+        max_length=200,
+        description=("Freetext search (ILIKE %%q%%), same fields as GET /api/ingestion/events."),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> IngestionHistogramResponse:
+    """Return per-minute (or coarser) ingestion event counts by status.
+
+    Powers a status-aware timeline hour strip: ONE grouped ``date_bin`` query
+    over the same union GET /api/ingestion/events reads (``public.ingestion_events``
+    UNION ALL ``connectors.filtered_events``) — no per-bucket queries, no LLM
+    calls, no Prometheus dependency. This is DB truth, distinct from the
+    ``aggregates_available`` degraded-mode surface used by the Prometheus-backed
+    pipeline endpoints.
+
+    Accepts the same ``channels``/``statuses``/``q`` filters as the events list
+    so the strip respects active filters.
+
+    Zero-count buckets are omitted — a bucket only appears in the response when
+    at least one event fell into it during the requested window; present
+    buckets always carry all seven status keys (zero-filled for statuses with
+    no events in that bucket).
+
+    Guardrail: bucket count is capped at 2880 regardless of granularity (48h
+    at 1m, 10 days at 5m, 120 days at 1h) to bound the scan. Requesting a
+    range/bucket combination that would exceed the cap returns 422 — retry
+    with a coarser bucket.
+
+    Returns:
+        200 — ``{"buckets": [{"ts": "...", "counts": {...}}], "bucket": "1m"}``
+        422 — invalid ``from``/``to``/``bucket``, or the range exceeds the
+              bucket's guardrail cap
+        503 — shared database pool unavailable
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    try:
+        from_dt = _datetime.fromisoformat(from_).astimezone(UTC)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid 'from' value: {exc}") from exc
+    try:
+        to_dt = _datetime.fromisoformat(to).astimezone(UTC)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid 'to' value: {exc}") from exc
+
+    channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
+    status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
+
+    try:
+        result = await ingestion_events_histogram(
+            pool,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            bucket=bucket,
+            channels=channel_list,
+            statuses=status_list,
+            q=q,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return IngestionHistogramResponse(**result)
 
 
 # ---------------------------------------------------------------------------

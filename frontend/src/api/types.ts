@@ -3519,6 +3519,57 @@ export interface IngestionWindowRollup {
   window: { from: string | null; to: string | null };
 }
 
+/** Bucket granularity accepted by GET /api/ingestion/events/histogram. */
+export type IngestionHistogramBucketSize = "1m" | "5m" | "1h";
+
+/** Query parameters for GET /api/ingestion/events/histogram. */
+export interface IngestionHistogramParams {
+  /** ISO-8601 inclusive lower bound on received_at. Required. */
+  from: string;
+  /** ISO-8601 exclusive upper bound on received_at. Required. */
+  to: string;
+  /**
+   * Bucket granularity. Defaults to "1m" server-side. "1m" is capped at 48h
+   * ranges by the server-side guardrail (max 2880 buckets); wider ranges must
+   * use "5m" (up to 10 days) or "1h" (up to 120 days) or the request 422s.
+   */
+  bucket?: IngestionHistogramBucketSize;
+  /** Comma-separated source_channel values (e.g. "email,telegram"). */
+  channels?: string;
+  /** Comma-separated status values to include (e.g. "ingested,error"). */
+  statuses?: string;
+  /** Freetext search (ILIKE %q%), same fields as GET /api/ingestion/events. */
+  q?: string;
+}
+
+/** Per-status event counts for one histogram bucket. Every status defaults to 0. */
+export interface IngestionHistogramCounts {
+  ingested: number;
+  skipped: number;
+  filtered: number;
+  error: number;
+  replay_pending: number;
+  replay_complete: number;
+  replay_failed: number;
+}
+
+/** One bucket of the ingestion events histogram. */
+export interface IngestionHistogramBucket {
+  ts: string;
+  counts: IngestionHistogramCounts;
+}
+
+/**
+ * Response from GET /api/ingestion/events/histogram.
+ *
+ * `buckets` omits zero-count buckets — a bucket only appears when at least
+ * one event fell into it during the requested window.
+ */
+export interface IngestionHistogramResponse {
+  buckets: IngestionHistogramBucket[];
+  bucket: IngestionHistogramBucketSize;
+}
+
 /** One replay attempt entry from public.audit_log. */
 export interface IngestionEventReplayHistoryEntry {
   ts: string;

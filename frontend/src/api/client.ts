@@ -192,6 +192,8 @@ import type {
   IngestionEventDetail,
   IngestionEventPayload,
   IngestionEventsParams,
+  IngestionHistogramParams,
+  IngestionHistogramResponse,
   IngestionWindowRollup,
   IngestionWindowRollupParams,
   IngestionRule,
@@ -4788,6 +4790,34 @@ export async function getIngestionWindowRollup(
   if (params?.q) sp.set("q", params.q);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`);
+}
+
+/**
+ * Per-bucket ingestion event counts by status for a time window.
+ * GET /api/ingestion/events/histogram
+ *
+ * Powers a status-aware timeline hour strip. `from` and `to` are required —
+ * the server has no default window for this endpoint (unlike the events
+ * list, it runs an unpaginated aggregate scan). Accepts the same
+ * `channels`/`statuses`/`q` filters as GET /api/ingestion/events.
+ *
+ * The server enforces a bucket-count guardrail (422 when the range/bucket
+ * combination is too wide — e.g. '1m' over a range >48h); retry with a
+ * coarser `bucket` on 422.
+ */
+export async function getIngestionEventsHistogram(
+  params: IngestionHistogramParams,
+): Promise<IngestionHistogramResponse> {
+  const sp = new URLSearchParams();
+  sp.set("from", params.from);
+  sp.set("to", params.to);
+  if (params.bucket) sp.set("bucket", params.bucket);
+  if (params.channels) sp.set("channels", params.channels);
+  if (params.statuses) sp.set("statuses", params.statuses);
+  if (params.q) sp.set("q", params.q);
+  return apiFetch<IngestionHistogramResponse>(
+    `/ingestion/events/histogram?${sp.toString()}`,
+  );
 }
 
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */

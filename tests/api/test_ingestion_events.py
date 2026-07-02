@@ -1176,3 +1176,200 @@ async def test_event_rollup_skips_write_when_no_sessions(app):
     assert resp.status_code == 200
     # No write-back when total_sessions == 0
     mock_set_cost.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/histogram (bu-4utdw.6)
+#
+# Router-level tests only forward params / map errors — the real date_bin +
+# UNION-across-partitions SQL correctness is covered by the real-Postgres
+# integration test (tests/integration/test_ingestion_events_histogram_db.py).
+# ---------------------------------------------------------------------------
+
+
+async def test_histogram_routes_before_request_id_catch_all(app):
+    """GET /histogram must NOT be captured by GET /{request_id} (registration order)."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+        new_callable=AsyncMock,
+        return_value={"buckets": [], "bucket": "1m"},
+    ) as mock_histogram:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={"from": "2026-01-01T00:00:00Z", "to": "2026-01-01T01:00:00Z"},
+            )
+
+    assert resp.status_code == 200
+    mock_histogram.assert_awaited_once()
+
+
+async def test_histogram_defaults_and_forwards_filters(app):
+    """bucket defaults to '1m'; channels/statuses/q are parsed and forwarded."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+        new_callable=AsyncMock,
+        return_value={"buckets": [], "bucket": "5m"},
+    ) as mock_histogram:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={
+                    "from": "2026-01-01T00:00:00Z",
+                    "to": "2026-01-02T00:00:00Z",
+                    "bucket": "5m",
+                    "channels": "email,telegram",
+                    "statuses": "ingested,error",
+                    "q": "alice",
+                },
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"buckets": [], "bucket": "5m"}
+
+    call_kwargs = mock_histogram.await_args.kwargs
+    assert call_kwargs["bucket"] == "5m"
+    assert call_kwargs["channels"] == ["email", "telegram"]
+    assert call_kwargs["statuses"] == ["ingested", "error"]
+    assert call_kwargs["q"] == "alice"
+
+
+async def test_histogram_response_shape(app):
+    """Response envelope matches the documented {buckets, bucket} shape (no data/meta wrapper)."""
+    _app_with_mock_db(app)
+
+    ts = "2026-01-01T00:01:00+00:00"
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+        new_callable=AsyncMock,
+        return_value={
+            "buckets": [
+                {
+                    "ts": ts,
+                    "counts": {
+                        "ingested": 3,
+                        "skipped": 0,
+                        "filtered": 1,
+                        "error": 0,
+                        "replay_pending": 0,
+                        "replay_complete": 0,
+                        "replay_failed": 0,
+                    },
+                }
+            ],
+            "bucket": "1m",
+        },
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={"from": "2026-01-01T00:00:00Z", "to": "2026-01-01T01:00:00Z"},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" not in body and "meta" not in body
+    assert body["bucket"] == "1m"
+    assert len(body["buckets"]) == 1
+    assert body["buckets"][0]["counts"]["ingested"] == 3
+    assert body["buckets"][0]["counts"]["filtered"] == 1
+
+
+async def test_histogram_missing_from_or_to_returns_422(app):
+    """from/to are required — omitting either is a 422, not an unbounded scan."""
+    _app_with_mock_db(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp_no_from = await client.get(
+            "/api/ingestion/events/histogram", params={"to": "2026-01-01T01:00:00Z"}
+        )
+        resp_no_to = await client.get(
+            "/api/ingestion/events/histogram", params={"from": "2026-01-01T00:00:00Z"}
+        )
+
+    assert resp_no_from.status_code == 422
+    assert resp_no_to.status_code == 422
+
+
+async def test_histogram_invalid_bucket_returns_422(app):
+    """bucket is a closed Literal — an unrecognized value 422s before reaching core."""
+    _app_with_mock_db(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/ingestion/events/histogram",
+            params={
+                "from": "2026-01-01T00:00:00Z",
+                "to": "2026-01-01T01:00:00Z",
+                "bucket": "30s",
+            },
+        )
+
+    assert resp.status_code == 422
+
+
+async def test_histogram_invalid_timestamp_returns_422(app):
+    """Malformed from/to values return 422 with a descriptive detail."""
+    _app_with_mock_db(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/ingestion/events/histogram",
+            params={"from": "not-a-date", "to": "2026-01-01T01:00:00Z"},
+        )
+
+    assert resp.status_code == 422
+    assert "from" in resp.json()["detail"]
+
+
+async def test_histogram_guardrail_valueerror_maps_to_422(app):
+    """A ValueError raised by the core guardrail (range too wide) surfaces as 422, not 500."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Range is too wide for bucket '1m'; use a coarser bucket"),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={"from": "2026-01-01T00:00:00Z", "to": "2026-01-10T00:00:00Z"},
+            )
+
+    assert resp.status_code == 422
+    assert "too wide" in resp.json()["detail"]
+
+
+async def test_histogram_503_on_missing_pool(app):
+    """Missing shared pool returns 503, same as every other ingestion endpoint."""
+    _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/ingestion/events/histogram",
+            params={"from": "2026-01-01T00:00:00Z", "to": "2026-01-01T01:00:00Z"},
+        )
+
+    assert resp.status_code == 503

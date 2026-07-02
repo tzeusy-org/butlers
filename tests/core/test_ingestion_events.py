@@ -961,3 +961,158 @@ def test_ingestion_events_list_enrichment_duration_none_when_incomplete() -> Non
 
     assert enrichment["req-1"]["sessions"][0]["duration_ms"] is None
     assert enrichment["req-1"]["sessions"][0]["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# ingestion_events_histogram (bu-4utdw.6) — validation, guardrail, aggregation.
+#
+# NOTE: these tests exercise the Python-side validation/aggregation logic
+# against a mocked pool. They do NOT prove the date_bin/UNION SQL is valid
+# against a real partitioned Postgres backend — that is covered separately by
+# the real-Postgres integration test (tests/integration/test_ingestion_events_histogram_db.py).
+# ---------------------------------------------------------------------------
+
+
+def _make_histogram_row(ts: datetime, status: str, cnt: int) -> _FakeRecord:
+    return _FakeRecord({"bucket_ts": ts, "status": status, "cnt": cnt})
+
+
+async def test_ingestion_events_histogram_rejects_unknown_bucket() -> None:
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    pool = _FakePool()
+    with pytest.raises(ValueError, match="Invalid bucket"):
+        await ingestion_events_histogram(
+            pool,
+            from_dt=datetime(2026, 1, 1, tzinfo=UTC),
+            to_dt=datetime(2026, 1, 1, 1, tzinfo=UTC),
+            bucket="30s",
+        )
+    # Guardrail/validation short-circuits before any query is issued.
+    assert pool.calls == []
+
+
+async def test_ingestion_events_histogram_rejects_to_not_after_from() -> None:
+    from datetime import timedelta
+
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    pool = _FakePool()
+    same = datetime(2026, 1, 1, tzinfo=UTC)
+    with pytest.raises(ValueError, match="'to' must be after 'from'"):
+        await ingestion_events_histogram(pool, from_dt=same, to_dt=same)
+    with pytest.raises(ValueError, match="'to' must be after 'from'"):
+        await ingestion_events_histogram(pool, from_dt=same, to_dt=same - timedelta(hours=1))
+    assert pool.calls == []
+
+
+async def test_ingestion_events_histogram_guardrail_rejects_1m_over_48h() -> None:
+    """1m bucket over exactly 48h is allowed; one second past it is rejected."""
+    from datetime import timedelta
+
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    from_dt = datetime(2026, 1, 1, tzinfo=UTC)
+
+    # Exactly 48h → 2880 buckets → allowed (query issued).
+    pool_ok = _FakePool(fetch_results=[])
+    await ingestion_events_histogram(
+        pool_ok, from_dt=from_dt, to_dt=from_dt + timedelta(hours=48), bucket="1m"
+    )
+    assert len(pool_ok.calls) == 1
+
+    # One second over 48h → exceeds the 2880-bucket cap → rejected before querying.
+    pool_reject = _FakePool()
+    with pytest.raises(ValueError, match="too wide for bucket '1m'"):
+        await ingestion_events_histogram(
+            pool_reject,
+            from_dt=from_dt,
+            to_dt=from_dt + timedelta(hours=48, seconds=1),
+            bucket="1m",
+        )
+    assert pool_reject.calls == []
+
+    # The same wide range is fine at a coarser bucket (5m).
+    pool_5m = _FakePool(fetch_results=[])
+    await ingestion_events_histogram(
+        pool_5m,
+        from_dt=from_dt,
+        to_dt=from_dt + timedelta(hours=48, seconds=1),
+        bucket="5m",
+    )
+    assert len(pool_5m.calls) == 1
+
+
+async def test_ingestion_events_histogram_aggregates_and_zero_fills_present_buckets() -> None:
+    """Rows are grouped by bucket_ts, zero-filled to all 7 statuses; buckets sorted ascending."""
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    ts_a = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    ts_b = datetime(2026, 1, 1, 12, 1, 0, tzinfo=UTC)
+    pool = _FakePool(
+        fetch_results=[
+            _make_histogram_row(ts_b, "error", 2),
+            _make_histogram_row(ts_a, "ingested", 3),
+            _make_histogram_row(ts_a, "filtered", 1),
+        ]
+    )
+
+    result = await ingestion_events_histogram(
+        pool,
+        from_dt=datetime(2026, 1, 1, 11, 0, 0, tzinfo=UTC),
+        to_dt=datetime(2026, 1, 1, 13, 0, 0, tzinfo=UTC),
+        bucket="1m",
+    )
+
+    assert result["bucket"] == "1m"
+    assert [b["ts"] for b in result["buckets"]] == [ts_a, ts_b]  # sorted ascending
+
+    bucket_a = result["buckets"][0]["counts"]
+    assert bucket_a == {
+        "ingested": 3,
+        "skipped": 0,
+        "filtered": 1,
+        "error": 0,
+        "replay_pending": 0,
+        "replay_complete": 0,
+        "replay_failed": 0,
+    }
+    bucket_b = result["buckets"][1]["counts"]
+    assert bucket_b["error"] == 2
+    assert bucket_b["ingested"] == 0
+
+    # No zero-count bucket appears for minutes with no rows at all.
+    assert len(result["buckets"]) == 2
+
+
+async def test_ingestion_events_histogram_forwards_filters_to_sql() -> None:
+    """channels/statuses/q are forwarded as WHERE-clause args, same as ingestion_events_list."""
+    from datetime import timedelta
+
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    pool = _FakePool(fetch_results=[])
+    await ingestion_events_histogram(
+        pool,
+        from_dt=datetime(2026, 1, 1, tzinfo=UTC),
+        to_dt=datetime(2026, 1, 1, 1, tzinfo=UTC),
+        bucket="1h",
+        channels=["email", "telegram"],
+        statuses=["ingested", "error"],
+        q="alice",
+    )
+
+    assert len(pool.calls) == 1
+    sql, args = pool.calls[0][1], pool.calls[0][2]
+    assert "date_bin($3" in sql
+    assert "source_channel = ANY(" in sql
+    assert "status = ANY(" in sql
+    assert "ILIKE" in sql
+    # The bucket interval is bound as a real timedelta ($3), not a text literal —
+    # asyncpg cannot encode a Python str as an `interval`-typed parameter (it
+    # infers the wire type from date_bin()'s own signature and expects an
+    # object with .days/.months/.microseconds, i.e. a timedelta).
+    assert args[2] == timedelta(hours=1)
+    assert ["ingested", "error"] in args  # statuses list bound
+    assert ["email", "telegram"] in args  # channels list bound
+    assert "%alice%" in args  # q pattern bound
