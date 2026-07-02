@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -45,6 +46,8 @@ def _register_and_grab_correct(
     *,
     butler_name: str = "general",
     registered: list[str] | None = None,
+    switchboard_client: Any | None = None,
+    own_pool: Any | None = None,
 ):
     registered = registered if registered is not None else ["finance", "general"]
 
@@ -69,7 +72,7 @@ def _register_and_grab_correct(
         return decorator
 
     mcp = SimpleNamespace()
-    own_pool = SimpleNamespace(marker="own-pool")
+    own_pool = own_pool if own_pool is not None else SimpleNamespace(marker="own-pool")
     source_db = SimpleNamespace(
         db_name="butlers",
         host="localhost",
@@ -82,7 +85,7 @@ def _register_and_grab_correct(
     ctx = ToolContext(
         daemon=SimpleNamespace(
             db=source_db,
-            switchboard_client=None,
+            switchboard_client=switchboard_client,
             _started_at=0.0,
             _check_health=lambda: None,
             _modules=[],
@@ -285,3 +288,95 @@ async def test_cross_schema_target_pool_is_cached_across_calls(
         )
 
     assert len(_FakeTargetDatabase.instances) == 1
+
+
+# ---------------------------------------------------------------------------
+# misroute correction — real registered_butlers list (bu-e2vdj)
+#
+# Prior regression: the `correct` tool hardcoded registered_butlers=[] for
+# handle_misroute specifically, so check_misroute_preconditions always
+# returned butler_not_registered and misroute correction was unusable
+# end-to-end, even against a correctly registered target butler.
+# ---------------------------------------------------------------------------
+
+
+async def test_misroute_correction_wires_real_registered_butlers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A misroute correction targeting a real registered butler must receive
+    the actual roster (not an empty list) so it passes butler validation."""
+    switchboard_client = AsyncMock()
+    correct, own_pool = _register_and_grab_correct(
+        monkeypatch, butler_name="general", switchboard_client=switchboard_client
+    )
+
+    fake_handler = AsyncMock(
+        return_value={
+            "status": "applied",
+            "correction_id": "id",
+            "summary": "ok",
+            "original_data_snapshot": None,
+            "correction_details": None,
+        }
+    )
+    monkeypatch.setattr("butlers.core_tools._infra.handle_misroute", fake_handler)
+
+    result = await correct(
+        correction_type="misroute",
+        target_session_id=str(uuid.uuid4()),
+        description="wrong butler handled this",
+        correct_butler="finance",
+    )
+
+    assert result["status"] == "applied"
+    fake_handler.assert_awaited_once()
+    _pool_arg, kwargs = fake_handler.await_args.args, fake_handler.await_args.kwargs
+
+    assert _pool_arg[0] is own_pool
+    # This is the exact regression: registered_butlers must be the real
+    # roster, never a hardcoded empty list.
+    assert kwargs["registered_butlers"] == ["finance", "general"]
+    assert kwargs["registered_butlers"] != []
+    assert kwargs["switchboard_client"] is switchboard_client
+    assert kwargs["correct_butler"] == "finance"
+
+
+async def test_misroute_correction_unregistered_target_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An unregistered correct_butler is still rejected — the tool layer
+    passes the real roster through and lets the handler's precondition
+    check (check_misroute_preconditions) reject it as butler_not_registered."""
+    session_id = uuid.uuid4()
+
+    async def _fetchrow(sql: str, *args):
+        if "sessions" in sql.lower():
+            return {"id": session_id, "trigger_source": "ingestion", "ingestion_event_id": "evt-1"}
+        return None
+
+    functional_own_pool = SimpleNamespace(
+        fetchrow=AsyncMock(side_effect=_fetchrow),
+        fetchval=AsyncMock(return_value=0),
+        fetch=AsyncMock(return_value=[]),
+        execute=AsyncMock(return_value=None),
+    )
+
+    correct, _own_pool = _register_and_grab_correct(
+        monkeypatch,
+        butler_name="general",
+        switchboard_client=AsyncMock(),
+        own_pool=functional_own_pool,
+    )
+
+    # Use the real handler (not a mock) so check_misroute_preconditions
+    # actually runs against the wired-through registered_butlers list.
+    result = await correct(
+        correction_type="misroute",
+        target_session_id=str(session_id),
+        description="wrong butler handled this",
+        correct_butler="ghost_butler",
+    )
+
+    assert result["status"] == "failed"
+    assert "ghost_butler" in result["summary"]
+    assert "not registered" in result["summary"].lower()

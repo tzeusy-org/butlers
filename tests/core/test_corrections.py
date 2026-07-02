@@ -25,6 +25,7 @@ try:
         FAILURE_MESSAGES,
         CorrectionType,
         check_data_correction_preconditions,
+        check_misroute_preconditions,
         corrections_by_session,
         corrections_for_session,
         create_correction,
@@ -427,6 +428,50 @@ async def test_handle_memory_deletion_target_butler_in_correction_details():
     assert result["correction_details"]["target_butler"] == "finance"
     assert result["correction_details"]["memory_type"] == "episode"
     mock_forget.assert_called_once_with(target_pool, "episode", str(mem_id))
+
+
+# ---------------------------------------------------------------------------
+# check_misroute_preconditions — real registered_butlers list (bu-e2vdj)
+# ---------------------------------------------------------------------------
+
+
+@corrections_required
+async def test_check_misroute_preconditions_passes_for_registered_butler():
+    """A correct_butler present in a real registered_butlers list passes
+    preconditions (returns None), not a butler_not_registered failure.
+
+    Regression guard for the tool-layer bug where `correct` hardcoded
+    registered_butlers=[] for misroute corrections, so every target butler
+    -- even correctly registered ones -- failed check_misroute_preconditions.
+    """
+    session_id = uuid.uuid4()
+    pool = _make_pool(session_row={"id": session_id, "ingestion_event_id": str(uuid.uuid4())})
+
+    result = await check_misroute_preconditions(
+        pool,
+        target_session_id=session_id,
+        correct_butler="finance",
+        registered_butlers=["finance", "general"],
+    )
+
+    assert result is None
+
+
+@corrections_required
+async def test_check_misroute_preconditions_fails_for_unregistered_butler():
+    """A correct_butler absent from registered_butlers fails with butler_not_registered."""
+    session_id = uuid.uuid4()
+    pool = _make_pool(session_row={"id": session_id, "ingestion_event_id": str(uuid.uuid4())})
+
+    result = await check_misroute_preconditions(
+        pool,
+        target_session_id=session_id,
+        correct_butler="ghost_butler",
+        registered_butlers=["finance", "general"],
+    )
+
+    assert result is not None
+    assert "ghost_butler" in result
 
 
 # ---------------------------------------------------------------------------
