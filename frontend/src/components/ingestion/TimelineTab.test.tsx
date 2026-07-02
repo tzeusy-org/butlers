@@ -112,6 +112,12 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
     filter_reason: null,
     error_detail: null,
     cost_usd: null,
+    // bu-4utdw.3: list-provided row enrichment fields (default to "no data yet").
+    tokens_in: null,
+    tokens_out: null,
+    session_count: 0,
+    sessions: [],
+    sender_display: null,
     ...overrides,
   };
 }
@@ -915,14 +921,17 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
   });
 
   it("shows resolved contact name in the ledger row when contact is resolved", () => {
-    vi.mocked(useIngestionEventSenderContact).mockReturnValue({
-      data: { data: { resolved: true, name: "Alice Smith", raw: "alice@example.com" } },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
-
+    // bu-4utdw.3: sender_display is now a list-provided field (bulk-resolved
+    // server-side), not a per-row useIngestionEventSenderContact hook result.
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "alice@example.com" })]) as unknown as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([
+        makeEvent({
+          id: EVENT_ID,
+          status: "ingested",
+          source_sender_identity: "alice@example.com",
+          sender_display: "Alice Smith",
+        }),
+      ]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -940,14 +949,15 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
   });
 
   it("shows raw sender identity in ledger row when contact is not resolved", () => {
-    vi.mocked(useIngestionEventSenderContact).mockReturnValue({
-      data: { data: { resolved: false, name: null, raw: "unknown@example.com" } },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
-
     vi.mocked(useIngestionEvents).mockReturnValue(
-      makeInfiniteEventsResult([makeEvent({ id: EVENT_ID, status: "ingested", source_sender_identity: "unknown@example.com" })]) as unknown as ReturnType<typeof useIngestionEvents>,
+      makeInfiniteEventsResult([
+        makeEvent({
+          id: EVENT_ID,
+          status: "ingested",
+          source_sender_identity: "unknown@example.com",
+          sender_display: null,
+        }),
+      ]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
 
     act(() => {
@@ -960,7 +970,7 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
       );
     });
 
-    // Raw sender identity appears in the ledger row (resolver returned resolved=false)
+    // Raw sender identity appears in the ledger row (sender_display is null)
     expect(container.textContent).toContain("unknown@example.com");
   });
 });

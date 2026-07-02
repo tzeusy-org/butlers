@@ -775,3 +775,189 @@ async def test_ingestion_window_rollup_cost_null_when_db_none() -> None:
 
     assert result["sessions"] == 0
     assert result["cost"] is None
+
+
+# ---------------------------------------------------------------------------
+# ingestion_events_sessions_for_ids / ingestion_events_list_enrichment (bu-4utdw.3)
+#
+# List-view row enrichment: ONE grouped fan-out for a whole page of ids (not
+# one query per event), feeding tokens/cost/session-summary fields onto each
+# IngestionEventSummary. Kills the N+1 request storm the per-row
+# rollup/sender-contact hooks previously caused.
+# ---------------------------------------------------------------------------
+
+
+def _make_bulk_session_record(request_id: str, **kwargs: Any) -> _FakeRecord:
+    defaults: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "request_id": request_id,
+        "trigger_source": "route",
+        "started_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        "completed_at": datetime(2026, 1, 1, 12, 0, 5, tzinfo=UTC),
+        "success": True,
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cost": {"total_usd": 0.005},
+        "trace_id": None,
+        "model": None,
+    }
+    defaults.update(kwargs)
+    return _FakeRecord(defaults)
+
+
+async def test_ingestion_events_sessions_for_ids_empty_ids_short_circuits() -> None:
+    """Empty event_ids returns {} without any fan-out call."""
+    from butlers.core.ingestion_events import ingestion_events_sessions_for_ids
+
+    db = _FakeDatabaseManager(results={"atlas": [_make_bulk_session_record("req-1")]})
+    result = await ingestion_events_sessions_for_ids(db, [])
+
+    assert result == {}
+    assert db.fan_out_calls == []
+
+
+async def test_ingestion_events_sessions_for_ids_one_query_per_butler_groups_by_request_id() -> (
+    None
+):
+    """Sessions from multiple butlers are grouped by request_id via a single fan-out call."""
+    from butlers.core.ingestion_events import ingestion_events_sessions_for_ids
+
+    db = _FakeDatabaseManager(
+        results={
+            "atlas": [
+                _make_bulk_session_record("req-1", input_tokens=100, output_tokens=50),
+                _make_bulk_session_record("req-2", input_tokens=10, output_tokens=5),
+            ],
+            "herald": [_make_bulk_session_record("req-1", input_tokens=20, output_tokens=10)],
+        }
+    )
+
+    result = await ingestion_events_sessions_for_ids(db, ["req-1", "req-2", "req-3"])
+
+    # Exactly one fan_out call for the whole page — not one per event.
+    assert len(db.fan_out_calls) == 1
+    query, args, _ = db.fan_out_calls[0]
+    assert "request_id = ANY($1::text[])" in query
+    assert args == (["req-1", "req-2", "req-3"],)
+
+    assert {s["butler_name"] for s in result["req-1"]} == {"atlas", "herald"}
+    assert len(result["req-2"]) == 1 and result["req-2"][0]["butler_name"] == "atlas"
+    # An id with no sessions is present as an empty list, never omitted.
+    assert result["req-3"] == []
+    # cost_usd was computed from the legacy JSONB fallback.
+    assert result["req-1"][0]["cost_usd"] == 0.005
+
+
+def test_ingestion_events_list_enrichment_aggregates_and_caps_sessions() -> None:
+    """tokens/cost summed; session_count uncapped; sessions list capped at 8."""
+    from butlers.core.ingestion_events import ingestion_events_list_enrichment
+
+    many_sessions = [
+        {
+            "butler_name": f"butler-{i}",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cost_usd": 0.001,
+            "success": True,
+            "started_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+            "completed_at": datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+        }
+        for i in range(10)
+    ]
+    sessions_by_id = {
+        "req-1": many_sessions,
+        "req-2": [],
+    }
+
+    enrichment = ingestion_events_list_enrichment(sessions_by_id)
+
+    req1 = enrichment["req-1"]
+    assert req1["tokens_in"] == 100 and req1["tokens_out"] == 50
+    assert abs(req1["session_cost_usd"] - 0.01) < 1e-9
+    assert req1["session_count"] == 10  # uncapped
+    assert len(req1["sessions"]) == 8  # capped at 8
+    assert req1["sessions"][0]["duration_ms"] == 1000
+    assert req1["sessions"][0]["butler_name"] == "butler-0"
+    assert req1["sessions"][0]["success"] is True
+
+    req2 = enrichment["req-2"]
+    assert req2["tokens_in"] == 0 and req2["tokens_out"] == 0
+    # No sessions → session_cost_usd is None (distinct from 0.0), so the
+    # router falls back to the denormalized cost_usd column.
+    assert req2["session_cost_usd"] is None
+    assert req2["session_count"] == 0
+    assert req2["sessions"] == []
+
+
+def test_ingestion_events_list_enrichment_unknown_cost_matches_drawer_parity() -> None:
+    """Unknown per-session cost sums as 0.0, matching ingestion_event_rollup's
+    drawer-side total — NOT None — so a list row and the drawer agree on the
+    same event's cost. (Only "no sessions at all" yields None; see the other
+    aggregation test above.)
+    """
+    from butlers.core.ingestion_events import ingestion_events_list_enrichment
+
+    sessions_by_id = {
+        "req-1": [
+            {
+                "butler_name": "butler-a",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cost_usd": None,
+                "success": True,
+                "started_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+                "completed_at": datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+            }
+        ],
+        "req-2": [
+            {
+                "butler_name": "butler-b",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cost_usd": None,
+                "success": True,
+                "started_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+                "completed_at": datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+            },
+            {
+                "butler_name": "butler-c",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cost_usd": 0.02,
+                "success": True,
+                "started_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+                "completed_at": datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+            },
+        ],
+    }
+
+    enrichment = ingestion_events_list_enrichment(sessions_by_id)
+
+    # All sessions unknown-cost → 0.0 (matches the drawer rollup's fallback).
+    assert enrichment["req-1"]["session_cost_usd"] == 0.0
+    # Mixed known/unknown → unknown contributes 0.0 to the sum.
+    assert abs(enrichment["req-2"]["session_cost_usd"] - 0.02) < 1e-9
+
+
+def test_ingestion_events_list_enrichment_duration_none_when_incomplete() -> None:
+    """A session missing completed_at yields duration_ms=None rather than raising."""
+    from butlers.core.ingestion_events import ingestion_events_list_enrichment
+
+    sessions_by_id = {
+        "req-1": [
+            {
+                "butler_name": "atlas",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cost_usd": None,
+                "success": False,
+                "started_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+                "completed_at": None,
+            }
+        ]
+    }
+
+    enrichment = ingestion_events_list_enrichment(sessions_by_id)
+
+    assert enrichment["req-1"]["sessions"][0]["duration_ms"] is None
+    assert enrichment["req-1"]["sessions"][0]["success"] is False

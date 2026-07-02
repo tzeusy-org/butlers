@@ -589,6 +589,163 @@ async def test_list_events_q_absent_passes_none(app):
 
 
 # ---------------------------------------------------------------------------
+# List row enrichment (bu-4utdw.3) — kills the timeline N+1 request storm.
+# Row-level tokens/cost/sessions/sender_display are computed via ONE grouped
+# session fan-out + ONE bulk sender-contact query for the whole page, not a
+# per-row hook mount.
+# ---------------------------------------------------------------------------
+
+
+async def test_list_events_enriches_rows_with_sessions_and_sender(app):
+    """List rows carry tokens/cost/session_count/sessions/sender_display,
+    computed via exactly one fan_out call and one sender bulk query."""
+    event_id = str(uuid4())
+    row = _make_event_row(event_id=event_id, status="ingested")
+    row["source_channel"] = "email"
+    row["source_sender_identity"] = "alice@example.com"
+    row["cost_usd"] = None  # denormalized column not yet populated
+
+    mock_db = _app_with_mock_db(app)
+
+    # One butler contributes one session for this event. model=None forces the
+    # legacy cost fallback so the assertion is independent of pricing-singleton
+    # state leaking from other tests in the same process.
+    session_row = {
+        "request_id": event_id,
+        "id": str(uuid4()),
+        "trigger_source": "route",
+        "started_at": _NOW,
+        "completed_at": _NOW,
+        "success": True,
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cost": {"total_usd": 0.01},
+        "trace_id": None,
+        "model": None,
+    }
+    mock_db.fan_out = AsyncMock(return_value={"atlas": [session_row]})
+
+    sender_row = {
+        "predicate": "has-email",
+        "object": "alice@example.com",
+        "entity_id": str(uuid4()),
+        "name": "Alice Smith",
+        "roles": [],
+    }
+    shared_pool = AsyncMock()
+    shared_pool.fetch = AsyncMock(return_value=[sender_row])
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [row], "next_cursor": None, "has_more": False},
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    item = resp.json()["data"][0]
+    assert item["tokens_in"] == 100
+    assert item["tokens_out"] == 50
+    assert item["session_count"] == 1
+    assert len(item["sessions"]) == 1
+    assert item["sessions"][0]["butler_name"] == "atlas"
+    assert item["sessions"][0]["success"] is True
+    assert item["cost_usd"] == 0.01  # fell back to session join (denormalized was None)
+    assert item["sender_display"] == "Alice Smith"
+
+    # Exactly one grouped fan-out call for the whole page — never per row.
+    assert mock_db.fan_out.await_count == 1
+    # Exactly one bulk sender-contact query for the whole page.
+    shared_pool.fetch.assert_awaited_once()
+
+
+async def test_list_events_enrichment_prefers_denormalized_cost_usd(app):
+    """When cost_usd is already denormalized (non-null), the session-join sum does NOT overwrite it."""
+    event_id = str(uuid4())
+    row = _make_event_row(event_id=event_id, status="ingested")
+    row["cost_usd"] = 0.5  # already denormalized (core_126)
+
+    mock_db = _app_with_mock_db(app)
+    session_row = {
+        "request_id": event_id,
+        "id": str(uuid4()),
+        "trigger_source": "route",
+        "started_at": _NOW,
+        "completed_at": _NOW,
+        "success": True,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cost": {"total_usd": 999.0},  # would clearly differ if it overwrote
+        "trace_id": None,
+        "model": None,
+    }
+    mock_db.fan_out = AsyncMock(return_value={"atlas": [session_row]})
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [row], "next_cursor": None, "has_more": False},
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    item = resp.json()["data"][0]
+    assert item["cost_usd"] == 0.5
+    assert item["tokens_in"] == 10  # tokens are still populated from the join
+
+
+async def test_list_events_enrichment_fails_open_on_session_fan_out_error(app):
+    """A fan_out failure must not fail the whole list request (fail-open, defaults intact)."""
+    event_id = str(uuid4())
+    row = _make_event_row(event_id=event_id, status="ingested")
+
+    mock_db = _app_with_mock_db(app)
+    mock_db.fan_out = AsyncMock(side_effect=Exception("db unreachable"))
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [row], "next_cursor": None, "has_more": False},
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    item = resp.json()["data"][0]
+    assert item["session_count"] == 0
+    assert item["sessions"] == []
+    assert item["tokens_in"] is None
+
+
+async def test_list_events_empty_page_skips_enrichment_calls(app):
+    """An empty page must not trigger any fan_out or sender-contact query."""
+    mock_db = _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [], "next_cursor": None, "has_more": False},
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+    mock_db.fan_out.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # GET /api/ingestion/rollup (bu-mxtn2)
 # ---------------------------------------------------------------------------
 

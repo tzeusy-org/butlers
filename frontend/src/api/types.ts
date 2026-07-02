@@ -3328,6 +3328,14 @@ export type IngestionEventStatus =
   | "replay_complete"
   | "replay_failed";
 
+/** Compact per-session summary embedded in a list row (dispatch-ticks cell). */
+export interface IngestionEventListSessionSummary {
+  butler_name: string;
+  duration_ms: number | null;
+  cost_usd: number | null;
+  success: boolean | null;
+}
+
 /** One ingestion event from shared.ingestion_events (list view). */
 export interface IngestionEventSummary {
   id: string; // UUIDv7 — the request_id
@@ -3352,10 +3360,25 @@ export interface IngestionEventSummary {
   error_detail: string | null;
   /**
    * Denormalized total cost in USD across all butler sessions for this event.
-   * Null until the event's rollup is first fetched (lazy write-through, core_126).
+   * Null until the event's rollup is first fetched (lazy write-through, core_126),
+   * falling back to the summed session-join cost (bu-4utdw.3) when still null.
    * filtered_events always have null (no sessions = no cost).
    */
   cost_usd: number | null;
+  /**
+   * Row-level enrichment (bu-4utdw.3): computed server-side via ONE grouped
+   * session fan-out for the whole page — never a per-row request. Use these
+   * directly in LedgerRow instead of mounting useIngestionEventRollup per row.
+   */
+  tokens_in: number | null;
+  tokens_out: number | null;
+  session_count: number;
+  sessions: IngestionEventListSessionSummary[];
+  /**
+   * Contact-resolved sender display name (relationship.entity_facts), or null
+   * when unresolved. Fall back to source_sender_identity when null.
+   */
+  sender_display: string | null;
 }
 
 /** Full ingestion event detail — augmented with lifecycle and decomposition fields from message_inbox. */

@@ -660,6 +660,7 @@ export {
 export type {
   IngestionEventStatus,
   IngestionEventSummary,
+  IngestionEventListSessionSummary,
   IngestionEventDetail,
   IngestionEventSession,
   IngestionEventRollup,

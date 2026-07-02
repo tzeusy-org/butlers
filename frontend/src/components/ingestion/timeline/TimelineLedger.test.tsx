@@ -105,6 +105,12 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
     filter_reason: null,
     error_detail: null,
     cost_usd: null,
+    // bu-4utdw.3: list-provided row enrichment fields (default to "no data yet").
+    tokens_in: null,
+    tokens_out: null,
+    session_count: 0,
+    sessions: [],
+    sender_display: null,
     ...overrides,
   };
 }

@@ -18,6 +18,8 @@ encode_cost_cursor              — encode page offset for cost-sort cursor
 decode_cost_cursor              — decode cost-sort cursor back to page offset
 ingestion_event_set_cost_usd    — write computed cost_usd back to public.ingestion_events
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
+ingestion_events_sessions_for_ids — ONE grouped fan-out for a whole page of ids (list enrichment)
+ingestion_events_list_enrichment — aggregate per-event tokens/cost/sessions from bulk fan-out
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
 ingestion_event_mark_replay_complete — transition replay_pending → ingested on success
 ingestion_event_replay_request  — mark a filtered event as replay_pending
@@ -140,6 +142,10 @@ _SESSION_COLUMNS = (
     "id, trigger_source, started_at, completed_at, success, "
     "input_tokens, output_tokens, cost, trace_id, model"
 )
+
+# Cap on sessions embedded per event in the list-enrichment response
+# (dispatch-ticks cell only needs enough entries to render a compact strip).
+_MAX_LIST_SESSIONS_PER_EVENT = 8
 
 
 def _decode_event_row(row: asyncpg.Record) -> dict[str, Any]:
@@ -829,6 +835,114 @@ async def ingestion_event_sessions(
     # Sort by started_at ascending so the timeline is chronological
     sessions.sort(key=lambda s: s.get("started_at") or "")
     return sessions
+
+
+async def ingestion_events_sessions_for_ids(
+    db: DatabaseManager,
+    event_ids: list[str],
+    pricing: PricingConfig | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Fan out ONCE across all butler schemas for a whole page of event ids.
+
+    Unlike :func:`ingestion_event_sessions` (single-event fan-out used by the
+    drawer), this issues exactly one query per registered butler schema for
+    the *entire page* of ids — used by ``GET /api/ingestion/events`` (list
+    enrichment, bu-4utdw.3) to kill the per-row N+1 request storm a 50-row
+    page previously caused (up to 100 extra HTTP requests). No per-row
+    queries; no LLM calls.
+
+    Args:
+        db: DatabaseManager with all butler pools registered.
+        event_ids: request_ids (UUIDv7 strings) for the current page.
+        pricing: Optional pricing config for ``cost_usd`` estimation. Falls
+            back to the legacy ``cost`` JSONB column, same as the drawer path.
+
+    Returns:
+        Dict mapping every input event_id to its list of session dicts
+        (chronologically sorted by ``started_at``). Event ids with no
+        sessions map to an empty list (never omitted).
+    """
+    sessions_by_id: dict[str, list[dict[str, Any]]] = {eid: [] for eid in event_ids}
+    if not event_ids:
+        return sessions_by_id
+
+    sql = f"SELECT request_id, {_SESSION_COLUMNS} FROM sessions WHERE request_id = ANY($1::text[])"
+    fan_results: dict[str, list[asyncpg.Record]] = await db.fan_out(sql, (event_ids,))
+
+    for butler_name, rows in fan_results.items():
+        for row in rows:
+            session = _decode_session_row(row, butler_name)
+            request_id = session.pop("request_id", None)
+            if request_id is None:
+                continue
+            session["cost_usd"] = _compute_session_cost_usd(session, pricing)
+            sessions_by_id.setdefault(str(request_id), []).append(session)
+
+    for sessions in sessions_by_id.values():
+        sessions.sort(key=lambda s: s.get("started_at") or "")
+
+    return sessions_by_id
+
+
+def _session_duration_ms(session: dict[str, Any]) -> int | None:
+    """Compute wall-clock session duration in milliseconds, or None if incomplete."""
+    started_at = session.get("started_at")
+    completed_at = session.get("completed_at")
+    if started_at is None or completed_at is None:
+        return None
+    try:
+        return int((completed_at - started_at).total_seconds() * 1000)
+    except (TypeError, AttributeError):
+        return None
+
+
+def ingestion_events_list_enrichment(
+    sessions_by_id: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    """Aggregate per-event tokens/cost/session-summary from bulk session data.
+
+    Consumes the output of :func:`ingestion_events_sessions_for_ids`. For each
+    event id, returns:
+    - ``tokens_in`` / ``tokens_out`` — summed across all of the event's sessions.
+    - ``session_cost_usd`` — summed session cost (unknown per-session cost
+      treated as ``0.0``, matching :func:`ingestion_event_rollup`'s drawer-side
+      total so list rows and the drawer agree on the same event), or ``None``
+      when the event has no sessions (distinct from ``0.0``, so callers can
+      fall back to the denormalized ``cost_usd`` column only when there is
+      truly nothing to sum).
+    - ``session_count`` — total session count (not capped).
+    - ``sessions`` — compact per-session dicts (``butler_name``, ``duration_ms``,
+      ``cost_usd``, ``success``), capped at :data:`_MAX_LIST_SESSIONS_PER_EVENT`.
+
+    Args:
+        sessions_by_id: Mapping of event_id to session dicts, as returned by
+            :func:`ingestion_events_sessions_for_ids`.
+
+    Returns:
+        Dict mapping each event_id to its enrichment dict.
+    """
+    enrichment: dict[str, dict[str, Any]] = {}
+    for event_id, sessions in sessions_by_id.items():
+        tokens_in = sum(s.get("input_tokens") or 0 for s in sessions)
+        tokens_out = sum(s.get("output_tokens") or 0 for s in sessions)
+        session_cost_usd = sum(s.get("cost_usd") or 0.0 for s in sessions) if sessions else None
+
+        enrichment[event_id] = {
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "session_cost_usd": session_cost_usd,
+            "session_count": len(sessions),
+            "sessions": [
+                {
+                    "butler_name": s.get("butler_name"),
+                    "duration_ms": _session_duration_ms(s),
+                    "cost_usd": s.get("cost_usd"),
+                    "success": s.get("success"),
+                }
+                for s in sessions[:_MAX_LIST_SESSIONS_PER_EVENT]
+            ],
+        }
+    return enrichment
 
 
 def ingestion_event_rollup(

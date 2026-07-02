@@ -31,6 +31,20 @@ class SenderContactResolution(BaseModel):
     raw: str | None = None
 
 
+class IngestionEventListSessionSummary(BaseModel):
+    """Compact per-session summary embedded in a list row (dispatch-ticks cell).
+
+    A trimmed projection of :class:`IngestionEventSession` — just enough to
+    render the row-level session strip without a per-row detail fetch.
+    Capped at 8 entries per event (see ``ingestion_events_list_enrichment``).
+    """
+
+    butler_name: str
+    duration_ms: int | None = None
+    cost_usd: float | None = None
+    success: bool | None = None
+
+
 class IngestionEventSummary(BaseModel):
     """Lightweight ingestion event representation for list views.
 
@@ -58,9 +72,21 @@ class IngestionEventSummary(BaseModel):
     status: str = "ingested"
     filter_reason: str | None = None
     error_detail: str | None = None
-    # Denormalized cost (core_126). NULL until the event's rollup is first fetched.
+    # Denormalized cost (core_126). NULL until the event's rollup is first fetched
+    # OR until session-join fallback (bu-4utdw.3) computes it below.
     # filtered_events rows always have NULL here (no sessions = no cost).
     cost_usd: float | None = None
+    # ── Row-level enrichment (bu-4utdw.3) — computed via ONE grouped session
+    # fan-out for the whole page, never per-row queries. Kills the N+1 request
+    # storm the per-row rollup/sender-contact hooks previously caused.
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    session_count: int = 0
+    sessions: list[IngestionEventListSessionSummary] = Field(default_factory=list)
+    # Contact-resolved sender display name (relationship.entity_facts via
+    # resolve_contacts_by_channel_bulk), or None when unresolved. The frontend
+    # falls back to source_sender_identity when this is null.
+    sender_display: str | None = None
 
 
 class IngestionEventDetail(IngestionEventSummary):

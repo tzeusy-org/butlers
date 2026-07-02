@@ -51,8 +51,6 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   useIngestionEvents,
-  useIngestionEventRollup,
-  useIngestionEventSenderContact,
   useIngestionWindowRollup,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
@@ -698,12 +696,9 @@ function LedgerRow({
 }: LedgerRowProps) {
   const eligible = isBulkEligible(event.status);
   const ineligibleReason = bulkIneligibleReason(event.status);
-  const { data: rollupResp } = useIngestionEventRollup(event.id);
-  const r = rollupResp?.data;
-  const { data: senderResp } = useIngestionEventSenderContact(event.id, {
-    enabled: !!event.source_sender_identity,
-  });
-  const resolvedName = senderResp?.data?.resolved ? senderResp.data.name : null;
+  // bu-4utdw.3: tokens/cost/sender are now list-provided fields (one grouped
+  // fan-out for the whole page server-side) — no per-row hook mounts here.
+  const resolvedName = event.sender_display ?? null;
 
   const [isReplaying, setIsReplaying] = useState(false);
   const canExpand = event.status !== "filtered" && event.status !== "error";
@@ -808,17 +803,17 @@ function LedgerRow({
 
       {/* Tokens in */}
       <span className="text-right tabular-nums font-mono text-[11px] text-muted-foreground">
-        {r ? fmtNum(r.total_input_tokens) : "—"}
+        {fmtNum(event.tokens_in)}
       </span>
 
       {/* Tokens out */}
       <span className="text-right tabular-nums font-mono text-[11px] text-muted-foreground">
-        {r ? fmtNum(r.total_output_tokens) : "—"}
+        {fmtNum(event.tokens_out)}
       </span>
 
       {/* Cost */}
       <span className="text-right tabular-nums font-mono text-[11px]">
-        {r ? formatCost(r.total_cost) : "—"}
+        {formatCost(event.cost_usd)}
       </span>
 
       {/* Replay / chevron */}

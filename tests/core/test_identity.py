@@ -38,6 +38,7 @@ from butlers.identity import (
     channel_value_for_storage,
     create_temp_contact,
     resolve_contact_by_channel,
+    resolve_contacts_by_channel_bulk,
 )
 
 pytestmark = pytest.mark.unit
@@ -159,6 +160,110 @@ async def test_resolve_contact_by_channel_maps_telegram_user_client_id():
     assert result.entity_id == _ENTITY_ID
     # Second call uses telegram: prefix for the fallback
     assert pool.fetchrow.await_args_list[1].args[2] == "telegram:86807245"
+
+
+# ---------------------------------------------------------------------------
+# resolve_contacts_by_channel_bulk (bu-4utdw.3) — batched N+1 killer for the
+# timeline list endpoint. Mocked-pool coverage only; the real cross-schema
+# relationship.entity_facts / public.entities join is exercised against a
+# live Postgres in tests/core/test_identity_resolution_entity_facts.py.
+# ---------------------------------------------------------------------------
+
+
+def _mk_bulk_row(d: dict[str, Any]) -> Any:
+    row = MagicMock()
+    row.__getitem__ = lambda self, k: d[k]
+    return row
+
+
+async def test_resolve_contacts_by_channel_bulk_one_query_multiple_pairs():
+    """One fetch() call resolves multiple independent pairs from the same result set."""
+    rows = [
+        _mk_bulk_row(
+            {
+                "predicate": "has-email",
+                "object": "alice@example.com",
+                "entity_id": _ENTITY_ID,
+                "name": "Alice",
+                "roles": [],
+            }
+        ),
+        _mk_bulk_row(
+            {
+                "predicate": "has-handle",
+                "object": "telegram:12345",
+                "entity_id": _OWNER_ID,
+                "name": "Owner",
+                "roles": ["owner"],
+            }
+        ),
+    ]
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=rows)
+
+    result = await resolve_contacts_by_channel_bulk(
+        pool,
+        [
+            ("email", "alice@example.com"),
+            ("telegram", "telegram:12345"),
+            ("email", "unknown@example.com"),
+        ],
+    )
+
+    pool.fetch.assert_awaited_once()
+    assert result[("email", "alice@example.com")].entity_id == _ENTITY_ID
+    assert result[("email", "alice@example.com")].contact_id is None
+    assert result[("telegram", "telegram:12345")].entity_id == _OWNER_ID
+    assert result[("telegram", "telegram:12345")].roles == ["owner"]
+    assert result[("email", "unknown@example.com")] is None
+
+
+async def test_resolve_contacts_by_channel_bulk_telegram_prefix_fallback_candidate():
+    """A bare telegram value resolves via its telegram: prefixed candidate in the batch."""
+    rows = [
+        _mk_bulk_row(
+            {
+                "predicate": "has-handle",
+                "object": "telegram:86807245",
+                "entity_id": _ENTITY_ID,
+                "name": "Chloe Wong",
+                "roles": [],
+            }
+        )
+    ]
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=rows)
+
+    result = await resolve_contacts_by_channel_bulk(pool, [("telegram_user_client", "86807245")])
+
+    resolved = result[("telegram_user_client", "86807245")]
+    assert resolved is not None
+    assert resolved.entity_id == _ENTITY_ID
+    assert resolved.contact_id is None
+
+    # The prefixed candidate must be present among the batched query objects.
+    call = pool.fetch.await_args
+    objects = call.args[2]
+    assert "telegram:86807245" in objects
+
+
+async def test_resolve_contacts_by_channel_bulk_empty_input_returns_empty_dict():
+    """No input pairs → {} without ever calling the DB."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    assert await resolve_contacts_by_channel_bulk(pool, []) == {}
+    pool.fetch.assert_not_awaited()
+
+
+async def test_resolve_contacts_by_channel_bulk_db_error_fails_open():
+    """DB error → every input pair maps to None rather than raising (fail-open)."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=Exception("relation does not exist"))
+
+    result = await resolve_contacts_by_channel_bulk(pool, [("email", "a@example.com")])
+
+    assert result == {("email", "a@example.com"): None}
 
 
 # ---------------------------------------------------------------------------

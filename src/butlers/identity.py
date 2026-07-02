@@ -392,6 +392,136 @@ async def resolve_contact_by_channel(
     )
 
 
+def _channel_candidates(channel_type: str, channel_value: str) -> list[tuple[str, str]]:
+    """Return the ordered ``(predicate, object)`` candidate list for one channel.
+
+    Mirrors the fallback chain :func:`resolve_contact_by_channel` walks
+    sequentially (primary predicate → telegram canonical-prefix → telegram
+    username variants → whatsapp phone cross-reference), but as a flat,
+    priority-ordered list so :func:`resolve_contacts_by_channel_bulk` can
+    batch every candidate for a whole page into a single query.
+    """
+    candidates: list[tuple[str, str]] = []
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    if predicate is not None:
+        candidates.append((predicate, channel_value))
+
+    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        candidates.append(("has-handle", _telegram_prefixed_value(channel_value)))
+
+    if channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+        # Skip index 0 — it's the exact value already covered by the primary
+        # predicate candidate above.
+        for variant in _telegram_username_candidates(channel_value)[1:]:
+            candidates.append(("has-handle", variant))
+
+    if channel_type == "whatsapp_jid":
+        phone = _extract_whatsapp_jid_phone(channel_value)
+        if phone is not None:
+            candidates.append(("has-phone", phone))
+
+    return candidates
+
+
+async def resolve_contacts_by_channel_bulk(
+    pool: asyncpg.Pool,
+    channels: list[tuple[str, str]],
+) -> dict[tuple[str, str], ResolvedContact | None]:
+    """Batch variant of :func:`resolve_contact_by_channel` for list views.
+
+    Built for the ingestion timeline list endpoint (bu-4utdw.3): resolving
+    every row's sender via the single-item helper would fire one query per
+    row (an N+1 storm on a 50-row page). This computes the same candidate
+    fallback chain per ``(channel_type, channel_value)`` pair, then issues
+    **one** grouped query against ``relationship.entity_facts`` /
+    ``public.entities`` for the union of all candidates across the page.
+
+    Args:
+        pool: asyncpg pool with ``SELECT`` on ``relationship.entity_facts``
+            and ``public.entities`` (the same shared pool
+            :func:`resolve_contact_by_channel` is called with).
+        channels: List of ``(channel_type, channel_value)`` pairs to resolve.
+            Duplicates are fine — the underlying query is deduplicated.
+
+    Returns:
+        A dict mapping every input pair to its ``ResolvedContact`` (or
+        ``None`` when unresolved). Fail-open: on DB error, all pairs map to
+        ``None`` rather than raising.
+    """
+    result: dict[tuple[str, str], ResolvedContact | None] = dict.fromkeys(channels)
+    if not channels:
+        return result
+
+    candidates_by_pair: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    wanted_pairs: set[tuple[str, str]] = set()
+    for channel_type, channel_value in channels:
+        if not channel_type or not channel_value:
+            continue
+        pair_candidates = _channel_candidates(channel_type, channel_value)
+        if not pair_candidates:
+            continue
+        candidates_by_pair[(channel_type, channel_value)] = pair_candidates
+        wanted_pairs.update(pair_candidates)
+
+    if not wanted_pairs:
+        return result
+
+    predicates, objects = map(list, zip(*wanted_pairs))
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT ef.predicate            AS predicate,
+                   ef.object               AS object,
+                   ef.subject              AS entity_id,
+                   e.canonical_name        AS name,
+                   COALESCE(e.roles, '{}') AS roles
+            FROM   relationship.entity_facts ef
+            JOIN   public.entities e ON e.id = ef.subject
+            JOIN   unnest($1::text[], $2::text[]) AS wanted(predicate, object)
+              ON   ef.predicate = wanted.predicate AND ef.object = wanted.object
+            WHERE  ef.object_kind = 'literal'
+              AND  ef.validity    = 'active'
+            """,
+            predicates,
+            objects,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "resolve_contacts_by_channel_bulk: DB query failed "
+            "(table may not exist yet); returning all-unresolved",
+            exc_info=True,
+        )
+        return result
+
+    match_by_candidate: dict[tuple[str, str], asyncpg.Record] = {}
+    for row in rows:
+        match_by_candidate.setdefault((row["predicate"], row["object"]), row)
+
+    for pair, pair_candidates in candidates_by_pair.items():
+        for candidate in pair_candidates:
+            row = match_by_candidate.get(candidate)
+            if row is None:
+                continue
+            entity_id = row["entity_id"]
+            if not isinstance(entity_id, UUID):
+                try:
+                    entity_id = UUID(str(entity_id))
+                except (ValueError, AttributeError):
+                    continue
+            raw_roles = row["roles"]
+            roles = [str(r) for r in raw_roles] if isinstance(raw_roles, (list, tuple)) else []
+            result[pair] = ResolvedContact(
+                contact_id=None,
+                name=row["name"] or None,
+                roles=roles,
+                entity_id=entity_id,
+            )
+            break
+
+    return result
+
+
 async def resolve_owner_channel_via_definer(
     pool: asyncpg.Pool,
     channel_type: str,
@@ -779,6 +909,7 @@ __all__ = [
     "build_identity_preamble",
     "create_temp_contact",
     "resolve_contact_by_channel",
+    "resolve_contacts_by_channel_bulk",
     "resolve_outbound_channel",
     # Telegram normalization helpers — consumed by approvals._shared to keep
     # is_primary_contact consistent with resolve_contact_by_channel.

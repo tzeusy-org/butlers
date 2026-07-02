@@ -27,7 +27,7 @@ import shutil
 
 import pytest
 
-from butlers.identity import resolve_contact_by_channel
+from butlers.identity import resolve_contact_by_channel, resolve_contacts_by_channel_bulk
 
 # Minimal schema the resolver touches: public.entities (join target) and
 # relationship.entity_facts (the triple store).  Mirrors the real migration DDL
@@ -194,3 +194,97 @@ async def test_unknown_handle_returns_none(provisioned_postgres_pool) -> None:
         result = await resolve_contact_by_channel(pool, "telegram", "telegram:does-not-exist")
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_contacts_by_channel_bulk (bu-4utdw.3) — the batched N+1 killer used
+# by the timeline list endpoint. These exercise the SAME cross-schema join
+# (relationship.entity_facts JOIN public.entities) against a real Postgres,
+# but through the grouped ``unnest($1::text[], $2::text[])`` query the bulk
+# resolver issues for a whole page of ids in one round trip — this is the
+# exact bug class (bare cross-schema access under a scoped search_path) that
+# caused an 8h main-red via PR #2598, so mocked-pool coverage alone is not
+# sufficient for this query.
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_resolves_multiple_pairs_matching_single_item_resolution(
+    provisioned_postgres_pool,
+) -> None:
+    """Bulk resolution of several distinct channels in one query matches per-item resolution."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVISION_SCHEMA)
+
+        chloe = await _mk_entity(pool, "Chloe Wong")
+        await _add_fact(pool, chloe, "has-handle", "telegram:12345")
+
+        owner = await _mk_entity(pool, "Owner", roles=["owner"])
+        await _add_fact(pool, owner, "has-email", "owner@example.com")
+
+        result = await resolve_contacts_by_channel_bulk(
+            pool,
+            [
+                ("telegram", "telegram:12345"),
+                ("email", "owner@example.com"),
+                ("email", "unknown@example.com"),
+            ],
+        )
+
+        assert result[("telegram", "telegram:12345")] is not None
+        assert result[("telegram", "telegram:12345")].entity_id == chloe
+        assert result[("telegram", "telegram:12345")].contact_id is None
+
+        assert result[("email", "owner@example.com")] is not None
+        assert result[("email", "owner@example.com")].entity_id == owner
+        assert result[("email", "owner@example.com")].roles == ["owner"]
+
+        assert result[("email", "unknown@example.com")] is None
+
+
+async def test_bulk_telegram_user_client_prefix_fallback(provisioned_postgres_pool) -> None:
+    """Bulk resolution applies the telegram: prefix fallback candidate, like the single-item path."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVISION_SCHEMA)
+
+        ent = await _mk_entity(pool, "Chloe Wong")
+        await _add_fact(pool, ent, "has-handle", "telegram:86807245")
+
+        result = await resolve_contacts_by_channel_bulk(
+            pool, [("telegram_user_client", "86807245")]
+        )
+
+        resolved = result[("telegram_user_client", "86807245")]
+        assert resolved is not None
+        assert resolved.entity_id == ent
+        assert resolved.contact_id is None
+
+
+async def test_bulk_retracted_triple_does_not_resolve(provisioned_postgres_pool) -> None:
+    """validity='retracted' triples are excluded from the batched query too."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVISION_SCHEMA)
+
+        ent = await _mk_entity(pool, "Departed")
+        await _add_fact(pool, ent, "has-handle", "telegram:55555", validity="retracted")
+
+        result = await resolve_contacts_by_channel_bulk(pool, [("telegram", "telegram:55555")])
+
+        assert result[("telegram", "telegram:55555")] is None
+
+
+async def test_bulk_duplicate_pairs_resolve_consistently(provisioned_postgres_pool) -> None:
+    """The same (channel_type, value) pair appearing twice on a page resolves identically."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVISION_SCHEMA)
+
+        ent = await _mk_entity(pool, "Alice")
+        await _add_fact(pool, ent, "has-phone", "+15555551234")
+
+        result = await resolve_contacts_by_channel_bulk(
+            pool,
+            [("phone", "+15555551234"), ("phone", "+15555551234")],
+        )
+
+        # dict keys collapse duplicates; the single resolved entry is correct.
+        assert result[("phone", "+15555551234")] is not None
+        assert result[("phone", "+15555551234")].entity_id == ent

@@ -7,7 +7,9 @@ Provides:
 
 Endpoints
 ---------
-GET  /api/ingestion/events               — cursor-paginated unified timeline (supports ?q=)
+GET  /api/ingestion/events               — cursor-paginated unified timeline (supports ?q=);
+                                            rows carry bulk-enriched tokens/cost/sessions/
+                                            sender_display (bu-4utdw.3, no per-row queries)
 GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
@@ -35,6 +37,7 @@ from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, CursorPaginatedResponse, CursorPaginationMeta
 from butlers.api.models.ingestion_event import (
     IngestionEventDetail,
+    IngestionEventListSessionSummary,
     IngestionEventPayload,
     IngestionEventRollup,
     IngestionEventSession,
@@ -55,9 +58,15 @@ from butlers.core.ingestion_events import (
     ingestion_event_sessions,
     ingestion_event_set_cost_usd,
     ingestion_events_list,
+    ingestion_events_list_enrichment,
+    ingestion_events_sessions_for_ids,
     ingestion_window_rollup,
 )
-from butlers.identity import resolve_contact_by_channel
+from butlers.identity import (
+    ResolvedContact,
+    resolve_contact_by_channel,
+    resolve_contacts_by_channel_bulk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +191,12 @@ async def list_ingestion_events(
 
     Channel filter precedence: ``channels`` wins over ``source_channel``.
     Status filter precedence: ``statuses`` wins over ``status``.
+
+    Each item is enriched (bu-4utdw.3) with ``tokens_in``, ``tokens_out``,
+    ``session_count``, a capped ``sessions`` summary, and a bulk-resolved
+    ``sender_display`` — computed via exactly one grouped session fan-out and
+    one grouped sender-contact query for the whole page, not a per-row fetch.
+    See :func:`_enrich_list_summaries`.
     """
     try:
         pool = db.credential_shared_pool()
@@ -242,6 +257,9 @@ async def list_ingestion_events(
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]
 
+    if summaries:
+        await _enrich_list_summaries(summaries, db)
+
     return CursorPaginatedResponse[IngestionEventSummary](
         data=summaries,
         meta=CursorPaginationMeta(
@@ -249,6 +267,72 @@ async def list_ingestion_events(
             has_more=result["has_more"],
         ),
     )
+
+
+async def _enrich_list_summaries(
+    summaries: list[IngestionEventSummary],
+    db: DatabaseManager,
+) -> None:
+    """Mutate ``summaries`` in place with row-level session + sender fields.
+
+    Kills the timeline N+1 request storm (bu-4utdw.3): a 50-row page used to
+    fire one ``/rollup`` and one ``/sender-contact`` request per row (up to
+    100 extra HTTP requests). This does the equivalent work with exactly:
+    - one grouped session fan-out (one query per registered butler schema,
+      not per event — see :func:`ingestion_events_sessions_for_ids`), and
+    - one grouped sender-contact resolution query
+      (:func:`resolve_contacts_by_channel_bulk`).
+
+    Fail-open: any DB error here degrades individual fields to their defaults
+    (None/0/[]) rather than failing the whole list request — the fan-out and
+    bulk resolver already fail open internally, and pool lookups here are
+    guarded defensively for the same reason.
+    """
+    event_ids = [s.id for s in summaries]
+
+    try:
+        pricing = _get_pricing_optional()
+        sessions_by_id = await ingestion_events_sessions_for_ids(db, event_ids, pricing=pricing)
+        enrichment = ingestion_events_list_enrichment(sessions_by_id)
+    except Exception:
+        logger.debug("_enrich_list_summaries: session fan-out failed (non-fatal)", exc_info=True)
+        enrichment = {}
+
+    channel_pairs: list[tuple[str, str]] = list(
+        {
+            (s.source_channel, s.source_sender_identity)
+            for s in summaries
+            if s.source_channel and s.source_sender_identity
+        }
+    )
+    sender_map: dict[tuple[str, str], ResolvedContact | None] = {}
+    if channel_pairs:
+        try:
+            pool = db.credential_shared_pool()
+            sender_map = await resolve_contacts_by_channel_bulk(pool, channel_pairs)
+        except Exception:
+            logger.debug(
+                "_enrich_list_summaries: sender-contact bulk resolution failed (non-fatal)",
+                exc_info=True,
+            )
+            sender_map = {}
+
+    for summary in summaries:
+        enr = enrichment.get(summary.id)
+        if enr is not None:
+            summary.tokens_in = enr["tokens_in"]
+            summary.tokens_out = enr["tokens_out"]
+            summary.session_count = enr["session_count"]
+            summary.sessions = [
+                IngestionEventListSessionSummary(**sess) for sess in enr["sessions"]
+            ]
+            if summary.cost_usd is None and enr["session_cost_usd"] is not None:
+                summary.cost_usd = enr["session_cost_usd"]
+
+        if summary.source_channel and summary.source_sender_identity:
+            resolved = sender_map.get((summary.source_channel, summary.source_sender_identity))
+            if resolved is not None:
+                summary.sender_display = resolved.name
 
 
 # ---------------------------------------------------------------------------
