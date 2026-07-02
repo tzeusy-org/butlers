@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
+from butlers.chronicler.adapters.comms import CommsSocialAdapter
 from butlers.chronicler.adapters.exercise import ExerciseInferredAdapter
 from butlers.chronicler.adapters.focus import FocusInferredAdapter
 from butlers.chronicler.adapters.google_health import (
@@ -35,6 +36,7 @@ from butlers.chronicler.adapters.steam import SteamPlayAdapter
 __all__ = [
     "AdapterResult",
     "CalendarCompletedAdapter",
+    "CommsSocialAdapter",
     "CoreSessionsAdapter",
     "ExerciseInferredAdapter",
     "FocusInferredAdapter",

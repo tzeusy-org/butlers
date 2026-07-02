@@ -1,9 +1,9 @@
 """Shared helper: resolve the owner entity_id from ``public.entities``.
 
 Owner-only adapters (focus, sessions, spotify, steam, meals, owntracks,
-reading, google_health) need to stamp the owner entity on every episode they
-project. This helper provides a single resolution point so the lookup
-pattern is consistent across all adapters.
+reading, google_health, comms) need to stamp the owner entity on every
+episode they project. This helper provides a single resolution point so the
+lookup pattern is consistent across all adapters.
 
 Lookup path:
   ``public.entities WHERE 'owner' = ANY(roles)`` → ``entities.id``

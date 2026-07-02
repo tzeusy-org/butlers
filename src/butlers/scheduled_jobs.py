@@ -1086,6 +1086,16 @@ async def _run_chronicler_project_exercise_inferred_job(
     return await run_project_exercise_inferred(pool, job_args)
 
 
+async def _run_chronicler_project_comms_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's comms->Social message-burst projection job."""
+    from butlers.chronicler.jobs import run_project_comms
+
+    return await run_project_comms(pool, job_args)
+
+
 # ---------------------------------------------------------------------------
 # Retention pruner jobs (opt-in, disabled by default)
 # ---------------------------------------------------------------------------
@@ -1292,6 +1302,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_reading_inferred": _run_chronicler_project_reading_inferred_job,
             "chronicler_project_spotify": _run_chronicler_project_spotify_job,
             "chronicler_project_exercise_inferred": (_run_chronicler_project_exercise_inferred_job),
+            "chronicler_project_comms": _run_chronicler_project_comms_job,
         },
         "home": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,

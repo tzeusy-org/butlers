@@ -254,6 +254,9 @@ BEGIN
     -- Approved evidence surfaces (v1):
     --   {schema}.sessions               — CoreSessionsAdapter (all butler schemas)
     --   {schema}.calendar_event_instances — CalendarCompletedAdapter (optional)
+    --   relationship.entity_facts       — CoreSessionsAdapter contact resolution
+    --                                      (bu-hjo3i) + comms.message_bursts
+    --                                      participant resolution (bu-jc6htw.1)
     --
     -- Planned (PLANNED compatibility; tables may not yet exist):
     --   connectors.steam_play_history
@@ -286,6 +289,17 @@ BEGIN
         ) THEN
             EXECUTE format(
                 'GRANT SELECT ON TABLE %I.calendar_event_instances TO butler_chronicler_rw',
+                _schema
+            );
+        END IF;
+        -- entity_facts (CoreSessionsAdapter contact resolution + the
+        -- comms.message_bursts participant resolution — relationship schema only)
+        IF _schema = 'relationship' AND EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = _schema AND table_name = 'entity_facts'
+        ) THEN
+            EXECUTE format(
+                'GRANT SELECT ON TABLE %I.entity_facts TO butler_chronicler_rw',
                 _schema
             );
         END IF;

@@ -180,6 +180,25 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=False,
     ),
+    # Comms -> Social message-burst candidates (bu-jc6htw.1). Reads only
+    # already-ingested envelope metadata (never message content) plus
+    # relationship.entity_facts for participant resolution.
+    SourceAdapterState(
+        source_name="comms.message_bursts",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface=(
+            "public.ingestion_events (source_channel IN email, telegram_bot, "
+            "telegram_user_client, whatsapp_user_client, discord) + "
+            "relationship.entity_facts (participant resolution)"
+        ),
+        boundary_semantics=(
+            "social_episode per contiguous run of ingestion_events sharing "
+            "(source_channel, source_sender_identity) within BURST_GAP_MINUTES; "
+            "(first.received_at, last.received_at) bound the episode; "
+            "no message content is read or projected"
+        ),
+        optional_schema=False,
+    ),
     # Explicitly not time-bearing.
     SourceAdapterState(
         source_name="core.session_process_logs",

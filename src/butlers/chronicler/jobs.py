@@ -10,6 +10,7 @@ import asyncpg
 
 from butlers.chronicler.adapters import (
     CalendarCompletedAdapter,
+    CommsSocialAdapter,
     CoreSessionsAdapter,
     ExerciseInferredAdapter,
     FocusInferredAdapter,
@@ -360,10 +361,25 @@ async def run_project_exercise_inferred(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_comms(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project comms message bursts (gmail/telegram/whatsapp/discord) into social_episode."""
+    options = _parse_job_args(
+        "chronicler_project_comms",
+        job_args,
+        supported_fields=("batch_limit",),
+    )
+    adapter = CommsSocialAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
     "run_project_calendar",
+    "run_project_comms",
     "run_project_exercise_inferred",
     "run_project_focus_inferred",
     "run_project_google_health_heart_rate",

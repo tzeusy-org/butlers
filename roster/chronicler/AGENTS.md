@@ -677,3 +677,64 @@ The gap between `chronicler_episode_participants_resolved_total` (adapter writes
 - **High both:** integration is live.
 - **Zero adapter rate:** `calendar_event_entities` is absent on all schemas or the adapter
   has not run since bu-3zve1 (PR #1869) was deployed.
+
+## CommsSocialAdapter — comms -> Social projection (bu-jc6htw.1)
+
+`src/butlers/chronicler/adapters/comms.py` (`source_name = "comms.message_bursts"`,
+`episode_type = "social_episode"`) projects already-ingested inbound message
+metadata from `public.ingestion_events` into `social` activity candidates.
+It is the Tier-1 half of tasks.md §6.2 (IEA reframe, "Comms Projected Into
+Social").
+
+**Read surface:** `public.ingestion_events` (metadata only — id, received_at,
+source_channel, source_sender_identity; never message content, never
+`switchboard.message_inbox`) + `relationship.entity_facts` for participant
+resolution. The `relationship.entity_facts` grant to `butler_chronicler_rw`
+required its own migration (`core_150_chronicler_comms_entity_facts_grant`) —
+it was previously used cross-schema only by `CoreSessionsAdapter._resolve_contacts`
+(bu-hjo3i) without an explicit RFC 0014 §D8 grant migration ever having been
+filed for it; that gap is now closed for both callers.
+
+**`source_channel` → connector mapping** (the *connector module name* the bead
+brief used is NOT the persisted `source_channel` value — verify against the
+connector's `_build_ingest_envelope` call site, not its filename):
+
+| Connector module | `ingestion_events.source_channel` |
+|---|---|
+| `gmail.py` | `"email"` |
+| `telegram_bot.py` | `"telegram_bot"` |
+| `telegram_user_client.py` | `"telegram_user_client"` |
+| `whatsapp_user_client.py` | `"whatsapp_user_client"` |
+| `discord_user.py` | `"discord"` (not `"discord_user"`) |
+
+**Participant match-object encoding** (mirrors how `relationship` writes
+`entity_facts`, see migrations 019/027/028 and
+`roster/relationship/tools/relationship_assert_fact.py`): email is reduced to
+a bare lowercased address (Gmail's `source_sender_identity` is the raw RFC-822
+`From:` header, not a bare address); both Telegram channels are matched
+`telegram:`-prefixed; Discord and WhatsApp are matched verbatim — those two
+channels are **not currently auto-linked by ingress**
+(`identity._CHANNEL_TYPE_TO_PREDICATE` has no entries for `"discord"` or
+`"whatsapp_user_client"`, so `assert_sender_channel_fact()` silently no-ops for
+them today), so verbatim resolution only succeeds if the owner separately
+registered a `has-handle` fact for that raw id. This is a known, accepted gap —
+not a bug in this adapter.
+
+**Burst semantics:** contiguous `ingestion_events` sharing
+`(source_channel, source_sender_identity)` within `BURST_GAP_MINUTES` (20)
+collapse into one `social_episode`. Deliberately **no cross-batch carryover**
+(unlike `OwnTracksPointAdapter`) — a burst straddling a batch boundary may
+fragment into two candidates; tasks.md §7's day-close deterministic
+reconciliation is the designed place duplicate/overlapping same-lane
+candidates get merged, so Tier-1 projection does not need perfect stitching.
+
+**Confidence ladder:** resolved participant → two independent evidence kinds
+(`message_channel` + `entity_resolution`) → `high`. Unresolved → single kind
+→ `low` (still counted, degrades gracefully — spec: "Unresolved participant
+degrades to UNATTRIBUTED + lower confidence"). `episode_entities` gets a
+`role='participant'` row only when resolved; the owner row is always written
+via the usual `upsert_owner_episode_entity` convention.
+
+**Scheduling:** `chronicler_project_comms` job, `*/15 * * * *` (matches
+`chronicler_project_sessions`'s cadence — messaging activity is higher-frequency
+than the `*/30 * * * *` sources).

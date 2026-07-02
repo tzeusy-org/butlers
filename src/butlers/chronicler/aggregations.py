@@ -35,6 +35,7 @@ CATEGORIES: frozenset[str] = frozenset(
         "meal",
         "home",
         "workout",
+        "social",
         "other",
     }
 )
@@ -58,6 +59,9 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     # Inferred exercise from HR+GPS corroboration (bu-1sj3zn) folds into the
     # 'workout' category (→ Exercise lane), matching explicit workout episodes.
     ("chronicler.exercise_inferred", "exercise_episode"): "workout",
+    # Comms message bursts (bu-jc6htw.1) fold into the 'social' category
+    # (-> Social lane).
+    ("comms.message_bursts", "social_episode"): "social",
 }
 
 # trigger_source values that represent user→butler conversations.
@@ -113,10 +117,10 @@ LANES: frozenset[str] = frozenset(
 )
 
 # Source category → Activity lane. The left-hand side is a ``category_for``
-# output (plus a few forward-compat categories not yet emitted by any adapter:
-# ``idle-presence`` and ``social`` arrive with the comms/presence work in
-# tasks.md §6). Categories with no lane (``other``, and the absent
-# ``calendar``) resolve to ``None`` and are not counted.
+# output. ``social`` is emitted by ``comms.message_bursts`` (tasks.md §6.2,
+# bu-jc6htw.1); ``idle-presence`` remains forward-compat, pending the
+# co-presence half of tasks.md §6. Categories with no lane (``other``, and
+# the absent ``calendar``) resolve to ``None`` and are not counted.
 _CATEGORY_TO_LANE: dict[str, str] = {
     "conversations": "work",
     "tasks": "work",

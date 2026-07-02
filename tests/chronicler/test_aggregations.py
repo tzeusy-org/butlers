@@ -55,6 +55,8 @@ _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
     ("chronicler.reading_inferred", "reading_block", None, "tasks"),
     # Inferred exercise from HR+GPS corroboration (bu-1sj3zn) → Exercise lane.
     ("chronicler.exercise_inferred", "exercise_episode", None, "workout"),
+    # Comms message bursts (bu-jc6htw.1) → Social lane.
+    ("comms.message_bursts", "social_episode", None, "social"),
 ]
 
 
