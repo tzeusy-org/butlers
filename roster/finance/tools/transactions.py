@@ -1103,6 +1103,40 @@ async def update_transaction(
                 "current_version": current_version,
             }
 
+    # Resolve a caller-supplied category through the shared taxonomy guard so an
+    # out-of-taxonomy value canonicalizes (case-insensitive) or falls back to
+    # 'uncategorized' instead of tripping the transactions.category ->
+    # categories.name FK on migrated schemas. Mirrors record_transaction's exact
+    # usage: the fallback warning is recorded into whichever metadata dict will
+    # actually be persisted (the caller-supplied replacement, or the existing
+    # row's metadata when the caller did not also update metadata).
+    resolved_category = category
+    used_category_fallback = False
+    category_meta_target: dict[str, Any] | None = None
+    if category is not None:
+        if metadata is not None:
+            category_meta_target = dict(metadata)
+        else:
+            # Defensive: some pool configurations return JSONB columns as raw
+            # JSON strings rather than pre-decoded dicts. Parse defensively so a
+            # string metadata value doesn't collapse to {} and silently drop the
+            # transaction's existing metadata when the fallback below writes it
+            # back. Mirrors split_transaction's handling of the same column.
+            current_metadata = current.get("metadata")
+            if isinstance(current_metadata, str):
+                try:
+                    parsed_metadata = json.loads(current_metadata) if current_metadata else {}
+                except (json.JSONDecodeError, ValueError):
+                    parsed_metadata = {}
+                category_meta_target = parsed_metadata if isinstance(parsed_metadata, dict) else {}
+            else:
+                category_meta_target = (
+                    dict(current_metadata) if isinstance(current_metadata, dict) else {}
+                )
+        resolved_category, used_category_fallback = await _resolve_category_for_insert(
+            pool, category, category_meta_target
+        )
+
     # Build SET clause dynamically.
     sets: list[str] = ["updated_at = now()"]
     params: list[Any] = []
@@ -1111,10 +1145,10 @@ async def update_transaction(
     # Track which fields are being changed for correction logging.
     changed_fields: dict[str, tuple[Any, Any]] = {}  # field -> (old_val, new_val)
 
-    if category is not None and str(current.get("category", "")) != category:
+    if category is not None and str(current.get("category", "")) != resolved_category:
         sets.append(f"category = ${idx}")
-        params.append(category)
-        changed_fields["category"] = (current.get("category"), category)
+        params.append(resolved_category)
+        changed_fields["category"] = (current.get("category"), resolved_category)
         idx += 1
         # Set category_source = 'manual' and lock the category.
         if has_category_source:
@@ -1136,8 +1170,15 @@ async def update_transaction(
 
     if metadata is not None:
         sets.append(f"metadata = ${idx}")
-        params.append(metadata)
+        params.append(category_meta_target if used_category_fallback else metadata)
         changed_fields["metadata"] = (None, metadata)  # Don't log full metadata diffs
+        idx += 1
+    elif used_category_fallback:
+        # The caller did not replace metadata, but the category fallback needs
+        # to persist its original_category / warnings annotation somewhere.
+        sets.append(f"metadata = ${idx}")
+        params.append(category_meta_target)
+        changed_fields["metadata"] = (None, category_meta_target)
         idx += 1
 
     # Increment version when version column exists.
@@ -1577,6 +1618,16 @@ async def split_transaction(
                 child_meta = dict(orig_meta)
                 child_meta["split_from"] = str(original["id"])
 
+                # Route the per-split category through the shared taxonomy guard
+                # so an out-of-taxonomy value canonicalizes (case-insensitive) or
+                # falls back to 'uncategorized' instead of tripping the
+                # transactions.category -> categories.name FK on migrated
+                # schemas. Mirrors record_transaction's exact usage; the warning
+                # is recorded into this split's own metadata.
+                resolved_category, _used_category_fallback = await _resolve_category_for_insert(
+                    conn, s["category"], child_meta
+                )
+
                 row = await conn.fetchrow(
                     """
                     INSERT INTO transactions (
@@ -1596,7 +1647,7 @@ async def split_transaction(
                     s["amount"],
                     original["currency"],
                     original["direction"],
-                    s["category"],
+                    resolved_category,
                     original["payment_method"],
                     original["receipt_url"],
                     original["external_ref"],

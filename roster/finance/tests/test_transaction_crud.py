@@ -1174,6 +1174,106 @@ class TestUpdateTransactionEnhanced:
         assert correction["old_value"] == "groceries"
         assert correction["new_value"] == "dining"
 
+    async def test_unknown_category_falls_back_when_category_fk_exists(self, pool_v2):
+        """update_transaction stores unknown categories as uncategorized under the FK schema."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(pool_v2, category="uncategorized")
+
+        result = await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            category="misc",
+        )
+
+        assert result["category"] == "uncategorized"
+        assert result["category_source"] == "manual"
+        assert result["metadata"]["original_category"] == "misc"
+        assert result["metadata"]["warnings"] == [
+            {
+                "code": "unknown_category",
+                "field": "category",
+                "stored_as": "uncategorized",
+            }
+        ]
+
+    async def test_category_is_canonicalized_case_insensitively_for_fk_schema(self, pool_v2):
+        """update_transaction accepts display-style casing when categories are FK-backed."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(pool_v2, category="uncategorized")
+
+        result = await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            category="Groceries",
+        )
+
+        assert result["category"] == "groceries"
+
+    async def test_unknown_category_fallback_preserves_existing_metadata(self, pool_v2):
+        """The fallback warning is merged into existing metadata when the caller
+        does not also replace metadata on the same call."""
+        from butlers.tools.finance.transactions import update_transaction
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(
+            pool_v2, category="uncategorized", metadata={"receipt_url": "https://example.com/r"}
+        )
+
+        result = await update_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            category="not-a-real-category",
+        )
+
+        assert result["category"] == "uncategorized"
+        assert result["metadata"]["receipt_url"] == "https://example.com/r"
+        assert result["metadata"]["original_category"] == "not-a-real-category"
+
+    async def test_unknown_category_fallback_preserves_metadata_when_read_as_string(self, pool_v2):
+        """Regression test: some connections decode JSONB columns as raw JSON
+        strings on read (asyncpg's default) rather than pre-decoded dicts, even
+        though writes still accept a dict. update_transaction must not collapse
+        `current_metadata` to {} in that case — doing so would silently drop
+        all pre-existing metadata keys when the fallback warning is persisted.
+        """
+        from butlers.db import _jsonb_encoder
+        from butlers.tools.finance.transactions import update_transaction
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(
+            pool_v2, category="uncategorized", metadata={"receipt_url": "https://example.com/r"}
+        )
+
+        def _passthrough_decoder(data: bytes) -> str:
+            # Mirrors register_jsonb_codec's wire-format handling but skips the
+            # json.loads() step, so JSONB columns come back as raw text instead
+            # of pre-decoded dicts -- reproducing the shape described in the
+            # review thread for this fix without disturbing the write path.
+            return data[1:].decode()
+
+        async with pool_v2.acquire() as conn:
+            await conn.set_type_codec(
+                "jsonb",
+                encoder=_jsonb_encoder,
+                decoder=_passthrough_decoder,
+                schema="pg_catalog",
+                format="binary",
+            )
+
+            result = await update_transaction(
+                pool=conn,
+                transaction_id=txn["id"],
+                category="not-a-real-category",
+            )
+
+        assert result["category"] == "uncategorized"
+        assert result["metadata"]["receipt_url"] == "https://example.com/r"
+        assert result["metadata"]["original_category"] == "not-a-real-category"
+
 
 # ---------------------------------------------------------------------------
 # delete_transaction: version increment
@@ -1324,6 +1424,49 @@ class TestSplitTransactionEnhanced:
             txn["id"],
         )
         assert correction is not None
+
+    async def test_unknown_split_category_falls_back_when_category_fk_exists(self, pool_v2):
+        """split_transaction stores unknown split categories as uncategorized under the FK schema."""
+        from butlers.tools.finance.transactions import split_transaction
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(pool_v2, amount=-100.00, category="uncategorized")
+
+        result = await split_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            splits=[
+                {"amount": "60.00", "category": "groceries"},
+                {"amount": "40.00", "category": "not-a-real-category"},
+            ],
+        )
+
+        known, unknown = result["splits"]
+        assert known["category"] == "groceries"
+        assert unknown["category"] == "uncategorized"
+        assert unknown["metadata"]["original_category"] == "not-a-real-category"
+        assert unknown["metadata"]["warnings"] == [
+            {
+                "code": "unknown_category",
+                "field": "category",
+                "stored_as": "uncategorized",
+            }
+        ]
+
+    async def test_split_category_is_canonicalized_case_insensitively_for_fk_schema(self, pool_v2):
+        """split_transaction accepts display-style casing when categories are FK-backed."""
+        from butlers.tools.finance.transactions import split_transaction
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(pool_v2, amount=-30.00, category="uncategorized")
+
+        result = await split_transaction(
+            pool=pool_v2,
+            transaction_id=txn["id"],
+            splits=[{"amount": "30.00", "category": "Groceries"}],
+        )
+
+        assert result["splits"][0]["category"] == "groceries"
 
 
 # ---------------------------------------------------------------------------
