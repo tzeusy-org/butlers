@@ -140,7 +140,7 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
       type="button"
       onClick={handleCopy}
       className="inline-flex items-center gap-1 rounded px-1 py-0.5 font-mono text-[11px] tracking-[0.01em] text-muted-foreground hover:bg-muted transition-colors"
-      title={copied ? 'Copied!' : 'Copy to clipboard'}
+      title={copied ? 'Copied' : 'Copy to clipboard'}
       data-testid="copy-button"
     >
       <span className="truncate max-w-[160px]">{label ?? value}</span>
@@ -313,20 +313,22 @@ function DrawerSessionsTab({
               open →
             </Link>
           </div>
-          <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 text-[12px]">
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground pb-1">
-              step
-            </div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right pb-1">in</div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right pb-1">out</div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right pb-1">cost</div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right pb-1">dur</div>
-            {/* Summary row — no per-step data in current API; show session-level totals as one row */}
-            <div className="text-foreground">session total</div>
-            <div className="text-right tabular-nums">{fmtNum(s.input_tokens)}</div>
-            <div className="text-right tabular-nums">{fmtNum(s.output_tokens)}</div>
-            <div className="text-right tabular-nums">{formatCost(s.cost_usd)}</div>
-            <div className="text-right tabular-nums">{formatDuration(s.started_at, s.completed_at)}</div>
+          {/*
+            The API does not report per-step token/cost/duration data today
+            (only session-level aggregates), so this renders one honestly
+            labeled totals row rather than a step-by-step table with headers
+            promising rows that don't exist. Future extension: once the
+            backend records per-step accounting, restore a per-step
+            breakdown here.
+          */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              session total
+            </span>
+            <span className="tabular-nums text-foreground">in {fmtNum(s.input_tokens)}</span>
+            <span className="tabular-nums text-foreground">out {fmtNum(s.output_tokens)}</span>
+            <span className="tabular-nums text-foreground">cost {formatCost(s.cost_usd)}</span>
+            <span className="tabular-nums text-foreground">dur {formatDuration(s.started_at, s.completed_at)}</span>
           </div>
         </div>
       ))}
@@ -338,14 +340,37 @@ function DrawerSessionsTab({
 // Raw payload tab
 // ---------------------------------------------------------------------------
 
-function DrawerRawTab({ requestId, enabled }: { requestId: string; enabled: boolean }) {
+function DrawerRawTab({
+  requestId,
+  enabled,
+  onLoad,
+}: {
+  requestId: string
+  enabled: boolean
+  onLoad: () => void
+}) {
   const { data, isLoading, isError, error } = useIngestionEventPayload(requestId, { enabled })
 
+  // Not yet enabled for THIS event — this is the state when the tab
+  // selection was restored from a remembered preference rather than an
+  // explicit click during this drawer's lifetime (see handleTabChange).
+  // Requires one explicit, audited action per event; never auto-fetches
+  // from a preference set on a previously viewed event.
   if (!enabled) {
     return (
-      <p className="p-4 font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
-        Raw payload not loaded.
-      </p>
+      <div className="p-4 space-y-3">
+        <p className="font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
+          Raw payload not loaded.
+        </p>
+        <button
+          type="button"
+          onClick={onLoad}
+          className="rounded border px-3 py-1.5 font-mono text-[11px] tracking-[0.01em] hover:bg-muted transition-colors"
+          data-testid="raw-tab-load-button"
+        >
+          Load payload (audited)
+        </button>
+      </div>
     )
   }
 
@@ -364,10 +389,10 @@ function DrawerRawTab({ requestId, enabled }: { requestId: string; enabled: bool
     return (
       <div className="p-4 space-y-2" data-testid="raw-tab-gated">
         <p className="font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
-          Payload access requires elevated permission.
+          Payload access is disabled for this session.
         </p>
         <p className="font-mono text-[11px] text-muted-foreground">
-          Each access is recorded in the audit log. Request access from your administrator.
+          Reads are recorded in the audit log.
         </p>
       </div>
     )
@@ -546,14 +571,22 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
   // active and its content has rendered. Replaces the fragile setTimeout approach.
   const [pendingScrollId, setPendingScrollId] = useState<string | null>(null)
 
+  // Explicitly clicking the raw tab is a deliberate, in-the-moment request
+  // for THIS event's payload, so it's safe to auto-fetch (the fetch itself
+  // IS the audited read: writes ingestion.event.payload_read to
+  // public.audit_log). A tab selection merely *restored* from a remembered
+  // preference (sessionStorage, set by a previously viewed event) is not
+  // such a request — auto-fetching there would silently audit-log reads
+  // for events the user never chose to inspect. See DrawerRawTab's explicit
+  // "Load payload (audited)" affordance for that remembered-tab case.
   function handleTabChange(tab: DrawerTab) {
     setActiveTab(tab)
+    if (tab === 'raw') setRawEnabled(true)
     try {
       sessionStorage.setItem('ingestion-drawer-tab', tab)
     } catch {
       // sessionStorage unavailable
     }
-    if (tab === 'raw') setRawEnabled(true)
   }
 
   const { data: detailData } = useIngestionEventDetail(event.id, { enabled: true })
@@ -647,8 +680,10 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
             ))}
           </div>
 
-          {/* Tab content */}
-          <div className="overflow-auto" style={{ maxHeight: '24rem' }}>
+          {/* Tab content — no independent scroll region; the page's main
+              scroll area is the single scroll context for the whole drawer
+              (avoids nested scrollbars alongside the right rail). */}
+          <div>
             {activeTab === 'sessions' && (
               <DrawerSessionsTab
                 requestId={event.id}
@@ -658,7 +693,11 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
               />
             )}
             {activeTab === 'raw' && (
-              <DrawerRawTab requestId={event.id} enabled={rawEnabled} />
+              <DrawerRawTab
+                requestId={event.id}
+                enabled={rawEnabled}
+                onLoad={() => setRawEnabled(true)}
+              />
             )}
             {activeTab === 'replays' && (
               <DrawerReplaysTab requestId={event.id} enabled={true} />
@@ -667,7 +706,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
         </div>
 
         {/* Right rail: request KV + session index */}
-        <div className="w-52 shrink-0 border-l border-border p-4 space-y-4 overflow-auto" style={{ maxHeight: '24rem' }}>
+        <div className="w-52 shrink-0 border-l border-border p-4 space-y-4">
           {/* Request KV block */}
           <div className="space-y-1.5">
             <p className="font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground mb-2">

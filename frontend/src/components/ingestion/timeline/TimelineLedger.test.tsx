@@ -701,7 +701,9 @@ describe("EventDrawer — raw payload tab gated state", () => {
     // and since useIngestionEventPayload returns isError+403, it renders gated state.
     const gatedEl = container.querySelector("[data-testid='raw-tab-gated']");
     expect(gatedEl).not.toBeNull();
-    expect(gatedEl!.textContent).toContain("elevated permission");
+    expect(gatedEl!.textContent).toContain("disabled for this session");
+    // Single-owner product: no multi-tenant "administrator" framing (bu-4utdw.11).
+    expect(gatedEl!.textContent).not.toContain("administrator");
   });
 });
 
