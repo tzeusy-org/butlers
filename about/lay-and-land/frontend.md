@@ -363,7 +363,7 @@ butlers add entries here regularly).
 | QA dossier | `qa/` | `QaKpiStrip`, `CaseList`, `CaseDossierHeader`, `StateTrack`, `ClaimAnchoredBlurb`, `EvidenceLog`, `CounterEvidence`, `PRPanel`, `DiffPreview`, `PatrolJournal` |
 | Butlers detail | `butler-detail/` | 13+ tab components |
 | Notifications | `notifications/` | feed, stats bar |
-| Memory | `memory/` | tier cards, browser, ConcentricCircles dialog |
+| Memory | `memory/` | tier cards, browser |
 | Health | `health/` | measurements, medications, conditions, symptoms, meals |
 | Relationships | `relationship/` | contacts, groups, entity views |
 | Chronicles | `chronicles/` | Gantt, map, scrubber, aggregations (lazy) |
@@ -444,9 +444,6 @@ under "Theme commitment" for the full rationale.
   inline `style={{ width: \`${pct}%\` }}` for progress bars.
 - `pages/CalendarWorkspacePage.tsx:188`:
   `style={{ height: 24 * HOUR_HEIGHT_PX }}` for the day grid.
-- `pages/memory/ConcentricCirclesDialog.tsx`: multiple inline
-  `style={{ ... }}` for cursor and visibility (could be tailwind
-  classes).
 
 These should be either named tokens (`--severity-low`,
 `--severity-high`) or chart-palette references (`--chart-1..5`),
@@ -502,7 +499,7 @@ not literals.
 | `StatsCard` reimplemented | CostsPage:20, QaOverviewPage:149 | `DashboardPage` migrated to `StatItem` (no-Card strip). Remaining pages are candidates for the same pattern |
 | Date formatters disagree | `toLocaleString` (EpisodeDetailPage:140), `toISOString().slice(0,10)` (EntitiesPage:196), `format(...)` from date-fns (GroupsPage:155) | `<Time>` primitive shipped; `DashboardPage` already uses `<Time mode="relative">` |
 | Hex literals | EntitiesPage:102-113, EntityDetailPage:313/316, SymptomsPage, GroupsPage:121 | Need named tokens |
-| Inline `style={{...}}` | FactDetailPage:101, RuleDetailPage:97, CalendarWorkspacePage:188, ConcentricCirclesDialog | Tailwind arbitrary values |
+| Inline `style={{...}}` | FactDetailPage:101, RuleDetailPage:97, CalendarWorkspacePage:188 | Tailwind arbitrary values |
 | Button variant for "secondary" action | `outline` (33 sites) vs `ghost` (7 sites) | No documented rule |
 | Empty-state pattern | Shared `EmptyState` vs inline div | Adopt the shared one or replace it |
 | `PageHeader.title` slot is dead code | `RootLayout.tsx:15` mounts with no title | Either use it or remove the prop |

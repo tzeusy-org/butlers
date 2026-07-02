@@ -202,16 +202,14 @@ describe("ConcentrationPage — route mount", () => {
     expect(nav).toBeTruthy();
   });
 
-  it("renders Index, Hop, Columns, Concentration, Social map tabs", () => {
+  it("renders Plex, Index, Concentration tabs", () => {
     renderPage("/entities/concentration");
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
     const labels = Array.from(links).map((a) => a.textContent?.trim());
+    expect(labels).toContain("Plex");
     expect(labels).toContain("Index");
-    expect(labels).toContain("Hop");
-    expect(labels).toContain("Columns");
     expect(labels).toContain("Concentration");
-    expect(labels).toContain("Social map");
   });
 
   it("renders the page title", () => {
@@ -234,7 +232,26 @@ describe("ConcentrationPage — predicate tab strip", () => {
     const predicates = Array.from(tabs).map((b) => b.getAttribute("data-predicate"));
     expect(predicates).toContain("knows");
     expect(predicates).toContain("family-of");
-    expect(predicates).toContain("works-with");
+    // Zero-count predicates are hidden behind the "empty hidden" note.
+    expect(predicates).not.toContain("works-with");
+    expect(
+      strip?.querySelector("[data-testid='predicate-tabs-hidden-note']")?.textContent,
+    ).toContain("1");
+  });
+
+  it("keeps a zero-count predicate visible when it is the active deep link", () => {
+    // The active predicate comes from the server response, not the URL.
+    vi.mocked(useEntityConcentration).mockReturnValue({
+      data: { ...KNOWS_RESPONSE, predicate: "works-with" },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityConcentration>);
+    renderPage("/entities/concentration?predicate=works-with");
+    const strip = container.querySelector("[data-testid='predicate-tab-strip']");
+    const worksBtn = strip?.querySelector("[data-predicate='works-with']");
+    expect(worksBtn).toBeTruthy();
   });
 
   it("marks the active predicate tab with aria-pressed=true", () => {
@@ -251,15 +268,15 @@ describe("ConcentrationPage — predicate tab strip", () => {
     renderPage("/entities/concentration");
     const strip = container.querySelector("[data-testid='predicate-tab-strip']");
     const countBadges = strip?.querySelectorAll("[data-testid='predicate-tab-count']") ?? [];
-    // One count badge per tab.
-    expect(countBadges.length).toBe(PREDICATE_TABS.length);
+    // One count badge per VISIBLE tab (zero-count tabs are hidden).
+    expect(countBadges.length).toBe(
+      PREDICATE_TABS.filter((t) => t.entity_count > 0).length,
+    );
     // Spot-check values from the fixture.
     const knowsBtn = strip?.querySelector("[data-predicate='knows']");
     expect(knowsBtn?.querySelector("[data-testid='predicate-tab-count']")?.textContent).toBe("42");
     const familyBtn = strip?.querySelector("[data-predicate='family-of']");
     expect(familyBtn?.querySelector("[data-testid='predicate-tab-count']")?.textContent).toBe("7");
-    const worksBtn = strip?.querySelector("[data-predicate='works-with']");
-    expect(worksBtn?.querySelector("[data-testid='predicate-tab-count']")?.textContent).toBe("0");
   });
 
   it("clicking a tab updates ?predicate= in the URL (hook called with new predicate)", async () => {

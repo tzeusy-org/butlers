@@ -493,7 +493,7 @@ test.describe("entity-redesign: entity detail page", () => {
 // index filtered by `has=contact`:
 //
 //   { path: '/contacts/:contactId',
-//     element: <Navigate to="/entities?has=contact" replace /> }
+//     element: <Navigate to="/entities/index?has=contact" replace /> }
 //
 // There is no per-contact entity lookup, no `/entities/:id` redirect, and no
 // "Contact not linked to an entity" recovery state any more — a legacy
@@ -502,7 +502,7 @@ test.describe("entity-redesign: entity detail page", () => {
 
 /**
  * Stub the entities-index list + curation-queue endpoints so the redirect
- * destination (`/entities?has=contact`) renders cleanly without a real backend.
+ * destination (`/entities/index?has=contact`) renders cleanly without a real backend.
  */
 async function installEntitiesIndexStubs(page: Page) {
   const emptyList = { items: [], total: 0, limit: 50, offset: 0 };
@@ -528,7 +528,7 @@ test.describe("entity-redesign: legacy /contacts redirect", () => {
   // Test 5: /contacts/:contactId redirects to the entity index (no tab block)
   //
   // The old tabbed ContactDetailPage is gone — a legacy per-contact URL now
-  // forwards straight to /entities?has=contact, and no tablist is rendered.
+  // forwards straight to /entities/index?has=contact, and no tablist is rendered.
   // -------------------------------------------------------------------------
 
   test("contact detail page redirects to the entity index without a tab block", async ({
@@ -540,8 +540,8 @@ test.describe("entity-redesign: legacy /contacts redirect", () => {
 
     // The compatibility redirect lands on the entities index filtered to
     // contact-bearing entities (NOT an individual /entities/:id page).
-    await page.waitForURL(/\/entities\?has=contact/, { timeout: TIMEOUT_MS });
-    expect(page.url()).toContain("/entities?has=contact");
+    await page.waitForURL(/\/entities\/index\?has=contact/, { timeout: TIMEOUT_MS });
+    expect(page.url()).toContain("/entities/index?has=contact");
 
     // The "Has contact" filter chip on the index toolbar confirms we landed on
     // the entity index, and no old tabbed contact-detail layout is present.
@@ -566,11 +566,11 @@ test.describe("entity-redesign: legacy /contacts redirect", () => {
 
     await page.goto(`/contacts/${CONTACT_ID}`, { timeout: TIMEOUT_MS });
 
-    await page.waitForURL(/\/entities\?has=contact/, { timeout: TIMEOUT_MS });
+    await page.waitForURL(/\/entities\/index\?has=contact/, { timeout: TIMEOUT_MS });
 
     // Must NOT have resolved to a specific entity detail route.
-    expect(page.url()).not.toMatch(/\/entities\/[^?]/);
-    expect(page.url()).toContain("/entities?has=contact");
+    expect(page.url()).not.toMatch(/\/entities\/(?!index)[^?]/);
+    expect(page.url()).toContain("/entities/index?has=contact");
   });
 
 });

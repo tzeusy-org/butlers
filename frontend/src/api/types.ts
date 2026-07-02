@@ -6643,7 +6643,7 @@ export interface ReembedRunResult {
 
 // ---------------------------------------------------------------------------
 // Relationship entity neighbours (GET /api/butlers/relationship/entities/{id}/neighbours)
-// Used by HopPage §8.2 (bu-h4s95).
+// Used by PlexPage and the EntityFinder preview.
 // ---------------------------------------------------------------------------
 
 /**
@@ -6671,7 +6671,7 @@ export interface NeighboursResponse {
   neighbours: Record<string, NeighbourEntry[]>;
   /**
    * Per-predicate count of neighbours NOT returned in ``neighbours`` because of
-   * ranked truncation (the "+N more" affordance for Hop / Columns).
+   * ranked truncation (the "+N more" affordance in the Plex).
    *
    * Empty (and an omitted predicate means zero remainder) when no truncation was
    * applied — i.e. when ``rank`` was not requested.

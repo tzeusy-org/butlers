@@ -423,7 +423,7 @@ export function useMemoryInspect(params?: MemoryInspectParams) {
   });
 }
 
-/** Fetch the Dunbar tier ranking for the social map visualization. */
+/** Fetch the Dunbar tier ranking (drives the Plex and the relationship contacts tab). */
 export function useDunbarRanking(enabled: boolean = false) {
   return useQuery({
     queryKey: ["dunbar-ranking"],

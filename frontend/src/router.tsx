@@ -83,3 +83,33 @@ export function IngestionTabRedirect() {
   }
   return <IngestionTimelinePage />
 }
+
+/**
+ * /entities/hop → /entities (the Plex absorbed the Hop traversal view).
+ * The plex shares the ?center / ?trail grammar, so both params pass through.
+ */
+export function HopToPlexRedirect() {
+  const [searchParams] = useSearchParams()
+  const qs = new URLSearchParams()
+  const center = searchParams.get('center')
+  const trail = searchParams.get('trail')
+  if (center) qs.set('center', center)
+  if (trail) qs.set('trail', trail)
+  const suffix = qs.toString()
+  return <Navigate to={`/entities${suffix ? `?${suffix}` : ''}`} replace />
+}
+
+/**
+ * /entities/columns → /entities. The columns ?path=a,b,c walk maps onto the
+ * plex grammar: the last path node becomes the center, the rest the trail.
+ */
+export function ColumnsToPlexRedirect() {
+  const [searchParams] = useSearchParams()
+  const path = (searchParams.get('path') ?? '').split(',').filter(Boolean)
+  const qs = new URLSearchParams()
+  const center = path[path.length - 1]
+  if (center) qs.set('center', center)
+  if (path.length > 1) qs.set('trail', path.slice(0, -1).join(','))
+  const suffix = qs.toString()
+  return <Navigate to={`/entities${suffix ? `?${suffix}` : ''}`} replace />
+}

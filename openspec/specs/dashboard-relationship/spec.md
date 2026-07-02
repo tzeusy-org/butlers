@@ -612,13 +612,13 @@ A guardrail test (tasks.md §12.8) MUST exercise this invariant.
 
 ---
 
-### Requirement: Entity index page (`/entities`)
+### Requirement: Entity index page (`/entities/index`)
 
-The frontend SHALL render an entity index at `/entities` (NOT `/butlers/relationship/entities`)
-as the canonical landing surface for "people and things I care about." The route is owned
-by the relationship butler's frontend tree but exposed at the top-level path because the
-Index is the home for every entity-related workflow (Hop, Columns, Concentration, Social-map
-are alternate views of the same population). The Index MUST consist of:
+The frontend SHALL render an entity index at `/entities/index` (NOT
+`/butlers/relationship/entities`). The `/entities` landing itself is the Plex (see
+Requirement: Entity Plex view); the Index is the tabular curation surface one tab away,
+home for list-filter-and-curate workflows over the same population. The Index MUST
+consist of:
 
 1. **Tabular list (left/main column)** — one row per entity, neutral hairline-on-neutral.
    Columns: entity-mark glyph (type indicator: `P / O / L / X / @ / E / G`), canonical_name +
@@ -630,15 +630,15 @@ are alternate views of the same population). The Index MUST consist of:
    `stale`), tier chips. The `has=contact` chip MUST surface all entities with at least one
    `has-email | has-phone | has-handle | has-address` triple.
 3. **Curation queue (right rail)** — see Requirement: Entity curation queue.
-4. **SubpageTabs** — horizontal nav strip linking Index / Hop / Columns / Concentration /
-   Social-map. Active tab is `/entities`.
+4. **SubpageTabs** — horizontal nav strip linking Plex / Index / Concentration.
+   Active tab is `/entities/index`.
 5. **Cmd-K affordance** — visible mono kbd capsule (`⌘K`) in the header.
 
 The Index page MUST render inside `<Page archetype="overview">` (per the in-flight
 `page-primitive-spec-sync` change) with breadcrumb `Entities`.
 
 #### Scenario: Index renders with neutral rows and queue rail
-- **WHEN** a user navigates to `/entities` with at least one entity in `public.entities`
+- **WHEN** a user navigates to `/entities/index` with at least one entity in `public.entities`
 - **THEN** the rows MUST render neutral hairline-on-neutral (no amber/red fills)
 - **AND** the curation queue rail MUST be present (collapsed to single serif italic line if empty)
 - **AND** the SubpageTabs strip MUST mark Index as active
@@ -649,61 +649,89 @@ The Index page MUST render inside `<Page archetype="overview">` (per the in-flig
   `relationship.entity_facts` whose predicate matches `has-email | has-phone | has-handle |
   has-address | has-birthday | has-website`
 
-#### Scenario: `/contacts` index redirects to `/entities?has=contact`
+#### Scenario: `/contacts` index redirects to `/entities/index?has=contact`
 - **WHEN** a request reaches the contacts INDEX path `/contacts` (no `:contactId` param)
-- **THEN** the response MUST be a 301 redirect to `/entities?has=contact`
+- **THEN** the response MUST be a 301 redirect to `/entities/index?has=contact`
 - **AND** no functional regression MUST occur for any prior `/contacts` index workflow
 - **AND** the contact-detail path `/contacts/:contactId` MUST NOT be redirected; it
   continues to serve the canonical contact detail page per Requirement: Contact detail
   page canonical route in the shipped `dashboard-relationship` spec.
 
-### Requirement: Entity Hop view (`/entities/hop`)
+### Requirement: Entity Plex view (`/entities`)
 
-The frontend SHALL render a re-centre graph explorer at `/entities/hop` with predicate-grouped
-neighbour fan-out. The page MUST:
+The frontend SHALL render the owner ego-graph ("Plex") at `/entities` as the canonical
+landing surface for the entity graph. The Plex supersedes the former Hop, Columns, and
+Social-map views; their traversal and Dunbar-visualisation jobs are absorbed here. The
+page MUST render inside `<Page archetype="overview">` with breadcrumb `Entities` and the
+SubpageTabs strip marking Plex active.
 
-1. Accept `?center=<entity_id>` to seed the centre node (defaults to owner if absent).
-2. Render the centre entity card plus predicate-grouped neighbour rows (`knows` group,
-   `family-of` group, `co-attended` group, etc.). Each neighbour shows EntityMark + name +
-   tier + edge weight + `last_seen`.
-3. Allow re-centring on any neighbour with one click. Re-centring MUST update `?center=`
-   and remain on `/entities/hop` (NOT navigate away to a different product surface).
-4. Render inside `<Page archetype="overview">` with SubpageTabs strip marking Hop active.
+**Owner mode (default, no `?center=`):**
 
-Data source: `GET /api/relationship/entities/{id}/neighbours` (Requirement: Entity
-neighbours endpoint below).
+1. Non-owner contacts from `GET /api/relationship/dunbar/ranking` render on concentric
+   Dunbar tier rings (5/15/50/150/500); tier 1500 MUST NOT render as nodes — it renders
+   as a dashed periphery ring carrying only its count.
+2. Each ring carries an honest capacity label (`<count>/<tier>`); over-capacity renders
+   amber. A right-flank overlay repeats the per-tier capacity meters; a left-flank
+   "Worth attention" overlay lists at most 5 contacts past their per-tier reach-out
+   cadence, ordered by tier-weighted urgency (attention flows inward), each carrying the
+   reason (`tier N · Xd since contact`).
+3. Staleness renders as node desaturation (the read-time freshness axis); a manually
+   pinned tier renders as a dashed border on the mark.
 
-#### Scenario: Re-centre keeps user on /entities/hop
-- **WHEN** a user clicks a neighbour from the centre fan-out
-- **THEN** the URL MUST change to `/entities/hop?center=<new_entity_id>`
-- **AND** the page MUST remain `/entities/hop` (NOT navigate to `/entities/<id>` detail)
+**Neighbour mode (`?center=<entity_id>`):**
 
-### Requirement: Entity Columns view (`/entities/columns`)
+4. The centred entity's neighbours (from `GET /api/relationship/entities/{id}/neighbours`
+   with `rank=weight`) fan into angular sectors, one per relational predicate; heavier
+   neighbours sit closer, and per-predicate ranked-truncation remainders render as a
+   `+N` affordance. Edge opacity carries assertion confidence; node desaturation carries
+   staleness — the two manifesto axes MUST use separate visual channels. A peer appearing
+   in both directions of one predicate MUST render once (the heaviest row wins).
+5. A right-flank dossier renders the centred entity: identity header (type, tier, pin
+   state, last seen), 90-day activity sparkline, upcoming core dates, literal facts, and
+   latest interactions per channel.
 
-The frontend SHALL render a Finder-style cascading column drill at `/entities/columns`.
-Each column shows one entity's predicate-grouped neighbours; clicking a neighbour pushes
-a new column to the right. Column 0 is the owner unless `?path=` overrides it. Each column
-MUST be reachable via either (a) chained client-side calls to
-`GET /api/relationship/entities/{id}/neighbours` or (b) a server-side
-`GET /api/relationship/entities/{id}/columns?path=<csv>` helper. Phase 2 picks
-**option (a)**: client-side chaining is sufficient for v1; no new server endpoint required
-(resolves Phase 1 Open Question 15).
+**Navigation and interaction (both modes):**
 
-Render inside `<Page archetype="overview">` with SubpageTabs Columns active.
+6. Clicking a mark re-centres the Plex; the previous centre pushes onto a `?trail=`
+   parameter (oldest first) rendered as a clickable hop-trail breadcrumb. Re-centring on
+   the owner resets centre and trail. Esc pops one hop; Enter opens the centred record;
+   keyboard bindings MUST be scoped to the canvas container, never window-global.
+7. Wheel zooms toward the cursor (clamped); dragging empty canvas pans; `0` and a
+   visible affordance reset the camera; wheel over a flank overlay scrolls the overlay,
+   not the camera. Outer-tier name labels fade in past the zoom threshold.
+8. Dragging a person to another ring pins their Dunbar tier (the manifesto's manual
+   override) via the dunbar-tier update endpoint; the drop-target ring highlights during
+   the drag; the hover card and dossier expose an unpin affordance.
+9. Hovering a mark opens a micro-dossier card (type, tier, days since contact, 90-day
+   sparkline, open/unpin actions); in owner mode hover also spotlights the hovered
+   person's edges to other visible contacts while unconnected marks recede.
 
-#### Scenario: Clicking a neighbour pushes a new column
-- **WHEN** the user is on `/entities/columns` viewing column 0 (owner) and clicks a neighbour
-  of the owner in column 0
-- **THEN** a new column MUST be appended to the right showing that neighbour's
-  predicate-grouped neighbours
-- **AND** the URL MUST reflect the new path (e.g. `?path=ent-1,ent-2`)
-- **AND** no new server endpoint MUST be called (per option (a)); only chained calls to
-  `/api/relationship/entities/{id}/neighbours`
+**Retired-route redirects:** `/entities/hop?center=<id>&trail=<csv>` MUST redirect to
+`/entities` preserving both params; `/entities/columns?path=a,...,z` MUST redirect to
+`/entities?center=z&trail=a,...,y`; `/entities/social-map` MUST redirect to `/entities`.
 
-#### Scenario: Column 0 defaults to owner
-- **WHEN** the user navigates to `/entities/columns` without a `?path=` query
-- **THEN** column 0 MUST render the owner entity's predicate-grouped neighbours
-- **AND** the SubpageTabs strip MUST mark Columns active
+#### Scenario: Owner plex renders rings, periphery count, and attention rail
+- **WHEN** a user navigates to `/entities` with a populated Dunbar ranking
+- **THEN** contacts in tiers 5-500 MUST render as marks on their tier rings
+- **AND** tier-1500 contacts MUST appear only as a periphery count
+- **AND** the attention rail MUST list at most 5 tier-weighted overdue contacts with reasons
+
+#### Scenario: Re-centring builds a trail and the owner resets it
+- **WHEN** the user clicks contact A, then A's neighbour B, then the owner mark
+- **THEN** after the first click the URL MUST carry `?center=A`
+- **AND** after the second `?center=B&trail=A`
+- **AND** after the owner click the URL MUST carry neither `center` nor `trail`
+
+#### Scenario: Hop and Columns deep links carry over
+- **WHEN** a request reaches `/entities/hop?center=X&trail=Y` or `/entities/columns?path=a,b,c`
+- **THEN** the former MUST land on `/entities?center=X&trail=Y`
+- **AND** the latter MUST land on `/entities?center=c&trail=a,b`
+
+#### Scenario: Confidence and staleness use separate channels
+- **WHEN** the plex is centred on an entity whose neighbours vary in `conf` and `last_seen`
+- **THEN** edge opacity MUST vary with `conf`
+- **AND** node desaturation MUST vary with the staleness band
+- **AND** neither axis MUST reuse the other's visual channel
 
 ### Requirement: Entity Concentration view (`/entities/concentration`)
 
@@ -716,14 +744,18 @@ The frontend SHALL render a balance-sheet view of weight aggregation per predica
 3. Render a header rollup: `total`, `top3Share`.
 4. Tabs are NOT hardcoded to four predicates — the predicate set is enumerated from the
    `predicate_registry` filtered to relational predicates (resolves Phase 1 Open Question 8).
-5. Render inside `<Page archetype="overview">` with SubpageTabs Concentration active.
+   Zero-count predicates MUST be hidden behind a quiet `N empty hidden` note; a zero-count
+   predicate stays visible while it is the active deep link.
+5. Render inside `<Page archetype="overview">` with SubpageTabs Concentration active, as
+   hairline sections without card chrome.
 
 Data source: `GET /api/relationship/entities/concentration?pred=<predicate>`.
 
 #### Scenario: Predicate tabs are enumerated from registry
 - **WHEN** the page loads with `relationship.entity_predicate_registry` containing five relational
   predicates (`knows`, `family-of`, `partner-of`, `colleague-of`, `co-attended`)
-- **THEN** the Concentration page MUST render five tabs (NOT a hardcoded four)
+- **THEN** the Concentration page MUST render one tab per non-zero-count predicate
+  (NOT a hardcoded four), hiding zero-count predicates behind the `empty hidden` note
 - **AND** the active tab MUST be `knows` if no `?pred=` is supplied
 
 #### Scenario: top3Share and total render in tabular nums
@@ -732,28 +764,6 @@ Data source: `GET /api/relationship/entities/concentration?pred=<predicate>`.
 - **THEN** the header rollup MUST show `total` (sum of all weights) and `top3Share`
   (top-3-sum / total) using `font-variant-numeric: tabular-nums`
 - **AND** no count-up animation MUST be applied to the values
-
-### Requirement: Social Map preservation
-
-The existing `/entities/social-map` route MUST remain unchanged in this redesign pass.
-SocialMapPage is refactored into a `SocialMapView` component so the SubpageTabs chrome
-can wrap it without duplicating layout, but its visual behaviour and data sources are
-preserved. Any refresh to the Dunbar circles UI is explicitly out of scope (resolves
-Phase 1 Open Question 1).
-
-#### Scenario: SocialMapView renders inside SubpageTabs chrome unchanged
-- **WHEN** the user navigates to `/entities/social-map` after the refactor
-- **THEN** the Dunbar-circles visualisation MUST render with identical visual behaviour
-  to the pre-refactor `SocialMapPage`
-- **AND** the SubpageTabs strip MUST wrap the view with Social-map marked active
-- **AND** the data sources powering the circles MUST be unchanged from the prior spec
-
-#### Scenario: Dunbar circles UI is not modified
-- **WHEN** code review compares the post-refactor `SocialMapView` rendering against the
-  pre-refactor `SocialMapPage` rendering
-- **THEN** the visual output (circle layout, sizing, labels, colours) MUST be identical
-- **AND** any change to the circles UI MUST be explicitly out of scope and rejected at
-  review
 
 ### Requirement: Entity detail Editorial / Workbench mode toggle
 

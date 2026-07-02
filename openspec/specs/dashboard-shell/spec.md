@@ -255,11 +255,10 @@ The route map SHALL include the Settings Console sub-routes and the ingestion di
   - `/memory/facts/:factId` -- Fact detail (parameterized)
   - `/memory/rules/:ruleId` -- Rule detail (parameterized)
   - `/memory/episodes/:episodeId` -- Episode detail (parameterized)
-  - `/entities` -- Entities index (`EntitiesIndexPage`)
-  - `/entities/hop` -- Entity hop explorer
-  - `/entities/columns` -- Entity columns view
+  - `/entities` -- Entity plex, the owner ego-graph landing (`PlexPage`)
+  - `/entities/index` -- Entities index (`EntitiesIndexPage`)
   - `/entities/concentration` -- Entity concentration view
-  - `/entities/social-map` -- Social map view
+  - `/entities/hop`, `/entities/columns`, `/entities/social-map` -- retired views; redirect into the plex
   - `/entities/:entityId` -- Entity detail (parameterized)
   - `/health` -- Health overview (`HealthOverviewPage`)
   - `/health/measurements` -- Health measurements

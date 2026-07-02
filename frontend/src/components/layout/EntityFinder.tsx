@@ -16,7 +16,7 @@
  *     type/tier, canned gloss, top-5 relations). Inert — no links. Sourced from
  *     the search response plus at most ONE debounced
  *     GET /entities/{id}/neighbours per active-row change.
- *   - Tab = "hop into": close the Finder and navigate /entities/hop?center=<id>.
+ *   - Tab = "hop into": close the Finder and center the Plex (/entities?center=<id>).
  *   - Empty query renders the owner-pinned set (owner's top-8 neighbours by
  *     summed weight), via the same ranked /neighbours endpoint.
  *
@@ -25,7 +25,7 @@
  *   /            — open (when no input/textarea is focused)
  *   ↑ / ↓        — step through results
  *   Enter        — open result detail
- *   Tab          — hop into the active result (/entities/hop?center=<id>)
+ *   Tab          — hop into the active result (/entities?center=<id>)
  *   Esc          — close
  */
 
@@ -300,7 +300,7 @@ export default function EntityFinder() {
   const hopEntity = useCallback(
     (entityId: string) => {
       setOpen(false);
-      navigate(`/entities/hop?center=${encodeURIComponent(entityId)}`);
+      navigate(`/entities?center=${encodeURIComponent(entityId)}`);
     },
     [navigate],
   );

@@ -25,7 +25,6 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 import type { ConcentrationEntry, ConcentrationResponse, PredicateTab } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
 import {
@@ -55,13 +54,21 @@ function PredicateTabStrip({ tabs, activePredicate, onSelect }: PredicateTabStri
     return null;
   }
 
+  // Empty predicates are noise, not options: hide zero-count tabs (keeping
+  // the active one, so a deep link to an empty predicate stays legible) and
+  // note how many were hidden.
+  const visible = tabs.filter(
+    (t) => t.entity_count > 0 || t.predicate === activePredicate,
+  );
+  const hiddenCount = tabs.length - visible.length;
+
   return (
     <nav
       aria-label="Predicate filter"
-      className="flex flex-wrap gap-1 border-b border-border pb-0"
+      className="flex flex-wrap items-center gap-1 border-b border-border pb-0"
       data-testid="predicate-tab-strip"
     >
-      {tabs.map(({ predicate, label, entity_count }) => {
+      {visible.map(({ predicate, label, entity_count }) => {
         const isActive = predicate === activePredicate;
         return (
           <button
@@ -89,6 +96,14 @@ function PredicateTabStrip({ tabs, activePredicate, onSelect }: PredicateTabStri
           </button>
         );
       })}
+      {hiddenCount > 0 && (
+        <span
+          className="ml-2 font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--dim)]"
+          data-testid="predicate-tabs-hidden-note"
+        >
+          <span className="tabular-nums">{hiddenCount}</span> empty hidden
+        </span>
+      )}
     </nav>
   );
 }
@@ -499,19 +514,12 @@ export default function ConcentrationPage() {
       {/* SubpageTabs — Concentration is active */}
       <SubpageTabs />
 
-      {/* Main content */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Edge-weight ranking</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ConcentrationList
-            predicate={predicateParam}
-            onSelectPredicate={handleSelectPredicate}
-            onOpenEntity={handleOpenEntity}
-          />
-        </CardContent>
-      </Card>
+      {/* Main content — hairline sections, no card chrome. */}
+      <ConcentrationList
+        predicate={predicateParam}
+        onSelectPredicate={handleSelectPredicate}
+        onOpenEntity={handleOpenEntity}
+      />
     </Page>
   );
 }

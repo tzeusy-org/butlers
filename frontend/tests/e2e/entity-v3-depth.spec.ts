@@ -13,7 +13,7 @@
  *   3. Workbench toggle → three rails render; provenance grid sortable;
  *      duplicate panel → compare.
  *   4. Finder: Cmd-K → type → preview pane populates; Tab lands on
- *      /entities/hop?center=...; empty-query owner-pinned set renders.
+ *      /entities?center=... (the Plex); empty-query owner-pinned set renders.
  *   5. Closeout gaps (PR #2239): concentration provenance marks
  *      (data-testid=concentration-provenance), Index keyboard cursor focus
  *      (tr[data-cursor]), delta-since-last-visit fact-row highlight
@@ -561,7 +561,7 @@ test.describe("entity-v3: queue → compare → dismiss/merge", () => {
       });
     });
 
-    await page.goto("/entities", { timeout: TIMEOUT_MS });
+    await page.goto("/entities/index", { timeout: TIMEOUT_MS });
 
     // Queue rail with the duplicate-candidate pair is present.
     await expect(page.getByTestId("queue-rail")).toBeVisible({
@@ -620,7 +620,7 @@ test.describe("entity-v3: queue → compare → dismiss/merge", () => {
       },
     );
 
-    await page.goto("/entities", { timeout: TIMEOUT_MS });
+    await page.goto("/entities/index", { timeout: TIMEOUT_MS });
     await page.getByTestId("queue-duplicate-peer").first().click();
     await expect(page.getByTestId("merge-compare-dialog")).toBeVisible({
       timeout: TIMEOUT_MS,
@@ -857,7 +857,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     ).toBeVisible({ timeout: TIMEOUT_MS });
   });
 
-  test("Tab on the active result lands on /entities/hop?center=<id>", async ({
+  test("Tab on the active result lands on /entities?center=<id>", async ({
     page,
   }) => {
     await installFinderStubs(page);
@@ -877,7 +877,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     ).toBeVisible({ timeout: TIMEOUT_MS });
 
     await input.press("Tab");
-    await page.waitForURL(/\/entities\/hop\?center=/, { timeout: TIMEOUT_MS });
+    await page.waitForURL(/\/entities\?center=/, { timeout: TIMEOUT_MS });
     expect(page.url()).toContain(`center=${ENTITY_ID}`);
   });
 
@@ -934,7 +934,7 @@ test.describe("entity-v3: closeout gaps (PR #2239)", () => {
     await page.route("**/api/relationship/entities?**", (route) =>
       json(route, entityList()),
     );
-    await page.goto("/entities", { timeout: TIMEOUT_MS });
+    await page.goto("/entities/index", { timeout: TIMEOUT_MS });
 
     // The table renders ≥2 rows.
     await expect(page.getByTestId("entity-table")).toBeVisible({
