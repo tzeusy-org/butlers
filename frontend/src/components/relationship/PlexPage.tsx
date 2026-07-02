@@ -1297,6 +1297,9 @@ export default function PlexPage() {
   useEffect(() => {
     if (!stageEl) return;
     const onWheel = (e: WheelEvent) => {
+      // Wheel over an overlay (dossier, hover card, flanks) scrolls that
+      // overlay natively; only wheel over the graph itself zooms.
+      if ((e.target as HTMLElement).closest("[data-plex-overlay]")) return;
       e.preventDefault();
       const rect = stageEl.getBoundingClientRect();
       const px = e.clientX - rect.left;
