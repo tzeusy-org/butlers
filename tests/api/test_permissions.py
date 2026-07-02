@@ -41,6 +41,34 @@ def _make_records(rows: list[dict]) -> list[MagicMock]:
     return records
 
 
+class _NullTxCtx:
+    """No-op async context manager standing in for ``conn.transaction()``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False  # never suppress — let exceptions propagate/rollback
+
+
+class _AcquireCtx:
+    """Async context manager standing in for ``pool.acquire()``.
+
+    Yields *conn* (the same mock as the pool itself) so existing assertions
+    against ``pool.execute``/``pool.fetchrow`` keep working unchanged even
+    though the route now issues those calls via an acquired connection.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 def _make_pool(
     rows: list[dict] | None = None,
     butler_rows: list[dict] | None = None,
@@ -51,6 +79,11 @@ def _make_pool(
       1. butler_registry query  → butler_rows
       2. public.permissions query → rows
     PUT /api/permissions doesn't call pool.fetch at all.
+
+    ``pool.acquire()`` yields the pool mock itself as "conn" (see
+    ``_AcquireCtx``) and ``pool.transaction()`` is a no-op context manager, so
+    the route's ``async with pool.acquire() as conn, conn.transaction():``
+    exercises the same ``execute``/``fetchrow`` mocks asserted on below.
     """
     pool = AsyncMock()
     pool.execute = AsyncMock(return_value=None)
@@ -62,6 +95,8 @@ def _make_pool(
             _make_records(rows or []),
         ]
     )
+    pool.acquire = MagicMock(return_value=_AcquireCtx(pool))
+    pool.transaction = MagicMock(return_value=_NullTxCtx())
     return pool
 
 

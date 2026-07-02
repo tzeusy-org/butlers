@@ -69,6 +69,35 @@ def _make_record(row: dict) -> MagicMock:
     return m
 
 
+class _NullTxCtx:
+    """No-op async context manager standing in for ``conn.transaction()``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False  # never suppress — let exceptions propagate/rollback
+
+
+class _AcquireCtx:
+    """Async context manager standing in for ``pool.acquire()``.
+
+    Yields *conn* (the same mock as the pool itself) so existing assertions
+    against ``pool.execute``/``pool.fetchrow`` keep working unchanged even
+    though the write endpoints now issue those calls via an acquired
+    connection.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 def _make_pool(
     *,
     rows: list[dict] | None = None,
@@ -81,6 +110,12 @@ def _make_pool(
         return_value=_make_record(fetchrow_return) if fetchrow_return else None
     )
     pool.execute = AsyncMock(return_value=execute_return)
+    # pool.acquire() yields the pool mock itself as "conn" (see _AcquireCtx),
+    # and pool.transaction() is a no-op context manager, so the route's
+    # ``async with pool.acquire() as conn, conn.transaction():`` exercises the
+    # same execute/fetchrow mocks asserted on throughout this module.
+    pool.acquire = MagicMock(return_value=_AcquireCtx(pool))
+    pool.transaction = MagicMock(return_value=_NullTxCtx())
     return pool
 
 
@@ -311,6 +346,41 @@ async def test_put_without_regenerate_keeps_secret(app):
     update_args = calls[1]
     assert update_args[4] == old_encrypted  # $4 = secret_encrypted unchanged
     assert update_args[5] == "keep12…"  # $5 = secret_prefix unchanged
+
+
+async def test_put_concurrent_delete_returns_404(app):
+    """PUT returns 404 (not a 500 TypeError) when the row is deleted between
+    the existence check and the UPDATE — the UPDATE...RETURNING then yields no
+    row, which must be handled explicitly instead of reaching _row_to_model(None).
+    """
+    existing = _make_webhook_record()
+
+    calls: list = []
+
+    def _fetchrow(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            # First call: SELECT existing row.
+            return _make_record(existing)
+        # Second call: UPDATE ... RETURNING — simulate a concurrent delete.
+        return None
+
+    pool = _make_pool()
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock) as mock_audit:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                f"/api/webhooks/{_WH_ID}",
+                json={"endpoint": "https://new.example.com/hook"},
+            )
+
+    assert resp.status_code == 404
+    assert len(calls) == 2
+    # The audit append must not fire when the UPDATE found nothing to update.
+    mock_audit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

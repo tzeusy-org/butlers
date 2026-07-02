@@ -165,6 +165,11 @@ async def set_permission(
 
     Returns HTTP 422 with ``{"error": "reason_required"}`` when ``reason``
     is empty or whitespace-only.  On success calls ``audit.append``.
+
+    The permissions UPSERT and the audit append run inside the same
+    transaction (acquired connection + ``conn.transaction()``) so the audit
+    row is atomic with the state change: if either write fails, both roll
+    back together (§D17 atomicity requirement).
     """
     # Enforce the non-empty reason here (not via a Pydantic validator) so the
     # spec-mandated {"error": "reason_required"} body is returned for empty,
@@ -182,21 +187,25 @@ async def set_permission(
 
     now = datetime.now(UTC)
 
-    await pool.execute(
-        "INSERT INTO public.permissions (butler, permission, granted, reason, updated_at) "
-        "VALUES ($1, $2, $3, $4, $5) "
-        "ON CONFLICT (butler, permission) DO UPDATE "
-        "SET granted = EXCLUDED.granted, "
-        "    reason  = EXCLUDED.reason, "
-        "    updated_at = EXCLUDED.updated_at",
-        butler,
-        perm,
-        body.granted,
-        body.reason,
-        now,
-    )
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO public.permissions (butler, permission, granted, reason, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (butler, permission) DO UPDATE "
+            "SET granted = EXCLUDED.granted, "
+            "    reason  = EXCLUDED.reason, "
+            "    updated_at = EXCLUDED.updated_at",
+            butler,
+            perm,
+            body.granted,
+            body.reason,
+            now,
+        )
 
-    await audit.append(pool, "owner", "permission.set", target=f"{butler}.{perm}", note=body.reason)
+        await audit.append(
+            conn, "owner", "permission.set", target=f"{butler}.{perm}", note=body.reason
+        )
+
     dispatch_event(
         pool,
         "permission.set",

@@ -478,24 +478,29 @@ async def create_webhook(
 
     rp_json = body.retry_policy.model_dump()
 
-    row = await pool.fetchrow(
-        "INSERT INTO public.webhooks "
-        "(id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
-        " retry_policy, created_at, updated_at) "
-        "VALUES ($1::uuid, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9) "
-        f"RETURNING {_WEBHOOK_PROJECTION}",
-        row_id,
-        body.endpoint,
-        json.dumps(body.events),
-        body.enabled,
-        secret_encrypted,
-        secret_prefix,
-        json.dumps(rp_json),
-        now,
-        now,
-    )
+    # The INSERT and the audit append run inside the same transaction (acquired
+    # connection + conn.transaction()) so the audit row is atomic with the
+    # state change — if either write fails, both roll back together.
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "INSERT INTO public.webhooks "
+            "(id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
+            " retry_policy, created_at, updated_at) "
+            "VALUES ($1::uuid, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9) "
+            f"RETURNING {_WEBHOOK_PROJECTION}",
+            row_id,
+            body.endpoint,
+            json.dumps(body.events),
+            body.enabled,
+            secret_encrypted,
+            secret_prefix,
+            json.dumps(rp_json),
+            now,
+            now,
+        )
 
-    await audit.append(pool, "owner", "webhook.create", target=str(row_id))
+        await audit.append(conn, "owner", "webhook.create", target=str(row_id))
+
     dispatch_event(pool, "webhook.create", {"target": row_id})
 
     base = _row_to_model(row)
@@ -585,23 +590,34 @@ async def update_webhook(
         new_secret_encrypted = existing["secret_encrypted"]
         new_secret_prefix = existing["secret_prefix"]
 
-    row = await pool.fetchrow(
-        "UPDATE public.webhooks "
-        "SET endpoint = $1, events = $2::jsonb, enabled = $3, secret_encrypted = $4, "
-        "    secret_prefix = $5, retry_policy = $6::jsonb, updated_at = $7 "
-        "WHERE id = $8::uuid "
-        f"RETURNING {_WEBHOOK_PROJECTION}",
-        new_endpoint,
-        json.dumps(new_events),
-        new_enabled,
-        new_secret_encrypted,
-        new_secret_prefix,
-        json.dumps(new_rp),
-        now,
-        str(webhook_id),
-    )
+    # The UPDATE and the audit append run inside the same transaction (acquired
+    # connection + conn.transaction()) so the audit row is atomic with the
+    # state change — if either write fails, both roll back together.
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "UPDATE public.webhooks "
+            "SET endpoint = $1, events = $2::jsonb, enabled = $3, secret_encrypted = $4, "
+            "    secret_prefix = $5, retry_policy = $6::jsonb, updated_at = $7 "
+            "WHERE id = $8::uuid "
+            f"RETURNING {_WEBHOOK_PROJECTION}",
+            new_endpoint,
+            json.dumps(new_events),
+            new_enabled,
+            new_secret_encrypted,
+            new_secret_prefix,
+            json.dumps(new_rp),
+            now,
+            str(webhook_id),
+        )
 
-    await audit.append(pool, "owner", "webhook.update", target=str(webhook_id))
+        if row is None:
+            # Concurrently deleted between the existence check above and this
+            # UPDATE — abort cleanly with 404 instead of letting
+            # _row_to_model(None) raise a TypeError below.
+            raise HTTPException(status_code=404, detail=f"Webhook {webhook_id} not found")
+
+        await audit.append(conn, "owner", "webhook.update", target=str(webhook_id))
+
     dispatch_event(pool, "webhook.update", {"target": str(webhook_id)})
 
     base = _row_to_model(row)
@@ -631,16 +647,21 @@ async def delete_webhook(
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    result = await pool.execute(
-        "DELETE FROM public.webhooks WHERE id = $1::uuid",
-        str(webhook_id),
-    )
-    deleted = result != "DELETE 0"
+    # The DELETE and the audit append run inside the same transaction (acquired
+    # connection + conn.transaction()) so the audit row is atomic with the
+    # state change — if either write fails, both roll back together.
+    async with pool.acquire() as conn, conn.transaction():
+        result = await conn.execute(
+            "DELETE FROM public.webhooks WHERE id = $1::uuid",
+            str(webhook_id),
+        )
+        deleted = result != "DELETE 0"
 
-    if not deleted:
-        raise HTTPException(status_code=404, detail=f"Webhook {webhook_id} not found")
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Webhook {webhook_id} not found")
 
-    await audit.append(pool, "owner", "webhook.delete", target=str(webhook_id))
+        await audit.append(conn, "owner", "webhook.delete", target=str(webhook_id))
+
     dispatch_event(pool, "webhook.delete", {"target": str(webhook_id)})
 
     return ApiResponse(data=WebhookDeleteResponse(deleted=True, id=webhook_id))
@@ -699,15 +720,20 @@ async def test_webhook(
     )
     result.webhook_id = webhook_id  # type: ignore[assignment]
 
-    # Update last_test_at / last_test_ok in the DB.
-    await pool.execute(
-        "UPDATE public.webhooks SET last_test_at = now(), last_test_ok = $1 WHERE id = $2::uuid",
-        result.ok,
-        str(webhook_id),
-    )
+    # The last_test_at/last_test_ok UPDATE and the audit append run inside the
+    # same transaction (acquired connection + conn.transaction()) so the audit
+    # row is atomic with the state change — if either write fails, both roll
+    # back together.
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "UPDATE public.webhooks SET last_test_at = now(), last_test_ok = $1 "
+            "WHERE id = $2::uuid",
+            result.ok,
+            str(webhook_id),
+        )
 
-    await audit.append(
-        pool, "owner", "webhook.test", target=str(webhook_id), note=f"ok={result.ok}"
-    )
+        await audit.append(
+            conn, "owner", "webhook.test", target=str(webhook_id), note=f"ok={result.ok}"
+        )
 
     return ApiResponse(data=result)
