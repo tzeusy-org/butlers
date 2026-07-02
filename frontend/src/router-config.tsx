@@ -44,6 +44,7 @@ import SecretsPage from './pages/SecretsPage.tsx'
 import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 import EducationPage from './pages/EducationPage.tsx'
 import { EntitiesIndexPage } from './components/relationship/EntitiesIndexPage.tsx'
+import PlexPage from './components/relationship/PlexPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import HopPage from './components/relationship/HopPage.tsx'
 import ColumnsPage from './components/relationship/ColumnsPage.tsx'
@@ -88,14 +89,14 @@ export const router = createBrowserRouter(
         { path: '/approvals/rules', element: <ApprovalRulesPage /> },
         { path: '/calendar', element: <CalendarWorkspacePage /> },
         // /contacts → /entities?has=contact (§8.10 entity-redesign redirect)
-        { path: '/contacts', element: <Navigate to="/entities?has=contact" replace /> },
+        { path: '/contacts', element: <Navigate to="/entities/index?has=contact" replace /> },
         // /contacts/:contactId → /entities?has=contact compatibility redirect.
         // public.contacts was dropped (core_134) and the per-contact resolver
         // endpoint no longer exists, so legacy contact bookmarks forward to the
         // entity index filter instead of resolving an individual entity.
         {
           path: '/contacts/:contactId',
-          element: <Navigate to="/entities?has=contact" replace />,
+          element: <Navigate to="/entities/index?has=contact" replace />,
         },
         { path: '/groups', element: <GroupsPage /> },
         { path: '/health', element: <HealthOverviewPage /> },
@@ -110,7 +111,8 @@ export const router = createBrowserRouter(
         { path: '/memory/facts/:factId', element: <FactDetailPage /> },
         { path: '/memory/rules/:ruleId', element: <RuleDetailPage /> },
         { path: '/memory/episodes/:episodeId', element: <EpisodeDetailPage /> },
-        { path: '/entities', element: <EntitiesIndexPage /> },
+        { path: '/entities', element: <PlexPage /> },
+        { path: '/entities/index', element: <EntitiesIndexPage /> },
         { path: '/entities/hop', element: <HopPage /> },
         { path: '/entities/columns', element: <ColumnsPage /> },
         { path: '/entities/concentration', element: <ConcentrationPage /> },

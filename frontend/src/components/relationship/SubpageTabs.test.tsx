@@ -3,9 +3,9 @@
  * Component tests for SubpageTabs (§8.6).
  *
  * Covers:
- * - All 5 tabs render with correct labels and to paths
+ * - All 6 tabs render with correct labels and to paths
  * - Active tab gets aria-current="page" based on pathname
- * - Index tab uses end matching (not active on /entities/hop etc.)
+ * - Plex tab uses end matching (not active on /entities/hop etc.)
  * - Tab links have proper hrefs in the rendered <a> elements
  * - Custom className prop is applied to the wrapping nav
  * - nav has aria-label="Entity views" for a11y
@@ -63,12 +63,13 @@ describe("SubpageTabs — accessibility and structure", () => {
     expect(nav).toBeTruthy();
   });
 
-  it("renders all 5 tabs with correct labels", () => {
+  it("renders all 6 tabs with correct labels", () => {
     renderTabs();
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
     const labels = Array.from(links).map((a) => a.textContent?.trim());
 
+    expect(labels).toContain("Plex");
     expect(labels).toContain("Index");
     expect(labels).toContain("Hop");
     expect(labels).toContain("Columns");
@@ -89,7 +90,8 @@ describe("SubpageTabs — tab links and routing", () => {
 
     const hrefMap = new Map(Array.from(links).map((a) => [a.textContent?.trim(), a.getAttribute("href")]));
 
-    expect(hrefMap.get("Index")).toBe("/entities");
+    expect(hrefMap.get("Plex")).toBe("/entities");
+    expect(hrefMap.get("Index")).toBe("/entities/index");
     expect(hrefMap.get("Hop")).toBe("/entities/hop");
     expect(hrefMap.get("Columns")).toBe("/entities/columns");
     expect(hrefMap.get("Concentration")).toBe("/entities/concentration");
@@ -102,8 +104,17 @@ describe("SubpageTabs — tab links and routing", () => {
 // ---------------------------------------------------------------------------
 
 describe("SubpageTabs — active tab styling", () => {
-  it("Index tab has aria-current='page' when at /entities", () => {
+  it("Plex tab has aria-current='page' when at /entities", () => {
     renderTabs("/entities");
+    const nav = container.querySelector("nav[aria-label='Entity views']");
+    const links = nav?.querySelectorAll("a") ?? [];
+    const plexLink = Array.from(links).find((a) => a.textContent?.trim() === "Plex");
+
+    expect(plexLink?.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("Index tab has aria-current='page' when at /entities/index", () => {
+    renderTabs("/entities/index");
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
     const indexLink = Array.from(links).find((a) => a.textContent?.trim() === "Index");
@@ -149,22 +160,22 @@ describe("SubpageTabs — active tab styling", () => {
     expect(socialMapLink?.getAttribute("aria-current")).toBe("page");
   });
 
-  it("Index tab does not stay active on /entities/hop (end matching)", () => {
+  it("Plex tab does not stay active on /entities/hop (end matching)", () => {
     renderTabs("/entities/hop");
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
-    const indexLink = Array.from(links).find((a) => a.textContent?.trim() === "Index");
+    const plexLink = Array.from(links).find((a) => a.textContent?.trim() === "Plex");
 
-    expect(indexLink?.getAttribute("aria-current")).toBeNull();
+    expect(plexLink?.getAttribute("aria-current")).toBeNull();
   });
 
-  it("Index tab does not stay active on /entities/columns (end matching)", () => {
-    renderTabs("/entities/columns");
+  it("Plex tab does not stay active on /entities/index (end matching)", () => {
+    renderTabs("/entities/index");
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
-    const indexLink = Array.from(links).find((a) => a.textContent?.trim() === "Index");
+    const plexLink = Array.from(links).find((a) => a.textContent?.trim() === "Plex");
 
-    expect(indexLink?.getAttribute("aria-current")).toBeNull();
+    expect(plexLink?.getAttribute("aria-current")).toBeNull();
   });
 });
 

@@ -15,7 +15,8 @@
 import { NavLink } from "react-router";
 
 const TABS = [
-  { label: "Index", to: "/entities" },
+  { label: "Plex", to: "/entities" },
+  { label: "Index", to: "/entities/index" },
   { label: "Hop", to: "/entities/hop" },
   { label: "Columns", to: "/entities/columns" },
   { label: "Concentration", to: "/entities/concentration" },
