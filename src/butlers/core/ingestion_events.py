@@ -401,7 +401,9 @@ async def ingestion_events_list(
             source_channel, source_sender_identity, source_endpoint_identity,
             external_event_id, triage_target (butler routing destination),
             triage_decision, filter_reason, and error_detail.  Searching a
-            visible event ID prefix always returns that row.
+            visible event ID prefix always returns that row.  Empty or
+            whitespace-only values are ignored (no ILIKE clause is added) so
+            a blank q does not force an ILIKE '%%' scan of the page window.
         from_dt: Inclusive lower bound on ``received_at``.  ``None`` = no lower bound.
         to_dt: Exclusive upper bound on ``received_at``.  ``None`` = no upper bound.
         sort: Sort mode.  ``None`` or ``"recent"`` → keyset pagination on
@@ -426,7 +428,7 @@ async def ingestion_events_list(
     if channels:
         args.append(channels)
         where_parts.append(f"source_channel = ANY(${len(args)}::text[])")
-    if q is not None:
+    if q is not None and q.strip():
         q_pattern = f"%{q}%"
         args.append(q_pattern)
         n = len(args)
@@ -1228,7 +1230,8 @@ async def ingestion_window_rollup(
         q:         Optional freetext search (ILIKE %q%) against event id, source_channel,
                    source_sender_identity, source_endpoint_identity, external_event_id,
                    triage_target, triage_decision, filter_reason, and error_detail.
-                   ``None`` = no text filter.
+                   ``None`` = no text filter.  Empty or whitespace-only values are
+                   ignored (no ILIKE clause is added).
         db:        DatabaseManager for the cross-butler session fan-out.
                    When ``None``, session count is omitted (returns 0) and cost is ``None``.
         pricing:   Optional pricing config for cost estimation.  When provided, cost is
@@ -1257,7 +1260,7 @@ async def ingestion_window_rollup(
     if statuses:
         args.append(statuses)
         where_parts.append(f"status = ANY(${len(args)}::text[])")
-    if q:
+    if q is not None and q.strip():
         q_pattern = f"%{q}%"
         args.append(q_pattern)
         n = len(args)

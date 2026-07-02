@@ -505,6 +505,29 @@ async def test_ingestion_events_list_q_search_coverage() -> None:
     assert "triage_target ILIKE" in sql3 and "%atlas%" in args3
 
 
+async def test_ingestion_events_list_skips_ilike_for_empty_or_whitespace_q() -> None:
+    """Empty/whitespace-only q must not emit an ILIKE '%%' full-window scan.
+
+    Mirrors the guard applied to ingestion_events_histogram (PR #2853): q=None,
+    q="", and q="   " all skip the ILIKE predicate entirely, while a real
+    query string still produces one.
+    """
+    from butlers.core.ingestion_events import ingestion_events_list
+
+    for blank_q in (None, "", "   "):
+        pool = _FakePool(fetch_results=[])
+        await ingestion_events_list(pool, q=blank_q, limit=5)
+        _, sql, args = pool.calls[0]
+        assert "ILIKE" not in sql, f"q={blank_q!r} should not emit ILIKE: {sql!r}"
+        assert "%%" not in "".join(a for a in args if isinstance(a, str))
+
+    # Sanity: a non-blank q still filters as before.
+    pool2 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool2, q="alice", limit=5)
+    _, sql2, args2 = pool2.calls[0]
+    assert "ILIKE" in sql2 and "%alice%" in args2
+
+
 async def test_replay_request_and_inbox_lifecycle() -> None:
     """replay_request ok/not_found/conflict outcomes; inbox_lifecycle state lookup."""
     from butlers.core.ingestion_events import (
@@ -648,11 +671,14 @@ class _FakePoolForRollup:
         self._event_ids = (
             event_ids if event_ids is not None else [{"id": uuid.uuid4()}] * event_count
         )
+        self.calls: list = []
 
     async def fetchval(self, sql, *args):
+        self.calls.append(("fetchval", sql, args))
         return self._event_count
 
     async def fetch(self, sql, *args):
+        self.calls.append(("fetch", sql, args))
         return self._event_ids
 
 
@@ -775,6 +801,31 @@ async def test_ingestion_window_rollup_cost_null_when_db_none() -> None:
 
     assert result["sessions"] == 0
     assert result["cost"] is None
+
+
+async def test_ingestion_window_rollup_skips_ilike_for_empty_or_whitespace_q() -> None:
+    """Empty/whitespace-only q must not emit an ILIKE '%%' full-window scan.
+
+    Mirrors the guard applied to ingestion_events_histogram (PR #2853) and
+    ingestion_events_list — the rollup's event-count query is unpaginated, so
+    a blank q forcing an ILIKE '%%' scan is exactly what this guards against.
+    """
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    for blank_q in (None, "", "   "):
+        pool = _FakePoolForRollup(event_count=0)
+        await ingestion_window_rollup(pool, q=blank_q, db=None)
+        fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
+        assert len(fetchval_calls) == 1
+        sql = fetchval_calls[0][1]
+        assert "ILIKE" not in sql, f"q={blank_q!r} should not emit ILIKE: {sql!r}"
+
+    # Sanity: a non-blank q still filters as before.
+    pool2 = _FakePoolForRollup(event_count=0)
+    await ingestion_window_rollup(pool2, q="alice", db=None)
+    fetchval_calls2 = [c for c in pool2.calls if c[0] == "fetchval"]
+    sql2, args2 = fetchval_calls2[0][1], fetchval_calls2[0][2]
+    assert "ILIKE" in sql2 and "%alice%" in args2
 
 
 # ---------------------------------------------------------------------------
