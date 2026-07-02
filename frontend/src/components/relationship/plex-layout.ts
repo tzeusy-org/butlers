@@ -81,18 +81,21 @@ export function stalenessOf(days: number | null): Staleness {
 }
 
 /**
- * Polar-to-cartesian around a center. Angle 0 points up (12 o'clock) and
- * increases clockwise, which keeps sector labels readable.
+ * Elliptical polar-to-cartesian around a center. Angle 0 points up
+ * (12 o'clock) and increases clockwise. Separate x/y radii let the plex
+ * stretch into the horizontal space of a wide canvas instead of clamping
+ * to a circle bounded by the (usually smaller) height.
  */
 export function polar(
   cx: number,
   cy: number,
-  r: number,
+  rx: number,
+  ry: number,
   angle: number,
 ): { x: number; y: number } {
   return {
-    x: cx + r * Math.sin(angle),
-    y: cy - r * Math.cos(angle),
+    x: cx + rx * Math.sin(angle),
+    y: cy - ry * Math.cos(angle),
   };
 }
 

@@ -211,7 +211,9 @@ function OwnerPlexCanvas({
 }) {
   const cx = width / 2;
   const cy = height / 2;
-  const radius = Math.min(width, height) / 2 - 28;
+  const r = Math.min(width, height) / 2 - 32;
+  const rx = r;
+  const ry = r;
 
   return (
     <>
@@ -222,21 +224,23 @@ function OwnerPlexCanvas({
         aria-hidden="true"
       >
         {PLEX_NODE_TIERS.map((tier) => (
-          <circle
+          <ellipse
             key={tier}
             cx={cx}
             cy={cy}
-            r={radius * PLEX_RING_FRACTIONS[tier]}
+            rx={rx * PLEX_RING_FRACTIONS[tier]}
+            ry={ry * PLEX_RING_FRACTIONS[tier]}
             fill="none"
             stroke={TIER_RING_COLORS[tier]}
             strokeOpacity={0.28}
           />
         ))}
         {/* Periphery: tier 1500 summarized, never drawn as nodes. */}
-        <circle
+        <ellipse
           cx={cx}
           cy={cy}
-          r={radius * PLEX_PERIPHERY_FRACTION}
+          rx={rx * PLEX_PERIPHERY_FRACTION}
+          ry={ry * PLEX_PERIPHERY_FRACTION}
           fill="none"
           stroke={TIER_RING_COLORS[1500]}
           strokeOpacity={0.35}
@@ -246,7 +250,7 @@ function OwnerPlexCanvas({
 
       {/* Ring capacity labels, stacked up the 12 o'clock axis. */}
       {PLEX_NODE_TIERS.map((tier) => {
-        const p = polar(cx, cy, radius * PLEX_RING_FRACTIONS[tier], 0);
+        const p = polar(cx, cy, rx * PLEX_RING_FRACTIONS[tier], ry * PLEX_RING_FRACTIONS[tier], 0);
         const over = tierCounts[tier] > tier;
         return (
           <span
@@ -265,7 +269,7 @@ function OwnerPlexCanvas({
         );
       })}
       {(() => {
-        const p = polar(cx, cy, radius * PLEX_PERIPHERY_FRACTION, 0);
+        const p = polar(cx, cy, rx * PLEX_PERIPHERY_FRACTION, ry * PLEX_PERIPHERY_FRACTION, 0);
         return (
           <span
             className="absolute left-0 top-0 bg-background px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--dim)]"
@@ -281,7 +285,7 @@ function OwnerPlexCanvas({
 
       {/* Contact nodes */}
       {nodes.map((node) => {
-        const p = polar(cx, cy, radius * node.radiusFrac, node.angle);
+        const p = polar(cx, cy, rx * node.radiusFrac, ry * node.radiusFrac, node.angle);
         return (
           <PlexNode
             key={node.entityId}
@@ -339,7 +343,9 @@ function NeighbourPlexCanvas({
   // Sparse fans pull inward so a handful of neighbours does not scatter to
   // the corners of a large canvas.
   const spread = Math.min(1, 0.45 + nodes.length / 18);
-  const radius = (Math.min(width, height) / 2 - 48) * spread;
+  const r = (Math.min(width, height) / 2 - 48) * spread;
+  const rx = r;
+  const ry = r;
 
   return (
     <>
@@ -351,7 +357,7 @@ function NeighbourPlexCanvas({
       >
         {/* Edges: opacity carries assertion confidence. */}
         {nodes.map((node) => {
-          const p = polar(cx, cy, radius * node.radiusFrac, node.angle);
+          const p = polar(cx, cy, rx * node.radiusFrac, ry * node.radiusFrac, node.angle);
           return (
             <line
               key={`edge-${node.predicate}-${node.entityId}`}
@@ -368,7 +374,7 @@ function NeighbourPlexCanvas({
 
       {/* Sector labels: the predicate names this slice of the fan. */}
       {sectors.map((sector) => {
-        const p = polar(cx, cy, radius * 0.92, sector.midAngle);
+        const p = polar(cx, cy, rx * 0.92, ry * 0.92, sector.midAngle);
         return (
           <span
             key={`sector-${sector.predicate}`}
@@ -394,7 +400,7 @@ function NeighbourPlexCanvas({
 
       {/* Neighbour nodes */}
       {nodes.map((node) => {
-        const p = polar(cx, cy, radius * node.radiusFrac, node.angle);
+        const p = polar(cx, cy, rx * node.radiusFrac, ry * node.radiusFrac, node.angle);
         return (
           <PlexNode
             key={`${node.predicate}-${node.entityId}`}
@@ -489,21 +495,20 @@ function TrailBreadcrumb({
 // ---------------------------------------------------------------------------
 
 function AttentionRail({
-  entriesById,
   tierCounts,
   onCenter,
   attention,
   attentionLoading,
 }: {
-  entriesById: Map<string, DunbarEntry>;
   tierCounts: Record<Tier, number> | null;
   onCenter: (id: string) => void;
   attention: AttentionItem[];
   attentionLoading: boolean;
 }) {
   return (
+    <>
     <aside
-      className="w-64 shrink-0 space-y-6 border-l border-border pl-6"
+      className="pointer-events-auto absolute left-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
       aria-label="Worth attention"
       data-testid="plex-rail"
     >
@@ -552,7 +557,12 @@ function AttentionRail({
           </ul>
         )}
       </section>
+    </aside>
 
+    <aside
+      className="pointer-events-auto absolute right-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
+      aria-label="Capacity"
+    >
       {tierCounts && (
         <section>
           <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
@@ -613,10 +623,8 @@ function AttentionRail({
           Curation and full index
         </Link>
       </section>
-
-      {/* This map is threaded in so future rail modules can resolve names. */}
-      <span className="hidden" data-entries={entriesById.size} />
     </aside>
+    </>
   );
 }
 
@@ -854,7 +862,7 @@ export default function PlexPage() {
 
       <div
         ref={fillRef}
-        className="flex gap-6"
+        className="flex"
         style={{ height: fillHeight ?? undefined }}
       >
         {/* Canvas column */}
@@ -967,15 +975,16 @@ export default function PlexPage() {
           <p className="pointer-events-none absolute bottom-0 right-0 p-1 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--dim)]">
             esc back · enter open record
           </p>
-        </div>
 
-        <AttentionRail
-          entriesById={entriesById}
-          tierCounts={isOwnerMode && !rankingLoading ? ownerLayout.tierCounts : null}
-          onCenter={handleCenter}
-          attention={attention}
-          attentionLoading={rankingLoading}
-        />
+          {/* Flank overlays: attention left, capacity right. The circular
+              plex is height-bound, so the horizontal flanks carry content. */}
+          <AttentionRail
+            tierCounts={isOwnerMode && !rankingLoading ? ownerLayout.tierCounts : null}
+            onCenter={handleCenter}
+            attention={attention}
+            attentionLoading={rankingLoading}
+          />
+        </div>
       </div>
     </Page>
   );
