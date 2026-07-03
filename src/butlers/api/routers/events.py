@@ -159,15 +159,22 @@ async def events_stream(
 
     await websocket.accept()
 
-    snapshot = {"type": "snapshot", "ts": time.time(), "events": list(_events_ring)}
-    try:
-        await websocket.send_text(json.dumps(snapshot))
-    except WebSocketDisconnect:
-        return
-
+    # Subscribe BEFORE sending the snapshot: if we snapshotted first, an event
+    # emitted in the gap between snapshot-send and subscribe would never reach
+    # this client (missed entirely, not just duplicated). Subscribing first
+    # means the worst case is a harmless duplicate — an event that lands in
+    # the gap appears in both the snapshot (via the ring buffer) and the live
+    # queue — which is fine because replay is idempotent (cache patches are
+    # invalidateQueries-only, see bu-86c4c.8 review).
     queue: asyncio.Queue = asyncio.Queue(maxsize=_EVENTS_QUEUE_MAXSIZE)
     _events_subscribers.append(queue)
     try:
+        snapshot = {"type": "snapshot", "ts": time.time(), "events": list(_events_ring)}
+        try:
+            await websocket.send_text(json.dumps(snapshot))
+        except WebSocketDisconnect:
+            return
+
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=_EVENTS_HEARTBEAT_INTERVAL_S)

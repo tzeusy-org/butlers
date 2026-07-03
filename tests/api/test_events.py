@@ -68,6 +68,51 @@ def test_events_stream_receives_emitted_event(app):
             assert "ts" in msg
 
 
+async def test_events_stream_subscribes_before_snapshot_send(monkeypatch):
+    """Regression (bu-fq8y1): subscribing must happen BEFORE the snapshot is
+    sent, so an event emitted during/right after the snapshot send — the old
+    miss-window between snapshot-send and subscribe — is still delivered live
+    instead of being silently dropped.
+
+    Drives ``events_stream`` directly against a fake websocket so the emit can
+    be pinned to the exact moment the snapshot is flushed, rather than relying
+    on real-world scheduling to hit a race window.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    import butlers.api.routers.events as events_mod
+
+    monkeypatch.setattr(events_mod, "_EVENTS_HEARTBEAT_INTERVAL_S", 0.05)
+
+    sent: list[dict] = []
+    emitted = {"done": False}
+
+    class _FakeWebSocket:
+        async def accept(self) -> None:
+            return None
+
+        async def send_text(self, text: str) -> None:
+            msg = json.loads(text)
+            sent.append(msg)
+            if not emitted["done"] and msg["type"] == "snapshot":
+                # Fires exactly when the snapshot hits the wire. With the fix
+                # this connection is already subscribed, so this event must
+                # still reach it via the live queue.
+                emitted["done"] = True
+                events_mod.emit_event("notification", {"kind": "gap-event"})
+            if len(sent) >= 2:
+                raise WebSocketDisconnect(code=1000)
+
+    ws = _FakeWebSocket()
+    await events_mod.events_stream(ws, api_key=None)
+
+    assert sent[0]["type"] == "snapshot"
+    assert sent[1]["type"] == "notification"
+    assert sent[1]["data"]["kind"] == "gap-event"
+    # The finally block ran and cleaned up the subscriber on disconnect.
+    assert events_mod._events_subscribers == []
+
+
 def test_events_stream_snapshot_includes_recent_events(app):
     """Snapshot contains events emitted before the connection was opened."""
     from fastapi.testclient import TestClient
