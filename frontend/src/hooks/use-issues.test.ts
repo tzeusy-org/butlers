@@ -1,41 +1,37 @@
 /**
- * Unit tests for the issues hooks — focused on the undismiss (restore) flow.
+ * Unit tests for the issues hooks.
  *
- * Strategy mirrors use-secrets-mutations.test.ts: mock @tanstack/react-query's
- * useMutation + useQuery + useQueryClient, capture the options object passed by
- * each hook via the mock call list, then drive mutationFn / onMutate /
- * onSettled directly to verify the API call and cache behaviour.
+ * useDismissIssue/useUndismissIssue now delegate their cancel/snapshot/
+ * rollback/invalidate mechanics to the shared useOptimisticListMutation
+ * (bu-86c4c.13) — that generic machinery has its own dedicated tests in
+ * use-optimistic-mutation.test.ts. These tests only verify the *wiring*:
+ * which API function is called, which list prefix is targeted, how items are
+ * filtered, and which keys are invalidated.
  *
  * Covers:
  *   - useIssues passes include_dismissed through to getIssues, distinct keys
- *   - useUndismissIssue calls undismissIssue with the key
- *   - useUndismissIssue optimistically drops the issue from the dismissed view
- *   - useUndismissIssue invalidates the shared ["issues"] prefix on settle
+ *   - useDismissIssue/useUndismissIssue call the right API function
+ *   - useDismissIssue/useUndismissIssue filter the dismissed issue out
+ *   - useDismissIssue/useUndismissIssue invalidate the shared ["issues"] prefix
  */
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const mockCancelQueries = vi.fn(() => Promise.resolve());
-const mockInvalidateQueries = vi.fn();
-const mockGetQueryData = vi.fn();
-const mockSetQueryData = vi.fn();
-const mockQueryClient = {
-  cancelQueries: mockCancelQueries,
-  invalidateQueries: mockInvalidateQueries,
-  getQueryData: mockGetQueryData,
-  setQueryData: mockSetQueryData,
-};
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const original = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...original,
-    useMutation: vi.fn((opts: unknown) => opts),
     useQuery: vi.fn((opts: unknown) => opts),
-    useQueryClient: () => mockQueryClient,
   };
 });
+
+const { mockUseOptimisticListMutation } = vi.hoisted(() => ({
+  mockUseOptimisticListMutation: vi.fn((opts: unknown) => opts),
+}));
+vi.mock("@/hooks/use-optimistic-mutation.ts", () => ({
+  useOptimisticListMutation: mockUseOptimisticListMutation,
+}));
 
 vi.mock("@/api/index.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/api/index.ts")>();
@@ -47,11 +43,10 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
   };
 });
 
-import { getIssues, undismissIssue } from "@/api/index.ts";
-import type { ApiResponse, Issue } from "@/api/types";
-import { useIssues, useUndismissIssue } from "./use-issues";
+import { dismissIssue, getIssues, undismissIssue } from "@/api/index.ts";
+import type { Issue } from "@/api/types";
+import { useDismissIssue, useIssues, useUndismissIssue } from "./use-issues";
 
-const mockUseMutation = vi.mocked(useMutation);
 const mockUseQuery = vi.mocked(useQuery);
 
 const ACTIVE_KEY = ["issues", { dismissed: false }];
@@ -62,15 +57,11 @@ interface CapturedQueryOptions {
   queryFn: () => unknown;
 }
 
-interface CapturedMutationOptions {
+interface CapturedListMutationOptions {
   mutationFn: (key: string) => unknown;
-  onMutate: (key: string) => Promise<{ previous: ApiResponse<Issue[]> | undefined }>;
-  onError: (
-    err: unknown,
-    key: string,
-    context: { previous: ApiResponse<Issue[]> | undefined },
-  ) => void;
-  onSettled: () => void;
+  listKeyPrefix: readonly unknown[];
+  updateItems: (issues: Issue[], key: string) => Issue[];
+  invalidateQueryKeys?: (readonly unknown[])[];
 }
 
 function lastQueryOptions(): CapturedQueryOptions {
@@ -78,9 +69,9 @@ function lastQueryOptions(): CapturedQueryOptions {
   return calls[calls.length - 1][0] as unknown as CapturedQueryOptions;
 }
 
-function lastMutationOptions(): CapturedMutationOptions {
-  const calls = mockUseMutation.mock.calls;
-  return calls[calls.length - 1][0] as unknown as CapturedMutationOptions;
+function lastListMutationOptions(): CapturedListMutationOptions {
+  const calls = mockUseOptimisticListMutation.mock.calls;
+  return calls[calls.length - 1][0] as unknown as CapturedListMutationOptions;
 }
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -120,44 +111,56 @@ describe("useIssues", () => {
   });
 });
 
+describe("useDismissIssue", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls dismissIssue with the issue key, targets the active list", () => {
+    useDismissIssue();
+    const opts = lastListMutationOptions();
+    opts.mutationFn("audit_error_group:boom::general");
+    expect(dismissIssue).toHaveBeenCalledWith("audit_error_group:boom::general");
+    expect(opts.listKeyPrefix).toEqual(ACTIVE_KEY);
+  });
+
+  it("filters the dismissed issue out of the cached items", () => {
+    useDismissIssue();
+    const issue = makeIssue();
+    const other = makeIssue({ issue_key: "other::general" });
+    const result = lastListMutationOptions().updateItems([issue, other], issue.issue_key);
+    expect(result).toEqual([other]);
+  });
+
+  it("invalidates the broad ['issues'] prefix so both views refresh", () => {
+    useDismissIssue();
+    expect(lastListMutationOptions().invalidateQueryKeys).toEqual([["issues"]]);
+  });
+});
+
 describe("useUndismissIssue", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("calls undismissIssue with the issue key", () => {
+  it("calls undismissIssue with the issue key, targets the dismissed list", () => {
     useUndismissIssue();
-    lastMutationOptions().mutationFn("audit_error_group:boom::general");
+    const opts = lastListMutationOptions();
+    opts.mutationFn("audit_error_group:boom::general");
     expect(undismissIssue).toHaveBeenCalledWith("audit_error_group:boom::general");
+    expect(opts.listKeyPrefix).toEqual(DISMISSED_KEY);
   });
 
-  it("optimistically removes the issue from the dismissed view cache", async () => {
+  it("filters the restored issue out of the cached dismissed items", () => {
+    useUndismissIssue();
     const issue = makeIssue();
     const other = makeIssue({ issue_key: "other::general" });
-    const previous = { data: [issue, other] } as ApiResponse<Issue[]>;
-    mockGetQueryData.mockReturnValue(previous);
-
-    useUndismissIssue();
-    const context = await lastMutationOptions().onMutate(issue.issue_key);
-
-    expect(mockCancelQueries).toHaveBeenCalledWith({ queryKey: DISMISSED_KEY });
-    expect(mockSetQueryData).toHaveBeenCalledWith(DISMISSED_KEY, {
-      ...previous,
-      data: [other],
-    });
-    expect(context).toEqual({ previous });
+    const result = lastListMutationOptions().updateItems([issue, other], issue.issue_key);
+    expect(result).toEqual([other]);
   });
 
-  it("rolls back the dismissed cache on error", () => {
-    const previous = { data: [] } as unknown as ApiResponse<Issue[]>;
+  it("invalidates the broad ['issues'] prefix so both views refresh", () => {
     useUndismissIssue();
-    lastMutationOptions().onError(new Error("nope"), "k", { previous });
-    expect(mockSetQueryData).toHaveBeenCalledWith(DISMISSED_KEY, previous);
-  });
-
-  it("invalidates the shared issues prefix on settle (both views refresh)", () => {
-    useUndismissIssue();
-    lastMutationOptions().onSettled();
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["issues"] });
+    expect(lastListMutationOptions().invalidateQueryKeys).toEqual([["issues"]]);
   });
 });

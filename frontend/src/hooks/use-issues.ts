@@ -2,10 +2,11 @@
  * TanStack Query hooks for the issues API.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { dismissIssue, getIssues, undismissIssue } from "@/api/index.ts";
 import type { ApiResponse, Issue } from "@/api/types";
+import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 /** Query key for the active issues feed. */
 const ACTIVE_ISSUES_KEY = ["issues", { dismissed: false }] as const;
@@ -36,30 +37,13 @@ export function useIssues(includeDismissed = false) {
  * invalidated on settle so the server's filtered views are the source of truth.
  */
 export function useDismissIssue() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+  return useOptimisticListMutation<ApiResponse<unknown>, string, Issue>({
     mutationFn: (issueKey: string) => dismissIssue(issueKey),
-    onMutate: async (issueKey: string) => {
-      await queryClient.cancelQueries({ queryKey: ACTIVE_ISSUES_KEY });
-      const previous = queryClient.getQueryData<ApiResponse<Issue[]>>(ACTIVE_ISSUES_KEY);
-      if (previous) {
-        queryClient.setQueryData<ApiResponse<Issue[]>>(ACTIVE_ISSUES_KEY, {
-          ...previous,
-          data: previous.data.filter((issue) => issue.issue_key !== issueKey),
-        });
-      }
-      return { previous };
-    },
-    onError: (_err, _issueKey, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(ACTIVE_ISSUES_KEY, context.previous);
-      }
-    },
-    onSettled: () => {
-      // Invalidate both the active feed and the dismissed view (prefix match).
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-    },
+    listKeyPrefix: ACTIVE_ISSUES_KEY,
+    updateItems: (issues, issueKey) => issues.filter((issue) => issue.issue_key !== issueKey),
+    // Broad prefix so BOTH the active and dismissed views refresh, not just
+    // the one this mutation optimistically touched.
+    invalidateQueryKeys: [["issues"]],
   });
 }
 
@@ -71,29 +55,10 @@ export function useDismissIssue() {
  * restored issue reappears in the active feed.
  */
 export function useUndismissIssue() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+  return useOptimisticListMutation<ApiResponse<unknown>, string, Issue>({
     mutationFn: (issueKey: string) => undismissIssue(issueKey),
-    onMutate: async (issueKey: string) => {
-      await queryClient.cancelQueries({ queryKey: DISMISSED_ISSUES_KEY });
-      const previous = queryClient.getQueryData<ApiResponse<Issue[]>>(DISMISSED_ISSUES_KEY);
-      if (previous) {
-        queryClient.setQueryData<ApiResponse<Issue[]>>(DISMISSED_ISSUES_KEY, {
-          ...previous,
-          data: previous.data.filter((issue) => issue.issue_key !== issueKey),
-        });
-      }
-      return { previous };
-    },
-    onError: (_err, _issueKey, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(DISMISSED_ISSUES_KEY, context.previous);
-      }
-    },
-    onSettled: () => {
-      // Invalidate both the dismissed view and the active feed (prefix match).
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-    },
+    listKeyPrefix: DISMISSED_ISSUES_KEY,
+    updateItems: (issues, issueKey) => issues.filter((issue) => issue.issue_key !== issueKey),
+    invalidateQueryKeys: [["issues"]],
   });
 }

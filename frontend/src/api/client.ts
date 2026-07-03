@@ -469,8 +469,21 @@ export class ApiError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
+ * Every request gives up after this long rather than hanging indefinitely
+ * (JARVIS audit move 10). A stuck backend should surface as a fast, honest
+ * timeout error, not a spinner that never resolves.
+ */
+export const API_REQUEST_TIMEOUT_MS = 15_000;
+
+/**
  * Typed fetch wrapper that prepends `API_BASE_URL`, sets JSON headers,
- * and throws {@link ApiError} on non-ok responses.
+ * aborts after {@link API_REQUEST_TIMEOUT_MS}, and throws {@link ApiError}
+ * on non-ok responses (or on timeout).
+ *
+ * A caller-supplied `options.signal` (e.g. TanStack Query's queryFn signal,
+ * which fires on unmount/refetch-superseded) is still honored: aborting it
+ * aborts the underlying fetch immediately, same as before this wrapper
+ * introduced its own internal timeout controller.
  */
 export async function apiFetch<T>(
   path: string,
@@ -478,14 +491,47 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
 
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...options?.headers,
-    },
-  });
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, API_REQUEST_TIMEOUT_MS);
+
+  const callerSignal = options?.signal;
+  const forwardAbort = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener("abort", forwardAbort);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...options?.headers,
+      },
+    });
+  } catch (err) {
+    // Distinguish OUR timeout from a caller-initiated cancel (e.g. query
+    // unmount) — the latter must keep surfacing as a plain AbortError so
+    // TanStack Query's own cancellation handling still recognizes it.
+    if (timedOut) {
+      throw new ApiError(
+        "TIMEOUT",
+        `Request timed out after ${API_REQUEST_TIMEOUT_MS / 1000}s`,
+        0,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    if (callerSignal) callerSignal.removeEventListener("abort", forwardAbort);
+  }
 
   if (!response.ok) {
     let code = "UNKNOWN_ERROR";

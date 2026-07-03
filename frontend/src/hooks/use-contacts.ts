@@ -31,20 +31,35 @@ import {
   getUpcomingDates,
 } from "@/api/index.ts";
 import type {
+  ApiResponse,
+  ContactDetail,
   ContactPatchRequest,
+  ContactSummary,
   CreateAndLinkEntityRequest,
   CreateContactInfoRequest,
+  Group,
+  Label,
   LinkEntityRequest,
   PatchContactInfoRequest,
   ContactParams,
   GroupParams,
 } from "@/api/index.ts";
+import {
+  type ListSnapshot,
+  rollbackLists,
+  snapshotAndUpdateLists,
+  useOptimisticListMutation,
+  useOptimisticMutation,
+} from "@/hooks/use-optimistic-mutation.ts";
 
 /** Fetch a paginated list of contacts. */
 export function useContacts(params?: ContactParams) {
   return useQuery({
     queryKey: ["contacts", params],
     queryFn: () => getContacts(params),
+    // Never-blank list (JARVIS audit move 10): keep the previous filter's
+    // rows visible while the new combination fetches.
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -62,6 +77,7 @@ export function useGroups(params?: GroupParams) {
   return useQuery({
     queryKey: ["groups", params],
     queryFn: () => getGroups(params),
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -88,35 +104,50 @@ export function useCreateLabel() {
   });
 }
 
-/** Assign a label to a group. */
+/**
+ * Assign a label to a group (toggle-like — OPTIMISTIC: appends the label to
+ * the cached group immediately, using the already-cached `["labels"]` list to
+ * resolve the label's name/color; rolls back on error).
+ */
 export function useAssignGroupLabel() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ groupId, labelId }: { groupId: string; labelId: string }) =>
-      assignGroupLabel(groupId, labelId),
-    onSuccess: (_, { groupId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["groups"] });
-      void queryClient.invalidateQueries({ queryKey: ["group", groupId] });
+  return useOptimisticMutation<
+    unknown,
+    { groupId: string; labelId: string },
+    ListSnapshot
+  >({
+    mutationFn: ({ groupId, labelId }) => assignGroupLabel(groupId, labelId),
+    applyOptimisticUpdate: ({ groupId, labelId }, queryClient) => {
+      const label = queryClient
+        .getQueryData<ApiResponse<Label[]>>(["labels"])
+        ?.data.find((l) => l.id === labelId);
+      return snapshotAndUpdateLists<Group>(queryClient, ["groups"], (groups) =>
+        groups.map((g) =>
+          g.id === groupId && label && !g.labels.some((l) => l.id === labelId)
+            ? { ...g, labels: [...g.labels, label] }
+            : g,
+        ),
+      );
     },
-    onError: (err: Error) => {
-      toast.error(err.message ?? "Failed to assign label");
-    },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: [["groups"]],
+    onError: (err) => toast.error(err.message ?? "Failed to assign label"),
   });
 }
 
-/** Remove a label from a group. */
+/** Remove a label from a group (mirrors {@link useAssignGroupLabel}). */
 export function useRemoveGroupLabel() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ groupId, labelId }: { groupId: string; labelId: string }) =>
-      removeGroupLabel(groupId, labelId),
-    onSuccess: (_, { groupId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["groups"] });
-      void queryClient.invalidateQueries({ queryKey: ["group", groupId] });
-    },
-    onError: (err: Error) => {
-      toast.error(err.message ?? "Failed to remove label");
-    },
+  return useOptimisticListMutation<
+    unknown,
+    { groupId: string; labelId: string },
+    Group
+  >({
+    mutationFn: ({ groupId, labelId }) => removeGroupLabel(groupId, labelId),
+    listKeyPrefix: ["groups"],
+    updateItems: (groups, { groupId, labelId }) =>
+      groups.map((g) =>
+        g.id === groupId ? { ...g, labels: g.labels.filter((l) => l.id !== labelId) } : g,
+      ),
+    onError: (err) => toast.error(err.message ?? "Failed to remove label"),
   });
 }
 
@@ -150,19 +181,20 @@ export function usePatchContact() {
   });
 }
 
-/** Confirm a pending contact as a new known contact. */
+/**
+ * Confirm a pending contact as a new known contact (ack — OPTIMISTIC: drops
+ * it from the pending queue immediately; the promoted contact itself still
+ * comes from the `["contacts"]` invalidate-driven refetch since we don't
+ * have its full record client-side to insert directly).
+ */
 export function useConfirmContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticListMutation<unknown, string, ContactDetail>({
     mutationFn: (contactId: string) => confirmContact(contactId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["pending-contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      toast.success("Contact confirmed");
-    },
-    onError: (err) => {
-      toast.error(`Confirm failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    },
+    listKeyPrefix: ["pending-contacts"],
+    updateItems: (pending, contactId) => pending.filter((c) => c.id !== contactId),
+    invalidateQueryKeys: [["pending-contacts"], ["contacts"]],
+    onSuccess: () => toast.success("Contact confirmed"),
+    onError: (err) => toast.error(`Confirm failed: ${err.message}`),
   });
 }
 
@@ -195,27 +227,27 @@ export function useDeleteContact() {
   });
 }
 
-/** Archive a contact (soft-delete, sync won't re-create). */
+/**
+ * Archive a contact (soft-delete, sync won't re-create — toggle-like and
+ * reversible via {@link useUnarchiveContact}, so OPTIMISTIC: drops it from
+ * every cached `["contacts", params]` view immediately; a view scoped to
+ * `archived: true` picks it back up on the invalidate-driven refetch).
+ */
 export function useArchiveContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticListMutation<unknown, string, ContactSummary>({
     mutationFn: (contactId: string) => archiveContact(contactId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["pending-contacts"] });
-    },
+    listKeyPrefix: ["contacts"],
+    updateItems: (contacts, contactId) => contacts.filter((c) => c.id !== contactId),
+    invalidateQueryKeys: [["contacts"], ["unlinked-contacts"], ["pending-contacts"]],
   });
 }
 
-/** Restore an archived contact. */
+/** Restore an archived contact (mirrors {@link useArchiveContact}). */
 export function useUnarchiveContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticListMutation<unknown, string, ContactSummary>({
     mutationFn: (contactId: string) => unarchiveContact(contactId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
+    listKeyPrefix: ["contacts"],
+    updateItems: (contacts, contactId) => contacts.filter((c) => c.id !== contactId),
   });
 }
 
@@ -261,6 +293,7 @@ export function useUnlinkedContacts(params?: { offset?: number; limit?: number; 
   return useQuery({
     queryKey: ["unlinked-contacts", params],
     queryFn: () => getUnlinkedContacts(params),
+    placeholderData: (prev) => prev,
   });
 }
 

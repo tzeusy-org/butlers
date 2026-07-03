@@ -17,5 +17,8 @@ export function useTimeline(params?: TimelineParams, options?: TimelineQueryOpti
     queryKey: ["timeline", params],
     queryFn: () => getTimeline(params),
     refetchInterval: options?.refetchInterval ?? 30_000,
+    // Never-blank list (JARVIS audit move 10): keep the previous cursor/filter
+    // combination's rows visible while the new one fetches.
+    placeholderData: (prev) => prev,
   });
 }

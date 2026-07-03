@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Page } from "@/components/ui/page";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSessions } from "@/hooks/use-sessions";
@@ -124,6 +125,7 @@ export default function SessionsPage() {
   const {
     data: sessionsResponse,
     isLoading,
+    isFetching,
     isError,
     error,
     refetch,
@@ -356,16 +358,18 @@ export default function SessionsPage() {
         </CardContent>
       </Card>
 
-      {/* Session table */}
+      {/* Session table — dims (never blanks) while a filter/cursor change refetches */}
       <Card>
         <CardContent>
-          <SessionTable
-            sessions={sessions}
-            isLoading={isLoading}
-            onSessionClick={handleSessionClick}
-            onRequestIdClick={handleRequestIdClick}
-            showButlerColumn={true}
-          />
+          <FetchingDim isFetching={isFetching && !isLoading}>
+            <SessionTable
+              sessions={sessions}
+              isLoading={isLoading}
+              onSessionClick={handleSessionClick}
+              onRequestIdClick={handleRequestIdClick}
+              showButlerColumn={true}
+            />
+          </FetchingDim>
         </CardContent>
       </Card>
 

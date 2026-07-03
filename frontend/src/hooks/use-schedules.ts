@@ -12,7 +12,8 @@ import {
   triggerButlerSchedule,
   updateButlerSchedule,
 } from "@/api/index.ts";
-import type { ScheduleCreate, ScheduleUpdate } from "@/api/types.ts";
+import type { Schedule, ScheduleCreate, ScheduleUpdate } from "@/api/types.ts";
+import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 /** Fetch all schedules for a butler with auto-refresh. */
 export function useSchedules(butlerName: string) {
@@ -73,14 +74,16 @@ export function useTriggerSchedule(butlerName: string) {
   });
 }
 
-/** Mutation to toggle a schedule's enabled/disabled state. */
+/**
+ * Mutation to toggle a schedule's enabled/disabled state (toggle —
+ * OPTIMISTIC: flips `enabled` in the cached list immediately, rolls back on
+ * error).
+ */
 export function useToggleSchedule(butlerName: string) {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+  return useOptimisticListMutation<unknown, string, Schedule>({
     mutationFn: (scheduleId: string) => toggleButlerSchedule(butlerName, scheduleId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["butlers", butlerName, "schedules"] });
-    },
+    listKeyPrefix: ["butlers", butlerName, "schedules"],
+    updateItems: (schedules, scheduleId) =>
+      schedules.map((s) => (s.id === scheduleId ? { ...s, enabled: !s.enabled } : s)),
   });
 }

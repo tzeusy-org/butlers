@@ -45,10 +45,12 @@ import type {
   QaDismissRequest,
   QaGitAuthorUpdate,
   QaInvestigationsParams,
+  QaKnownIssue,
   QaKnownIssuesParams,
   QaPatrolsParams,
   QaRepoConfigUpdate,
 } from "@/api/index.ts";
+import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 const STALE_TIME = 30_000;
 
@@ -78,6 +80,7 @@ export function useQaCases(params?: QaCasesParams) {
     queryFn: () => getQaCases(params),
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -117,6 +120,7 @@ export function useQaPatrols(params?: QaPatrolsParams) {
     queryFn: () => getQaPatrols(params),
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -158,6 +162,7 @@ export function useQaKnownIssues(
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
     enabled: options?.enabled ?? true,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -165,33 +170,34 @@ export function useQaKnownIssues(
 // Dismiss / Undismiss mutations
 // ---------------------------------------------------------------------------
 
-/** Dismiss a known issue fingerprint. Invalidates known-issues cache on success. */
+/**
+ * Dismiss a known issue fingerprint (dismiss — OPTIMISTIC: drops it from
+ * every cached known-issues view immediately; the `dismissed` filter param
+ * means a view scoped to the *other* state picks it back up on the
+ * invalidate-driven refetch, same as use-issues.ts's active/dismissed pair).
+ */
 export function useDismissQaIssue() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      fingerprint,
-      body,
-    }: {
-      fingerprint: string;
-      body?: QaDismissRequest;
-    }) => dismissQaKnownIssue(fingerprint, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["qa-known-issues"] });
-      queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
-    },
+  return useOptimisticListMutation<
+    unknown,
+    { fingerprint: string; body?: QaDismissRequest },
+    QaKnownIssue
+  >({
+    mutationFn: ({ fingerprint, body }) => dismissQaKnownIssue(fingerprint, body),
+    listKeyPrefix: ["qa-known-issues"],
+    updateItems: (issues, { fingerprint }) =>
+      issues.filter((issue) => issue.fingerprint !== fingerprint),
+    invalidateQueryKeys: [["qa-known-issues"], ["qa-summary"]],
   });
 }
 
-/** Un-dismiss a known issue fingerprint. Invalidates known-issues cache on success. */
+/** Un-dismiss a known issue fingerprint (mirrors {@link useDismissQaIssue}). */
 export function useUndismissQaIssue() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticListMutation<unknown, string, QaKnownIssue>({
     mutationFn: (fingerprint: string) => undismissQaKnownIssue(fingerprint),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["qa-known-issues"] });
-      queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
-    },
+    listKeyPrefix: ["qa-known-issues"],
+    updateItems: (issues, fingerprint) =>
+      issues.filter((issue) => issue.fingerprint !== fingerprint),
+    invalidateQueryKeys: [["qa-known-issues"], ["qa-summary"]],
   });
 }
 
@@ -259,6 +265,7 @@ export function useHealingAttempts(params?: HealingAttemptsParams) {
     queryFn: () => listHealingAttempts(params),
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -273,6 +280,7 @@ export function useQaInvestigations(params?: QaInvestigationsParams) {
     queryFn: () => getQaInvestigations(params),
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+    placeholderData: (prev) => prev,
   });
 }
 

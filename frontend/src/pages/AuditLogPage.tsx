@@ -6,6 +6,7 @@ import AuditLogTable from "@/components/audit/AuditLogTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { useAuditLog } from "@/hooks/use-audit-log";
@@ -71,7 +72,7 @@ export default function AuditLogPage() {
     ...(actorFilter ? { actor: actorFilter } : {}),
   };
 
-  const { data: auditResponse, isLoading, isError } = useAuditLog(params);
+  const { data: auditResponse, isLoading, isFetching, isError } = useAuditLog(params);
   const entries = auditResponse?.data ?? [];
   const meta = auditResponse?.meta;
   const total = meta?.total ?? 0;
@@ -231,10 +232,12 @@ export default function AuditLogPage() {
         </CardContent>
       </Card>
 
-      {/* Audit log table */}
+      {/* Audit log table — dims (never blanks) while a filter/page change refetches */}
       <Card>
         <CardContent>
-          <AuditLogTable entries={entries} isLoading={isLoading} isError={isError} />
+          <FetchingDim isFetching={isFetching && !isLoading}>
+            <AuditLogTable entries={entries} isLoading={isLoading} isError={isError} />
+          </FetchingDim>
         </CardContent>
       </Card>
 

@@ -21,8 +21,10 @@ import {
 } from "@/api/index.ts";
 import type {
   PriorityContactAddRequest,
+  PriorityContactEntry,
   PriorityContactListParams,
 } from "@/api/index.ts";
+import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -66,14 +68,14 @@ export function useAddPriorityContact() {
   });
 }
 
-/** Remove a priority contact. Invalidates the list cache on success. */
+/**
+ * Remove a priority contact (remove-from-list — OPTIMISTIC: drops it from
+ * the cached list immediately, rolls back on error).
+ */
 export function useRemovePriorityContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ contactId }: { contactId: string }) =>
-      removePriorityContact(contactId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: priorityContactKeys.all });
-    },
+  return useOptimisticListMutation<unknown, { contactId: string }, PriorityContactEntry>({
+    mutationFn: ({ contactId }) => removePriorityContact(contactId),
+    listKeyPrefix: priorityContactKeys.all,
+    updateItems: (contacts, { contactId }) => contacts.filter((c) => c.contact_id !== contactId),
   });
 }

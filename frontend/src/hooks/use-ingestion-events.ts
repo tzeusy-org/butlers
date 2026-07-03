@@ -112,6 +112,9 @@ export function useIngestionEvents(
     // loaded pages but we only need freshness from the newest (first) page.
     refetchInterval: options?.refetchInterval !== undefined ? options.refetchInterval : 30_000,
     enabled: options?.enabled !== false,
+    // Never-blank list (JARVIS audit move 10): keep the previous filter's
+    // pages visible while a filter change re-keys the query and refetches.
+    placeholderData: (prev) => prev,
   });
 }
 

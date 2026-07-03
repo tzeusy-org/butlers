@@ -49,6 +49,7 @@ import {
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import type {
   ApiResponse,
+  ApprovalAction,
   ApprovalDetail,
   ApprovalSummary,
   ApprovalsPolicy,
@@ -59,6 +60,7 @@ import {
   useConfirmAutonomySuggestion,
   useDismissAutonomySuggestion,
 } from "@/hooks/use-approvals.ts";
+import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
@@ -1129,14 +1131,17 @@ export default function ApprovalsPage() {
   };
   const rollback = (prev: PendingSnapshot | undefined) =>
     prev?.forEach(([key, snap]) => qc.setQueryData(key, snap));
-  const reconcile = () => {
-    qc.invalidateQueries({ queryKey: ["approvals", "flat", "waiting"] });
-    qc.invalidateQueries({ queryKey: Q.history() });
-  };
+  const reconcileKeys = [["approvals", "flat", "waiting"], Q.history()];
 
-  const approveMut = useMutation({
+  // These three decisions share the exact cancel -> snapshot -> optimistic
+  // drop -> rollback-on-error -> reconcile-on-settle shape, extracted into
+  // useOptimisticMutation (bu-86c4c.13) — this was the second hand-rolled
+  // copy of the pattern use-issues.ts established, now a single shared path.
+  const approveMut = useOptimisticMutation<ApiResponse<ApprovalAction>, string, PendingSnapshot>({
     mutationFn: (id: string) => approveApproval(id),
-    onMutate: (id: string) => ({ prev: dropFromPending(id) }),
+    applyOptimisticUpdate: (id) => dropFromPending(id),
+    rollback,
+    invalidateQueryKeys: () => reconcileKeys,
     onSuccess: (res) => {
       // Honest outcome: the action only ran if the backend dispatched it
       // (status "executed" / dispatched=true). Otherwise it is approved but
@@ -1149,35 +1154,33 @@ export default function ApprovalsPage() {
         toast.warning("Approved. Queued, not yet run. Retry from History.");
       }
     },
-    onError: (e: Error, _id, ctx) => {
-      rollback(ctx?.prev);
-      toast.error(`Approve failed: ${e.message}`);
-    },
-    onSettled: reconcile,
+    onError: (e) => toast.error(`Approve failed: ${e.message}`),
   });
 
-  const denyMut = useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
-      denyApproval(id, reason ? { reason } : undefined),
-    onMutate: ({ id }) => ({ prev: dropFromPending(id) }),
+  const denyMut = useOptimisticMutation<
+    ApiResponse<ApprovalAction>,
+    { id: string; reason?: string },
+    PendingSnapshot
+  >({
+    mutationFn: ({ id, reason }) => denyApproval(id, reason ? { reason } : undefined),
+    applyOptimisticUpdate: ({ id }) => dropFromPending(id),
+    rollback,
+    invalidateQueryKeys: () => reconcileKeys,
     onSuccess: () => toast.success("Denied"),
-    onError: (e: Error, _vars, ctx) => {
-      rollback(ctx?.prev);
-      toast.error(`Deny failed: ${e.message}`);
-    },
-    onSettled: reconcile,
+    onError: (e) => toast.error(`Deny failed: ${e.message}`),
   });
 
-  const deferMut = useMutation({
-    mutationFn: ({ id, hours }: { id: string; hours: number }) =>
-      deferApproval(id, { hours }),
-    onMutate: ({ id }) => ({ prev: dropFromPending(id) }),
+  const deferMut = useOptimisticMutation<
+    ApiResponse<ApprovalAction>,
+    { id: string; hours: number },
+    PendingSnapshot
+  >({
+    mutationFn: ({ id, hours }) => deferApproval(id, { hours }),
+    applyOptimisticUpdate: ({ id }) => dropFromPending(id),
+    rollback,
+    invalidateQueryKeys: () => reconcileKeys,
     onSuccess: () => toast.success("Deferred"),
-    onError: (e: Error, _vars, ctx) => {
-      rollback(ctx?.prev);
-      toast.error(`Defer failed: ${e.message}`);
-    },
-    onSettled: reconcile,
+    onError: (e) => toast.error(`Defer failed: ${e.message}`),
   });
 
   function handleLoadMore() {

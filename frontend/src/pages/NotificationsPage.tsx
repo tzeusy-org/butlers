@@ -6,6 +6,7 @@ import { NotificationStatsBar } from "@/components/notifications/notification-st
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import {
@@ -93,6 +94,7 @@ export default function NotificationsPage() {
   const {
     data: notificationsResponse,
     isLoading: notificationsLoading,
+    isFetching: notificationsFetching,
     isError: notificationsError,
   } = useNotifications(params);
 
@@ -295,7 +297,7 @@ export default function NotificationsPage() {
         </CardContent>
       </Card>
 
-      {/* Notification feed */}
+      {/* Notification feed — dims (never blanks) while a filter/page change refetches */}
       <Card>
         <CardContent>
           {notificationsLoading ? (
@@ -305,14 +307,16 @@ export default function NotificationsPage() {
               Failed to load notifications. Please try refreshing the page.
             </p>
           ) : (
-            <NotificationFeed
-              notifications={notifications}
-              isLoading={false}
-              hasActiveFilters={hasActiveFilters}
-              onMarkRead={handleMarkRead}
-              onDismiss={handleDismiss}
-              pendingAckIds={pendingAckIds}
-            />
+            <FetchingDim isFetching={notificationsFetching}>
+              <NotificationFeed
+                notifications={notifications}
+                isLoading={false}
+                hasActiveFilters={hasActiveFilters}
+                onMarkRead={handleMarkRead}
+                onDismiss={handleDismiss}
+                pendingAckIds={pendingAckIds}
+              />
+            </FetchingDim>
           )}
         </CardContent>
       </Card>

@@ -22,6 +22,10 @@ export function useSessions(params?: SessionParams, options?: SessionQueryOption
     queryKey: ["sessions", params],
     queryFn: () => getSessions(params),
     refetchInterval: options?.refetchInterval ?? 30_000,
+    // Keep the previous page/filter's rows visible while the new cursor/filter
+    // combination fetches, instead of blanking to a loading skeleton
+    // (JARVIS audit move 10 — never-blank lists).
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -51,6 +55,7 @@ export function useButlerSessions(name: string, params?: SessionParams) {
     queryFn: () => getButlerSessions(name, params),
     enabled: !!name,
     refetchInterval: 30_000,
+    placeholderData: (prev) => prev,
   });
 }
 
