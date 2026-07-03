@@ -1898,7 +1898,16 @@ export function TimelineTab({
     ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
     ...(statusesCsv ? { statuses: statusesCsv } : {}),
     ...(debouncedQ ? { q: debouncedQ } : {}),
-  }), [rangeWindow.from, rangeWindow.to, histogramBucket, activeChannels, statusesCsv, debouncedQ]);
+    ...(urlTrace ? { trace_id: urlTrace } : {}),
+  }), [
+    rangeWindow.from,
+    rangeWindow.to,
+    histogramBucket,
+    activeChannels,
+    statusesCsv,
+    debouncedQ,
+    urlTrace,
+  ]);
 
   const { data: histogramResp, isLoading: histogramLoading } = useIngestionEventsHistogram(
     histogramParams,
@@ -1931,6 +1940,7 @@ export function TimelineTab({
       ...(debouncedQ ? { q: debouncedQ } : {}),
       ...(rollupChannels ? { channels: rollupChannels } : {}),
       ...(rollupStatuses ? { statuses: rollupStatuses } : {}),
+      ...(urlTrace ? { trace_id: urlTrace } : {}),
     },
     { enabled: isActive },
   );

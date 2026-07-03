@@ -117,11 +117,12 @@ describe("getIngestionEventsHistogram", () => {
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("from=2026-01-01T00%3A00%3A00Z");
     expect(url).toContain("to=2026-01-02T00%3A00%3A00Z");
-    // bucket/channels/statuses/q are omitted when not provided.
+    // bucket/channels/statuses/q/trace_id are omitted when not provided.
     expect(url).not.toContain("bucket=");
     expect(url).not.toContain("channels=");
     expect(url).not.toContain("statuses=");
     expect(url).not.toContain("q=");
+    expect(url).not.toContain("trace_id=");
   });
 
   it("forwards bucket, channels, statuses, and q when provided", async () => {
@@ -139,6 +140,17 @@ describe("getIngestionEventsHistogram", () => {
     expect(url).toContain("channels=email%2Ctelegram");
     expect(url).toContain("statuses=ingested%2Cerror");
     expect(url).toContain("q=alice");
+  });
+
+  it("forwards trace_id when provided (bu-q750c drill-down spine consistency)", async () => {
+    mockHistogramResponse({ buckets: [], bucket: "1m" });
+    await getIngestionEventsHistogram({
+      from: "2026-01-01T00:00:00Z",
+      to: "2026-01-02T00:00:00Z",
+      trace_id: "trace-abc-123",
+    });
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("trace_id=trace-abc-123");
   });
 
   it("hits /ingestion/events/histogram", async () => {
@@ -174,6 +186,71 @@ describe("getIngestionEventsHistogram", () => {
       from: "2026-01-01T00:00:00Z",
       to: "2026-01-02T00:00:00Z",
     });
+    expect(result).toEqual(body);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getIngestionWindowRollup — GET /api/ingestion/rollup (bu-q750c trace_id threading)
+// ---------------------------------------------------------------------------
+
+import { getIngestionWindowRollup } from "./client.ts";
+
+function mockRollupResponse(body: {
+  events: number;
+  sessions: number;
+  cost: number | null;
+  window: { from: string | null; to: string | null };
+}) {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+    headers: { get: () => "application/json" },
+  });
+}
+
+describe("getIngestionWindowRollup", () => {
+  it("sends no params when called with no args", async () => {
+    mockRollupResponse({ events: 0, sessions: 0, cost: null, window: { from: null, to: null } });
+    await getIngestionWindowRollup();
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("/ingestion/rollup");
+    expect(url).not.toContain("trace_id=");
+    expect(url).not.toContain("from=");
+  });
+
+  it("forwards trace_id when provided (bu-q750c drill-down spine consistency)", async () => {
+    mockRollupResponse({ events: 3, sessions: 5, cost: null, window: { from: null, to: null } });
+    await getIngestionWindowRollup({ trace_id: "trace-abc-123" });
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("trace_id=trace-abc-123");
+  });
+
+  it("forwards from/to/channels/statuses/q alongside trace_id", async () => {
+    mockRollupResponse({ events: 0, sessions: 0, cost: null, window: { from: null, to: null } });
+    await getIngestionWindowRollup({
+      from: "2026-01-01T00:00:00Z",
+      to: "2026-01-02T00:00:00Z",
+      channels: "email,telegram",
+      statuses: "ingested,error",
+      q: "alice",
+      trace_id: "trace-abc-123",
+    });
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("from=2026-01-01T00%3A00%3A00Z");
+    expect(url).toContain("to=2026-01-02T00%3A00%3A00Z");
+    expect(url).toContain("channels=email%2Ctelegram");
+    expect(url).toContain("statuses=ingested%2Cerror");
+    expect(url).toContain("q=alice");
+    expect(url).toContain("trace_id=trace-abc-123");
+  });
+
+  it("returns the parsed response body", async () => {
+    const body = { events: 3, sessions: 5, cost: 1.23, window: { from: null, to: null } };
+    mockRollupResponse(body);
+    const result = await getIngestionWindowRollup({ trace_id: "trace-abc-123" });
     expect(result).toEqual(body);
   });
 });

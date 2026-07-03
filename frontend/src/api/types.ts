@@ -3585,6 +3585,13 @@ export interface IngestionWindowRollupParams {
    * and error_detail.
    */
   q?: string;
+  /**
+   * Filter to events with at least one linked butler session carrying this
+   * trace_id — same drill-down spine as IngestionEventsParams.trace_id. The
+   * server resolves trace_id -> matching event ids before aggregating, so a
+   * trace-scoped rollup band stays consistent with the trace-scoped ledger.
+   */
+  trace_id?: string;
 }
 
 /** Response from GET /api/ingestion/rollup. */
@@ -3623,6 +3630,13 @@ export interface IngestionHistogramParams {
   statuses?: string;
   /** Freetext search (ILIKE %q%), same fields as GET /api/ingestion/events. */
   q?: string;
+  /**
+   * Filter to events with at least one linked butler session carrying this
+   * trace_id — same drill-down spine as IngestionEventsParams.trace_id. The
+   * server resolves trace_id -> matching event ids before bucketing, so a
+   * trace-scoped hour strip stays consistent with the trace-scoped ledger.
+   */
+  trace_id?: string;
 }
 
 /** Per-status event counts for one histogram bucket. Every status defaults to 0. */

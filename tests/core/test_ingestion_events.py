@@ -903,6 +903,55 @@ async def test_ingestion_window_rollup_skips_ilike_for_empty_or_whitespace_q() -
     assert "ILIKE" in sql2 and "%alice%" in args2
 
 
+async def test_ingestion_window_rollup_event_ids_filter() -> None:
+    """event_ids pushes an `id = ANY(...)` filter into SQL (bu-q750c: trace-scoped footer band).
+
+    Mirrors ingestion_events_list's event_ids handling — an explicit empty
+    list must still restrict to zero rows (`is not None` check, not truthy),
+    so a trace that matched no session yields a zeroed rollup rather than
+    falling through to "no filter". The filter must apply to BOTH the event
+    count query and the session-fan-out id query (they share where_clause/args).
+    """
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+    pool = _FakePoolForRollup(event_count=2)
+    await ingestion_window_rollup(pool, event_ids=ids, db=None)
+    fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
+    assert len(fetchval_calls) == 1
+    sql, args = fetchval_calls[0][1], fetchval_calls[0][2]
+    assert "id = ANY(" in sql and "::uuid[]" in sql
+    assert [uuid.UUID(i) for i in ids] in args
+
+    # Explicit empty list still adds the filter (not skipped like channels=[])
+    # and the event count query is expected to return 0 rows.
+    pool2 = _FakePoolForRollup(event_count=0)
+    result2 = await ingestion_window_rollup(pool2, event_ids=[], db=None)
+    fetchval_calls2 = [c for c in pool2.calls if c[0] == "fetchval"]
+    sql2, args2 = fetchval_calls2[0][1], fetchval_calls2[0][2]
+    assert "id = ANY(" in sql2
+    assert [] in args2
+    assert result2["events"] == 0
+
+    # event_ids=None (default) omits the filter entirely
+    pool3 = _FakePoolForRollup(event_count=5)
+    await ingestion_window_rollup(pool3, event_ids=None, db=None)
+    fetchval_calls3 = [c for c in pool3.calls if c[0] == "fetchval"]
+    sql3 = fetchval_calls3[0][1]
+    assert "id = ANY(" not in sql3
+
+    # The filter also reaches the session-fan-out id query (shared where_clause).
+    db = _FakeDatabaseManager(results={"butler1": []})
+    pool4 = _FakePoolForRollup(event_count=2)
+    await ingestion_window_rollup(pool4, event_ids=ids, db=db)
+    fetch_calls4 = [c for c in pool4.calls if c[0] == "fetch"]
+    assert len(fetch_calls4) == 1
+    id_sql, id_args = fetch_calls4[0][1], fetch_calls4[0][2]
+    assert "id = ANY(" in id_sql
+    assert [uuid.UUID(i) for i in ids] in id_args
+
+
 # ---------------------------------------------------------------------------
 # ingestion_events_sessions_for_ids / ingestion_events_list_enrichment (bu-4utdw.3)
 #
@@ -1242,3 +1291,49 @@ async def test_ingestion_events_histogram_forwards_filters_to_sql() -> None:
     assert ["ingested", "error"] in args  # statuses list bound
     assert ["email", "telegram"] in args  # channels list bound
     assert "%alice%" in args  # q pattern bound
+
+
+async def test_ingestion_events_histogram_event_ids_filter() -> None:
+    """event_ids pushes an `id = ANY(...)` filter into SQL (bu-q750c: trace-scoped hour strip).
+
+    Mirrors ingestion_events_list's event_ids handling — an explicit empty
+    list must still restrict to zero rows (`is not None` check, not truthy),
+    so a trace that matched no session yields an empty histogram rather than
+    falling through to "no filter".
+    """
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+    pool = _FakePool(fetch_results=[])
+    await ingestion_events_histogram(
+        pool,
+        from_dt=datetime(2026, 1, 1, tzinfo=UTC),
+        to_dt=datetime(2026, 1, 1, 1, tzinfo=UTC),
+        event_ids=ids,
+    )
+    sql, args = pool.calls[0][1], pool.calls[0][2]
+    assert "id = ANY(" in sql and "::uuid[]" in sql
+    assert [uuid.UUID(i) for i in ids] in args
+
+    # Explicit empty list still adds the filter (not skipped like channels=[])
+    pool2 = _FakePool(fetch_results=[])
+    await ingestion_events_histogram(
+        pool2,
+        from_dt=datetime(2026, 1, 1, tzinfo=UTC),
+        to_dt=datetime(2026, 1, 1, 1, tzinfo=UTC),
+        event_ids=[],
+    )
+    sql2, args2 = pool2.calls[0][1], pool2.calls[0][2]
+    assert "id = ANY(" in sql2
+    assert [] in args2
+
+    # event_ids=None (default) omits the filter entirely
+    pool3 = _FakePool(fetch_results=[])
+    await ingestion_events_histogram(
+        pool3,
+        from_dt=datetime(2026, 1, 1, tzinfo=UTC),
+        to_dt=datetime(2026, 1, 1, 1, tzinfo=UTC),
+    )
+    sql3 = pool3.calls[0][1]
+    assert "id = ANY(" not in sql3

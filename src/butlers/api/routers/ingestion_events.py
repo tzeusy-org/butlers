@@ -403,6 +403,19 @@ async def get_ingestion_events_histogram(
         max_length=200,
         description=("Freetext search (ILIKE %%q%%), same fields as GET /api/ingestion/events."),
     ),
+    trace_id: str | None = Query(
+        None,
+        description=(
+            "Filter to ingestion events with at least one linked butler session "
+            "carrying this OpenTelemetry trace_id — same drill-down spine as "
+            "GET /api/ingestion/events. Resolved via a cross-butler session "
+            "fan-out (ingestion_events_request_ids_for_trace), then pushed into "
+            "the histogram query as an `id = ANY(...)` filter so a trace-scoped "
+            "hour strip stays consistent with the trace-scoped ledger. A "
+            "trace_id that matches no session returns an empty histogram, not "
+            "an error."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> IngestionHistogramResponse:
     """Return per-minute (or coarser) ingestion event counts by status.
@@ -414,8 +427,9 @@ async def get_ingestion_events_histogram(
     ``aggregates_available`` degraded-mode surface used by the Prometheus-backed
     pipeline endpoints.
 
-    Accepts the same ``channels``/``statuses``/``q`` filters as the events list
-    so the strip respects active filters.
+    Accepts the same ``channels``/``statuses``/``q``/``trace_id`` filters as
+    the events list so the strip respects active filters (including a
+    trace-scoped view).
 
     Zero-count buckets are omitted — a bucket only appears in the response when
     at least one event fell into it during the requested window; present
@@ -450,6 +464,13 @@ async def get_ingestion_events_histogram(
     channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
     status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
 
+    # Resolve trace_id -> matching event ids BEFORE the main query, same
+    # resolve-then-filter pattern as GET /api/ingestion/events (see
+    # ingestion_events_request_ids_for_trace).
+    event_ids: list[str] | None = None
+    if trace_id is not None and trace_id.strip():
+        event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
+
     try:
         result = await ingestion_events_histogram(
             pool,
@@ -459,6 +480,7 @@ async def get_ingestion_events_histogram(
             channels=channel_list,
             statuses=status_list,
             q=q,
+            event_ids=event_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1132,14 +1154,27 @@ async def get_ingestion_window_rollup(
             "filter reason, and error detail."
         ),
     ),
+    trace_id: str | None = Query(
+        None,
+        description=(
+            "Filter to ingestion events with at least one linked butler session "
+            "carrying this OpenTelemetry trace_id — same drill-down spine as "
+            "GET /api/ingestion/events. Resolved via a cross-butler session "
+            "fan-out (ingestion_events_request_ids_for_trace), then pushed into "
+            "the rollup query as an `id = ANY(...)` filter so a trace-scoped "
+            "footer rollup stays consistent with the trace-scoped ledger. A "
+            "trace_id that matches no session returns a zeroed rollup, not an "
+            "error."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_rollup_db_manager),
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> IngestionWindowRollup:
     """Return aggregate event/session/cost counts for the active filter window.
 
-    Accepts the same filter shape as GET /api/ingestion/events.  When pricing
-    data is available, ``cost`` is populated with the estimated USD total for
-    all sessions linked to matching events.
+    Accepts the same filter shape as GET /api/ingestion/events (including
+    ``trace_id``).  When pricing data is available, ``cost`` is populated with
+    the estimated USD total for all sessions linked to matching events.
 
     Returns:
         200 — ``{events, sessions, cost, window: {from, to}}``
@@ -1166,6 +1201,13 @@ async def get_ingestion_window_rollup(
     channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
     status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
 
+    # Resolve trace_id -> matching event ids BEFORE the main query, same
+    # resolve-then-filter pattern as GET /api/ingestion/events (see
+    # ingestion_events_request_ids_for_trace).
+    event_ids: list[str] | None = None
+    if trace_id is not None and trace_id.strip():
+        event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
+
     result = await ingestion_window_rollup(
         pool,
         from_dt=from_dt,
@@ -1175,6 +1217,7 @@ async def get_ingestion_window_rollup(
         q=q,
         db=db,
         pricing=pricing,
+        event_ids=event_ids,
     )
 
     return IngestionWindowRollup(

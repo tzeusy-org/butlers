@@ -26,7 +26,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import httpx
@@ -283,6 +283,47 @@ async def test_histogram_respects_q_filter(pool):
     assert result["buckets"][0]["counts"]["ingested"] == 1
 
 
+async def test_histogram_respects_event_ids_filter(pool):
+    """event_ids' `id = ANY($N::uuid[])` cast is valid against the real UNION ALL
+    of the unpartitioned public.ingestion_events and the partitioned
+    connectors.filtered_events (bu-q750c: trace-scoped hour strip).
+
+    A mocked pool cannot prove the ``::uuid[]`` cast type-checks against both
+    branches of the UNION or that the partitioned side's ``id`` column
+    actually participates in the ANY() comparison — only a real backend can.
+    """
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    ts = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
+    keep_id = await _seed_ingestion_event(pool, received_at=ts, status="ingested")
+    await _seed_ingestion_event(pool, received_at=ts, status="ingested")
+    await _seed_filtered_event(pool, received_at=ts, status="error")
+
+    result = await ingestion_events_histogram(
+        pool,
+        from_dt=ts - timedelta(minutes=1),
+        to_dt=ts + timedelta(minutes=1),
+        bucket="1m",
+        event_ids=[str(keep_id)],
+    )
+
+    assert len(result["buckets"]) == 1
+    counts = result["buckets"][0]["counts"]
+    assert counts["ingested"] == 1
+    assert counts["error"] == 0
+
+    # An explicit empty list restricts to zero rows (a trace that matched no
+    # session), not "no filter" — no buckets at all should come back.
+    empty_result = await ingestion_events_histogram(
+        pool,
+        from_dt=ts - timedelta(minutes=1),
+        to_dt=ts + timedelta(minutes=1),
+        bucket="1m",
+        event_ids=[],
+    )
+    assert empty_result["buckets"] == []
+
+
 # ---------------------------------------------------------------------------
 # Guardrail — enforced against the real function signature (no seeding needed;
 # the guardrail short-circuits before any query is issued).
@@ -359,3 +400,47 @@ async def test_histogram_endpoint_422_on_guardrail_against_real_backend(histogra
 
     assert resp.status_code == 422
     assert "too wide" in resp.json()["detail"]
+
+
+async def test_histogram_endpoint_trace_id_filters_to_matching_events(pool):
+    """?trace_id= resolves to matching event ids and filters the histogram (bu-q750c).
+
+    Proves the router-level wiring end to end against the real backend: the
+    trace_id -> event_ids resolution (mocked fan-out here, since sessions
+    live in per-butler schemas outside this pool) feeds into the same
+    ``id = ANY(...)`` SQL the ledger uses, so a trace-scoped hour strip
+    reflects only the trace's events, not the whole window.
+    """
+    ts = datetime(2026, 4, 2, 9, 0, 0, tzinfo=UTC)
+    traced_id = await _seed_ingestion_event(pool, received_at=ts, status="ingested")
+    await _seed_ingestion_event(pool, received_at=ts, status="ingested")  # untraced, same window
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = pool
+    mock_db.fan_out = AsyncMock(return_value={"atlas": [{"request_id": str(traced_id)}]})
+
+    application = create_app()
+    from butlers.api.routers import ingestion_events as ingestion_events_router_module
+
+    application.dependency_overrides[ingestion_events_router_module._get_db_manager] = lambda: (
+        mock_db
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url=BASE_URL
+    ) as client:
+        resp = await client.get(
+            HISTOGRAM_PATH,
+            params={
+                "from": (ts - timedelta(minutes=1)).isoformat(),
+                "to": (ts + timedelta(minutes=1)).isoformat(),
+                "trace_id": "trace-xyz",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Only the traced event counts — the untraced sibling in the same window
+    # is excluded, proving trace_id narrowed the aggregate, not just the ledger.
+    assert len(body["buckets"]) == 1
+    assert body["buckets"][0]["counts"]["ingested"] == 1

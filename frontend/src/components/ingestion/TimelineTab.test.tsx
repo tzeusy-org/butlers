@@ -2240,6 +2240,56 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     expect(lastFilters).toHaveProperty("from");
   });
 
+  it("forwards trace_id to the footer rollup band (useIngestionWindowRollup) — bu-q750c", () => {
+    // Regression: the rollup query used to ignore trace_id entirely, so the
+    // footer band showed counts for the WHOLE range window instead of just
+    // the trace's events, contradicting the trace-scoped ledger above it.
+    renderWithTrace("trace-abc-123");
+    const calls = vi.mocked(useIngestionWindowRollup).mock.calls;
+    const lastParams = calls[calls.length - 1][0];
+    expect(lastParams).toMatchObject({ trace_id: "trace-abc-123" });
+  });
+
+  it("omits trace_id from the rollup query when no ?trace= param is present", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    const calls = vi.mocked(useIngestionWindowRollup).mock.calls;
+    const lastParams = calls[calls.length - 1][0];
+    expect(lastParams).not.toHaveProperty("trace_id");
+  });
+
+  it("forwards trace_id to the hour strip histogram (useIngestionEventsHistogram) — bu-q750c", () => {
+    // Regression: the histogram query used to ignore trace_id entirely, so
+    // the hour strip showed per-status counts for the WHOLE range window
+    // instead of just the trace's events.
+    renderWithTrace("trace-abc-123");
+    const calls = vi.mocked(useIngestionEventsHistogram).mock.calls;
+    const lastParams = calls[calls.length - 1][0];
+    expect(lastParams).toMatchObject({ trace_id: "trace-abc-123" });
+  });
+
+  it("omits trace_id from the histogram query when no ?trace= param is present", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    const calls = vi.mocked(useIngestionEventsHistogram).mock.calls;
+    const lastParams = calls[calls.length - 1][0];
+    expect(lastParams).not.toHaveProperty("trace_id");
+  });
+
   it("renders a 'Scoped to trace' banner naming the trace", () => {
     renderWithTrace("trace-abc-123");
     expect(container.querySelector("[data-testid='trace-scope-banner']")?.textContent).toContain(

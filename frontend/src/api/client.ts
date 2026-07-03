@@ -4755,6 +4755,7 @@ export async function getIngestionWindowRollup(
   if (params?.channels) sp.set("channels", params.channels);
   if (params?.statuses) sp.set("statuses", params.statuses);
   if (params?.q) sp.set("q", params.q);
+  if (params?.trace_id) sp.set("trace_id", params.trace_id);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`);
 }
@@ -4782,6 +4783,7 @@ export async function getIngestionEventsHistogram(
   if (params.channels) sp.set("channels", params.channels);
   if (params.statuses) sp.set("statuses", params.statuses);
   if (params.q) sp.set("q", params.q);
+  if (params.trace_id) sp.set("trace_id", params.trace_id);
   return apiFetch<IngestionHistogramResponse>(
     `/ingestion/events/histogram?${sp.toString()}`,
   );

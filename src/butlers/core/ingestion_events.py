@@ -566,6 +566,7 @@ async def ingestion_events_histogram(
     channels: list[str] | None = None,
     statuses: list[str] | None = None,
     q: str | None = None,
+    event_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return per-bucket, per-status ingestion event counts for a time window.
 
@@ -587,6 +588,17 @@ async def ingestion_events_histogram(
             as :func:`ingestion_events_list`'s ``statuses`` filter).
         q: Optional freetext search (ILIKE %q%), same fields as
             :func:`ingestion_events_list`.
+        event_ids: Optional explicit set of event ids to restrict the result
+            to (``id = ANY(...)``), pushed into SQL exactly like the other
+            filters. Used by the ``trace_id`` filter (see
+            :func:`ingestion_events_request_ids_for_trace`): the caller
+            resolves a trace to its matching ``request_id``s first, then
+            passes them here — the same resolve-then-filter pattern used by
+            :func:`ingestion_events_list`, so a trace-scoped hour strip stays
+            consistent with the trace-scoped ledger. ``None`` = no
+            restriction. An explicit empty list restricts to zero rows (a
+            trace that matched no session correctly yields an empty
+            histogram, not an unfiltered one).
 
     Returns:
         A dict with:
@@ -650,6 +662,13 @@ async def ingestion_events_histogram(
             f" OR filter_reason ILIKE ${n}"
             f" OR error_detail ILIKE ${n})"
         )
+    if event_ids is not None:
+        # Explicit `is not None` (not a truthiness check): an empty list must
+        # still restrict to zero rows, not fall through to "no filter" the
+        # way an empty `channels`/`statuses` list would — see
+        # ingestion_events_list's identical event_ids handling.
+        args.append([UUID(e) for e in event_ids])
+        where_parts.append(f"id = ANY(${len(args)}::uuid[])")
 
     where_clause = " AND ".join(where_parts)
 
@@ -1261,6 +1280,7 @@ async def ingestion_window_rollup(
     q: str | None = None,
     db: DatabaseManager | None = None,
     pricing: PricingConfig | None = None,
+    event_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return aggregate event/session counts for the active filter window.
 
@@ -1291,6 +1311,17 @@ async def ingestion_window_rollup(
         pricing:   Optional pricing config for cost estimation.  When provided, cost is
                    computed by summing per-model token totals across all linked sessions.
                    When ``None``, cost is returned as ``None``.
+        event_ids: Optional explicit set of event ids to restrict the result to
+                   (``id = ANY(...)``), pushed into SQL exactly like the other
+                   filters. Used by the ``trace_id`` filter (see
+                   :func:`ingestion_events_request_ids_for_trace`): the caller
+                   resolves a trace to its matching ``request_id``s first, then
+                   passes them here — the same resolve-then-filter pattern used
+                   by :func:`ingestion_events_list`, so a trace-scoped rollup
+                   band stays consistent with the trace-scoped ledger.
+                   ``None`` = no restriction.  An explicit empty list restricts
+                   to zero rows (a trace that matched no session correctly
+                   yields a zeroed rollup, not an unfiltered one).
 
     Returns:
         Dict with:
@@ -1329,6 +1360,13 @@ async def ingestion_window_rollup(
             f" OR filter_reason ILIKE ${n}"
             f" OR error_detail ILIKE ${n})"
         )
+    if event_ids is not None:
+        # Explicit `is not None` (not a truthiness check): an empty list must
+        # still restrict to zero rows, not fall through to "no filter" the
+        # way an empty `channels`/`statuses` list would — see
+        # ingestion_events_list's identical event_ids handling.
+        args.append([UUID(e) for e in event_ids])
+        where_parts.append(f"id = ANY(${len(args)}::uuid[])")
 
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
