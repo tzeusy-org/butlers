@@ -1,8 +1,9 @@
 /**
  * Section -- eyebrow + bottom-rule wrapper for the right-column index lists.
  *
- * Used by ButlerIndex and NextList. Renders a mono uppercase eyebrow label
- * above the list body, separated by a hairline border at the bottom.
+ * Used by right-column index lists (ButlerIndex, OperationsNowList, chronicles
+ * indices). Renders a mono uppercase eyebrow label above the list body,
+ * separated by a hairline border at the bottom.
  *
  * Topology: about/lay-and-land/frontend.md §Editorial archetype layout §Row anatomies
  * Doctrine: about/heart-and-soul/design-language.md §Editorial archetype

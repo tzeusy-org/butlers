@@ -402,16 +402,21 @@ describe('nav-config', () => {
     expect(contactsItem).toBeUndefined()
   })
 
-  // The Groups page remains routable (/groups), but is no longer surfaced in
-  // the sidebar navigation — see GroupsPage and the relationship CRM quick links.
-  it('does not contain a Groups entry', () => {
+  // Groups was retired (bu-86c4c.19) into the "Circles" lens on /entities —
+  // reachable via the SubpageTabs strip there, not surfaced as a top-level
+  // sidebar entry.
+  it('does not contain a Groups/Circles sidebar entry', () => {
     const allItems = navSections.flatMap((section) =>
       section.items.flatMap((item) =>
         item.kind === 'group' ? item.children : [item],
       ),
     )
     const groupsItem = allItems.find(
-      (item) => item.label === 'Groups' || item.path === '/groups',
+      (item) =>
+        item.label === 'Groups' ||
+        item.label === 'Circles' ||
+        item.path === '/groups' ||
+        item.path === '/entities/circles',
     )
     expect(groupsItem).toBeUndefined()
   })

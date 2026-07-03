@@ -1,7 +1,7 @@
 /**
  * SubpageTabs — horizontal nav strip for the /entities sub-route family.
  *
- * Renders links to: Plex / Index / Concentration.
+ * Renders links to: Plex / Index / Concentration / Circles.
  * The active tab is determined by the current pathname (exact match on the
  * canonical path for each tab).
  *
@@ -10,6 +10,9 @@
  * Renders inside the Page shell (archetype="overview") above the main content.
  *
  * Spec: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/tasks.md §8.6
+ *
+ * Circles (JARVIS audit move 14) retires the standalone /groups vestige into
+ * this family — see CirclesPage.tsx.
  */
 
 import { NavLink } from "react-router";
@@ -18,6 +21,7 @@ const TABS = [
   { label: "Plex", to: "/entities" },
   { label: "Index", to: "/entities/index" },
   { label: "Concentration", to: "/entities/concentration" },
+  { label: "Circles", to: "/entities/circles" },
 ] as const;
 
 interface SubpageTabsProps {

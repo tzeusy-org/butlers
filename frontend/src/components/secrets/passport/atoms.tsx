@@ -9,7 +9,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 import type { CredentialState } from "./types.ts";
-import { STATE_CATALOG, STAMP_GLYPHS, SEVERITY_META } from "./constants.ts";
+import { STATE_CATALOG, STAMP_GLYPHS } from "./constants.ts";
 
 // ── Token helpers ──────────────────────────────────────────────────────────
 
@@ -536,25 +536,6 @@ export function StampRow({
   );
 }
 
-// ── Severity pip ─────────────────────────────────────────────────────────────
-
-/** SeverityPip: 1-char mono pip for WhatBreaks rows. */
-export function SeverityPip({
-  severity,
-  className,
-}: {
-  severity: "high" | "medium" | "low";
-  className?: string;
-}) {
-  const meta = SEVERITY_META[severity] ?? SEVERITY_META.low;
-  const color = toneColor(meta.tone);
-  return (
-    <Mono size={11} color={color} className={className}>
-      {meta.glyph}
-    </Mono>
-  );
-}
-
 // ── BlockHead ───────────────────────────────────────────────────────────────
 
 /** BlockHead: mono eyebrow with optional right caption. */
@@ -740,73 +721,6 @@ export function ProbeResult({
           probe again
         </button>
       )}
-    </div>
-  );
-}
-
-// ── WhatBreaks ───────────────────────────────────────────────────────────────
-
-/**
- * WhatBreaks list: butler features that go silent when credential is sick.
- * Severity pip per row. Sourced from server-side catalogue.
- */
-export function WhatBreaks({
-  breaks,
-  state,
-}: {
-  breaks: Array<{ butler: string; feature: string; severity: "high" | "medium" | "low" }>;
-  state: CredentialState;
-}) {
-  if (!breaks || breaks.length === 0) return null;
-  const sick = state !== "ok" && state !== "never_set";
-  const presentTense = sick;
-  return (
-    <div>
-      <div className="flex items-baseline justify-between">
-        <Mono size={10} upper tracking="0.14em" color="var(--dim)">
-          {presentTense ? "what breaks" : "what would break"}
-        </Mono>
-        <Mono size={9} color="var(--dim)">
-          {breaks.length} feature{breaks.length === 1 ? "" : "s"}
-        </Mono>
-      </div>
-      <div className="mt-2 border-t border-[var(--border)]">
-        {breaks.map((b, i) => {
-          const meta = SEVERITY_META[b.severity] ?? SEVERITY_META.low;
-          const color =
-            sick && b.severity === "high"
-              ? "var(--red)"
-              : sick && b.severity === "medium"
-                ? "var(--amber)"
-                : "var(--fg)";
-          return (
-            <div
-              key={`${b.butler}-${b.feature}-${i}`}
-              className={cn(
-                "grid gap-2.5 items-baseline py-1.5",
-                i < breaks.length - 1 && "border-b border-[var(--border-soft)]",
-              )}
-              style={{ gridTemplateColumns: "14px 1fr auto 80px" }}
-            >
-              <SeverityPip severity={b.severity} />
-              <span className="flex items-center gap-2">
-                <span
-                  className="font-sans"
-                  style={{ fontSize: 13, color, letterSpacing: "-0.005em" }}
-                >
-                  {b.feature}
-                </span>
-              </span>
-              <Mono size={9} upper tracking="0.10em" color={color}>
-                {presentTense ? meta.label : "ok"}
-              </Mono>
-              <Mono size={9} upper tracking="0.10em" color="var(--dim)">
-                {b.butler === "*" ? "all butlers" : b.butler}
-              </Mono>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }

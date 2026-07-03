@@ -3,147 +3,180 @@
 > **Purpose:** Define the global navigation structure, route map, tab structures, and URL semantics for the dashboard.
 > **Audience:** Frontend developers and designers working on dashboard navigation and routing.
 > **Prerequisites:** [Purpose and Single-Pane Role](purpose-and-single-pane.md).
+>
+> **Source of truth:** the sidebar (`src/components/layout/nav-config.ts`), the router
+> (`src/router-config.tsx`), and the single command/route registry
+> (`src/lib/route-registry.ts`) that reconciles the two and feeds the command
+> palette, `g`-chords, and the `?` help sheet. This document is a regenerated
+> snapshot of those three files (bu-86c4c.19, JARVIS audit move 14) — when in
+> doubt, read the source, not this page.
 
 ## Global Shell
 
-All routes render inside a common shell with:
+All routes render inside a common shell (`RootLayout`) with:
 
-- Responsive sidebar navigation (desktop collapsible, mobile drawer).
-- Header with breadcrumb trail and theme toggle.
-- Global command palette (`/` or `Ctrl/Cmd+K`).
-- Keyboard shortcut help dialog (`?` floating button).
+- Responsive sidebar navigation (desktop collapsible, mobile drawer), driven by `nav-config.ts`.
+- Header with breadcrumb trail (auto-built from the path) and the one theme toggle.
+- Global entity/page finder (`EntityFinder`, opened via `Cmd/Ctrl+K` or `/`) — entities,
+  pages (sourced from `route-registry.ts`'s `ALL_ROUTES`, so every route is findable even
+  when it isn't in the sidebar), and `g`-chords all live here. There is no separate
+  "command palette" component; `EntityFinder` is the one command surface.
+- Keyboard shortcut help sheet (`?`).
 - Error boundary around route content.
 - Toast notifications for mutation feedback.
 
 ## Primary Navigation (Sidebar)
 
-Sidebar entries:
+Sidebar sections and entries (`navSections` in `nav-config.ts`):
 
+**Main**
 - Overview (`/`)
 - Butlers (`/butlers`)
-- Sessions (`/sessions`)
-- Traces (`/traces`)
+- QA (`/qa`, only when the `qa` butler is present)
+- Ingestion (`/ingestion`)
+- Approvals (`/approvals`)
+- Memory (`/memory`)
+- Entities (`/entities`)
+- Secrets (`/secrets`)
+- Settings (`/settings`)
+
+**Dedicated Butlers**
+- Education (`/education`, only when the `education` butler is present)
+- Health (`/health`, only when the `health` butler is present)
+- Calendar (`/calendar`)
+- Chronicles (`/chronicles`, only when the `chronicler` butler is present)
+
+**Telemetry** (collapsed by default)
 - Timeline (`/timeline`)
 - Notifications (`/notifications`)
 - Issues (`/issues`)
+- Sessions (`/sessions`)
 - Audit Log (`/audit-log`)
-- Approvals (`/approvals`)
-- Contacts (`/contacts`)
-- Calendar (`/butlers/calendar`)
-- Groups (`/groups`)
-- Health (`/health/measurements`)
-- Collections (`/collections`)
-- Connectors (`/connectors`)
-- Memory (`/memory`)
-- Entities (`/entities`)
-- Settings (`/settings`)
+- System (`/system`)
 
-Note: `Costs` exists as a route (`/costs`) but is not a sidebar item.
+### Routes that exist but are intentionally not in the sidebar
+
+These are reached via the entity finder, `g`-chords, deep links from a parent page, or
+direct URL — never orphaned, just not promoted to the rail (`EXTRA_ROUTES` in
+`route-registry.ts`):
+
+- Costs (`/costs`)
+- Six Health sub-pages: Measurements, Medications, Conditions, Symptoms, Meals, Research
+  (`/health/measurements`, `/health/medications`, `/health/conditions`, `/health/symptoms`,
+  `/health/meals`, `/health/research`) — reached today from the `/health` overview's
+  attention list and inbound links; a ledger-index + sidebar-children treatment for these
+  six is tracked as follow-up work, not yet shipped.
+- Settings sub-pages: Spend Settings (`/settings/spend`), Permissions (`/settings/permissions`),
+  Models (`/settings/models`)
+- Entities Index (`/entities/index`), Concentration (`/entities/concentration`),
+  Circles (`/entities/circles`)
+- Contacts (`/entities/index?has=contact`) — indexed directly rather than through the
+  `/contacts` redirect so the `c` chord and finder don't bounce through it
 
 ## Route Map
 
 | Route | Surface | Notes |
 | --- | --- | --- |
-| `/` | Overview dashboard | Topology + aggregate health + failed notifications + active issues |
-| `/butlers` | Butler list | Status cards for all registered butlers |
-| `/butlers/calendar` | Calendar workspace | Dual-view shell with user/butler toggle and range controls |
-| `/butlers/:name` | Butler detail | Multi-tab control and observability surface |
+| `/` | Overview dashboard | Topology + aggregate health + attention list |
+| `/butlers` | Butler roster | Status board for all registered butlers |
+| `/butlers/:name` | Butler detail | Multi-tab control and observability surface (see Tab Structures) |
 | `/sessions` | Session list | Cross-butler sessions with filters + drawer detail |
 | `/sessions/:id` | Session detail | Full metadata/prompt/result/error view |
-| `/traces` | Trace list | Distributed trace index |
-| `/traces/:traceId` | Trace detail | Metadata + span waterfall |
 | `/timeline` | Unified timeline | Cross-butler event stream with filters |
 | `/notifications` | Notifications center | Delivery stats + filtered feed |
 | `/issues` | Issues center | Active alerts and operator-dismissable issue list |
 | `/audit-log` | Audit log | Filterable operation history |
-| `/approvals` | Approvals queue | Pending action queue + filters + decision workflows |
-| `/approvals/rules` | Approval rules | Standing rules list/detail/revoke flows |
-| `/contacts` | Contacts list | Search/filter contacts with pagination |
-| `/contacts/:contactId` | Contact detail | Profile + notes/interactions/gifts/loans/activity tabs |
-| `/groups` | Groups list | Relationship groups and membership metrics |
-| `/health/measurements` | Health measurements | Measurement trend visualization + filters |
-| `/health/medications` | Health medications | Medication cards + dose log/adherence |
-| `/health/conditions` | Health conditions | Paginated condition status table |
-| `/health/symptoms` | Health symptoms | Severity trend table with filters |
-| `/health/meals` | Health meals | Grouped-by-day meals table |
-| `/health/research` | Health research | Search/tag-filtered research notes |
-| `/collections` | General collections | Collection cards and entity counts |
-| `/entities` | General entities | Search/filter entity browser |
-| `/entities/:entityId` | Entity detail | Metadata + full JSON payload |
-| `/connectors` | Connectors overview | Connector cards + volume chart + fanout matrix + error log |
-| `/connectors/:connectorType/:endpointIdentity` | Connector detail | Full stats + timeseries + health history |
+| `/approvals`, `/approvals/:id` | Approvals + Autonomy | Pending queue, decision workflows, and the always-visible Autonomy panel (per-butler × tool trust rules — absorbed the orphaned `/approvals/rules` page, bu-86c4c.12) |
+| `/calendar` | Calendar workspace | Dual-view shell with user/butler toggle and range controls |
+| `/contacts`, `/contacts/:contactId` | *(compat redirect)* | Forwards to `/entities/index?has=contact` — `public.contacts` was dropped (core_134) |
+| `/health` | Health overview | Voice briefing + vitals KPI strip + insight-driven attention list |
+| `/health/measurements` \| `/medications` \| `/conditions` \| `/symptoms` \| `/meals` \| `/research` | Health sub-pages | Six Dispatch-language CRUD surfaces over the fact store; not yet surfaced as a ledger index (follow-up) |
 | `/costs` | Costs and usage | Summary stats + chart + butler breakdown |
-| `/memory` | Memory system | Tier cards + browser + activity timeline |
-| `/settings` | Settings | Local UI preferences (theme, live-refresh defaults, search history controls) |
+| `/memory`, `/memory/facts/:factId`, `/memory/rules/:ruleId`, `/memory/episodes/:episodeId` | Memory system | Register pills (Facts/Rules/Episodes) + detail deep links |
+| `/entities` | Entities Plex | Force-graph relationship map |
+| `/entities/index` | Entities Index | Tabular entity list with filter chips + curation queue rail |
+| `/entities/concentration` | Concentration | Relationship-weight balance sheet by predicate |
+| `/entities/circles` | Circles | Contact-group lens (retired the standalone `/groups` page, bu-86c4c.19) |
+| `/entities/:entityId` | Entity detail | Single activity feed with filter pills (replaced the old Notes/Interactions/Gifts/Loans/Activity tab strip) |
+| `/entities/hop`, `/entities/columns`, `/entities/social-map` | *(compat redirects)* | Absorbed into the Plex; forward to `/entities` |
+| `/groups` | *(compat redirect)* | Forwards to `/entities/circles` (bu-86c4c.19) |
+| `/settings`, `/settings/spend`, `/settings/permissions`, `/settings/models` | Settings console | Local UI preferences, spend posture, permission grants, model routing |
+| `/secrets` | Secrets passport | Severity-sorted spine + per-credential evidence pages (System/User/CLI families) |
+| `/education` | Education | Butler-specific dashboard (only when the `education` butler is present) |
+| `/chronicles` | Chronicles | Retrospective lived-time reconstruction (only when `chronicler` is present) |
+| `/qa` | QA overview | Dossier shell: severity/since/state/butler filters (all URL-persisted), KPI strip, patrol pulse strip, case rail + dossier. Folded the standalone `/qa/investigations` flat index in here so there is one canonical case index (bu-86c4c.19) |
+| `/qa/patrols/:patrolId` | Patrol detail | One patrol's findings and dispatched investigations |
+| `/qa/investigations` | *(compat redirect)* | Forwards to `/qa` (bu-86c4c.19) |
+| `/qa/investigations/:attemptId` | Case detail (deep link) | Mounts the same `CaseDossier` as `/qa?case=<id>`, with breadcrumb chrome — kept as a stable per-case URL |
+| `/ingestion` | Ingestion timeline | Dispatch ledger (default sub-route); redirects legacy `?tab=` URLs |
+| `/ingestion/connectors`, `/ingestion/connectors/:connectorType/:endpointIdentity` | Connectors roster + detail | |
+| `/ingestion/filters` | Filters pipeline | |
+| `/ingestion/history` | *(compat redirect)* | Forwards to `/ingestion` |
+| `/connectors`, `/connectors/:connectorType/:endpointIdentity` | *(compat redirects)* | Forward to `/ingestion/connectors` equivalents |
+| `/system` | System | Instance ownership and runtime facts |
 
 ## Tab Structures
 
-## Butler Detail Tabs (`/butlers/:name`)
+### Butler Detail Tabs (`/butlers/:name`)
 
-Always rendered tab triggers:
+Always-rendered tab triggers: `Overview`, `Activity`, `Approvals`, `Spend`, `Memory`, `System`.
 
-- `Overview`
-- `Sessions`
-- `Config`
-- `Skills`
-- `Schedules`
-- `Trigger`
-- `MCP`
-- `State`
-- `CRM`
-- `Memory`
+Conditionally rendered (per butler, gated by which modules/roster entry the butler has):
 
-Conditionally rendered:
+- `Collections`, `Entities` — `general` butler
+- `Measurements` (health tab) — `health` butler
+- `Routing Log`, `Registry` — `switchboard` butler
+- `Reviews` — education-flavored butlers
+- `Timelines` — chronicler-flavored butlers
+- `Finances` — finance-flavored butlers
+- `Devices` — home-flavored butlers
+- `Taste` — lifestyle-flavored butlers
+- `Conversations` — messenger-flavored butlers
+- `Investigations` — QA staffer
+- `Contacts` — relationship butler
+- `Trips` — travel-flavored butlers
 
-- `Health` (only when `name === "health"`)
-- `Collections`, `Entities` (only when `name === "general"`)
-- `Routing Log`, `Registry` (only when `name === "switchboard"`)
+Tab URL semantics: active tab is controlled by `?tab=`; `overview` is the default and
+removes the query param.
 
-Tab URL semantics:
+### Entities Subpage Tabs (`SubpageTabs`, the `/entities/*` family)
 
-- Active tab is controlled by `?tab=` query param.
-- `overview` is default and removes the query param.
-- Accepted deep-link values are currently base tabs + health tabs + general tabs + switchboard tabs.
+- `Plex` (`/entities`, end-matched so it doesn't stay active on sub-routes)
+- `Index` (`/entities/index`)
+- `Concentration` (`/entities/concentration`)
+- `Circles` (`/entities/circles`)
 
-## Memory Browser Tabs
+### Memory Register Pills
 
-On `/memory` and Butler Detail `Memory` tab:
+On `/memory` and the Butler Detail `Memory` tab: `Facts`, `Rules`, `Episodes` register
+pills (not a `<Tabs>` shell — a plain pill switcher). When opened inside Butler Detail,
+queries are scope-filtered to that butler.
 
-- `Facts`
-- `Rules`
-- `Episodes`
+### Entity Detail (`/entities/:entityId`)
 
-When opened inside Butler Detail, queries are scope-filtered to that butler.
+A single activity feed with filter pills — the old per-contact `Notes` / `Interactions`
+/ `Gifts` / `Loans` / `Activity` tab strip was replaced when contacts were folded into
+the entity graph.
 
-## Contact Detail Tabs
+### QA Suite (`/qa`)
 
-On `/contacts/:contactId`:
+Not a tab strip — a two-pane dossier: a case rail (filtered by the sticky top bar's
+severity/since/state/butler controls, all URL-persisted) and a `CaseDossier` main
+column selected via `?case=`. Patrol detail (`/qa/patrols/:patrolId`) and per-case deep
+links (`/qa/investigations/:attemptId`) are separate routes linked in from here.
 
-- `Notes`
-- `Interactions`
-- `Gifts`
-- `Loans`
-- `Activity`
+## Approvals + Autonomy Integration
 
-## Approvals Integration
-
-The approvals module is integrated into the single-pane dashboard:
+The approvals module is integrated into the single-pane dashboard as one page:
 
 - Sidebar entry: `Approvals` (`/approvals`)
-- Route: `/approvals` (pending queue + filters + metrics + decision workflows)
-- Route: `/approvals/rules` (standing rules list/detail/create/revoke flows)
+- Route: `/approvals`, `/approvals/:id` — pending queue, filters, decision workflows,
+  and the always-visible Autonomy panel (per butler × tool trust spectrum with live use
+  counts and inline revoke)
 
-The main approvals page provides:
-- Metrics dashboard with pending count, approval/rejection/auto-approval stats
-- Filterable action queue (by tool, status, butler)
-- Action detail dialog with approve/reject/rule creation
-- Stale action expiry management
-
-The rules page provides:
-- Filterable rules list (by tool, active status, butler)
-- Rule detail dialog with constraint inspection
-- Rule revocation capability
-- Use count and limit tracking
+The standalone `/approvals/rules` page (standing-rules CRUD) was merged into `/approvals`
+as this Autonomy panel and its route deleted (bu-86c4c.12) — there is no separate rules
+route anymore.
 
 ## Related Pages
 

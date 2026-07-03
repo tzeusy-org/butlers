@@ -30,7 +30,6 @@ import SettingsSpendPage from './pages/SettingsSpendPage.tsx'
 import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import SettingsModelsPage from './pages/SettingsModelsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
-import GroupsPage from './pages/GroupsPage.tsx'
 import HealthOverviewPage from './pages/HealthOverviewPage.tsx'
 import MeasurementsPage from './pages/MeasurementsPage.tsx'
 import MedicationsPage from './pages/MedicationsPage.tsx'
@@ -46,13 +45,13 @@ import { EntitiesIndexPage } from './components/relationship/EntitiesIndexPage.t
 import PlexPage from './components/relationship/PlexPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import ConcentrationPage from './components/relationship/ConcentrationPage.tsx'
+import CirclesPage from './components/relationship/CirclesPage.tsx'
 import IngestionConnectorsPage from './pages/IngestionConnectorsPage.tsx'
 import IngestionFiltersPage from './pages/IngestionFiltersPage.tsx'
 import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 import QaOverviewPage from './pages/QaOverviewPage.tsx'
 import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
 import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
-import QaInvestigationsPage from './pages/QaInvestigationsPage.tsx'
 import ChroniclesPage from './pages/ChroniclesPage.tsx'
 import SystemPage from './pages/SystemPage.tsx'
 import {
@@ -93,7 +92,6 @@ export const router = createBrowserRouter(
           path: '/contacts/:contactId',
           element: <Navigate to="/entities/index?has=contact" replace />,
         },
-        { path: '/groups', element: <GroupsPage /> },
         { path: '/health', element: <HealthOverviewPage /> },
         { path: '/health/measurements', element: <MeasurementsPage /> },
         { path: '/health/medications', element: <MedicationsPage /> },
@@ -113,6 +111,11 @@ export const router = createBrowserRouter(
         { path: '/entities/columns', element: <ColumnsToPlexRedirect /> },
         { path: '/entities/social-map', element: <Navigate to="/entities" replace /> },
         { path: '/entities/concentration', element: <ConcentrationPage /> },
+        // Circles (JARVIS audit move 14): retires the standalone /groups page
+        // into an entities lens — see CirclesPage.tsx.
+        { path: '/entities/circles', element: <CirclesPage /> },
+        // Legacy /groups bookmarks forward to the new home.
+        { path: '/groups', element: <Navigate to="/entities/circles" replace /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsConsolePage /> },
         { path: '/settings/spend', element: <SettingsSpendPage /> },
@@ -134,7 +137,11 @@ export const router = createBrowserRouter(
         // QA Staffer routes
         { path: '/qa', element: <QaOverviewPage /> },
         { path: '/qa/patrols/:patrolId', element: <QaPatrolDetailPage /> },
-        { path: '/qa/investigations', element: <QaInvestigationsPage /> },
+        // The flat /qa/investigations index was folded into /qa itself, whose
+        // filters (severity/since/state/butler) are now URL-persisted —
+        // bu-86c4c.19 (JARVIS audit move 14, "one canonical case index").
+        // Legacy bookmarks forward to the merged page.
+        { path: '/qa/investigations', element: <Navigate to="/qa" replace /> },
         { path: '/qa/investigations/:attemptId', element: <QaInvestigationDetailPage /> },
         // Ingestion routes — first-class sub-routes in the Dispatch visual
         // language, with 301-equivalent redirects from legacy ?tab= URLs.

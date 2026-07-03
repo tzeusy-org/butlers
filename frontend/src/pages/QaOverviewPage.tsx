@@ -2,28 +2,37 @@
  * QaOverviewPage -- QA Staffer dossier shell.
  *
  * Layout (vertical order):
- *   1. Sticky top bar: severity filter + theme toggle
- *   2. Page header: Dispatch eyebrow + H1 + runtime caption + clock
+ *   1. Sticky top bar: severity + since + state + butler filters, force patrol
+ *   2. Page header: Dispatch eyebrow + H1 + runtime caption + clock (the
+ *      shell's global PageHeader carries the one theme toggle — this page
+ *      used to duplicate it locally; removed as cross-chrome cruft)
  *   3. QaKpiStrip: 4-cell KPI row
- *   4. Two-pane body: CaseList rail (320px) + CaseDossier main column
+ *   4. Patrol pulse strip: last few patrols, linking to patrol detail
+ *   5. Two-pane body: CaseList rail (320px) + CaseDossier main column
  *
- * URL-driven case selection: `?case=<id>` selects a case in the rail.
- * Clicking a case row calls setParams with a functional update to preserve existing params.
+ * URL-driven state: `?case=<id>` selects a case in the rail; `?sev=`,
+ * `?since=`, `?state=`, and `?butler=` (comma-separated) drive the case
+ * query and are shareable/bookmarkable — bu-86c4c.19 folded the standalone
+ * /qa/investigations flat index into this page so there is one canonical
+ * case index (JARVIS audit move 14). Filter/case changes call setParams
+ * with a functional update to preserve existing params.
  *
  * bu-21uf7 -- Rewrite QaOverviewPage.tsx as dossier shell
  */
 
-import { useState } from "react";
-import { useSearchParams } from "react-router";
+import { useMemo, useRef, useState } from "react";
+import { ChevronDownIcon } from "lucide-react";
+import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
+import type { QaCaseSummary } from "@/api/types";
 import { CaseDossier, CaseList, QaKpiStrip } from "@/components/qa";
 import { Time } from "@/components/ui/time";
-import { useForceQaPatrol, useQaCases, useQaSummary } from "@/hooks/use-qa";
-import { useDarkMode } from "@/hooks/useDarkMode";
+import { useButlers } from "@/hooks/use-butlers";
+import { useForceQaPatrol, useQaCases, useQaPatrols, useQaSummary } from "@/hooks/use-qa";
 
 // ---------------------------------------------------------------------------
-// Severity + time-range filter types
+// Filter types (all URL-persisted — see useSearchParams below)
 // ---------------------------------------------------------------------------
 
 type SeverityFilter = "all" | "high" | "medium" | "low";
@@ -44,6 +53,17 @@ const SINCE_OPTIONS: Array<{ value: SinceFilter; label: string }> = [
   { value: "all", label: "All" },
 ];
 
+type StateFilter = "all" | QaCaseSummary["state"];
+
+const STATE_OPTIONS: Array<{ value: StateFilter; label: string }> = [
+  { value: "all", label: "All states" },
+  { value: "detect", label: "Detect" },
+  { value: "diagnose", label: "Diagnose" },
+  { value: "pr", label: "PR open" },
+  { value: "landed", label: "Landed" },
+  { value: "escalated", label: "Escalated" },
+];
+
 /** Human-readable label for the active time range, used in CaseList. */
 function caseListSinceLabel(since: SinceFilter): string {
   if (since === "all") return "Cases · all cases";
@@ -59,6 +79,11 @@ function StickyTopBar({
   onSeverityChange,
   since,
   onSinceChange,
+  state,
+  onStateChange,
+  selectedButlers,
+  onToggleButler,
+  butlerOptions,
   onForcePatrol,
   forcePatrolPending,
 }: {
@@ -66,22 +91,25 @@ function StickyTopBar({
   onSeverityChange: (sev: SeverityFilter) => void;
   since: SinceFilter;
   onSinceChange: (since: SinceFilter) => void;
+  state: StateFilter;
+  onStateChange: (state: StateFilter) => void;
+  selectedButlers: Set<string>;
+  onToggleButler: (name: string) => void;
+  butlerOptions: string[];
   onForcePatrol: () => void;
   forcePatrolPending: boolean;
 }) {
-  const { theme, setTheme, resolvedTheme } = useDarkMode();
+  const [butlerMenuOpen, setButlerMenuOpen] = useState(false);
+  const butlerMenuRef = useRef<HTMLDivElement | null>(null);
 
-  function toggleTheme() {
-    if (theme === "system") {
-      setTheme(resolvedTheme === "dark" ? "light" : "dark");
-    } else {
-      setTheme(theme === "dark" ? "light" : "dark");
-    }
-  }
+  const butlerLabel =
+    selectedButlers.size === 0
+      ? "All butlers"
+      : `${selectedButlers.size} butler${selectedButlers.size === 1 ? "" : "s"}`;
 
   return (
-    <div className="sticky top-0 z-20 flex items-center justify-between border-b border-border/60 bg-background/95 px-6 py-2 backdrop-blur-sm">
-      <div className="flex items-center gap-4">
+    <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-y-2 border-b border-border/60 bg-background/95 px-6 py-2 backdrop-blur-sm">
+      <div className="flex flex-wrap items-center gap-4">
         {/* Severity filter */}
         <div className="flex items-center gap-1" role="group" aria-label="Filter by severity">
           {SEVERITY_OPTIONS.map((opt) => (
@@ -124,6 +152,64 @@ function StickyTopBar({
             </button>
           ))}
         </div>
+
+        {/* Divider between filter groups */}
+        <span aria-hidden="true" className="h-4 w-px bg-border/60" />
+
+        {/* State filter — folded in from the retired /qa/investigations index */}
+        <label className="flex items-center gap-1.5">
+          <span className="sr-only">State</span>
+          <select
+            aria-label="Filter by state"
+            value={state}
+            onChange={(event) => onStateChange(event.target.value as StateFilter)}
+            className="h-6 rounded border border-border/60 bg-transparent px-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {STATE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {/* Butler multi-select — folded in from the retired /qa/investigations index */}
+        <div className="relative" ref={butlerMenuRef}>
+          <button
+            type="button"
+            aria-label={`Butlers: ${butlerLabel}`}
+            aria-haspopup="menu"
+            aria-expanded={butlerMenuOpen}
+            onClick={() => setButlerMenuOpen((open) => !open)}
+            className="flex h-6 items-center gap-1 rounded border border-border/60 px-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground transition-colors duration-fast hover:text-foreground"
+          >
+            {butlerLabel}
+            <ChevronDownIcon className="size-3" aria-hidden="true" />
+          </button>
+          {butlerMenuOpen && (
+            <div
+              role="menu"
+              className="absolute left-0 top-7 z-30 w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+              onMouseLeave={() => setButlerMenuOpen(false)}
+            >
+              {butlerOptions.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={selectedButlers.has(name)}
+                  onClick={() => onToggleButler(name)}
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left font-mono text-[11px] text-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+                >
+                  <span className="w-3 text-center" aria-hidden="true">
+                    {selectedButlers.has(name) ? "x" : ""}
+                  </span>
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
@@ -136,47 +222,6 @@ function StickyTopBar({
           className="rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground transition-colors duration-fast hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
         >
           {forcePatrolPending ? "Patrolling…" : "Force patrol"}
-        </button>
-
-        {/* Theme toggle */}
-        <button
-          type="button"
-          onClick={toggleTheme}
-          aria-label="Toggle theme"
-        className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors duration-fast hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        {resolvedTheme === "dark" ? (
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="5" />
-            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-          </svg>
-        ) : (
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-          </svg>
-        )}
         </button>
       </div>
     </div>
@@ -236,22 +281,112 @@ function DossierPlaceholder({ children }: { children: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
+// Patrol pulse strip — links the overview to patrol detail (JARVIS audit
+// move 14: "link patrols from the overview"), so the orphaned /qa/patrols/:id
+// route is reachable from somewhere other than the butler-detail QA tab.
+// ---------------------------------------------------------------------------
+
+const PATROL_STRIP_LIMIT = 8;
+
+function statusDotClass(status: string): string {
+  if (status === "error" || status === "failed") return "bg-destructive";
+  if (status === "dispatched") return "bg-amber-500";
+  return "bg-emerald-500";
+}
+
+function PatrolPulseStrip() {
+  const patrols = useQaPatrols({ limit: PATROL_STRIP_LIMIT });
+  const rows = patrols.data?.data ?? [];
+
+  if (patrols.isLoading || patrols.isError || rows.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 overflow-x-auto border-b border-border/60 px-6 py-2">
+      <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+        Recent patrols
+      </span>
+      {rows.map((patrol) => (
+        <Link
+          key={patrol.id}
+          to={`/qa/patrols/${patrol.id}`}
+          title={`${patrol.status} · ${patrol.findings_count} findings`}
+          className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/60"
+        >
+          <span
+            aria-hidden="true"
+            className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass(patrol.status)}`}
+          />
+          <Time
+            value={patrol.started_at}
+            mode="relative"
+            className="font-mono text-[10px] text-muted-foreground"
+            showTitle={false}
+          />
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // QaOverviewPage
 // ---------------------------------------------------------------------------
 
 export default function QaOverviewPage() {
   const [params, setParams] = useSearchParams();
-  const [severity, setSeverity] = useState<SeverityFilter>("all");
-  const [since, setSince] = useState<SinceFilter>("7d");
+
+  // All filters are URL-persisted (bu-86c4c.19 — folds the retired
+  // /qa/investigations index's richer filter set in here, and makes the
+  // lighter severity/since filters that already existed shareable too).
+  const severity = (params.get("sev") as SeverityFilter | null) ?? "all";
+  const since = (params.get("since") as SinceFilter | null) ?? "7d";
+  const state = (params.get("state") as StateFilter | null) ?? "all";
+  const selectedButlers = useMemo(
+    () => new Set((params.get("butler") ?? "").split(",").filter(Boolean)),
+    [params],
+  );
 
   const selectedCaseId = params.get("case") ?? undefined;
 
   const summary = useQaSummary();
   const forcePatrol = useForceQaPatrol();
+  const butlersQuery = useButlers();
   const cases = useQaCases({
     sev: severity === "all" ? undefined : severity,
     since,
+    ...(state !== "all" ? { state } : {}),
+    ...(selectedButlers.size > 0 ? { butler: Array.from(selectedButlers).sort() } : {}),
   });
+
+  function setFilterParam(key: string, value: string | null) {
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value === null || value === "") {
+        next.delete(key);
+      } else {
+        next.set(key, value);
+      }
+      return next;
+    });
+  }
+
+  function handleToggleButler(name: string) {
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const currentButlers = new Set((next.get("butler") ?? "").split(",").filter(Boolean));
+      if (currentButlers.has(name)) {
+        currentButlers.delete(name);
+      } else {
+        currentButlers.add(name);
+      }
+      if (currentButlers.size > 0) {
+        next.set("butler", Array.from(currentButlers).sort().join(","));
+      } else {
+        next.delete("butler");
+      }
+      return next;
+    });
+  }
 
   function handleForcePatrol() {
     if (forcePatrol.isPending) return;
@@ -270,6 +405,12 @@ export default function QaOverviewPage() {
 
   const casesData = cases.data?.data ?? [];
 
+  const butlerOptions = useMemo(() => {
+    const liveNames = butlersQuery.data?.data.map((butler) => butler.name) ?? [];
+    const caseButlers = cases.data?.data.map((c) => c.butler) ?? [];
+    return Array.from(new Set([...liveNames, ...caseButlers])).sort();
+  }, [butlersQuery.data?.data, cases.data?.data]);
+
   // Auto-select first case when no URL param is set and data is loaded
   const effectiveCaseId = selectedCaseId ?? casesData[0]?.id;
 
@@ -287,9 +428,14 @@ export default function QaOverviewPage() {
     <div className="flex min-h-full flex-col">
       <StickyTopBar
         severity={severity}
-        onSeverityChange={setSeverity}
+        onSeverityChange={(v) => setFilterParam("sev", v === "all" ? null : v)}
         since={since}
-        onSinceChange={setSince}
+        onSinceChange={(v) => setFilterParam("since", v === "7d" ? null : v)}
+        state={state}
+        onStateChange={(v) => setFilterParam("state", v === "all" ? null : v)}
+        selectedButlers={selectedButlers}
+        onToggleButler={handleToggleButler}
+        butlerOptions={butlerOptions}
         onForcePatrol={handleForcePatrol}
         forcePatrolPending={forcePatrol.isPending}
       />
@@ -300,6 +446,8 @@ export default function QaOverviewPage() {
       <div className="border-b border-border/60 px-6 py-4">
         <QaKpiStrip kpis={summaryData?.kpis} active={summaryData?.active_breakdown} />
       </div>
+
+      <PatrolPulseStrip />
 
       {/* Two-pane body: case rail + dossier */}
       <div className="flex flex-1 overflow-hidden">

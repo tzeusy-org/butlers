@@ -3,7 +3,9 @@
  * Component tests for SubpageTabs (§8.6).
  *
  * Covers:
- * - All 3 tabs render with correct labels and to paths
+ * - All 4 tabs render with correct labels and to paths (Plex/Index/
+ *   Concentration/Circles — Circles added by bu-86c4c.19, absorbing the
+ *   retired /groups vestige)
  * - Active tab gets aria-current="page" based on pathname
  * - Plex tab uses end matching (not active on /entities/hop etc.)
  * - Tab links have proper hrefs in the rendered <a> elements
@@ -63,7 +65,7 @@ describe("SubpageTabs — accessibility and structure", () => {
     expect(nav).toBeTruthy();
   });
 
-  it("renders all 3 tabs with correct labels", () => {
+  it("renders all 4 tabs with correct labels", () => {
     renderTabs();
     const nav = container.querySelector("nav[aria-label='Entity views']");
     const links = nav?.querySelectorAll("a") ?? [];
@@ -72,6 +74,7 @@ describe("SubpageTabs — accessibility and structure", () => {
     expect(labels).toContain("Plex");
     expect(labels).toContain("Index");
     expect(labels).toContain("Concentration");
+    expect(labels).toContain("Circles");
   });
 });
 
@@ -90,6 +93,7 @@ describe("SubpageTabs — tab links and routing", () => {
     expect(hrefMap.get("Plex")).toBe("/entities");
     expect(hrefMap.get("Index")).toBe("/entities/index");
     expect(hrefMap.get("Concentration")).toBe("/entities/concentration");
+    expect(hrefMap.get("Circles")).toBe("/entities/circles");
   });
 });
 
@@ -125,6 +129,15 @@ describe("SubpageTabs — active tab styling", () => {
     );
 
     expect(concentrationLink?.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("Circles tab has aria-current='page' when at /entities/circles", () => {
+    renderTabs("/entities/circles");
+    const nav = container.querySelector("nav[aria-label='Entity views']");
+    const links = nav?.querySelectorAll("a") ?? [];
+    const circlesLink = Array.from(links).find((a) => a.textContent?.trim() === "Circles");
+
+    expect(circlesLink?.getAttribute("aria-current")).toBe("page");
   });
 
   it("Plex tab does not stay active on /entities/concentration (end matching)", () => {

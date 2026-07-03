@@ -5,6 +5,9 @@
 export { DirectionPassport } from "./DirectionPassport.tsx";
 export { Spine, SpineRow, SpineGroup, SpineSearch, SortPicker } from "./Spine.tsx";
 export { PageUser, PageSystem, PageCli, PassportEmptyState } from "./pages.tsx";
+export { WhatBreaks } from "./WhatBreaks.tsx";
+export { SeverityPip } from "./SeverityPip.tsx";
+export type { Severity } from "./SeverityPip.tsx";
 export {
   Eyebrow,
   Mono,
@@ -19,12 +22,10 @@ export {
   FingerprintRow,
   StampGlyph,
   StampRow,
-  SeverityPip,
   BlockHead,
   VisaRow,
   ScopeBalance,
   ProbeResult,
-  WhatBreaks,
   PillBtn,
   KV,
   toneColor,

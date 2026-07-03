@@ -7,6 +7,9 @@
  * - Empty state renders "Nothing in the dossier." when cases list is empty
  * - Error state renders "Couldn't reach the staffer." on API failure
  * - Severity filter buttons are present and accessible
+ * - bu-86c4c.19: severity/since/state/butler filters are all URL-persisted
+ *   (folded in from the retired /qa/investigations index), and the patrol
+ *   pulse strip links the overview to patrol detail
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -27,14 +30,11 @@ vi.mock("@/hooks/use-qa", () => ({
   useQaCaseJournal: vi.fn(),
   useRemoveDismissal: vi.fn(),
   useForceQaPatrol: vi.fn(),
+  useQaPatrols: vi.fn(),
 }));
 
-vi.mock("@/hooks/useDarkMode", () => ({
-  useDarkMode: vi.fn(() => ({
-    theme: "dark",
-    setTheme: vi.fn(),
-    resolvedTheme: "dark",
-  })),
+vi.mock("@/hooks/use-butlers", () => ({
+  useButlers: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,9 @@ import {
   useQaCaseJournal,
   useRemoveDismissal,
   useForceQaPatrol,
+  useQaPatrols,
 } from "@/hooks/use-qa";
+import { useButlers } from "@/hooks/use-butlers";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -141,6 +143,16 @@ describe("QaOverviewPage -- dossier shell", () => {
     (useForceQaPatrol as AnyMock).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
+    });
+    (useQaPatrols as AnyMock).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    });
+    (useButlers as AnyMock).mockReturnValue({
+      data: { data: [{ name: "chronicler" }, { name: "general" }] },
+      isLoading: false,
+      isError: false,
     });
   });
 
@@ -320,5 +332,138 @@ describe("QaOverviewPage -- dossier shell", () => {
     });
     const html = renderPage();
     expect(html).toContain("Loading cases");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Folded filters (bu-86c4c.19 — /qa/investigations retired into /qa)
+// ---------------------------------------------------------------------------
+
+describe("QaOverviewPage -- folded filters are URL-persisted", () => {
+  beforeEach(() => {
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: { data: MOCK_SUMMARY },
+      isLoading: false,
+      isError: false,
+    });
+    (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useButlers as AnyMock).mockReturnValue({
+      data: { data: [{ name: "chronicler" }, { name: "general" }] },
+      isLoading: false,
+      isError: false,
+    });
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1, MOCK_CASE_2] },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("reads ?sev= from the URL and marks the matching pill pressed", () => {
+    const html = renderPage("/qa?sev=high");
+    expect(html).toMatch(/aria-pressed="true"[^>]*>High</);
+
+    const lastCallArgs = (useQaCases as AnyMock).mock.calls.at(-1)?.[0];
+    expect(lastCallArgs).toMatchObject({ sev: "high" });
+  });
+
+  it("reads ?state= from the URL and passes it through to useQaCases", () => {
+    renderPage("/qa?state=escalated");
+    const lastCallArgs = (useQaCases as AnyMock).mock.calls.at(-1)?.[0];
+    expect(lastCallArgs).toMatchObject({ state: "escalated" });
+  });
+
+  it("omits state from the query when ?state= is absent (all states)", () => {
+    renderPage("/qa");
+    const lastCallArgs = (useQaCases as AnyMock).mock.calls.at(-1)?.[0];
+    expect(lastCallArgs).not.toHaveProperty("state");
+  });
+
+  it("reads ?butler= (comma-separated) from the URL and passes a sorted array through", () => {
+    renderPage("/qa?butler=general,chronicler");
+    const lastCallArgs = (useQaCases as AnyMock).mock.calls.at(-1)?.[0];
+    expect(lastCallArgs).toMatchObject({ butler: ["chronicler", "general"] });
+
+    const html = renderPage("/qa?butler=general,chronicler");
+    expect(html).toContain("2 butlers");
+  });
+
+  it("renders the state filter select with all five states plus 'all'", () => {
+    const html = renderPage("/qa");
+    expect(html).toContain('aria-label="Filter by state"');
+    expect(html).toContain("Detect");
+    expect(html).toContain("Diagnose");
+    expect(html).toContain("PR open");
+    expect(html).toContain("Landed");
+    expect(html).toContain("Escalated");
+  });
+
+  it("does not render a page-local theme toggle (the shell header owns the one toggle)", () => {
+    const html = renderPage("/qa");
+    expect(html).not.toContain('aria-label="Toggle theme"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Patrol pulse strip (bu-86c4c.19 — links patrols from the overview)
+// ---------------------------------------------------------------------------
+
+describe("QaOverviewPage -- patrol pulse strip", () => {
+  beforeEach(() => {
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: { data: MOCK_SUMMARY },
+      isLoading: false,
+      isError: false,
+    });
+    (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useButlers as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("links each recent patrol to its patrol detail route", () => {
+    (useQaPatrols as AnyMock).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "patrol-1",
+            started_at: "2026-05-16T00:00:00Z",
+            completed_at: "2026-05-16T00:05:00Z",
+            status: "clean",
+            findings_count: 0,
+            novel_count: 0,
+            dispatched_count: 0,
+            log_lookback_minutes: 15,
+            sources_polled: [],
+            error_detail: null,
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain("Recent patrols");
+    expect(html).toContain('href="/qa/patrols/patrol-1"');
+  });
+
+  it("renders nothing when there are no patrols yet", () => {
+    (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    const html = renderPage();
+    expect(html).not.toContain("Recent patrols");
+  });
+
+  it("renders nothing while patrols are loading or on error (no fabricated strip)", () => {
+    (useQaPatrols as AnyMock).mockReturnValue({ data: undefined, isLoading: true, isError: false });
+    const loadingHtml = renderPage();
+    expect(loadingHtml).not.toContain("Recent patrols");
+
+    (useQaPatrols as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    const errorHtml = renderPage();
+    expect(errorHtml).not.toContain("Recent patrols");
   });
 });

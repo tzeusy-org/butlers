@@ -3,8 +3,8 @@
  * The single command/route registry (bu-86c4c.7).
  *
  * Covers the audit's two concrete failure modes:
- * - orphaned routes: /costs, /groups, and the six health sub-pages must be
- *   indexed even though they're not in the sidebar.
+ * - orphaned routes: /costs, /entities/circles, and the six health sub-pages
+ *   must be indexed even though they're not in the sidebar.
  * - chord drift: g-h used to point at /health/measurements (pre-redesign);
  *   chords must be unique and resolvable from the same registry that builds
  *   the sidebar.
@@ -18,7 +18,7 @@ describe("route-registry", () => {
     const paths = ALL_ROUTES.map((r) => r.path);
     for (const orphaned of [
       "/costs",
-      "/groups",
+      "/entities/circles",
       "/health/measurements",
       "/health/medications",
       "/health/conditions",
@@ -34,6 +34,14 @@ describe("route-registry", () => {
     const paths = ALL_ROUTES.map((r) => r.path);
     expect(paths).not.toContain("/approvals/rules");
     expect(paths).toContain("/approvals");
+  });
+
+  it("does not index /groups or /qa/investigations (bu-86c4c.19 retired /groups into the Circles lens at /entities/circles and folded /qa/investigations into /qa's own URL-persisted filters)", () => {
+    const paths = ALL_ROUTES.map((r) => r.path);
+    expect(paths).not.toContain("/groups");
+    expect(paths).not.toContain("/qa/investigations");
+    expect(paths).toContain("/entities/circles");
+    expect(paths).toContain("/qa");
   });
 
   it("still indexes every sidebar-promoted route (sanity — sidebar routes are a subset)", () => {

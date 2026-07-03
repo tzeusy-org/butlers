@@ -686,11 +686,13 @@ describe("Sidebar", () => {
       });
     });
 
-    it("does not render a Groups nav link even when relationship butler is present", () => {
-      render("/groups");
+    it("does not render a Groups/Circles nav link even when relationship butler is present", () => {
+      render("/entities/circles");
 
-      // The Groups page is reachable by direct route, but no longer surfaced in
-      // the sidebar — neither a /groups link nor a Relationships group header.
+      // Groups was retired (bu-86c4c.19) into the "Circles" lens on /entities,
+      // reachable via that page's own SubpageTabs strip — not surfaced as a
+      // top-level sidebar link or a "Relationships" group header.
+      expect(container.querySelector('a[href="/entities/circles"]')).toBeNull();
       expect(container.querySelector('a[href="/groups"]')).toBeNull();
       const groupHeader = Array.from(container.querySelectorAll("button")).find(
         (btn) => btn.getAttribute("aria-label") === "Relationships",
@@ -698,9 +700,10 @@ describe("Sidebar", () => {
       expect(groupHeader).toBeUndefined();
     });
 
-    it("does not render a Groups nav link in mobile mode", () => {
-      renderMobile("/groups");
+    it("does not render a Groups/Circles nav link in mobile mode", () => {
+      renderMobile("/entities/circles");
 
+      expect(container.querySelector('a[href="/entities/circles"]')).toBeNull();
       expect(container.querySelector('a[href="/groups"]')).toBeNull();
     });
   });

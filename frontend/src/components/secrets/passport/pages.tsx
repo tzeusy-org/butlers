@@ -28,7 +28,6 @@ import {
   FingerprintRow,
   StampRow,
   BlockHead,
-  WhatBreaks,
   ProbeResult,
   VisaRow,
   ScopeBalance,
@@ -37,6 +36,7 @@ import {
   toneColor,
   IdentityChip,
 } from "./atoms.tsx";
+import { WhatBreaks } from "./WhatBreaks.tsx";
 import type { Identity } from "./types.ts";
 import { reauthorizeUserCredential, ApiError } from "@/api/client.ts";
 import {
@@ -1311,7 +1311,7 @@ export function PageUser({
               </div>
             </div>
           )}
-          <WhatBreaks breaks={credential.breaks} state={credential.state} />
+          <WhatBreaks provider={credential.provider} />
           {credential.feeds.length > 0 && (
             <div>
               <Mono size={9} upper tracking="0.14em" color="var(--dim)">feeds</Mono>
@@ -1877,31 +1877,7 @@ export function PageSystem({
       {/* Body: two columns */}
       <div className="grid gap-9" style={{ gridTemplateColumns: "1fr 1fr" }}>
         <div className="flex flex-col gap-4.5">
-          {credential.breaks && credential.breaks.length > 0 ? (
-            <WhatBreaks
-              breaks={credential.breaks}
-              state={isMissing ? "never_set" : "ok"}
-            />
-          ) : (
-            <div>
-              <Mono size={9} upper tracking="0.14em" color="var(--dim)">what breaks</Mono>
-              <div
-                className="mt-2 pt-2.5"
-                style={{ borderTop: "1px solid var(--border)" }}
-              >
-                <span
-                  style={{
-                    fontFamily: "var(--font-serif)",
-                    fontStyle: "italic",
-                    fontSize: 13,
-                    color: "var(--dim)",
-                  }}
-                >
-                  Nothing routed here yet.
-                </span>
-              </div>
-            </div>
-          )}
+          <WhatBreaks provider={credential.category} />
         </div>
         <div className="flex flex-col gap-4.5">
           {!isPlain && (
