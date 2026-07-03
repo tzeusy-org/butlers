@@ -211,7 +211,7 @@ but there is unresolved namespace drift between
 
 ## Page Archetypes
 
-Pages today fall into roughly five archetypes. The shared `<Page>`
+Pages today fall into roughly six archetypes. The shared `<Page>`
 primitive (`components/ui/page.tsx`) enforces heading block, skeleton,
 error/empty regions, and `space-y-6` rhythm. Pages not yet migrated
 still compose the archetype by hand; see the Migration Checklist below.
@@ -223,16 +223,20 @@ above-the-fold feed → secondary cards → demoted stat strip, shipped
 PRs #1345, #1346, #1351, #1361) but has since migrated to the
 **editorial** archetype (`<Page archetype="editorial">`) as the
 operational triage cockpit — see "Editorial archetype layout" below
-for its current code and layout detail. `QaOverviewPage` and
-`CostsPage` still use the older stats-grid + chart layout.
+for its current code and layout detail. `QaOverviewPage` still uses
+the older stats-grid + chart layout; `CostsPage` has migrated to the
+**workspace** archetype (`<Page archetype="workspace">`, `CostsPage.tsx:111`)
+-- see "D. Workspace / canvas" below.
 
 The topology graph lives at `/system`, not on `/`.
 
 ### B. List / index
 Filterable table-of-things. Header + filter bar + table + manual
-pagination. Examples: `ButlersPage`, `ContactsPage`, `EntitiesPage`,
+pagination. Examples: `ContactsPage`, `EntitiesPage`,
 `AuditLogPage`, `IngestionPage`, `NotificationsPage`,
-`QaInvestigationsPage`.
+`QaInvestigationsPage`. (`ButlersPage` was a List-archetype page
+historically but has since moved to the **status-board** archetype --
+see "F. Status board" below.)
 
 There is no shared `<DataTable>` component. The shadcn `Table`
 primitive is used directly, with each page wiring its own pagination
@@ -281,6 +285,30 @@ Settings, secrets, rule definitions. Examples: `SettingsPage`,
 
 There is no shared form layout. Forms compose `Input`, `Label`,
 `Button`, `Dialog`, `Select` directly.
+
+### F. Status board
+Full-bleed operational board: an optional `header` slot (identity/KPI chrome)
+above a body region the consumer fully owns, and an optional `footer` slot
+(aggregate KPI band) below it. Unlike the other archetypes, `<Page>` renders
+no `<h1>`/heading block for this archetype -- the `header` slot owns the
+page's visible title (`components/ui/page.tsx:294-305,527-541`). Examples:
+`ButlersPage` (4-column butler grid: `<BoardHeader>` as `header`,
+`<StatusBoardCell>` grid as `children`, `<BoardFooter>` as `footer` --
+`ButlersPage.tsx:71-118`), `ButlerDetailPage` (`<ButlerDetailHeader>` as
+`header`, tabbed content as `children`, no `footer` -- `ButlerDetailPage.tsx:318-331`).
+
+**Reference implementation:** `ButlersPage` -- the only page using both the
+`header` and `footer` slots; `ButlerDetailPage` uses `header` only.
+
+**Required primitives:** `<Page archetype="status-board">` with `header?`
+and `footer?` props (both `React.ReactNode`, rendered outside the standard
+`space-y-6` children wrapper); consumers supply their own header/footer
+components (`<BoardHeader>` + `<BoardFooter>` for `ButlersPage`;
+`<ButlerDetailHeader>` for `ButlerDetailPage`).
+
+**When to use:** Full-page operational dashboards where a persistent
+header/footer chrome frames a body the consumer fully owns (a grid, tabs, or
+otherwise) instead of `<Page>`-managed heading block + `space-y-6` children.
 
 ---
 
@@ -474,7 +502,7 @@ not literals.
 | Concern | Where it shows up | Note |
 |---|---|---|
 | H1 size varies | `text-2xl` (e.g. pre-migration pages) vs `text-3xl` (ButlersPage:124) | `<Page>` enforces `text-3xl` for overview/list/detail/workspace/editor archetypes; the editorial archetype (`ChroniclesPage`, `DashboardPage`) uses a 44px Display headline instead; remaining `text-2xl` pages pre-date migration |
-| `StatsCard` reimplemented | CostsPage:20, QaOverviewPage:149 | `DashboardPage` migrated to `StatItem` (no-Card strip). Remaining pages are candidates for the same pattern |
+| `StatsCard` reimplemented | CostsPage:20, QaOverviewPage:149 | `DashboardPage` moved off `StatsCard` to its own `RuntimeSummaryKpi` KPI strip (`DashboardPage.tsx:153`, no-Card strip); `StatItem` is no longer used anywhere in `frontend/src`. Remaining pages are candidates for a shared KPI-strip pattern |
 | Date formatters disagree | `toLocaleString` (EpisodeDetailPage:140), `toISOString().slice(0,10)` (EntitiesPage:196), `format(...)` from date-fns (GroupsPage:155) | `<Time>` primitive shipped; `DashboardPage` already uses `<Time mode="relative">` |
 | Hex literals | EntitiesPage:102-113, EntityDetailPage:313/316, SymptomsPage, GroupsPage:121 | Need named tokens |
 | Inline `style={{...}}` | FactDetailPage:101, RuleDetailPage:97, CalendarWorkspacePage:188 | Tailwind arbitrary values |
@@ -578,8 +606,9 @@ interface PageProps {
   `text-3xl font-bold tracking-tight`). `text-3xl` is the canonical
   operator-tool H1 size (not `text-2xl`). The `<Page>` `HeadingBlock` uses
   `text-3xl`.
-  Pages not yet migrated to `<Page>` that use `text-2xl` (e.g. `CostsPage`)
-  will adopt `text-3xl` when they migrate.
+  Pages not yet migrated to `<Page>` that use `text-2xl` (e.g. `QaOverviewPage`)
+  will adopt `text-3xl` when they migrate. (`CostsPage` has already migrated
+  and uses `text-3xl` via the shared heading block.)
   It is also used for `<title>` via a `useEffect` if there is no other title
   manager.
 - `description` renders as `text-muted-foreground mt-1` below the title.
@@ -695,6 +724,42 @@ Reference pages: `SettingsPage`, `SecretsPage`, `ApprovalRulesPage`.
   mixing within one page.
 - The `actions` prop in editors typically holds a single "Save" button
   (`variant="default"`).
+
+#### F. Status board (`archetype="status-board"`)
+
+Reference pages: `ButlersPage` (header + body grid + footer),
+`ButlerDetailPage` (header + tabs body, no footer).
+
+- Max content width: unrestricted. `page.tsx:294-305` wraps `header` (if
+  provided), a `flex-1` body region holding `children`, and `footer` (if
+  provided) inside `<div className="flex min-h-full flex-col">`.
+- Content padding: NOT inherited via a shared `<Page>`-level padding or
+  `space-y-6` wrapper the way A-E are. Each slot supplies its own padding --
+  `<BoardHeader>` and `<BoardFooter>` both use `px-7` (`BoardHeader.tsx:89`,
+  `BoardFooter.tsx:100`), and the body supplies its own border/padding (e.g.
+  `ButlersPage`'s grid uses `border-t border-l border-border/60`,
+  `ButlersPage.tsx:104`).
+- Heading block: none. `<Page>` renders no `<h1>`/`HeadingBlock` for this
+  archetype -- `title`/`description` are still consumed for `document.title`,
+  but the `header` slot (`<BoardHeader>`, `<ButlerDetailHeader>`) owns the
+  visible page identity. When `<Page>`'s own `breadcrumbs` or `actions` props
+  are supplied (neither current consumer passes them -- `ButlerDetailPage`
+  instead threads its mode-switch actions into the `header` slot via
+  `<ButlerDetailHeader>`'s own `actions` prop), `<Page>` renders an optional
+  chrome strip (`flex items-center justify-between gap-4 px-7 pt-4 pb-2`,
+  `page.tsx:531-538`) between the `header` slot and the body.
+- Section rhythm: `children` is unconstrained; consumers own their own body
+  layout (`ButlersPage`'s CSS grid of `<StatusBoardCell>`; `ButlerDetailPage`'s
+  `<Tabs>`).
+- `loading` renders a dedicated `StatusBoardSkeleton` (header bar + 2x4 cell
+  grid + footer band, `page.tsx:241-256`) in the body region (`children` of
+  `ArchetypeWrapper`), framed by -- not inside -- the `header`/`footer` slots;
+  not the standard per-archetype skeleton used by A-E.
+- `error` (with no cached rows) renders a simple error `<Card>` in the body
+  region (`children` of `ArchetypeWrapper`), framed by -- not inside -- the
+  `header`/`footer` slots (`page.tsx:419-437`), matching the editorial
+  archetype's error treatment rather than the `HeadingBlock` + error card
+  used by A-E.
 
 ---
 
