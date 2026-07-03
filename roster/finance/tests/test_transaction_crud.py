@@ -1528,6 +1528,91 @@ class TestBulkRecategorizeEnhanced:
         assert "create_rule" in result
         assert result["create_rule"] is False
 
+    async def test_bulk_recategorize_unknown_category_falls_back_when_category_fk_exists(
+        self, pool_v2
+    ):
+        """bulk_recategorize stores an out-of-taxonomy new_category as uncategorized
+        under the FK schema instead of raising ForeignKeyViolationError.
+
+        Regression test for bu-f3guj: bulk_recategorize previously wrote
+        new_category directly via a bulk UPDATE, bypassing the
+        _resolve_category_for_insert taxonomy guard that record_transaction /
+        update_transaction / split_transaction already route through (bu-24jwd,
+        PR #2848), so an out-of-taxonomy category tripped the
+        transactions.category -> categories.name FK on migrated schemas.
+        """
+        from butlers.tools.finance.transactions import bulk_recategorize
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(pool_v2, merchant="FkBulkMerchant", category="uncategorized")
+
+        result = await bulk_recategorize(
+            pool=pool_v2,
+            merchant_pattern="%FkBulkMerchant%",
+            new_category="not-a-real-category",
+        )
+
+        assert result["updated"] == 1
+        assert result["resolved_category"] == "uncategorized"
+        assert result["used_category_fallback"] is True
+        assert result["original_category"] == "not-a-real-category"
+
+        row = await pool_v2.fetchrow(
+            "SELECT category FROM transactions WHERE id = $1::uuid", txn["id"]
+        )
+        assert row["category"] == "uncategorized"
+
+    async def test_bulk_recategorize_category_is_canonicalized_case_insensitively_for_fk_schema(
+        self, pool_v2
+    ):
+        """bulk_recategorize accepts display-style casing when categories are FK-backed."""
+        from butlers.tools.finance.transactions import bulk_recategorize
+
+        await _install_category_fk(pool_v2)
+        txn = await _insert_txn_v2(pool_v2, merchant="FkBulkCanon", category="uncategorized")
+
+        result = await bulk_recategorize(
+            pool=pool_v2,
+            merchant_pattern="%FkBulkCanon%",
+            new_category="Groceries",
+        )
+
+        assert result["updated"] == 1
+        assert result["resolved_category"] == "groceries"
+        assert "used_category_fallback" not in result
+
+        row = await pool_v2.fetchrow(
+            "SELECT category FROM transactions WHERE id = $1::uuid", txn["id"]
+        )
+        assert row["category"] == "groceries"
+
+    async def test_bulk_recategorize_create_rule_uses_resolved_category_under_fk_schema(
+        self, pool_v2
+    ):
+        """The create_rule merchant_mappings upsert stores the resolved (not raw)
+        category, so it does not later leak an out-of-taxonomy value into
+        auto-categorization on schemas where merchant_mappings.category also
+        carries the categories FK (fk_merchant_mappings_category, finance_006)."""
+        from butlers.tools.finance.transactions import bulk_recategorize
+
+        await _install_category_fk(pool_v2)
+        await _insert_txn_v2(pool_v2, merchant="FkBulkRuleMerchant", category="uncategorized")
+
+        result = await bulk_recategorize(
+            pool=pool_v2,
+            merchant_pattern="%FkBulkRuleMerchant%",
+            new_category="not-a-real-category",
+            create_rule=True,
+        )
+        assert result["resolved_category"] == "uncategorized"
+
+        mapping = await pool_v2.fetchrow(
+            "SELECT category FROM merchant_mappings WHERE raw_pattern = $1",
+            "%FkBulkRuleMerchant%",
+        )
+        assert mapping is not None
+        assert mapping["category"] == "uncategorized"
+
 
 # ---------------------------------------------------------------------------
 # spending_summary: deleted_at IS NULL filter

@@ -1703,8 +1703,19 @@ async def bulk_recategorize(
     When ``dry_run=True``, returns a preview of affected transactions without
     modifying them.
 
+    ``new_category`` is routed through the shared ``_resolve_category_for_insert``
+    taxonomy guard once (not per-row) before the bulk UPDATE, mirroring
+    ``record_transaction`` / ``update_transaction`` / ``split_transaction``: on
+    migrated schemas with the ``transactions.category -> categories.name`` FK, an
+    out-of-taxonomy value canonicalizes case-insensitively or falls back to
+    ``'uncategorized'`` instead of raising ``ForeignKeyViolationError``. The
+    resolved value is reused for the correction log entry and the
+    ``create_rule`` merchant-mapping upsert (which carries the same FK via
+    ``fk_merchant_mappings_category`` in migrated schemas). Legacy schemas
+    without a ``categories`` table are unaffected.
+
     When ``create_rule=True``, upserts a ``finance.merchant_mappings`` row
-    mapping the pattern to ``new_category`` after the update.
+    mapping the pattern to the resolved category after the update.
 
     Parameters
     ----------
@@ -1722,8 +1733,11 @@ async def bulk_recategorize(
     Returns
     -------
     dict
-        ``{matched, updated, dry_run, create_rule, sample_transactions}``
-        where ``updated`` is 0 when ``dry_run=True``.
+        ``{matched, updated, dry_run, create_rule, sample_transactions}`` where
+        ``updated`` is 0 when ``dry_run=True``. When ``dry_run=False`` also
+        includes ``resolved_category`` (the value actually written), and when
+        the taxonomy guard fell back, ``used_category_fallback=True`` plus
+        ``original_category`` (the caller-supplied value).
     """
     has_deleted_at = await _has_column(pool, "transactions", "deleted_at")
     has_is_category_locked = await _has_column(pool, "transactions", "is_category_locked")
@@ -1759,7 +1773,25 @@ async def bulk_recategorize(
     )
 
     updated = 0
+    resolved_category = new_category
+    used_category_fallback = False
     if not dry_run:
+        # Resolve the caller-supplied category through the shared taxonomy guard
+        # ONCE (not per-row) so an out-of-taxonomy value canonicalizes
+        # (case-insensitive) or falls back to 'uncategorized' instead of
+        # tripping the transactions.category -> categories.name FK on migrated
+        # schemas. Mirrors record_transaction / update_transaction /
+        # split_transaction's exact usage — resolve, then reuse the resolved
+        # value for every write below (bulk UPDATE, corrections log, and the
+        # merchant_mappings upsert, which carries the same FK in migrated
+        # schemas via fk_merchant_mappings_category).
+        bulk_meta: dict[str, Any] = {}
+        resolved_category, used_category_fallback = await _resolve_category_for_insert(
+            pool,
+            new_category,
+            bulk_meta,
+        )
+
         result = await pool.execute(
             f"""
             UPDATE transactions
@@ -1768,7 +1800,7 @@ async def bulk_recategorize(
               {deleted_cond}
               {locked_cond}
             """,
-            new_category,
+            resolved_category,
             merchant_pattern,
         )
         # asyncpg execute() returns "UPDATE N" string
@@ -1784,7 +1816,7 @@ async def bulk_recategorize(
                 "00000000-0000-0000-0000-000000000000",  # sentinel for bulk ops
                 "bulk_recategorize",
                 merchant_pattern,
-                new_category,
+                resolved_category,
                 reason=f"bulk_recategorize: {updated} transactions updated",
                 source="bulk",
             )
@@ -1832,7 +1864,7 @@ async def bulk_recategorize(
                             """,
                             merchant_pattern,
                             normalized_merchant or merchant_pattern,
-                            new_category,
+                            resolved_category,
                             int(updated),
                         )
                     else:
@@ -1849,7 +1881,7 @@ async def bulk_recategorize(
                             """,
                             str(existing["id"]),
                             normalized_merchant or merchant_pattern,
-                            new_category,
+                            resolved_category,
                             int(updated),
                         )
             except Exception:
@@ -1859,13 +1891,19 @@ async def bulk_recategorize(
                     exc_info=True,
                 )
 
-    return {
+    response: dict[str, Any] = {
         "matched": matched,
         "updated": updated,
         "dry_run": dry_run,
         "create_rule": create_rule,
         "sample_transactions": [_row_to_dict(r) for r in sample_rows],
     }
+    if not dry_run:
+        response["resolved_category"] = resolved_category
+        if used_category_fallback:
+            response["used_category_fallback"] = True
+            response["original_category"] = new_category
+    return response
 
 
 async def bulk_record_transactions(
