@@ -107,6 +107,7 @@ export function RecentDaysIndex({ days, onSelect, selectedDate }: RecentDaysInde
   }
   return (
     <Section eyebrow="Recent days">
+      {/* eslint-disable-next-line jsx-a11y/no-redundant-roles -- `list-style: none` (via list-none) strips the UL's implicit list semantics in Safari/VoiceOver; role="list" restores it and is NOT redundant here. */}
       <ul role="list" className="m-0 list-none p-0">
         {days.map((d, i) => {
           const active = d.date === selectedDate;

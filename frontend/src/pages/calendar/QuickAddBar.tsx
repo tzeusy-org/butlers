@@ -144,11 +144,12 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
           aria-label="Parsed event preview"
           className="flex flex-col gap-2 rounded-[4px] border border-[var(--border-strong)] bg-[var(--bg)] px-2.5 py-2"
         >
-          <label className="flex flex-col gap-1">
+          <label htmlFor="quick-add-draft-title" className="flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
               Title
             </span>
             <Input
+              id="quick-add-draft-title"
               aria-label="Draft title"
               value={draft.title}
               onChange={(event) => patchDraft({ title: event.target.value })}
@@ -156,11 +157,12 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
             />
           </label>
           <div className="flex flex-wrap gap-2">
-            <label className="flex flex-1 flex-col gap-1">
+            <label htmlFor="quick-add-draft-start" className="flex flex-1 flex-col gap-1">
               <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
                 Starts
               </span>
               <Input
+                id="quick-add-draft-start"
                 aria-label="Draft start"
                 value={draft.start_at ?? ""}
                 placeholder="ISO 8601"
@@ -168,11 +170,12 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
                 className="h-8"
               />
             </label>
-            <label className="flex flex-1 flex-col gap-1">
+            <label htmlFor="quick-add-draft-end" className="flex flex-1 flex-col gap-1">
               <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
                 Ends
               </span>
               <Input
+                id="quick-add-draft-end"
                 aria-label="Draft end"
                 value={draft.end_at ?? ""}
                 placeholder="ISO 8601"
@@ -181,11 +184,12 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
               />
             </label>
           </div>
-          <label className="flex flex-col gap-1">
+          <label htmlFor="quick-add-draft-location" className="flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
               Location
             </span>
             <Input
+              id="quick-add-draft-location"
               aria-label="Draft location"
               value={draft.location ?? ""}
               onChange={(event) => patchDraft({ location: event.target.value || null })}

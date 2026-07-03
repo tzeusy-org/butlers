@@ -108,11 +108,20 @@ function JsonNode({ label, value, defaultCollapsed, depth }: NodeProps) {
   return (
     <div>
       <div
-        className="flex cursor-pointer items-baseline gap-1 hover:bg-accent/30 rounded-sm"
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        className="flex cursor-pointer items-baseline gap-1 hover:bg-accent/30 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         style={{ paddingLeft: depth * 16 }}
         onClick={() => setCollapsed((c) => !c)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setCollapsed((c) => !c);
+          }
+        }}
       >
-        <span className="text-muted-foreground select-none text-xs w-4 inline-block text-center">
+        <span aria-hidden="true" className="text-muted-foreground select-none text-xs w-4 inline-block text-center">
           {collapsed ? "\u25B6" : "\u25BC"}
         </span>
         {label != null && (

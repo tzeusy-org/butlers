@@ -332,7 +332,6 @@ function RecentInvestigationsTable({
                       }
                     }}
                     tabIndex={0}
-                    role="button"
                     data-testid="investigation-row"
                     aria-selected={selectedId === inv.id}
                     aria-label={`Investigation ${inv.id.slice(0, 8)}: ${inv.exception_type}`}

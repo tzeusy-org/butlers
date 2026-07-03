@@ -1943,6 +1943,7 @@ export default function PlexPage() {
         style={{ height: fillHeight ?? undefined }}
       >
         {/* Canvas column */}
+        {/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex -- role="application" is the correct ARIA pattern for a pan/zoom graph canvas that owns its own keyboard+pointer handling (onKeyDown below IS the keyboard equivalent); the rule's static role allowlist doesn't recognize "application" as interactive. */}
         <div
           ref={stageRef}
           tabIndex={0}
@@ -1957,6 +1958,7 @@ export default function PlexPage() {
             panning ? "cursor-grabbing" : "cursor-grab"
           }`}
         >
+          {/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
           {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
               Loading the plex...

@@ -303,21 +303,21 @@ describe("EpisodesRegister — the daybook", () => {
     setEpisodes([makeEpisode()]);
     mounted = renderRegister();
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
     );
     const labels = pills.map((p) => p.textContent);
     for (const m of ["all", "pending", "consolidated", "dead letter"]) {
       expect(labels).toContain(m);
     }
     const all = pills.find((p) => p.textContent === "all");
-    expect(all!.getAttribute("aria-checked")).toBe("true");
+    expect(all!.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("selecting a status pill writes the status URL param and resets offset", () => {
     setEpisodes([makeEpisode()], { total: 200, has_more: true });
     mounted = renderRegister(["/memory?offset=100"]);
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
     );
     const deadPill = pills.find((p) => p.textContent === "dead letter")!;
 
@@ -337,12 +337,12 @@ describe("EpisodesRegister — the daybook", () => {
     mounted = renderRegister(["/memory?status=consolidated"]);
     expect((lastEpisodeParams as { status?: string }).status).toBe("consolidated");
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
     );
     const consolidated = pills.find((p) => p.textContent === "consolidated");
-    expect(consolidated!.getAttribute("aria-checked")).toBe("true");
+    expect(consolidated!.getAttribute("aria-pressed")).toBe("true");
     const all = pills.find((p) => p.textContent === "all");
-    expect(all!.getAttribute("aria-checked")).toBe("false");
+    expect(all!.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("shows the offset pagination footer as `1–N of M`", () => {

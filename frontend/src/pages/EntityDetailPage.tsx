@@ -1643,6 +1643,18 @@ function _sortEntityFacts(facts: EntityFact[], sort: ProvenanceSortState): Entit
   });
 }
 
+/**
+ * aria-sort belongs on the `<th>` (columnheader role), not the button inside
+ * it — see the three `TableHead aria-sort={sortAriaValue(...)}` call sites.
+ */
+function sortAriaValue(
+  sort: ProvenanceSortState,
+  column: ProvenanceSortKey,
+): "ascending" | "descending" | "none" {
+  if (sort.key !== column) return "none";
+  return sort.dir === "asc" ? "ascending" : "descending";
+}
+
 function SortHeaderButton({
   label,
   column,
@@ -1660,7 +1672,6 @@ function SortHeaderButton({
       type="button"
       className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
       onClick={() => onSort(column)}
-      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
     >
       {label}
       {active ? (
@@ -1830,7 +1841,7 @@ function ProvenanceGrid({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="text-muted-foreground text-xs">
+              <TableHead className="text-muted-foreground text-xs" aria-sort={sortAriaValue(sort, "predicate")}>
                 <SortHeaderButton
                   label="Predicate"
                   column="predicate"
@@ -1842,7 +1853,7 @@ function ProvenanceGrid({
               <TableHead className="text-muted-foreground text-xs">Kind</TableHead>
               <TableHead className="text-muted-foreground text-xs">Store</TableHead>
               <TableHead className="text-muted-foreground text-xs">Freshness</TableHead>
-              <TableHead className="text-muted-foreground text-xs">
+              <TableHead className="text-muted-foreground text-xs" aria-sort={sortAriaValue(sort, "weight")}>
                 <SortHeaderButton
                   label="Weight"
                   column="weight"
@@ -1851,7 +1862,7 @@ function ProvenanceGrid({
                 />
               </TableHead>
               <TableHead className="text-muted-foreground text-xs">Source</TableHead>
-              <TableHead className="text-muted-foreground text-xs">
+              <TableHead className="text-muted-foreground text-xs" aria-sort={sortAriaValue(sort, "last_observed_at")}>
                 <SortHeaderButton
                   label="Last Observed"
                   column="last_observed_at"
@@ -2170,7 +2181,7 @@ function WorkbenchContextRail({
                 type="button"
                 data-testid="workbench-shares-identifiers"
                 onClick={() => onOpenMergeReviewWith(peer.id)}
-                className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber-text)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {peer.name ?? "another entity"}, likely the same →
               </button>
@@ -2479,7 +2490,7 @@ function WorkbenchActionRail({
             type="button"
             data-testid="workbench-duplicate-commit"
             onClick={onOpenMergeReview}
-            className="inline-flex items-center gap-1.5 rounded border border-[var(--amber)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--amber)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex items-center gap-1.5 rounded border border-[var(--amber)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--amber-text)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <Layers className="h-3.5 w-3.5" aria-hidden />
             Review &amp; merge →
@@ -3011,6 +3022,7 @@ export default function EntityDetailPage() {
       actions={pageActions}
     >
       {entity && entityId && (
+        /* eslint-disable jsx-a11y/no-static-element-interactions, jsx-a11y/no-noninteractive-tabindex -- this is a view-local keyboard-shortcut scope (m/j/k/Esc/e, see handleDetailKeyDown above), not a widget; it has no click semantics and no ARIA role applies. */
         <div
           ref={detailRootRef}
           tabIndex={0}
@@ -3018,6 +3030,7 @@ export default function EntityDetailPage() {
           data-testid="entity-detail-root"
           className="outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
+          {/* eslint-enable jsx-a11y/no-static-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
           {/* Duplicate-warning panel — "shares identifiers with" hint. Its merge
               action opens the compare view; `m` is the keyboard equivalent. */}
           {duplicatePeerId && (

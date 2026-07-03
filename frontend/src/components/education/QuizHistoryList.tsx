@@ -110,14 +110,27 @@ export default function QuizHistoryList({
         return (
           <div key={r.id} className="rounded-md border">
             <div
-              className={`flex items-start justify-between gap-2 px-3 py-2${
+              role={!compact ? "button" : undefined}
+              tabIndex={!compact ? 0 : undefined}
+              aria-expanded={!compact ? isExpanded : undefined}
+              className={`flex items-start justify-between gap-2 px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring${
                 !compact ? " cursor-pointer hover:bg-muted/50" : ""
               }`}
               onClick={!compact ? () => toggleExpand(r.id) : undefined}
+              onKeyDown={
+                !compact
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggleExpand(r.id);
+                      }
+                    }
+                  : undefined
+              }
             >
               <div className="flex min-w-0 flex-1 items-start gap-2">
                 {!compact && (
-                  <span className="mt-0.5 shrink-0 text-muted-foreground">
+                  <span aria-hidden="true" className="mt-0.5 shrink-0 text-muted-foreground">
                     {isExpanded ? (
                       <ChevronDown className="h-4 w-4" />
                     ) : (

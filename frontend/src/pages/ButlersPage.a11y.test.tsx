@@ -1,147 +1,161 @@
 /**
- * ButlersPage — axe-core accessibility baseline tests for the status-board layout.
- * (bu-hb7dh.8)
+ * ButlersPage — axe-core accessibility test, run against the REAL routed
+ * page (bu-86c4c.16).
  *
- * Tests each key UI state for zero axe violations. States covered:
- *   1. Loading (skeleton with aria-label="Loading")
- *   2. Empty (no rows, no error)
- *   3. Error (full-page, no cached rows)
- *   4. Populated (grid cells, header banner, footer contentinfo)
- *   5. Quarantined cell (restore button inside div[role=link])
+ * The previous version of this file (bu-hb7dh.8) ran axe against hand-
+ * written stub components that merely "mirrored" ButlersPage's DOM shape —
+ * a change to the real StatusBoardCell/BoardHeader/BoardFooter/NeedsYouStrip
+ * markup could regress accessibility without this suite ever noticing
+ * (JARVIS audit move 11, critical finding: "the a11y gate is theater").
  *
- * Uses jest-axe (wraps axe-core) + @testing-library/react with jsdom.
- * Colour-contrast is disabled because jsdom cannot compute computed styles.
+ * This version mocks only the data layer (useButlerStatusBoard) — following
+ * the same vi.mock pattern already used by TimelineTab.test.tsx — and
+ * drives the actual `<ButlersPage />` component through each of its five
+ * real states (loading / empty / error / populated / quarantined-restore).
+ *
+ * Colour-contrast is disabled because jsdom cannot compute computed styles;
+ * that gap is covered separately by src/lib/contrast.test.ts, which checks
+ * the real oklch token literals via pure math (no DOM needed).
  */
 
 // @vitest-environment jsdom
 
-import { afterEach, describe, it } from "vitest";
-import React from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { axe, toHaveNoViolations } from "jest-axe";
-import { expect as vitestExpect } from "vitest";
 
-vitestExpect.extend(toHaveNoViolations);
+expect.extend(toHaveNoViolations);
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
 });
 
 // ---------------------------------------------------------------------------
-// axe wrapper
+// Mock the data hooks — same pattern as TimelineTab.test.tsx. ButlersPage
+// itself, StatusBoardCell, BoardHeader, BoardFooter, and NeedsYouStrip all
+// render for real.
 // ---------------------------------------------------------------------------
 
-async function checkA11y(ui: React.ReactElement): Promise<void> {
-  const { container } = render(ui);
+vi.mock("@/hooks/use-butler-status-board", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-butler-status-board")>();
+  return {
+    ...actual,
+    useButlerStatusBoard: vi.fn(),
+  };
+});
+
+vi.mock("@/hooks/use-general", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-general")>();
+  return {
+    ...actual,
+    useSetEligibility: vi.fn(() => ({
+      mutate: vi.fn(),
+      isPending: false,
+      variables: undefined,
+    })),
+  };
+});
+
+import ButlersPage from "./ButlersPage";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
+import type { StatusBoardAggregates, StatusBoardRow } from "@/hooks/use-butler-status-board";
+
+const mockUseButlerStatusBoard = vi.mocked(useButlerStatusBoard);
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
+  return {
+    name: "general",
+    type: "butler",
+    description: "Default household assistant",
+    status: "ok",
+    activity: "idle",
+    cellTone: "neutral",
+    eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
+    sessions24h: 3,
+    costToday: 0.42,
+    loadPct: 10,
+    activeSessionCount: 0,
+    lastRunISO: "2026-07-04T09:00:00Z",
+    lastHeartbeatISO: "2026-07-04T09:55:00Z",
+    heartbeatAgeSeconds: 60,
+    hourlyStripe: Array.from({ length: 24 }, () => 0),
+    hourlyTotal: 3,
+    hourlyStripeLoading: false,
+    hourlyStripeError: false,
+    schemaUnreachable: false,
+    heartbeatUnavailable: false,
+    cadenceSeconds: 3600,
+    cadenceLabel: "hourly",
+    silenceSeconds: 60,
+    cadenceStatus: "on_schedule",
+    ...overrides,
+  };
+}
+
+function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusBoardAggregates {
+  return {
+    total: 0,
+    butlerCount: 0,
+    stafferCount: 0,
+    active: 0,
+    offline: 0,
+    quarantined: 0,
+    overdue: 0,
+    totalSessions24h: 0,
+    totalSpendToday: 0,
+    avgLoadPct: null,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+    heartbeatSourceError: false,
+    registrySourceError: false,
+    eligibilityUnavailable: 0,
+    hasPerEntryErrors: false,
+    costSourceError: false,
+    sourcesPartiallyDegraded: false,
+    ...overrides,
+  };
+}
+
+async function checkA11y(): Promise<void> {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { container } = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ButlersPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
   const results = await axe(container, {
     rules: {
       "color-contrast": { enabled: false },
     },
   });
-  vitestExpect(results).toHaveNoViolations();
-}
-
-// ---------------------------------------------------------------------------
-// Shared stub components — mirror the status-board DOM structure.
-// ---------------------------------------------------------------------------
-
-/** A single 24h bar — aria-hidden; the ActivityStripe has its own role="img". */
-function ActivityStripeStub() {
-  return (
-    <div
-      role="img"
-      aria-label="24-hour activity, total 0 sessions, peak 0 at 00:00"
-      style={{ display: "flex", height: 22, gap: 1 }}
-    >
-      {Array.from({ length: 24 }, (_, i) => (
-        <div key={i} aria-hidden="true" style={{ flex: 1, background: "#e5e7eb", borderRadius: 1 }} />
-      ))}
-    </div>
-  );
-}
-
-interface CellProps {
-  name: string;
-  activity?: string;
-  restorable?: boolean;
-}
-
-/**
- * Stub StatusBoardCell matching the produced DOM shape:
- *   - <a> when not restorable
- *   - <div role="link"> when restorable (contains a restore <button>)
- */
-function CellStub({ name, activity = "IDLE", restorable = false }: CellProps) {
-  const href = `/butlers/${name}`;
-
-  const innerContent = (
-    <>
-      <div aria-hidden="true" title={name} style={{ width: 28, height: 28, borderRadius: 8, background: "#e5e7eb" }} />
-      <span style={{ fontWeight: 500 }}>{name}</span>
-      {restorable ? (
-        <button
-          type="button"
-          onClick={(e) => e.stopPropagation()}
-          style={{ fontFamily: "monospace", fontSize: 9, textTransform: "uppercase" }}
-        >
-          {activity}
-        </button>
-      ) : (
-        <span style={{ fontFamily: "monospace", fontSize: 9, textTransform: "uppercase" }}>
-          {activity}
-        </span>
-      )}
-      <div style={{ marginTop: "auto" }}>
-        <ActivityStripeStub />
-      </div>
-    </>
-  );
-
-  if (restorable) {
-    return (
-      <div
-        role="link"
-        tabIndex={0}
-        aria-label={`${name}, ${activity.toLowerCase()}, last run unknown, 0 sessions in 24h`}
-        onClick={() => { window.location.href = href; }}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") window.location.href = href; }}
-        style={{ display: "flex", flexDirection: "column", minHeight: 224, padding: 20, cursor: "pointer" }}
-      >
-        {innerContent}
-      </div>
-    );
-  }
-
-  return (
-    <a
-      href={href}
-      aria-label={`${name}, ${activity.toLowerCase()}, last run unknown, 0 sessions in 24h`}
-      style={{ display: "flex", flexDirection: "column", minHeight: 224, padding: 20, textDecoration: "none" }}
-    >
-      {innerContent}
-    </a>
-  );
+  expect(results).toHaveNoViolations();
 }
 
 // ---------------------------------------------------------------------------
 // Story 1: Loading state
 // ---------------------------------------------------------------------------
 
-describe("a11y: Loading state", () => {
+describe("a11y (real page): Loading state", () => {
   it("has zero axe violations", async () => {
-    await checkA11y(
-      <main aria-label="Butlers">
-        <div role="status" aria-label="Loading">
-          <div aria-hidden="true" style={{ height: 56, background: "#e5e7eb", borderRadius: 4 }} />
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16, marginTop: 16 }}>
-            {Array.from({ length: 8 }, (_, i) => (
-              <div key={i} aria-hidden="true" style={{ height: 224, background: "#e5e7eb", borderRadius: 4 }} />
-            ))}
-          </div>
-          <div aria-hidden="true" style={{ height: 64, background: "#e5e7eb", borderRadius: 4, marginTop: 16 }} />
-        </div>
-      </main>,
-    );
+    mockUseButlerStatusBoard.mockReturnValue({
+      rows: [],
+      needsYou: [],
+      aggregates: makeAggregates({ isLoading: true }),
+    });
+    await checkA11y();
   });
 });
 
@@ -149,17 +163,14 @@ describe("a11y: Loading state", () => {
 // Story 2: Empty state (no rows, no error)
 // ---------------------------------------------------------------------------
 
-describe("a11y: Empty state", () => {
+describe("a11y (real page): Empty state", () => {
   it("has zero axe violations", async () => {
-    await checkA11y(
-      <main aria-label="Butlers">
-        {/* BoardHeader absent in empty state (Page renders empty slot) */}
-        <div>
-          <h2>No butlers found</h2>
-          <p>Check daemon status and try again.</p>
-        </div>
-      </main>,
-    );
+    mockUseButlerStatusBoard.mockReturnValue({
+      rows: [],
+      needsYou: [],
+      aggregates: makeAggregates(),
+    });
+    await checkA11y();
   });
 });
 
@@ -167,75 +178,42 @@ describe("a11y: Empty state", () => {
 // Story 3: Error state (full-page, no cached rows)
 // ---------------------------------------------------------------------------
 
-describe("a11y: Error state", () => {
+describe("a11y (real page): Error state", () => {
   it("has zero axe violations", async () => {
-    await checkA11y(
-      <main aria-label="Butlers">
-        <div role="alert">
-          <p style={{ fontWeight: 600, color: "#dc2626" }}>Something went wrong</p>
-          <p style={{ color: "#dc2626" }}>Failed to fetch butler list.</p>
-          <button type="button">Retry</button>
-        </div>
-      </main>,
-    );
+    mockUseButlerStatusBoard.mockReturnValue({
+      rows: [],
+      needsYou: [],
+      aggregates: makeAggregates({
+        isError: true,
+        error: new Error("Failed to fetch butler list."),
+      }),
+    });
+    await checkA11y();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Story 4: Populated (header banner, grid group, cells as links, footer contentinfo)
+// Story 4: Populated (header banner, grid group, cells as links, footer)
 // ---------------------------------------------------------------------------
 
-describe("a11y: Populated state", () => {
+describe("a11y (real page): Populated state", () => {
   it("has zero axe violations", async () => {
-    await checkA11y(
-      <main aria-label="Butlers">
-        {/* BoardHeader — rendered as a plain div here. BoardHeader uses a
-            semantic <header> element without role=banner so it is valid
-            inside <main>; axe banner-is-top-level is not triggered. */}
-        <div aria-label="Status board header">
-          <span style={{ fontFamily: "monospace", fontSize: 10, textTransform: "uppercase" }}>
-            Butlers, status board
-          </span>
-          <h1 style={{ fontSize: 24, fontWeight: 700 }}>The staff, at a glance</h1>
-          <div
-            aria-label="3 of 3 reporting healthy"
-            style={{ display: "flex", alignItems: "center", gap: 6 }}
-          >
-            <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e" }} />
-            <span style={{ fontFamily: "monospace", fontSize: 10 }}>3/3 reporting</span>
-          </div>
-        </div>
-
-        {/* Status-board grid — role=group */}
-        <div role="group" aria-label="Butler status board" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
-          <CellStub name="general" activity="IDLE" />
-          <CellStub name="health" activity="RUNNING" />
-          <CellStub name="finance" activity="IDLE" />
-        </div>
-
-        {/* BoardFooter — rendered as a plain div here. BoardFooter uses a
-            semantic <footer> element without role=contentinfo so it is valid
-            inside <main>; axe contentinfo-is-top-level is not triggered. */}
-        <div aria-label="Status board footer">
-          <div
-            role="group"
-            aria-label="Active: 1"
-            style={{ display: "flex", flexDirection: "column", gap: 4 }}
-          >
-            <span style={{ fontFamily: "monospace", fontSize: 9, textTransform: "uppercase" }}>Active</span>
-            <span style={{ fontFamily: "monospace", fontSize: 16 }}>1</span>
-          </div>
-          <div
-            role="group"
-            aria-label="Sessions in the past 24 hours: 15"
-            style={{ display: "flex", flexDirection: "column", gap: 4 }}
-          >
-            <span style={{ fontFamily: "monospace", fontSize: 9, textTransform: "uppercase" }}>Sessions 24h</span>
-            <span style={{ fontFamily: "monospace", fontSize: 16 }}>15</span>
-          </div>
-        </div>
-      </main>,
-    );
+    const rows = [
+      makeRow({ name: "general", activity: "idle" }),
+      makeRow({ name: "health", activity: "running" }),
+      makeRow({ name: "finance", activity: "idle" }),
+    ];
+    mockUseButlerStatusBoard.mockReturnValue({
+      rows,
+      needsYou: [],
+      aggregates: makeAggregates({
+        total: 3,
+        butlerCount: 3,
+        active: 1,
+        totalSessions24h: 15,
+      }),
+    });
+    await checkA11y();
   });
 });
 
@@ -243,19 +221,22 @@ describe("a11y: Populated state", () => {
 // Story 5: Quarantined cell (restore button inside div[role=link])
 // ---------------------------------------------------------------------------
 
-describe("a11y: Quarantined cell (restore chip)", () => {
+describe("a11y (real page): Quarantined cell (restore chip)", () => {
   it("has zero axe violations", async () => {
-    await checkA11y(
-      <main aria-label="Butlers">
-        <div aria-label="Status board header">
-          <h1>The staff, at a glance</h1>
-        </div>
-        <div role="group" aria-label="Butler status board" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
-          {/* Restorable cell uses div[role=link] so button is not inside <a> */}
-          <CellStub name="quarant" activity="QUARANTINED" restorable={true} />
-          <CellStub name="general" activity="IDLE" />
-        </div>
-      </main>,
-    );
+    const rows = [
+      makeRow({
+        name: "quarant",
+        activity: "quarantined",
+        eligibility: "quarantined",
+        quarantineReason: "Repeated tool failures",
+      }),
+      makeRow({ name: "general", activity: "idle" }),
+    ];
+    mockUseButlerStatusBoard.mockReturnValue({
+      rows,
+      needsYou: rows.filter((r) => r.activity === "quarantined"),
+      aggregates: makeAggregates({ total: 2, butlerCount: 2, quarantined: 1 }),
+    });
+    await checkA11y();
   });
 });

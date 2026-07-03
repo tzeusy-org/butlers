@@ -241,12 +241,12 @@ export default function SessionsPage() {
           <div className="flex flex-wrap items-end gap-4">
             {/* Butler dropdown */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">Butler</label>
+              <label htmlFor="sessions-butler-filter" className="text-muted-foreground text-xs font-medium">Butler</label>
               <Select
                 value={filters.butler}
                 onValueChange={(v) => handleFilterChange("butler", v)}
               >
-                <SelectTrigger className="w-44">
+                <SelectTrigger id="sessions-butler-filter" className="w-44">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -296,12 +296,12 @@ export default function SessionsPage() {
 
             {/* Status dropdown */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">Status</label>
+              <label htmlFor="sessions-status-filter" className="text-muted-foreground text-xs font-medium">Status</label>
               <Select
                 value={filters.status}
                 onValueChange={(v) => handleFilterChange("status", v)}
               >
-                <SelectTrigger className="w-32">
+                <SelectTrigger id="sessions-status-filter" className="w-32">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

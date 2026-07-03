@@ -66,7 +66,7 @@ function policyLabel(action: string): string {
 function policyColor(action: string): string {
   const verb = action.toLowerCase().split(/[ :.]/)[0]
   if (verb === 'block' || verb === 'drop') return 'text-[var(--red)]'
-  if (verb === 'low_priority_queue' || verb === 'tier') return 'text-[var(--amber)]'
+  if (verb === 'low_priority_queue' || verb === 'tier') return 'text-[var(--amber-text)]'
   return 'text-foreground'
 }
 

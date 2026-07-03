@@ -110,8 +110,9 @@ function MergeDialog({ pendingContact, open, onOpenChange }: MergeDialogProps) {
           ) : (
             <div className="space-y-4">
               <div>
-                <label className="text-sm font-medium">Search for target contact</label>
+                <label htmlFor="pending-identity-search" className="text-sm font-medium">Search for target contact</label>
                 <Input
+                  id="pending-identity-search"
                   className="mt-1"
                   placeholder="Type a name or email..."
                   value={search}

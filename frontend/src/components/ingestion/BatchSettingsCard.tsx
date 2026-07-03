@@ -101,7 +101,7 @@ export function BatchSettingsCard({
         <div className="space-y-4">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium">Flush interval</label>
+              <label htmlFor="flush-interval-input" className="text-sm font-medium">Flush interval</label>
               <Badge
                 variant={isCustom ? "default" : "secondary"}
                 className="text-xs"
@@ -112,6 +112,7 @@ export function BatchSettingsCard({
             </div>
             <div className="flex items-center gap-2">
               <Input
+                id="flush-interval-input"
                 type="number"
                 min={FLUSH_INTERVAL_MIN}
                 max={FLUSH_INTERVAL_MAX}

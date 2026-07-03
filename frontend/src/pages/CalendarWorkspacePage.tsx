@@ -705,6 +705,7 @@ function RecurrenceScopeFieldset({
         <label
           key={value}
           data-testid={`${optionPrefix}-${value}`}
+          aria-label={RECURRENCE_SCOPE_LABELS[value]}
           className="flex cursor-pointer items-start gap-2 text-sm"
         >
           <input

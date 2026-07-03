@@ -203,6 +203,14 @@ export default function EntityBrowser({
                     key={entity.id}
                     className="cursor-pointer"
                     onClick={() => toggleExpand(entity.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggleExpand(entity.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-expanded={isExpanded}
                   >
                     <TableCell className="align-top">
                       <Badge variant="outline" className="text-xs">
@@ -230,6 +238,7 @@ export default function EntityBrowser({
                     </TableCell>
                     <TableCell className="max-w-md align-top">
                       {isExpanded ? (
+                        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- not itself interactive; onClick only swallows bubbling so a click inside the JSON preview doesn't collapse the ancestor row.
                         <div
                           className="rounded-md bg-muted p-3"
                           onClick={(e) => e.stopPropagation()}

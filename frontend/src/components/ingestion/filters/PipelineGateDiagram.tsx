@@ -77,7 +77,7 @@ function GateNode({ def, count, index }: GateNodeProps) {
         )}
         {hasPreserved && (
           <span
-            className="font-mono text-[10px] tracking-[0.04em] text-[var(--amber)]"
+            className="font-mono text-[10px] tracking-[0.04em] text-[var(--amber-text)]"
             data-testid={`gate-preserved-${def.key}`}
           >
             −{fmt(count.preserved)} pres.

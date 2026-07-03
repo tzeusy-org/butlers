@@ -1,5 +1,6 @@
 import js from '@eslint/js'
 import globals from 'globals'
+import jsxA11y from 'eslint-plugin-jsx-a11y'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
@@ -14,10 +15,32 @@ export default defineConfig([
       tseslint.configs.recommended,
       reactHooks.configs.flat.recommended,
       reactRefresh.configs.vite,
+      // bu-86c4c.16: static a11y gate — catches missing alt text, invalid ARIA
+      // attrs/roles, non-interactive elements with click handlers, etc. at
+      // lint time instead of relying solely on runtime axe assertions.
+      jsxA11y.flatConfigs.recommended,
     ],
     languageOptions: {
       ecmaVersion: 2020,
       globals: globals.browser,
+    },
+    rules: {
+      // aria-role by default validates any prop literally named `role`, even
+      // on custom (non-DOM) components — e.g. IdentityChip's `role` prop is
+      // a domain concept ("owner" | "member" | "unknown"), not the ARIA role
+      // attribute. ignoreNonDOM restricts the check to real host elements
+      // (lowercase JSX tags), where `role=` genuinely is ARIA.
+      'jsx-a11y/aria-role': ['error', { ignoreNonDOM: true }],
+      // no-autofocus's own justification is page-load autofocus disorienting
+      // a user who didn't ask for it. Every autoFocus in this codebase (~25
+      // sites, audited bu-86c4c.16) is inside a Dialog/Sheet/inline-editor
+      // that renders in direct response to an explicit user action (opening
+      // a dialog, clicking "edit") — moving focus to the primary field there
+      // is the WAI-ARIA APG-recommended behavior, not the anti-pattern the
+      // rule exists to catch. Disabled repo-wide rather than 25 individual
+      // eslint-disable comments; revisit per-site if a genuine page-load
+      // autofocus is ever introduced.
+      'jsx-a11y/no-autofocus': 'off',
     },
   },
   {

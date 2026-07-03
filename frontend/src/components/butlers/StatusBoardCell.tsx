@@ -22,9 +22,10 @@
 //   - All timestamps via <Time>; never new Date().toLocaleString().
 // ---------------------------------------------------------------------------
 
-import { Link, useNavigate } from "react-router"
+import { useNavigate } from "react-router"
 
 import { ButlerMark } from "@/components/ui/ButlerMark"
+import { RowLink } from "@/components/ui/RowLink"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time, formatRelativeCompact } from "@/components/ui/time"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
@@ -337,31 +338,20 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
     </>
   )
 
-  // When a restore chip is present, switch to div+role="link" so the <button>
-  // is not nested inside an <a> (invalid HTML: interactive content inside
-  // interactive content). Navigation is handled imperatively via useNavigate().
-  if (isRestorable && onRestore) {
-    return (
-      <div
-        role="link"
-        tabIndex={0}
-        aria-label={ariaLabel}
-        className={containerClass}
-        onClick={() => { navigate(routePath) }}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") navigate(routePath) }}
-      >
-        {innerContent}
-      </div>
-    )
-  }
-
+  // bu-86c4c.16: RowLink supplies the shared navigating-row contract (real
+  // <Link> normally; accessible div[role=link] + Enter/Space fallback when a
+  // restore chip is nested — see the primitive's own docs for why the
+  // fallback exists). Recomposed here so every status-board tile enforces
+  // the same pattern the JARVIS audit flagged as ad hoc per-component.
   return (
-    <Link
+    <RowLink
       to={routePath}
+      hasNestedInteractive={isRestorable && !!onRestore}
+      onActivate={() => navigate(routePath)}
       aria-label={ariaLabel}
       className={containerClass}
     >
       {innerContent}
-    </Link>
+    </RowLink>
   )
 }

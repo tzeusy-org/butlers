@@ -139,7 +139,7 @@ function AdherenceStatement({ medicationId }: { medicationId: string }) {
       className={cn(
         "mt-0.5 block",
         data.adherence_rate < 50 && "text-[var(--red)]",
-        data.adherence_rate >= 50 && data.adherence_rate < 80 && "text-[var(--amber)]",
+        data.adherence_rate >= 50 && data.adherence_rate < 80 && "text-[var(--amber-text)]",
       )}
     >
       {data.taken_doses} of {data.total_doses} doses taken · {data.adherence_rate.toFixed(0)}%
@@ -197,7 +197,7 @@ function DoseHistory({ medicationId, name }: { medicationId: string; name: strin
               <Mono muted>
                 <Time value={dose.taken_at} mode="absolute" precision="minute" compact />
               </Mono>
-              <Mono className={cn(dose.skipped ? "text-[var(--amber)]" : "text-muted-foreground")}>
+              <Mono className={cn(dose.skipped ? "text-[var(--amber-text)]" : "text-muted-foreground")}>
                 {dose.skipped ? "Skipped" : "Taken"}
               </Mono>
               <span className="truncate text-xs text-muted-foreground">{dose.notes ?? ""}</span>

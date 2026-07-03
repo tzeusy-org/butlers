@@ -491,3 +491,113 @@ describe("EventDrawer — raw tab", () => {
     expect(gated!.textContent).toContain("audit log");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Disclosure choreography (bu-86c4c.16, JARVIS audit move 11)
+// ---------------------------------------------------------------------------
+
+describe("EventDrawer — disclosure choreography", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+
+    vi.mocked(useIngestionEventReplays).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionEventReplays>);
+    vi.mocked(useIngestionEventPayload).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionEventPayload>);
+    vi.mocked(useIngestionEventDetail).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionEventDetail>);
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<
+        typeof useIngestionEventSessions
+      >,
+      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<
+        typeof useIngestionEventRollup
+      >,
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  function renderDrawer(onClose: () => void, event = makeEvent()) {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <EventDrawer event={event} onClose={onClose} onOptimisticUpdate={vi.fn()} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("moves focus to the drawer heading on mount (focus-in on open)", () => {
+    renderDrawer(vi.fn());
+    const heading = container.querySelector("h2");
+    expect(heading).not.toBeNull();
+    expect(document.activeElement).toBe(heading);
+  });
+
+  it("Escape calls onClose", () => {
+    const onClose = vi.fn();
+    renderDrawer(onClose);
+    const drawer = container.querySelector("[data-testid='event-drawer']") as HTMLElement;
+    act(() => {
+      drawer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call onClose for a non-Escape key", () => {
+    const onClose = vi.fn();
+    renderDrawer(onClose);
+    const drawer = container.querySelector("[data-testid='event-drawer']") as HTMLElement;
+    act(() => {
+      drawer.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("root carries an id matching event-drawer-<id> for aria-controls to target", () => {
+    renderDrawer(vi.fn(), makeEvent({ id: "target-event-id" }));
+    const drawer = container.querySelector("[data-testid='event-drawer']");
+    expect(drawer!.getAttribute("id")).toBe("event-drawer-target-event-id");
+  });
+
+  it("announces a polite live-region status once session data resolves", () => {
+    vi.mocked(useIngestionEventLineage).mockReturnValue({
+      sessions: {
+        data: { data: [makeSession(), makeSession({ id: "s2" })] },
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useIngestionEventSessions>,
+      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<
+        typeof useIngestionEventRollup
+      >,
+    });
+    renderDrawer(vi.fn());
+    const status = container.querySelector('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status!.textContent).toContain("2 sessions");
+  });
+});

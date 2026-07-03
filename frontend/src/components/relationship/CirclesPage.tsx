@@ -221,6 +221,7 @@ function GroupLabelCell({ groupId, labels }: { groupId: string; labels: Label[] 
   const assignedIds = new Set(labels.map((l) => l.id));
 
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- not itself interactive; onClick only swallows bubbling so clicking a label/remove-button doesn't trigger the ancestor row's click-to-navigate.
     <div className="flex flex-wrap items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
       {labels.map((label) => (
         <Badge

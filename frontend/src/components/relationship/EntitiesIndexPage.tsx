@@ -918,7 +918,7 @@ function DuplicateEvidence({
                   highlight: trigger,
                 })
               }
-              className="min-w-0 truncate text-left text-xs text-[var(--amber)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--amber)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="min-w-0 truncate text-left text-xs text-[var(--amber-text)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--amber)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {nameById.get(peerId) ?? "Linked entity"}
             </button>

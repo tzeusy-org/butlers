@@ -551,6 +551,26 @@ export interface EventDrawerProps {
  */
 export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerProps) {
   const contentRef = useRef<HTMLDivElement>(null!)
+  // bu-86c4c.16: real disclosure choreography (JARVIS audit move 11) — focus
+  // moves into the drawer on open (this heading is the drawer's landing
+  // point), Escape closes and returns focus to the triggering row, and a
+  // polite live region announces the drawer opened once session data
+  // resolves ("event detail open — N sessions").
+  const headingRef = useRef<HTMLHeadingElement>(null)
+
+  useEffect(() => {
+    headingRef.current?.focus()
+    // Only on mount — this component remounts fresh whenever the drawer
+    // switches to a different event (TimelineTab renders it conditionally
+    // per-row), so a mount-only effect is exactly "focus moves in on open".
+  }, [])
+
+  function handleDrawerKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onClose()
+    }
+  }
 
   // Preserve tab selection across row switches
   const [activeTab, setActiveTab] = useState<DrawerTab>(() => {
@@ -629,13 +649,32 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
 
   const canReplay = event.status === 'filtered' || event.status === 'error' || event.status === 'replay_failed'
 
+  const announceText = hasSessions
+    ? `Event detail open — ${sessionList.length} ${sessionList.length === 1 ? 'session' : 'sessions'}`
+    : 'Event detail open'
+
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="complementary" is a landmark, not a widget, but Escape-to-close on the panel root is the standard dialog/disclosure keyboard pattern (matches Radix Dialog's own internal behavior) — not a click/hover "interaction" the rule is guarding against.
     <div
       className="border-t border-border bg-background"
       data-testid="event-drawer"
+      id={`event-drawer-${event.id}`}
       role="complementary"
       aria-label="Event detail drawer"
+      onKeyDown={handleDrawerKeyDown}
     >
+      {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
+          not a Tab stop); visually hidden since StatusBadge + timestamp
+          already carry the same information for sighted users. */}
+      <h2 ref={headingRef} tabIndex={-1} className="sr-only focus:outline-none">
+        Event detail: {event.source_channel ?? 'unknown channel'}, {event.status}
+      </h2>
+      {/* Polite live-region announcement — screen-reader users hear the
+          drawer arrived without needing to discover the heading above. */}
+      <span role="status" aria-live="polite" className="sr-only">
+        {announceText}
+      </span>
+
       {/* Drawer header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
         <StatusBadge status={event.status} filterReason={event.filter_reason} errorDetail={event.error_detail} />

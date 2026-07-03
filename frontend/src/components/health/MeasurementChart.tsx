@@ -302,10 +302,11 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
       {/* Date range filters */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
-          <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+          <label htmlFor="measurement-chart-since" className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
             From
           </label>
           <input
+            id="measurement-chart-since"
             type="date"
             value={since}
             onChange={(e) => setSince(e.target.value)}
@@ -313,10 +314,11 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
           />
         </div>
         <div className="flex items-center gap-2">
-          <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+          <label htmlFor="measurement-chart-until" className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
             To
           </label>
           <input
+            id="measurement-chart-until"
             type="date"
             value={until}
             onChange={(e) => setUntil(e.target.value)}

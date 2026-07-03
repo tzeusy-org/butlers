@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// Pill tests — bu-ec2wb
+// Pill tests — bu-ec2wb, updated bu-86c4c.16
 //
 // Coverage:
 //   - Renders children label
 //   - Renders as a <button> element
-//   - selected=false (default): aria-checked=false, unselected styling class
-//   - selected=true: aria-checked=true, selected styling
+//   - selected=false (default): aria-pressed=false, unselected styling class
+//   - selected=true: aria-pressed=true, selected styling
 //   - count prop is rendered when provided
-//   - ARIA: role="switch" + aria-checked
+//   - ARIA: toggle-button semantics (aria-pressed, not role="switch") with
+//     the count folded into the button's own accessible name
 //   - className forwarding
 //   - disabled state
 // ---------------------------------------------------------------------------
@@ -34,9 +35,8 @@ describe("Pill: renders label", () => {
     expect(html).toContain("3")
   })
 
-  it("does not render count element when count is not provided", () => {
+  it("does not render an aria-label when count is not provided", () => {
     const html = renderToStaticMarkup(<Pill>stale</Pill>)
-    // No aria-label="N items" when count is not supplied
     expect(html).not.toContain("aria-label=")
   })
 })
@@ -59,28 +59,29 @@ describe("Pill: element type", () => {
 })
 
 // ---------------------------------------------------------------------------
-// ARIA — toggle switch semantics
+// ARIA — toggle-button semantics (bu-86c4c.16)
 // ---------------------------------------------------------------------------
 
 describe("Pill: ARIA role and state", () => {
-  it('has role="switch"', () => {
+  it('does NOT use role="switch" (a filter chip is not an independent on/off setting)', () => {
     const html = renderToStaticMarkup(<Pill>label</Pill>)
-    expect(html).toContain('role="switch"')
+    expect(html).not.toContain('role="switch"')
+    expect(html).not.toContain("aria-checked")
   })
 
-  it("aria-checked=false when not selected (default)", () => {
+  it("aria-pressed=false when not selected (default)", () => {
     const html = renderToStaticMarkup(<Pill>label</Pill>)
-    expect(html).toContain('aria-checked="false"')
+    expect(html).toContain('aria-pressed="false"')
   })
 
-  it("aria-checked=true when selected=true", () => {
+  it("aria-pressed=true when selected=true", () => {
     const html = renderToStaticMarkup(<Pill selected>label</Pill>)
-    expect(html).toContain('aria-checked="true"')
+    expect(html).toContain('aria-pressed="true"')
   })
 })
 
 // ---------------------------------------------------------------------------
-// Count badge
+// Count badge — folded into the button's accessible name (bu-86c4c.16)
 // ---------------------------------------------------------------------------
 
 describe("Pill: count prop", () => {
@@ -94,20 +95,25 @@ describe("Pill: count prop", () => {
     expect(html).toContain("42")
   })
 
-  it("count span has aria-label with count value (plural)", () => {
+  it("folds the count into the button's own aria-label (plural)", () => {
     const html = renderToStaticMarkup(<Pill count={7}>label</Pill>)
-    expect(html).toContain("7 items")
+    expect(html).toContain('aria-label="label, 7 items"')
   })
 
-  it("count=1 uses singular aria-label", () => {
+  it("count=1 uses singular wording in the folded aria-label", () => {
     const html = renderToStaticMarkup(<Pill count={1}>label</Pill>)
-    expect(html).toContain('aria-label="1 item"')
+    expect(html).toContain('aria-label="label, 1 item"')
     expect(html).not.toContain("1 items")
   })
 
-  it("count=0 uses plural aria-label", () => {
+  it("count=0 uses plural wording in the folded aria-label", () => {
     const html = renderToStaticMarkup(<Pill count={0}>stale</Pill>)
-    expect(html).toContain("0 items")
+    expect(html).toContain('aria-label="stale, 0 items"')
+  })
+
+  it("the inner count span is aria-hidden once folded into the button label", () => {
+    const html = renderToStaticMarkup(<Pill count={3}>duplicate</Pill>)
+    expect(html).toMatch(/<span aria-hidden="true"[^>]*>3<\/span>/)
   })
 })
 

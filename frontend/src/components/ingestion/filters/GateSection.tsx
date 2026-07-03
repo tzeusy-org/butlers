@@ -90,7 +90,7 @@ export function GateSection({
             </span>
           )}
           {hasPreserved && (
-            <span className="ml-1.5 text-[var(--amber)]">
+            <span className="ml-1.5 text-[var(--amber-text)]">
               · −{fmt(count.preserved)} pres.
             </span>
           )}

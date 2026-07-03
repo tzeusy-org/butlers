@@ -10,7 +10,7 @@
  *   §6  Kill switch          — 30s grace confirmation
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 
@@ -27,6 +27,38 @@ interface Props {
 // ---------------------------------------------------------------------------
 // Primitives
 // ---------------------------------------------------------------------------
+
+/**
+ * ModalBackdrop — click-outside-to-close overlay with Escape support.
+ *
+ * Clicking the backdrop itself (never a descendant, via the target check
+ * below) or pressing Escape calls `onClose`. Children never need their own
+ * stopPropagation click handler, so only this one element carries the
+ * mouse-only backdrop-dismiss gesture — Escape is its real keyboard
+ * equivalent (bu-86c4c.16: a div that only ever receives synthetic-target
+ * clicks has no sensible focus target of its own for Enter/Space).
+ */
+function ModalBackdrop({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- backdrop-dismiss is a mouse-only convenience; Escape (handled above) is the real keyboard equivalent, and the overlay is not a focusable target.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 function SectionHeader({
   n,
@@ -311,14 +343,8 @@ function PromptDiffModal({
     current && previous ? diffLines(previous.prompt, current.prompt) : [];
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-border bg-background p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalBackdrop onClose={onClose}>
+      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-border bg-background p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-[0.10em] text-muted-foreground">
             diff · v{currentVersion - 1} → v{currentVersion} · {butlerName}
@@ -360,7 +386,7 @@ function PromptDiffModal({
           </div>
         )}
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 
@@ -393,14 +419,8 @@ function PromptEditModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-2xl rounded-lg border border-border bg-background p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalBackdrop onClose={onClose}>
+      <div className="w-full max-w-2xl rounded-lg border border-border bg-background p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-[0.10em] text-muted-foreground">
             edit system prompt · {butlerName}
@@ -437,7 +457,7 @@ function PromptEditModal({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 
@@ -657,14 +677,8 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
       </div>
 
       {showConfirm && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setShowConfirm(false)}
-        >
-          <div
-            className="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <ModalBackdrop onClose={() => setShowConfirm(false)}>
+          <div className="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-xl">
             <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.10em] text-muted-foreground">
               confirm kill
             </p>
@@ -690,7 +704,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
               </button>
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
     </Section>
   );

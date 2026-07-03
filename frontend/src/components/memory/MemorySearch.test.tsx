@@ -130,9 +130,9 @@ describe("MemorySearch", () => {
 
   it("writes the kind URL param when a scope pill is clicked", () => {
     mounted = render();
-    // Find the "Facts" scope pill (role=switch from the Pill primitive).
+    // Find the "Facts" scope pill (aria-pressed toggle from the Pill primitive).
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('[aria-pressed]'),
     );
     const factsPill = pills.find((p) => p.textContent?.trim() === "Facts");
     expect(factsPill).toBeTruthy();

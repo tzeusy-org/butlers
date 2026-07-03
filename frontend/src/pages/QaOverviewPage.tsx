@@ -189,6 +189,7 @@ function StickyTopBar({
           {butlerMenuOpen && (
             <div
               role="menu"
+              tabIndex={-1}
               className="absolute left-0 top-7 z-30 w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
               onMouseLeave={() => setButlerMenuOpen(false)}
             >

@@ -271,21 +271,21 @@ describe("FactsRegister — the ledger", () => {
     setFacts([makeFact()]);
     mounted = renderRegister();
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
     );
     const labels = pills.map((p) => p.textContent);
     for (const v of ["active", "fading", "superseded", "expired", "retracted"]) {
       expect(labels).toContain(v);
     }
     const active = pills.find((p) => p.textContent === "active");
-    expect(active!.getAttribute("aria-checked")).toBe("true");
+    expect(active!.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("selecting a validity pill refetches with the new validity and offset reset", () => {
     setFacts([makeFact()], { total: 200, has_more: true });
     mounted = renderRegister(["/memory?offset=100"]);
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
     );
     const fadingPill = pills.find((p) => p.textContent === "fading");
     expect(fadingPill).toBeDefined();

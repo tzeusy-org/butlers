@@ -43,7 +43,7 @@ function conditionSummary(condition: Record<string, unknown>): string {
 function actionColor(action: string): string {
   const verb = action.toLowerCase().split(' ')[0]
   if (verb === 'drop') return 'text-[var(--red)]'
-  if (verb === 'tier') return 'text-[var(--amber)]'
+  if (verb === 'tier') return 'text-[var(--amber-text)]'
   if (verb === 'route') return 'text-foreground'
   return 'text-muted-foreground'
 }

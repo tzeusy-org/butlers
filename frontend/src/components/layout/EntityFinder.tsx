@@ -427,6 +427,7 @@ export default function EntityFinder() {
   if (!open) return null;
 
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- backdrop-dismiss is a mouse-only convenience; Escape (handled on the Command panel below) is the real keyboard equivalent, and the overlay is not a focusable target.
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[15vh]"
       onClick={() => setOpen(false)}

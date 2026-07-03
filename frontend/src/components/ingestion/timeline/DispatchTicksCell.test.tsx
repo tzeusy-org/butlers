@@ -177,6 +177,7 @@ describe("DispatchTicksCell", () => {
 
     act(() => {
       root.render(
+        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- test-only fixture standing in for a parent event handler, not user-facing UI.
         <div onClick={parentClick}>
           <DispatchTicksCell sessions={[session()]} sessionCount={1} onOpenDrawer={onOpenDrawer} />
         </div>,

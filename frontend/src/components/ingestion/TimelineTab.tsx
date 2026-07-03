@@ -64,6 +64,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { DisclosureRow } from "@/components/ui/DisclosureRow";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -884,7 +885,15 @@ function LedgerRow({
   }
 
   function handleRowClick(e: React.MouseEvent<HTMLDivElement>) {
-    // Shift-click enters selection mode without opening the drawer.
+    // Shift-click enters selection mode without opening the drawer; a plain
+    // click anywhere else in the row is a MOUSE-ONLY convenience that
+    // mirrors the sender cell's real DisclosureRow trigger below (bigger
+    // click target, same action) — it carries no independent ARIA role
+    // itself, so it can safely sit around several genuinely-interactive
+    // children (checkbox, channel filter, sender disclosure, replay)
+    // without triggering "nested interactive controls" (a real regression
+    // the previous single-role-on-the-whole-row version of this component
+    // had, caught by the real-page axe suite this bead adds).
     if (e.shiftKey && eligible) {
       onToggleSelect();
       return;
@@ -892,29 +901,21 @@ function LedgerRow({
     onToggleExpand();
   }
 
-  function handleRowKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    // Only react when the row itself is focused (not a nested checkbox/button —
-    // those already handle their own activation and stop propagation).
-    if (e.target !== e.currentTarget) return;
-    if (e.key === "Enter") {
-      e.preventDefault();
-      onToggleExpand();
-    }
-  }
+  const senderLabel = resolvedName ?? "Unknown sender";
+  const senderDisclosureLabel = `${senderLabel}${reasonText ? `, ${reasonText}` : ""}, ${
+    isExpanded ? "collapse" : "expand"
+  } event details`;
 
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- not itself an ARIA widget (no role); this is a mouse-only "click anywhere in the row" convenience mirroring the sender cell's DisclosureRow below, which is the row's real keyboard-accessible trigger. Giving the WHOLE row a widget role instead (tried first) fails axe's nested-interactive check because the row also contains independently-focusable cells (checkbox, channel filter, replay) — a real ARIA violation, not a false positive.
     <div
       className={[
         "grid items-center gap-x-3 px-3 py-2 border-b border-border/50 text-[13px] transition-colors cursor-pointer group",
-        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
         event.status === "filtered" ? "opacity-60" : "",
         isExpanded ? "bg-muted/20" : "hover:bg-muted/10",
       ].join(" ")}
       style={{ gridTemplateColumns: LEDGER_GRID_COLUMNS }}
       onClick={handleRowClick}
-      onKeyDown={handleRowKeyDown}
-      tabIndex={0}
-      aria-expanded={isExpanded}
       title={event.id}
       data-testid="ledger-row"
       data-event-id={event.id}
@@ -982,26 +983,43 @@ function LedgerRow({
         </span>
       </button>
 
-      {/* Sender + inline filter/error reason (no more tooltip-only pattern) */}
-      <div className="min-w-0 pr-2 flex items-baseline gap-2">
+      {/* Sender + inline filter/error reason (no more tooltip-only pattern).
+          bu-86c4c.16: this is the row's REAL keyboard-accessible disclosure
+          trigger — DisclosureRow supplies role="button", Enter+Space
+          activation, and aria-expanded/aria-controls (JARVIS audit move 11,
+          critical finding). It wraps only static text (no nested focusable
+          descendants), so it — unlike a whole-row role — passes axe's
+          nested-interactive check cleanly. stopPropagation keeps the outer
+          row's own mouse-convenience onClick from double-firing the toggle. */}
+      <DisclosureRow
+        expanded={isExpanded}
+        onToggle={onToggleExpand}
+        onClick={(e) => e.stopPropagation()}
+        controlsId={isExpanded ? `event-drawer-${event.id}` : undefined}
+        aria-label={senderDisclosureLabel}
+        title={[resolvedName, reasonText].filter(Boolean).join(" — ") || undefined}
+        className="min-w-0 pr-2 flex items-baseline gap-2 rounded-sm"
+        data-testid="ledger-row-trigger"
+        data-event-id={event.id}
+      >
         <span
           className="truncate font-serif text-[13px] leading-[1.5] shrink-0 max-w-[55%]"
-          title={resolvedName ?? undefined}
+          aria-hidden="true"
         >
           {resolvedName ?? "—"}
         </span>
         {reasonText && (
           <span
+            aria-hidden="true"
             className={[
               "truncate min-w-0 font-mono text-[11px]",
               event.status === "error" ? "text-destructive" : "text-muted-foreground",
             ].join(" ")}
-            title={reasonText}
           >
             {reasonText}
           </span>
         )}
-      </div>
+      </DisclosureRow>
 
       {/* Status — quiet dot + word, never a filled pill in rows */}
       <RowStatus status={event.status} />
@@ -1019,6 +1037,7 @@ function LedgerRow({
       </span>
 
       {/* Replay / chevron — chevron on every row now */}
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- not itself interactive; onClick only swallows bubbling so the replay button's click (which already stopPropagation()s itself) never double-fires the row's expand toggle. */}
       <div className="flex items-center justify-end gap-0" onClick={(e) => e.stopPropagation()}>
         {isReplayPending(event.status) ? (
           <Loader2 className="size-3 animate-spin text-muted-foreground" data-testid="replay-pending-spinner" />
@@ -1038,7 +1057,7 @@ function LedgerRow({
             )}
           </button>
         ) : (
-          <span className="font-mono text-[10px] text-muted-foreground select-none">
+          <span aria-hidden="true" className="font-mono text-[10px] text-muted-foreground select-none">
             {isExpanded ? "▲" : "▼"}
           </span>
         )}
@@ -1178,31 +1197,51 @@ function HourGroup({
       </div>
 
       {/* Event rows */}
-      {events.map((event) => (
-        <div key={event.id}>
-          <LedgerRow
-            event={event}
-            isExpanded={drawerEventId === event.id}
-            isSelected={selectedIds.has(event.id)}
-            showCheckboxColumn={showCheckboxColumn}
-            onToggleExpand={() =>
-              drawerEventId === event.id ? onCloseDrawer() : onOpenDrawer(event.id)
-            }
-            onToggleSelect={() => onToggleSelect(event.id)}
-            onOptimisticUpdate={onOptimisticUpdate}
-            onChannelClick={onChannelClick}
-          />
+      {events.map((event) => {
+        // bu-86c4c.16: Escape (or the close button) inside the drawer should
+        // return focus to the row that opened it — the real keyboard
+        // equivalent of "the drawer went away, you're back where you were".
+        // Looked up by data-event-id (via a plain attribute filter, not a
+        // CSS-selector-escaped query — event ids are opaque strings and
+        // needn't round-trip through selector syntax) rather than a ref map,
+        // since rows mount/unmount freely as the ledger scrolls/paginates.
+        // The trigger itself never unmounts when only the drawer toggles, so
+        // this runs synchronously — no requestAnimationFrame/rAF-after-
+        // unmount race to worry about.
+        function closeAndReturnFocus() {
+          onCloseDrawer();
+          const trigger = Array.from(
+            document.querySelectorAll<HTMLElement>('[data-testid="ledger-row-trigger"]'),
+          ).find((el) => el.dataset.eventId === event.id);
+          trigger?.focus();
+        }
 
-          {/* Inline drawer below this row when it's the focused event */}
-          {drawerEventId === event.id && drawerEvent && (
-            <EventDrawer
-              event={drawerEvent}
-              onClose={onCloseDrawer}
+        return (
+          <div key={event.id}>
+            <LedgerRow
+              event={event}
+              isExpanded={drawerEventId === event.id}
+              isSelected={selectedIds.has(event.id)}
+              showCheckboxColumn={showCheckboxColumn}
+              onToggleExpand={() =>
+                drawerEventId === event.id ? onCloseDrawer() : onOpenDrawer(event.id)
+              }
+              onToggleSelect={() => onToggleSelect(event.id)}
               onOptimisticUpdate={onOptimisticUpdate}
+              onChannelClick={onChannelClick}
             />
-          )}
-        </div>
-      ))}
+
+            {/* Inline drawer below this row when it's the focused event */}
+            {drawerEventId === event.id && drawerEvent && (
+              <EventDrawer
+                event={drawerEvent}
+                onClose={closeAndReturnFocus}
+                onOptimisticUpdate={onOptimisticUpdate}
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

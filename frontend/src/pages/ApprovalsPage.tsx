@@ -627,10 +627,11 @@ function Dossier({
             {/* Defer expansion — drops down under the cluster */}
             {!isScheduled && showDefer && (
               <div className="pointer-events-auto w-72 space-y-2 p-3 rounded-lg border border-border bg-background shadow-md">
-                <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                <label htmlFor="approvals-defer-hours" className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
                   Hours to defer (1–168)
                 </label>
                 <input
+                  id="approvals-defer-hours"
                   type="number"
                   min={1}
                   max={168}
@@ -937,10 +938,11 @@ function PolicySection() {
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
+              <label htmlFor="approvals-quiet-start-hour" className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
                 Start hour (0–23)
               </label>
               <input
+                id="approvals-quiet-start-hour"
                 type="number"
                 min={0}
                 max={23}
@@ -959,10 +961,11 @@ function PolicySection() {
               />
             </div>
             <div>
-              <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
+              <label htmlFor="approvals-quiet-end-hour" className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
                 End hour (0–23)
               </label>
               <input
+                id="approvals-quiet-end-hour"
                 type="number"
                 min={0}
                 max={23}
@@ -982,10 +985,11 @@ function PolicySection() {
             </div>
           </div>
           <div>
-            <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
+            <label htmlFor="approvals-quiet-timezone" className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1">
               Timezone (IANA)
             </label>
             <input
+              id="approvals-quiet-timezone"
               value={draft.timezone}
               onChange={(e) =>
                 setDraft((d) => ({ ...d, timezone: e.target.value }))

@@ -249,10 +249,11 @@ export default function MeasurementTracker() {
             ))}
           </select>
           <div className="flex items-center gap-2">
-            <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            <label htmlFor="measurement-tracker-since" className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
               From
             </label>
             <input
+              id="measurement-tracker-since"
               type="date"
               value={since}
               onChange={(e) => {
@@ -263,10 +264,11 @@ export default function MeasurementTracker() {
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            <label htmlFor="measurement-tracker-until" className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
               To
             </label>
             <input
+              id="measurement-tracker-until"
               type="date"
               value={until}
               onChange={(e) => {

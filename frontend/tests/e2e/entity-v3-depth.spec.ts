@@ -753,14 +753,19 @@ test.describe("entity-v3: workbench mode", () => {
 
     // Provenance grid is present and sortable: clicking a sort header flips its
     // aria-sort. The header is the "Predicate" sort button (default direction).
+    // bu-86c4c.16: aria-sort moved from the button to the <th> (columnheader
+    // role) — it isn't a valid ARIA attribute on role=button and only applies
+    // to columnheader/rowheader — so the assertion targets the columnheader,
+    // while the click still goes through the sort button inside it.
     const grid = page.getByTestId("provenance-grid");
     await expect(grid).toBeVisible();
     const sortHeader = grid.getByRole("button", { name: /Predicate/ });
-    await expect(sortHeader).toHaveAttribute("aria-sort", "none");
+    const sortColumnHeader = grid.getByRole("columnheader", { name: /Predicate/ });
+    await expect(sortColumnHeader).toHaveAttribute("aria-sort", "none");
     await sortHeader.click();
-    await expect(sortHeader).toHaveAttribute("aria-sort", "ascending");
+    await expect(sortColumnHeader).toHaveAttribute("aria-sort", "ascending");
     await sortHeader.click();
-    await expect(sortHeader).toHaveAttribute("aria-sort", "descending");
+    await expect(sortColumnHeader).toHaveAttribute("aria-sort", "descending");
 
     // Duplicate panel (amber) sits atop the action rail; commit opens compare.
     await expect(page.getByTestId("workbench-duplicate-panel")).toBeVisible();

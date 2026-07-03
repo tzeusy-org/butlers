@@ -107,8 +107,9 @@ function EntitySearchDialog({ contact, open, onOpenChange }: EntitySearchDialogP
 
         <div className="space-y-4">
           <div>
-            <label className="text-sm font-medium">Search entities</label>
+            <label htmlFor="unlinked-entity-search" className="text-sm font-medium">Search entities</label>
             <Input
+              id="unlinked-entity-search"
               className="mt-1"
               placeholder="Type a name to search..."
               value={search}

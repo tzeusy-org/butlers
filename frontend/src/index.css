@@ -107,7 +107,17 @@
   --bg-deep:  oklch(0.965 0.005 85);   /* sidebar, sticky bars */
   --fg:       oklch(0.18 0 0);         /* primary text */
   --mfg:      oklch(0.46 0 0);         /* muted text, eyebrows */
-  --dim:      oklch(0.62 0 0);         /* tertiary text, deltas */
+  /* bu-86c4c.16: was oklch(0.62 0 0) — 3.49:1 against --bg, a WCAG AA
+   * failure for the 9-11px mono type this token carries (timestamps,
+   * deltas, and the entire content of "fading" memory facts). Darkened to
+   * clear 4.5:1 against both --bg and --bg-elev (verified in
+   * src/lib/contrast.test.ts, which reads this literal at test time). */
+  --dim:      oklch(0.55 0 0);         /* tertiary text, deltas */
+  /* bu-86c4c.16: text-safe amber, split from the --amber fill/border token
+   * below (fills/borders/badges intentionally stay bright — only TEXT needs
+   * the 4.5:1 AA floor). Base --amber at 2.01:1 against --bg cannot carry
+   * text; this token can. Use for any `text-[var(--amber)]` site. */
+  --amber-text: oklch(0.55 0.10 84.0);
 
   /* Dispatch border softness variants (light mode) */
   --border-soft:   oklch(0 0 0 / 0.05);   /* list separators */
@@ -447,7 +457,14 @@ body {
   --bg-deep:  oklch(0.115 0 0);         /* sidebar, sticky bars */
   --fg:       oklch(0.985 0 0);         /* primary text */
   --mfg:      oklch(0.708 0 0);         /* muted text, eyebrows */
-  --dim:      oklch(0.55 0 0);          /* tertiary text, deltas */
+  /* bu-86c4c.16: was oklch(0.55 0 0) — 4.08:1 against --bg, below the
+   * 4.5:1 AA floor this 9-11px mono token needs. Lightened to clear 4.5:1
+   * against both --bg and --bg-elev. */
+  --dim:      oklch(0.62 0 0);          /* tertiary text, deltas */
+  /* bu-86c4c.16: dark --amber already clears AA as text (~10.8:1 vs --bg) —
+   * --amber-text is defined equal to it purely so the same token NAME is
+   * theme-safe to reference from either theme. */
+  --amber-text: oklch(0.810 0.185 84.0);
   --border-soft:   oklch(1 0 0 / 0.06); /* list separators */
   --border-strong: oklch(1 0 0 / 0.18); /* buttons, link underlines */
   --green: oklch(0.790 0.195 148);      /* healthy, positive delta */
@@ -636,6 +653,31 @@ body {
   .calendar-entry-flash {
     animation: none;
     box-shadow: 0 0 0 2px var(--fg);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Global prefers-reduced-motion floor (bu-86c4c.16, JARVIS audit move 11)
+ *
+ * Reduced-motion was previously honored "artisanally": a JS hook
+ * (usePrefersReducedMotion) exists and 3 components use it conscientiously,
+ * but every Radix dialog/sheet zoom-and-slide, skeleton pulse, and
+ * animate-pulse status dot (all via the tailwindcss-animate utilities)
+ * played regardless of the OS preference. This single global rule collapses
+ * every CSS animation/transition to an effectively-instant state change
+ * whenever the user has requested reduced motion — motion restraint becomes
+ * the default, not a per-component courtesy. The JS hook remains the right
+ * tool for canvas/SVG work (Plex graph, calendar drag) that CSS can't reach;
+ * this rule does not touch those.
+ * ---------------------------------------------------------------------------*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

@@ -9,6 +9,13 @@
 //            or add Pill variant." — builds on badge.tsx tokens/shape, adds
 //            toggle (selected) semantics and mono font.
 // Amendment 9: Reuses existing border, mfg, and fg/bg tokens only.
+//
+// bu-86c4c.16 (JARVIS audit move 11): was role="switch" + aria-checked —
+// wrong semantics for a filter chip (switch means an independent on/off
+// setting; these are toggled selection state, "pressed" not "on"). Fixed to
+// the standard ARIA toggle-button pattern (native <button>, aria-pressed);
+// the count is folded into the button's own accessible name instead of an
+// aria-label on a plain inner <span>, which AT discards.
 // ---------------------------------------------------------------------------
 
 import * as React from "react"
@@ -37,11 +44,22 @@ export interface PillProps extends React.ButtonHTMLAttributes<HTMLButtonElement>
  *   <Pill selected count={3}>duplicate</Pill>
  */
 export function Pill({ selected = false, count, children, className, ...props }: PillProps) {
+  // Fold the count into the button's accessible name — an aria-label on the
+  // inner count <span> is not itself a labelling element, so AT discards it
+  // and only ever announces the label text, silently dropping the count.
+  // Only auto-computed when the label is plain text and no explicit
+  // aria-label was already supplied by the caller (props spreads after this
+  // and wins on conflict).
+  const computedAriaLabel =
+    count !== undefined && typeof children === "string"
+      ? `${children}, ${count} ${count === 1 ? "item" : "items"}`
+      : undefined
+
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={selected}
+      aria-pressed={selected}
+      aria-label={computedAriaLabel}
       className={cn(
         // Shape
         "inline-flex items-center gap-1",
@@ -69,7 +87,13 @@ export function Pill({ selected = false, count, children, className, ...props }:
       {children}
       {count !== undefined && (
         <span
-          aria-label={`${count} ${count === 1 ? "item" : "items"}`}
+          // Hidden from AT only when the count is already folded into the
+          // button's own aria-label above (plain-text children). For a
+          // non-text label there's no button-level aria-label to fold into,
+          // so this span keeps its own aria-label as a fallback — better an
+          // "unlabelled span" pattern than a count no AT ever announces.
+          aria-hidden={computedAriaLabel ? "true" : undefined}
+          aria-label={computedAriaLabel ? undefined : `${count} ${count === 1 ? "item" : "items"}`}
           className="tabular-nums"
         >
           {count}

@@ -85,18 +85,18 @@ function FactRow({
   return (
     <li
       className={`flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs ${
-        highlighted ? "text-[var(--amber)]" : ""
+        highlighted ? "text-[var(--amber-text)]" : ""
       }`}
       data-testid="compare-fact"
       data-highlighted={highlighted ? "true" : undefined}
     >
       <span
-        className={`font-medium capitalize ${highlighted ? "text-[var(--amber)]" : "text-foreground"}`}
+        className={`font-medium capitalize ${highlighted ? "text-[var(--amber-text)]" : "text-foreground"}`}
       >
         {prettyPredicate(fact.predicate)}
       </span>
       <span
-        className={`truncate ${highlighted ? "text-[var(--amber)]" : "text-muted-foreground"}`}
+        className={`truncate ${highlighted ? "text-[var(--amber-text)]" : "text-muted-foreground"}`}
         title={fact.object}
       >
         {fact.object}

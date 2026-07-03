@@ -207,14 +207,14 @@ export default function NotificationsPage() {
 
             {/* Channel dropdown */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">
+              <label htmlFor="notifications-channel-filter" className="text-muted-foreground text-xs font-medium">
                 Channel
               </label>
               <Select
                 value={filters.channel}
                 onValueChange={(v) => handleFilterChange("channel", v)}
               >
-                <SelectTrigger className="w-40">
+                <SelectTrigger id="notifications-channel-filter" className="w-40">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -229,14 +229,14 @@ export default function NotificationsPage() {
 
             {/* Status dropdown */}
             <div className="space-y-1">
-              <label className="text-muted-foreground text-xs font-medium">
+              <label htmlFor="notifications-status-filter" className="text-muted-foreground text-xs font-medium">
                 Status
               </label>
               <Select
                 value={filters.status}
                 onValueChange={(v) => handleFilterChange("status", v)}
               >
-                <SelectTrigger className="w-40">
+                <SelectTrigger id="notifications-status-filter" className="w-40">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

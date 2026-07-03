@@ -230,21 +230,21 @@ describe("RulesRegister — standing orders", () => {
     setRules([makeRule()]);
     mounted = renderRegister();
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
     );
     const labels = pills.map((p) => p.textContent);
     for (const m of ["all", "candidate", "established", "proven", "anti_pattern"]) {
       expect(labels).toContain(m);
     }
     const all = pills.find((p) => p.textContent === "all");
-    expect(all!.getAttribute("aria-checked")).toBe("true");
+    expect(all!.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("selecting a maturity pill refetches with that maturity and offset reset", () => {
     setRules([makeRule()], { total: 200, has_more: true });
     mounted = renderRegister(["/memory?offset=100"]);
     const pills = Array.from(
-      mounted.container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+      mounted.container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'),
     );
     const antiPill = pills.find((p) => p.textContent === "anti_pattern");
     expect(antiPill).toBeDefined();

@@ -764,27 +764,58 @@ describe("TimelineTab — every row is expandable", () => {
   });
 
   it("all rows have aria-expanded reflecting drawer state", () => {
+    // bu-86c4c.16: aria-expanded lives on the row's real DisclosureRow
+    // trigger (the sender cell) — the outer [data-testid='ledger-row'] is a
+    // plain, role-less mouse-convenience wrapper (a whole-row widget role
+    // would fail axe's nested-interactive check against the row's other
+    // independently-focusable cells: checkbox, channel filter, replay).
     render([makeEvent({ id: "aria-evt", status: "filtered" })]);
-    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
-    expect(row.getAttribute("aria-expanded")).toBe("false");
+    const trigger = container.querySelector("[data-testid='ledger-row-trigger']") as HTMLElement;
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
 
     act(() => {
-      row.click();
+      trigger.click();
     });
 
-    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("pressing Enter on a focused row opens the drawer (keyboard access)", () => {
+  it("pressing Enter on the focused sender trigger opens the drawer (keyboard access)", () => {
     render([makeEvent({ id: "kbd-evt", status: "ingested" })]);
-    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
-    expect(row.getAttribute("tabIndex") ?? row.tabIndex.toString()).toBeDefined();
+    const trigger = container.querySelector("[data-testid='ledger-row-trigger']") as HTMLElement;
+    expect(trigger.getAttribute("tabIndex") ?? trigger.tabIndex.toString()).toBeDefined();
 
     act(() => {
-      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
 
     expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
+  });
+
+  it("Escape inside the drawer closes it and returns focus to the row's trigger", () => {
+    render([makeEvent({ id: "escape-evt", status: "ingested" })]);
+
+    const trigger = container.querySelector(
+      "[data-testid='ledger-row-trigger']",
+    ) as HTMLElement;
+    act(() => {
+      trigger.click();
+    });
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
+
+    const drawer = container.querySelector("[data-testid='event-drawer']") as HTMLElement;
+    act(() => {
+      drawer.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(container.querySelector("[data-testid='event-drawer']")).toBeNull();
+    // Focus returned to the SAME row's trigger, not lost to <body>.
+    const triggerAfterClose = container.querySelector(
+      "[data-testid='ledger-row-trigger']",
+    ) as HTMLElement;
+    expect(document.activeElement).toBe(triggerAfterClose);
   });
 
   it("no ledger row renders a filled status pill (shadcn Badge slot)", () => {
@@ -1941,11 +1972,16 @@ describe("TimelineTab — sender cell title attribute", () => {
       );
     });
 
+    // bu-86c4c.16: title now lives on the wrapping DisclosureRow trigger
+    // (the sender span itself is aria-hidden — its accessible name comes
+    // from the trigger's aria-label, not this title).
     const senderEl = Array.from(container.querySelectorAll("span")).find(
       (el) => el.textContent === "Alice Smith",
     );
     expect(senderEl).toBeDefined();
-    expect(senderEl!.getAttribute("title")).toBe("Alice Smith");
+    const trigger = senderEl!.closest("[data-testid='ledger-row-trigger']");
+    expect(trigger).not.toBeNull();
+    expect(trigger!.getAttribute("title")).toBe("Alice Smith");
   });
 });
 

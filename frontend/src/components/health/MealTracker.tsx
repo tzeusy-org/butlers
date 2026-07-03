@@ -366,8 +366,9 @@ export default function MealTracker({
 
           {/* Date range inputs */}
           <div className="flex items-center gap-2">
-            <label className="text-muted-foreground text-xs font-mono uppercase tracking-wider">From</label>
+            <label htmlFor="meal-tracker-since" className="text-muted-foreground text-xs font-mono uppercase tracking-wider">From</label>
             <input
+              id="meal-tracker-since"
               type="date"
               value={since}
               max={until || undefined}
@@ -379,8 +380,9 @@ export default function MealTracker({
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-muted-foreground text-xs font-mono uppercase tracking-wider">To</label>
+            <label htmlFor="meal-tracker-until" className="text-muted-foreground text-xs font-mono uppercase tracking-wider">To</label>
             <input
+              id="meal-tracker-until"
               type="date"
               value={until}
               min={since || undefined}

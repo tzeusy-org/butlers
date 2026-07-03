@@ -229,8 +229,9 @@ export default function SymptomTracker() {
             className="w-48"
           />
           <div className="flex items-center gap-2">
-            <label className="text-muted-foreground text-sm">From</label>
+            <label htmlFor="symptom-tracker-since" className="text-muted-foreground text-sm">From</label>
             <Input
+              id="symptom-tracker-since"
               type="date"
               value={since}
               onChange={(e) => {
@@ -241,8 +242,9 @@ export default function SymptomTracker() {
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-muted-foreground text-sm">To</label>
+            <label htmlFor="symptom-tracker-until" className="text-muted-foreground text-sm">To</label>
             <Input
+              id="symptom-tracker-until"
               type="date"
               value={until}
               onChange={(e) => {
