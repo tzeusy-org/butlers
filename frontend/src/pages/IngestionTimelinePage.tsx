@@ -1,9 +1,8 @@
 /**
  * IngestionTimelinePage — route component for /ingestion (Timeline root).
  *
- * Mounts under the INGESTION_DISPATCH_CONSOLE sub-route hierarchy when the
- * feature flag is on. The Timeline is the default landing view for the
- * ingestion surface.
+ * Mounts under the /ingestion sub-route hierarchy. The Timeline is the
+ * default landing view for the ingestion surface.
  *
  * Uses Dispatch primitives (DispatchLayout, DispatchHeader) and the shared
  * IngestionSubNav for consistent navigation across all ingestion routes.

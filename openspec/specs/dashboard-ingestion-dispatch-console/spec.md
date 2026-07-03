@@ -16,6 +16,18 @@ synthetic, or forever-loading sections), audited raw-payload access, explicit
 data states (loading, empty, partial-error, unavailable), and committed visual
 and route verification evidence before closure.
 
+The legacy tabbed `IngestionPage` shell (behind the now-removed
+`INGESTION_DISPATCH_CONSOLE` flag) was deleted once this surface became the
+unconditional default (bu-4utdw.2). The owner explicitly accepted losing the
+legacy-only capabilities that were never ported: the backfill job manager tab,
+the fanout distribution matrix, the volume time-series chart (and its 30d
+period option), the tier-breakdown donut, and the legacy connector-card
+delete button. Thread-affinity settings and Gmail label filters (previously
+in the legacy Filters tab) are also not yet present in the Filters Pipeline
+below; their source component is preserved unmounted pending a rehoming
+follow-up discovered from bu-4utdw.2. See
+`docs/frontend/feature-inventory.md` §"Ingestion" for the full accounting.
+
 ## Requirements
 
 ### Requirement: Ingestion Dispatch Route Architecture

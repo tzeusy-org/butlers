@@ -11,8 +11,6 @@
  * 6. ?tab= redirect preserves compatible query params (range, channels, status)
  *
  * All tab content components are mocked so this file needs no QueryClientProvider.
- * The feature-flags module is mocked to set INGESTION_DISPATCH_CONSOLE = true so
- * the routes in router-config actually use the new dispatch sub-route hierarchy.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -23,10 +21,6 @@ import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router'
 // ---------------------------------------------------------------------------
 // Mocks — must be before any router/page imports
 // ---------------------------------------------------------------------------
-
-vi.mock('@/lib/feature-flags', () => ({
-  INGESTION_DISPATCH_CONSOLE: true,
-}))
 
 vi.mock('@/pages/IngestionTimelinePage', () => ({
   default: () => (
@@ -42,18 +36,6 @@ vi.mock('@/pages/IngestionTimelinePage', () => ({
 
 vi.mock('@/components/ingestion/TimelineTab', () => ({
   TimelineTab: () => <div data-testid="timeline-tab-stub">Timeline tab</div>,
-}))
-vi.mock('@/components/ingestion/ConnectorsListPage', () => ({
-  ConnectorsListPage: () => <div data-testid="connectors-list-stub">Connectors list</div>,
-}))
-vi.mock('@/components/ingestion/ConnectorsTab', () => ({
-  ConnectorsTab: () => <div data-testid="connectors-tab-stub">Connectors tab</div>,
-}))
-vi.mock('@/components/switchboard/FiltersTab', () => ({
-  FiltersTab: () => <div data-testid="filters-tab-stub">Filters tab</div>,
-}))
-vi.mock('@/components/switchboard/BackfillHistoryTab', () => ({
-  BackfillHistoryTab: () => <div data-testid="history-tab-stub">History tab</div>,
 }))
 
 // Import after mocks

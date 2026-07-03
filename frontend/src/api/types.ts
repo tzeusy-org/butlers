@@ -3194,43 +3194,6 @@ export interface ConnectorStats {
   timeseries: ConnectorStatsBucket[];
 }
 
-/** Period-scoped ingestion overview statistics from GET /api/switchboard/ingestion/overview. */
-export interface IngestionOverviewStats {
-  period: IngestionPeriod;
-  total_ingested: number;
-  total_skipped: number;
-  total_metadata_only: number;
-  llm_calls_saved: number;
-  active_connectors: number;
-  tier1_full_count: number;
-  tier2_metadata_count: number;
-  tier3_skip_count: number;
-}
-
-/** One row in the cross-connector summary. */
-export interface ConnectorSummaryEntry {
-  connector_type: string;
-  endpoint_identity: string;
-  liveness: string;
-  messages_ingested: number;
-  messages_failed: number;
-}
-
-/** Cross-connector aggregate summary (GET /api/connectors/summary). */
-export interface CrossConnectorSummary {
-  period: IngestionPeriod;
-  total_connectors: number;
-  connectors_online: number;
-  connectors_stale: number;
-  connectors_offline: number;
-  total_messages_ingested: number;
-  total_messages_failed: number;
-  overall_error_rate_pct: number;
-  by_connector: ConnectorSummaryEntry[];
-  /** Whether Prometheus-backed aggregate metrics are available. */
-  aggregates_available?: boolean;
-}
-
 /**
  * Pipeline funnel statistics (GET /api/ingestion/pipeline?window=24h).
  * Sourced from Prometheus via PromQL with 60s TTL cache.
@@ -3290,19 +3253,6 @@ export interface ConnectorProfile {
   provider: string;
   display_name: string;
   supports_backfill: boolean;
-}
-
-/** One row in the fanout matrix. */
-export interface ConnectorFanoutEntry {
-  connector_type: string;
-  endpoint_identity: string;
-  targets: Record<string, number>; // butler_name -> message_count
-}
-
-/** Fanout distribution response (GET /api/connectors/fanout). */
-export interface ConnectorFanout {
-  period: IngestionPeriod;
-  matrix: ConnectorFanoutEntry[];
 }
 
 // ---------------------------------------------------------------------------

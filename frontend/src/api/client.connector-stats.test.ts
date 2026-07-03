@@ -3,8 +3,8 @@
  *
  * Verifies:
  * - Correct /switchboard/* path prefixes (no direct /api/connectors/* calls)
- * - Backend-to-frontend type transformations (liveness derivation, fanout matrix
- *   grouping, stats summary aggregation, CrossConnectorSummary field mapping)
+ * - Backend-to-frontend type transformations (liveness derivation, stats
+ *   summary aggregation)
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -39,9 +39,6 @@ import {
   listConnectorSummaries,
   getConnectorDetail,
   getConnectorStats,
-  getCrossConnectorSummary,
-  getConnectorFanout,
-  getIngestionOverview,
 } from "./client.ts";
 
 // ---------------------------------------------------------------------------
@@ -93,28 +90,6 @@ describe("connector API path prefixes", () => {
     expect(url).toContain("/api/switchboard/connectors/gmail/user%40example.com/stats");
   });
 
-  it("getCrossConnectorSummary calls /api/switchboard/connectors/summary", async () => {
-    mockResponse({ data: {
-      total_connectors: 0,
-      online_count: 0,
-      stale_count: 0,
-      offline_count: 0,
-      unknown_count: 0,
-      total_messages_ingested: 0,
-      total_messages_failed: 0,
-      error_rate_pct: 0,
-    }});
-    await getCrossConnectorSummary("24h");
-    const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/api/switchboard/connectors/summary");
-  });
-
-  it("getConnectorFanout calls /api/switchboard/ingestion/fanout", async () => {
-    mockResponse({ data: [] });
-    await getConnectorFanout("7d");
-    const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/api/switchboard/ingestion/fanout");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -170,76 +145,6 @@ describe("listConnectorSummaries liveness derivation", () => {
     mockResponse({ data: [makeEntry({ last_heartbeat_at: null })] });
     const resp = await listConnectorSummaries();
     expect(resp.data[0].liveness).toBe("offline");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// CrossConnectorSummary field mapping
-// ---------------------------------------------------------------------------
-
-describe("getCrossConnectorSummary field mapping", () => {
-  it("maps backend field names to frontend CrossConnectorSummary shape", async () => {
-    mockResponse({
-      data: {
-        total_connectors: 5,
-        online_count: 3,
-        stale_count: 1,
-        offline_count: 1,
-        unknown_count: 0,
-        total_messages_ingested: 1000,
-        total_messages_failed: 10,
-        error_rate_pct: 1.0,
-      },
-    });
-    const resp = await getCrossConnectorSummary("24h");
-    const summary = resp.data;
-    expect(summary.total_connectors).toBe(5);
-    expect(summary.connectors_online).toBe(3);
-    expect(summary.connectors_stale).toBe(1);
-    expect(summary.connectors_offline).toBe(1);
-    expect(summary.total_messages_ingested).toBe(1000);
-    expect(summary.total_messages_failed).toBe(10);
-    expect(summary.overall_error_rate_pct).toBe(1.0);
-    expect(summary.period).toBe("24h");
-    expect(summary.by_connector).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Fanout matrix grouping
-// ---------------------------------------------------------------------------
-
-describe("getConnectorFanout matrix grouping", () => {
-  it("groups flat FanoutRow records into ConnectorFanout matrix", async () => {
-    mockResponse({
-      data: [
-        { connector_type: "gmail", endpoint_identity: "u@x.com", target_butler: "finance", message_count: 100 },
-        { connector_type: "gmail", endpoint_identity: "u@x.com", target_butler: "general", message_count: 50 },
-        { connector_type: "telegram_bot", endpoint_identity: "bot-1", target_butler: "health", message_count: 200 },
-      ],
-    });
-    const resp = await getConnectorFanout("7d");
-    const fanout = resp.data;
-    expect(fanout.period).toBe("7d");
-    expect(fanout.matrix).toHaveLength(2);
-
-    const gmailEntry = fanout.matrix.find(
-      (e) => e.connector_type === "gmail" && e.endpoint_identity === "u@x.com",
-    );
-    expect(gmailEntry).toBeDefined();
-    expect(gmailEntry!.targets).toEqual({ finance: 100, general: 50 });
-
-    const tgEntry = fanout.matrix.find(
-      (e) => e.connector_type === "telegram_bot" && e.endpoint_identity === "bot-1",
-    );
-    expect(tgEntry).toBeDefined();
-    expect(tgEntry!.targets).toEqual({ health: 200 });
-  });
-
-  it("returns empty matrix when backend returns empty list", async () => {
-    mockResponse({ data: [] });
-    const resp = await getConnectorFanout("7d");
-    expect(resp.data.matrix).toEqual([]);
   });
 });
 
@@ -420,74 +325,5 @@ describe("listConnectorSummaries today field mapping (Bug 1)", () => {
     expect(connector.today).not.toBeNull();
     expect(connector.today!.messages_ingested).toBe(0);
     expect(connector.today!.messages_failed).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Bug 2 fix: getIngestionOverview — period-scoped stats from message_inbox
-// ---------------------------------------------------------------------------
-
-describe("getIngestionOverview (Bug 2)", () => {
-  it("calls /api/switchboard/ingestion/overview with period param", async () => {
-    mockResponse({
-      data: {
-        period: "24h",
-        total_ingested: 0,
-        total_skipped: 0,
-        total_metadata_only: 0,
-        llm_calls_saved: 0,
-        active_connectors: 0,
-        tier1_full_count: 0,
-        tier2_metadata_count: 0,
-        tier3_skip_count: 0,
-      },
-    });
-    await getIngestionOverview("24h");
-    const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/api/switchboard/ingestion/overview");
-    expect(url).toContain("period=24h");
-  });
-
-  it("returns period-scoped tier counts from backend", async () => {
-    mockResponse({
-      data: {
-        period: "7d",
-        total_ingested: 500,
-        total_skipped: 10,
-        total_metadata_only: 20,
-        llm_calls_saved: 30,
-        active_connectors: 3,
-        tier1_full_count: 470,
-        tier2_metadata_count: 20,
-        tier3_skip_count: 10,
-      },
-    });
-    const resp = await getIngestionOverview("7d");
-    const overview = resp.data;
-    expect(overview.period).toBe("7d");
-    expect(overview.total_ingested).toBe(500);
-    expect(overview.tier1_full_count).toBe(470);
-    expect(overview.tier2_metadata_count).toBe(20);
-    expect(overview.tier3_skip_count).toBe(10);
-    expect(overview.active_connectors).toBe(3);
-  });
-
-  it("passes period=30d to the endpoint", async () => {
-    mockResponse({
-      data: {
-        period: "30d",
-        total_ingested: 0,
-        total_skipped: 0,
-        total_metadata_only: 0,
-        llm_calls_saved: 0,
-        active_connectors: 0,
-        tier1_full_count: 0,
-        tier2_metadata_count: 0,
-        tier3_skip_count: 0,
-      },
-    });
-    await getIngestionOverview("30d");
-    const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("period=30d");
   });
 });

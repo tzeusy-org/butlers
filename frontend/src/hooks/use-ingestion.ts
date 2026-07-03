@@ -3,34 +3,26 @@
  *
  * Shared query-key strategy (spec §7):
  * - ingestionKeys.connectorsList()            → list of ConnectorSummary
- * - ingestionKeys.connectorsSummary(period)   → CrossConnectorSummary
- * - ingestionKeys.ingestionOverview(period)   → IngestionOverviewStats
- * - ingestionKeys.fanout(period)              → ConnectorFanout matrix
  * - ingestionKeys.connectorDetail(type, id)           → ConnectorDetail
  * - ingestionKeys.connectorStats(type, id, period)  → ConnectorStats timeseries
  * - ingestionKeys.connectorSummariesWithAggregates()  → ConnectorSummariesResponse
  * - ingestionKeys.crossSummaryWithAggregates()        → ConnectorCrossSummaryResponse
  * - ingestionKeys.pipelineStats(window)               → PipelineStats
  *
- * Overview and Connectors tabs share the connectors list / summary / fanout
- * keys so switching tabs reuses warm cache.
+ * Overview and Connectors tabs share the connectors list key so switching
+ * tabs reuses warm cache.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  deleteConnector,
-  getCrossConnectorSummary,
   getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
   getConnectorEvents,
-  getConnectorFanout,
   getConnectorIncidents,
   getConnectorRoutingRules,
   getConnectorStats,
   getConnectorSummariesWithAggregates,
-  getIngestionOverview,
-  getIngestionVolume,
   getPipelineStats,
   listAvailableConnectors,
   listConnectorSummaries,
@@ -47,12 +39,6 @@ export const ingestionKeys = {
   all: ["ingestion"] as const,
   connectorsList: () => [...ingestionKeys.all, "connectors-list"] as const,
   connectorsAvailable: () => [...ingestionKeys.all, "connectors-available"] as const,
-  connectorsSummary: (period: IngestionPeriod) =>
-    [...ingestionKeys.all, "connectors-summary", period] as const,
-  ingestionOverview: (period: IngestionPeriod) =>
-    [...ingestionKeys.all, "ingestion-overview", period] as const,
-  fanout: (period: IngestionPeriod) =>
-    [...ingestionKeys.all, "fanout", period] as const,
   connectorDetail: (connectorType: string, endpointIdentity: string) =>
     [...ingestionKeys.all, "connector-detail", connectorType, endpointIdentity] as const,
   connectorStats: (
@@ -67,8 +53,6 @@ export const ingestionKeys = {
       endpointIdentity,
       period,
     ] as const,
-  ingestionVolume: (period: IngestionPeriod) =>
-    [...ingestionKeys.all, "ingestion-volume", period] as const,
   connectorSummariesWithAggregates: () =>
     [...ingestionKeys.all, "connectors-summaries-with-aggregates"] as const,
   crossSummaryWithAggregates: () =>
@@ -112,69 +96,6 @@ export function useConnectorSummaries(options?: { enabled?: boolean }) {
     queryKey: ingestionKeys.connectorsList(),
     queryFn: () => listConnectorSummaries(),
     refetchInterval: 60_000,
-    enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Cross-connector aggregate summary. Lazy-loaded per active tab.
- */
-export function useCrossConnectorSummary(
-  period: IngestionPeriod,
-  options?: { enabled?: boolean },
-) {
-  return useQuery({
-    queryKey: ingestionKeys.connectorsSummary(period),
-    queryFn: () => getCrossConnectorSummary(period),
-    refetchInterval: 60_000,
-    enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Period-scoped ingestion overview statistics from message_inbox.
- * Used for the Overview tab stat row (replaces getCrossConnectorSummary for that purpose).
- */
-export function useIngestionOverview(
-  period: IngestionPeriod,
-  options?: { enabled?: boolean },
-) {
-  return useQuery({
-    queryKey: ingestionKeys.ingestionOverview(period),
-    queryFn: () => getIngestionOverview(period),
-    refetchInterval: 60_000,
-    enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Aggregate ingestion volume time-series (across all connectors).
- * DB-backed via connector_heartbeat_log — works without Prometheus.
- */
-export function useIngestionVolume(
-  period: IngestionPeriod,
-  options?: { enabled?: boolean },
-) {
-  return useQuery({
-    queryKey: ingestionKeys.ingestionVolume(period),
-    queryFn: () => getIngestionVolume(period),
-    refetchInterval: 60_000,
-    enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Fanout distribution matrix (connector x butler message counts).
- * Shared between Overview and Connectors tabs.
- */
-export function useConnectorFanout(
-  period: IngestionPeriod,
-  options?: { enabled?: boolean },
-) {
-  return useQuery({
-    queryKey: ingestionKeys.fanout(period),
-    queryFn: () => getConnectorFanout(period),
-    refetchInterval: 120_000,
     enabled: options?.enabled !== false,
   });
 }
@@ -273,31 +194,6 @@ export function useAvailableConnectors(options?: { enabled?: boolean }) {
     staleTime: 60_000,
     gcTime: 120_000,
     enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Mutation to delete (deregister) a connector.
- * Invalidates the connector list so the grid refreshes.
- */
-export function useDeleteConnector() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      connectorType,
-      endpointIdentity,
-    }: {
-      connectorType: string;
-      endpointIdentity: string;
-    }) => deleteConnector(connectorType, endpointIdentity),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ingestionKeys.connectorsList(),
-      });
-      queryClient.invalidateQueries({
-        queryKey: ingestionKeys.all,
-      });
-    },
   });
 }
 

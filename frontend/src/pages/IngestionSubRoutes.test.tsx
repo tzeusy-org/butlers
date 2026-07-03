@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Tests for the INGESTION_DISPATCH_CONSOLE sub-route scaffolding (§2.1).
+ * Tests for the ingestion Dispatch console sub-route scaffolding (§2.1).
  *
  * Covers:
  *   - IngestionTabRedirect: ?tab=connectors|filters|history → sub-route redirect
@@ -10,8 +10,8 @@
  *   - Sub-route pages render their page headings
  *
  * Tests import IngestionTabRedirect directly from router.tsx (it is exported).
- * The feature-flag module and IngestionTimelinePage are mocked so that importing
- * router.tsx does not evaluate createBrowserRouter side-effects or the flag.
+ * IngestionTimelinePage is mocked so that importing router.tsx does not
+ * evaluate createBrowserRouter side-effects.
  */
 
 import React from 'react'
@@ -19,14 +19,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router'
-
-// ---------------------------------------------------------------------------
-// Mock feature-flags before importing router so the module-level flag
-// evaluation does not run the real env-var read or createBrowserRouter.
-// ---------------------------------------------------------------------------
-vi.mock('@/lib/feature-flags', () => ({
-  INGESTION_DISPATCH_CONSOLE: false,
-}))
 
 // Mock IngestionTimelinePage so the redirect component renders a testable stub
 // instead of pulling in the real component and its dependencies.
@@ -42,17 +34,8 @@ vi.mock('@/pages/IngestionTimelinePage', () => ({
 vi.mock('@/components/ingestion/TimelineTab', () => ({
   TimelineTab: () => <div data-testid="timeline-tab-stub">Timeline tab</div>,
 }))
-vi.mock('@/components/ingestion/ConnectorsTab', () => ({
-  ConnectorsTab: () => <div data-testid="connectors-tab-stub">Connectors tab</div>,
-}))
-vi.mock('@/components/ingestion/ConnectorsListPage', () => ({
-  ConnectorsListPage: () => <div data-testid="connectors-tab-stub">Connectors tab</div>,
-}))
 vi.mock('@/components/ingestion/connectors/ConnectorsRoster', () => ({
   ConnectorsRoster: () => <div data-testid="connectors-tab-stub">Connectors roster</div>,
-}))
-vi.mock('@/components/switchboard/FiltersTab', () => ({
-  FiltersTab: () => <div data-testid="filters-tab-stub">Filters tab</div>,
 }))
 vi.mock('@/components/ingestion/filters', () => ({
   FiltersPipeline: () => <div data-testid="filters-pipeline-stub">Filters pipeline</div>,
@@ -64,9 +47,6 @@ vi.mock('@/hooks/use-ingestion', async (importOriginal) => {
     usePipelineStats: () => ({ data: undefined, isLoading: false }),
   }
 })
-vi.mock('@/components/switchboard/BackfillHistoryTab', () => ({
-  BackfillHistoryTab: () => <div data-testid="history-tab-stub">History tab</div>,
-}))
 
 // Import the real component after mocks are registered.
 import { IngestionTabRedirect } from '@/router'
@@ -334,37 +314,5 @@ describe('IngestionFiltersPage', () => {
     // Old card stub is gone; new pipeline is rendered instead
     expect(container.querySelector('[data-testid="filters-tab-stub"]')).toBeNull()
     expect(container.querySelector('[data-testid="filters-pipeline-stub"]')).not.toBeNull()
-  })
-})
-
-describe('IngestionHistoryPage', () => {
-  let container: HTMLDivElement
-  let root: Root
-
-  beforeEach(() => {
-    container = document.createElement('div')
-    document.body.appendChild(container)
-    root = createRoot(container)
-  })
-
-  afterEach(() => {
-    act(() => {
-      root.unmount()
-    })
-    container.remove()
-    document.body.innerHTML = ''
-  })
-
-  it('renders the History heading and history tab stub', async () => {
-    const { default: IngestionHistoryPage } = await import('@/pages/IngestionHistoryPage')
-    act(() => {
-      root.render(
-        <MemoryRouter>
-          <IngestionHistoryPage />
-        </MemoryRouter>,
-      )
-    })
-    expect(container.querySelector('h1')?.textContent).toBe('History')
-    expect(container.querySelector('[data-testid="history-tab-stub"]')).not.toBeNull()
   })
 })

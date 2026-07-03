@@ -4130,8 +4130,6 @@ import type {
   ConnectorDaySummary,
   ConnectorDetail,
   ConnectorEventsResponse,
-  ConnectorFanout,
-  ConnectorFanoutEntry,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorScopeEntry,
@@ -4140,9 +4138,6 @@ import type {
   ConnectorStatsSummary,
   ConnectorSummariesResponse,
   ConnectorSummary,
-  ConnectorSummaryEntry,
-  CrossConnectorSummary,
-  IngestionOverviewStats,
   IngestionPeriod,
   PipelineStats,
 } from "./types.ts";
@@ -4157,8 +4152,6 @@ export type {
   ConnectorDetail,
   ConnectorScopeEntry,
   ConnectorEventsResponse,
-  ConnectorFanout,
-  ConnectorFanoutEntry,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorStats,
@@ -4166,9 +4159,6 @@ export type {
   ConnectorStatsSummary,
   ConnectorSummariesResponse,
   ConnectorSummary,
-  ConnectorSummaryEntry,
-  CrossConnectorSummary,
-  IngestionOverviewStats,
   IngestionPeriod,
   PipelineStats,
 };
@@ -4205,26 +4195,6 @@ interface _BackendConnectorEntry {
   scopes?: ConnectorScopeEntry[] | null;
   /** Present only on endpoints that compute hourly timeseries (e.g. /api/ingestion/connectors/summaries). */
   hourly_events?: number[];
-}
-
-/** Raw aggregate summary from GET /api/switchboard/connectors/summary. */
-interface _BackendConnectorSummary {
-  total_connectors: number;
-  online_count: number;
-  stale_count: number;
-  offline_count: number;
-  unknown_count: number;
-  total_messages_ingested: number;
-  total_messages_failed: number;
-  error_rate_pct: number;
-}
-
-/** Raw row from GET /api/switchboard/ingestion/fanout. */
-interface _BackendFanoutRow {
-  connector_type: string;
-  endpoint_identity: string;
-  target_butler: string;
-  message_count: number;
 }
 
 /** Raw timeseries row from GET /api/switchboard/connectors/:type/:id/stats. */
@@ -4309,54 +4279,8 @@ function _toConnectorDetail(entry: _BackendConnectorEntry): ConnectorDetail {
 }
 
 /**
- * Map a backend aggregate summary to the frontend CrossConnectorSummary shape.
- * The `/summary` endpoint does not include per-connector breakdown or period,
- * so those are synthesised as empty/default values.
- */
-function _toCrossConnectorSummary(
-  raw: _BackendConnectorSummary,
-  period: IngestionPeriod,
-): CrossConnectorSummary {
-  return {
-    period,
-    total_connectors: raw.total_connectors,
-    connectors_online: raw.online_count,
-    connectors_stale: raw.stale_count,
-    connectors_offline: raw.offline_count,
-    total_messages_ingested: raw.total_messages_ingested,
-    total_messages_failed: raw.total_messages_failed,
-    overall_error_rate_pct: raw.error_rate_pct,
-    by_connector: [],
-  };
-}
-
-/**
- * Map a flat list of FanoutRow records into the matrix-shaped ConnectorFanout
- * expected by FanoutMatrix. Rows are grouped by (connector_type, endpoint_identity)
- * and each unique target_butler becomes a key in the `targets` dict.
- */
-function _toConnectorFanout(
-  rows: _BackendFanoutRow[],
-  period: IngestionPeriod,
-): ConnectorFanout {
-  const index = new Map<string, ConnectorFanoutEntry>();
-  for (const row of rows) {
-    const key = `${row.connector_type}::${row.endpoint_identity}`;
-    if (!index.has(key)) {
-      index.set(key, {
-        connector_type: row.connector_type,
-        endpoint_identity: row.endpoint_identity,
-        targets: Object.create(null) as Record<string, number>,
-      });
-    }
-    index.get(key)!.targets[row.target_butler] = row.message_count;
-  }
-  return { period, matrix: Array.from(index.values()) };
-}
-
-/**
  * Map a flat list of hourly/daily stats rows into the ConnectorStats shape
- * expected by VolumeTrendChart and the period-summary card.
+ * expected by the connector detail page's period-summary card.
  */
 function _toConnectorStats(
   rows: _BackendStatsRow[],
@@ -4434,19 +4358,6 @@ export async function getConnectorStats(
   };
 }
 
-/** Get aggregate cross-connector summary. */
-export async function getCrossConnectorSummary(
-  period: IngestionPeriod = "24h",
-): Promise<ApiResponse<CrossConnectorSummary>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorSummary>>(
-    `/switchboard/connectors/summary`,
-  );
-  return {
-    ...resp,
-    data: _toCrossConnectorSummary(resp.data, period),
-  };
-}
-
 /**
  * GET /api/ingestion/connectors/summaries
  * Returns connector list with aggregates_available flag.
@@ -4496,41 +4407,6 @@ export async function bulkRetryEvents(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ event_ids: eventIds }),
   });
-}
-
-/** Get period-scoped ingestion overview statistics (message_inbox-based). */
-export async function getIngestionOverview(
-  period: IngestionPeriod = "24h",
-): Promise<ApiResponse<IngestionOverviewStats>> {
-  return apiFetch<ApiResponse<IngestionOverviewStats>>(
-    `/switchboard/ingestion/overview?period=${period}`,
-  );
-}
-
-/** Get aggregate ingestion volume time-series (across all connectors). */
-export async function getIngestionVolume(
-  period: IngestionPeriod = "24h",
-): Promise<ApiResponse<ConnectorStats>> {
-  const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
-    `/switchboard/ingestion/volume?period=${period}`,
-  );
-  return {
-    ...resp,
-    data: _toConnectorStats(resp.data ?? [], "all", "all", period),
-  };
-}
-
-/** Get fanout distribution matrix. */
-export async function getConnectorFanout(
-  period: IngestionPeriod = "7d",
-): Promise<ApiResponse<ConnectorFanout>> {
-  const resp = await apiFetch<ApiResponse<_BackendFanoutRow[]>>(
-    `/switchboard/ingestion/fanout?period=${period}`,
-  );
-  return {
-    ...resp,
-    data: _toConnectorFanout(resp.data ?? [], period),
-  };
 }
 
 /**
@@ -4615,17 +4491,6 @@ export async function updateConnectorSettings(
     ...resp,
     data: _toConnectorDetail(resp.data),
   };
-}
-
-/** Delete (deregister) a connector and its heartbeat log. */
-export async function deleteConnector(
-  connectorType: string,
-  endpointIdentity: string,
-): Promise<ApiResponse<{ deleted: string }>> {
-  return apiFetch<ApiResponse<{ deleted: string }>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
-    { method: "DELETE" },
-  );
 }
 
 // ---------------------------------------------------------------------------

@@ -47,10 +47,8 @@ import { EntitiesIndexPage } from './components/relationship/EntitiesIndexPage.t
 import PlexPage from './components/relationship/PlexPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import ConcentrationPage from './components/relationship/ConcentrationPage.tsx'
-import IngestionPage from './pages/IngestionPage.tsx'
 import IngestionConnectorsPage from './pages/IngestionConnectorsPage.tsx'
 import IngestionFiltersPage from './pages/IngestionFiltersPage.tsx'
-import IngestionHistoryPage from './pages/IngestionHistoryPage.tsx'
 import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 import QaOverviewPage from './pages/QaOverviewPage.tsx'
 import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
@@ -66,7 +64,6 @@ import {
   RelationshipContactRedirect,
   RelationshipEntityRedirect,
 } from './router.tsx'
-import { INGESTION_DISPATCH_CONSOLE } from './lib/feature-flags.ts'
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
@@ -140,47 +137,33 @@ export const router = createBrowserRouter(
         { path: '/qa/patrols/:patrolId', element: <QaPatrolDetailPage /> },
         { path: '/qa/investigations', element: <QaInvestigationsPage /> },
         { path: '/qa/investigations/:attemptId', element: <QaInvestigationDetailPage /> },
-        // Ingestion routes — behaviour depends on INGESTION_DISPATCH_CONSOLE flag.
+        // Ingestion routes — first-class sub-routes in the Dispatch visual
+        // language, with 301-equivalent redirects from legacy ?tab= URLs.
         //
-        // Flag ON (default in both dev and prod): first-class sub-routes +
-        //   301-equivalent redirects from legacy ?tab= URLs per
-        //   dashboard-ingestion-dispatch-console spec.
-        // Flag OFF (VITE_INGESTION_DISPATCH_CONSOLE=false kill switch):
-        //   legacy single-route IngestionPage with ?tab= param.
-        //
-        // Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
-        //       dashboard-ingestion-dispatch-console/spec.md
+        // Spec: openspec/specs/dashboard-ingestion-dispatch-console/spec.md
         //       dashboard-shell/spec.md
         //
-        // Route hierarchy (flag ON):
+        // Route hierarchy:
         //   /ingestion                                    Timeline ledger (default)
         //   /ingestion/connectors                         Connectors roster
         //   /ingestion/connectors/:connectorType/:id      Connector detail
         //   /ingestion/filters                            Filters pipeline
         //
-        // Legacy compat (flag ON):
+        // Legacy compat:
         //   ?tab=connectors  → /ingestion/connectors
         //   ?tab=filters     → /ingestion/filters
         //   ?tab=history     → /ingestion (Timeline; no /ingestion/history primary route)
         //   ?tab=timeline    → /ingestion (strips param)
         //   /ingestion/history → /ingestion (redirect; route retained for bookmark compat)
-        ...(INGESTION_DISPATCH_CONSOLE
-          ? [
-              // Root /ingestion: redirect ?tab= params → sub-routes; else Timeline.
-              { path: '/ingestion', element: <IngestionTabRedirect /> },
-              // First-class sub-routes
-              { path: '/ingestion/connectors', element: <IngestionConnectorsPage /> },
-              { path: '/ingestion/filters', element: <IngestionFiltersPage /> },
-              // /ingestion/history: bookmark compat redirect → Timeline
-              // There is no primary redesigned /ingestion/history route.
-              { path: '/ingestion/history', element: <Navigate to="/ingestion" replace /> },
-            ]
-          : [
-              // Legacy single-route with ?tab= param (prod-safe fallback)
-              { path: '/ingestion', element: <IngestionPage /> },
-              // Retain history sub-route in legacy mode
-              { path: '/ingestion/history', element: <IngestionHistoryPage /> },
-            ]),
+        //
+        // Root /ingestion: redirect ?tab= params → sub-routes; else Timeline.
+        { path: '/ingestion', element: <IngestionTabRedirect /> },
+        // First-class sub-routes
+        { path: '/ingestion/connectors', element: <IngestionConnectorsPage /> },
+        { path: '/ingestion/filters', element: <IngestionFiltersPage /> },
+        // /ingestion/history: bookmark compat redirect → Timeline
+        // There is no primary redesigned /ingestion/history route.
+        { path: '/ingestion/history', element: <Navigate to="/ingestion" replace /> },
         {
           path: '/ingestion/connectors/:connectorType/:endpointIdentity',
           element: <ConnectorDetailPage />,
@@ -190,7 +173,7 @@ export const router = createBrowserRouter(
         // Legacy /connectors redirects → /ingestion equivalents (spec section 3.3)
         {
           path: '/connectors',
-          element: <Navigate to="/ingestion?tab=connectors" replace />,
+          element: <Navigate to="/ingestion/connectors" replace />,
         },
         {
           path: '/connectors/:connectorType/:endpointIdentity',

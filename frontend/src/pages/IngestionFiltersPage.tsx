@@ -5,11 +5,11 @@
  * gate sections with rule rows, priority senders, channel defaults, archived
  * rules, and footer actions.
  *
- * Replaces the legacy FiltersTab card placeholder (FiltersTabContent). The
- * old card-based content is NOT rendered here (spec AC4).
+ * Replaced the legacy FiltersTab card placeholder (FiltersTabContent, deleted
+ * in bu-4utdw.2). The old card-based content is not rendered here (spec AC4).
  *
- * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
- *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline"
+ * Spec: openspec/specs/dashboard-ingestion-dispatch-console/spec.md
+ *       §"Filters Pipeline"
  */
 
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'

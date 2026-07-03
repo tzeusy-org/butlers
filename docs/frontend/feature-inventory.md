@@ -259,38 +259,55 @@ This inventory describes what is implemented today in `frontend/src/**`.
 - Entity Detail (`/entities/:entityId`):
   - metadata and full JSON payload viewer
 
-## Connectors (`/connectors`)
+## Ingestion (`/ingestion`)
 
-- Connector overview cards:
-  - One card per registered connector showing type icon, endpoint identity, liveness badge (online/stale/offline), self-reported health state (healthy/degraded/error), uptime percentage (today), last heartbeat age, and today's ingestion count.
-- Volume time series chart:
-  - Line or bar chart of ingestion volume per connector over selected period.
-  - Period selector: 24h / 7d / 30d.
-  - Toggle per-connector visibility.
-- Fanout distribution table:
-  - Matrix of connector x butler showing message counts for the selected period.
-  - Columns: target butlers. Rows: connectors. Cells: message count.
-- Error log panel:
-  - Recent connector errors (heartbeats with state != healthy).
-  - Columns: timestamp, connector type + identity, state (degraded/error), error message.
-- Cross-connector summary stats:
-  - Total connectors, online count, stale count, offline count, total messages ingested, total messages failed, overall error rate.
+Redesigned Dispatch-language surface (`openspec/specs/dashboard-ingestion-dispatch-console/spec.md`)
+as first-class routes rather than a page-level tab switcher. Legacy `?tab=`
+query-param URLs and the bare `/connectors` route redirect into the
+equivalent sub-route.
 
-## Connector Detail (`/connectors/:connectorType/:endpointIdentity`)
+- Timeline (`/ingestion`, default route):
+  - Reverse-chronological event ledger with a time-first, every-row-expandable
+    layout; range picker (1h/24h/7d), toolbar, hour strip with dispatch ticks
+    (per-butler dispatch activity), saved views, and event drawer (raw
+    payload, replay history, step ledger).
+- Connectors (`/ingestion/connectors`):
+  - Dense hairline-divided connector register (`ConnectorsRoster`) — no card
+    chrome. Attention strip surfaces unhealthy connectors above the table.
+    Summary-level liveness/health/today's counts only; no per-connector
+    volume chart or fanout matrix (see "Orphaned capabilities" below).
+  - Discovery: dormant/available-but-not-registered connector types listed
+    separately from the live roster.
+- Connector Detail (`/ingestion/connectors/:connectorType/:endpointIdentity`):
+  - Identity, current status (liveness, health, error, uptime), lifetime
+    counters, checkpoint cursor, 24h stats histogram, recent events and
+    incidents, connector-scoped routing rules, and a settings editor
+    (`BatchSettingsCard`).
+- Filters (`/ingestion/filters`):
+  - Five-gate pipeline diagram with a proportional funnel, gate sections with
+    rule rows, priority senders block, channel-defaults inline editor,
+    archived rules section, and a rule editor (create/edit + DSL dry-run
+    test) with footer actions.
 
-- Connector identity card:
-  - Type, endpoint identity, instance ID, version, registered_via, first_seen_at.
-- Current status card:
-  - Liveness badge, health state, error message (if any), uptime, last heartbeat age.
-- Counters card:
-  - Lifetime monotonic counters: messages ingested, messages failed, source API calls, checkpoint saves, dedupe accepted.
-- Checkpoint card:
-  - Current cursor value and last updated timestamp.
-- Volume + health time series:
-  - Same chart as overview page but scoped to this connector.
-  - Period selector: 24h / 7d / 30d.
-- Fanout breakdown:
-  - Per-butler message distribution for this connector over selected period.
+### Orphaned capabilities (accepted loss, bu-4utdw.2)
+
+The legacy tabbed `/ingestion` surface (`IngestionPage`, flag-gated behind
+`INGESTION_DISPATCH_CONSOLE`) was deleted once the redesign above shipped as
+the default. The owner explicitly accepted dropping these legacy-only
+capabilities rather than porting them:
+
+- Backfill job manager tab (`BackfillHistoryTab`) — the component still
+  exists at `frontend/src/components/switchboard/BackfillHistoryTab.tsx` but
+  is no longer mounted anywhere; needs a rehome or an intentional retirement
+  decision (follow-up discovered from bu-4utdw.2).
+- Thread-affinity settings (global enable/TTL) and Gmail label include/exclude
+  filters, previously exposed via `FiltersTab.tsx` (also still present but
+  unmounted) — not yet ported to the new Filters Pipeline surface (same
+  follow-up).
+- Fanout distribution matrix (connector × butler message counts).
+- Volume time-series chart and the 24h/7d/30d period selector on it.
+- Tier-breakdown donut chart.
+- The legacy connector-card inline delete (deregister) button.
 
 ## Costs (`/costs`)
 
@@ -319,6 +336,8 @@ This inventory describes what is implemented today in `frontend/src/**`.
 
 - `CostWidget` component.
 - `TopSessionsTable` component and `useTopSessions` hook.
+- `BackfillHistoryTab` and `FiltersTab` (switchboard) — see "Orphaned
+  capabilities" under Ingestion above.
 
 ## Current Gaps / Partial States
 

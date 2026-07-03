@@ -2,7 +2,7 @@
  * Playwright smoke test — §2.1 + §2.10 ingestion sub-route 301 redirects.
  *
  * Verifies that legacy ?tab= query-param URLs redirect to the dedicated
- * sub-routes when the INGESTION_DISPATCH_CONSOLE feature flag is enabled.
+ * ingestion sub-routes.
  *
  * The four redirects under test:
  *   /ingestion?tab=connectors → /ingestion/connectors
@@ -12,10 +12,6 @@
  *
  * The preview server is managed by playwright.config.ts `webServer`; tests
  * rely on it being available and will fail hard (not skip) if it is not.
- *
- * Note: the redirect logic is on by default (dispatch console default-on
- * since 2026-07-03); CI still sets VITE_INGESTION_DISPATCH_CONSOLE=true
- * explicitly for clarity/future-proofing.
  *
  * Prerequisites:
  *   npm run build && npm run preview  (or Playwright starts preview automatically)

@@ -23,33 +23,6 @@ describe("ingestionKeys", () => {
     ]);
   });
 
-  it("connectorsSummary includes period", () => {
-    expect(ingestionKeys.connectorsSummary("7d")).toEqual([
-      "ingestion",
-      "connectors-summary",
-      "7d",
-    ]);
-    expect(ingestionKeys.connectorsSummary("24h")).toEqual([
-      "ingestion",
-      "connectors-summary",
-      "24h",
-    ]);
-    expect(ingestionKeys.connectorsSummary("30d")).toEqual([
-      "ingestion",
-      "connectors-summary",
-      "30d",
-    ]);
-  });
-
-  it("fanout includes period", () => {
-    expect(ingestionKeys.fanout("7d")).toEqual(["ingestion", "fanout", "7d"]);
-    expect(ingestionKeys.fanout("30d")).toEqual([
-      "ingestion",
-      "fanout",
-      "30d",
-    ]);
-  });
-
   it("connectorDetail includes type and identity", () => {
     expect(
       ingestionKeys.connectorDetail("gmail", "user@example.com"),
@@ -74,8 +47,8 @@ describe("ingestionKeys", () => {
   });
 
   it("different periods produce different keys (cache isolation)", () => {
-    const k24 = ingestionKeys.connectorsSummary("24h");
-    const k7d = ingestionKeys.connectorsSummary("7d");
+    const k24 = ingestionKeys.connectorStats("gmail", "a@x.com", "24h");
+    const k7d = ingestionKeys.connectorStats("gmail", "a@x.com", "7d");
     expect(k24).not.toEqual(k7d);
   });
 
