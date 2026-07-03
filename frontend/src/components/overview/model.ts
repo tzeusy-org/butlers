@@ -34,6 +34,7 @@ export interface OverviewDerivationInput {
   butlersError?: boolean;
   costs?: SpendSummary | null;
   issues?: Issue[];
+  issuesError?: boolean;
   heartbeats?: HeartbeatFacts | null;
   approvalMetrics?: ApprovalMetrics | null;
   notificationStats?: NotificationStats | null;
@@ -81,6 +82,12 @@ export interface OverviewAttentionRow {
   count?: number;
   lastSeenAt?: string | null;
   butlers?: string[];
+  /**
+   * True when this row exists because an upstream data source failed to
+   * load (not because of a real operational signal). Rendered with
+   * role="alert" so a degraded source announces itself distinctly.
+   */
+  isSourceError?: boolean;
 }
 
 export interface OverviewNowRow {
@@ -105,6 +112,13 @@ export interface OverviewTriageModel {
    * empty page. Mirrors the per-source error flags threaded into Now rows.
    */
   butlersError: boolean;
+  /**
+   * True when the issues source (`useIssues`) failed to load. Distinguishes
+   * "the issues source is down" from "there are genuinely no issues" -- a
+   * failed fetch must never render as the calm "Nothing waiting." empty
+   * state (bu-86c4c.2, JARVIS audit move 1b: "truth amnesty").
+   */
+  issuesError: boolean;
 }
 
 const DEFAULT_RECENT_ISSUE_HOURS = 24;
@@ -161,7 +175,22 @@ export function deriveOverviewTriageModel(
   const hiddenOldIssueGroups = options.includeOldIssueRows ? 0 : issueBuckets.old.length;
   const hiddenIssueGroups = hiddenOldIssueGroups + hiddenCurrentIssueGroups;
 
+  const issuesSourceErrorRows: OverviewAttentionRow[] = input.issuesError
+    ? [
+        {
+          id: "issues:source-error",
+          kind: "issue",
+          severity: "high",
+          title: "Issues feed unavailable",
+          detail: "Could not load recent issues -- retry from the issues page.",
+          href: "/issues",
+          isSourceError: true,
+        },
+      ]
+    : [];
+
   const attentionRows = [
+    ...issuesSourceErrorRows,
     ...currentHighIssueRows,
     ...runtimeRows,
     ...approvalRows,
@@ -207,6 +236,7 @@ export function deriveOverviewTriageModel(
     nowRows,
     hiddenOldIssueGroups,
     butlersError: input.butlersError ?? false,
+    issuesError: input.issuesError ?? false,
   };
 }
 

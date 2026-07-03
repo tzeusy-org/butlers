@@ -111,6 +111,7 @@ beforeEach(() => {
       registrySourceError: false,
       eligibilityUnavailable: 0,
       hasPerEntryErrors: false,
+      costSourceError: false,
       sourcesPartiallyDegraded: false,
     },
   })

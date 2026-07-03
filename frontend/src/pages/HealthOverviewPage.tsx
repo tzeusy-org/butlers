@@ -52,6 +52,7 @@ import { KpiStrip } from "@/components/overview/KpiStrip.tsx";
 import { Section } from "@/components/overview/Section.tsx";
 import { ButlerMark } from "@/components/ui/ButlerMark.tsx";
 import { Display } from "@/components/ui/Display.tsx";
+import { SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 
 // ---------------------------------------------------------------------------
 // KPI value helpers
@@ -233,27 +234,48 @@ export default function HealthOverviewPage() {
   const {
     data: briefing,
     isFetching: briefingFetching,
+    isError: briefingError,
     refetch: refetchBriefing,
   } = useHealthBriefing();
 
   // --- KPI measurements latest ---
-  const { data: latestData } = useMeasurementsLatest(KPI_TYPES);
+  const { data: latestData, isError: measurementsError } = useMeasurementsLatest(KPI_TYPES);
   const measurements = latestData?.measurements ?? {};
 
   // --- Source freshness ---
-  const { data: sourcesData } = useMeasurementSources();
+  const { data: sourcesData, isError: sourcesError } = useMeasurementSources();
   const sources = sourcesData ?? [];
 
   // --- Insight candidates (no refetchInterval — manual refresh via pill) ---
-  const { data: insights } = useInsights(INSIGHT_PARAMS);
-  const attentionItems = toAttentionItems(insights ?? []);
+  const { data: insights, isError: insightsError, refetch: refetchInsights } =
+    useInsights(INSIGHT_PARAMS);
+  const attentionItems: AttentionListItem[] = insightsError
+    ? [
+        {
+          id: "health:insights:source-error",
+          severity: "high",
+          title: "Health signals unavailable",
+          detail: "Could not load the attention index.",
+          href: null,
+          isSourceError: true,
+          onRetry: () => void refetchInsights(),
+        },
+      ]
+    : toAttentionItems(insights ?? []);
 
-  // --- Derived briefing values with safe fallbacks ---
+  // --- Derived briefing values with safe fallbacks. A failed briefing fetch
+  // must never render the indefinite "Health overview loading…" copy forever
+  // -- that reads as still-loading when it is actually down (bu-86c4c.2,
+  // JARVIS audit move 1b: "the suite speaks two control languages" finding
+  // named this exact page/line range). ---
   const greet = briefing?.greet ?? "Good day.";
-  const headline = briefing?.headline ?? "Health overview loading…";
-  const elaboration =
-    briefing?.elaboration ??
-    "Your health butler is composing a fresh briefing. Check back in a moment.";
+  const headline = briefingError
+    ? "Briefing unavailable."
+    : (briefing?.headline ?? "Health overview loading…");
+  const elaboration = briefingError
+    ? "Could not reach the health briefing service. Retry from the status pill above."
+    : (briefing?.elaboration ??
+      "Your health butler is composing a fresh briefing. Check back in a moment.");
 
   // --- KPI strip cells ---
   const weightEntry = measurements["weight"] ?? null;
@@ -302,6 +324,7 @@ export default function HealthOverviewPage() {
                   source={briefing?.source}
                   generatedAt={briefing?.generated_at}
                   isFetching={briefingFetching}
+                  isError={briefingError}
                   onRefetch={() => { void refetchBriefing(); }}
                 />
               }
@@ -335,13 +358,26 @@ export default function HealthOverviewPage() {
           {/* Voice elaboration paragraph */}
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
-          {/* KPI strip: weight / blood_pressure / heart_rate / blood_sugar */}
+          {/* KPI strip: weight / blood_pressure / heart_rate / blood_sugar.
+              Cells fall back to "—" (never a fake number) when a reading is
+              absent; a source error additionally gets a named degraded note
+              below so "—" everywhere doesn't get mistaken for "no data logged". */}
           <Section eyebrow="Vitals">
             <KpiStrip cells={kpiCells} />
+            {measurementsError && (
+              <SourceDegradedNote
+                label="Vitals"
+                detail="measurements source unavailable, readings above may be stale or missing"
+                className="mt-2"
+              />
+            )}
           </Section>
 
           {/* Data-freshness chip(s) — only rendered when source data exists */}
           <FreshnessChips sources={sources} />
+          {sourcesError && (
+            <SourceDegradedNote label="Data freshness" detail="source unavailable" />
+          )}
         </div>
 
         {/* ===================== RIGHT COLUMN — index ===================== */}

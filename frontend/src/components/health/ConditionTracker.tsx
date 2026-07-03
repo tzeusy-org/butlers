@@ -32,6 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useConditions, useDeleteCondition } from "@/hooks/use-health";
 import { cn } from "@/lib/utils";
@@ -181,7 +182,7 @@ export default function ConditionTracker() {
   // `null` = closed; `undefined` = add mode; a HealthCondition = edit mode.
   const [formTarget, setFormTarget] = useState<HealthCondition | null | undefined>(null);
 
-  const { data, isLoading } = useConditions({
+  const { data, isLoading, isError, error, refetch } = useConditions({
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
   });
@@ -208,19 +209,26 @@ export default function ConditionTracker() {
         </Button>
       </div>
 
-      {isLoading ? (
-        <SkeletonRows />
-      ) : conditions.length === 0 ? (
-        <p className="text-muted-foreground font-serif text-[15px] italic">
-          Nothing on record yet. Add a condition above, or tell your Health butler.
-        </p>
-      ) : (
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        isEmpty={conditions.length === 0}
+        onRetry={() => void refetch()}
+        sourceLabel="the health record"
+        loadingFallback={<SkeletonRows />}
+        emptyFallback={
+          <p className="text-muted-foreground font-serif text-[15px] italic">
+            Nothing on record yet. Add a condition above, or tell your Health butler.
+          </p>
+        }
+      >
         <div className="divide-y divide-border/60 border-y border-border/60">
           {conditions.map((cond) => (
             <ConditionRow key={cond.id} condition={cond} onEdit={setFormTarget} />
           ))}
         </div>
-      )}
+      </QueryBoundary>
 
       {/* Pagination */}
       {total > 0 && (

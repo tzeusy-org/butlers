@@ -1027,6 +1027,28 @@ describe("sourcesPartiallyDegraded — union of secondary source errors", () => 
     expect(aggregates.sourcesPartiallyDegraded).toBe(false)
     expect(aggregates.heartbeatSourceError).toBe(false)
     expect(aggregates.registrySourceError).toBe(false)
+    expect(aggregates.costSourceError).toBe(false)
+  })
+
+  it("cost source error → costSourceError=true, sourcesPartiallyDegraded=true (never a confident $0.00 total)", () => {
+    mockUseButlers.mockReturnValue(butlersQueryResult([
+      makeButler({ name: "a" }),
+      makeButler({ name: "b" }),
+    ]))
+    mockUseSpendSummary.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("cost failed"),
+    })
+    mockUseQueries.mockReturnValue(runtimeResults(2, 4))
+
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.costSourceError).toBe(true)
+    expect(aggregates.sourcesPartiallyDegraded).toBe(true)
+    // The raw sum is still 0 (no cost data at all) -- the UI layer (BoardFooter)
+    // is responsible for not presenting this as a confident total.
+    expect(aggregates.totalSpendToday).toBe(0)
   })
 
   it("heartbeat source error → loadPct=null for all rows (not 0%)", () => {

@@ -19,6 +19,20 @@ export interface AttentionListItem {
   title: string;
   detail?: string | null;
   href?: string | null;
+  /**
+   * True when this row represents a failed upstream data source rather than
+   * a real operational signal. The title+detail column gets role="alert" so
+   * a degraded source announces itself to assistive tech -- the outer row
+   * keeps role="listitem" so the ARIA list contract (every direct child of
+   * role="list" is a listitem) stays intact.
+   */
+  isSourceError?: boolean;
+  /**
+   * Retry callback for a source-error row. Rendered as a "Retry" button in
+   * the action column when `href` is absent -- a row whose copy says "retry"
+   * must offer an actual retry control, not just prose (bu-86c4c.2).
+   */
+  onRetry?: () => void;
 }
 
 interface AttentionListProps {
@@ -95,7 +109,7 @@ export function AttentionList({ items }: AttentionListProps) {
             </span>
 
             {/* Title + detail column */}
-            <div>
+            <div role={item.isSourceError ? "alert" : undefined}>
               <p
                 style={{
                   fontFamily: "var(--font-sans)",
@@ -124,7 +138,7 @@ export function AttentionList({ items }: AttentionListProps) {
               ) : null}
             </div>
 
-            {/* Action column: arrow link if available */}
+            {/* Action column: arrow link, retry button, or spacer */}
             {item.href ? (
               <Link
                 to={item.href}
@@ -139,6 +153,24 @@ export function AttentionList({ items }: AttentionListProps) {
               >
                 →
               </Link>
+            ) : item.onRetry ? (
+              <button
+                type="button"
+                onClick={item.onRetry}
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  color: "var(--muted-foreground)",
+                  background: "none",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius-sm)",
+                  padding: "2px 8px",
+                  lineHeight: 1.4,
+                  cursor: "pointer",
+                }}
+              >
+                Retry
+              </button>
             ) : (
               <span aria-hidden="true" />
             )}

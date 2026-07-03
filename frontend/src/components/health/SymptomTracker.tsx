@@ -35,6 +35,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useConditions, useDeleteSymptom, useSymptoms } from "@/hooks/use-health";
 
@@ -194,7 +195,7 @@ export default function SymptomTracker() {
     limit: PAGE_SIZE,
   };
 
-  const { data, isLoading } = useSymptoms(params);
+  const { data, isLoading, isError, error, refetch } = useSymptoms(params);
   // Fetch all conditions (up to 500) for ID → name resolution in rows.
   const { data: conditionsData } = useConditions({ limit: 500 });
   const conditionNameById = Object.fromEntries(
@@ -271,13 +272,20 @@ export default function SymptomTracker() {
         </Button>
       </div>
 
-      {isLoading ? (
-        <SkeletonRows />
-      ) : symptoms.length === 0 ? (
-        <p className="text-muted-foreground font-serif text-[15px] italic">
-          Nothing logged yet. Log a symptom above, or tell your Health butler.
-        </p>
-      ) : (
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        isEmpty={symptoms.length === 0}
+        onRetry={() => void refetch()}
+        sourceLabel="the health record"
+        loadingFallback={<SkeletonRows />}
+        emptyFallback={
+          <p className="text-muted-foreground font-serif text-[15px] italic">
+            Nothing logged yet. Log a symptom above, or tell your Health butler.
+          </p>
+        }
+      >
         <div className="divide-y divide-border/60 border-y border-border/60">
           {symptoms.map((symptom) => (
             <SymptomRow
@@ -288,7 +296,7 @@ export default function SymptomTracker() {
             />
           ))}
         </div>
-      )}
+      </QueryBoundary>
 
       {/* Pagination */}
       {total > 0 && (

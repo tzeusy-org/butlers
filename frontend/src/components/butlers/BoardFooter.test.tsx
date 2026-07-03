@@ -44,6 +44,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     registrySourceError: false,
     eligibilityUnavailable: 0,
     hasPerEntryErrors: false,
+    costSourceError: false,
     sourcesPartiallyDegraded: false,
     ...overrides,
   }
@@ -203,5 +204,29 @@ describe("BoardFooter", () => {
     const html = render(makeAggregates({ totalSpendToday: 2.469 }))
     expect(html).toContain("$2.47")
     expect(html).not.toContain("$2.48")
+  })
+
+  describe("cost source degraded (bu-86c4c.2 -- truth amnesty)", () => {
+    it("renders '—' instead of a confident '$0.00'/partial total when costSourceError is true", () => {
+      const html = render(makeAggregates({ totalSpendToday: 0, costSourceError: true }))
+      expect(html).toContain("—")
+      expect(html).not.toContain("$0.00")
+    })
+
+    it("renders a role=alert degraded note naming the cost source when costSourceError is true", () => {
+      const html = render(makeAggregates({ costSourceError: true }))
+      expect(html).toContain('role="alert"')
+      expect(html.toLowerCase()).toContain("spend today")
+    })
+
+    it("does NOT render a degraded note when costSourceError is false", () => {
+      const html = render(makeAggregates({ costSourceError: false }))
+      expect(html).not.toContain('role="alert"')
+    })
+
+    it("still renders the formatted total when costSourceError is false", () => {
+      const html = render(makeAggregates({ totalSpendToday: 4.2, costSourceError: false }))
+      expect(html).toContain("$4.20")
+    })
   })
 })

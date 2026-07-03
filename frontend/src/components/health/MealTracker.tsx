@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/dialog";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
+import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Row } from "@/components/ui/Row";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Voice } from "@/components/ui/Voice";
@@ -317,7 +318,7 @@ export default function MealTracker({
     limit: PAGE_SIZE,
   };
 
-  const { data, isLoading } = useMeals(params);
+  const { data, isLoading, isError, error, refetch } = useMeals(params);
 
   const meals = data?.data ?? [];
   const total = data?.meta?.total ?? 0;
@@ -418,21 +419,30 @@ export default function MealTracker({
       </div>
 
       {/* Day-grouped rule-list */}
-      {isLoading ? (
-        <div className="flex flex-col">
-          {Array.from({ length: 5 }, (_, i) => (
-            <div key={i} className="flex items-center gap-3 border-b border-border py-2.5">
-              <Skeleton className="h-3 w-10" />
-              <Skeleton className="h-4 w-48" />
-              <Skeleton className="ml-auto h-3 w-20" />
-            </div>
-          ))}
-        </div>
-      ) : groups.length === 0 ? (
-        <Voice variant="italic" className="text-muted-foreground">
-          No meals found.
-        </Voice>
-      ) : (
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        isEmpty={groups.length === 0}
+        onRetry={() => void refetch()}
+        sourceLabel="the health record"
+        loadingFallback={
+          <div className="flex flex-col">
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="flex items-center gap-3 border-b border-border py-2.5">
+                <Skeleton className="h-3 w-10" />
+                <Skeleton className="h-4 w-48" />
+                <Skeleton className="ml-auto h-3 w-20" />
+              </div>
+            ))}
+          </div>
+        }
+        emptyFallback={
+          <Voice variant="italic" className="text-muted-foreground">
+            Nothing logged yet. Log a meal above, or tell your Health butler.
+          </Voice>
+        }
+      >
         <div className="flex flex-col gap-4">
           {groups.map(({ dateKey, meals: groupMeals }) => (
             <DayGroup
@@ -443,7 +453,7 @@ export default function MealTracker({
             />
           ))}
         </div>
-      )}
+      </QueryBoundary>
 
       {/* Pagination */}
       {total > 0 && (

@@ -97,7 +97,13 @@ export interface StatusBoardAggregates {
   eligibilityUnavailable: number
   /** True when at least one row has a per-entry schema_unreachable error from the backend. */
   hasPerEntryErrors: boolean
-  /** True when any secondary source (heartbeat, registry, per-entry errors) has degraded. */
+  /**
+   * True when the cost source (`useSpendSummary("today")`) has errored fleet-wide.
+   * When true, `totalSpendToday` is a partial sum over rows with known cost, NOT
+   * a confident fleet-wide total -- it must never be shown as a bare "$0.00".
+   */
+  costSourceError: boolean
+  /** True when any secondary source (heartbeat, registry, cost, per-entry errors) has degraded. */
   sourcesPartiallyDegraded: boolean
 }
 
@@ -346,9 +352,11 @@ export function useButlerStatusBoard(): StatusBoardResult {
 
     const heartbeatSourceError = heartbeatsQuery.isError
     const registrySourceError = registryQuery.isError
+    const costSourceError = costQuery.isError
     const eligibilityUnavailable = rows.filter((r) => r.eligibility === "unavailable").length
     const hasPerEntryErrors = rows.some((r) => r.schemaUnreachable)
-    const sourcesPartiallyDegraded = heartbeatSourceError || registrySourceError || hasPerEntryErrors
+    const sourcesPartiallyDegraded =
+      heartbeatSourceError || registrySourceError || costSourceError || hasPerEntryErrors
 
     return {
       total,
@@ -368,10 +376,11 @@ export function useButlerStatusBoard(): StatusBoardResult {
       registrySourceError,
       eligibilityUnavailable,
       hasPerEntryErrors,
+      costSourceError,
       sourcesPartiallyDegraded,
     }
   }, [rows, butlersQuery.isLoading, butlersQuery.data, butlersQuery.isError, butlersQuery.error, butlersQuery.refetch,
-      heartbeatsQuery.isError, registryQuery.isError])
+      heartbeatsQuery.isError, registryQuery.isError, costQuery.isError])
 
   return { rows, aggregates }
 }

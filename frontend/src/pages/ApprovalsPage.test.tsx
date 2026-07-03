@@ -256,6 +256,23 @@ describe("ApprovalsPage — load-more", () => {
     expect(findButton(container, "Load more")).toBeUndefined();
   });
 
+  it("never renders 'No pending approvals.' when the queue fetch fails (bu-86c4c.2 -- truth amnesty)", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      Promise.reject(new Error("queue unreachable")) as AnyMock,
+    );
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("No pending approvals.");
+    expect(container.textContent).toContain("approvals queue");
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    // A retry affordance must be present.
+    expect(findButton(container, "Retry")).toBeDefined();
+  });
+
   it("re-calls getApprovalsFlat with bumped limit after clicking 'Load more'", async () => {
     // First call: full page of 100.
     const full = Array.from({ length: 100 }, (_, i) => makeSummary(`id-${i}`));

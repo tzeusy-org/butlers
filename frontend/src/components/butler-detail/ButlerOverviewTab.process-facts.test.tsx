@@ -141,6 +141,7 @@ function setButlerState(butler: ButlerDetail | null, opts: Partial<UseButlerResu
       registrySourceError: false,
       eligibilityUnavailable: 0,
       hasPerEntryErrors: false,
+      costSourceError: false,
       sourcesPartiallyDegraded: false,
     },
   });

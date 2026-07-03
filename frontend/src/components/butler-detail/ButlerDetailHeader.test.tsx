@@ -74,6 +74,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     registrySourceError: false,
     eligibilityUnavailable: 0,
     hasPerEntryErrors: false,
+    costSourceError: false,
     sourcesPartiallyDegraded: false,
     ...overrides,
   }

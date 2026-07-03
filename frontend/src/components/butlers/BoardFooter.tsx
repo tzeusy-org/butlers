@@ -10,6 +10,7 @@
 //   - Status-tone dots only when count > 0 (per spec).
 // ---------------------------------------------------------------------------
 
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import type { StatusBoardAggregates } from "@/hooks/use-butler-status-board"
 
 // ---------------------------------------------------------------------------
@@ -85,6 +86,7 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
     avgLoadPct,
     butlerCount,
     stafferCount,
+    costSourceError,
   } = aggregates
 
   const avgLoadValue = avgLoadPct == null ? "—" : `${avgLoadPct}%`
@@ -92,7 +94,12 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
   // authoritative figure. Per-cell displayed values also use .toFixed(2) on
   // their own raw input, so the visual sum of cells may differ from this total
   // by at most $0.01 per cell due to rounding. This is expected and acceptable.
-  const spendValue = `$${totalSpendToday.toFixed(2)}`
+  //
+  // When the cost source has errored, totalSpendToday is a partial sum over
+  // whichever butlers still have cached cost data (possibly none) -- never a
+  // confident fleet-wide total. Show "—" and name the degraded source below
+  // rather than a calm "$0.00" that reads as "no spend today".
+  const spendValue = costSourceError ? "—" : `$${totalSpendToday.toFixed(2)}`
   const sessionsValue = totalSessions24h.toLocaleString()
 
   return (
@@ -143,6 +150,15 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
         {butlerCount} {butlerCount === 1 ? "butler" : "butlers"},{" "}
         {stafferCount} {stafferCount === 1 ? "staffer" : "staffers"}
       </p>
+
+      {/* Cost source degraded note -- never let a failed spend query hide behind "$0.00". */}
+      {costSourceError && (
+        <SourceDegradedNote
+          label="Spend today"
+          detail="cost source unavailable, total above is incomplete"
+          className="mt-3"
+        />
+      )}
     </footer>
   )
 }

@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useDeleteResearch, useResearch } from "@/hooks/use-health";
 import { cn } from "@/lib/utils";
@@ -226,7 +227,7 @@ export default function ResearchTracker() {
     limit: PAGE_SIZE,
   };
 
-  const { data, isLoading } = useResearch(params);
+  const { data, isLoading, isError, error, refetch } = useResearch(params);
 
   const notes = data?.data ?? [];
   const total = data?.meta?.total ?? 0;
@@ -303,13 +304,20 @@ export default function ResearchTracker() {
         </Button>
       </div>
 
-      {isLoading ? (
-        <SkeletonRows />
-      ) : notes.length === 0 ? (
-        <p className="text-muted-foreground font-serif text-[15px] italic">
-          Nothing saved yet. Add a research note above, or tell your Health butler.
-        </p>
-      ) : (
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        isEmpty={notes.length === 0}
+        onRetry={() => void refetch()}
+        sourceLabel="the health record"
+        loadingFallback={<SkeletonRows />}
+        emptyFallback={
+          <p className="text-muted-foreground font-serif text-[15px] italic">
+            Nothing saved yet. Add a research note above, or tell your Health butler.
+          </p>
+        }
+      >
         <div className="divide-y divide-border/60 border-y border-border/60">
           {notes.map((note) => (
             <ResearchRow
@@ -321,7 +329,7 @@ export default function ResearchTracker() {
             />
           ))}
         </div>
-      )}
+      </QueryBoundary>
 
       {/* Pagination */}
       {total > 0 && (

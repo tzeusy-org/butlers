@@ -32,6 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { useDeleteMeasurement, useMeasurements } from "@/hooks/use-health";
@@ -215,7 +216,7 @@ export default function MeasurementTracker() {
     limit: PAGE_SIZE,
   };
 
-  const { data, isLoading } = useMeasurements(params);
+  const { data, isLoading, isError, error, refetch } = useMeasurements(params);
 
   const measurements = data?.data ?? [];
   const total = data?.meta?.total ?? 0;
@@ -295,23 +296,26 @@ export default function MeasurementTracker() {
         </Button>
       </div>
 
-      {!isLoading && measurements.length === 0 ? (
-        <EmptyLine />
-      ) : (
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        isEmpty={measurements.length === 0}
+        onRetry={() => void refetch()}
+        sourceLabel="the health record"
+        loadingFallback={<SkeletonRows />}
+        emptyFallback={<EmptyLine />}
+      >
         <div className="divide-y divide-border/60 border-y border-border/60">
-          {isLoading ? (
-            <SkeletonRows />
-          ) : (
-            measurements.map((measurement) => (
-              <MeasurementRow
-                key={measurement.id}
-                measurement={measurement}
-                onEdit={setFormTarget}
-              />
-            ))
-          )}
+          {measurements.map((measurement) => (
+            <MeasurementRow
+              key={measurement.id}
+              measurement={measurement}
+              onEdit={setFormTarget}
+            />
+          ))}
         </div>
-      )}
+      </QueryBoundary>
 
       {/* Pagination */}
       {total > 0 && (

@@ -429,6 +429,18 @@ describe("DashboardPage -- AttentionList", () => {
     expect(html).toContain('href="/butlers-dev/issues"');
     expect(html).not.toContain("Old audit group.");
   });
+
+  it("never renders 'Nothing waiting.' when the issues source has errored (bu-86c4c.2 -- truth amnesty)", () => {
+    vi.mocked(useIssues).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("issues fetch failed"),
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).not.toContain("Nothing waiting.");
+    expect(html).toContain("Issues feed unavailable");
+  });
 });
 
 // ---------------------------------------------------------------------------

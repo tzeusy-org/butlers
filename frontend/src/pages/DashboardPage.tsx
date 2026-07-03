@@ -61,6 +61,7 @@ export default function DashboardPage() {
   const {
     data: briefing,
     isFetching: briefingFetching,
+    isError: briefingError,
     refetch: refetchBriefing,
   } = useBriefing();
 
@@ -84,7 +85,8 @@ export default function DashboardPage() {
     butlers: butlersQuery.isError ? [] : (butlersQuery.data?.data ?? []),
     butlersError: butlersQuery.isError,
     costs: costQuery.isError ? null : costQuery.data?.data,
-    issues: issuesQuery.data?.data ?? [],
+    issues: issuesQuery.isError ? [] : (issuesQuery.data?.data ?? []),
+    issuesError: issuesQuery.isError,
     heartbeats: heartbeatQuery.isError ? null : heartbeatQuery.data?.data,
     approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetricsQuery.data?.data,
     notificationStats: notificationStatsQuery.isError ? null : notificationStatsQuery.data?.data,
@@ -108,12 +110,18 @@ export default function DashboardPage() {
   >((best, [name, cost]) => (cost > best[1] ? [name, cost] : best), [null, 0]);
   const topSessions = topSessionsQuery.isError ? [] : (topSessionsQuery.data?.data ?? []);
 
-  // Briefing headline and greet with safe fallbacks
+  // Briefing headline and greet with safe fallbacks. A failed briefing fetch
+  // must never render the indefinite "Checking in." / "check back in a
+  // moment" copy forever -- that reads as still-loading when it is actually
+  // down (bu-86c4c.2, JARVIS audit move 1b).
   const greet = briefing?.greet ?? "Good morning.";
-  const headline = briefing?.headline ?? "Checking in.";
-  const elaboration =
-    briefing?.elaboration ??
-    "Butlers are running. Check back in a moment for a fresh briefing.";
+  const headline = briefingError
+    ? "Briefing unavailable."
+    : (briefing?.headline ?? "Checking in.");
+  const elaboration = briefingError
+    ? "Could not reach the briefing service. Retry from the status pill above."
+    : (briefing?.elaboration ??
+      "Butlers are running. Check back in a moment for a fresh briefing.");
 
   return (
     <Page archetype="editorial" title="Overview">
@@ -139,6 +147,7 @@ export default function DashboardPage() {
                 source={briefing?.source}
                 generatedAt={briefing?.generated_at}
                 isFetching={briefingFetching}
+                isError={briefingError}
                 onRefetch={() => { void refetchBriefing(); }}
               />
             }

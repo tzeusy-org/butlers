@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/dialog";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
+import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Row } from "@/components/ui/Row";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StateDot, type AnyDotState } from "@/components/ui/StateDot";
@@ -423,7 +424,7 @@ export default function MedicationTracker() {
   // `null` = closed; `undefined` = add mode; a Medication = edit mode.
   const [formTarget, setFormTarget] = useState<Medication | null | undefined>(null);
 
-  const { data, isLoading } = useMedications({
+  const { data, isLoading, isError, error, refetch } = useMedications({
     active: showAll ? undefined : true,
     limit: 100,
   });
@@ -472,33 +473,42 @@ export default function MedicationTracker() {
       <div className="flex flex-col gap-8 md:flex-row md:items-start md:gap-10">
         {/* Rule-list — the primary surface */}
         <div className="min-w-0 flex-1">
-          {isLoading ? (
-            <div className="flex flex-col">
-              {Array.from({ length: 5 }, (_, i) => (
-                <div key={i} className="flex items-center gap-3 border-b border-border py-2.5">
-                  <Skeleton className="h-2 w-2 rounded-full" />
-                  <Skeleton className="h-4 w-40" />
-                  <Skeleton className="ml-auto h-3 w-24" />
-                </div>
-              ))}
-            </div>
-          ) : medications.length === 0 ? (
-            <Voice variant="italic" className="text-muted-foreground">
-              {showAll
-                ? "No medications recorded yet."
-                : "No active medications. Switch to All to see inactive ones."}
-            </Voice>
-          ) : (
+          <QueryBoundary
+            isLoading={isLoading}
+            isError={isError}
+            error={error}
+            isEmpty={medications.length === 0}
+            onRetry={() => void refetch()}
+            sourceLabel="the health record"
+            loadingFallback={
+              <div className="flex flex-col">
+                {Array.from({ length: 5 }, (_, i) => (
+                  <div key={i} className="flex items-center gap-3 border-b border-border py-2.5">
+                    <Skeleton className="h-2 w-2 rounded-full" />
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="ml-auto h-3 w-24" />
+                  </div>
+                ))}
+              </div>
+            }
+            emptyFallback={
+              <Voice variant="italic" className="text-muted-foreground">
+                {showAll
+                  ? "No medications recorded yet."
+                  : "No active medications. Switch to All to see inactive ones."}
+              </Voice>
+            }
+          >
             <div className="flex flex-col">
               {medications.map((med) => (
                 <MedicationRow key={med.id} medication={med} onEdit={setFormTarget} />
               ))}
             </div>
-          )}
+          </QueryBoundary>
         </div>
 
         {/* Next doses rail */}
-        {!isLoading && medications.length > 0 && <NextDoses medications={medications} />}
+        {!isLoading && !isError && medications.length > 0 && <NextDoses medications={medications} />}
       </div>
 
       {/* Add / edit dialog (preserved) */}

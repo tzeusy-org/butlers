@@ -1,10 +1,16 @@
 /**
- * BriefingStatus -- pill button with three states from useBriefing().
+ * BriefingStatus -- pill button with four states from useBriefing() /
+ * useHealthBriefing().
  *
- * States:
+ * States (priority order):
  *   composing...   amber dot  while isFetching
+ *   unavailable    red dot    when isError and not fetching
  *   llm · cached 5m  green dot  when data.source === "llm"
  *   templated        dim dot    when data.source === "fallback"
+ *
+ * `isError` exists so a failed briefing fetch never renders as the
+ * indefinite "composing..."/loading copy (bu-86c4c.2, JARVIS audit move 1b:
+ * a killed backend must announce itself, not impersonate "still working on it").
  *
  * Clicking triggers refetch().
  * Geometry: 9px mono, dot + label + refresh icon.
@@ -24,6 +30,8 @@ interface BriefingStatusProps {
   source: BriefingSource | undefined;
   generatedAt: string | undefined;
   isFetching: boolean;
+  /** True when the underlying briefing query has errored (no cached data assumed absent). */
+  isError?: boolean;
   onRefetch: () => void;
 }
 
@@ -41,10 +49,12 @@ function ageLabel(generatedAt: string): string {
  */
 function pillContent(
   isFetching: boolean,
+  isError: boolean,
   source: BriefingSource | undefined,
   generatedAt: string | undefined,
-): { dot: "amber" | "green" | "dim"; label: string } {
+): { dot: "amber" | "green" | "dim" | "red"; label: string } {
   if (isFetching) return { dot: "amber", label: "composing…" };
+  if (isError) return { dot: "red", label: "unavailable" };
   if (source === "llm") {
     const age = generatedAt ? ageLabel(generatedAt) : "cached";
     return { dot: "green", label: `llm · ${age}` };
@@ -52,22 +62,29 @@ function pillContent(
   return { dot: "dim", label: "templated" };
 }
 
-const DOT_COLORS: Record<"amber" | "green" | "dim", string> = {
+const DOT_COLORS: Record<"amber" | "green" | "dim" | "red", string> = {
   amber: "var(--severity-medium)", // oklch(0.769 0.189 84.0)
   green: "var(--severity-low)",    // oklch(0.723 0.198 148.2)
   dim: "var(--muted-foreground)",
+  red: "var(--destructive)",
 };
 
 export function BriefingStatus({
   source,
   generatedAt,
   isFetching,
+  isError = false,
   onRefetch,
 }: BriefingStatusProps) {
-  const { dot, label } = pillContent(isFetching, source, generatedAt);
+  const { dot, label } = pillContent(isFetching, isError, source, generatedAt);
   const dotColor = DOT_COLORS[dot];
+  // Announce the degraded state without stripping the button's native
+  // interactive semantics (role="alert" on the <button> itself would replace
+  // its exposed "button" role for assistive tech). A wrapping alert region
+  // announces the change; the button underneath stays a button.
+  const announceError = isError && !isFetching;
 
-  return (
+  const pill = (
     <button
       type="button"
       onClick={onRefetch}
@@ -123,5 +140,13 @@ export function BriefingStatus({
         <path d="M10 2v4H6" />
       </svg>
     </button>
+  );
+
+  if (!announceError) return pill;
+
+  return (
+    <span role="alert" style={{ display: "inline-flex" }}>
+      {pill}
+    </span>
   );
 }

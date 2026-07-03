@@ -693,6 +693,36 @@ describe("deriveOverviewTriageModel", () => {
     expect(model.nowRows.some((row) => row.id === "now:butlers:error")).toBe(false);
   });
 
+  it("emits a named source-error attention row and sets issuesError when issuesError is true (bu-86c4c.2)", () => {
+    // This is the exact "Nothing waiting." truth-amnesty defect from the JARVIS
+    // audit: a failed issues fetch must never look like a genuinely empty
+    // attention list.
+    const model = deriveOverviewTriageModel({
+      issues: [],
+      issuesError: true,
+    });
+
+    const errorRow = model.attentionRows.find((row) => row.id === "issues:source-error");
+    expect(errorRow).toBeDefined();
+    expect(errorRow).toMatchObject({
+      kind: "issue",
+      severity: "high",
+      title: "Issues feed unavailable",
+      href: "/issues",
+      isSourceError: true,
+    });
+    expect(model.issuesError).toBe(true);
+    // attentionRows must not be empty, so AttentionList cannot fall back to
+    // "Nothing waiting."
+    expect(model.attentionRows.length).toBeGreaterThan(0);
+  });
+
+  it("leaves issuesError false and emits no issues error row by default", () => {
+    const model = deriveOverviewTriageModel({ issues: [] });
+    expect(model.issuesError).toBe(false);
+    expect(model.attentionRows.some((row) => row.id === "issues:source-error")).toBe(false);
+  });
+
   it("does not emit error rows when error flags are false", () => {
     const model = deriveOverviewTriageModel({
       notificationStats: notificationStats({ failed: 0 }),

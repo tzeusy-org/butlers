@@ -47,6 +47,7 @@ import {
   useDismissAutonomySuggestion,
 } from "@/hooks/use-approvals.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
+import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -595,7 +596,7 @@ function PolicySection() {
     timezone: "UTC",
   });
 
-  const { data } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: Q.policy(),
     queryFn: getApprovalsPolicy,
   });
@@ -644,25 +645,44 @@ function PolicySection() {
         )}
       </div>
 
-      {!editing && policy && (
-        <div className="font-mono text-sm space-y-1">
-          <div>
-            <span className="text-muted-foreground">Start:</span>{" "}
-            {policy.quiet_start_hour != null
-              ? `${policy.quiet_start_hour}:00`
-              : "—"}
-          </div>
-          <div>
-            <span className="text-muted-foreground">End:</span>{" "}
-            {policy.quiet_end_hour != null
-              ? `${policy.quiet_end_hour}:00`
-              : "—"}
-          </div>
-          <div>
-            <span className="text-muted-foreground">Timezone:</span>{" "}
-            {policy.timezone}
-          </div>
-        </div>
+      {!editing && (
+        <QueryBoundary
+          isLoading={isLoading}
+          isError={isError}
+          error={error}
+          isEmpty={!policy}
+          onRetry={() => void refetch()}
+          sourceLabel="the quiet-hours policy"
+          loadingFallback={
+            <div className="font-mono text-sm text-muted-foreground">loading…</div>
+          }
+          emptyFallback={
+            <div className="font-mono text-sm text-muted-foreground">
+              No policy configured yet.
+            </div>
+          }
+        >
+          {policy && (
+            <div className="font-mono text-sm space-y-1">
+              <div>
+                <span className="text-muted-foreground">Start:</span>{" "}
+                {policy.quiet_start_hour != null
+                  ? `${policy.quiet_start_hour}:00`
+                  : "—"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">End:</span>{" "}
+                {policy.quiet_end_hour != null
+                  ? `${policy.quiet_end_hour}:00`
+                  : "—"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Timezone:</span>{" "}
+                {policy.timezone}
+              </div>
+            </div>
+          )}
+        </QueryBoundary>
       )}
 
       {editing && (
@@ -787,7 +807,7 @@ function RetryDispatchButton({ actionId }: { actionId: string }) {
 }
 
 function HistorySection() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: Q.history(),
     queryFn: () => getApprovalsHistory(undefined, 30),
   });
@@ -799,43 +819,52 @@ function HistorySection() {
       <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-4">
         History (last 30)
       </div>
-      {isLoading && (
-        <div className="text-sm text-muted-foreground font-mono">loading…</div>
-      )}
-      {!isLoading && items.length === 0 && (
-        <div className="text-sm text-muted-foreground font-mono">
-          No decided approvals yet.
-        </div>
-      )}
-      {items.map((item, i) => (
-        <div
-          key={item.id}
-          className={[
-            "py-2 flex items-center gap-3",
-            i > 0 ? "border-t border-border/50" : "",
-          ].join(" ")}
-        >
-          <span
-            className={`font-mono text-[10px] uppercase w-16 shrink-0 ${statusColor(item.status)}`}
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        isEmpty={items.length === 0}
+        onRetry={() => void refetch()}
+        sourceLabel="approval history"
+        loadingFallback={
+          <div className="text-sm text-muted-foreground font-mono">loading…</div>
+        }
+        emptyFallback={
+          <div className="text-sm text-muted-foreground font-mono">
+            No decided approvals yet.
+          </div>
+        }
+      >
+        {items.map((item, i) => (
+          <div
+            key={item.id}
+            className={[
+              "py-2 flex items-center gap-3",
+              i > 0 ? "border-t border-border/50" : "",
+            ].join(" ")}
           >
-            {item.status}
-          </span>
-          <span className="text-sm truncate flex-1">
-            {item.tool_name.replace(/_/g, " ")}
-          </span>
-          {/* "approved" in History = approved-but-un-run (dispatch silently
-              failed). Offer a retry; "executed" rows ran successfully. */}
-          {item.status === "approved" && (
-            <RetryDispatchButton actionId={item.id} />
-          )}
-          <span className="font-mono text-xs text-muted-foreground shrink-0">
-            {item.butler}
-          </span>
-          <span className="font-mono text-[10px] text-muted-foreground shrink-0">
-            {fmtTs(item.created_at)}
-          </span>
-        </div>
-      ))}
+            <span
+              className={`font-mono text-[10px] uppercase w-16 shrink-0 ${statusColor(item.status)}`}
+            >
+              {item.status}
+            </span>
+            <span className="text-sm truncate flex-1">
+              {item.tool_name.replace(/_/g, " ")}
+            </span>
+            {/* "approved" in History = approved-but-un-run (dispatch silently
+                failed). Offer a retry; "executed" rows ran successfully. */}
+            {item.status === "approved" && (
+              <RetryDispatchButton actionId={item.id} />
+            )}
+            <span className="font-mono text-xs text-muted-foreground shrink-0">
+              {item.butler}
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+              {fmtTs(item.created_at)}
+            </span>
+          </div>
+        ))}
+      </QueryBoundary>
     </div>
   );
 }
@@ -911,7 +940,7 @@ export default function ApprovalsPage() {
   // below acts as a safety net when the WS is disconnected.
   useApprovalsStream();
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: Q.pending(pendingLimit),
     queryFn: () => getApprovalsFlat("waiting", pendingLimit),
     refetchInterval: 15_000,
@@ -920,6 +949,12 @@ export default function ApprovalsPage() {
     placeholderData: (prev) => prev,
   });
 
+  // `pending` may still carry stale cached rows from before a failed refetch
+  // (react-query keeps the last good `data` around). QueryBoundary below
+  // checks `isError` BEFORE `isEmpty`, so a fetch failure with zero cached
+  // rows renders the distinct "Approvals queue unavailable" state rather than
+  // the calm "No pending approvals." -- the exact truth-amnesty defect named
+  // in the JARVIS audit (ApprovalsPage.tsx:913-926).
   const pending = data?.data ?? [];
   const firstId = pending[0]?.id;
   const effectiveSelected = selectedId ?? firstId ?? null;
@@ -1038,42 +1073,51 @@ export default function ApprovalsPage() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left rail */}
         <div className="w-72 shrink-0 border-r border-border overflow-y-auto">
-          {isLoading && (
-            <div className="p-4 text-sm text-muted-foreground font-mono">
-              loading…
-            </div>
-          )}
-          {!isLoading && pending.length === 0 && (
-            <div className="p-4 text-sm text-muted-foreground font-mono">
-              No pending approvals.
-            </div>
-          )}
-          {pending.map((summary) => (
-            <RailItem
-              key={summary.id}
-              summary={summary}
-              selected={summary.id === effectiveSelected}
-              onSelect={() => setSelectedId(summary.id)}
-            />
-          ))}
-          {/* Load more — shown only when the previous response was full */}
-          {!isLoading && hasMore && (
-            <div className="p-3 border-t border-border">
-              <button
-                onClick={handleLoadMore}
-                disabled={isFetching}
-                className={[
-                  "w-full py-1.5 px-3 rounded text-xs font-mono border border-border",
-                  "text-muted-foreground transition-colors",
-                  isFetching
-                    ? "opacity-50 cursor-not-allowed"
-                    : "hover:border-foreground/40 hover:text-foreground",
-                ].join(" ")}
-              >
-                {isFetching ? "loading…" : "Load more"}
-              </button>
-            </div>
-          )}
+          <QueryBoundary
+            isLoading={isLoading}
+            isError={isError}
+            error={error}
+            isEmpty={pending.length === 0}
+            onRetry={() => void refetch()}
+            sourceLabel="the approvals queue"
+            loadingFallback={
+              <div className="p-4 text-sm text-muted-foreground font-mono">
+                loading…
+              </div>
+            }
+            emptyFallback={
+              <div className="p-4 text-sm text-muted-foreground font-mono">
+                No pending approvals.
+              </div>
+            }
+          >
+            {pending.map((summary) => (
+              <RailItem
+                key={summary.id}
+                summary={summary}
+                selected={summary.id === effectiveSelected}
+                onSelect={() => setSelectedId(summary.id)}
+              />
+            ))}
+            {/* Load more — shown only when the previous response was full */}
+            {hasMore && (
+              <div className="p-3 border-t border-border">
+                <button
+                  onClick={handleLoadMore}
+                  disabled={isFetching}
+                  className={[
+                    "w-full py-1.5 px-3 rounded text-xs font-mono border border-border",
+                    "text-muted-foreground transition-colors",
+                    isFetching
+                      ? "opacity-50 cursor-not-allowed"
+                      : "hover:border-foreground/40 hover:text-foreground",
+                  ].join(" ")}
+                >
+                  {isFetching ? "loading…" : "Load more"}
+                </button>
+              </div>
+            )}
+          </QueryBoundary>
         </div>
 
         {/* Right dossier pane */}

@@ -226,4 +226,28 @@ describe("OperationsNowList", () => {
     expect(html).toContain("font-style:italic");
     expect(html).toContain("unavail");
   });
+
+  it("keeps role=listitem on the row and puts role=alert on the inner content only (bu-86c4c.2 -- ARIA list contract)", () => {
+    // Every direct child of role="list" must be a listitem -- replacing the
+    // row's own role with "alert" would violate that contract. role="alert"
+    // must live on an element nested inside the listitem instead.
+    const html = render([
+      {
+        id: "now:qa:error",
+        kind: "error",
+        label: "QA status: unavailable",
+        detail: "QA data could not be loaded.",
+        href: "/qa",
+      },
+    ]);
+    expect(html).toContain('role="listitem"');
+    expect(html).toContain('role="alert"');
+  });
+
+  it("does not render role=alert on ordinary (non-error) rows", () => {
+    const html = render([
+      { id: "a", kind: "approval", label: "1 pending approval", detail: "", href: "/approvals" },
+    ]);
+    expect(html).not.toContain('role="alert"');
+  });
 });
