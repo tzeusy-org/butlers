@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
+import { chartColor } from "@/lib/chart-colors";
 
 interface DailyCostData {
   date: string;
@@ -90,12 +91,12 @@ export default function CostChart({
                 <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop
                     offset="5%"
-                    stopColor="hsl(var(--primary))"
+                    stopColor={chartColor()}
                     stopOpacity={0.3}
                   />
                   <stop
                     offset="95%"
-                    stopColor="hsl(var(--primary))"
+                    stopColor={chartColor()}
                     stopOpacity={0}
                   />
                 </linearGradient>
@@ -121,7 +122,7 @@ export default function CostChart({
               <Area
                 type="monotone"
                 dataKey="cost_usd"
-                stroke="hsl(var(--primary))"
+                stroke={chartColor()}
                 fill="url(#costGradient)"
                 strokeWidth={2}
               />

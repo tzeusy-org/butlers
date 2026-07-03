@@ -27,6 +27,39 @@ export default defineConfig([
     },
   },
   // ---------------------------------------------------------------------------
+  // Chart color plumbing guard (bu-86c4c.5)
+  //
+  // Every theme color token (--primary, --chart-1..5, etc.) is a full
+  // oklch(...) color literal, not a raw HSL component tuple, so wrapping one
+  // in hsl(var(--x)) is invalid CSS — browsers drop the declaration and the
+  // series/element silently renders black/invisible in the dark theme. This
+  // exact bug hit 9+ recharts components before this bead fixed it. Reference
+  // tokens directly with var(--x), or use the chartColor()/chartColorAlpha()
+  // helpers in src/lib/chart-colors.ts for chart series.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Literal[value=/hsla?\\(\\s*var\\(/i]',
+          message:
+            'hsl(var(--x)) is invalid CSS for this theme (tokens are oklch(...) literals, ' +
+            'not HSL components). Use var(--x) directly, or chartColor()/chartColorAlpha() ' +
+            'from src/lib/chart-colors.ts for chart series colors.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/hsla?\\(\\s*var\\(/i]',
+          message:
+            'hsl(var(--x)) is invalid CSS for this theme (tokens are oklch(...) literals, ' +
+            'not HSL components). Use var(--x) directly, or chartColor()/chartColorAlpha() ' +
+            'from src/lib/chart-colors.ts for chart series colors.',
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
   // No-LLM-Narration Invariant (butler-secrets spec §No-LLM-Narration Invariant)
   //
   // The /secrets surfaces MUST NOT trigger LLM inference. Importing the

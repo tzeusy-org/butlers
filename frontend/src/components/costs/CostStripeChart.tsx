@@ -23,6 +23,7 @@ import {
 import { ChartSkeleton } from "@/components/skeletons"
 import type { DailySpend } from "@/api/types"
 import { butlerHueVar } from "@/components/ui/ButlerMark"
+import { chartColor } from "@/lib/chart-colors"
 
 // ---------------------------------------------------------------------------
 // Data helpers
@@ -222,7 +223,7 @@ export function CostStripeChart({
               stackId="day"
               fill={
                 name === "_total"
-                  ? "hsl(var(--primary))"
+                  ? chartColor()
                   : butlerHueVar(name)
               }
               isAnimationActive={false}

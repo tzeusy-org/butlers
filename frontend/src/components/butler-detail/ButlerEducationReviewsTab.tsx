@@ -40,6 +40,7 @@ import {
 } from "@/hooks/use-education";
 import { ErrorLine } from "@/components/butler-detail/atoms";
 import { toneClass } from "@/components/butler-detail/atoms-utils";
+import { chartColor } from "@/lib/chart-colors";
 import type { PendingReviewNode, MindMapNode, MasterySummary, AnalyticsTrendEntry } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -623,7 +624,7 @@ function RetentionTrendPanel({
                   <Line
                     dataKey="value"
                     type="monotone"
-                    stroke="hsl(var(--primary))"
+                    stroke={chartColor()}
                     dot={false}
                     strokeWidth={1.5}
                     isAnimationActive={false}

@@ -90,7 +90,7 @@ function IssueCard({
         "rounded-md border px-3 py-2 text-sm",
         issue.severity === "warning"
           ? "border-amber-500/50 bg-amber-500/5"
-          : "border-[var(--border)] bg-[var(--bg-subtle)]",
+          : "border-border bg-muted",
       )}
       data-kind={issue.kind}
       data-severity={issue.severity}
@@ -99,11 +99,11 @@ function IssueCard({
         <span className="font-medium text-[var(--fg)]">
           {formatDay(issue.date)} · {KIND_LABEL[issue.kind]}
         </span>
-        <span className="shrink-0 text-xs uppercase tracking-wide text-[var(--fg-muted)]">
+        <span className="shrink-0 text-xs uppercase tracking-wide text-muted-foreground">
           {issue.severity}
         </span>
       </div>
-      <p className="mt-0.5 text-[var(--fg-muted)]">{issue.summary}</p>
+      <p className="mt-0.5 text-muted-foreground">{issue.summary}</p>
       {issue.events.length > 0 && (
         <ul className="mt-1 flex flex-wrap gap-1">
           {issue.events.map((event) => (
@@ -129,7 +129,7 @@ function IssueCard({
               </button>
               <button
                 type="button"
-                className="rounded border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--fg)] hover:bg-[var(--bg-subtle)]"
+                className="rounded border border-border px-2 py-0.5 text-xs text-[var(--fg)] hover:bg-muted"
                 onClick={() => onDismissProposal?.(proposalId)}
               >
                 Decline
@@ -138,7 +138,7 @@ function IssueCard({
           ))}
         </div>
       ) : (
-        <p className="mt-1 text-xs italic text-[var(--fg-muted)]">
+        <p className="mt-1 text-xs italic text-muted-foreground">
           No suggested fix yet. The radar will propose one shortly.
         </p>
       )}
@@ -193,7 +193,7 @@ export function ConflictRadarBanner({
         )}
         <button
           type="button"
-          className="shrink-0 rounded px-1.5 py-0.5 text-xs text-[var(--fg-muted)] hover:bg-[var(--bg-subtle)]"
+          className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
           onClick={() => setExpanded((v) => !v)}
         >
           {expanded ? "Hide" : "Review"}
@@ -201,7 +201,7 @@ export function ConflictRadarBanner({
         <button
           type="button"
           aria-label="Dismiss conflict radar"
-          className="shrink-0 rounded px-1.5 py-0.5 text-xs text-[var(--fg-muted)] hover:bg-[var(--bg-subtle)]"
+          className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
           onClick={() => setDismissed(true)}
         >
           ✕

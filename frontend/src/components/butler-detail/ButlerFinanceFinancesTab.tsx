@@ -57,6 +57,7 @@ import type {
   FinanceSpendingGroup,
 } from "@/api/index.ts";
 import { Panel, KpiCell } from "@/components/butler-detail/atoms";
+import { chartColor } from "@/lib/chart-colors";
 
 // ---------------------------------------------------------------------------
 // Format helpers
@@ -249,7 +250,7 @@ function CategorySpendPanel({
               />
               {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
               <Tooltip formatter={(value: any) => [formatCurrency(String(value), currency), "Spend"]} />
-              <Bar dataKey="amount" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="amount" fill={chartColor()} radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

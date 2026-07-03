@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { KpiCell, ErrorLine } from "./atoms";
+import { chartColorAlpha } from "@/lib/chart-colors";
 import {
   useGeneralCollections,
   useGeneralEntities,
@@ -323,16 +324,16 @@ function RecentItemsSidebar({ entities, isLoading, isError }: RecentItemsSidebar
 // Panel 4: Collection size histogram (recharts bar chart)
 //
 // Each bucket from /api/general/stats.size_histogram is rendered as a bar.
-// Palette uses graduated hsl(var(--primary)) opacity rather than raw hex.
+// Palette uses graduated opacity over the first chart series color.
 // ---------------------------------------------------------------------------
 
 // Graduated fill palette for the 4 histogram brackets.
-// Uses CSS variables so theme switching works correctly.
+// Uses CSS variables (via chartColorAlpha) so theme switching works correctly.
 const HISTOGRAM_FILLS = [
-  "hsl(var(--primary) / 0.35)",
-  "hsl(var(--primary) / 0.55)",
-  "hsl(var(--primary) / 0.75)",
-  "hsl(var(--primary) / 1)",
+  chartColorAlpha(0, 35),
+  chartColorAlpha(0, 55),
+  chartColorAlpha(0, 75),
+  chartColorAlpha(0, 100),
 ];
 
 interface HistogramBucket {

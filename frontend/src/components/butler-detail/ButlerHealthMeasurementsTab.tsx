@@ -53,6 +53,7 @@ import {
 } from "@/hooks/use-health";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { useGoogleHealthStatus } from "@/hooks/use-google-health";
+import { chartColor } from "@/lib/chart-colors";
 import { GoogleHealthStatusCard } from "./GoogleHealthStatusCard";
 
 // ---------------------------------------------------------------------------
@@ -337,7 +338,7 @@ function TrendSparkline({
             <Line
               dataKey="value"
               type="monotone"
-              stroke="hsl(var(--primary))"
+              stroke={chartColor()}
               dot={false}
               strokeWidth={1.5}
               isAnimationActive={!prefersReducedMotion}
