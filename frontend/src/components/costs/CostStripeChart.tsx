@@ -1,19 +1,29 @@
 // ---------------------------------------------------------------------------
-// CostStripeChart — stacked bar chart of daily cost over time (bu-e8b5w.5)
+// CostStripeChart — daily cost-over-time chart (bu-e8b5w.5)
 //
-// Shows cost_usd per day as stacked bars, one per butler.
-// Each day's bar is proportionally divided by the butler share from the
-// period summary's `by_butler` map. When all butlers share equally (or when
-// summary is unavailable), each day renders as a single primary-colored bar.
+// Renders real cost_usd per day as a single bar per day.
 //
-// Color: deterministic mapping butler-name -> --category-1..8 CSS tokens,
-// matching the SessionStripeChart visual idiom.
+// bu-86c4c.1 (truth amnesty): this chart previously split each day's total
+// into per-butler stripes by applying the *period-aggregate* by_butler
+// proportions uniformly to every day — every bar ended up with identical
+// butler ratios, and the tooltip printed those fabricated per-butler dollar
+// values to 4 decimal places as if they were measured. The backend's
+// GET /api/spend/daily endpoint fans out per-butler daily stats internally
+// (see spend.py:_get_butler_daily_stats) but discards butler identity when
+// merging across butlers into the single-series response, so there is no
+// real per-butler-per-day figure to render today. Rather than keep
+// inventing one, this renders an honest single-color total bar per day;
+// the per-butler breakdown lives in CostBreakdownTable as a period
+// aggregate, never smeared across days.
+//
+// Follow-up (not yet implemented): extend /api/spend/daily to optionally
+// preserve butler identity per day so this chart can stack real per-butler
+// values instead of a single total.
 // ---------------------------------------------------------------------------
 
 import {
   Bar,
   BarChart,
-  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -22,8 +32,8 @@ import {
 
 import { ChartSkeleton } from "@/components/skeletons"
 import type { DailySpend } from "@/api/types"
-import { butlerHueVar } from "@/components/ui/ButlerMark"
 import { chartColor } from "@/lib/chart-colors"
+import { formatCostUsd } from "@/lib/format-cost"
 
 // ---------------------------------------------------------------------------
 // Data helpers
@@ -33,60 +43,6 @@ function formatDate(dateStr: string): string {
   const [year, month, day] = dateStr.split("-").map(Number)
   const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0))
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
-}
-
-function formatCost(value: number): string {
-  return `$${value.toFixed(4)}`
-}
-
-// ---------------------------------------------------------------------------
-// Row type for recharts
-// ---------------------------------------------------------------------------
-
-interface CostBucketRow {
-  date: string
-  /** Per-butler cost for this day (keyed by butler name). */
-  [butlerName: string]: string | number
-}
-
-/**
- * Expand each DailySpend entry into per-butler slices using the aggregate
- * `by_butler` proportions from the summary. The proportions are applied
- * uniformly across days since we only have aggregate totals.
- *
- * When `byButler` is empty (no summary data yet), falls back to a single
- * "_total" key so the chart still renders.
- */
-function buildRows(
-  dailyCosts: DailySpend[],
-  byButler: Record<string, number>,
-): { rows: CostBucketRow[]; orderedNames: string[] } {
-  const butlerNames = Object.keys(byButler).sort()
-  const periodTotal = Object.values(byButler).reduce((sum, v) => sum + v, 0)
-
-  if (butlerNames.length === 0 || periodTotal === 0) {
-    // No butler breakdown available — show total as a single series.
-    const rows: CostBucketRow[] = dailyCosts.map((d) => ({
-      date: d.date,
-      _total: d.cost_usd,
-    }))
-    return { rows, orderedNames: ["_total"] }
-  }
-
-  // Apply proportions: each day's total is split by butler share.
-  const shares = Object.fromEntries(
-    butlerNames.map((name) => [name, byButler[name] / periodTotal]),
-  )
-
-  const rows: CostBucketRow[] = dailyCosts.map((d) => {
-    const row: CostBucketRow = { date: d.date }
-    for (const name of butlerNames) {
-      row[name] = Math.round(d.cost_usd * (shares[name] ?? 0) * 1_000_000) / 1_000_000
-    }
-    return row
-  })
-
-  return { rows, orderedNames: butlerNames }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,32 +64,20 @@ interface CostStripeTooltipProps {
 function CostStripeTooltip({ active, label, payload }: CostStripeTooltipProps) {
   if (!active || !payload || payload.length === 0 || !label) return null
 
-  const entries = payload.filter((p) => p.value > 0).sort((a, b) => b.value - a.value)
-  if (entries.length === 0) return null
-
-  const total = entries.reduce((sum, p) => sum + p.value, 0)
+  const entry = payload[0]
+  if (!entry || entry.value == null || entry.value === 0) return null
 
   return (
     <div className="rounded-md border bg-popover p-3 text-sm shadow-md">
       <p className="mb-2 font-medium">{formatDate(label)}</p>
-      {entries.map((p) => (
-        <div key={p.dataKey} className="flex items-center gap-2">
-          <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-            style={{ backgroundColor: p.color }}
-          />
-          <span className="text-muted-foreground">
-            {p.dataKey === "_total" ? "Total" : p.dataKey}:
-          </span>
-          <span className="ml-auto font-mono">{formatCost(p.value)}</span>
-        </div>
-      ))}
-      {entries.length > 1 && (
-        <div className="mt-2 border-t pt-2 flex justify-between text-muted-foreground">
-          <span>Total</span>
-          <span className="font-mono">{formatCost(total)}</span>
-        </div>
-      )}
+      <div className="flex items-center gap-2">
+        <span
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+          style={{ backgroundColor: entry.color }}
+        />
+        <span className="text-muted-foreground">Total:</span>
+        <span className="ml-auto font-mono">{formatCostUsd(entry.value)}</span>
+      </div>
     </div>
   )
 }
@@ -145,8 +89,6 @@ function CostStripeTooltip({ active, label, payload }: CostStripeTooltipProps) {
 export interface CostStripeChartProps {
   /** Daily cost time series. */
   data: DailySpend[]
-  /** Per-butler aggregate totals used for proportional stripe coloring. */
-  byButler?: Record<string, number>
   isLoading?: boolean
   isError?: boolean
 }
@@ -157,7 +99,6 @@ export interface CostStripeChartProps {
 
 export function CostStripeChart({
   data,
-  byButler = {},
   isLoading,
   isError,
 }: CostStripeChartProps) {
@@ -187,12 +128,10 @@ export function CostStripeChart({
     )
   }
 
-  const { rows, orderedNames } = buildRows(data, byButler)
-
   return (
     <div data-testid="cost-stripe-chart">
       <ResponsiveContainer width="100%" height={256}>
-        <BarChart data={rows} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
+        <BarChart data={data} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
           <XAxis
             dataKey="date"
             tickFormatter={formatDate}
@@ -209,26 +148,7 @@ export function CostStripeChart({
             width={52}
           />
           <Tooltip content={<CostStripeTooltip />} />
-          {orderedNames.length > 1 && (
-            <Legend
-              iconSize={10}
-              wrapperStyle={{ fontSize: 11 }}
-              formatter={(value) => (value === "_total" ? "Total" : value)}
-            />
-          )}
-          {orderedNames.map((name) => (
-            <Bar
-              key={name}
-              dataKey={name}
-              stackId="day"
-              fill={
-                name === "_total"
-                  ? chartColor()
-                  : butlerHueVar(name)
-              }
-              isAnimationActive={false}
-            />
-          ))}
+          <Bar dataKey="cost_usd" fill={chartColor()} isAnimationActive={false} />
         </BarChart>
       </ResponsiveContainer>
     </div>

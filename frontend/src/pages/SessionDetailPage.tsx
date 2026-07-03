@@ -205,7 +205,6 @@ export default function SessionDetailPage() {
         <CardContent>
           <ToolCallTimeline
             toolCalls={Array.isArray(session.tool_calls) ? session.tool_calls : []}
-            resultText={session.result}
           />
         </CardContent>
       </Card>

@@ -70,13 +70,24 @@ export function buildSpineEntries(
     state: s.state,
     mono: false,
     lastTouchOrder: s.lastUsed ? i : 800,
+    // bu-86c4c.1 (truth amnesty): these sublines used to hardcode a fake
+    // failure age ("refresh failed · 2d") and a fake missing-scope count
+    // ("1 scope missing") for EVERY expired / scope_mismatch credential,
+    // regardless of how long ago it actually broke or how many scopes are
+    // actually missing. The backend does not report a failure timestamp or
+    // real scope counts yet (scopesRequired/scopesGranted are always [] —
+    // see use-secrets-inventory.ts), so there is no real number to render.
+    // Show the last known-good verification instead (real data), or a plain
+    // state label with no invented figure when even that is unavailable.
     subline:
       s.state === "expired"
-        ? "refresh failed · 2d"
+        ? s.lastVerified
+          ? `last verified ${s.lastVerified}`
+          : "refresh failed"
         : s.state === "expiring" && s.expires
           ? `expires ${s.expires}`
           : s.state === "scope_mismatch"
-            ? "1 scope missing"
+            ? "scope mismatch"
             : s.state === "warn"
               ? "needs probe"
             : s.state === "never_set"

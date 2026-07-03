@@ -1038,6 +1038,83 @@ class TestGetPendingReviews:
         assert body[0]["label"] == "Variables"
         assert body[0]["mastery_status"] == "reviewing"
 
+    async def test_returns_real_mastery_score_when_present(self):
+        """bu-86c4c.1: the response must carry the node's real mastery_score
+        through to the client (never fabricate one from mastery_status)."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        review_nodes = [
+            {
+                "node_id": _NODE_ID,
+                "label": "Variables",
+                "ease_factor": 2.5,
+                "repetitions": 2,
+                "next_review_at": _NOW,
+                "mastery_status": "reviewing",
+                "mastery_score": 0.42,
+            },
+        ]
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "spaced_repetition_pending_reviews",
+                new_callable=AsyncMock,
+                return_value=review_nodes,
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/pending-reviews")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body[0]["mastery_score"] == 0.42
+
+    async def test_mastery_score_defaults_to_null_when_absent(self):
+        """Older callers that don't return mastery_score must not crash the
+        endpoint, and must never have a value fabricated for them."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        review_nodes = [
+            {
+                "node_id": _NODE_ID,
+                "label": "Variables",
+                "ease_factor": 2.5,
+                "repetitions": 2,
+                "next_review_at": _NOW,
+                "mastery_status": "reviewing",
+            },
+        ]
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "spaced_repetition_pending_reviews",
+                new_callable=AsyncMock,
+                return_value=review_nodes,
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/pending-reviews")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body[0]["mastery_score"] is None
+
     async def test_returns_empty_when_no_reviews_due(self):
         """When no reviews are due, return an empty list."""
         mock_pool = AsyncMock()

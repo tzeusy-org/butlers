@@ -3676,6 +3676,8 @@ export interface PendingReviewNode {
   repetitions: number;
   next_review_at: string;
   mastery_status: string;
+  /** Real mastery score (0-100 scale is NOT assumed — see mind_map_nodes.mastery_score). Null when unavailable. */
+  mastery_score: number | null;
 }
 
 /** One snapshot entry in an analytics trend time-series (from /analytics/trend). */

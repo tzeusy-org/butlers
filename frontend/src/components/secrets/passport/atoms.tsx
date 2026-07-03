@@ -668,7 +668,14 @@ export function ProbeResult({
   test,
   onProbe,
 }: {
-  test: { ok: boolean; code?: number | null; latencyMs: number; at: string; message?: string | null } | null;
+  test: {
+    ok: boolean;
+    code?: number | null;
+    /** Omitted/null when the server doesn't report latency — never fabricate "0ms". */
+    latencyMs?: number | null;
+    at: string;
+    message?: string | null;
+  } | null;
   onProbe?: () => void;
 }) {
   if (!test) {
@@ -700,10 +707,14 @@ export function ProbeResult({
         <Mono size={12} color={color}>
           {test.code ?? "—"}
         </Mono>
-        <Mono size={10} color="var(--dim)">
-          ·
-        </Mono>
-        <Mono size={11}>{test.latencyMs}ms</Mono>
+        {test.latencyMs != null && (
+          <>
+            <Mono size={10} color="var(--dim)">
+              ·
+            </Mono>
+            <Mono size={11}>{test.latencyMs}ms</Mono>
+          </>
+        )}
       </div>
       <Mono size={10} color="var(--dim)">
         at {test.at}

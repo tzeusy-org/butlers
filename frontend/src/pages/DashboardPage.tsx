@@ -34,7 +34,7 @@
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
-import { useSpendSummary, useTopSessions } from "@/hooks/use-spend";
+import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlerHeartbeats } from "@/hooks/use-system";
@@ -74,6 +74,10 @@ export default function DashboardPage() {
   const qaSummaryQuery = useQaSummary();
   const timelineQuery = useTimeline({ limit: 5 });
   const topSessionsQuery = useTopSessions();
+  // Real 7-day daily cost series for the CostWidget sparkline (bu-86c4c.1 —
+  // the sparkline previously fabricated bar heights from a pseudo-random
+  // formula; this is the same real series CostsPage's chart uses).
+  const dailySpendQuery = useDailySpend();
 
   // Derived values
   const model = deriveOverviewTriageModel({
@@ -184,6 +188,8 @@ export default function DashboardPage() {
             topButler={topButler}
             topButlerCost={topButlerCost}
             isLoading={costQuery.isLoading}
+            dailyCosts={dailySpendQuery.isError ? undefined : dailySpendQuery.data?.data}
+            dailyCostsError={dailySpendQuery.isError}
           />
         </div>
         <TopSessionsTable sessions={topSessions} isLoading={topSessionsQuery.isLoading} />

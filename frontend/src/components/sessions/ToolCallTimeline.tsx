@@ -274,40 +274,14 @@ function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
   };
 }
 
-function extractToolNamesFromResult(result: string | null): string[] {
-  if (typeof result !== "string" || result.length === 0) {
-    return [];
-  }
-
-  const names: string[] = [];
-  const patterns = [
-    /`([A-Za-z0-9_./-]+)\(/g,
-    /-\s*`([A-Za-z0-9_./-]+)`\s*:/g,
-  ];
-
-  for (const regex of patterns) {
-    let match: RegExpExecArray | null = regex.exec(result);
-    while (match != null) {
-      const name = match[1];
-      if (name && name.trim().length > 0) {
-        names.push(name);
-      }
-      match = regex.exec(result);
-    }
-  }
-  return names;
-}
-
 // ---------------------------------------------------------------------------
 // ToolCallTimeline — public component
 // ---------------------------------------------------------------------------
 
 export function ToolCallTimeline({
   toolCalls,
-  resultText,
 }: {
   toolCalls: unknown[];
-  resultText: string | null;
 }) {
   if (toolCalls.length === 0) {
     return (
@@ -315,34 +289,17 @@ export function ToolCallTimeline({
     );
   }
 
-  const parsedNames = extractToolNamesFromResult(resultText);
+  // bu-86c4c.1 (truth amnesty): tool calls whose payload carries no real name
+  // used to be regex-guessed from the free-text result prose and positionally
+  // assigned back to unnamed calls — a guess presented as fact that could
+  // mislabel calls when order or coverage differed. Show the real name when
+  // the payload has one, and an honest "Tool #N" placeholder otherwise —
+  // never a guessed name.
   const normalized = toolCalls.map((call, idx) => normalizeToolCall(call, idx));
-  const hydrated = normalized.reduce(
-    (state, call, idx) => {
-      const defaultName = `Tool #${idx + 1}`;
-      if (call.name !== defaultName || state.nextNameIndex >= parsedNames.length) {
-        return {
-          calls: [...state.calls, call],
-          nextNameIndex: state.nextNameIndex,
-        };
-      }
-      return {
-        calls: [
-          ...state.calls,
-          {
-            ...call,
-            name: parsedNames[state.nextNameIndex],
-          },
-        ],
-        nextNameIndex: state.nextNameIndex + 1,
-      };
-    },
-    { calls: [] as NormalizedToolCall[], nextNameIndex: 0 },
-  ).calls;
 
   return (
     <ol className="relative border-l border-border/60 ml-2 space-y-3">
-      {hydrated.map((tc, idx) => {
+      {normalized.map((tc, idx) => {
         const outcomeStyle = TOOL_CALL_OUTCOME_STYLES[tc.outcome];
         return (
           <li key={`${tc.key}-${idx}`} className="ml-4">

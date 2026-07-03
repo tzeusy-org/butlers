@@ -22,15 +22,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Page } from "@/components/ui/page"
 import { useSpendSummary, useDailySpend, formatCostDate } from "@/hooks/use-spend"
 import { useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
+import { formatCostUsd as formatCost } from "@/lib/format-cost"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatCost(amount: number): string {
-  if (amount < 0.01) return "$0.00"
-  return `$${amount.toFixed(2)}`
-}
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -152,7 +148,6 @@ export default function CostsPage() {
         <CardContent className="space-y-4">
           <CostStripeChart
             data={dailyData}
-            byButler={summary?.by_butler ?? {}}
             isLoading={dailyLoading}
             isError={dailyError}
           />

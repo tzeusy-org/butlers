@@ -47,7 +47,11 @@ function makeMap(id: string, title: string): MindMap {
 }
 
 /** A pending review due ~1 day from "now" (lands in the "This Week" bucket). */
-function makeReview(nodeId: string, label: string): PendingReviewNode {
+function makeReview(
+  nodeId: string,
+  label: string,
+  overrides: Partial<PendingReviewNode> = {},
+): PendingReviewNode {
   const next = new Date();
   next.setDate(next.getDate() + 1);
   return {
@@ -57,6 +61,8 @@ function makeReview(nodeId: string, label: string): PendingReviewNode {
     repetitions: 1,
     next_review_at: next.toISOString(),
     mastery_status: "reviewing",
+    mastery_score: 0.62,
+    ...overrides,
   };
 }
 
@@ -150,5 +156,61 @@ describe("ReviewTimeline — renders all active mind maps", () => {
     render(<ReviewTimeline />);
 
     expect(screen.getByText(/no reviews scheduled/i)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bu-86c4c.1 (truth amnesty): mastery badge previously fabricated a fixed
+// 50%/100% split from mastery_status alone — every non-mastered node showed
+// exactly "50%" regardless of its real mastery_score. These pin the real-data
+// path and the honest fallback when no score is available.
+// ---------------------------------------------------------------------------
+
+describe("ReviewTimeline — mastery badge", () => {
+  it("renders the real mastery_score percentage when present", () => {
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockImplementation((mapIds: string[]) =>
+      mapIds.map(
+        () =>
+          ({
+            data: [makeReview("map-a-n1", "Closures", { mastery_score: 0.37 })],
+            isLoading: false,
+          }) as unknown as ReviewResult,
+      ),
+    );
+
+    render(<ReviewTimeline />);
+
+    // 0.37 * 100 rounded, never the fabricated 50%.
+    expect(screen.getByText("37%")).toBeTruthy();
+  });
+
+  it("falls back to the mastery status label when mastery_score is unavailable", () => {
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockImplementation((mapIds: string[]) =>
+      mapIds.map(
+        () =>
+          ({
+            data: [
+              makeReview("map-a-n1", "Closures", {
+                mastery_status: "learning",
+                mastery_score: null,
+              }),
+            ],
+            isLoading: false,
+          }) as unknown as ReviewResult,
+      ),
+    );
+
+    render(<ReviewTimeline />);
+
+    expect(screen.queryByText(/%/)).toBeNull();
+    expect(screen.getByText("learning")).toBeTruthy();
   });
 });

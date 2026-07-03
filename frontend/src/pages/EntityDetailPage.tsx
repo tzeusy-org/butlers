@@ -1176,6 +1176,30 @@ function GiftsPanel({ entityId }: { entityId: string }) {
   );
 }
 
+/**
+ * Format a loan's amount_cents (a numeric string, e.g. "15000") as a real
+ * currency figure ("$150.00") rather than the raw integer cents.
+ *
+ * bu-86c4c.1: this page used to render `{loan.currency} {loan.amount_cents}`
+ * directly — a $150 loan displayed as "USD 15000".
+ */
+function formatLoanAmount(amountCents: string | null, currency: string | null): string | null {
+  if (amountCents == null) return null;
+  const cents = Number(amountCents);
+  if (!Number.isFinite(cents)) return null;
+  const dollars = cents / 100;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currency || "USD",
+    }).format(dollars);
+  } catch {
+    // Unknown/invalid currency code — fall back to a plain labeled figure
+    // rather than throwing out of render.
+    return `${currency ?? ""} ${dollars.toFixed(2)}`.trim();
+  }
+}
+
 function LoansPanel({ entityId }: { entityId: string }) {
   const { data: loans, isLoading } = useEntityLoans(entityId);
   if (isLoading || !loans || loans.length === 0) return null;
@@ -1191,6 +1215,7 @@ function LoansPanel({ entityId }: { entityId: string }) {
       <ul className="space-y-1.5">
         {loans.map((loan) => {
           const settled = loan.settled === "true";
+          const formattedAmount = formatLoanAmount(loan.amount_cents, loan.currency);
           return (
             <li
               key={loan.id}
@@ -1204,10 +1229,8 @@ function LoansPanel({ entityId }: { entityId: string }) {
                   {loan.direction}
                 </span>
               )}
-              {loan.amount_cents && (
-                <span className="tabular-nums text-xs">
-                  {loan.currency ?? ""} {loan.amount_cents}
-                </span>
+              {formattedAmount && (
+                <span className="tabular-nums text-xs">{formattedAmount}</span>
               )}
               <Badge
                 variant={settled ? "outline" : "secondary"}
@@ -1369,9 +1392,12 @@ function _provenanceForFact(
   if (!candidates || candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
   const target = (fact.content ?? "").trim();
-  return (
-    candidates.find((c) => (c.object ?? "").trim() === target) ?? candidates[0]
-  );
+  // bu-86c4c.1 (truth amnesty): a predicate with multiple drill rows used to
+  // fall back to candidates[0] when none matched by content — silently
+  // showing another fact's provenance (wrong src/verified/staleness). The
+  // docstring above already promised "no invented provenance"; honor it —
+  // return null (no reveal) rather than guess.
+  return candidates.find((c) => (c.object ?? "").trim() === target) ?? null;
 }
 
 function FactsSection({

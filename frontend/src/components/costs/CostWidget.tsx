@@ -2,17 +2,23 @@ import { Link } from "react-router";
 
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { formatCostUsd } from "@/lib/format-cost";
+import type { DailySpend } from "@/api/types";
 
 interface CostWidgetProps {
   totalCostUsd: number;
   topButler: string | null;
   topButlerCost: number;
   isLoading?: boolean;
-}
-
-function formatCurrency(amount: number): string {
-  if (amount < 0.01) return "$0.00";
-  return `$${amount.toFixed(2)}`;
+  /**
+   * Real daily cost series for the trailing 7 days (from GET /api/spend/daily).
+   * Renders the trend sparkline; when absent or empty, the sparkline is
+   * replaced by an honest "trend unavailable" note rather than fabricated
+   * bars.
+   */
+  dailyCosts?: DailySpend[];
+  /** True when the daily-cost source failed to load. */
+  dailyCostsError?: boolean;
 }
 
 export default function CostWidget({
@@ -20,6 +26,8 @@ export default function CostWidget({
   topButler,
   topButlerCost,
   isLoading,
+  dailyCosts,
+  dailyCostsError = false,
 }: CostWidgetProps) {
   if (isLoading) {
     return (
@@ -43,23 +51,38 @@ export default function CostWidget({
         </Button>
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{formatCurrency(totalCostUsd)}</div>
+        <div className="text-2xl font-bold">{formatCostUsd(totalCostUsd)}</div>
         {topButler && (
           <p className="mt-1 text-xs text-muted-foreground">
-            Top: {topButler} ({formatCurrency(topButlerCost)})
+            Top: {topButler} ({formatCostUsd(topButlerCost)})
           </p>
         )}
-        {/* Sparkline placeholder — will be replaced with Recharts */}
-        <div className="mt-3 flex h-8 items-end gap-0.5">
-          {Array.from({ length: 7 }).map((_, i) => (
-            <div
-              key={i}
-              className="flex-1 rounded-sm bg-muted"
-              style={{ height: `${20 + ((i * 37 + 13) % 80)}%` }}
-            />
-          ))}
-        </div>
-        <p className="mt-1 text-xs text-muted-foreground">7-day trend</p>
+        {dailyCostsError ? (
+          <p className="mt-3 text-xs text-muted-foreground" data-testid="cost-widget-trend-unavailable">
+            7-day trend unavailable
+          </p>
+        ) : dailyCosts && dailyCosts.length > 0 ? (
+          <>
+            <div className="mt-3 flex h-8 items-end gap-0.5" data-testid="cost-widget-sparkline">
+              {(() => {
+                const max = Math.max(...dailyCosts.map((d) => d.cost_usd), 0);
+                return dailyCosts.map((d) => (
+                  <div
+                    key={d.date}
+                    className="flex-1 rounded-sm bg-primary/60"
+                    title={`${d.date}: ${formatCostUsd(d.cost_usd)}`}
+                    style={{ height: max > 0 ? `${Math.max(4, (d.cost_usd / max) * 100)}%` : "4%" }}
+                  />
+                ));
+              })()}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">7-day trend</p>
+          </>
+        ) : (
+          <p className="mt-3 text-xs text-muted-foreground" data-testid="cost-widget-trend-unavailable">
+            7-day trend unavailable
+          </p>
+        )}
       </CardContent>
     </Card>
   );

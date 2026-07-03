@@ -26,7 +26,11 @@ import DashboardPage from "@/pages/DashboardPage";
 
 vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
-vi.mock("@/hooks/use-spend", () => ({ useSpendSummary: vi.fn(), useTopSessions: vi.fn() }));
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(),
+  useTopSessions: vi.fn(),
+  useDailySpend: vi.fn(),
+}));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
 vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
 vi.mock("@/hooks/use-system", () => ({ useButlerHeartbeats: vi.fn() }));
@@ -40,7 +44,7 @@ vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
 
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
-import { useSpendSummary, useTopSessions } from "@/hooks/use-spend";
+import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlerHeartbeats } from "@/hooks/use-system";
@@ -180,6 +184,18 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
   } as AnyMock);
   vi.mocked(useTimeline).mockReturnValue({
     data: { data: [], meta: { cursor: null, has_more: false } },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+  vi.mocked(useDailySpend).mockReturnValue({
+    data: {
+      data: [
+        { date: "2026-05-08", cost_usd: 0.31, sessions: 4, input_tokens: 1000, output_tokens: 500 },
+        { date: "2026-05-09", cost_usd: 0.42, sessions: 5, input_tokens: 1000, output_tokens: 500 },
+      ],
+      meta: {},
+    },
     isLoading: false,
     isError: false,
     error: null,

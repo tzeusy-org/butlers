@@ -171,7 +171,10 @@ function adaptProbeResult(raw: SecretsCliRaw["test"]): TestResult | null {
     ok: raw.ok,
     code: raw.code ?? null,
     message: raw.message ?? null,
-    latencyMs: 0,           // not returned in inventory response
+    // The inventory endpoint does not measure/return probe latency yet —
+    // leave it unset (never fabricate "0ms"; see ProbeResult's conditional
+    // render in atoms.tsx).
+    latencyMs: null,
     at: raw.at ?? "",
   };
 }

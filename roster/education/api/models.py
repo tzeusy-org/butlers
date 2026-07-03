@@ -134,6 +134,10 @@ class PendingReviewNodeResponse(BaseModel):
     repetitions: int
     next_review_at: str
     mastery_status: str
+    # Real mastery score for this node (education.mind_map_nodes.mastery_score).
+    # Optional/nullable because older callers of spaced_repetition_pending_reviews
+    # (e.g. mocked tests) may not include it — never fabricate a value when absent.
+    mastery_score: float | None = None
 
 
 class StatusUpdateRequest(BaseModel):

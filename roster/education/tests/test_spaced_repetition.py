@@ -824,6 +824,39 @@ class TestSpacedRepetitionPendingReviews:
         result = await spaced_repetition_pending_reviews(pool, str(uuid.uuid4()))
         assert result == []
 
+    async def test_returns_real_mastery_score(self) -> None:
+        """bu-86c4c.1: pending reviews must return the node's real
+        mastery_score (not just mastery_status) so the frontend can render an
+        honest percentage instead of fabricating one from status alone."""
+        from butlers.tools.education.spaced_repetition import (
+            spaced_repetition_pending_reviews,
+        )
+
+        map_id = str(uuid.uuid4())
+        overdue = datetime.now(tz=UTC) - timedelta(hours=1)
+
+        pool = _make_pool(
+            fetch_returns=[
+                [
+                    _make_row(
+                        {
+                            "node_id": str(uuid.uuid4()),
+                            "label": "Concept",
+                            "ease_factor": 2.5,
+                            "repetitions": 1,
+                            "next_review_at": overdue,
+                            "mastery_status": "reviewing",
+                            "mastery_score": 0.42,
+                        }
+                    )
+                ]
+            ]
+        )
+
+        result = await spaced_repetition_pending_reviews(pool, map_id)
+        assert len(result) == 1
+        assert result[0]["mastery_score"] == 0.42
+
     async def test_iso_formats_datetime_fields(self) -> None:
         from butlers.tools.education.spaced_repetition import (
             spaced_repetition_pending_reviews,

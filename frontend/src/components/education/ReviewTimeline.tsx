@@ -45,11 +45,15 @@ function ReviewEntryRow({ entry }: { entry: ReviewEntry }) {
         <p className="text-xs text-muted-foreground">{entry.mind_map_title}</p>
       </div>
       <div className="flex items-center gap-2">
-        <Badge variant="outline" className="text-xs">
-          {Math.round(
-            (entry.mastery_status === "mastered" ? 1.0 : 0.5) * 100,
-          )}%
-        </Badge>
+        {entry.mastery_score != null ? (
+          <Badge variant="outline" className="text-xs">
+            {Math.round(entry.mastery_score * 100)}%
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="text-xs capitalize">
+            {entry.mastery_status}
+          </Badge>
+        )}
         <span className="text-xs text-muted-foreground">
           {new Date(entry.next_review_at).toLocaleDateString()}
         </span>

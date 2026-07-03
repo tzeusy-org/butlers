@@ -454,6 +454,9 @@ async def get_pending_reviews(
             repetitions=int(n["repetitions"]),
             next_review_at=str(n["next_review_at"]),
             mastery_status=n["mastery_status"],
+            mastery_score=(
+                float(n["mastery_score"]) if n.get("mastery_score") is not None else None
+            ),
         )
         for n in nodes
     ]

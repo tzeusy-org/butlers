@@ -198,7 +198,14 @@ describe("SessionDetailDrawer", () => {
     expect(document.body.textContent).not.toContain("Tool #1");
   });
 
-  it("uses session result summary to label unnamed tool calls", () => {
+  // bu-86c4c.1 (truth amnesty): ToolCallTimeline used to regex-guess tool
+  // names out of the free-text result prose and positionally assign them
+  // back to calls whose payload carried no real name — a guess presented as
+  // fact that could mislabel calls when order or coverage differed. These
+  // tests now pin the honest replacement: a call without a real name renders
+  // an explicit "Tool #N" placeholder, never a name lifted from the result
+  // text, even when that text happens to look like a tool-call summary.
+  it("never guesses a tool name from the result summary — shows an honest placeholder", () => {
     setQueryState({
       data: {
         data: {
@@ -219,12 +226,11 @@ describe("SessionDetailDrawer", () => {
 
     renderDrawer();
 
-    expect(document.body.textContent).toContain("route_to_butler");
-    expect(document.body.textContent).not.toContain("Tool #1");
-    expect(document.body.textContent).not.toContain("Tool #2");
+    expect(document.body.textContent).toContain("Tool #1");
+    expect(document.body.textContent).toContain("Tool #2");
   });
 
-  it("uses colon summary format to label unnamed tool calls", () => {
+  it("still uses a call's real name when the payload provides one", () => {
     setQueryState({
       data: {
         data: {
@@ -235,8 +241,8 @@ describe("SessionDetailDrawer", () => {
             "- `notify`: `channel=telegram`",
           ].join("\n"),
           tool_calls: [
-            { args: { subject: "Chloe", predicate: "birthday" } },
-            { args: { channel: "telegram", intent: "reply" } },
+            { name: "memory_store_fact", args: { subject: "Chloe", predicate: "birthday" } },
+            { name: "notify", args: { channel: "telegram", intent: "reply" } },
           ],
         },
         meta: {},

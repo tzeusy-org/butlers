@@ -7,6 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from "../ui/table";
+import { formatCostUsd as formatCost } from "@/lib/format-cost";
 
 interface ButlerCostRow {
   name: string;
@@ -18,11 +19,6 @@ interface CostBreakdownTableProps {
   byButler: Record<string, number>;
   totalCost: number;
   isLoading?: boolean;
-}
-
-function formatCost(amount: number): string {
-  if (amount < 0.01) return "$0.00";
-  return `$${amount.toFixed(2)}`;
 }
 
 function formatPercentage(value: number): string {

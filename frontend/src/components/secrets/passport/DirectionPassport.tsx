@@ -271,6 +271,16 @@ export function DirectionPassport({
             </div>
             {needsAttention > 0 && (
               <div className="mt-2.5">
+                {/*
+                 * bu-86c4c.1 (truth amnesty): this line used to always end
+                 * with the literal "Everything else verified within the
+                 * hour." regardless of whether any probe had actually run
+                 * recently. lastVerified values from the inventory API are
+                 * opaque, server-pre-formatted strings (e.g. "14:21 today",
+                 * "2 days ago") rather than timestamps, so there is no real
+                 * "as of <time>" figure this page can compute — the honest
+                 * fix is to drop the claim rather than assert one.
+                 */}
                 <Voice maxWidth="60ch">
                   {kpis.integrations.needsHand > 0 && (
                     <>
@@ -280,10 +290,9 @@ export function DirectionPassport({
                   )}
                   {kpis.cli.attention > 0 && (
                     <>
-                      {kpis.cli.attention} runtime token expiring.{" "}
+                      {kpis.cli.attention} runtime token expiring.
                     </>
                   )}
-                  Everything else verified within the hour.
                 </Voice>
               </div>
             )}

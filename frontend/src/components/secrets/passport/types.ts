@@ -57,7 +57,12 @@ export interface AuditEvent {
 export interface TestResult {
   ok: boolean;
   code?: number | null;
-  latencyMs: number;
+  /**
+   * Probe round-trip latency in milliseconds, when the server reports one.
+   * The inventory endpoint does not currently measure/return latency —
+   * render nothing (never a fabricated "0ms") when null.
+   */
+  latencyMs?: number | null;
   at: string;
   message?: string | null;
 }

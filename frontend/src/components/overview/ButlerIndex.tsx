@@ -1,4 +1,5 @@
 import { ButlerMark } from "@/components/ui/ButlerMark";
+import { formatCostUsd } from "@/lib/format-cost";
 import { Section } from "./Section";
 import type { OverviewButlerIndexRow } from "./model";
 
@@ -61,7 +62,7 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
                 }}
               >
                 {runtimeLabel(butler)}
-                {butler.costUsd > 0 ? ` · ${formatCost(butler.costUsd)} today` : ""}
+                {butler.costUsd > 0 ? ` · ${formatCostUsd(butler.costUsd)} today` : ""}
               </p>
             </div>
 
@@ -144,10 +145,6 @@ function lastActivityLabel(butler: OverviewButlerIndexRow): string {
     return `heartbeat ${formatDuration(butler.heartbeatAgeSeconds)}`;
   }
   return "no session";
-}
-
-function formatCost(value: number): string {
-  return `$${value.toFixed(3)}`;
 }
 
 function formatDateTime(iso: string): string {

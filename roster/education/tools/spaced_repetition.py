@@ -337,13 +337,13 @@ async def spaced_repetition_pending_reviews(
     -------
     list of dict, each with:
         node_id, label, ease_factor, repetitions,
-        next_review_at (ISO string), mastery_status
+        next_review_at (ISO string), mastery_status, mastery_score
     """
     if horizon_days is not None:
         rows = await pool.fetch(
             """
             SELECT id AS node_id, label, ease_factor, repetitions,
-                   next_review_at, mastery_status
+                   next_review_at, mastery_status, mastery_score
             FROM education.mind_map_nodes
             WHERE mind_map_id = $1
               AND next_review_at IS NOT NULL
@@ -357,7 +357,7 @@ async def spaced_repetition_pending_reviews(
         rows = await pool.fetch(
             """
             SELECT id AS node_id, label, ease_factor, repetitions,
-                   next_review_at, mastery_status
+                   next_review_at, mastery_status, mastery_score
             FROM education.mind_map_nodes
             WHERE mind_map_id = $1
               AND next_review_at IS NOT NULL

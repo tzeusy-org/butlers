@@ -215,7 +215,7 @@ export function SessionDetailDrawer({
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
                   Tool Calls ({session.tool_calls.length})
                 </h3>
-                <ToolCallTimeline toolCalls={session.tool_calls} resultText={session.result} />
+                <ToolCallTimeline toolCalls={session.tool_calls} />
               </section>
 
               {/* Result */}
