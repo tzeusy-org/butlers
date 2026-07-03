@@ -28,12 +28,10 @@
 // they govern — noticing a spike and capping the schedule that caused it is
 // one continuous motion.
 //
-// Not yet windowed to the picker (backend limitation, tracked as a
-// follow-up): GET /api/spend/top-sessions and GET /api/spend/by-schedule
-// take no date range today, so those two evidence sections are always
-// all-time/current rather than scoped to the TimeWindowPicker above the
-// daily chart. They are labelled honestly rather than implying a scope they
-// don't have.
+// The evidence layer (Top Sessions + by-schedule projected costs) is scoped
+// to the same TimeWindowPicker window as the daily chart above it (bu-oaiiw
+// backend support: GET /api/spend/top-sessions and GET /api/spend/by-schedule
+// now accept from/to, mirroring /api/spend/daily).
 // ---------------------------------------------------------------------------
 
 import { useState, useMemo, useRef, useEffect, useCallback } from "react"
@@ -55,7 +53,7 @@ import {
   useTopSessions,
   useCostsBySchedule,
 } from "@/hooks/use-spend"
-import { useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
+import { useTimeWindow, formatWindowDate, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { CostStripeChart } from "@/components/costs/CostStripeChart"
 import { formatCostUsd } from "@/lib/format-cost"
@@ -659,13 +657,13 @@ function BreakdownSection() {
 }
 
 // ---------------------------------------------------------------------------
-// Why — evidence layer: Top Sessions + by-schedule projected costs. Neither
-// endpoint accepts a date range today (see file header), so these are
-// labelled honestly rather than claiming to be scoped to the picker above.
+// Why — evidence layer: Top Sessions + by-schedule projected costs, both
+// scoped to the same [from, to] window as the daily chart's TimeWindowPicker
+// (bu-oaiiw).
 // ---------------------------------------------------------------------------
 
-function TopSessionsSection() {
-  const { data, isLoading, isError } = useTopSessions(10)
+function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
+  const { data, isLoading, isError } = useTopSessions(10, from, to)
   const sessions = data?.data ?? []
 
   return (
@@ -673,7 +671,8 @@ function TopSessionsSection() {
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>Most Expensive Sessions</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          All-time top sessions by cost — click through to session detail.
+          Top sessions by cost, {formatWindowDate(from)} – {formatWindowDate(to)} — click through
+          to session detail.
         </p>
       </div>
       <div className="p-4">
@@ -737,8 +736,8 @@ function TopSessionsSection() {
   )
 }
 
-function ByScheduleSection() {
-  const { data, isLoading, isError } = useCostsBySchedule()
+function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
+  const { data, isLoading, isError } = useCostsBySchedule(from, to)
   const schedules = data?.data ?? []
 
   return (
@@ -746,7 +745,8 @@ function ByScheduleSection() {
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>By Schedule</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Projected monthly cost per cron job — which schedule is burning money.
+          Projected monthly cost per cron job, runs from {formatWindowDate(from)} –{" "}
+          {formatWindowDate(to)} — which schedule is burning money.
         </p>
       </div>
       <div className="p-4">
@@ -1392,9 +1392,9 @@ export default function SpendPage() {
           </div>
         </section>
 
-        {/* Why: evidence layer */}
-        <TopSessionsSection />
-        <ByScheduleSection />
+        {/* Why: evidence layer, scoped to the same window as the daily chart */}
+        <TopSessionsSection from={timeWindow.from} to={timeWindow.to} />
+        <ByScheduleSection from={timeWindow.from} to={timeWindow.to} />
 
         {/* Why: period breakdown */}
         <BreakdownSection />

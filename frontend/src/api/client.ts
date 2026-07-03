@@ -919,15 +919,27 @@ export function getDailyCosts(
   return apiFetch<ApiResponse<DailySpend[]>>(`/spend/daily${query}`);
 }
 
-/** Fetch most expensive sessions. */
-export function getTopSessions(limit?: number): Promise<ApiResponse<TopSession[]>> {
-  const params = limit ? `?limit=${limit}` : "";
-  return apiFetch<ApiResponse<TopSession[]>>(`/spend/top-sessions${params}`);
+/** Fetch most expensive sessions, optionally scoped to a date range (YYYY-MM-DD). */
+export function getTopSessions(
+  limit?: number,
+  from?: string,
+  to?: string,
+): Promise<ApiResponse<TopSession[]>> {
+  const params = new URLSearchParams();
+  if (limit) params.set("limit", String(limit));
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch<ApiResponse<TopSession[]>>(`/spend/top-sessions${qs}`);
 }
 
-/** Fetch per-schedule cost analysis (projected monthly USD per cron job). */
-export function getCostsBySchedule(): Promise<ApiResponse<ScheduleCost[]>> {
-  return apiFetch<ApiResponse<ScheduleCost[]>>("/spend/by-schedule");
+/** Fetch per-schedule cost analysis (projected monthly USD per cron job), optionally scoped to a date range (YYYY-MM-DD). */
+export function getCostsBySchedule(from?: string, to?: string): Promise<ApiResponse<ScheduleCost[]>> {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch<ApiResponse<ScheduleCost[]>>(`/spend/by-schedule${qs}`);
 }
 
 // ---------------------------------------------------------------------------

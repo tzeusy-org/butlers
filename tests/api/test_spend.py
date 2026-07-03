@@ -97,14 +97,19 @@ def _make_tool_result(data: dict) -> MagicMock:
 
 def _mock_mgr(responses: dict) -> MCPClientManager:
     mgr = MagicMock(spec=MCPClientManager)
+    clients: dict[str, MagicMock] = {}
 
     async def _get(name: str):
         resp = responses.get(name)
         if isinstance(resp, Exception):
             raise resp
-        c = MagicMock()
-        c.call_tool = AsyncMock(return_value=resp)
-        return c
+        # Cache per-name so tests can retrieve the same client mock afterward
+        # (e.g. to inspect call_tool.call_args) instead of getting a fresh one.
+        if name not in clients:
+            c = MagicMock()
+            c.call_tool = AsyncMock(return_value=resp)
+            clients[name] = c
+        return clients[name]
 
     mgr.get_client = AsyncMock(side_effect=_get)
     return mgr
@@ -927,6 +932,68 @@ async def test_top_sessions_unknown_butler_returns_empty_200(app):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/spend/top-sessions — date-range scoping [bu-oaiiw]
+# ---------------------------------------------------------------------------
+
+
+async def test_top_sessions_date_range_forwarded_to_mcp_tool(app):
+    """?from=&to= on /top-sessions are forwarded as from_date/to_date to the MCP tool."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sw_sessions = {"sessions": []}
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_sessions)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/spend/top-sessions", params={"from": "2026-05-01", "to": "2026-05-07"}
+        )
+    assert resp.status_code == 200
+    client_mock = await mgr.get_client("sw")
+    tool_name, tool_args = client_mock.call_tool.call_args.args
+    assert tool_name == "top_sessions"
+    assert tool_args["from_date"] == "2026-05-01"
+    assert tool_args["to_date"] == "2026-05-07"
+
+
+async def test_top_sessions_no_date_range_omits_mcp_args_back_compat(app):
+    """Omitting from/to on /top-sessions does not send from_date/to_date (all-time, back-compat)."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sw_sessions = {"sessions": []}
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_sessions)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/top-sessions")
+    assert resp.status_code == 200
+    client_mock = await mgr.get_client("sw")
+    _tool_name, tool_args = client_mock.call_tool.call_args.args
+    assert "from_date" not in tool_args
+    assert "to_date" not in tool_args
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"from": "2026-05-01"},  # only 'from' without 'to'
+        {"from": "2026-05-07", "to": "2026-05-01"},  # inverted 'from' > 'to'
+    ],
+    ids=["only-from", "inverted"],
+)
+async def test_top_sessions_date_range_invalid_returns_422(app, params):
+    """Incomplete or inverted from/to ranges return 422."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    mgr = _mock_mgr({})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/top-sessions", params=params)
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # GET /api/spend/by-schedule — ?butler= filter [bu-lryu6]
 # ---------------------------------------------------------------------------
 
@@ -1031,6 +1098,67 @@ async def test_by_schedule_unknown_butler_returns_empty_200(app):
         resp = await client.get("/api/spend/by-schedule", params={"butler": "nonexistent"})
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/spend/by-schedule — date-range scoping [bu-oaiiw]
+# ---------------------------------------------------------------------------
+
+
+async def test_by_schedule_date_range_forwarded_to_mcp_tool(app):
+    """?from=&to= on /by-schedule are forwarded as from_date/to_date to the MCP tool."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sw_sched = {"schedules": []}
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_sched)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/spend/by-schedule", params={"from": "2026-05-01", "to": "2026-05-07"}
+        )
+    assert resp.status_code == 200
+    client_mock = await mgr.get_client("sw")
+    tool_name, tool_args = client_mock.call_tool.call_args.args
+    assert tool_name == "schedule_costs"
+    assert tool_args["from_date"] == "2026-05-01"
+    assert tool_args["to_date"] == "2026-05-07"
+
+
+async def test_by_schedule_no_date_range_omits_mcp_args_back_compat(app):
+    """Omitting from/to on /by-schedule does not send from_date/to_date (all-time, back-compat)."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sw_sched = {"schedules": []}
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_sched)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    client_mock = await mgr.get_client("sw")
+    _tool_name, tool_args = client_mock.call_tool.call_args.args
+    assert tool_args == {}
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"from": "2026-05-01"},  # only 'from' without 'to'
+        {"from": "2026-05-07", "to": "2026-05-01"},  # inverted 'from' > 'to'
+    ],
+    ids=["only-from", "inverted"],
+)
+async def test_by_schedule_date_range_invalid_returns_422(app, params):
+    """Incomplete or inverted from/to ranges return 422."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    mgr = _mock_mgr({})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule", params=params)
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------

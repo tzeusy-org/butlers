@@ -517,6 +517,31 @@ def _parse_iso_date(value: str | date) -> date:
     return date.fromisoformat(value)
 
 
+def _resolve_optional_range(
+    from_date: str | date | None,
+    to_date: str | date | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Resolve an optional ``[from_date, to_date]`` pair into UTC timestamp bounds.
+
+    Returns ``(None, None)`` when both are omitted (callers should treat this as
+    "no range" / all-time, preserving pre-existing behavior). Raises ``ValueError``
+    when only one side is given, or ``from_date`` is later than ``to_date``.
+    """
+    if from_date is None and to_date is None:
+        return None, None
+    if from_date is None or to_date is None:
+        raise ValueError("from_date and to_date must be provided together")
+
+    from_day = _parse_iso_date(from_date)
+    to_day = _parse_iso_date(to_date)
+    if from_day > to_day:
+        raise ValueError("from_date must be <= to_date")
+
+    start_at = datetime.combine(from_day, datetime.min.time(), tzinfo=UTC)
+    end_exclusive = datetime.combine(to_day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    return start_at, end_exclusive
+
+
 def _estimate_runs_per_day(cron: str) -> float:
     """Estimate average daily run frequency from a cron expression."""
     if not croniter.is_valid(cron):
@@ -668,9 +693,22 @@ async def sessions_daily(
     return {"days": days}
 
 
-async def top_sessions(pool: asyncpg.Pool, limit: int = 10) -> dict[str, list[dict[str, Any]]]:
-    """Return the highest-token completed sessions."""
+async def top_sessions(
+    pool: asyncpg.Pool,
+    limit: int = 10,
+    from_date: str | date | None = None,
+    to_date: str | date | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return the highest-token completed sessions.
+
+    When ``from_date``/``to_date`` are both provided (ISO date strings or
+    ``date`` objects), results are scoped to sessions started within that
+    inclusive range. When both are omitted, all-time results are returned
+    (pre-existing behavior, preserved for back-compat). Providing only one
+    of the two raises ``ValueError``.
+    """
     safe_limit = max(1, int(limit))
+    start_at, end_exclusive = _resolve_optional_range(from_date, to_date)
     rows = await pool.fetch(
         """
         SELECT
@@ -681,10 +719,14 @@ async def top_sessions(pool: asyncpg.Pool, limit: int = 10) -> dict[str, list[di
             started_at
         FROM sessions
         WHERE completed_at IS NOT NULL
+          AND ($2::timestamptz IS NULL OR started_at >= $2)
+          AND ($3::timestamptz IS NULL OR started_at < $3)
         ORDER BY (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) DESC, started_at DESC
         LIMIT $1
         """,
         safe_limit,
+        start_at,
+        end_exclusive,
     )
 
     sessions: list[dict[str, Any]] = []
@@ -702,8 +744,21 @@ async def top_sessions(pool: asyncpg.Pool, limit: int = 10) -> dict[str, list[di
     return {"sessions": sessions}
 
 
-async def schedule_costs(pool: asyncpg.Pool) -> dict[str, list[dict[str, Any]]]:
-    """Return per-schedule token usage aggregates for cost analysis."""
+async def schedule_costs(
+    pool: asyncpg.Pool,
+    from_date: str | date | None = None,
+    to_date: str | date | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return per-schedule token usage aggregates for cost analysis.
+
+    When ``from_date``/``to_date`` are both provided (ISO date strings or
+    ``date`` objects), only runs started within that inclusive range are
+    aggregated — schedules with no runs in the window still appear (with
+    zeroed totals) thanks to the LEFT JOIN. When both are omitted, all-time
+    totals are returned (pre-existing behavior, preserved for back-compat).
+    Providing only one of the two raises ``ValueError``.
+    """
+    start_at, end_exclusive = _resolve_optional_range(from_date, to_date)
     rows = await pool.fetch(
         """
         SELECT
@@ -716,9 +771,13 @@ async def schedule_costs(pool: asyncpg.Pool) -> dict[str, list[dict[str, Any]]]:
         FROM scheduled_tasks AS st
         LEFT JOIN sessions AS s
             ON s.trigger_source = ('schedule:' || st.name)
+            AND ($1::timestamptz IS NULL OR s.started_at >= $1)
+            AND ($2::timestamptz IS NULL OR s.started_at < $2)
         GROUP BY st.name, st.cron, s.model
         ORDER BY st.name, s.model
-        """
+        """,
+        start_at,
+        end_exclusive,
     )
 
     schedules: list[dict[str, Any]] = []

@@ -79,21 +79,38 @@ export function useDailySpend(
   });
 }
 
-/** Fetch most expensive sessions with auto-refresh. */
-export function useTopSessions(limit?: number) {
+/**
+ * Fetch most expensive sessions with auto-refresh, optionally scoped to a date range.
+ *
+ * When `from`/`to` are provided, results are scoped to sessions started within that
+ * inclusive range (backend support added bu-oaiiw). Omit both for all-time results.
+ */
+export function useTopSessions(limit?: number, from?: Date, to?: Date) {
+  const fromStr = from ? formatCostDate(from) : undefined;
+  const toStr = to ? formatCostDate(to) : undefined;
+
   return useQuery({
-    queryKey: ["top-sessions", limit],
-    queryFn: () => getTopSessions(limit),
+    queryKey: ["top-sessions", limit, fromStr, toStr],
+    queryFn: () => getTopSessions(limit, fromStr, toStr),
     // See useSpendSummary above: fleet-event-bus-driven, poll is now a safety net.
     refetchInterval: 5 * 60_000,
   });
 }
 
-/** Fetch per-schedule cost analysis (projected monthly USD per cron job). */
-export function useCostsBySchedule() {
+/**
+ * Fetch per-schedule cost analysis (projected monthly USD per cron job), optionally
+ * scoped to a date range.
+ *
+ * When `from`/`to` are provided, run totals are scoped to that inclusive range
+ * (backend support added bu-oaiiw). Omit both for all-time totals.
+ */
+export function useCostsBySchedule(from?: Date, to?: Date) {
+  const fromStr = from ? formatCostDate(from) : undefined;
+  const toStr = to ? formatCostDate(to) : undefined;
+
   return useQuery({
-    queryKey: ["costs-by-schedule"],
-    queryFn: () => getCostsBySchedule(),
+    queryKey: ["costs-by-schedule", fromStr, toStr],
+    queryFn: () => getCostsBySchedule(fromStr, toStr),
     refetchInterval: 5 * 60_000,
   });
 }

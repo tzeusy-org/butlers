@@ -345,6 +345,141 @@ async def test_recover_orphaned_sessions_preserves_existing_error(pool):
 
 
 # ---------------------------------------------------------------------------
+# top_sessions / schedule_costs — date-range scoping [bu-oaiiw]
+# ---------------------------------------------------------------------------
+
+
+async def test_top_sessions_date_range_filters_by_started_at(pool):
+    """from_date/to_date scope results to sessions started within the inclusive range."""
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.core.sessions import session_complete, session_create, top_sessions
+
+    in_range = await session_create(
+        pool, prompt="in-range", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await pool.execute(
+        "UPDATE sessions SET started_at = $2 WHERE id = $1",
+        in_range,
+        datetime(2026, 5, 3, tzinfo=UTC),
+    )
+    await session_complete(
+        pool,
+        in_range,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=9000,
+        output_tokens=9000,
+    )
+
+    out_of_range = await session_create(
+        pool, prompt="out-of-range", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await pool.execute(
+        "UPDATE sessions SET started_at = $2 WHERE id = $1",
+        out_of_range,
+        datetime.now(UTC) - timedelta(days=90),
+    )
+    await session_complete(
+        pool,
+        out_of_range,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=99999,
+        output_tokens=99999,
+    )
+
+    scoped = await top_sessions(pool, limit=10, from_date="2026-05-01", to_date="2026-05-07")
+    scoped_ids = {s["session_id"] for s in scoped["sessions"]}
+    assert str(in_range) in scoped_ids
+    assert str(out_of_range) not in scoped_ids
+
+    # Omitting both from_date/to_date preserves all-time behavior (back-compat).
+    all_time = await top_sessions(pool, limit=10)
+    all_time_ids = {s["session_id"] for s in all_time["sessions"]}
+    assert str(in_range) in all_time_ids
+    assert str(out_of_range) in all_time_ids
+
+    # Only one of from_date/to_date raises.
+    with pytest.raises(ValueError):
+        await top_sessions(pool, from_date="2026-05-01")
+
+
+async def test_schedule_costs_date_range_filters_runs(pool):
+    """from_date/to_date scope run aggregates; schedules with no runs in-window still appear."""
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.core.scheduler import schedule_create
+    from butlers.core.sessions import schedule_costs, session_complete, session_create
+
+    await schedule_create(pool, name="daily-report", cron="0 8 * * *", prompt="run report")
+
+    recent = await session_create(
+        pool,
+        prompt="scoped run",
+        trigger_source="schedule:daily-report",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await pool.execute(
+        "UPDATE sessions SET started_at = $2 WHERE id = $1",
+        recent,
+        datetime(2026, 5, 3, tzinfo=UTC),
+    )
+    await session_complete(
+        pool,
+        recent,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=1000,
+        output_tokens=500,
+    )
+
+    old = await session_create(
+        pool,
+        prompt="old run",
+        trigger_source="schedule:daily-report",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await pool.execute(
+        "UPDATE sessions SET started_at = $2 WHERE id = $1",
+        old,
+        datetime.now(UTC) - timedelta(days=90),
+    )
+    await session_complete(
+        pool,
+        old,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=50000,
+        output_tokens=50000,
+    )
+
+    scoped = await schedule_costs(pool, from_date="2026-05-01", to_date="2026-05-07")
+    entries = [e for e in scoped["schedules"] if e["name"] == "daily-report"]
+    assert entries, "schedule must still appear even if scoped totals are zero"
+    scoped_tokens = sum(e["total_input_tokens"] for e in entries)
+    assert scoped_tokens == 1000
+
+    all_time = await schedule_costs(pool)
+    all_time_entries = [e for e in all_time["schedules"] if e["name"] == "daily-report"]
+    all_time_tokens = sum(e["total_input_tokens"] for e in all_time_entries)
+    assert all_time_tokens == 51000
+
+    with pytest.raises(ValueError):
+        await schedule_costs(pool, from_date="2026-05-01")
+
+
+# ---------------------------------------------------------------------------
 # Immutability contract
 # ---------------------------------------------------------------------------
 

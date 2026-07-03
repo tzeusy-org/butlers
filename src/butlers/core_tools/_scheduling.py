@@ -294,6 +294,11 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                 return {"id": resolved_id, "status": "error", "error": str(exc)}
 
         @_core_tool("scheduling")
-        async def schedule_costs() -> dict:
-            """Return per-schedule token usage aggregates."""
-            return await _schedule_costs(pool)
+        async def schedule_costs(from_date: str | None = None, to_date: str | None = None) -> dict:
+            """Return per-schedule token usage aggregates.
+
+            When ``from_date``/``to_date`` (ISO date strings) are both provided,
+            only runs started within that inclusive date range are aggregated.
+            Omit both for all-time totals.
+            """
+            return await _schedule_costs(pool, from_date, to_date)

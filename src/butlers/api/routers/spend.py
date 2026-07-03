@@ -757,16 +757,26 @@ async def _get_butler_top_sessions(
     info: ButlerConnectionInfo,
     pricing: PricingConfig,
     limit: int,
+    from_date: date | None = None,
+    to_date: date | None = None,
 ) -> list[TopSession]:
     """Query a single butler for its most expensive sessions.
+
+    When ``from_date``/``to_date`` are provided, results are scoped to sessions
+    started within that inclusive date range; otherwise all-time results are
+    returned (pre-existing behavior).
 
     Returns a list of TopSession records with costs calculated from pricing config.
     Falls back to empty list when the butler is unreachable or returns bad data.
     """
+    args: dict[str, object] = {"limit": limit}
+    if from_date is not None and to_date is not None:
+        args["from_date"] = from_date.isoformat()
+        args["to_date"] = to_date.isoformat()
     try:
         client = await asyncio.wait_for(mgr.get_client(info.name), timeout=_STATUS_TIMEOUT_S)
         result = await asyncio.wait_for(
-            client.call_tool("top_sessions", {"limit": limit}),
+            client.call_tool("top_sessions", args),
             timeout=_STATUS_TIMEOUT_S,
         )
         if result.content:
@@ -806,6 +816,8 @@ async def _get_butler_top_sessions(
 @router.get("/top-sessions", response_model=ApiResponse[list[TopSession]])
 async def get_top_sessions(
     limit: int = Query(default=10, ge=1, le=50),
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
     butler: str | None = Query(None, description="Filter to a single butler by name"),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
@@ -817,13 +829,31 @@ async def get_top_sessions(
     calculates costs using the pricing config, and returns the top *limit*
     sessions sorted by cost descending.
 
+    When ``from`` and ``to`` query params are provided (ISO 8601 date strings,
+    matching ``/api/spend/daily``), results are scoped to sessions started
+    within that inclusive date range. When omitted, all-time results are
+    returned (pre-existing behavior).  Both must be provided together, and
+    ``from`` must not be later than ``to``.
+
     When ``butler`` is provided, only that butler's data is included.  An
     unknown butler name returns an empty 200 response.
     """
+    if (from_date is None) != (to_date is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Both 'from' and 'to' must be provided together, or both omitted.",
+        )
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise HTTPException(
+            status_code=422,
+            detail="'from' must not be later than 'to'.",
+        )
     if butler is not None:
         configs = [c for c in configs if c.name == butler]
 
-    tasks = [_get_butler_top_sessions(mgr, info, pricing, limit) for info in configs]
+    tasks = [
+        _get_butler_top_sessions(mgr, info, pricing, limit, from_date, to_date) for info in configs
+    ]
     results = await asyncio.gather(*tasks)
 
     all_sessions: list[TopSession] = []
@@ -838,12 +868,23 @@ async def _get_butler_schedule_costs(
     mgr: MCPClientManager,
     info: ButlerConnectionInfo,
     pricing: PricingConfig,
+    from_date: date | None = None,
+    to_date: date | None = None,
 ) -> list[ScheduleCost]:
-    """Query a butler for per-schedule cost data."""
+    """Query a butler for per-schedule cost data.
+
+    When ``from_date``/``to_date`` are provided, runs are scoped to that
+    inclusive date range; otherwise all-time totals are returned (pre-existing
+    behavior).
+    """
+    args: dict[str, object] = {}
+    if from_date is not None and to_date is not None:
+        args["from_date"] = from_date.isoformat()
+        args["to_date"] = to_date.isoformat()
     try:
         client = await asyncio.wait_for(mgr.get_client(info.name), timeout=_STATUS_TIMEOUT_S)
         result = await asyncio.wait_for(
-            client.call_tool("schedule_costs", {}),
+            client.call_tool("schedule_costs", args),
             timeout=_STATUS_TIMEOUT_S,
         )
         if result.content:
@@ -886,6 +927,8 @@ async def _get_butler_schedule_costs(
 
 @router.get("/by-schedule", response_model=ApiResponse[list[ScheduleCost]])
 async def get_costs_by_schedule(
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
     butler: str | None = Query(None, description="Filter to a single butler by name"),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
@@ -893,13 +936,29 @@ async def get_costs_by_schedule(
 ) -> ApiResponse[list[ScheduleCost]]:
     """Return per-schedule cost analysis across all butlers.
 
+    When ``from`` and ``to`` query params are provided (ISO 8601 date strings,
+    matching ``/api/spend/daily``), run totals are scoped to that inclusive
+    date range (schedules with no runs in the window still appear, zeroed).
+    When omitted, all-time totals are returned (pre-existing behavior).  Both
+    must be provided together, and ``from`` must not be later than ``to``.
+
     When ``butler`` is provided, only that butler's data is included.  An
     unknown butler name returns an empty 200 response.
     """
+    if (from_date is None) != (to_date is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Both 'from' and 'to' must be provided together, or both omitted.",
+        )
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise HTTPException(
+            status_code=422,
+            detail="'from' must not be later than 'to'.",
+        )
     if butler is not None:
         configs = [c for c in configs if c.name == butler]
 
-    tasks = [_get_butler_schedule_costs(mgr, info, pricing) for info in configs]
+    tasks = [_get_butler_schedule_costs(mgr, info, pricing, from_date, to_date) for info in configs]
     results = await asyncio.gather(*tasks)
     all_costs = [c for butler_costs in results for c in butler_costs]
     all_costs.sort(key=lambda c: c.projected_monthly_usd, reverse=True)

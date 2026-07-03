@@ -388,6 +388,37 @@ describe("SpendPage — why (evidence layer)", () => {
     expect(section.textContent).toContain("morning-briefing")
     expect(section.textContent).toContain("$3.00")
   })
+
+  it("scopes both evidence sections to the TimeWindowPicker window, not all-time [bu-oaiiw]", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    await screen.findByTestId("top-sessions-section")
+
+    // Both hooks are called with (limit-or-nothing, from, to) — from/to must be
+    // real Date instances (the active TimeWindowPicker window), and neither
+    // section's label should claim to be "all-time" anymore.
+    expect(mockUseTopSessions).toHaveBeenCalled()
+    const topSessionsArgs = mockUseTopSessions.mock.calls[0]
+    expect(topSessionsArgs[0]).toBe(10)
+    expect(topSessionsArgs[1]).toBeInstanceOf(Date)
+    expect(topSessionsArgs[2]).toBeInstanceOf(Date)
+
+    expect(mockUseCostsBySchedule).toHaveBeenCalled()
+    const byScheduleArgs = mockUseCostsBySchedule.mock.calls[0]
+    expect(byScheduleArgs[0]).toBeInstanceOf(Date)
+    expect(byScheduleArgs[1]).toBeInstanceOf(Date)
+
+    // Same window is shared across both evidence sections and the daily chart.
+    expect((byScheduleArgs[0] as Date).getTime()).toBe((topSessionsArgs[1] as Date).getTime())
+    expect((byScheduleArgs[1] as Date).getTime()).toBe((topSessionsArgs[2] as Date).getTime())
+
+    const topSection = screen.getByTestId("top-sessions-section")
+    const scheduleSection = screen.getByTestId("by-schedule-section")
+    expect(topSection.textContent).not.toContain("All-time")
+    expect(scheduleSection.textContent).not.toContain("all-time")
+  })
 })
 
 describe("SpendPage — routing rules", () => {

@@ -52,6 +52,15 @@ def register_session_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             return await _sessions_daily(pool, from_date, to_date)
 
         @_core_tool("sessions")
-        async def top_sessions(limit: int = 10) -> dict:
-            """Return the highest-token completed sessions."""
-            return await _top_sessions(pool, limit)
+        async def top_sessions(
+            limit: int = 10,
+            from_date: str | None = None,
+            to_date: str | None = None,
+        ) -> dict:
+            """Return the highest-token completed sessions.
+
+            When ``from_date``/``to_date`` (ISO date strings) are both provided,
+            results are scoped to that inclusive date range. Omit both for
+            all-time results.
+            """
+            return await _top_sessions(pool, limit, from_date, to_date)
