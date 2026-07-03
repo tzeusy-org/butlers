@@ -4,7 +4,7 @@
 
 The Mailbox module provides a local message queue for inter-butler and external communication, with durable storage in a PostgreSQL `mailbox` table, status lifecycle management, and five MCP tools for message management.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Mailbox Table Schema
 

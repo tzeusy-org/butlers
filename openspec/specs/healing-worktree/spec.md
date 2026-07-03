@@ -4,7 +4,7 @@
 
 Git worktree lifecycle management for healing agents. Each healing attempt runs in an isolated worktree branched from `main`, ensuring healing agents cannot corrupt the daemon's working tree. Includes automatic cleanup of stale worktrees and robust error handling for git operation failures.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Worktree Creation
 The system SHALL create a dedicated git worktree for each healing attempt. The worktree is branched from the current `main` HEAD.

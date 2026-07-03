@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Cross-Butler Briefing Aggregation
+
+## Purpose
+
+Defines the cross-schema aggregation view that assembles per-butler briefing contributions into a unified briefing.
+
+## Requirements
 
 ### Requirement: Cross-Schema Briefing View
 A SQL view `general.v_briefing_contributions` SHALL exist that provides read-only access to briefing contribution state entries across all specialist schemas. The view SHALL union `butler`, `key`, and `value` columns from the `state` table of each specialist schema (education, finance, health, home, lifestyle, relationship, travel — seven specialists total) filtered to keys matching `briefing/daily/%`. Each UNION term SHALL include an explicit `butler` column as a string literal identifying the source schema (e.g., `SELECT 'health' AS butler, key, value FROM health.state WHERE key LIKE 'briefing/daily/%'`). The authoritative list lives in `src/butlers/jobs/briefing.py::SPECIALIST_BUTLERS` and must match the `_SPECIALIST_SCHEMAS` tuple in the Alembic migration `core_063_v_briefing_contributions`.

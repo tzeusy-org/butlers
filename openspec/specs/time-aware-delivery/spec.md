@@ -3,7 +3,7 @@
 ## Purpose
 Provides quiet hours enforcement and notification batching for butler outbound notifications. Delivery preferences (quiet hours, timezone, batch settings) are stored per-butler in a `delivery_preferences` table. Deferred notifications are persisted in a `deferred_notifications` table and flushed by the scheduler's tick loop. High-priority notifications always bypass quiet hours; medium and low-priority notifications are deferred to a configurable batch delivery time.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Delivery Preferences Configuration
 Delivery preferences are stored in a `delivery_preferences` table with fields: `id` (UUID), `butler_name` (unique), `quiet_hours_start` (time, default 22:00), `quiet_hours_end` (time, default 07:00), `timezone` (string, required), `batch_low_priority` (boolean, default true), `batch_delivery_time` (time, default 07:00), `override_channels` (JSONB, optional -- per-channel overrides), `created_at`, `updated_at`.

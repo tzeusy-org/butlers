@@ -4,7 +4,7 @@
 
 Defines the curriculum planning system for the education butler: LLM-driven topic decomposition into concept DAGs, structural constraints (max depth, max nodes, acyclicity), topological sort with tie-breaking, sequence numbering, re-planning, goal-directed planning, diagnostic results integration, next-node selection, and syllabus lifecycle.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Topic decomposition into concept graph
 

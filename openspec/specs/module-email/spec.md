@@ -4,7 +4,7 @@
 
 The Email module provides email MCP tools for inbox search, message reading, sending, and replying using IMAP and SMTP, with classification pipeline integration for incoming message routing.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Email Tools
 

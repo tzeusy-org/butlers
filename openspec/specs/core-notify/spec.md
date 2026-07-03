@@ -3,7 +3,7 @@
 ## Purpose
 Defines the `notify` MCP tool and its versioned envelope contract (`notify.v1`) for outbound user interaction requests from non-messenger butlers, routed through Switchboard to the Messenger butler for delivery.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Notify Tool Registration
 Every butler daemon SHALL register a `notify(channel, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?, priority?)` MCP tool during startup. Runtime instances MUST be able to call this tool to send outbound notifications. The tool MUST be available in every butler's MCP tool surface regardless of which modules are enabled.

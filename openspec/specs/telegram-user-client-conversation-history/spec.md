@@ -4,7 +4,7 @@
 
 Extends the Telegram user client connector with per-chat message buffering, timed batch flushing, and surrounding conversation history context. Instead of submitting each message individually to the Switchboard, the connector accumulates messages and flushes them as conversation snippets with history context for improved routing accuracy and downstream comprehension.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Per-Chat Message Buffering
 The connector SHALL accumulate incoming messages in per-chat buffers instead of submitting each message individually to Switchboard.

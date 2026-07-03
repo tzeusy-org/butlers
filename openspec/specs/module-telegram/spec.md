@@ -4,7 +4,7 @@
 
 The Telegram module provides MCP tools for sending and replying to Telegram messages, with webhook setup for production deployments and lifecycle reaction emoji support for ingest pipeline integration.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Telegram Send/Reply Tools
 
@@ -114,4 +114,3 @@ The Telegram module SHALL support sending a message with an inline keyboard so t
 - **WHEN** the owner taps Approve on the inline keyboard
 - **THEN** the corresponding pending action transitions to `approved` and executes via the standard approved-action executor
 - **AND** the originating message is updated to reflect the resolved state
-

@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Catalog Token Limits
+
+## Purpose
+
+Defines the token-usage ledger and per-model catalog limits used to budget and cap LLM spend.
+
+## Requirements
 
 ### Requirement: Token Usage Ledger Schema
 The system SHALL maintain a `public.token_usage_ledger` table as an append-only record of token consumption per catalog entry. The table is range-partitioned on `recorded_at` with monthly partitions managed by pg_partman (90-day retention).

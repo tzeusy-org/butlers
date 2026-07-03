@@ -1,6 +1,10 @@
 # Finance CRUD Operations
 
-## ADDED Requirements
+## Purpose
+
+Defines the finance butler's CRUD tool surface for transactions, including single-entry creation with auto-categorization.
+
+## Requirements
 
 ### Requirement: Single transaction creation with auto-categorization
 Creating a single transaction SHALL check for duplicates, apply merchant mapping, and record the transaction with post-insert hooks.

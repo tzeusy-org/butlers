@@ -3,7 +3,7 @@
 ## Purpose
 Provides infrastructure for loading butler system prompts from `CLAUDE.md`, managing runtime agent notes in `AGENTS.md`, discovering skill directories, and composing system prompts with include directives and shared snippets.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: System Prompt Loading from CLAUDE.md
 The `read_system_prompt(config_dir, butler_name)` function reads the system prompt from `<config_dir>/CLAUDE.md`. If the file is missing or empty, a default prompt `"You are the {butler_name} butler."` is returned.

@@ -4,7 +4,7 @@
 
 Data sanitization pipeline that scrubs PII, credentials, user content, and environment-specific paths from error context before inclusion in PR descriptions, commit messages, or branch metadata. This is the hard safety gate for a public repository — no PR can be created without passing anonymization and validation.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Credential Redaction
 The anonymizer SHALL scrub known credential patterns from all text. This extends the existing `CredentialRedactionFilter` pattern set with additional rules.

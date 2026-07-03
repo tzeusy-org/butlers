@@ -4,7 +4,7 @@
 
 Provides dashboard REST API endpoints for managing connected Google accounts, including listing accounts, setting primary account, disconnecting accounts, and querying per-account credential status.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Google Accounts Management API
 

@@ -1,4 +1,10 @@
-## ADDED Requirements
+# User Preferences
+
+## Purpose
+
+Defines the predicate namespace convention and storage model for user preferences.
+
+## Requirements
 
 ### Requirement: Preference predicate namespace convention
 

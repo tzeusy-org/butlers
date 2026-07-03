@@ -4,7 +4,7 @@
 
 Deterministic error classification that extracts a stable fingerprint from session failures. Maps duplicate errors to the same key so the self-healing dispatcher can deduplicate investigation attempts. Includes severity scoring for dispatch prioritization. Handles all exception types that can occur within the spawner's `_run()` method scope.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Fingerprint Computation
 The system SHALL compute a fingerprint for each failed session by hashing a structured tuple of `(exception_type, call_site, sanitized_message_pattern)` using SHA-256. The fingerprint is a 64-character lowercase hex string.

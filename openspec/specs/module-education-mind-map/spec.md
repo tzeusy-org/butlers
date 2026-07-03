@@ -4,7 +4,7 @@
 
 Defines the mind map CRUD operations, node and edge management, DAG invariants, frontier computation, subtree queries, lifecycle transitions, and mastery status state machine for the education butler's concept graph.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Mind map creation
 

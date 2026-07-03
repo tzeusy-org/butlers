@@ -4,7 +4,7 @@
 
 Defines the mastery tracking subsystem for the education butler: quiz response recording, response type classification, mastery score computation (weighted average), mastery status state machine, mastery threshold for graduation, struggle detection, diagnosed node self-correction, node history retrieval, and map-level mastery summary.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Quiz response recording
 

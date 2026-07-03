@@ -3,7 +3,7 @@
 ## Purpose
 Net worth tracking (manual balance entries over time), cash flow analysis (income vs. expenses), subscription audit with annual cost projection, and tax-relevant expense flagging.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Net Worth Tracking
 The system SHALL track account balances over time through user-reported snapshots stored in the `finance.balance_snapshots` table.

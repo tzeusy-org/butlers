@@ -3,7 +3,7 @@
 ## Purpose
 Configurable alert system -- large transaction alerts, subscription price change detection, bill reminders from historical patterns, and automated periodic spending summaries.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Alert Configuration
 The system SHALL allow configuring financial alert preferences stored as memory facts.

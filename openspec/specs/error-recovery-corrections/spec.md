@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Error Recovery Corrections
+
+## Purpose
+
+Defines the taxonomy and handling of user corrections so butlers can recover from and learn from errors.
+
+## Requirements
 
 ### Requirement: Correction Types Taxonomy
 The system SHALL support four correction types, each with distinct semantics: `data_correction` (fix incorrect data stored by a previous session), `misroute` (reclassify a message that was routed to the wrong butler), `memory_deletion` (retract an incorrect memory — fact, episode, or rule), and `action_reversal` (reverse or cancel an action taken in error). The correction type determines which preconditions are checked and which downstream operations are performed.

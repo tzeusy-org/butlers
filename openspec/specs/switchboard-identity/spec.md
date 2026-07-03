@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Switchboard Identity
+
+## Purpose
+
+Defines how the Switchboard resolves inbound message identities to canonical contacts so requests route to the correct butler.
+
+## Requirements
 
 ### Requirement: Inbound message identity resolution
 

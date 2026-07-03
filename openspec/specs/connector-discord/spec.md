@@ -27,7 +27,7 @@ Still-incomplete components for the v2 target-state:
 ## Purpose
 The Discord connector ingests Discord message events into the butler ecosystem for passive contextualization, giving butlers awareness of conversations happening on Discord without requiring manual upload. The currently-shipped connector is a bot-token Gateway client (see STATUS above); a broader user-account-context model (DMs and user-visible server contexts), authenticated by an OAuth user-flow, is a v2 target-state described later in this spec. This connector is ingestion-only and does not define outbound delivery.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: [AS-BUILT] Shipped Bot-Token Gateway Connector
 The currently-shipped Discord connector authenticates with a Discord bot token and ingests events over the Discord Gateway. This is the as-built behavior reflected in `src/butlers/connectors/discord_user.py`, and it is the spec's described-current state for Discord.

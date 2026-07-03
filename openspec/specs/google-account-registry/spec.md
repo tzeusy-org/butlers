@@ -4,7 +4,7 @@
 
 The `public.google_accounts` table stores metadata for each connected Google account. It provides account discovery, primary account management, companion entity creation for credential storage, scope tracking, and account lifecycle management (connect, disconnect, hard delete).
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Google Accounts Registry Table
 

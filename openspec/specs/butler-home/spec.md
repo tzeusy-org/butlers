@@ -4,7 +4,7 @@
 
 The Home butler (port 41108) is a home automation orchestrator that uses Home Assistant as a glue layer to control and monitor smart home devices (Zigbee, Wi-Fi, Z-Wave), manage scenes and automations, track energy consumption, and maintain awareness of the physical home environment.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Home Butler Identity and Runtime
 

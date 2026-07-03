@@ -4,7 +4,7 @@
 
 The Pipeline module provides LLM-based message classification and routing for the Switchboard butler. It is the final routing stage in the ingestion flow: connectors ingest external messages, Switchboard applies deterministic triage, and unmatched messages fall through to the pipeline for LLM-driven classification and dispatch to specialist butlers.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Ingestion Architecture
 Live data enters the system through connectors and flows through the Switchboard before reaching any domain butler. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.

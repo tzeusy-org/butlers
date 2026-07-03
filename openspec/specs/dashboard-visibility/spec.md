@@ -3,7 +3,7 @@
 ## Purpose
 Specifies the operator-facing dashboard surfaces that provide end-to-end visibility into the Butlers system: session history, unified timeline, notification audit trail, audit log, issue detection, and topology visualization. Together these surfaces answer the operator's core questions: "What is every butler doing right now?", "What happened to this specific request?", and "Is the system healthy?" Every requirement below is grounded in the implemented frontend code and its backend data contracts.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Cross-Butler Session Explorer
 The Sessions page (`/sessions`) provides a paginated, filterable table of session records aggregated across all butlers. This is the primary surface for answering "what work has the system done?" and is the entry point for drill-down into any individual execution.

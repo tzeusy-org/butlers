@@ -3,7 +3,7 @@
 ## Purpose
 LLM-driven adaptive CSV parsing skill for the finance butler. Guides the runtime through a script-generation workflow that handles arbitrary CSV layouts without loading the file into context or calling per-row tools.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: CSV extraction skill definition
 The finance butler MUST have a `transaction-csv-extraction` skill in `roster/finance/.agents/skills/transaction-csv-extraction/SKILL.md` that guides the LLM through adaptive CSV import.

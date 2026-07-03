@@ -3,7 +3,7 @@
 ## Purpose
 Provides OpenTelemetry tracing initialization, structured logging with butler identity and trace context injection, metric instruments for spawner concurrency and route processing, and defense-in-depth credential redaction in log output.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: OpenTelemetry Tracer Initialization
 `init_telemetry(service_name)` configures a `TracerProvider` with OTLP gRPC exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. When the endpoint is not set, a no-op tracer is returned. The provider is installed once per process; subsequent calls for additional butlers reuse the existing provider and return a correctly-named tracer.

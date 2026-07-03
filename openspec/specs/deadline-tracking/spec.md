@@ -3,7 +3,7 @@
 ## Purpose
 Provides countdown-based deadline registration and evaluation for butlers. Deadlines are `scheduled_tasks` rows with `task_type='deadline'` and additional metadata. The scheduler evaluates deadlines each tick, dispatching alerts when threshold days are crossed and transitioning status through a defined state machine.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Deadline Registration
 Butlers SHALL register deadlines via a `deadline_create` MCP tool. A deadline is a scheduled_task with `task_type='deadline'` and additional metadata: `target_date` (date, required), `lead_time_days` (integer, required -- how many days before target_date to begin alerting), `alert_thresholds` (JSONB array of `{days_before: int, severity: string}`, required -- at least one threshold), and `deadline_status` (enum: `pending`, `alerted`, `escalated`, `completed`, `expired`).

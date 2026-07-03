@@ -1,6 +1,10 @@
 # Finance Data Migration
 
-## ADDED Requirements
+## Purpose
+
+Defines the phased migration of finance data from the SPO-primary model to dedicated finance tables, preserving history and reconciliation guarantees throughout.
+
+## Requirements
 
 ### Requirement: Four-phase migration from SPO-primary to dedicated-table-primary
 The migration from SPO fact storage to dedicated table storage SHALL follow four phases to ensure zero data loss and backward compatibility.

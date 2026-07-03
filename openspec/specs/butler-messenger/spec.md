@@ -3,7 +3,7 @@
 ## Purpose
 The Messenger (port 41104) is the outbound delivery execution plane for Telegram, Email, and WhatsApp (WhatsApp tools are registered but disabled by default via `send_enabled = false`, pending account ban-risk assessment). It is a staffer, an infrastructure agent that serves the ecosystem by owning all outbound channel delivery. It does not perform classification or domain logic.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Messenger Butler Identity and Runtime
 The messenger is a staffer — a delivery-only execution plane with no domain logic. It serves the ecosystem by owning all outbound channel delivery.

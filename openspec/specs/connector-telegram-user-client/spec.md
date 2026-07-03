@@ -3,7 +3,7 @@
 ## Purpose
 The Telegram User Client connector provides **readonly access to the user's personal Telegram account** — not the butler's bot account. Its sole purpose is contextualization: by ingesting the user's DMs, group chats, supergroups, and channels, butlers gain awareness of life events, commitments, relationships, and facts flowing through Telegram without requiring explicit manual upload. The connector reads messages the user can see; it never sends, replies, or modifies anything on the user's Telegram account. All outbound messaging goes through the separate Telegram Bot connector and Messenger butler.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Readonly Contextualization Role
 The user client connector exists to give butlers passive awareness of the user's Telegram activity. It is strictly ingestion-only and readonly.

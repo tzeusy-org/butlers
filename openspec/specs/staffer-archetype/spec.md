@@ -3,7 +3,7 @@
 ## Purpose
 Defines what a "staffer" is as an architectural primitive — the infrastructure-specialist counterpart to domain butlers. Staffers share the same daemon engine but have a distinct permissions model, connectivity topology, and governing document (infrastructure contract vs. manifesto). This spec covers the type system, routing exclusion, briefing exclusion, cross-butler permissions, infrastructure contracts, and extensibility for future staffers.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Staffer as Architectural Primitive
 A staffer is a long-lived MCP server daemon sharing the same core engine as a butler (FastMCP, modules, ephemeral LLM sessions, scheduler, state store) but distinguished by its permissions model and connectivity topology. Staffers serve the ecosystem rather than the user directly. The staffer type is declared in `butler.toml` and governs routing exclusion, briefing exclusion, and cross-butler connectivity.

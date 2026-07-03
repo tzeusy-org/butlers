@@ -6,7 +6,7 @@ Defines the contract future timestamped sources must provide so Chronicler can
 project lived-time evidence without bespoke LLM interpretation or ad hoc
 cross-schema access.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Timestamped Source Compatibility Declaration
 

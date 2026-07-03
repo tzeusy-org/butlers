@@ -3,7 +3,7 @@
 ## Purpose
 Transaction anomaly detection engine that flags unusual merchants, amounts, times, and frequencies against established statistical baselines. Includes duplicate charge detection.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Statistical Baseline Computation
 The system SHALL compute rolling statistical baselines from `finance.transactions` to enable anomaly detection. Baselines SHALL be computed per-merchant (median amount, standard deviation) and per-category (weekly spending velocity, typical transaction count).

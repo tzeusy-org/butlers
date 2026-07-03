@@ -3,7 +3,7 @@
 ## Purpose
 Defines the end-to-end teaching UX flows for the education butler: the flow state machine, session context assembly, the full teaching lifecycle (PENDING through COMPLETED), spaced repetition review sessions, mid-flow contextual help, staleness detection, multi-channel delivery, flow listing and management, and cross-session coherence.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Flow State Machine — Valid Transitions
 

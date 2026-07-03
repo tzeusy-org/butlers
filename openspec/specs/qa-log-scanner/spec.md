@@ -4,7 +4,7 @@
 
 Cross-butler log scanning discovery source — one of multiple pluggable sources in the QA staffer's discovery architecture. Reads structured JSON log files from all deployed butlers, staffers, and connectors. Uses tool-based filtering (JSON parsing, regex, severity checks) to extract error/warning events without LLM invocation. Computes fingerprints and produces a normalized finding set for the triage layer.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: DiscoverySource Protocol Compliance
 The log scanner SHALL implement the `DiscoverySource` protocol, making it interchangeable with other discovery sources.

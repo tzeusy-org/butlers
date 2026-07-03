@@ -3,7 +3,7 @@
 ## Purpose
 The OwnTracks connector receives HTTP webhook POSTs from the OwnTracks mobile app, normalizes location events and waypoint transitions into `ingest.v1` envelopes, and submits them to the Switchboard via MCP. It is the location data ingestion pathway into the butler ecosystem. The connector is a webhook server (not a polling client), privacy-conservative by default, and opt-in only.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Connector Identity and Role
 The OwnTracks connector bridges the OwnTracks mobile app into the butler ecosystem as a location data ingestion channel.

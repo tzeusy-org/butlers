@@ -3,7 +3,7 @@
 ## Purpose
 Recurring charge auto-detection from transaction history, merchant auto-categorization with learned mappings, and bill prediction from historical payment patterns.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Recurring Charge Auto-Detection
 The system SHALL analyze transaction history to identify subscription-like patterns and surface them as suggestions for subscription tracking.

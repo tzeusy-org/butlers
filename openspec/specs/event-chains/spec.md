@@ -3,7 +3,7 @@
 ## Purpose
 Provides post-event trigger sequences that fire workflows after calendar events complete, deadlines pass, or deadline thresholds are crossed. Event chains are stored in a dedicated `event_chains` table and materialized into one-shot `scheduled_tasks` entries when triggered. Actions execute in array order with cumulative delays.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Event Chain Definition
 An event chain is a named sequence of actions triggered by a temporal event. Chains are stored in an `event_chains` table with fields: `id` (UUID), `name` (unique per butler), `trigger_type` (enum: `calendar_event_end`, `deadline_passed`, `deadline_threshold`), `trigger_reference` (string -- calendar event_id or deadline task UUID), `actions` (JSONB array), `status` (enum: `active`, `paused`, `fired`, `failed`), `butler_name`, `created_at`, `updated_at`.

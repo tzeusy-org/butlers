@@ -1,6 +1,10 @@
 # Finance Supporting Tables
 
-## ADDED Requirements
+## Purpose
+
+Defines the supporting finance tables (accounts and related structures) that back the finance butler's operations.
+
+## Requirements
 
 ### Requirement: Accounts table enhancements
 The `finance.accounts` table SHALL be enhanced with lifecycle and sync tracking fields.

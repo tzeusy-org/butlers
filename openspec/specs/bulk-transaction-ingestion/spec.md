@@ -3,7 +3,7 @@
 ## Purpose
 Bulk import endpoint and MCP tool for recording multiple normalized transactions in a single call, with composite deduplication for sources that lack email provenance.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Bulk transaction ingestion HTTP endpoint
 The dashboard API SHALL expose a bulk transaction import endpoint that accepts an array of normalized transaction objects, persists them via the fact layer, and returns per-row results.

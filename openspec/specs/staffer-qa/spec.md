@@ -4,7 +4,7 @@
 
 Defines the QA Staffer — a permanently-running infrastructure agent (type = "staffer") that acts as the system-wide SRE for the butlers ecosystem. Owns the patrol loop lifecycle, pluggable discovery source architecture, roster identity, and operational contract. Subsumes the existing per-butler self-healing into a unified quality assurance function: discovers errors across multiple channels, triages and deduplicates findings, dispatches investigations, and raises anonymized PRs.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: QA Staffer Identity
 The QA Staffer SHALL be a staffer-typed agent in the roster at `roster/qa/` with `type = "staffer"` in its `butler.toml`. It is excluded from user-message routing and daily briefing contributions per the staffer archetype contract.

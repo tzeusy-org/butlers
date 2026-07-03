@@ -4,7 +4,7 @@
 
 The Google Health module provides read-only MCP tools to the Health butler for querying wellness data (sleep, heart rate, HRV, SpO2, breathing rate, steps, active minutes, VO2 max) ingested by the Google Health connector. Tools query the Health butler's SPO memory fact store — they do NOT call the Google Health API directly.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Module Identity and Configuration
 

@@ -4,7 +4,7 @@
 
 The Home Assistant module provides MCP tools for bidirectional smart-home control: querying entity state from an in-memory cache, calling HA services, fetching history and statistics, rendering Jinja2 templates, logging all issued commands, and tracking recurring home-maintenance items. It maintains a persistent WebSocket connection for real-time state updates and falls back to REST polling when the WebSocket is unavailable. A `read_only` mode restricts the surface to query tools only.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: HomeAssistantConfig Schema
 

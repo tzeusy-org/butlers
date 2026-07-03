@@ -3,7 +3,7 @@
 ## Purpose
 Defines a shared, opt-in module providing pure-computation document rendering — Markdown/HTML to PDF, static chart/graph image generation, and templated document assembly — producing blobs in the S3-compatible blob store for delivery via notify attachments. The module has no external side effects.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: [TARGET-STATE] Render to Blob
 The module SHALL expose tools that render structured input (Markdown, HTML, or a chart spec) to a binary artifact (PDF, PNG, or SVG) and persist it to the blob store, returning a `storage_ref`.

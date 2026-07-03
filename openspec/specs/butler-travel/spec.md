@@ -3,7 +3,7 @@
 ## Purpose
 The Travel butler (port 41106) is a travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Travel Butler Identity and Runtime
 The travel butler manages trip lifecycle and booking data with structured container models.

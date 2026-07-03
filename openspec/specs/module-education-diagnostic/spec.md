@@ -4,7 +4,7 @@
 
 The diagnostic assessment capability runs a short, adaptive probe sequence before teaching begins. It generates a concept inventory for the requested topic, uses a binary-search probe strategy to locate the user's knowledge frontier in 3-7 questions, and seeds conservative mastery scores onto mind map nodes. Results persist in the teaching flow's state store entry and transition the flow from DIAGNOSING to PLANNING.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Concept Inventory Generation
 

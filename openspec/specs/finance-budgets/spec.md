@@ -3,7 +3,7 @@
 ## Purpose
 Category-level budget targets with threshold-based proactive alerts, spending trend analysis (month-over-month and year-over-year), and end-of-month spending forecasting.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Budget Target Management
 The system SHALL allow setting, updating, and querying category-level budget targets stored in the `finance.budgets` table.

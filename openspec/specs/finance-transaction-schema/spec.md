@@ -1,6 +1,10 @@
 # Finance Transaction Schema
 
-## ADDED Requirements
+## Purpose
+
+Defines the enhanced transaction table schema that backs the finance butler's ledger.
+
+## Requirements
 
 ### Requirement: Enhanced transaction table columns
 The `finance.transactions` table SHALL include columns for intelligence features beyond the base ledger fields.

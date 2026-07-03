@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Autonomy Suggestions
+
+## Purpose
+
+Defines the data model and lifecycle for promotion suggestions that advance butler actions toward greater autonomy.
+
+## Requirements
 
 ### Requirement: Promotion Suggestion Data Model
 

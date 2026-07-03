@@ -3,7 +3,7 @@
 ## Purpose
 Historical data import pipeline -- multi-format CSV normalization, deduplication on import, and retroactive baseline analytics. Extends the existing `transaction-csv-extraction` skill with format detection and bulk processing.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Bank Export Format Detection
 The system SHALL auto-detect common bank export CSV formats by analyzing header rows and column patterns.

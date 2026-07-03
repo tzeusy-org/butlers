@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Core Daemon
+
+## Purpose
+
+Defines the type-aware behaviors of the unified butler daemon engine: config parsing, the core MCP tool surface, runtime-config seeding from the DB, and startup sequencing.
+
+## Requirements
 
 ### Requirement: Agent Type Awareness
 The daemon SHALL read the `type` field from `butler.toml` config and apply type-specific behaviors at well-defined decision points. The daemon engine remains unified — there is no separate `StafferDaemon` class.
@@ -24,8 +30,6 @@ The daemon SHALL read the `type` field from `butler.toml` config and apply type-
 #### Scenario: Butler-specific startup behaviors unchanged
 - **WHEN** the daemon starts with `config.type == ButlerType.BUTLER`
 - **THEN** startup proceeds exactly as before this change — no behavioral differences from the pre-staffer codebase
-
-## MODIFIED Requirements
 
 ### Requirement: Core Tool Surface
 Every butler daemon registers core MCP tools based on the `core_groups` allowlist from `runtime_config` (DB) and the butler's type/name. When `core_groups` is NULL, all groups are enabled (backward compat). When set, only tools in the listed groups are registered.

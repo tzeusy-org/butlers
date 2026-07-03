@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Autonomy Tracker
+
+## Purpose
+
+Defines pattern-fingerprint computation and tracking that detects repeated actions eligible for autonomy promotion.
+
+## Requirements
 
 ### Requirement: Pattern Fingerprint Computation
 

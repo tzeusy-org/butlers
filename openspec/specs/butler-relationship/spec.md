@@ -3,7 +3,7 @@
 ## Purpose
 The Relationship butler (port 41102) is a personal CRM that manages contacts, relationships, important dates, interactions, gifts, reminders, and loans.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Relationship Butler Identity and Runtime
 The relationship butler maintains personal CRM context with 40+ domain tools.

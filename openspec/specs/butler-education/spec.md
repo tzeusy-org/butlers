@@ -4,7 +4,7 @@
 
 The Education butler (port 41107) is a personalized tutor with spaced repetition, mind maps, and adaptive learning. This spec covers the butler's roster configuration, system prompt, module profile, schedule, skills, switchboard registration, and database identity — the foundational layer on which all other education butler capabilities are built.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Education Butler Identity and Runtime
 

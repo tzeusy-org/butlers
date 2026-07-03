@@ -3,7 +3,7 @@
 ## Purpose
 Provides a per-butler key-value store backed by PostgreSQL JSONB, supporting get/set/delete/list operations with version tracking for optimistic concurrency control. Each butler's state is isolated within its own database schema.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: State Get
 Retrieve a JSONB value by key from the `state` table. Returns `None` if the key does not exist. Handles both decoded Python objects and raw JSON strings from asyncpg.

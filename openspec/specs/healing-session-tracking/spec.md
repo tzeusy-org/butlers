@@ -4,7 +4,7 @@
 
 Database schema and query layer for tracking healing attempts. Links error fingerprints to investigation branches, PRs, session IDs, and outcome status. Provides the data backbone for dispatch gate checks, dashboard visibility, and operational observability. Includes atomicity guarantees for concurrent dispatch and recovery mechanisms for daemon restarts.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Healing Attempts Table
 The system SHALL maintain a `public.healing_attempts` table tracking every healing investigation lifecycle.

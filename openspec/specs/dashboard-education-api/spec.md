@@ -4,7 +4,7 @@
 
 Defines the education butler's dashboard API write/read endpoints: pending reviews, mastery summary, mind map status update, and curriculum request submission.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Pending reviews endpoint
 

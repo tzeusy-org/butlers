@@ -3,7 +3,7 @@
 ## Purpose
 The Telegram Bot connector is the butler ecosystem's primary user-facing chat interface. It receives Telegram updates from a bot account, normalizes them into `ingest.v1` envelopes for Switchboard ingestion, and provides the bidirectional channel through which butlers communicate with the user. The bot account is the "face" of the butler system on Telegram — users message the bot, and butlers reply through the Messenger butler's channel tools. This connector handles the inbound half of that loop.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Telegram Bot Identity and Role
 The Telegram bot connector bridges a Telegram bot account into the butler ecosystem as the primary interactive chat channel.

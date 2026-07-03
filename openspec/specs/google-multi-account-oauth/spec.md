@@ -4,7 +4,7 @@
 
 Extends the Google OAuth flow to support multiple Google accounts. The OAuth start endpoint accepts an account hint for pre-selection, the callback resolves the authenticated identity and stores credentials per-account using companion entities, and force-consent mode enables scope upgrades.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Account-Hint OAuth Start
 

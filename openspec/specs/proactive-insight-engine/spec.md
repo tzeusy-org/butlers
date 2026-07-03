@@ -3,7 +3,7 @@
 ## Purpose
 Defines the central coordination layer for proactive user-facing insights across all butlers. Covers the insight candidate schema, global rate limiting via delivery budget, cooldown tracking, cross-butler deduplication, adaptive delivery with graceful degradation, user-adjustable verbosity presets, and quiet hours suppression. This is the core anti-spam architecture — the system defaults to minimal noise and structurally prevents individual butlers from bypassing delivery controls.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Insight Candidate Schema
 Every proactive insight produced by a butler SHALL be represented as a structured candidate row in the `public.insight_candidates` table. Candidates are proposals, not deliveries — they compete for delivery slots during the delivery cycle. Butlers submit candidates via the Switchboard's `propose_insight_candidate()` MCP tool (see Insight Candidate Submission requirement below); they do not write to the table directly.

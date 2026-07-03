@@ -3,7 +3,7 @@
 ## Purpose
 The live-listener connector captures ambient audio from local microphones, segments speech using VAD, streams segments to a locally-hosted faster-whisper transcription service, applies LLM-based discretion filtering, and submits actionable utterances to the Switchboard as `ingest.v1` envelopes. It is the ambient voice ingestion pathway into the butler ecosystem. **End-to-end latency — from speech offset to Switchboard submission — is the primary design constraint.**
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Latency Budget
 The connector SHALL treat end-to-end latency as the #1 priority. Every pipeline stage has a latency budget, and the total speech-to-submission time MUST be minimized.

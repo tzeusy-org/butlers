@@ -3,7 +3,7 @@
 ## Purpose
 The Gmail connector ingests emails from a user's Gmail inbox in near real-time, keeping butlers current with inbox-driven life events, tasks, and facts without manual forwarding. It supports both polling mode (history delta, default for v1) and Pub/Sub push mode (production, near real-time). The connector implements a sophisticated policy pipeline: label filtering gates ingestion, triage rules assign ingestion tiers (full, metadata-only, skip), priority tiers order the queue, and per-MIME attachment policies control fetch behavior. Backfill mode supports dashboard-triggered historical email processing.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Gmail Connector Identity and Authentication
 The Gmail connector runs as a single process that discovers and manages all connected Google accounts. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database.

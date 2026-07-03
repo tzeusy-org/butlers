@@ -4,7 +4,7 @@
 
 The Approvals module is a reusable execution-control module that butlers load locally to intercept configured high-impact tool invocations before execution, park unapproved invocations as durable pending actions, support manual approve/reject/expire workflows, and auto-approve matching invocations through standing approval rules.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Gate Wrapper Interception
 

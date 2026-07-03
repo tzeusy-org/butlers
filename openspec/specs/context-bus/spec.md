@@ -3,7 +3,7 @@
 ## Purpose
 Provides shared situational awareness across butlers via a `public.user_context` table. Butlers read and write context signals (traveling, sleeping, meeting, etc.) with TTL-based expiry, confidence scoring, and per-signal write permissions.
 
-## ADDED Requirements
+## Requirements
 
 Note on signatures: every context-bus function that takes a connection `pool` (`get_active_context`, `is_user_in_context`, `set_context`, `clear_context`) is implemented as an `async def` and must be awaited (`src/butlers/context_bus.py`). The function-call notation in the scenarios below omits the `async`/`await` keywords for brevity.
 

@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Cross-Butler Briefing Contribution
+
+## Purpose
+
+Defines the schema by which each butler contributes content to the cross-butler briefing.
+
+## Requirements
 
 ### Requirement: Briefing Contribution Schema
 Each specialist butler's briefing contribution SHALL be a JSON object conforming to a standard envelope with fields: `butler` (string, butler name), `date` (string, ISO date YYYY-MM-DD), `has_updates` (boolean), `highlights` (array of highlight objects), and `summary` (string, pre-rendered human-readable text). Each highlight object SHALL have `category` (string), `text` (string), and `priority` (string, one of "high", "medium", "low").

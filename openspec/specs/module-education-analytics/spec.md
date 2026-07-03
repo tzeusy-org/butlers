@@ -4,7 +4,7 @@
 
 Defines the learning analytics subsystem for the education butler: nightly snapshot computation, metrics calculation (mastery, retention, velocity, completion estimates, time-of-day distribution), trend retrieval, cross-topic comparison, weekly progress digest, and feedback loop triggers for automatic curriculum re-planning.
 
-## ADDED Requirements
+## Requirements
 
 ---
 

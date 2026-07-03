@@ -3,7 +3,7 @@
 ## Purpose
 Provides contextual awareness of recurring annual periods (tax season, holidays, academic terms, annual renewals). Seasonal periods are stored in a `seasonal_periods` table. A `get_active_seasons()` query returns currently active periods with year-boundary wrapping. The scheduler injects active seasonal context into task dispatch so butlers can adjust behavior based on what periods are active.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Seasonal Period Definition
 Seasonal periods are stored in a `seasonal_periods` table with fields: `id` (UUID), `name` (unique per butler), `period_type` (enum: `annual`, `academic`, `fiscal`, `custom`), `start_month` (integer 1-12), `start_day` (integer 1-31), `end_month` (integer 1-12), `end_day` (integer 1-31), `timezone` (string, default from butler config), `metadata` (JSONB, optional -- custom attributes like priority modifiers or context hints), `butler_name`, `enabled` (boolean, default true).

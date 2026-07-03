@@ -4,7 +4,7 @@
 
 Provides the persistence layer, data model, and API endpoints for per-butler conversational threads originating from the dashboard. Dashboard conversations create real butler sessions via the existing Switchboard ingestion pipeline, enabling full lineage tracking, audit, and cost attribution. This capability covers conversation lifecycle (create, continue, archive, rename), message storage with model attribution and token counts, and SSE-streamed responses.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Conversation Data Model
 

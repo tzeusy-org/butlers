@@ -3,7 +3,7 @@
 ## Purpose
 The Google Calendar connector ingests calendar event changes (created, updated, deleted) and synthesizes "event starting soon" notifications, keeping butlers current with the user's schedule in near real-time. It runs as a standalone process, polls Google Calendar via incremental sync (`events.list` with `syncToken`), normalizes events into `ingest.v1` envelopes, and submits them to the Switchboard. The connector supports multi-account operation via `public.google_accounts` (same pattern as the Gmail connector) and reuses existing Google OAuth infrastructure.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Google Calendar Connector Identity and Authentication
 The Google Calendar connector runs as a single process that discovers and manages all connected Google accounts with calendar scope. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database.

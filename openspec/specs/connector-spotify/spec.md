@@ -6,7 +6,7 @@ The Spotify connector is a standalone polling process that reads the user's curr
 
 Unlike messaging connectors, the Spotify connector has no discretion layer (all events are the user's own activity), no per-chat buffering (no "chats" exist), and no interactive routing (listening events are not messages requiring a reply). It is a pure polling-and-ingest connector.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Polling-Based Ingestion Loop
 

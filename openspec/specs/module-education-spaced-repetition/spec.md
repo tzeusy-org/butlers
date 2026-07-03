@@ -3,7 +3,7 @@
 ## Purpose
 Defines the SM-2-inspired spaced repetition engine for the education butler, covering per-node ease factor computation, interval scheduling, one-shot schedule creation via the core scheduler, review delivery via `notify()`, and operational cost controls (pending review cap, batch overflow, cleanup on map completion/abandonment).
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: SM-2 Interval Calculation — Successful Recall
 

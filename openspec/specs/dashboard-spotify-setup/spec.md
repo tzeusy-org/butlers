@@ -4,7 +4,7 @@
 
 A dedicated section on the Butlers dashboard settings page at `/butlers/settings` for linking, monitoring, and managing the user's Spotify account. Uses the OAuth 2.0 PKCE flow (no client secret required) for authorization. Modeled after the Google OAuth account management pattern: status card with health badge, account linking flow, and disconnect capability.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Spotify OAuth 2.0 PKCE Authorization Flow
 

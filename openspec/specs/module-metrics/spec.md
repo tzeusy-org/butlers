@@ -4,7 +4,7 @@
 
 The Metrics module is a reusable, opt-in module that gives a butler LLM-facing access to Prometheus-based operational metrics: it can define named metrics, emit samples, and query historical data via PromQL. Write-side emission goes through the OpenTelemetry SDK already wired in the framework; read-side queries hit the Prometheus HTTP API directly. Metric definitions are persisted in the butler's state store so they survive restarts.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Module conforms to Module ABC
 

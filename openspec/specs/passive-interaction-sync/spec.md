@@ -19,7 +19,7 @@ systematic blind spot: the user's most-contacted people (partner, family, close
 friends) can sit at the lowest tier because no pipeline logs their conversations
 as interaction facts.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Message-based interaction detection
 

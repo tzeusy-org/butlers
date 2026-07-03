@@ -3,7 +3,7 @@
 ## Purpose
 Defines how ranked and filtered insight candidates are delivered to the user via the existing `notify` contract. Covers delivery channel selection, digest batching for multi-insight delivery, standalone delivery for single insights, engagement tracking for adaptive feedback, and the visual rendering contract for insight notifications.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Digest Mode Delivery
 When the effective daily budget is greater than 1, insights SHALL be delivered as a single batched digest message rather than individual notifications.

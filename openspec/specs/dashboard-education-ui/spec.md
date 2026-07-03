@@ -4,7 +4,7 @@
 
 Defines the education butler's dashboard frontend: page route and sidebar entry, tab panels (Curriculum, Reviews, Analytics), mind map DAG visualization, curriculum management actions, spaced repetition review timeline, mastery analytics with charts, quiz interaction history, and frontend API client with TanStack Query hooks.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Education page route and sidebar entry
 

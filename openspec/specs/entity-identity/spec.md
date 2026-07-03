@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Entity Identity
+
+## Purpose
+
+Defines the public-schema entities table and identity model underpinning cross-butler entity resolution.
+
+## Requirements
 
 ### Requirement: Entities table in public schema
 

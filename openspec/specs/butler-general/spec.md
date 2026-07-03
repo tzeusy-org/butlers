@@ -3,7 +3,7 @@
 ## Purpose
 The General butler (port 41101) is the flexible catch-all assistant for freeform data that does not belong to any specialist domain.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: General Butler Identity and Runtime
 The general butler handles ad-hoc user requests without specialist schema assumptions.

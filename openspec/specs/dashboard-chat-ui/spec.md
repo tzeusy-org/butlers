@@ -4,7 +4,7 @@
 
 Provides the frontend conversational interface for the Butlers dashboard, enabling operators to interact with any butler directly from the butler detail page. The chat UI surfaces per-butler conversation threads with real-time response streaming, markdown rendering, tool call visibility, cost indicators, and conversation management — all within the existing dashboard shell design system.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Chat Panel on Butler Detail Page
 
