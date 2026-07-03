@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type {
   ApprovalMetrics,
+  ApprovalSummary,
   ButlerSummary,
   Issue,
   NotificationStats,
@@ -50,6 +51,22 @@ function approvalMetrics(overrides: Partial<ApprovalMetrics> = {}): ApprovalMetr
     rejection_rate: 0,
     failure_count_today: 0,
     active_rules_count: 0,
+    ...overrides,
+  };
+}
+
+function approvalSummary(
+  id: string,
+  overrides: Partial<ApprovalSummary> = {},
+): ApprovalSummary {
+  return {
+    id,
+    butler: "general",
+    tool_name: "send_email",
+    status: "pending",
+    created_at: "2026-05-14T10:00:00.000Z",
+    expires_at: null,
+    why: null,
     ...overrides,
   };
 }
@@ -745,5 +762,74 @@ describe("deriveOverviewTriageModel", () => {
 
     expect(model.nowRows.find((row) => row.id === "now:notifications:error")).toBeDefined();
     expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-item approval attention rows (bu-86c4c.14 -- Act loop / hot queue):
+// approve/deny/defer executable from the dashboard without leaving the pane.
+// ---------------------------------------------------------------------------
+
+describe("deriveOverviewTriageModel — per-item approval attention rows (bu-86c4c.14)", () => {
+  it("renders one actionable row per pending approval, carrying its id", () => {
+    const model = deriveOverviewTriageModel({
+      approvals: [approvalSummary("a1", { tool_name: "send_email" }), approvalSummary("a2")],
+      approvalMetrics: approvalMetrics({ total_pending: 2 }),
+    });
+
+    const rows = model.attentionRows.filter((row) => row.kind === "approval");
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.approvalId).sort()).toEqual(["a1", "a2"]);
+    expect(rows[0]).toMatchObject({ title: "send email", href: "/approvals/a1" });
+  });
+
+  it("ranks the soonest-to-expire approval first", () => {
+    const soon = approvalSummary("expiring", {
+      expires_at: new Date(NOW.getTime() + 5 * 60_000).toISOString(),
+    });
+    const noExpiry = approvalSummary("no-expiry");
+    const model = deriveOverviewTriageModel({
+      approvals: [noExpiry, soon],
+      approvalMetrics: approvalMetrics({ total_pending: 2 }),
+    });
+
+    const rows = model.attentionRows.filter((row) => row.kind === "approval");
+    expect(rows[0].approvalId).toBe("expiring");
+  });
+
+  it("caps actionable rows and collapses the remainder into a 'more' row with no approvalId", () => {
+    const approvals = Array.from({ length: 5 }, (_, i) => approvalSummary(`a${i}`));
+    const model = deriveOverviewTriageModel(
+      { approvals, approvalMetrics: approvalMetrics({ total_pending: 5 }) },
+      { maxAttentionApprovalRows: 2 },
+    );
+
+    const rows = model.attentionRows.filter((row) => row.kind === "approval");
+    expect(rows).toHaveLength(3); // 2 actionable + 1 "more"
+    expect(rows.filter((r) => r.approvalId).length).toBe(2);
+    const more = rows.find((r) => !r.approvalId);
+    expect(more).toMatchObject({ title: "3 more pending approvals", href: "/approvals" });
+  });
+
+  it("falls back to the aggregate count row when no detail list is provided", () => {
+    const model = deriveOverviewTriageModel({
+      approvalMetrics: approvalMetrics({ total_pending: 4 }),
+    });
+
+    const rows = model.attentionRows.filter((row) => row.kind === "approval");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].approvalId).toBeUndefined();
+    expect(rows[0]).toMatchObject({ title: "4 pending approvals", href: "/approvals" });
+  });
+
+  it("falls back to the aggregate count row when the detail list is empty but metrics still report pending", () => {
+    const model = deriveOverviewTriageModel({
+      approvals: [],
+      approvalMetrics: approvalMetrics({ total_pending: 2 }),
+    });
+
+    const rows = model.attentionRows.filter((row) => row.kind === "approval");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].approvalId).toBeUndefined();
   });
 });

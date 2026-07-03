@@ -11,6 +11,7 @@
  * Doctrine: about/heart-and-soul/design-language.md §Attention list
  */
 
+import type { CSSProperties } from "react";
 import { Link } from "react-router";
 
 export interface AttentionListItem {
@@ -33,6 +34,20 @@ export interface AttentionListItem {
    * must offer an actual retry control, not just prose (bu-86c4c.2).
    */
   onRetry?: () => void;
+  /**
+   * Inline verb-labeled decision buttons for an individually-actionable
+   * approval row (bu-86c4c.14 -- Act loop / hot queue). All three are
+   * optional independently so a caller can wire only what it supports; any
+   * one present renders the inline action group instead of the arrow/retry
+   * column. `*Pending` disables its own button while the mutation is in
+   * flight, without borrowing another row's pending state.
+   */
+  onApprove?: () => void;
+  onDeny?: () => void;
+  onDefer?: () => void;
+  approvePending?: boolean;
+  denyPending?: boolean;
+  deferPending?: boolean;
 }
 
 interface AttentionListProps {
@@ -42,6 +57,20 @@ interface AttentionListProps {
 /**
  * Map severity string to a one-character glyph and a color.
  */
+/** Shared look for the inline Approve/Deny/Defer verb buttons (bu-86c4c.14). */
+const inlineVerbButtonStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: "11px",
+  color: "var(--muted-foreground)",
+  background: "none",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)",
+  padding: "2px 8px",
+  lineHeight: 1.4,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
 function severityGlyph(severity: string): { char: string; color: string } {
   switch (severity.toLowerCase()) {
     case "high":
@@ -138,8 +167,56 @@ export function AttentionList({ items }: AttentionListProps) {
               ) : null}
             </div>
 
-            {/* Action column: arrow link, retry button, or spacer */}
-            {item.href ? (
+            {/* Action column: inline decision verbs, arrow link, retry
+                button, or spacer */}
+            {item.onApprove || item.onDeny || item.onDefer ? (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                {item.onApprove && (
+                  <button
+                    type="button"
+                    onClick={item.onApprove}
+                    disabled={item.approvePending}
+                    style={inlineVerbButtonStyle}
+                  >
+                    {item.approvePending ? "Approving…" : "Approve"}
+                  </button>
+                )}
+                {item.onDeny && (
+                  <button
+                    type="button"
+                    onClick={item.onDeny}
+                    disabled={item.denyPending}
+                    style={inlineVerbButtonStyle}
+                  >
+                    {item.denyPending ? "Denying…" : "Deny"}
+                  </button>
+                )}
+                {item.onDefer && (
+                  <button
+                    type="button"
+                    onClick={item.onDefer}
+                    disabled={item.deferPending}
+                    style={inlineVerbButtonStyle}
+                  >
+                    {item.deferPending ? "Deferring…" : "Defer"}
+                  </button>
+                )}
+                {item.href && (
+                  <Link
+                    to={item.href}
+                    aria-label={`View: ${item.title}`}
+                    style={{
+                      color: "var(--muted-foreground)",
+                      fontSize: "16px",
+                      lineHeight: 1,
+                      textDecoration: "none",
+                    }}
+                  >
+                    →
+                  </Link>
+                )}
+              </div>
+            ) : item.href ? (
               <Link
                 to={item.href}
                 aria-label={`View: ${item.title}`}

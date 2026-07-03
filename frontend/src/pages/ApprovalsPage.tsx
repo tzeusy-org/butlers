@@ -30,15 +30,12 @@
  * bu-86c4c.12 — One Trust Console: Autonomy panel, /approvals/:id, ranking
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import {
-  approveApproval,
-  deferApproval,
-  denyApproval,
   getApprovalDetail,
   getApprovalsFlat,
   getApprovalsHistory,
@@ -47,29 +44,87 @@ import {
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
-import type {
-  ApiResponse,
-  ApprovalAction,
-  ApprovalDetail,
-  ApprovalSummary,
-  ApprovalsPolicy,
-} from "@/api/index.ts";
+import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
 import { useApprovalsStream } from "@/hooks/use-approvals-stream.ts";
 import {
   useAutonomySuggestions,
   useConfirmAutonomySuggestion,
   useDismissAutonomySuggestion,
 } from "@/hooks/use-approvals.ts";
-import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
+import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
+
+// `window.__pendingGNav` is declared globally by use-keyboard-shortcuts.ts.
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const PENDING_PAGE_SIZE = 100;
+
+// Keyboard-triage decision types + timing (bu-86c4c.14 — Act loop / hot
+// queue). Keyboard verbs (a/d/x) are the fast, blind-fire path — a slip of
+// the key is cheap to make during rapid triage — so they route through a
+// short delay-then-fire window with an undo toast rather than calling the
+// mutation immediately. Mouse clicks on the dossier's own Approve/Deny/Defer
+// buttons stay instant (bu-approvals-fast-deny's one-click design), since
+// those are deliberate, already-read-the-dossier actions.
+type DecisionVerb = "approve" | "deny" | "defer";
+const UNDO_WINDOW_MS = 5_000;
+// Keyboard defer has no UI to pick an hour count -- match the dossier's own
+// default (see Dossier's deferHours state below).
+const KEYBOARD_DEFER_HOURS = 24;
+
+interface ScheduledDecision {
+  verb: DecisionVerb;
+  timeoutId: number;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled-decision store -- MODULE SCOPE, not component state.
+//
+// A decision scheduled via a/d/x must survive ApprovalsPage unmounting mid
+// undo-window: navigating away from /approvals and back within 5s is a
+// normal part of fast triage, not an edge case. If this lived in a `useState`
+// on the page component, a remount would start from an empty map -- the
+// original `window.setTimeout` from the unmounted instance keeps ticking
+// unseen, and the fresh instance would happily schedule a SECOND, independent
+// decision for the same id. Both timers eventually fire and the mutation
+// double-submits (confirmed: denyApproval called twice for one id). Keeping
+// the map here, outside any component instance, makes "is this id already
+// scheduled" and "cancel this id's timer" globally consistent regardless of
+// how many times the page mounts while the window is open.
+// ---------------------------------------------------------------------------
+let scheduledDecisionsSnapshot: ReadonlyMap<string, ScheduledDecision> = new Map();
+const scheduledDecisionsListeners = new Set<() => void>();
+
+function setScheduledDecisionsSnapshot(next: Map<string, ScheduledDecision>) {
+  scheduledDecisionsSnapshot = next;
+  for (const listener of scheduledDecisionsListeners) listener();
+}
+
+function subscribeScheduledDecisions(onStoreChange: () => void) {
+  scheduledDecisionsListeners.add(onStoreChange);
+  return () => {
+    scheduledDecisionsListeners.delete(onStoreChange);
+  };
+}
+
+function getScheduledDecisionsSnapshot() {
+  return scheduledDecisionsSnapshot;
+}
+
+/** Cancel and clear an id's scheduled decision, if one exists. */
+function cancelScheduledDecision(id: string) {
+  const entry = scheduledDecisionsSnapshot.get(id);
+  if (!entry) return;
+  window.clearTimeout(entry.timeoutId);
+  const next = new Map(scheduledDecisionsSnapshot);
+  next.delete(id);
+  setScheduledDecisionsSnapshot(next);
+}
 
 // ---------------------------------------------------------------------------
 // Query keys
@@ -272,26 +327,55 @@ function predicateDigest(detail: ApprovalDetail): PredicateDigest | null {
 // Rail item
 // ---------------------------------------------------------------------------
 
+// Present-tense verb label for a scheduled (undo-window) decision.
+function pendingVerbLabel(verb: DecisionVerb): string {
+  switch (verb) {
+    case "approve":
+      return "Approving…";
+    case "deny":
+      return "Denying…";
+    case "defer":
+      return "Deferring…";
+  }
+}
+
 function RailItem({
   summary,
   selected,
   onSelect,
+  pendingVerb,
+  onUndo,
 }: {
   summary: ApprovalSummary;
   selected: boolean;
   onSelect: () => void;
+  /**
+   * Set while a keyboard-triage decision (a/d/x) is scheduled but not yet
+   * fired -- the row renders dimmed with a present-tense verb + inline undo
+   * instead of its normal status/countdown, and clicking it undoes the
+   * decision instead of selecting it (bu-86c4c.14 -- per-item pending state).
+   */
+  pendingVerb?: DecisionVerb | null;
+  onUndo?: () => void;
 }) {
   const countdown = expiryCountdown(summary.expires_at);
+  const isPending = !!pendingVerb;
   return (
     <button
-      onClick={onSelect}
+      onClick={isPending ? onUndo : onSelect}
       data-testid="rail-item"
       data-approval-id={summary.id}
+      data-pending-verb={pendingVerb ?? undefined}
+      aria-label={isPending ? `${pendingVerbLabel(pendingVerb!)} Undo` : undefined}
       className={[
         "w-full text-left px-3 py-3 border-b border-border last:border-b-0",
         "transition-colors focus-visible:outline focus-visible:outline-2",
         "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
-        selected ? "bg-foreground/5" : "hover:bg-foreground/[0.03]",
+        isPending
+          ? "opacity-50 hover:opacity-70"
+          : selected
+            ? "bg-foreground/5"
+            : "hover:bg-foreground/[0.03]",
       ].join(" ")}
     >
       <div className="flex items-center justify-between gap-2">
@@ -312,20 +396,27 @@ function RailItem({
           {summary.why}
         </div>
       )}
-      <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
-        <span>{fmtTs(summary.created_at)}</span>
-        {countdown && (
-          <span
-            className={
-              countdown.warn
-                ? "text-red-600 dark:text-red-400 font-medium"
-                : "text-muted-foreground"
-            }
-          >
-            · {countdown.text}
-          </span>
-        )}
-      </div>
+      {isPending ? (
+        <div className="mt-1 flex items-center gap-2 text-[10px] font-mono uppercase tracking-wide">
+          <span>{pendingVerbLabel(pendingVerb!)}</span>
+          <span className="underline underline-offset-2">Undo</span>
+        </div>
+      ) : (
+        <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+          <span>{fmtTs(summary.created_at)}</span>
+          {countdown && (
+            <span
+              className={
+                countdown.warn
+                  ? "text-red-600 dark:text-red-400 font-medium"
+                  : "text-muted-foreground"
+              }
+            >
+              · {countdown.text}
+            </span>
+          )}
+        </div>
+      )}
     </button>
   );
 }
@@ -342,6 +433,8 @@ function Dossier({
   approvePending,
   denyPending,
   deferPending,
+  pendingVerb,
+  onCancelPending,
 }: {
   actionId: string;
   onApprove: () => void;
@@ -350,6 +443,15 @@ function Dossier({
   approvePending: boolean;
   denyPending: boolean;
   deferPending: boolean;
+  /**
+   * Set when a keyboard-triage decision for this exact approval is scheduled
+   * but not yet fired -- the decision cluster is replaced by a single undo
+   * affordance so a stale bookmark/back-navigation can't fire a second,
+   * conflicting decision on top of the one already counting down
+   * (bu-86c4c.14).
+   */
+  pendingVerb?: DecisionVerb | null;
+  onCancelPending?: () => void;
 }) {
   const [deferHours, setDeferHours] = useState("24");
   const [showDefer, setShowDefer] = useState(false);
@@ -388,6 +490,11 @@ function Dossier({
 
   const detail: ApprovalDetail = data.data;
   const isPending = detail.status === "pending";
+  // A keyboard-triage decision for THIS exact approval is scheduled but not
+  // yet fired (bu-86c4c.14). Guards against a stale bookmark/back-navigation
+  // firing a second, conflicting decision on top of the one already counting
+  // down -- the decision cluster below is replaced by a single undo bar.
+  const isScheduled = !!pendingVerb;
   const digest = predicateDigest(detail);
   const refEntities = detail.referenced_entities ?? [];
   const expiryChip = expiryCountdown(detail.expires_at);
@@ -401,60 +508,78 @@ function Dossier({
       {isPending && (
         <div className="sticky top-0 z-20 h-0 pointer-events-none">
           <div className="absolute right-0 top-0 flex flex-col items-end gap-2">
-            <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
-              <button
-                onClick={onApprove}
-                disabled={approvePending}
-                className={[
-                  "py-1.5 px-4 rounded font-medium text-sm",
-                  "bg-foreground text-background",
-                  "hover:opacity-90 disabled:opacity-50 transition-opacity",
-                ].join(" ")}
-              >
-                {approvePending ? "Approving…" : "Approve"}
-              </button>
-              <button
-                onClick={() => onDeny(denyReason.trim() || undefined)}
-                disabled={denyPending}
-                className={[
-                  "py-1.5 px-3 rounded text-sm border transition-colors",
-                  "border-border text-foreground",
-                  "hover:border-destructive/60 hover:text-destructive",
-                  "disabled:opacity-50",
-                ].join(" ")}
-              >
-                {denyPending ? "Denying…" : "Deny"}
-              </button>
-              <button
-                onClick={() => setShowDefer(!showDefer)}
-                className={[
-                  "py-1.5 px-3 rounded text-sm border transition-colors",
-                  "border-border text-foreground hover:border-foreground/40",
-                  showDefer ? "border-foreground/40 bg-foreground/5" : "",
-                ].join(" ")}
-              >
-                Defer
-              </button>
-            </div>
+            {isScheduled ? (
+              /* A keyboard-triage decision is already counting down for this
+                 approval -- offer only Undo, not a second competing decision. */
+              <div className="pointer-events-auto flex items-center gap-3 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-3 py-2 shadow-sm">
+                <span className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+                  {pendingVerbLabel(pendingVerb!)}
+                </span>
+                <button
+                  onClick={onCancelPending}
+                  className="py-1 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors"
+                >
+                  Undo
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
+                  <button
+                    onClick={onApprove}
+                    disabled={approvePending}
+                    className={[
+                      "py-1.5 px-4 rounded font-medium text-sm",
+                      "bg-foreground text-background",
+                      "hover:opacity-90 disabled:opacity-50 transition-opacity",
+                    ].join(" ")}
+                  >
+                    {approvePending ? "Approving…" : "Approve"}
+                  </button>
+                  <button
+                    onClick={() => onDeny(denyReason.trim() || undefined)}
+                    disabled={denyPending}
+                    className={[
+                      "py-1.5 px-3 rounded text-sm border transition-colors",
+                      "border-border text-foreground",
+                      "hover:border-destructive/60 hover:text-destructive",
+                      "disabled:opacity-50",
+                    ].join(" ")}
+                  >
+                    {denyPending ? "Denying…" : "Deny"}
+                  </button>
+                  <button
+                    onClick={() => setShowDefer(!showDefer)}
+                    className={[
+                      "py-1.5 px-3 rounded text-sm border transition-colors",
+                      "border-border text-foreground hover:border-foreground/40",
+                      showDefer ? "border-foreground/40 bg-foreground/5" : "",
+                    ].join(" ")}
+                  >
+                    Defer
+                  </button>
+                </div>
 
-            {/* Optional deny reason — always available, never gates the click.
-              Leave it blank for a one-tap deny, or jot a note that rides along
-              with the Deny button. Approve/Defer ignore it. */}
-            <input
-              value={denyReason}
-              onChange={(e) => setDenyReason(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !denyPending) {
-                  onDeny(denyReason.trim() || undefined);
-                }
-              }}
-              placeholder="Deny reason (optional)"
-              className={[
-                "pointer-events-auto w-72 max-w-[80vw] px-2 py-1 text-xs rounded",
-                "border border-border bg-background/85 backdrop-blur-sm shadow-sm",
-                "focus:outline-none focus:border-destructive/50",
-              ].join(" ")}
-            />
+                {/* Optional deny reason — always available, never gates the click.
+                  Leave it blank for a one-tap deny, or jot a note that rides along
+                  with the Deny button. Approve/Defer ignore it. */}
+                <input
+                  value={denyReason}
+                  onChange={(e) => setDenyReason(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !denyPending) {
+                      onDeny(denyReason.trim() || undefined);
+                    }
+                  }}
+                  placeholder="Deny reason (optional)"
+                  className={[
+                    "pointer-events-auto w-72 max-w-[80vw] px-2 py-1 text-xs rounded",
+                    "border border-border bg-background/85 backdrop-blur-sm shadow-sm",
+                    "focus:outline-none focus:border-destructive/50",
+                  ].join(" ")}
+                />
+              </>
+            )}
 
             {/* Digest + referenced entities — pinned under the buttons so the
               "who/what" of the decision stays visible without scrolling. */}
@@ -500,7 +625,7 @@ function Dossier({
             )}
 
             {/* Defer expansion — drops down under the cluster */}
-            {showDefer && (
+            {!isScheduled && showDefer && (
               <div className="pointer-events-auto w-72 space-y-2 p-3 rounded-lg border border-border bg-background shadow-md">
                 <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
                   Hours to defer (1–168)
@@ -1062,7 +1187,6 @@ function AutonomySuggestionsSection() {
 // ---------------------------------------------------------------------------
 
 export default function ApprovalsPage() {
-  const qc = useQueryClient();
   // Every approval has a URL (/approvals/:id) so a notification, a history
   // row, or a bookmark can land the owner directly on the decision. The
   // route param is the source of truth for an EXPLICIT selection; with no
@@ -1103,88 +1227,161 @@ export default function ApprovalsPage() {
     [data],
   );
   const pending = rankedPending;
-  const firstId = rankedPending[0]?.id;
+
+  // Keyboard-triage scheduled decisions (bu-86c4c.14 -- undo window). An id
+  // maps to the verb chosen via a/d/x while its real mutation waits out
+  // UNDO_WINDOW_MS; the item stays visible -- dimmed, verb-labeled, per-item
+  // pending state -- in the rail/dossier until the window elapses or the
+  // owner hits undo. Dossier mouse clicks below bypass this map entirely and
+  // fire instantly (bu-approvals-fast-deny's one-click design).
+  //
+  // Backed by the module-scoped store above (not useState) so a remount
+  // mid-window picks up the already-scheduled state instead of double
+  // scheduling -- see the store's doc comment.
+  const scheduledDecisions = useSyncExternalStore(
+    subscribeScheduledDecisions,
+    getScheduledDecisionsSnapshot,
+  );
+
+  // The implicit default selection (no :id in the URL) must skip scheduled
+  // items -- otherwise triaging the top-ranked item via keyboard would keep
+  // re-selecting the very item just decided until its undo window elapses.
+  const actionablePending = useMemo(
+    () => rankedPending.filter((a) => !scheduledDecisions.has(a.id)),
+    [rankedPending, scheduledDecisions],
+  );
+  const firstId = actionablePending[0]?.id;
   const effectiveSelected = routeId ?? firstId ?? null;
   // Show "Load more" only when the last response was full (may be more results).
   const hasMore = pending.length === pendingLimit;
 
-  // Optimistic decision flow (bu-approvals-fast-deny): a decision drops the row
-  // from every "waiting" cache immediately. The mutation observers live here
-  // (never in the unmounting Dossier) so their success/error callbacks —
-  // including rollback — always fire. onSettled reconciles against server
-  // truth (also covered by the WS stream + refetch).
-  type PendingSnapshot = [readonly unknown[], unknown][];
-  const dropFromPending = (id: string): PendingSnapshot => {
-    const key = ["approvals", "flat", "waiting"];
-    const prev = qc.getQueriesData({ queryKey: key });
-    qc.setQueriesData<ApiResponse<ApprovalSummary[]>>({ queryKey: key }, (old) =>
-      old?.data
-        ? { ...old, data: old.data.filter((a) => a.id !== id) }
-        : old,
-    );
-    // Only navigate when the decided item was the EXPLICIT URL selection —
-    // the implicit default (no :id in the URL) recomputes `firstId` from the
-    // now-filtered rail automatically, no navigation needed.
-    if (routeId === id) {
-      const idx = rankedPending.findIndex((a) => a.id === id);
-      const nextId = rankedPending[idx + 1]?.id ?? rankedPending[idx - 1]?.id;
-      navigate(nextId ? `/approvals/${nextId}` : "/approvals", { replace: true });
-    }
-    return prev;
-  };
-  const rollback = (prev: PendingSnapshot | undefined) =>
-    prev?.forEach(([key, snap]) => qc.setQueryData(key, snap));
-  const reconcileKeys = [["approvals", "flat", "waiting"], Q.history()];
+  // Advance the URL selection past a just-decided item, skipping any ids in
+  // `skipIds` (other items already scheduled mid-triage). Shared by the
+  // instant dossier-button path (via onDecided below) and the keyboard
+  // schedule path (called immediately at schedule time, since the real
+  // mutation -- and its own onDecided call -- doesn't fire until later).
+  function advanceSelectionPast(id: string, skipIds: Set<string> = new Set()) {
+    if (routeId !== id) return;
+    const idx = rankedPending.findIndex((a) => a.id === id);
+    const isUsable = (a: ApprovalSummary) => a.id !== id && !skipIds.has(a.id);
+    const nextId =
+      rankedPending.slice(idx + 1).find(isUsable)?.id ??
+      rankedPending
+        .slice(0, idx)
+        .reverse()
+        .find(isUsable)?.id;
+    navigate(nextId ? `/approvals/${nextId}` : "/approvals", { replace: true });
+  }
 
-  // These three decisions share the exact cancel -> snapshot -> optimistic
-  // drop -> rollback-on-error -> reconcile-on-settle shape, extracted into
-  // useOptimisticMutation (bu-86c4c.13) — this was the second hand-rolled
-  // copy of the pattern use-issues.ts established, now a single shared path.
-  const approveMut = useOptimisticMutation<ApiResponse<ApprovalAction>, string, PendingSnapshot>({
-    mutationFn: (id: string) => approveApproval(id),
-    applyOptimisticUpdate: (id) => dropFromPending(id),
-    rollback,
-    invalidateQueryKeys: () => reconcileKeys,
-    onSuccess: (res) => {
-      // Honest outcome: the action only ran if the backend dispatched it
-      // (status "executed" / dispatched=true). Otherwise it is approved but
-      // un-run and stays retry-able — do not claim success.
-      const action = res?.data;
-      const ran = action?.dispatched === true || action?.status === "executed";
-      if (ran) {
-        toast.success("Approved & dispatched");
-      } else {
-        toast.warning("Approved. Queued, not yet run. Retry from History.");
+  // Optimistic decision flow (bu-approvals-fast-deny): a decision drops the
+  // row from every "waiting" cache immediately, with rollback-on-error --
+  // shared with DashboardPage's inline attention-list actions via
+  // useApprovalDecisionMutations (bu-86c4c.14, built on useOptimisticMutation
+  // from bu-86c4c.13).
+  const { approveMut, denyMut, deferMut } = useApprovalDecisionMutations({
+    onDecided: (id) => advanceSelectionPast(id),
+  });
+
+  // ---------------------------------------------------------------------
+  // Keyboard-triage scheduling (bu-86c4c.14 -- a/d/x, undo-toast)
+  //
+  // Keyboard verbs are the fast, blind-fire path used while rapidly triaging
+  // with j/k -- a slip of the key is cheap to make, so instead of firing the
+  // mutation immediately they schedule it UNDO_WINDOW_MS in the future and
+  // surface it as an undoable, per-item pending state. Nothing reaches the
+  // backend unless the window elapses without an undo.
+  // ---------------------------------------------------------------------
+  function summaryLabel(id: string): string {
+    const summary = rankedPending.find((a) => a.id === id);
+    return summary ? summary.tool_name.replace(/_/g, " ") : "approval";
+  }
+
+  // Thin wrapper kept local so JSX callbacks read naturally as "cancel the
+  // decision for this page's selection" -- the actual bookkeeping lives in
+  // the module-scoped store (see cancelScheduledDecision above).
+  const cancelDecision = cancelScheduledDecision;
+
+  function scheduleDecision(id: string, verb: DecisionVerb, run: () => void) {
+    if (scheduledDecisions.has(id)) return; // already scheduled -- ignore repeat verbs
+
+    const timeoutId = window.setTimeout(() => {
+      const next = new Map(scheduledDecisionsSnapshot);
+      next.delete(id);
+      setScheduledDecisionsSnapshot(next);
+      run();
+    }, UNDO_WINDOW_MS);
+
+    setScheduledDecisionsSnapshot(new Map(scheduledDecisions).set(id, { verb, timeoutId }));
+    advanceSelectionPast(id, new Set(scheduledDecisions.keys()));
+
+    toast(`${pendingVerbLabel(verb)} ${summaryLabel(id)}`, {
+      action: { label: "Undo", onClick: () => cancelDecision(id) },
+      duration: UNDO_WINDOW_MS,
+    });
+  }
+
+  // j/k roving focus + a/d/x decision verbs, active anywhere on the page
+  // (not just while a rail item has DOM focus) -- same convention as the
+  // app-wide g-chord/`/`/`?` shortcuts in use-keyboard-shortcuts.ts, which
+  // this guards against colliding with (a pending g-chord owns the next
+  // keystroke, e.g. g+a -> /audit-log).
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (window.__pendingGNav) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const target = e.target as HTMLElement;
+      const inEditableField =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable;
+      if (inEditableField) return;
+      if (pending.length === 0) return;
+
+      if (e.key === "j" || e.key === "k") {
+        const idx = pending.findIndex((p) => p.id === effectiveSelected);
+        const delta = e.key === "j" ? 1 : -1;
+        const nextIdx = idx === -1 ? 0 : Math.min(Math.max(idx + delta, 0), pending.length - 1);
+        const next = pending[nextIdx];
+        if (next && next.id !== effectiveSelected) {
+          e.preventDefault();
+          navigate(`/approvals/${next.id}`);
+        }
+        return;
       }
-    },
-    onError: (e) => toast.error(`Approve failed: ${e.message}`),
+
+      if (!effectiveSelected || scheduledDecisions.has(effectiveSelected)) return;
+      const id = effectiveSelected;
+
+      if (e.key === "a") {
+        e.preventDefault();
+        scheduleDecision(id, "approve", () => approveMut.mutate(id));
+      } else if (e.key === "d") {
+        e.preventDefault();
+        scheduleDecision(id, "deny", () => denyMut.mutate({ id }));
+      } else if (e.key === "x") {
+        e.preventDefault();
+        scheduleDecision(id, "defer", () => deferMut.mutate({ id, hours: KEYBOARD_DEFER_HOURS }));
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
-  const denyMut = useOptimisticMutation<
-    ApiResponse<ApprovalAction>,
-    { id: string; reason?: string },
-    PendingSnapshot
-  >({
-    mutationFn: ({ id, reason }) => denyApproval(id, reason ? { reason } : undefined),
-    applyOptimisticUpdate: ({ id }) => dropFromPending(id),
-    rollback,
-    invalidateQueryKeys: () => reconcileKeys,
-    onSuccess: () => toast.success("Denied"),
-    onError: (e) => toast.error(`Deny failed: ${e.message}`),
-  });
-
-  const deferMut = useOptimisticMutation<
-    ApiResponse<ApprovalAction>,
-    { id: string; hours: number },
-    PendingSnapshot
-  >({
-    mutationFn: ({ id, hours }) => deferApproval(id, { hours }),
-    applyOptimisticUpdate: ({ id }) => dropFromPending(id),
-    rollback,
-    invalidateQueryKeys: () => reconcileKeys,
-    onSuccess: () => toast.success("Deferred"),
-    onError: (e) => toast.error(`Defer failed: ${e.message}`),
-  });
+  // Keep DOM focus in sync with the current selection so the browser's
+  // native focus-visible ring (RailItem's focus-visible:outline classes)
+  // visibly tracks j/k roving focus, not just which dossier is shown.
+  useEffect(() => {
+    if (!effectiveSelected) return;
+    const nodes = document.querySelectorAll<HTMLButtonElement>('[data-testid="rail-item"]');
+    for (const node of nodes) {
+      if (node.getAttribute("data-approval-id") === effectiveSelected) {
+        node.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [effectiveSelected]);
 
   function handleLoadMore() {
     setPendingLimit((prev) => prev + PENDING_PAGE_SIZE);
@@ -1251,6 +1448,8 @@ export default function ApprovalsPage() {
                 summary={summary}
                 selected={summary.id === effectiveSelected}
                 onSelect={() => navigate(`/approvals/${summary.id}`)}
+                pendingVerb={scheduledDecisions.get(summary.id)?.verb ?? null}
+                onUndo={() => cancelDecision(summary.id)}
               />
             ))}
             {/* Load more — shown only when the previous response was full */}
@@ -1282,9 +1481,15 @@ export default function ApprovalsPage() {
             onApprove={() => approveMut.mutate(effectiveSelected)}
             onDeny={(reason) => denyMut.mutate({ id: effectiveSelected, reason })}
             onDefer={(hours) => deferMut.mutate({ id: effectiveSelected, hours })}
-            approvePending={approveMut.isPending}
-            denyPending={denyMut.isPending}
-            deferPending={deferMut.isPending}
+            // Scoped to THIS approval's id, not just "some mutation of this
+            // kind is in flight" -- approving item A no longer mislabels the
+            // very next dossier (item B) as already approving (JARVIS audit
+            // move 9's page-global-pending finding).
+            approvePending={approveMut.isPending && approveMut.variables === effectiveSelected}
+            denyPending={denyMut.isPending && denyMut.variables?.id === effectiveSelected}
+            deferPending={deferMut.isPending && deferMut.variables?.id === effectiveSelected}
+            pendingVerb={scheduledDecisions.get(effectiveSelected)?.verb ?? null}
+            onCancelPending={() => cancelDecision(effectiveSelected)}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">

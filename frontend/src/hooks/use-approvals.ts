@@ -11,6 +11,7 @@ import {
   getApprovalMetrics,
   getApprovalRule,
   getApprovalRules,
+  getApprovalsFlat,
   getAutonomySuggestions,
   getExecutedActions,
   getRuleSuggestions,
@@ -89,6 +90,21 @@ export function useApprovalMetrics() {
     // every approval state-transition event. Polling is now a 5-minute
     // reconciliation sweep — a safety net, not the primary update path.
     refetchInterval: 5 * 60_000,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Individual pending approvals ("waiting" state, Dispatch-language API),
+ * newest-agnostic, capped at `limit`. Shares its `["approvals","flat",
+ * "waiting", limit]` query key PREFIX with ApprovalsPage's own rail query
+ * (any `limit`) -- useApprovalDecisionMutations' cache eviction matches by
+ * prefix, so a decision made from either surface updates both (bu-86c4c.14).
+ */
+export function usePendingApprovalsFlat(limit: number) {
+  return useQuery({
+    queryKey: ["approvals", "flat", "waiting", limit] as const,
+    queryFn: () => getApprovalsFlat("waiting", limit),
     staleTime: 30_000,
   });
 }

@@ -15,7 +15,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ApprovalsPage from "@/pages/ApprovalsPage";
@@ -28,13 +28,17 @@ vi.mock("@/hooks/use-approvals-stream", () => ({
   useApprovalsStream: vi.fn(),
 }));
 
-vi.mock("sonner", () => ({
-  toast: {
+vi.mock("sonner", () => {
+  // sonner's real export is a CALLABLE function (toast(msg, opts)) that also
+  // carries .success/.error/.warning statics -- the undo-toast path
+  // (bu-86c4c.14) calls it directly, existing call sites use the statics.
+  const toastFn = Object.assign(vi.fn(), {
     success: vi.fn(),
     error: vi.fn(),
     warning: vi.fn(),
-  },
-}));
+  });
+  return { toast: toastFn };
+});
 
 // Mock the API module — we only need getApprovalsFlat + getApprovalsHistory +
 // getApprovalsPolicy for these tests. Others are stubs to satisfy imports.
@@ -62,6 +66,7 @@ vi.mock("@/api/index.ts", () => ({
 import {
   approveApproval,
   confirmAutonomySuggestion,
+  deferApproval,
   denyApproval,
   dismissAutonomySuggestion,
   getApprovalDetail,
@@ -1248,5 +1253,536 @@ describe("ApprovalsPage — autonomy suggestions banner (bu-phy21)", () => {
     });
 
     expect(dismissAutonomySuggestion).toHaveBeenCalledWith("s1", undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-item pending state — approving one item must not mislabel the NEXT
+// dossier's buttons as already in flight (bu-86c4c.14, JARVIS audit move 9).
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — per-item pending state (bu-86c4c.14)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage() {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <ApprovalsPage />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("does not mislabel the next dossier's Approve button as pending after approving the previous item", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
+    // Never resolves -- keeps approveMut.isPending true for a1's in-flight call
+    // for the lifetime of the test, so we can observe whether that pending
+    // flag leaks onto the next-selected item's dossier.
+    vi.mocked(approveApproval).mockReturnValue(new Promise(() => {}) as AnyMock);
+
+    renderPage(); // implicit selection -> top-ranked item (a1)
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+
+    const approveBtn = findButton(container, "Approve");
+    await act(async () => {
+      approveBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    // Selection auto-advances to a2 (dropFromPending's onDecided navigation).
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+
+    const nextApproveBtn = findButton(container, "Approve");
+    expect(nextApproveBtn?.textContent).toBe("Approve");
+    expect(nextApproveBtn?.disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Focus-visible outline on rail items (bu-86c4c.14 -- regression lock; the
+// classes shipped with bu-86c4c.12's RailItem and must survive this bead's
+// j/k roving-focus layer, not be re-suppressed).
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — rail item focus outline (bu-86c4c.14)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps focus-visible:outline classes on rail item buttons", async () => {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <ApprovalsPage />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushUntil(
+      () => container.querySelector('[data-testid="rail-item"]') !== null,
+    );
+
+    const item = container.querySelector('[data-testid="rail-item"]');
+    expect(item?.className).toContain("focus-visible:outline");
+    expect(item?.className).toContain("focus-visible:outline-2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard triage: j/k roving focus + a/d/x scheduled decisions with an undo
+// window (bu-86c4c.14 -- Act loop / hot queue).
+//
+// Keyboard verbs schedule the real mutation UNDO_WINDOW_MS in the future
+// instead of firing immediately (dossier mouse clicks stay instant,
+// unaffected -- see the "per-item pending state" and existing "honest
+// dispatch status" describes above). These tests use fake timers to control
+// that window; the shared `flush`/`flushUntil` helpers above are real-timer
+// based and are NOT used in this describe.
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — keyboard triage (bu-86c4c.14)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function renderAt(initialPath: string) {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[initialPath]}>
+          <QueryClientProvider client={qc}>
+            <Routes>
+              <Route path="/approvals" element={<ApprovalsPage />} />
+              <Route path="/approvals/:id" element={<ApprovalsPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  /** Fake-timer-aware analogue of the module's real-timer `flush` above. */
+  async function flushFake(rounds = 5): Promise<void> {
+    for (let i = 0; i < rounds; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+  }
+
+  async function flushUntilFake(
+    predicate: () => boolean,
+    max = 25,
+  ): Promise<void> {
+    for (let i = 0; i < max; i++) {
+      if (predicate()) return;
+      await flushFake(1);
+    }
+  }
+
+  async function pressKey(key: string): Promise<void> {
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
+  it("'j' moves selection to the next rail item and 'k' moves back", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+    );
+
+    renderAt("/approvals/a1");
+    // Wait for BOTH the rail (getApprovalsFlat) and the dossier
+    // (getApprovalDetail, which fires off the URL param independently and
+    // can resolve before the rail list does) so `pending` is non-empty when
+    // 'j' is pressed.
+    await flushUntilFake(
+      () =>
+        container.querySelectorAll('[data-testid="rail-item"]').length === 2 &&
+        vi.mocked(getApprovalDetail).mock.calls.length > 0,
+    );
+    expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+    expect(getApprovalDetail).not.toHaveBeenCalledWith("a2");
+
+    await pressKey("j");
+    await flushUntilFake(() =>
+      vi.mocked(getApprovalDetail).mock.calls.some((c) => c[0] === "a2"),
+    );
+    expect(getApprovalDetail).toHaveBeenCalledWith("a2");
+
+    await pressKey("k");
+    await flushUntilFake(
+      () =>
+        vi
+          .mocked(getApprovalDetail)
+          .mock.calls.filter((c) => c[0] === "a1").length > 1,
+    );
+    expect(
+      vi.mocked(getApprovalDetail).mock.calls.filter((c) => c[0] === "a1").length,
+    ).toBeGreaterThan(1);
+  });
+
+  it("ignores j/k/a/d/x while typing in an input (deny-reason field)", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+    );
+
+    renderAt("/approvals/a1");
+    await flushUntilFake(
+      () =>
+        container.querySelector<HTMLInputElement>(
+          'input[placeholder="Deny reason (optional)"]',
+        ) !== null,
+    );
+
+    const reasonInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Deny reason (optional)"]',
+    );
+    expect(reasonInput).not.toBeNull();
+
+    await act(async () => {
+      const evt = new KeyboardEvent("keydown", {
+        key: "d",
+        bubbles: true,
+        cancelable: true,
+      });
+      reasonInput?.dispatchEvent(evt);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(denyApproval).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('[data-pending-verb]'),
+    ).toBeNull();
+  });
+
+  it("'a' schedules an approval (no immediate call) and fires it once the undo window elapses", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+    vi.mocked(approveApproval).mockReturnValue(
+      makeApiResponse({
+        id: "a1",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "executed",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: true,
+      }) as AnyMock,
+    );
+
+    renderAt("/approvals/a1");
+    await flushUntilFake(
+      () =>
+        container.querySelectorAll('[data-testid="rail-item"]').length === 1 &&
+        vi.mocked(getApprovalDetail).mock.calls.length > 0,
+    );
+
+    await pressKey("a");
+
+    // Not called yet -- scheduled, not fired.
+    expect(approveApproval).not.toHaveBeenCalled();
+    // An undo-toast was shown.
+    expect(toast).toHaveBeenCalledWith(
+      expect.stringContaining("Approving"),
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Undo" }),
+      }),
+    );
+    // The rail item renders the per-item pending state.
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-pending-verb="approve"]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(approveApproval).toHaveBeenCalledWith("a1");
+  });
+
+  it("undo (clicking the scheduled rail item) cancels the decision before it fires", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+
+    renderAt("/approvals/a1");
+    await flushUntilFake(
+      () =>
+        container.querySelectorAll('[data-testid="rail-item"]').length === 1 &&
+        vi.mocked(getApprovalDetail).mock.calls.length > 0,
+    );
+
+    await pressKey("d");
+    expect(denyApproval).not.toHaveBeenCalled();
+
+    const pendingItem = container.querySelector<HTMLButtonElement>(
+      '[data-testid="rail-item"][data-pending-verb="deny"]',
+    );
+    expect(pendingItem).not.toBeNull();
+
+    await act(async () => {
+      pendingItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Undone -- no longer rendered as pending.
+    expect(
+      container.querySelector('[data-pending-verb]'),
+    ).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(denyApproval).not.toHaveBeenCalled();
+  });
+
+  it("'x' schedules a defer with the keyboard default hour count", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+    vi.mocked(deferApproval).mockReturnValue(
+      makeApiResponse({
+        id: "a1",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "pending",
+        requested_at: "2026-05-17T10:00:00Z",
+      }) as AnyMock,
+    );
+
+    renderAt("/approvals/a1");
+    await flushUntilFake(
+      () =>
+        container.querySelectorAll('[data-testid="rail-item"]').length === 1 &&
+        vi.mocked(getApprovalDetail).mock.calls.length > 0,
+    );
+
+    await pressKey("x");
+    expect(deferApproval).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(deferApproval).toHaveBeenCalledWith("a1", { hours: 24 });
+  });
+
+  it("pressing 'a' twice on the same item schedules only one decision", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+    vi.mocked(approveApproval).mockReturnValue(
+      makeApiResponse({
+        id: "a1",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "executed",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: true,
+      }) as AnyMock,
+    );
+
+    renderAt("/approvals/a1");
+    await flushUntilFake(
+      () =>
+        container.querySelectorAll('[data-testid="rail-item"]').length === 1 &&
+        vi.mocked(getApprovalDetail).mock.calls.length > 0,
+    );
+
+    await pressKey("a");
+    await pressKey("a");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(approveApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("navigating away and back to /approvals mid-undo-window does not double-fire the scheduled decision", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+    vi.mocked(denyApproval).mockReturnValue(
+      makeApiResponse({
+        id: "a1",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "rejected",
+        requested_at: "2026-05-17T10:00:00Z",
+      }) as AnyMock,
+    );
+
+    // A harness with real <Link>-driven navigation (not a raw MemoryRouter
+    // re-render, which would just re-seed initialEntries rather than
+    // simulating an in-app route change) so ApprovalsPage genuinely unmounts
+    // when leaving /approvals and remounts fresh on return -- the exact
+    // "triage then navigate away" scenario this guards against.
+    function Nav() {
+      const navigate = useNavigate();
+      return (
+        <div>
+          <button data-testid="go-dashboard" onClick={() => navigate("/dashboard")}>
+            dashboard
+          </button>
+          <button data-testid="go-approvals-a1" onClick={() => navigate("/approvals/a1")}>
+            approvals
+          </button>
+        </div>
+      );
+    }
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/approvals/a1"]}>
+          <QueryClientProvider client={qc}>
+            <Nav />
+            <Routes>
+              <Route path="/approvals" element={<ApprovalsPage />} />
+              <Route path="/approvals/:id" element={<ApprovalsPage />} />
+              <Route path="/dashboard" element={<div>dashboard-marker</div>} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushUntilFake(
+      () =>
+        container.querySelectorAll('[data-testid="rail-item"]').length === 1 &&
+        vi.mocked(getApprovalDetail).mock.calls.length > 0,
+    );
+
+    // Schedule a deny via keyboard -- not fired yet.
+    await pressKey("d");
+    expect(denyApproval).not.toHaveBeenCalled();
+
+    // Navigate entirely away from /approvals (unmounts ApprovalsPage) while
+    // 5s undo window is still ticking.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="go-dashboard"]')?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(container.textContent).toContain("dashboard-marker");
+
+    // Navigate back to /approvals/a1 -- ApprovalsPage remounts as a fresh
+    // component instance. The remounted instance must see the decision as
+    // already scheduled (module-scoped store), not schedule a second one.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="go-approvals-a1"]')?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await flushFake();
+
+    // The remounted rail correctly shows the item as still pending/dimmed.
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-pending-verb="deny"]'),
+    ).not.toBeNull();
+
+    // Pressing 'd' again on the same item in the fresh instance must be a
+    // no-op (already scheduled) rather than scheduling a second timer.
+    await pressKey("d");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(denyApproval).toHaveBeenCalledTimes(1);
+    expect(denyApproval).toHaveBeenCalledWith("a1", undefined);
   });
 });

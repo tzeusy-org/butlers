@@ -130,3 +130,155 @@ describe("AttentionList -- Retry click", () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline approve/deny/defer verbs (bu-86c4c.14 -- Act loop / hot queue):
+// approve/deny/defer executable from the dashboard's attention list without
+// leaving the pane.
+// ---------------------------------------------------------------------------
+
+describe("AttentionList -- inline approve/deny/defer verbs (bu-86c4c.14)", () => {
+  let container: HTMLElement | undefined;
+  let root: Root | undefined;
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive(items: AttentionListItem[]) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => {
+      r.render(
+        <MemoryRouter>
+          <AttentionList items={items} />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  function findButton(label: string): HTMLButtonElement | undefined {
+    return Array.from(container!.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === label,
+    );
+  }
+
+  it("renders verb-labeled Approve/Deny/Defer buttons when handlers are provided", () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <AttentionList
+          items={[
+            {
+              id: "approvals:a1",
+              severity: "medium",
+              title: "send email",
+              detail: "general · awaiting decision",
+              href: "/approvals/a1",
+              onApprove: () => {},
+              onDeny: () => {},
+              onDefer: () => {},
+            },
+          ]}
+        />
+      </MemoryRouter>,
+    );
+    expect(html).toContain(">Approve<");
+    expect(html).toContain(">Deny<");
+    expect(html).toContain(">Defer<");
+    // The drill-down link survives alongside the inline verbs.
+    expect(html).toContain('href="/approvals/a1"');
+  });
+
+  it("calls onApprove/onDeny/onDefer when their buttons are clicked", () => {
+    const onApprove = vi.fn();
+    const onDeny = vi.fn();
+    const onDefer = vi.fn();
+    renderLive([
+      {
+        id: "approvals:a1",
+        severity: "medium",
+        title: "send email",
+        detail: "general",
+        href: "/approvals/a1",
+        onApprove,
+        onDeny,
+        onDefer,
+      },
+    ]);
+
+    act(() => {
+      findButton("Approve")!.click();
+    });
+    expect(onApprove).toHaveBeenCalledOnce();
+
+    act(() => {
+      findButton("Deny")!.click();
+    });
+    expect(onDeny).toHaveBeenCalledOnce();
+
+    act(() => {
+      findButton("Defer")!.click();
+    });
+    expect(onDefer).toHaveBeenCalledOnce();
+  });
+
+  it("disables and relabels only the pending verb's own button, not its siblings", () => {
+    renderLive([
+      {
+        id: "approvals:a1",
+        severity: "medium",
+        title: "send email",
+        href: "/approvals/a1",
+        onApprove: () => {},
+        onDeny: () => {},
+        approvePending: true,
+      },
+    ]);
+
+    const approveBtn = findButton("Approving…");
+    expect(approveBtn).toBeDefined();
+    expect(approveBtn?.disabled).toBe(true);
+
+    const denyBtn = findButton("Deny");
+    expect(denyBtn).toBeDefined();
+    expect(denyBtn?.disabled).toBe(false);
+  });
+
+  it("renders only the verbs that have handlers wired (no dead buttons)", () => {
+    renderLive([
+      {
+        id: "approvals:a1",
+        severity: "medium",
+        title: "send email",
+        href: "/approvals/a1",
+        onApprove: () => {},
+      },
+    ]);
+
+    expect(findButton("Approve")).toBeDefined();
+    expect(findButton("Deny")).toBeUndefined();
+    expect(findButton("Defer")).toBeUndefined();
+  });
+
+  it("falls back to the plain arrow link when no verb handlers are present", () => {
+    const html = render([
+      {
+        id: "approvals:more",
+        severity: "low",
+        title: "3 more pending approvals",
+        href: "/approvals",
+      },
+    ]);
+    expect(html).not.toContain(">Approve<");
+    expect(html).toContain('href="/approvals"');
+  });
+});

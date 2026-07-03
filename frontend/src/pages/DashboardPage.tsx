@@ -18,6 +18,9 @@
  *   useButlers()            -- ButlerIndex, RuntimeSummaryKpi
  *   useSpendSummary("today") -- ButlerIndex per-butler cost
  *   useApprovalMetrics()    -- KPI "approvals" cell, OperationsNowList approvals row
+ *   usePendingApprovalsFlat() -- individual pending approvals for the inline
+ *                                approve/deny/defer rows below (falls back to
+ *                                the useApprovalMetrics aggregate row on error)
  *   useButlerHeartbeats()   -- RuntimeSummaryKpi runtime state, stale detection
  *   useNotificationStats()  -- OperationsNowList notification pressure row
  *   useQaSummary()          -- OperationsNowList QA state row
@@ -29,14 +32,19 @@
  * bu-tn1po.4   -- Promoted KPI strip + enriched butler index (ButlerIndex).
  * bu-tn1po.5   -- Operations-now signal list (OperationsNowList).
  * bu-tn1po.6   -- Compose all surfaces into this triage cockpit page.
+ * bu-86c4c.14  -- Act loop / hot queue: inline approve/deny/defer on the
+ *                 Needs-attention list's actionable approval rows.
  */
+
+import { useMemo } from "react";
 
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
-import { useApprovalMetrics } from "@/hooks/use-approvals";
+import { useApprovalMetrics, usePendingApprovalsFlat } from "@/hooks/use-approvals";
+import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
@@ -45,7 +53,7 @@ import { useTimeline } from "@/hooks/use-timeline";
 import CostWidget from "@/components/costs/CostWidget";
 import TopSessionsTable from "@/components/costs/TopSessionsTable";
 
-import { AttentionList } from "@/components/overview/AttentionList";
+import { AttentionList, type AttentionListItem } from "@/components/overview/AttentionList";
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
 import { ButlerIndex } from "@/components/overview/ButlerIndex";
 import { DateEyebrow } from "@/components/overview/DateEyebrow";
@@ -70,6 +78,11 @@ export default function DashboardPage() {
   const costQuery = useSpendSummary("today");
   const issuesQuery = useIssues();
   const approvalMetricsQuery = useApprovalMetrics();
+  // Individual pending approvals for the inline approve/deny/defer rows below
+  // (bu-86c4c.14). Small cap -- this is a "what needs a look" preview, not
+  // the full triage queue (that's /approvals).
+  const pendingApprovalsQuery = usePendingApprovalsFlat(3);
+  const { approveMut, denyMut, deferMut } = useApprovalDecisionMutations();
   const heartbeatQuery = useButlerHeartbeats();
   const notificationStatsQuery = useNotificationStats();
   const qaSummaryQuery = useQaSummary();
@@ -89,6 +102,7 @@ export default function DashboardPage() {
     issuesError: issuesQuery.isError,
     heartbeats: heartbeatQuery.isError ? null : heartbeatQuery.data?.data,
     approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetricsQuery.data?.data,
+    approvals: pendingApprovalsQuery.isError ? null : pendingApprovalsQuery.data?.data,
     notificationStats: notificationStatsQuery.isError ? null : notificationStatsQuery.data?.data,
     notificationStatsError: notificationStatsQuery.isError,
     qaSummary: qaSummaryQuery.isError ? null : qaSummaryQuery.data?.data,
@@ -109,6 +123,29 @@ export default function DashboardPage() {
     [string | null, number]
   >((best, [name, cost]) => (cost > best[1] ? [name, cost] : best), [null, 0]);
   const topSessions = topSessionsQuery.isError ? [] : (topSessionsQuery.data?.data ?? []);
+
+  // Wire live approve/deny/defer handlers onto the individually-actionable
+  // approval rows model.ts produced (rows carrying `approvalId`) -- the
+  // model itself stays a pure function, so the mutations are attached here
+  // (bu-86c4c.14: approve/deny/defer executable from the dashboard's
+  // attention list without leaving the pane).
+  const attentionRows: AttentionListItem[] = useMemo(
+    () =>
+      model.attentionRows.map((row) => {
+        if (!row.approvalId) return row;
+        const id = row.approvalId;
+        return {
+          ...row,
+          onApprove: () => approveMut.mutate(id),
+          onDeny: () => denyMut.mutate({ id }),
+          onDefer: () => deferMut.mutate({ id, hours: 24 }),
+          approvePending: approveMut.isPending && approveMut.variables === id,
+          denyPending: denyMut.isPending && denyMut.variables?.id === id,
+          deferPending: deferMut.isPending && deferMut.variables?.id === id,
+        };
+      }),
+    [model.attentionRows, approveMut, denyMut, deferMut],
+  );
 
   // Briefing headline and greet with safe fallbacks. A failed briefing fetch
   // must never render the indefinite "Checking in." / "check back in a
@@ -160,7 +197,7 @@ export default function DashboardPage() {
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
           <Section eyebrow="Needs attention">
-            <AttentionList items={model.attentionRows} />
+            <AttentionList items={attentionRows} />
           </Section>
 
           <RuntimeSummaryKpi

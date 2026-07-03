@@ -175,6 +175,36 @@ The pending rail SHALL be ordered by decision urgency, not arrival order.
 - **WHEN** two pending approvals have comparable expiry urgency
 - **THEN** the approval with the higher blast-radius tool (e.g. an outbound `notify`/`send_*` call) ranks ahead of a lower-radius internal data write (e.g. an `assert`/`store` call).
 
+### Requirement: Keyboard-Driven Triage with Undo
+
+`/approvals` SHALL support fully keyboard-driven triage of the pending rail: `j`/`k` move roving focus (and selection) between rail items, and `a`/`d`/`x` schedule approve/deny/defer on the focused item. These bare-key shortcuts are inactive while focus is inside an input, textarea, or content-editable element, while a modifier key is held, or while a pending `g`-chord (see the global command-menu shortcuts) owns the next keystroke.
+
+Because a rapid keystroke during triage is cheap to mis-press, a decision scheduled via `a`/`d`/`x` SHALL NOT call its approve/deny/defer endpoint immediately. It SHALL instead enter a per-item pending state, held for a fixed undo window, during which the item renders distinctly (dimmed, verb-labeled, e.g. "Approving…") in the rail and an undo toast is shown; only after the window elapses without an undo does the mutation fire. Clicking the pending rail item, or the toast's Undo action, cancels the scheduled decision before it reaches the backend. Mouse clicks on the dossier's own Approve/Deny/Defer buttons are unaffected by this window and continue to fire immediately (the existing one-click optimistic design).
+
+#### Scenario: j/k roving focus moves the selection
+
+- **WHEN** the pending rail has focus (or the page has keyboard focus outside an editable field) and the user presses `j`
+- **THEN** selection (and the URL) advances to the next-ranked pending item
+- **AND** pressing `k` moves selection to the previous-ranked item.
+
+#### Scenario: a/d/x schedule a decision instead of firing immediately
+
+- **WHEN** the user presses `a`, `d`, or `x` while a pending approval has keyboard focus
+- **THEN** the approve/deny/defer endpoint is NOT called immediately
+- **AND** the rail item renders a per-item pending state (dimmed, verb-labeled) and an undo toast appears
+- **AND** the real mutation fires only after the undo window elapses without the decision being undone.
+
+#### Scenario: Undo cancels a scheduled decision before it reaches the backend
+
+- **WHEN** the user clicks the pending rail item, or the undo toast's action, before the undo window elapses
+- **THEN** the scheduled decision is cancelled and no approve/deny/defer request is sent
+- **AND** the item returns to its normal (non-pending) rendering.
+
+#### Scenario: Keyboard shortcuts do not fire while typing
+
+- **WHEN** an input, textarea, or content-editable element has focus (e.g. the inline deny-reason field)
+- **THEN** `j`, `k`, `a`, `d`, and `x` keystrokes are treated as ordinary text input, not triage shortcuts.
+
 ### Requirement: Approved-but-Undispatched Renders Amber, Never Success-Green
 
 An approval whose backend `status` is `"approved"` (approved but not yet dispatched — see the dispatched-vs-approved distinction in Approval Verbs) SHALL never render with the same success-green treatment as `"executed"`.

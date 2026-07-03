@@ -1,5 +1,6 @@
 import type {
   ApprovalMetrics,
+  ApprovalSummary,
   ButlerHeartbeat,
   ButlerSummary,
   SpendSummary,
@@ -27,6 +28,8 @@ export interface OverviewDerivationOptions {
   includeOldIssueRows?: boolean;
   maxRecentIssueRows?: number;
   maxTimelineRows?: number;
+  /** Cap on individually-actionable approval rows (bu-86c4c.14); extras collapse into a "N more" link row. */
+  maxAttentionApprovalRows?: number;
 }
 
 export interface OverviewDerivationInput {
@@ -37,6 +40,15 @@ export interface OverviewDerivationInput {
   issuesError?: boolean;
   heartbeats?: HeartbeatFacts | null;
   approvalMetrics?: ApprovalMetrics | null;
+  /**
+   * Individual pending approvals (top few, any order) -- when present, the
+   * Needs-attention list renders one actionable row per approval (verb-
+   * labeled inline approve/deny/defer, bu-86c4c.14) instead of the aggregate
+   * "N pending approvals" count row. Falls back to the aggregate row from
+   * `approvalMetrics` when this is absent/empty (detail fetch not wired, or
+   * erroring) so a real pending-approvals signal never silently disappears.
+   */
+  approvals?: ApprovalSummary[] | null;
   notificationStats?: NotificationStats | null;
   notificationStatsError?: boolean;
   qaSummary?: QaSummary | null;
@@ -88,6 +100,15 @@ export interface OverviewAttentionRow {
    * role="alert" so a degraded source announces itself distinctly.
    */
   isSourceError?: boolean;
+  /**
+   * Present only on an individually-actionable pending-approval row (kind
+   * "approval") -- the underlying approval id. DashboardPage uses this to
+   * wire live approve/deny/defer mutations onto the row before handing it to
+   * AttentionList (bu-86c4c.14 -- Act loop / hot queue: approve/deny/defer
+   * executable from the dashboard's attention list without leaving the
+   * pane). Absent on the aggregate-count fallback row and every other kind.
+   */
+  approvalId?: string;
 }
 
 export interface OverviewNowRow {
@@ -125,6 +146,7 @@ const DEFAULT_RECENT_ISSUE_HOURS = 24;
 const DEFAULT_STALE_HEARTBEAT_SECONDS = 5 * 60;
 const DEFAULT_MAX_RECENT_ISSUE_ROWS = 5;
 const DEFAULT_MAX_TIMELINE_ROWS = 2;
+const DEFAULT_MAX_ATTENTION_APPROVAL_ROWS = 3;
 
 const HEALTHY_STATUSES = new Set(["ok", "online", "healthy"]);
 const DEGRADED_STATUSES = new Set(["degraded", "waiting", "paused", "error", "failed"]);
@@ -140,6 +162,8 @@ export function deriveOverviewTriageModel(
     options.staleHeartbeatSeconds ?? DEFAULT_STALE_HEARTBEAT_SECONDS;
   const maxRecentIssueRows = options.maxRecentIssueRows ?? DEFAULT_MAX_RECENT_ISSUE_ROWS;
   const maxTimelineRows = options.maxTimelineRows ?? DEFAULT_MAX_TIMELINE_ROWS;
+  const maxAttentionApprovalRows =
+    options.maxAttentionApprovalRows ?? DEFAULT_MAX_ATTENTION_APPROVAL_ROWS;
 
   const butlers = (input.butlers ?? []).filter((butler) => butler.type === "butler");
   const heartbeatByName = new Map<string, ButlerHeartbeat>(
@@ -160,7 +184,11 @@ export function deriveOverviewTriageModel(
   const runtimeRows = operationsRows
     .filter((row) => row.needsAttention)
     .map(runtimeAttentionRow);
-  const approvalRows = approvalAttentionRows(input.approvalMetrics);
+  const approvalRows = approvalAttentionRows(
+    input.approvals,
+    input.approvalMetrics,
+    maxAttentionApprovalRows,
+  );
   const notificationRows = notificationAttentionRows(input.notificationStats);
   const qaRows = qaAttentionRows(input.qaSummary);
   const currentHighIssues = issueBuckets.currentHigh.slice(0, maxRecentIssueRows);
@@ -401,7 +429,54 @@ function runtimeAttentionRow(row: OverviewButlerIndexRow): OverviewAttentionRow 
   };
 }
 
-function approvalAttentionRows(metrics: ApprovalMetrics | null | undefined): OverviewAttentionRow[] {
+/** Soonest-expiry-first, no-expiry items last (stable on ties). */
+function byExpirySoonFirst(a: ApprovalSummary, b: ApprovalSummary): number {
+  const aTime = a.expires_at ? new Date(a.expires_at).getTime() : Infinity;
+  const bTime = b.expires_at ? new Date(b.expires_at).getTime() : Infinity;
+  return aTime - bTime;
+}
+
+function approvalAttentionRows(
+  approvals: ApprovalSummary[] | null | undefined,
+  metrics: ApprovalMetrics | null | undefined,
+  maxRows: number,
+): OverviewAttentionRow[] {
+  // Individual, actionable rows -- lets the owner approve/deny/defer inline
+  // from the attention list (bu-86c4c.14) instead of only linking out.
+  // Intentionally a simpler ranking than ApprovalsPage's full expiry +
+  // blast-radius score: this is a "what needs a look" preview, not the
+  // triage queue itself.
+  if (approvals && approvals.length > 0) {
+    const sorted = [...approvals].sort(byExpirySoonFirst);
+    const shown = sorted.slice(0, maxRows);
+    const rows: OverviewAttentionRow[] = shown.map((a) => ({
+      id: `approvals:${a.id}`,
+      kind: "approval",
+      severity: "medium",
+      title: a.tool_name.replace(/_/g, " "),
+      detail: a.why ?? `${a.butler} · awaiting decision`,
+      href: `/approvals/${a.id}`,
+      approvalId: a.id,
+    }));
+    const remaining = sorted.length - shown.length;
+    if (remaining > 0) {
+      rows.push({
+        id: "approvals:more",
+        kind: "approval",
+        severity: "low",
+        title: `${remaining} more pending approval${remaining === 1 ? "" : "s"}`,
+        detail: "Review the full queue.",
+        href: "/approvals",
+        count: remaining,
+      });
+    }
+    return rows;
+  }
+
+  // Fallback: only the aggregate count is available (the detail list isn't
+  // wired by this caller, or came back empty/erroring while metrics still
+  // report pending > 0). Keeps the existing summary-only row so a real
+  // pending-approvals signal never silently disappears.
   const pending = metrics?.total_pending ?? 0;
   if (pending <= 0) return [];
   return [

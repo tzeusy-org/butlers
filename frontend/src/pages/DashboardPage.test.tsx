@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tests for DashboardPage (editorial archetype, bu-1fpvp.2 / bu-bm58r.1).
  *
@@ -14,6 +15,8 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -32,7 +35,13 @@ vi.mock("@/hooks/use-spend", () => ({
   useDailySpend: vi.fn(),
 }));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
-vi.mock("@/hooks/use-approvals", () => ({ useApprovalMetrics: vi.fn() }));
+vi.mock("@/hooks/use-approvals", () => ({
+  useApprovalMetrics: vi.fn(),
+  usePendingApprovalsFlat: vi.fn(),
+}));
+vi.mock("@/hooks/use-approval-decisions.ts", () => ({
+  useApprovalDecisionMutations: vi.fn(),
+}));
 vi.mock("@/hooks/use-system", () => ({ useButlerHeartbeats: vi.fn() }));
 vi.mock("@/hooks/use-notifications", () => ({ useNotificationStats: vi.fn() }));
 vi.mock("@/hooks/use-qa", () => ({ useQaSummary: vi.fn() }));
@@ -46,7 +55,8 @@ import { useBriefing } from "@/hooks/use-briefing";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
-import { useApprovalMetrics } from "@/hooks/use-approvals";
+import { useApprovalMetrics, usePendingApprovalsFlat } from "@/hooks/use-approvals";
+import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
@@ -143,6 +153,17 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
     isLoading: false,
     isError: false,
     error: null,
+  } as AnyMock);
+  vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+  vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+    approveMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+    denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+    deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
   } as AnyMock);
   vi.mocked(useButlerHeartbeats).mockReturnValue({
     data: {
@@ -783,5 +804,133 @@ describe("DashboardPage -- butler-health source failure", () => {
     const html = renderPage();
     expect(html).toContain("Butler health: unavailable");
     expect(html).toContain('href="/system"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline approve/deny/defer on the Needs-attention list (bu-86c4c.14 -- Act
+// loop / hot queue): approve/deny/defer executable from the dashboard
+// without leaving the pane.
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-86c4c.14)", () => {
+  let container: HTMLDivElement | undefined;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive() {
+    const queryClient = new QueryClient();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => {
+      r.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <DashboardPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  function findButton(label: string): HTMLButtonElement | undefined {
+    return Array.from(container!.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === label,
+    );
+  }
+
+  it("renders one actionable row per pending approval with verb-labeled buttons", () => {
+    vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+      data: {
+        data: [
+          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("send email");
+    expect(html).toContain(">Approve<");
+    expect(html).toContain(">Deny<");
+    expect(html).toContain(">Defer<");
+  });
+
+  it("calls the shared approve/deny/defer mutations with the row's approval id", () => {
+    const approveMutate = vi.fn();
+    const denyMutate = vi.fn();
+    const deferMutate = vi.fn();
+    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+      approveMut: { mutate: approveMutate, isPending: false, variables: undefined },
+      denyMut: { mutate: denyMutate, isPending: false, variables: undefined },
+      deferMut: { mutate: deferMutate, isPending: false, variables: undefined },
+    } as AnyMock);
+    vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+      data: {
+        data: [
+          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    renderLive();
+
+    act(() => {
+      findButton("Approve")!.click();
+    });
+    expect(approveMutate).toHaveBeenCalledWith("a1");
+
+    act(() => {
+      findButton("Deny")!.click();
+    });
+    expect(denyMutate).toHaveBeenCalledWith({ id: "a1" });
+
+    act(() => {
+      findButton("Defer")!.click();
+    });
+    expect(deferMutate).toHaveBeenCalledWith({ id: "a1", hours: 24 });
+  });
+
+  it("falls back to the aggregate 'N pending approvals' row when the detail list errors", () => {
+    vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("unreachable"),
+    } as AnyMock);
+    vi.mocked(useApprovalMetrics).mockReturnValue({
+      data: { data: { total_pending: 3 }, meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("3 pending approvals");
+    expect(html).not.toContain(">Approve<");
   });
 });

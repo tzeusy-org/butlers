@@ -122,6 +122,23 @@ a card grid or table.
 - **THEN** the list renders a local error row for the attention surface
 - **AND** the rest of the Overview remains visible
 
+### Requirement: Inline Approve/Deny/Defer on Attention Rows
+
+When individual pending approvals are available (not just the aggregate pending count), the `Needs attention` list SHALL render one actionable row per approval — up to a small cap, with any remainder collapsed into a single "N more pending approvals" row linking to `/approvals` — instead of only the aggregate count row. Each actionable row SHALL expose verb-labeled Approve/Deny/Defer buttons that call the same approve/deny/defer endpoints `/approvals` uses, letting the owner decide without leaving the Overview page. A row's own pending state (e.g. "Approving…") SHALL be scoped to that row's button only, never borrowed by a sibling row's in-flight decision.
+
+When the individual pending-approvals detail fetch is unavailable or empty while the aggregate metrics still report a nonzero pending count, the list SHALL fall back to the existing aggregate "N pending approvals" link row rather than silently dropping the signal.
+
+#### Scenario: Actionable rows render inline decision buttons
+
+- **WHEN** one or more individual pending approvals are available
+- **THEN** the attention list renders one row per approval (capped, with a "N more" row for the remainder) each showing Approve, Deny, and Defer buttons
+- **AND** clicking a button calls the corresponding approve/deny/defer endpoint with that approval's id and optimistically removes the row on success.
+
+#### Scenario: Falls back to the aggregate count when the detail list is unavailable
+
+- **WHEN** the individual pending-approvals fetch errors or returns no rows while the aggregate metrics report `total_pending > 0`
+- **THEN** the attention list renders the existing aggregate "N pending approvals" row linking to `/approvals`, with no inline decision buttons.
+
 ### Requirement: Runtime KPI Strip
 
 The home page SHALL render a promoted four-cell runtime KPI strip. "Promoted"
