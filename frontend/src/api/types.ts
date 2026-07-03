@@ -2639,6 +2639,11 @@ export interface ApprovalDetail {
   decided_at?: string | null;
   target_contact?: TargetContact | null;
   /**
+   * Originating session UUID that produced this action, when known. Lets the
+   * dossier link back to the session/trace that proposed the action.
+   */
+  session_id?: string | null;
+  /**
    * Entity UUIDs from proposed_action.tool_args resolved to canonical names.
    * Empty when the action references no known entities or resolution failed.
    */

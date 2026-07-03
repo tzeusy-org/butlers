@@ -1166,6 +1166,55 @@ async def test_emit_approvals_event_publishes_to_subscribers(app):
 
 
 # ---------------------------------------------------------------------------
+# Detail dossier surfaces the originating session_id (bu-86c4c.12 — Trust
+# Console evidence wiring: link the dossier back to the session/trace that
+# produced the proposed action).
+# ---------------------------------------------------------------------------
+
+
+async def test_detail_includes_originating_session_id(app):
+    """GET /api/approvals/{id} surfaces session_id so the dossier can link to
+    the originating session/trace that proposed the action."""
+    action_id = uuid4()
+    session_id = uuid4()
+    app, mock_conn = _app_with_mock_db(
+        app,
+        fetchrow_return={
+            **_make_action(),
+            "id": action_id,
+            "session_id": session_id,
+        },
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    detail = resp.json()["data"]
+    assert detail["session_id"] == str(session_id)
+
+
+async def test_detail_session_id_null_when_action_has_none(app):
+    """GET /api/approvals/{id} returns session_id: null (not a KeyError) for
+    actions with no recorded session (legacy rows / non-agent-originated)."""
+    action_id = uuid4()
+    app, mock_conn = _app_with_mock_db(
+        app,
+        fetchrow_return={**_make_action(), "id": action_id, "session_id": None},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["session_id"] is None
+
+
+# ---------------------------------------------------------------------------
 # Detail dossier resolves target_contact from entity_id (bu — approvals UX)
 # ---------------------------------------------------------------------------
 

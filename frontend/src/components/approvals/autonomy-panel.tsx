@@ -1,0 +1,216 @@
+/**
+ * AutonomyPanel — the always-visible ledger of standing autonomy grants.
+ *
+ * Move 9 of the 2026-07-03 JARVIS audit: `/approvals/rules` was an orphaned
+ * CRUD page with zero inbound links anywhere in the product — the owner
+ * could not see, audit, or revoke what the fleet may already do without
+ * asking. This panel merges that record into `/approvals` itself so trust
+ * is never invisible: every active standing rule, its live use count, and a
+ * one-keystroke revoke live next to the decision queue they govern.
+ *
+ * Trust tiers (derived client-side from `arg_constraints`, since the backend
+ * does not yet expose an explicit tier):
+ *   - "scoped"         — arg_constraints narrows the match (specific values)
+ *   - "full autonomy"  — arg_constraints is empty / `{type: "any"}` wildcard
+ *
+ * NOTE: this panel only lists tools that already HAVE a standing rule. A
+ * full "always ask" baseline (every gated tool with zero rules) requires a
+ * new backend endpoint enumerating all gated tool types — tracked as a
+ * follow-up, not implemented here.
+ *
+ * bu-86c4c.12
+ */
+
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { getApprovalRules } from "@/api/index.ts";
+import type { ApprovalRule } from "@/api/index.ts";
+import { approvalKeys, useRevokeRule } from "@/hooks/use-approvals.ts";
+import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
+import { CreateRuleDialog } from "@/components/approvals/create-rule-dialog.tsx";
+
+const RULES_LIMIT = 100;
+// Live use counts: poll on a short interval so a revoke or a fresh
+// auto-approval elsewhere shows up here without a manual refresh.
+const RULES_REFETCH_MS = 20_000;
+
+function fmtTs(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function isWildcardConstraints(constraints: Record<string, unknown>): boolean {
+  if (Object.keys(constraints).length === 0) return true;
+  return constraints.type === "any";
+}
+
+function ruleTier(rule: ApprovalRule): "full autonomy" | "scoped" {
+  return isWildcardConstraints(rule.arg_constraints) ? "full autonomy" : "scoped";
+}
+
+function tierClass(tier: "full autonomy" | "scoped"): string {
+  return tier === "full autonomy"
+    ? "text-red-600 dark:text-red-400"
+    : "text-blue-600 dark:text-blue-400";
+}
+
+// ---------------------------------------------------------------------------
+// RuleRow — one standing grant, with inline (non-window.confirm) revoke.
+// ---------------------------------------------------------------------------
+
+function RuleRow({ rule }: { rule: ApprovalRule }) {
+  const [confirming, setConfirming] = useState(false);
+  const revokeMut = useRevokeRule();
+  const tier = ruleTier(rule);
+  const nearMaxUses = rule.max_uses != null && rule.use_count >= rule.max_uses;
+
+  return (
+    <div className="py-2.5 border-b border-border/50 last:border-b-0">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs text-foreground truncate">
+          {rule.tool_name}
+        </span>
+        <span className={`font-mono text-[10px] uppercase tracking-wider shrink-0 ${tierClass(tier)}`}>
+          {tier}
+        </span>
+      </div>
+      <div className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
+        {rule.description}
+      </div>
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
+          <span className={nearMaxUses ? "text-amber-600 dark:text-amber-400 font-medium" : undefined}>
+            {rule.use_count} use{rule.use_count === 1 ? "" : "s"}
+            {rule.max_uses != null ? ` / ${rule.max_uses}` : ""}
+          </span>
+          {rule.expires_at && <span>· expires {fmtTs(rule.expires_at)}</span>}
+        </div>
+        {!confirming ? (
+          <button
+            onClick={() => setConfirming(true)}
+            className="shrink-0 text-[10px] font-mono uppercase tracking-wide text-muted-foreground hover:text-destructive transition-colors"
+          >
+            Revoke
+          </button>
+        ) : (
+          <div className="shrink-0 flex items-center gap-1.5">
+            <span className="text-[10px] font-mono text-muted-foreground">Revoke?</span>
+            <button
+              onClick={() => {
+                revokeMut.mutate(rule.id, { onSettled: () => setConfirming(false) });
+              }}
+              disabled={revokeMut.isPending}
+              className="text-[10px] font-mono uppercase tracking-wide text-destructive hover:underline disabled:opacity-50"
+            >
+              {revokeMut.isPending ? "revoking…" : "confirm"}
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground hover:underline"
+            >
+              cancel
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AutonomyPanel — grouped by butler, always visible.
+// ---------------------------------------------------------------------------
+
+export function AutonomyPanel() {
+  const qc = useQueryClient();
+  const [createOpen, setCreateOpen] = useState(false);
+  const params = { active: true, limit: RULES_LIMIT };
+
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: approvalKeys.rules(params),
+    queryFn: () => getApprovalRules(params),
+    refetchInterval: RULES_REFETCH_MS,
+  });
+
+  const rules = data?.data ?? [];
+  const byButler = new Map<string, ApprovalRule[]>();
+  for (const rule of rules) {
+    // ApprovalRule has no butler field today (rules are tool-scoped, not
+    // butler-scoped) — group under a single "standing rules" bucket rather
+    // than fabricate a per-butler split the data does not support.
+    const key = "standing rules";
+    const list = byButler.get(key) ?? [];
+    list.push(rule);
+    byButler.set(key, list);
+  }
+
+  return (
+    <div
+      className="w-80 shrink-0 border-l border-border overflow-y-auto flex flex-col"
+      data-testid="autonomy-panel"
+    >
+      <div className="px-4 pt-4 pb-3 border-b border-border flex items-center justify-between gap-2 shrink-0">
+        <div>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+            Autonomy
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            What the fleet may do unsupervised
+          </div>
+        </div>
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="shrink-0 text-[10px] font-mono uppercase tracking-wide px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors"
+        >
+          + Rule
+        </button>
+      </div>
+
+      <div className="px-4 py-3 flex-1">
+        <QueryBoundary
+          isLoading={isLoading}
+          isError={isError}
+          error={error}
+          isEmpty={rules.length === 0}
+          onRetry={() => void refetch()}
+          sourceLabel="standing autonomy rules"
+          loadingFallback={
+            <div className="text-xs text-muted-foreground font-mono">loading…</div>
+          }
+          emptyFallback={
+            <div className="text-xs text-muted-foreground">
+              No standing rules. Every action requires manual approval.
+            </div>
+          }
+        >
+          {[...byButler.entries()].map(([group, groupRules]) => (
+            <div key={group}>
+              <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
+                {group} ({groupRules.length})
+              </div>
+              {groupRules.map((rule) => (
+                <RuleRow key={rule.id} rule={rule} />
+              ))}
+            </div>
+          ))}
+        </QueryBoundary>
+      </div>
+
+      <CreateRuleDialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) qc.invalidateQueries({ queryKey: approvalKeys.rules() });
+        }}
+      />
+    </div>
+  );
+}

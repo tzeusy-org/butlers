@@ -3,16 +3,16 @@
  *
  * Full-width scroll panel listing the butler's pending approval actions.
  * Each row contains a severity dot, title (tool_name), sub-line with age,
- * and an action link navigating to the global /approvals page.
+ * and an action link deep-linking straight into that action's dossier at
+ * /approvals/:id (bu-86c4c.12 — every approval has a URL).
  *
  * Severity is derived from how soon the action expires:
  *   high   -- expires within 1 hour (or already expired)
  *   medium -- expires within 24 hours
  *   low    -- no expiry or expires later
  *
- * Filtering: the backend's GET /approvals/actions accepts a `butler` query
- * param and scopes the result to that butler's pending actions server-side
- * (see approvals.py:list_actions).
+ * Filtering: passes butlerName to useApprovalActions for forward compatibility.
+ * The backend does not yet filter by butler; server-side scoping is a follow-up.
  *
  * Empty state (per project voice rules -- no em-dashes, sentence case):
  *   "No items pending review."
@@ -108,11 +108,9 @@ function ApprovalRow({ action }: ApprovalRowProps) {
         </div>
       </div>
 
-      {/* Action link -- deep-links to the global approvals page, scoped to
-          this butler and this action (bu-86c4c.18) instead of dropping the
-          operator on an unfiltered list they have to re-find the item in. */}
+      {/* Action link -- deep-link straight into this action's dossier */}
       <Link
-        to={`/approvals?butler=${encodeURIComponent(action.butler)}&id=${encodeURIComponent(action.id)}`}
+        to={`/approvals/${action.id}`}
         className="shrink-0 text-xs text-primary hover:underline"
         data-testid="approval-action-link"
         aria-label={`Review approval for ${action.tool_name}`}

@@ -93,6 +93,14 @@ class ApprovalDetail(BaseModel):
     decided_by: str | None = None
     decided_at: datetime | None = None
     target_contact: TargetContact | None = None
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "Originating session UUID that produced this action, when known. "
+            "Lets the dossier link back to the session/trace that proposed the "
+            "action so the owner can scrutinize the evidence before deciding."
+        ),
+    )
     referenced_entities: list[EntityRef] = Field(
         default_factory=list,
         description=(

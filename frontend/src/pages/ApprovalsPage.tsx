@@ -1,24 +1,37 @@
 /**
- * ApprovalsPage — /approvals
+ * ApprovalsPage — /approvals and /approvals/:id
  *
- * Dispatch dossier layout (§8.4):
- *   - Left rail: pending approval summaries (rule-separated rows)
- *   - Right pane: dossier for the selected approval
+ * One Trust Console (JARVIS audit move 9): the queue, the decision dossier,
+ * and the standing-autonomy ledger live on one screen so trust is never an
+ * orphaned URL.
+ *
+ * Three-column body:
+ *   - Left rail: pending approval summaries, ranked by expiry urgency +
+ *     blast radius (not arrival order) — rule-separated rows.
+ *   - Center pane: dossier for the selected approval
  *     - title headline (sans 500, 22px)
  *     - why: serif paragraph (max-width 50ch)
  *     - evidence: mono lines (rule-separated)
  *     - proposed_action summary
  *     - primary Approve button, secondary Deny / Defer pill buttons
+ *   - Right pane: Autonomy panel — always-visible ledger of standing
+ *     autonomy rules (formerly the orphaned /approvals/rules CRUD page),
+ *     with live use counts and inline revoke.
  *   - Policy section: quiet-hours editor
- *   - History section: last 30 decided approvals
+ *   - History section: last 30 decided approvals — each row opens its
+ *     (read-only) dossier via /approvals/:id.
+ *
+ * Every approval has a URL (/approvals/:id) so a notification, a history
+ * row, or a bookmark can land the owner directly on the decision.
  *
  * No Kanban columns. No charts. No cards.
  *
  * bu-5xiu9 — Phase 6: /approvals replacement
+ * bu-86c4c.12 — One Trust Console: Autonomy panel, /approvals/:id, ranking
  */
 
 import { useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -47,6 +60,7 @@ import {
   useDismissAutonomySuggestion,
 } from "@/hooks/use-approvals.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
+import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
 
 // ---------------------------------------------------------------------------
@@ -84,12 +98,18 @@ function fmtTs(iso: string | null | undefined): string {
   }
 }
 
+// "approved" ALWAYS means approved-but-not-yet-dispatched here (the backend
+// only reaches "executed" once the tool call actually ran — see dispatched
+// handling below). Rendering it green would claim a success that did not
+// happen; it must read as a stalled, actionable amber state, never success
+// green (JARVIS audit move 9 — "approved-but-never-dispatched renders amber,
+// never success-green").
 function statusColor(status: string): string {
   switch (status) {
     case "pending":
       return "text-amber-600 dark:text-amber-400";
     case "approved":
-      return "text-green-600 dark:text-green-400";
+      return "text-orange-600 dark:text-orange-400";
     case "executed":
       return "text-blue-600 dark:text-blue-400";
     case "rejected":
@@ -99,6 +119,72 @@ function statusColor(status: string): string {
     default:
       return "text-foreground";
   }
+}
+
+// Human label for a status badge. "approved" reads as "stalled" — it is an
+// approval that never dispatched, not a settled success state.
+function statusLabel(status: string): string {
+  return status === "approved" ? "stalled" : status;
+}
+
+// ---------------------------------------------------------------------------
+// Queue ranking — expiry urgency + blast radius, not arrival order
+//
+// summary.expires_at previously drove nothing: an approval about to expire
+// looked identical to one that just arrived. Rank the pending rail by a
+// combination of (1) how soon it expires and (2) how consequential the tool
+// call is, so the first screenful is what most needs the owner's attention.
+// ---------------------------------------------------------------------------
+
+const HOUR_MS = 3_600_000;
+
+// Coarse blast-radius tiers by tool-name keyword. Outbound/irreversible
+// actions (message a human, delete/revoke something) outrank internal data
+// writes (assert/store a fact). Unclassified tools default to the middle
+// tier rather than silently sorting last.
+const HIGH_BLAST_RADIUS = /notify|send|message|email|telegram|delete|revoke/i;
+const LOW_BLAST_RADIUS = /assert|store|write|update|create/i;
+
+function blastRadius(toolName: string): number {
+  if (HIGH_BLAST_RADIUS.test(toolName)) return 3;
+  if (LOW_BLAST_RADIUS.test(toolName)) return 1;
+  return 2;
+}
+
+function expiryUrgency(expiresAt: string | null | undefined): number {
+  if (!expiresAt) return 0;
+  const expiresDate = new Date(expiresAt);
+  if (Number.isNaN(expiresDate.getTime())) return 0;
+  const msLeft = expiresDate.getTime() - Date.now();
+  if (msLeft <= 0) return 4; // already past expiry — most urgent
+  if (msLeft <= HOUR_MS) return 3;
+  if (msLeft <= 6 * HOUR_MS) return 2;
+  if (msLeft <= 24 * HOUR_MS) return 1;
+  return 0;
+}
+
+function rankScore(summary: ApprovalSummary): number {
+  // Expiry dominates the sort (it is time-bounded and irreversible once
+  // missed); blast radius breaks ties among similarly-urgent items.
+  return expiryUrgency(summary.expires_at) * 10 + blastRadius(summary.tool_name);
+}
+
+/** Countdown chip text + whether it should render in warning color (<=1h). */
+function expiryCountdown(
+  expiresAt: string | null | undefined,
+): { text: string; warn: boolean } | null {
+  if (!expiresAt) return null;
+  const expiresDate = new Date(expiresAt);
+  if (Number.isNaN(expiresDate.getTime())) return null;
+  const msLeft = expiresDate.getTime() - Date.now();
+  const warn = msLeft <= HOUR_MS;
+  if (msLeft <= 0) return { text: "expired", warn: true };
+  const mins = Math.round(msLeft / 60_000);
+  if (mins < 60) return { text: `expires in ${mins}m`, warn };
+  const hours = Math.round(msLeft / HOUR_MS);
+  if (hours < 24) return { text: `expires in ${hours}h`, warn };
+  const days = Math.round(msLeft / (24 * HOUR_MS));
+  return { text: `expires in ${days}d`, warn };
 }
 
 // ---------------------------------------------------------------------------
@@ -193,12 +279,16 @@ function RailItem({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const countdown = expiryCountdown(summary.expires_at);
   return (
     <button
       onClick={onSelect}
+      data-testid="rail-item"
+      data-approval-id={summary.id}
       className={[
         "w-full text-left px-3 py-3 border-b border-border last:border-b-0",
-        "transition-colors focus:outline-none",
+        "transition-colors focus-visible:outline focus-visible:outline-2",
+        "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
         selected ? "bg-foreground/5" : "hover:bg-foreground/[0.03]",
       ].join(" ")}
     >
@@ -209,7 +299,7 @@ function RailItem({
         <span
           className={`font-mono text-[10px] uppercase tracking-wider ${statusColor(summary.status)}`}
         >
-          {summary.status}
+          {statusLabel(summary.status)}
         </span>
       </div>
       <div className="mt-0.5 text-sm font-medium truncate">
@@ -220,8 +310,19 @@ function RailItem({
           {summary.why}
         </div>
       )}
-      <div className="mt-1 text-[10px] font-mono text-muted-foreground">
-        {fmtTs(summary.created_at)}
+      <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+        <span>{fmtTs(summary.created_at)}</span>
+        {countdown && (
+          <span
+            className={
+              countdown.warn
+                ? "text-red-600 dark:text-red-400 font-medium"
+                : "text-muted-foreground"
+            }
+          >
+            · {countdown.text}
+          </span>
+        )}
       </div>
     </button>
   );
@@ -287,6 +388,7 @@ function Dossier({
   const isPending = detail.status === "pending";
   const digest = predicateDigest(detail);
   const refEntities = detail.referenced_entities ?? [];
+  const expiryChip = expiryCountdown(detail.expires_at);
 
   return (
     <div className="flex-1 overflow-y-auto p-6 relative">
@@ -433,8 +535,27 @@ function Dossier({
         <div className={isPending ? "pr-56" : undefined}>
           <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
             {detail.butler} · {fmtTs(detail.created_at)}
-            {detail.expires_at && (
-              <span className="ml-2">expires {fmtTs(detail.expires_at)}</span>
+            {detail.session_id && (
+              <>
+                {" · "}
+                <Link
+                  to={`/sessions/${encodeURIComponent(detail.session_id)}`}
+                  className="hover:text-foreground hover:underline normal-case tracking-normal"
+                >
+                  originating session
+                </Link>
+              </>
+            )}
+            {expiryChip && (
+              <span
+                className={
+                  expiryChip.warn
+                    ? "ml-2 text-red-600 dark:text-red-400 font-medium"
+                    : "ml-2"
+                }
+              >
+                {expiryChip.text}
+              </span>
             )}
           </div>
           <h2 className="text-[22px] font-medium leading-tight">
@@ -443,7 +564,7 @@ function Dossier({
           <span
             className={`text-xs font-mono uppercase tracking-wide ${statusColor(detail.status)}`}
           >
-            {detail.status}
+            {statusLabel(detail.status)}
           </span>
         </div>
 
@@ -846,11 +967,19 @@ function HistorySection() {
             <span
               className={`font-mono text-[10px] uppercase w-16 shrink-0 ${statusColor(item.status)}`}
             >
-              {item.status}
+              {statusLabel(item.status)}
             </span>
-            <span className="text-sm truncate flex-1">
+            {/* Auditability: every decided approval opens its (read-only)
+                dossier via /approvals/:id — the Dossier pane already renders
+                a decided state (no decision cluster, decided_by/decided_at
+                shown) when status !== "pending". */}
+            <Link
+              to={`/approvals/${item.id}`}
+              data-testid="history-row-link"
+              className="text-sm truncate flex-1 hover:underline"
+            >
               {item.tool_name.replace(/_/g, " ")}
-            </span>
+            </Link>
             {/* "approved" in History = approved-but-un-run (dispatch silently
                 failed). Offer a retry; "executed" rows ran successfully. */}
             {item.status === "approved" && (
@@ -932,15 +1061,14 @@ function AutonomySuggestionsSection() {
 
 export default function ApprovalsPage() {
   const qc = useQueryClient();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Every approval has a URL (/approvals/:id) so a notification, a history
+  // row, or a bookmark can land the owner directly on the decision. The
+  // route param is the source of truth for an EXPLICIT selection; with no
+  // :id in the URL the rail falls back to the top-ranked pending item
+  // (see effectiveSelected below) without forcing a redirect.
+  const { id: routeId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
-
-  // Deep-link support (bu-86c4c.18): butler-detail Overview/Approvals rows
-  // link here with ?butler=<name>&id=<approvalId> instead of a bare global
-  // link the operator has to re-scan to find the item they just clicked.
-  const [searchParams] = useSearchParams();
-  const butlerFilter = searchParams.get("butler");
-  const deepLinkId = searchParams.get("id");
 
   // Live updates via WebSocket stream (§8.3).
   // Cache invalidation is handled inside useApprovalsStream; the refetchInterval
@@ -962,19 +1090,24 @@ export default function ApprovalsPage() {
   // rows renders the distinct "Approvals queue unavailable" state rather than
   // the calm "No pending approvals." -- the exact truth-amnesty defect named
   // in the JARVIS audit (ApprovalsPage.tsx:913-926).
-  const pendingAll = data?.data ?? [];
-  const pending = butlerFilter ? pendingAll.filter((a) => a.butler === butlerFilter) : pendingAll;
-  const firstId = pending[0]?.id;
-  const effectiveSelected = selectedId ?? deepLinkId ?? firstId ?? null;
+  // Rank by expiry urgency + blast radius rather than arrival order (JARVIS
+  // audit move 9): summary.expires_at previously drove nothing, so an
+  // approval about to expire looked identical to one that just arrived.
+  const rankedPending = useMemo(
+    () => [...(data?.data ?? [])].sort((a, b) => rankScore(b) - rankScore(a)),
+    [data],
+  );
+  const pending = rankedPending;
+  const firstId = rankedPending[0]?.id;
+  const effectiveSelected = routeId ?? firstId ?? null;
   // Show "Load more" only when the last response was full (may be more results).
   const hasMore = pending.length === pendingLimit;
 
   // Optimistic decision flow (bu-approvals-fast-deny): a decision drops the row
-  // from every "waiting" cache immediately and clears the explicit selection so
-  // the rail advances to the next pending item without waiting on the network.
-  // The mutation observers live here (never in the unmounting Dossier) so their
-  // success/error callbacks — including rollback — always fire. onSettled
-  // reconciles against server truth (also covered by the WS stream + refetch).
+  // from every "waiting" cache immediately. The mutation observers live here
+  // (never in the unmounting Dossier) so their success/error callbacks —
+  // including rollback — always fire. onSettled reconciles against server
+  // truth (also covered by the WS stream + refetch).
   type PendingSnapshot = [readonly unknown[], unknown][];
   const dropFromPending = (id: string): PendingSnapshot => {
     const key = ["approvals", "flat", "waiting"];
@@ -984,7 +1117,14 @@ export default function ApprovalsPage() {
         ? { ...old, data: old.data.filter((a) => a.id !== id) }
         : old,
     );
-    setSelectedId(null);
+    // Only navigate when the decided item was the EXPLICIT URL selection —
+    // the implicit default (no :id in the URL) recomputes `firstId` from the
+    // now-filtered rail automatically, no navigation needed.
+    if (routeId === id) {
+      const idx = rankedPending.findIndex((a) => a.id === id);
+      const nextId = rankedPending[idx + 1]?.id ?? rankedPending[idx - 1]?.id;
+      navigate(nextId ? `/approvals/${nextId}` : "/approvals", { replace: true });
+    }
     return prev;
   };
   const rollback = (prev: PendingSnapshot | undefined) =>
@@ -1104,7 +1244,7 @@ export default function ApprovalsPage() {
                 key={summary.id}
                 summary={summary}
                 selected={summary.id === effectiveSelected}
-                onSelect={() => setSelectedId(summary.id)}
+                onSelect={() => navigate(`/approvals/${summary.id}`)}
               />
             ))}
             {/* Load more — shown only when the previous response was full */}
@@ -1145,6 +1285,11 @@ export default function ApprovalsPage() {
             Select a pending approval to review.
           </div>
         )}
+
+        {/* Autonomy panel — always-visible ledger of standing autonomy
+            grants (replaces the orphaned /approvals/rules page, which had
+            zero inbound links anywhere in the product). */}
+        <AutonomyPanel />
       </div>
 
       {/* Bottom sections — policy and history */}

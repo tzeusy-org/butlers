@@ -45,13 +45,14 @@ const SIDEBAR_ROUTES: RouteEntry[] = navSections.flatMap((s) =>
  * sidebar — sub-pages reached by drilling in from a parent, or pages whose
  * primary entry point elsewhere is a redirect. Still indexed here so the
  * command menu, g-chords, and the '?' help sheet can reach them directly;
- * this is what "so /costs, /groups, /approvals/rules, and the six health
- * sub-pages can never be orphaned again" means in practice.
+ * this is what "so /costs, /groups, and the six health sub-pages can never
+ * be orphaned again" means in practice. (/approvals/rules was one of these
+ * until bu-86c4c.12 merged it into /approvals as the always-visible Autonomy
+ * panel and deleted the standalone route — nothing to index anymore.)
  */
 const EXTRA_ROUTES: RouteEntry[] = [
   { path: "/costs", label: "Costs", section: "Main" },
   { path: "/groups", label: "Groups", section: "Main" },
-  { path: "/approvals/rules", label: "Approval Rules", section: "Main" },
   { path: "/health/measurements", label: "Measurements", section: "Health", butler: "health" },
   { path: "/health/medications", label: "Medications", section: "Health", butler: "health" },
   { path: "/health/conditions", label: "Conditions", section: "Health", butler: "health" },

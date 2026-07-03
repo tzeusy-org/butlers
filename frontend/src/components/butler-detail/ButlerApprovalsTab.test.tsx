@@ -272,12 +272,12 @@ describe("ButlerApprovalsTab -- action link", () => {
     expect(links.length).toBe(2)
   })
 
-  it("action links deep-link to /approvals scoped to the butler and action id (bu-86c4c.18)", () => {
+  it("action links deep-link into that action's dossier at /approvals/:id (bu-86c4c.12)", () => {
     renderTab()
     const links = screen.getAllByTestId("approval-action-link") as HTMLAnchorElement[]
-    expect(links.map((link) => link.getAttribute("href"))).toEqual([
-      "/approvals?butler=general&id=action-high-001",
-      "/approvals?butler=general&id=action-med-002",
+    expect(links.map((l) => l.getAttribute("href"))).toEqual([
+      `/approvals/${HIGH_ACTION.id}`,
+      `/approvals/${MEDIUM_ACTION.id}`,
     ])
   })
 })

@@ -15,7 +15,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ApprovalsPage from "@/pages/ApprovalsPage";
@@ -53,6 +53,10 @@ vi.mock("@/api/index.ts", () => ({
   getAutonomySuggestions: vi.fn(),
   confirmAutonomySuggestion: vi.fn(),
   dismissAutonomySuggestion: vi.fn(),
+  // AutonomyPanel (bu-86c4c.12) — always rendered alongside the dossier.
+  getApprovalRules: vi.fn(),
+  createApprovalRule: vi.fn(),
+  revokeApprovalRule: vi.fn(),
 }));
 
 import {
@@ -61,11 +65,13 @@ import {
   denyApproval,
   dismissAutonomySuggestion,
   getApprovalDetail,
+  getApprovalRules,
   getApprovalsFlat,
   getApprovalsHistory,
   getApprovalsPolicy,
   getAutonomySuggestions,
   retryApproval,
+  revokeApprovalRule,
 } from "@/api/index.ts";
 import { toast } from "sonner";
 
@@ -165,6 +171,7 @@ describe("ApprovalsPage — load-more", () => {
     vi.mocked(getAutonomySuggestions).mockReturnValue(
       makeApiResponse([]) as AnyMock,
     );
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -355,6 +362,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     vi.mocked(getAutonomySuggestions).mockReturnValue(
       makeApiResponse([]) as AnyMock,
     );
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -696,6 +704,382 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Routing: every approval has a URL (bu-86c4c.12 — One Trust Console)
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeApiResponse([]) as AnyMock,
+    );
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderAt(initialPath: string) {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[initialPath]}>
+          <QueryClientProvider client={qc}>
+            <Routes>
+              <Route path="/approvals" element={<ApprovalsPage />} />
+              <Route path="/approvals/:id" element={<ApprovalsPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("selects the approval named in the URL, not the first-arrived item", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
+
+    renderAt("/approvals/a2");
+    await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+
+    expect(getApprovalDetail).toHaveBeenCalledWith("a2");
+    expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
+  });
+
+  it("clicking a rail item navigates to that approval's URL and fetches its dossier", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
+
+    renderAt("/approvals");
+    await flushUntil(
+      () => container.querySelectorAll('[data-testid="rail-item"]').length === 2,
+    );
+
+    const items = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="rail-item"]',
+    );
+    const secondId = items[1].getAttribute("data-approval-id");
+    await act(async () => {
+      items[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(getApprovalDetail).toHaveBeenCalledWith(secondId);
+  });
+
+  it("history rows link into the read-only dossier at /approvals/:id", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([makeHistoryItem("h1", "executed")]) as AnyMock,
+    );
+
+    renderAt("/approvals");
+    await flushUntil(
+      () => container.querySelector('[data-testid="history-row-link"]') !== null,
+    );
+
+    const link = container.querySelector<HTMLAnchorElement>(
+      '[data-testid="history-row-link"]',
+    );
+    expect(link?.getAttribute("href")).toBe("/approvals/h1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Queue ranking: expiry urgency + blast radius, not arrival order (bu-86c4c.12)
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — expiry + blast-radius ranking (bu-86c4c.12)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeApiResponse([]) as AnyMock,
+    );
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage() {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <ApprovalsPage />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("ranks an about-to-expire item ahead of an item that arrived first with no expiry", async () => {
+    const soon = {
+      ...makeSummary("late-arrival", "delete_file"),
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(), // 5 min left
+    };
+    const noExpiry = makeSummary("first-arrival", "assert_fact");
+    // API returns arrival order: noExpiry first, soon second.
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([noExpiry, soon]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelectorAll('[data-testid="rail-item"]').length === 2,
+    );
+
+    const items = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="rail-item"]',
+    );
+    // The expiring item ranks first despite arriving second.
+    expect(items[0].getAttribute("data-approval-id")).toBe("late-arrival");
+    expect(items[1].getAttribute("data-approval-id")).toBe("first-arrival");
+  });
+
+  it("shows a warning-colored countdown chip for an item expiring within the hour", async () => {
+    const soon = {
+      ...makeSummary("expiring-soon", "notify"),
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    };
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([soon]) as AnyMock);
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("expires in") ?? false);
+
+    expect(container.textContent).toMatch(/expires in \d+m/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approved-but-never-dispatched renders amber, never success-green (bu-86c4c.12)
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — stalled (approved-but-undispatched) state (bu-86c4c.12)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeApiResponse([]) as AnyMock,
+    );
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage() {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <ApprovalsPage />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("renders an 'approved' history row as 'stalled', never as green success text", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([
+        makeHistoryItem("h-approved", "approved"),
+        makeHistoryItem("h-executed", "executed"),
+      ]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("stalled") ?? false);
+
+    expect(container.textContent).toContain("stalled");
+    expect(container.textContent).not.toContain("approved");
+
+    const stalledLabel = Array.from(container.querySelectorAll("span")).find(
+      (el) => el.textContent?.trim() === "stalled",
+    );
+    expect(stalledLabel?.className).not.toMatch(/text-green/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Autonomy panel — merges /approvals/rules into /approvals (bu-86c4c.12)
+// ---------------------------------------------------------------------------
+
+function makeRule(id: string, overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id,
+    tool_name: "notify",
+    arg_constraints: { chat_id: { type: "exact", value: "mom_123" } },
+    description: "Auto-approve notify to mom",
+    created_from: null,
+    created_at: "2026-05-17T10:00:00Z",
+    expires_at: null,
+    max_uses: null,
+    use_count: 4,
+    active: true,
+    ...overrides,
+  };
+}
+
+describe("ApprovalsPage — Autonomy panel (bu-86c4c.12)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeApiResponse([]) as AnyMock,
+    );
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage() {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <ApprovalsPage />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("renders standing rules with live use counts, always visible (not behind a route)", async () => {
+    vi.mocked(getApprovalRules).mockReturnValue(
+      makeApiResponse([makeRule("r1")]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("notify") ?? false);
+
+    expect(container.textContent).toContain("Autonomy");
+    expect(container.textContent).toContain("notify");
+    expect(container.textContent).toContain("4 uses");
+  });
+
+  it("shows a calm empty state when no standing rules exist", async () => {
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    renderPage();
+    await flushUntil(
+      () =>
+        container.textContent?.includes("No standing rules") ?? false,
+    );
+
+    expect(container.textContent).toContain(
+      "No standing rules. Every action requires manual approval.",
+    );
+  });
+
+  it("revokes a rule inline (no window.confirm) via a two-step confirm", async () => {
+    vi.mocked(getApprovalRules).mockReturnValue(
+      makeApiResponse([makeRule("r1")]) as AnyMock,
+    );
+    vi.mocked(revokeApprovalRule).mockReturnValue(
+      makeApiResponse(makeRule("r1", { active: false })) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Revoke") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Revoke")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    const confirmBtn = findButton(container, "confirm");
+    expect(confirmBtn).toBeDefined();
+    await act(async () => {
+      confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(revokeApprovalRule).toHaveBeenCalledWith("r1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Autonomy Suggestions banner on /approvals (bu-phy21)
 //
 // The AutonomySuggestionsBanner was fully built (component + hook + client) but
@@ -744,6 +1128,7 @@ describe("ApprovalsPage — autonomy suggestions banner (bu-phy21)", () => {
     vi.mocked(getAutonomySuggestions).mockReturnValue(
       makeSuggestionsResponse([]) as AnyMock,
     );
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },

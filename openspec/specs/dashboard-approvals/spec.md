@@ -96,17 +96,17 @@ The response MUST be a `PaginatedResponse<ApprovalAction>` where each `ApprovalA
 
 ### Requirement: Approvals Page in Dispatch Language
 
-The dashboard SHALL render `/approvals` in the Dispatch design language as a replacement (not a duplicate) for the legacy approvals page.
+The dashboard SHALL render `/approvals` in the Dispatch design language as a replacement (not a duplicate) for the legacy approvals page. `/approvals` is the One Trust Console: the single surface for the pending decision queue, the decision dossier, and the standing autonomy ledger.
 
 #### Scenario: Approvals page layout
 
 - **WHEN** a user navigates to `/approvals`
 - **THEN** the page renders, in vertical order:
   - **Page header**: title "Approvals", mono eyebrow "system · approvals", clock.
-  - **Two-pane body**: left rail of pending approvals (rule-separated rows), right pane dossier of the selected approval.
+  - **Three-pane body**: left rail of pending approvals (rule-separated rows, ranked per the Queue ranking scenario below), center pane dossier of the selected approval, right pane Autonomy panel (always visible — see the Autonomy Panel requirement below).
   - **Dossier body**: `title` headline (sans 500, 22px), `why` serif paragraph (`max-width: 50ch`), `evidence` mono lines (rule-separated), `proposed_action` summary, primary `Approve` commit button, secondary `Deny` and `Defer` pill buttons.
   - **Policy section** below the body: quiet-hours editor (`start_hour`, `end_hour`, `timezone`).
-  - **History section** at the bottom: last 30 decided approvals from `GET /api/approvals/history`.
+  - **History section** at the bottom: last 30 decided approvals from `GET /api/approvals/history`; each row links to `/approvals/{id}` and opens the same dossier read-only.
 - **AND** the page contains no Kanban-style columns, no charts, no cards.
 
 #### Scenario: Legacy page deleted in same PR
@@ -136,6 +136,76 @@ The dashboard SHALL render `/approvals` in the Dispatch design language as a rep
 - **WHEN** a user navigates to `/approvals` with no pending or recent approvals
 - **THEN** the page MUST display an empty state message (e.g., "No pending approvals")
 
+### Requirement: Every Approval Has a URL
+
+The dashboard SHALL expose `/approvals/:id` as a first-class route rendering the same `ApprovalsPage`, with the URL selecting the dossier.
+
+#### Scenario: Deep link selects the named approval
+
+- **WHEN** a user navigates directly to `/approvals/{id}`
+- **THEN** the dossier pane fetches and displays that approval's detail via `GET /api/approvals/{id}`, regardless of arrival order in the pending queue
+- **AND** this holds for both pending and already-decided approvals (a decided approval renders its read-only dossier).
+
+#### Scenario: Selecting a rail item updates the URL
+
+- **WHEN** a user clicks a pending approval in the left rail
+- **THEN** the browser URL becomes `/approvals/{id}` for that approval.
+
+#### Scenario: History rows deep-link into the dossier
+
+- **WHEN** a user clicks a row in the History section
+- **THEN** the browser navigates to `/approvals/{id}` for that decided approval and its (read-only) dossier renders.
+
+#### Scenario: Deciding the explicitly-selected item advances the URL
+
+- **WHEN** the approval currently named in the URL is approved, denied, or deferred
+- **THEN** the URL advances to the next-ranked pending approval's `/approvals/{id}`, or to `/approvals` if none remain.
+
+### Requirement: Queue Ranked by Expiry and Blast Radius
+
+The pending rail SHALL be ordered by decision urgency, not arrival order.
+
+#### Scenario: Expiring items rank ahead of items with no expiry
+
+- **WHEN** the pending queue contains an approval expiring within the hour and an approval with no `expires_at` that arrived earlier
+- **THEN** the expiring approval renders first in the rail.
+
+#### Scenario: Blast radius breaks ties among similarly-urgent items
+
+- **WHEN** two pending approvals have comparable expiry urgency
+- **THEN** the approval with the higher blast-radius tool (e.g. an outbound `notify`/`send_*` call) ranks ahead of a lower-radius internal data write (e.g. an `assert`/`store` call).
+
+### Requirement: Approved-but-Undispatched Renders Amber, Never Success-Green
+
+An approval whose backend `status` is `"approved"` (approved but not yet dispatched — see the dispatched-vs-approved distinction in Approval Verbs) SHALL never render with the same success-green treatment as `"executed"`.
+
+#### Scenario: Stalled approval reads as a distinct, actionable state
+
+- **WHEN** an approval's status is `"approved"` (dispatch did not run)
+- **THEN** the UI renders it with an amber/warning color family, labeled distinctly from a settled decision (e.g. "stalled")
+- **AND** an executed action continues to render in its own distinct color, never sharing the amber "stalled" treatment.
+
+### Requirement: Autonomy Panel
+
+`/approvals` SHALL render an always-visible Autonomy panel listing active standing approval rules (`GET /api/approvals/rules?active=true`), replacing the standalone rules CRUD route.
+
+#### Scenario: Standing rules panel replaces the orphaned rules route
+
+- **WHEN** a user is on `/approvals`
+- **THEN** the Autonomy panel is visible without further navigation
+- **AND** no separate `/approvals/rules` route exists.
+
+#### Scenario: Live use counts and inline revoke
+
+- **WHEN** the Autonomy panel renders a standing rule
+- **THEN** it displays the rule's current `use_count` (and `max_uses` when set)
+- **AND** provides an inline revoke action (two-step confirm within the panel, not a native `window.confirm` dialog) that calls `POST /api/approvals/rules/{id}/revoke`.
+
+#### Scenario: Calm empty state
+
+- **WHEN** no active standing rules exist
+- **THEN** the panel displays "No standing rules. Every action requires manual approval." rather than an empty table.
+
 ### Requirement: Approvals Flat List API
 
 The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all` as a flat-list view complementing the existing `GET /api/approvals/actions` paginated list.
@@ -156,8 +226,9 @@ The dashboard SHALL expose `GET /api/approvals/{id}` returning the full dossier 
 #### Scenario: Detail response shape
 
 - **WHEN** `GET /api/approvals/{id}` is called
-- **THEN** the response is `ApiResponse[ApprovalDetail]` with fields `id`, `title`, `butler`, `created_at` (alias `ts`), `expires_at` (alias `expires`), `why` (string | null — serif paragraph), `evidence` (string[] | null — mono lines), `proposed_action` (object describing the tool call being approved).
+- **THEN** the response is `ApiResponse[ApprovalDetail]` with fields `id`, `title`, `butler`, `created_at` (alias `ts`), `expires_at` (alias `expires`), `why` (string | null — serif paragraph), `evidence` (string[] | null — mono lines), `proposed_action` (object describing the tool call being approved), `session_id` (string | null — the originating session/trace, when known).
 - **AND** when `why` or `evidence` is null (legacy row), the UI renders a serif-italic empty state for the missing section.
+- **AND** when `session_id` is present, the dossier header links to `/sessions/{session_id}` so the owner can inspect the originating session/trace before deciding.
 
 ### Requirement: Approval Verbs
 

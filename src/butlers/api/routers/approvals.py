@@ -286,6 +286,7 @@ def _pending_action_to_detail(
         decided_by=action.decided_by,
         decided_at=action.decided_at,
         target_contact=target_contact,
+        session_id=str(action.session_id) if action.session_id else None,
         referenced_entities=referenced_entities or [],
     )
 
