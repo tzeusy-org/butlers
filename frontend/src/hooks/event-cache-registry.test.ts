@@ -104,10 +104,16 @@ describe("EVENT_CACHE_REGISTRY", () => {
     expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([["issues"]]));
   });
 
-  it("ingestion: invalidates the ingestion events feed", () => {
+  it("ingestion: invalidates the ingestion events feed, window-rollup, and histogram", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "ingestion", ts: 1, data: {} });
-    expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([["ingestion", "events"]]));
+    expect(keys(invalidateQueries)).toEqual(
+      expect.arrayContaining([
+        ["ingestion", "events"],
+        ["ingestion", "window-rollup"],
+        ["ingestion", "events-histogram"],
+      ]),
+    );
   });
 
   it("heartbeat: is a no-op (no cache invalidation)", () => {

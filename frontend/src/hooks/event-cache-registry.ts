@@ -114,14 +114,19 @@ const issuePatch: CachePatch = (qc) => {
 };
 
 /**
- * ingestion — reserved for forward-compat. The backend does not yet emit
- * this event type onto the bus (no single choke point for every
- * ingestion_events insert was found during the bu-86c4c.8 investigation —
- * tracked as a follow-up). Registered now so the frontend contract is
- * complete and this activates the moment a producer starts emitting.
+ * ingestion — a new ingestion_events row landed (emitted from ingest_v1's
+ * insert transaction, bu-h8ioq). Invalidates the timeline list/detail keys
+ * (ingestionEventKeys.all == ["ingestion", "events"], which prefixes list,
+ * sessions, rollup, replays, sender-contact, detail, and payload) plus the
+ * window-rollup and histogram keys, which live under separate prefixes
+ * (["ingestion", "window-rollup", ...] / ["ingestion", "events-histogram",
+ * ...]) and would otherwise miss this invalidation — see
+ * use-ingestion-events.ts's ingestionEventKeys.
  */
 const ingestionPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["ingestion", "events"] });
+  qc.invalidateQueries({ queryKey: ["ingestion", "window-rollup"] });
+  qc.invalidateQueries({ queryKey: ["ingestion", "events-histogram"] });
 };
 
 /**

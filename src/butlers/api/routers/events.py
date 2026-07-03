@@ -7,7 +7,7 @@ building a fourth bespoke socket, every surface that wants live updates can
 subscribe once here and receive a typed envelope::
 
     {"type": "approval" | "spend" | "session" | "notification" | "issue"
-             | "heartbeat", "ts": <unix float>, "data": {...}}
+             | "ingestion" | "heartbeat", "ts": <unix float>, "data": {...}}
 
 On connect the server replays a snapshot of recent events (ring buffer) so a
 client is never blank while waiting for the next live event. When no event
@@ -23,8 +23,9 @@ functional for any existing consumer. Instead, ``emit_approvals_event`` and
 ``emit_spend_event`` additionally fan their events onto this bus (see the
 ``emit_event(...)`` calls added at the bottom of ``approvals.py`` /
 ``spend.py``), and a handful of additional choke points (session lifecycle,
-notify() delivery, audit-log errors) call ``emit_event`` directly. See
-``docs/redesigns/2026-07-03-jarvis-audit.md`` move 5.
+notify() delivery, audit-log errors, ingest_v1's ingestion_events insert)
+call ``emit_event`` directly. See ``docs/redesigns/2026-07-03-jarvis-audit.md``
+move 5.
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ EVENT_TYPES = frozenset(
     {
         "session",  # phase: "started" | "ended"
         "notification",  # notify() delivery attempts
-        "ingestion",  # new/updated ingestion_events row (reserved; not yet emitted, follow-up)
+        "ingestion",  # new ingestion_events row (emitted from ingest_v1's insert transaction)
         "issue",  # a new audit-log error landed (issues feed may have changed)
         "approval",  # mirrors /api/approvals/stream payloads
         "spend",  # mirrors /api/spend/stream payloads

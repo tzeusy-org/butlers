@@ -586,3 +586,60 @@ class TestEnsurePartitionOutsideTransaction:
             RuntimeError, match="Failed to ensure message_inbox partition: DB connection failed"
         ):
             await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+
+# ---------------------------------------------------------------------------
+# Tests: "ingestion" event fans onto the multiplexed fleet event bus (bu-h8ioq)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_events_bus():
+    """Clear the fleet event bus ring buffer/subscribers before and after each test.
+
+    Mirrors tests/api/test_events.py's ``_reset_bus`` fixture — this file's
+    tests share the same process-global ring buffer, so state must not leak
+    between tests either within this class or across the rest of the file.
+    """
+    from butlers.api.routers.events import _reset_events_bus_for_tests
+
+    _reset_events_bus_for_tests()
+    yield
+    _reset_events_bus_for_tests()
+
+
+class TestIngestionEventEmitsOnBus:
+    """A new (non-duplicate) ingest fans an "ingestion" event onto /api/events."""
+
+    async def test_new_ingest_emits_ingestion_event(self) -> None:
+        from butlers.api.routers.events import _events_ring
+
+        pool = _FakePool()
+        envelope = _telegram_envelope(update_id="70001")
+
+        result = await ingest_v1(
+            pool, envelope, policy_evaluator=None, enable_thread_affinity=False
+        )
+
+        assert len(_events_ring) == 1
+        bus_event = _events_ring[0]
+        assert bus_event["type"] == "ingestion"
+        assert bus_event["data"]["request_id"] == str(result.request_id)
+        assert bus_event["data"]["source_channel"] == "telegram_bot"
+
+    async def test_duplicate_ingest_does_not_emit_ingestion_event(self) -> None:
+        """A duplicate submission writes no new row, so no event should fire."""
+        from butlers.api.routers.events import _events_ring
+
+        pool = _FakePool()
+        existing_id = uuid.uuid4()
+        pool.set_outer_existing({"request_id": existing_id})
+
+        result = await ingest_v1(
+            pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+        )
+
+        assert result.duplicate is True
+        assert len(_events_ring) == 0, (
+            "duplicate ingest must not emit an 'ingestion' bus event (no new row written)"
+        )

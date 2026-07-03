@@ -973,6 +973,28 @@ async def ingest_v1(
         triage_decision.action if triage_decision else "n/a",
     )
 
+    # Fan an "ingestion" event onto the multiplexed fleet event bus (bu-86c4c.8,
+    # move 5; wired in bu-h8ioq). This is the single choke point where every
+    # new public.ingestion_events row is committed (the transaction above), so
+    # emitting here — not per-connector — covers every source. Lazy import
+    # avoids a circular dependency: switchboard tools -> api (mirrors
+    # sessions.py's lazy import of emit_event). Best-effort: never let a bus
+    # hiccup fail an already-accepted ingest.
+    try:
+        from butlers.api.routers.events import emit_event
+
+        emit_event(
+            "ingestion",
+            {
+                "request_id": str(request_id),
+                "source_channel": envelope.source.channel,
+                "triage_decision": triage_decision.action if triage_decision else None,
+                "triage_target": triage_decision.target_butler if triage_decision else None,
+            },
+        )
+    except Exception:
+        logger.debug("emit_event('ingestion') failed (non-fatal)", exc_info=True)
+
     _ingest_metrics.record_ingest_result(source=source_channel, outcome="success")
     return IngestAcceptedResponse(
         request_id=request_id,
