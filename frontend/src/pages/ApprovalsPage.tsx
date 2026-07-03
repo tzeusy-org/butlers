@@ -17,7 +17,7 @@
  * bu-5xiu9 — Phase 6: /approvals replacement
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -33,6 +33,7 @@ import {
   retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import type {
   ApiResponse,
   ApprovalDetail,
@@ -999,6 +1000,25 @@ export default function ApprovalsPage() {
   function handleLoadMore() {
     setPendingLimit((prev) => prev + PENDING_PAGE_SIZE);
   }
+
+  // ---------------------------------------------------------------------
+  // Command menu Actions (bu-86c4c.7 — per-page command registration API).
+  // "Approve next" only exists while mounted here and while there's a
+  // pending item to approve; it disappears from the command menu the
+  // moment the owner navigates away or the queue empties.
+  // ---------------------------------------------------------------------
+  const commandMenuCommands = useMemo<PaletteCommand[]>(() => {
+    if (!effectiveSelected) return [];
+    return [
+      {
+        id: "approve-next",
+        label: "Approve next",
+        keywords: ["approval", "queue"],
+        perform: () => approveMut.mutate(effectiveSelected),
+      },
+    ];
+  }, [effectiveSelected, approveMut]);
+  useRegisterCommands(commandMenuCommands);
 
   return (
     <div className="flex flex-col h-full min-h-0">

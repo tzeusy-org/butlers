@@ -9,7 +9,7 @@ import PageHeader from "@/components/layout/PageHeader";
 import { BreadcrumbsControlProvider } from "@/components/ui/breadcrumbs-control";
 import { Page } from "@/components/ui/page";
 import { useDarkMode } from "@/hooks/useDarkMode";
-import { OPEN_COMMAND_PALETTE_EVENT } from "@/lib/command-palette";
+import { OPEN_ENTITY_FINDER_EVENT } from "@/lib/entity-finder";
 
 vi.mock("@/hooks/useDarkMode", () => ({
   useDarkMode: vi.fn(),
@@ -171,9 +171,11 @@ describe("PageHeader", () => {
     });
   });
 
-  it("renders search trigger with Cmd/Ctrl+K hint and dispatches open event", () => {
+  it("renders search trigger with Cmd/Ctrl+K hint and dispatches the command menu open event (bu-86c4c.7)", () => {
+    // The header button now opens the SAME command menu as Cmd+K and '/'
+    // (bu-86c4c.7 unification) instead of a second, different palette.
     const openListener = vi.fn();
-    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, openListener);
+    window.addEventListener(OPEN_ENTITY_FINDER_EVENT, openListener);
 
     act(() => {
       root.render(
@@ -184,7 +186,7 @@ describe("PageHeader", () => {
     });
 
     const searchButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
-      button.getAttribute("aria-label")?.includes("Open command palette"),
+      button.getAttribute("aria-label")?.includes("Open command menu"),
     );
 
     expect(searchButton).toBeInstanceOf(HTMLButtonElement);
@@ -196,7 +198,7 @@ describe("PageHeader", () => {
 
     expect(openListener).toHaveBeenCalledTimes(1);
 
-    window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, openListener);
+    window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, openListener);
   });
 
   it("uppercases known acronyms in auto-built breadcrumbs (qa -> QA)", () => {

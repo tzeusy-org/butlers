@@ -26,6 +26,16 @@ export default defineConfig([
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // Context provider + its accompanying hooks (useRegisterCommands,
+    // useCommandMenuActions) are one small, tightly-coupled unit — splitting
+    // them into separate files just to satisfy fast-refresh would hurt
+    // readability for no real benefit (same tradeoff as src/components/ui above).
+    files: ['src/lib/command-registry.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
   // ---------------------------------------------------------------------------
   // Chart color plumbing guard (bu-86c4c.5)
   //

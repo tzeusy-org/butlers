@@ -29,6 +29,15 @@ export interface NavFlatItem {
   badgeVariant?: 'red' | 'amber'
   /** If set, used as the tooltip text instead of the label (e.g. for items needing disambiguation). */
   tooltip?: string
+  /**
+   * Single-letter `g`-then-key chord that navigates here (e.g. `'h'` for
+   * `g h` → this path). Declared directly on the route it targets so the
+   * chord can never drift from where it actually points (bu-86c4c.7 — the
+   * command/route registry is the single source of truth for the sidebar,
+   * the command menu's Pages group, g-chords, and the '?' help sheet).
+   * Consumed by `src/lib/route-registry.ts`.
+   */
+  chord?: string
 }
 
 /** A collapsible group of navigation links. */
@@ -58,12 +67,12 @@ export const navSections: NavSection[] = [
   {
     title: 'Main',
     items: [
-      { path: '/', label: 'Overview', end: true, icon: 'overview' },
-      { path: '/butlers', label: 'Butlers', icon: 'butlers' },
+      { path: '/', label: 'Overview', end: true, icon: 'overview', chord: 'o' },
+      { path: '/butlers', label: 'Butlers', icon: 'butlers', chord: 'b' },
       { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-escalations', badgeVariant: 'red', icon: 'qa' },
-      { path: '/ingestion', label: 'Ingestion', icon: 'ingestion' },
+      { path: '/ingestion', label: 'Ingestion', icon: 'ingestion', chord: 'e' },
       { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber', icon: 'approvals' },
-      { path: '/memory', label: 'Memory', icon: 'memory' },
+      { path: '/memory', label: 'Memory', icon: 'memory', chord: 'm' },
       { path: '/entities', label: 'Entities', icon: 'entities' },
       { path: '/secrets', label: 'Secrets', icon: 'secrets' },
       { path: '/settings', label: 'Settings', icon: 'settings' },
@@ -73,7 +82,10 @@ export const navSections: NavSection[] = [
     title: 'Dedicated Butlers',
     items: [
       { path: '/education', label: 'Education', butler: 'education' },
-      { path: '/health', label: 'Health', butler: 'health' },
+      // chord: 'h' — fixed bu-86c4c.7 drift (used to point g-h at the
+      // pre-redesign /health/measurements route; now points at the actual
+      // Health overview page it's declared on).
+      { path: '/health', label: 'Health', butler: 'health', chord: 'h' },
       { path: '/calendar', label: 'Calendar' },
       { path: '/chronicles', label: 'Chronicles', butler: 'chronicler', tooltip: 'Retrospective lived-time reconstruction' },
     ],
@@ -82,11 +94,11 @@ export const navSections: NavSection[] = [
     title: 'Telemetry',
     defaultExpanded: false,
     items: [
-      { path: '/timeline', label: 'Timeline', icon: 'timeline' },
-      { path: '/notifications', label: 'Notifications', icon: 'notifications' },
-      { path: '/issues', label: 'Issues', icon: 'issues' },
-      { path: '/sessions', label: 'Sessions', icon: 'sessions' },
-      { path: '/audit-log', label: 'Audit Log', icon: 'audit' },
+      { path: '/timeline', label: 'Timeline', icon: 'timeline', chord: 't' },
+      { path: '/notifications', label: 'Notifications', icon: 'notifications', chord: 'n' },
+      { path: '/issues', label: 'Issues', icon: 'issues', chord: 'i' },
+      { path: '/sessions', label: 'Sessions', icon: 'sessions', chord: 's' },
+      { path: '/audit-log', label: 'Audit Log', icon: 'audit', chord: 'a' },
       { path: '/system', label: 'System', icon: 'system', tooltip: 'Instance ownership and runtime facts' },
     ],
   },

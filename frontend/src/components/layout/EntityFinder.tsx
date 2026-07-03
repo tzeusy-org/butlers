@@ -1,13 +1,26 @@
 /**
- * Global entity-first Cmd-K finder (bu-xfjwk, extended for entity-v3 bu-rru9g).
+ * The unified command menu (bu-86c4c.7 "one command spine"; originally
+ * bu-xfjwk's entity-first Cmd-K finder, extended for entity-v3 bu-rru9g).
  *
- * Uses the `cmdk` 1.1.1 library wired to
- * GET /api/butlers/relationship/entities/search.
+ * Before bu-86c4c.7 this component only searched entities and pages, while a
+ * second, separately-mounted CommandPalette handled butlers/sessions/state
+ * search and was opened by a *different* set of triggers (the header button
+ * and '/', while Cmd+K opened this one) — a split-brain command layer with
+ * no verbs. This component now absorbs that surface: it is the ONE thing
+ * opened by Cmd+K, '/', and the header button, and additionally exposes an
+ * Actions group backed by a per-page command registration API
+ * (src/lib/command-registry.tsx) so pages can contribute verbs (e.g.
+ * ApprovalsPage's "Approve next") without this component knowing about them.
+ *
+ * Uses the `cmdk` 1.1.1 library. Entity search wired to
+ * GET /api/butlers/relationship/entities/search; butlers/sessions/state
+ * search wired to the shared GET /api/search endpoint (useSearch).
  *
  * Result ordering: entity group is rendered FIRST (highest-scored results
- * from the relationship search endpoint), followed by navigation pages.
- * This fulfils Brief §5 Open Question 14 (entity-first reordering) and
- * Brief §6b Amendment 15 (deterministic Finder — no LLM, no embeddings).
+ * from the relationship search endpoint), followed by navigation pages, then
+ * butlers/sessions/state, then Actions. This fulfils Brief §5 Open Question
+ * 14 (entity-first reordering) and Brief §6b Amendment 15 (deterministic
+ * Finder — no LLM, no embeddings).
  *
  * entity-v3 additions (spec: dashboard-relationship "Finder preview pane and
  * Tab-to-hop", "Finder empty-query state — owner-pinned set", MODIFIED
@@ -21,10 +34,10 @@
  *     summed weight), via the same ranked /neighbours endpoint.
  *
  * Keyboard shortcuts:
- *   Cmd/Ctrl+K   — open (global, any focused element)
+ *   Cmd/Ctrl+K   — open (global, works even while an input is focused)
  *   /            — open (when no input/textarea is focused)
  *   ↑ / ↓        — step through results
- *   Enter        — open result detail
+ *   Enter        — open result detail / run action
  *   Tab          — hop into the active result (/entities?center=<id>)
  *   Esc          — close
  */
@@ -43,7 +56,10 @@ import {
   OPEN_ENTITY_FINDER_EVENT,
   aggregateOwnerPinned,
 } from "@/lib/entity-finder";
-import { navSections, type NavItem } from "@/components/layout/nav-config";
+import { ALL_ROUTES } from "@/lib/route-registry";
+import { useCommandMenuActions } from "@/lib/command-registry";
+import { useSearch } from "@/hooks/use-search";
+import { useButlers } from "@/hooks/use-butlers";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { KbMono } from "@/components/ui/KbMono";
 import type {
@@ -52,7 +68,10 @@ import type {
 } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
-// Nav pages — client-side instant matches
+// Pages group — client-side instant matches, sourced from the single route
+// registry (src/lib/route-registry.ts) so every route (including ones not
+// promoted to the sidebar, e.g. /costs, /groups, health sub-pages) is
+// reachable here.
 // ---------------------------------------------------------------------------
 
 interface PageEntry {
@@ -61,23 +80,11 @@ interface PageEntry {
   section: string;
 }
 
-function flattenNavItems(items: NavItem[], section: string): PageEntry[] {
-  const result: PageEntry[] = [];
-  for (const item of items) {
-    if (item.kind === "group") {
-      for (const child of item.children) {
-        result.push({ label: child.label, path: child.path, section });
-      }
-    } else {
-      result.push({ label: item.label, path: item.path, section });
-    }
-  }
-  return result;
-}
-
-const ALL_PAGES: PageEntry[] = navSections.flatMap((s) =>
-  flattenNavItems(s.items, s.title),
-);
+const ALL_PAGES: PageEntry[] = ALL_ROUTES.map((r) => ({
+  label: r.label,
+  path: r.path,
+  section: r.section,
+}));
 
 // ---------------------------------------------------------------------------
 // Match kind label — human-readable hint shown in the result caption
@@ -323,12 +330,59 @@ export default function EntityFinder() {
           (p) =>
             p.label.toLowerCase().includes(lowerQuery) ||
             p.path.toLowerCase().includes(lowerQuery),
-        ).slice(0, 5)
+        ).slice(0, 8)
       : [];
 
   const entityResults: EntityFinderSearchResult[] = useMemo(
     () => searchData?.results ?? [],
     [searchData],
+  );
+
+  // -------------------------------------------------------------------------
+  // Butlers group — client-side instant match, absorbed from the legacy
+  // CommandPalette (bu-86c4c.7). Navigates to the butler detail page.
+  // -------------------------------------------------------------------------
+  const { data: butlersResponse } = useButlers();
+  const butlerMatches =
+    lowerQuery.length >= 1 && butlersResponse?.data
+      ? butlersResponse.data.filter((b) => b.name.toLowerCase().includes(lowerQuery)).slice(0, 5)
+      : [];
+
+  // -------------------------------------------------------------------------
+  // Sessions / State groups — server-side debounced search, absorbed from the
+  // legacy CommandPalette (bu-86c4c.7). The "entities" and "contacts"
+  // categories from this endpoint are intentionally NOT surfaced here: the
+  // dedicated entity search above already covers both (contact-fact matches
+  // included, see matchKindLabel's "contact_fact" case) and a second,
+  // differently-ranked entity list would just be a confusing duplicate.
+  // -------------------------------------------------------------------------
+  const { data: genericSearchData } = useSearch(trimmedQuery);
+  const sessionMatches = genericSearchData?.data?.sessions ?? [];
+  const stateMatches = genericSearchData?.data?.state ?? [];
+
+  // -------------------------------------------------------------------------
+  // Actions group — per-page command registration API (bu-86c4c.7). Only
+  // shown once the owner has typed something, matching Pages' behaviour, so
+  // the default (empty-query) view stays the entity-first pinned set.
+  // -------------------------------------------------------------------------
+  const allActions = useCommandMenuActions();
+  const actionMatches =
+    lowerQuery.length >= 1
+      ? allActions
+          .filter(
+            (a) =>
+              a.label.toLowerCase().includes(lowerQuery) ||
+              a.keywords?.some((k) => k.toLowerCase().includes(lowerQuery)),
+          )
+          .slice(0, 8)
+      : [];
+
+  const runAction = useCallback(
+    (perform: () => void) => {
+      setOpen(false);
+      perform();
+    },
+    [],
   );
 
   // The active result the preview pane mirrors. cmdk highlights the first item
@@ -362,7 +416,13 @@ export default function EntityFinder() {
   }, [activeValue, isEmptyQuery, pinned, entityResults]);
 
   const hasResults =
-    entityResults.length > 0 || pageMatches.length > 0 || pinned.length > 0;
+    entityResults.length > 0 ||
+    pageMatches.length > 0 ||
+    pinned.length > 0 ||
+    butlerMatches.length > 0 ||
+    sessionMatches.length > 0 ||
+    stateMatches.length > 0 ||
+    actionMatches.length > 0;
 
   // -------------------------------------------------------------------------
   // Render
@@ -376,7 +436,7 @@ export default function EntityFinder() {
       data-testid="entity-finder-backdrop"
     >
       <Command
-        label="Entity Finder"
+        label="Command Menu"
         onValueChange={setActiveValue}
         className="relative mx-auto flex w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -406,7 +466,7 @@ export default function EntityFinder() {
               ref={inputRef}
               value={query}
               onValueChange={setQuery}
-              placeholder="Search entities, pages…"
+              placeholder="Search entities, pages, butlers, actions…"
               className="h-12 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
               data-testid="entity-finder-input"
             />
@@ -525,7 +585,11 @@ export default function EntityFinder() {
             )}
 
             {/* ---------------------------------------------------------------
-             * PAGES GROUP — navigation links, shown after entities
+             * PAGES GROUP — navigation links, shown after entities. Sourced
+             * from the single route registry (route-registry.ts): every
+             * route is indexed here, not just the ones promoted to the
+             * sidebar (bu-86c4c.7 — fixes /costs, /groups, /approvals/rules,
+             * and the health sub-pages being unreachable from the palette).
              * --------------------------------------------------------------- */}
             {pageMatches.length > 0 && (
               <Command.Group heading="Pages">
@@ -546,6 +610,107 @@ export default function EntityFinder() {
                         {page.section}
                       </p>
                     </div>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {/* ---------------------------------------------------------------
+             * BUTLERS GROUP — absorbed from the legacy CommandPalette.
+             * --------------------------------------------------------------- */}
+            {butlerMatches.length > 0 && (
+              <Command.Group heading="Butlers">
+                {butlerMatches.map((b) => (
+                  <Command.Item
+                    key={b.name}
+                    value={`butler:${b.name}`}
+                    onSelect={() => openPage(`/butlers/${encodeURIComponent(b.name)}`)}
+                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    data-testid="entity-finder-butler-item"
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-muted font-mono text-xs font-semibold text-muted-foreground">
+                      ⚙
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{b.name}</p>
+                      <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
+                        {b.status}
+                      </p>
+                    </div>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {/* ---------------------------------------------------------------
+             * SESSIONS / STATE GROUPS — absorbed from the legacy
+             * CommandPalette (GET /api/search, debounced).
+             * --------------------------------------------------------------- */}
+            {sessionMatches.length > 0 && (
+              <Command.Group heading="Sessions">
+                {sessionMatches.map((s) => (
+                  <Command.Item
+                    key={s.id}
+                    value={`session:${s.id}:${s.title}`}
+                    onSelect={() => openPage(s.url)}
+                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    data-testid="entity-finder-session-item"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{s.title}</p>
+                      {s.snippet && (
+                        <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
+                          {s.snippet}
+                        </p>
+                      )}
+                    </div>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {stateMatches.length > 0 && (
+              <Command.Group heading="State">
+                {stateMatches.map((s) => (
+                  <Command.Item
+                    key={s.id}
+                    value={`state:${s.id}:${s.title}`}
+                    onSelect={() => openPage(s.url)}
+                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    data-testid="entity-finder-state-item"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{s.title}</p>
+                      {s.snippet && (
+                        <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
+                          {s.snippet}
+                        </p>
+                      )}
+                    </div>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {/* ---------------------------------------------------------------
+             * ACTIONS GROUP — per-page command registration API
+             * (src/lib/command-registry.tsx). Any mounted component can
+             * contribute a command here for as long as it stays mounted.
+             * --------------------------------------------------------------- */}
+            {actionMatches.length > 0 && (
+              <Command.Group heading="Actions">
+                {actionMatches.map((action) => (
+                  <Command.Item
+                    key={action.id}
+                    value={`action:${action.id}:${action.label}`}
+                    onSelect={() => runAction(action.perform)}
+                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    data-testid="entity-finder-action-item"
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-muted font-mono text-xs font-semibold text-muted-foreground">
+                      ⚡
+                    </span>
+                    <p className="min-w-0 flex-1 truncate font-medium">{action.label}</p>
                   </Command.Item>
                 ))}
               </Command.Group>

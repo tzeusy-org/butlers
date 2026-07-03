@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -8,22 +8,37 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { ALL_ROUTES } from "@/lib/route-registry";
+import { OPEN_SHORTCUT_HELP_EVENT } from "@/lib/shortcut-help";
 
-const SHORTCUTS = [
-  { keys: ["/"], description: "Open search" },
-  { keys: ["Ctrl", "K"], description: "Open search" },
-  { keys: ["g", "o"], description: "Go to Overview" },
-  { keys: ["g", "b"], description: "Go to Butlers" },
-  { keys: ["g", "s"], description: "Go to Sessions" },
-  { keys: ["g", "t"], description: "Go to Timeline" },
-  { keys: ["g", "n"], description: "Go to Notifications" },
-  { keys: ["g", "i"], description: "Go to Issues" },
-  { keys: ["g", "a"], description: "Go to Audit Log" },
-  { keys: ["g", "m"], description: "Go to Memory" },
-  { keys: ["g", "c"], description: "Go to Contacts" },
-  { keys: ["g", "h"], description: "Go to Health" },
-  { keys: ["g", "e"], description: "Go to Ingestion" },
-] as const;
+interface ShortcutRow {
+  keys: readonly string[];
+  description: string;
+}
+
+const STATIC_SHORTCUTS: ShortcutRow[] = [
+  { keys: ["Ctrl", "K"], description: "Open command menu" },
+  { keys: ["/"], description: "Open command menu" },
+  { keys: ["?"], description: "Open this help sheet" },
+];
+
+/**
+ * g-chord rows, generated from the same route registry that builds the
+ * sidebar and the command menu's Pages group (bu-86c4c.7) — this list used
+ * to be a hand-maintained duplicate here that had already drifted (g-h
+ * pointed at a stale route). It can't drift anymore: a chord shown here is
+ * read from the exact route it navigates to.
+ */
+function useChordShortcuts(): ShortcutRow[] {
+  return useMemo(
+    () =>
+      ALL_ROUTES.filter((r) => r.chord).map((r) => ({
+        keys: ["g", r.chord as string],
+        description: `Go to ${r.label}`,
+      })),
+    [],
+  );
+}
 
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
@@ -35,6 +50,22 @@ function Kbd({ children }: { children: React.ReactNode }) {
 
 export function ShortcutHints() {
   const [open, setOpen] = useState(false);
+  const chordShortcuts = useChordShortcuts();
+  const shortcuts = useMemo(
+    () => [...STATIC_SHORTCUTS, ...chordShortcuts],
+    [chordShortcuts],
+  );
+
+  // '?' is bound globally (use-keyboard-shortcuts.ts) in addition to this
+  // trigger button, so the help sheet has a real keyboard binding rather
+  // than only being reachable by clicking the floating button.
+  useEffect(() => {
+    function handleOpen() {
+      setOpen(true);
+    }
+    window.addEventListener(OPEN_SHORTCUT_HELP_EVENT, handleOpen);
+    return () => window.removeEventListener(OPEN_SHORTCUT_HELP_EVENT, handleOpen);
+  }, []);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -44,16 +75,17 @@ export function ShortcutHints() {
           size="icon"
           className="fixed bottom-4 right-4 z-50 h-8 w-8 rounded-full opacity-60 hover:opacity-100"
           aria-label="Keyboard shortcuts"
+          title="?"
         >
           <span className="text-xs font-bold">?</span>
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-sm">
         <DialogHeader>
           <DialogTitle>Keyboard Shortcuts</DialogTitle>
         </DialogHeader>
         <div className="space-y-3 pt-2">
-          {SHORTCUTS.map((shortcut, idx) => (
+          {shortcuts.map((shortcut, idx) => (
             <div key={idx} className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">{shortcut.description}</span>
               <div className="flex items-center gap-1">

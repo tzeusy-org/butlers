@@ -7,6 +7,8 @@ import { MemoryRouter } from "react-router";
 
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { OPEN_ENTITY_FINDER_EVENT } from "@/lib/entity-finder";
+import { OPEN_SHORTCUT_HELP_EVENT } from "@/lib/shortcut-help";
+import { G_CHORD_ROUTES } from "@/lib/route-registry";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -56,7 +58,11 @@ describe("useKeyboardShortcuts", () => {
     window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
   });
 
-  it("ignores Ctrl+K inside editable fields", () => {
+  it("still opens Ctrl+K inside editable fields (bu-86c4c.7: the keyboard floor fix)", () => {
+    // Previously Ctrl+K (like every other shortcut) died the moment focus was
+    // in an input — the audit's headline "shell" finding. Cmd/Ctrl+K is a
+    // modifier chord that can't collide with typing, so it must fire
+    // regardless of focus.
     const listener = vi.fn();
     window.addEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
 
@@ -75,10 +81,77 @@ describe("useKeyboardShortcuts", () => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
     });
 
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    input.remove();
+    window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
+  });
+
+  it("ignores '/' inside editable fields (it's a normal typing character there)", () => {
+    const listener = vi.fn();
+    window.addEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }));
+    });
+
     expect(listener).toHaveBeenCalledTimes(0);
 
     input.remove();
     window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
+  });
+
+  it("opens the command menu on '/' outside editable fields — same surface as Cmd+K (bu-86c4c.7)", () => {
+    const listener = vi.fn();
+    window.addEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }));
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, listener);
+  });
+
+  it("opens the shortcut help sheet on '?' (previously click-only, no binding)", () => {
+    const listener = vi.fn();
+    window.addEventListener(OPEN_SHORTCUT_HELP_EVENT, listener);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }));
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener(OPEN_SHORTCUT_HELP_EVENT, listener);
   });
 
   it("navigates to /ingestion on g+e shortcut", () => {
@@ -131,7 +204,7 @@ describe("useKeyboardShortcuts", () => {
     expect(window.__pendingGNav).toBe(false);
   });
 
-  it("g+c still navigates to /contacts (no regression)", () => {
+  it("g+c still consumes the pending chord (now routes to the entities/contacts filter, not the dead /contacts redirect)", () => {
     act(() => {
       root.render(
         <MemoryRouter initialEntries={["/"]}>
@@ -151,5 +224,12 @@ describe("useKeyboardShortcuts", () => {
     });
 
     expect(window.__pendingGNav).toBe(false);
+  });
+
+  it("g+h routes to /health, not the pre-redesign /health/measurements (bu-86c4c.7 drift fix)", () => {
+    // This was the audit's concrete example of registry drift: the chord map
+    // and the sidebar disagreed about where "Health" lives. The chord is now
+    // declared directly on nav-config's Health entry, so it cannot drift.
+    expect(G_CHORD_ROUTES.h).toBe("/health");
   });
 });

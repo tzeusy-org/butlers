@@ -4,7 +4,7 @@ import { SiblingButlerNav } from '@/components/butler-detail/SiblingButlerNav'
 import { Button } from '../ui/button'
 import { useBreadcrumbsControl } from '../ui/breadcrumbs-control'
 import { useDarkMode } from '../../hooks/useDarkMode'
-import { dispatchOpenCommandPalette } from '../../lib/command-palette'
+import { dispatchOpenEntityFinder } from '../../lib/entity-finder'
 
 interface Breadcrumb {
   label: string
@@ -129,8 +129,8 @@ export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false }: Pag
         <Button
           variant="ghost"
           size="sm"
-          onClick={dispatchOpenCommandPalette}
-          aria-label="Open command palette"
+          onClick={dispatchOpenEntityFinder}
+          aria-label="Open command menu"
           title="Cmd/Ctrl+K"
           className="h-8 w-8 p-0"
         >
