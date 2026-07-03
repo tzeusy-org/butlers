@@ -6,6 +6,20 @@ import type { SpineEntry, InventoryResponse } from "./types.ts";
 import { severityRank } from "./constants.ts";
 
 /**
+ * Real missing-scope count for a scope_mismatch credential, or a plain label
+ * when the required/granted scope arrays aren't populated for this provider
+ * (bu-6v1hx: most providers besides Google have no granted-scope tracking
+ * yet — never fabricate a count in that case).
+ */
+function scopeMismatchSubline(scopesRequired: string[], scopesGranted: string[]): string {
+  if (scopesRequired.length === 0) return "scope mismatch";
+  const granted = new Set(scopesGranted);
+  const missing = scopesRequired.filter((scope) => !granted.has(scope)).length;
+  if (missing === 0) return "scope mismatch";
+  return `${missing} scope${missing === 1 ? "" : "s"} missing`;
+}
+
+/**
  * Build the flat list of spine entries from inventory data.
  *
  * When ``identityId`` is an array with more than one entry (owner-default
@@ -74,11 +88,13 @@ export function buildSpineEntries(
     // failure age ("refresh failed · 2d") and a fake missing-scope count
     // ("1 scope missing") for EVERY expired / scope_mismatch credential,
     // regardless of how long ago it actually broke or how many scopes are
-    // actually missing. The backend does not report a failure timestamp or
-    // real scope counts yet (scopesRequired/scopesGranted are always [] —
-    // see use-secrets-inventory.ts), so there is no real number to render.
-    // Show the last known-good verification instead (real data), or a plain
-    // state label with no invented figure when even that is unavailable.
+    // actually missing. bu-6v1hx wired scopesRequired/scopesGranted to real
+    // sources (provider_feature_catalogue / google_accounts.granted_scopes),
+    // so a real missing-scope count can now be shown when both arrays are
+    // populated for this credential's provider; otherwise there is still no
+    // real number and the plain state label is used. Failure age is still not
+    // tracked server-side, so the last known-good verification is shown
+    // instead (real data), or a plain label when even that is unavailable.
     subline:
       s.state === "expired"
         ? s.lastVerified
@@ -87,7 +103,7 @@ export function buildSpineEntries(
         : s.state === "expiring" && s.expires
           ? `expires ${s.expires}`
           : s.state === "scope_mismatch"
-            ? "scope mismatch"
+            ? scopeMismatchSubline(s.scopesRequired, s.scopesGranted)
             : s.state === "warn"
               ? "needs probe"
             : s.state === "never_set"

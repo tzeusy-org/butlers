@@ -19,6 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getSecretsInventory } from "@/api/client.ts";
 import type {
+  SecretsAuditEvent,
   SecretsCliRaw,
   SecretsIdentityInfo,
   SecretsProviderInfo,
@@ -33,6 +34,7 @@ import type {
   Identity,
   CredentialState,
   TestResult,
+  AuditEvent,
 } from "@/components/secrets/passport/types.ts";
 
 const STATE_RANK: Record<CredentialState, number> = {
@@ -171,12 +173,24 @@ function adaptProbeResult(raw: SecretsCliRaw["test"]): TestResult | null {
     ok: raw.ok,
     code: raw.code ?? null,
     message: raw.message ?? null,
-    // The inventory endpoint does not measure/return probe latency yet —
-    // leave it unset (never fabricate "0ms"; see ProbeResult's conditional
-    // render in atoms.tsx).
-    latencyMs: null,
+    // Real round-trip latency (bu-6v1hx) when the backend measured one — only
+    // probes that make an actual live network call populate this column.
+    // Stays null (never a fabricated "0ms") for local-state-derived probes;
+    // see ProbeResult's conditional render in atoms.tsx.
+    latencyMs: raw.latency_ms ?? null,
     at: raw.at ?? "",
   };
+}
+
+/** Map backend audit_log rows to the FE AuditEvent shape (note: null → ""). */
+function adaptAuditEvents(raw: SecretsAuditEvent[] | undefined): AuditEvent[] {
+  if (!raw) return [];
+  return raw.map((event) => ({
+    ts: event.ts,
+    actor: event.actor,
+    action: event.action,
+    note: event.note ?? "",
+  }));
 }
 
 function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, SecretsProviderInfo>): UserCredential {
@@ -185,16 +199,23 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
     identity:       raw.entity_id,
     state:          normalizeCredentialState(raw.state),
     fingerprint:    raw.fingerprint ?? null,
-    issued:         null,
+    // Real (bu-6v1hx): entity_info.created_at.
+    issued:         raw.issued ?? null,
+    // No real source yet: entity_info has no expires_at column.
     expires:        null,
     lastVerified:   raw.last_verified ?? null,
     lastUsed:       null,
-    scopesRequired: [],
-    scopesGranted:  [],
+    // Real (bu-6v1hx): union of provider_feature_catalogue.required_scopes.
+    scopesRequired: raw.scopes_required ?? [],
+    // Real for Google only (public.google_accounts.granted_scopes); every
+    // other provider has no per-credential granted-scope tracking yet and
+    // stays honestly empty.
+    scopesGranted:  raw.scopes_granted ?? [],
     feeds:          [],
     breaks:         [],
     test:           adaptProbeResult(raw.test),
-    audit:          [],
+    // Real (bu-6v1hx): last few public.audit_log rows for this credential.
+    audit:          adaptAuditEvents(raw.audit),
   };
 }
 
@@ -220,7 +241,8 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
     usedBy:       [],
     breaks:       [],
     test:         adaptProbeResult(raw.test),
-    audit:        [],
+    // Real (bu-6v1hx): last few public.audit_log rows for this credential.
+    audit:        adaptAuditEvents(raw.audit),
     readOnly:     raw.read_only ?? false,
   };
 }
@@ -232,8 +254,10 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
     fingerprint:    raw.fingerprint ?? null,
     state:          normalizeCredentialState(raw.state),
     lastUsed:       null,
-    issued:         null,
-    expires:        null,
+    // Real (bu-6v1hx): butler_secrets.created_at / expires_at.
+    issued:         raw.issued ?? null,
+    expires:        raw.expires ?? null,
+    // No real source: CLI runtime tokens have no scope concept in this codebase.
     scopesGranted:  [],
     scopesRequired: [],
     test:           adaptProbeResult(raw.test),

@@ -29,7 +29,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from asyncpg.exceptions import UndefinedColumnError, UndefinedTableError
@@ -39,13 +39,19 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
     _derive_state,
+    _fetch_audit_bulk,
+    _fetch_cli_secrets,
+    _fetch_google_granted_scopes,
     _fetch_identity_info,
     _fetch_probe_log,
     _fetch_probe_logs_bulk,
+    _fetch_scopes_required_by_provider,
     _fetch_system_secrets,
+    _fetch_user_secrets,
     _fingerprint,
     _format_probe_time,
     _get_db_manager,
+    _infer_provider_from_type,
     _needs_hand_count,
     _row_to_test_result,
 )
@@ -571,7 +577,7 @@ def test_inventory_probe_log_lru_attached():
     # Bulk probe rows must include credential_key so _row_to_test_result can
     # build the dict {credential_key: TestResult}.
     probe_row_bulk = _make_row(
-        credential_key="KEY1", ok=True, code=200, message=None, recorded_at=_NOW
+        credential_key="KEY1", ok=True, code=200, message=None, recorded_at=_NOW, latency_ms=None
     )
     mock_db = _make_db_manager(
         butler_names=["switchboard"],
@@ -749,8 +755,8 @@ def test_inventory_aggregates_across_butler_schemas():
     pool_a = AsyncMock()
 
     async def _pool_a_fetch(sql, *args):
-        if "secret_probe_log" in sql:
-            return []  # no probes
+        if "secret_probe_log" in sql or "audit_log" in sql:
+            return []  # no probes / no audit history
         return [row_a]
 
     pool_a.fetch = AsyncMock(side_effect=_pool_a_fetch)
@@ -759,8 +765,8 @@ def test_inventory_aggregates_across_butler_schemas():
     pool_b = AsyncMock()
 
     async def _pool_b_fetch(sql, *args):
-        if "secret_probe_log" in sql:
-            return []  # no probes
+        if "secret_probe_log" in sql or "audit_log" in sql:
+            return []  # no probes / no audit history
         return [row_b]
 
     pool_b.fetch = AsyncMock(side_effect=_pool_b_fetch)
@@ -819,7 +825,7 @@ async def test_fetch_probe_log_returns_none(fetchrow_result):
 
 async def test_fetch_probe_log_returns_test_result_when_row_exists():
     """When a probe row exists, returns a TestResult with ok/code/message/at."""
-    row = _make_row(ok=True, code=200, message=None, recorded_at=_NOW)
+    row = _make_row(ok=True, code=200, message=None, recorded_at=_NOW, latency_ms=None)
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=row)
 
@@ -1054,10 +1060,10 @@ def test_inventory_providers_is_additive():
 
 
 def test_row_to_test_result_maps_fields_and_handles_none_message():
-    """_row_to_test_result maps ok/code/message/recorded_at and tolerates a None message."""
+    """_row_to_test_result maps ok/code/message/recorded_at/latency_ms and tolerates a None message."""
     # Freeze the formatter's clock so "now" and recorded_at are on the same
     # calendar day regardless of when CI runs.
-    row = _make_row(ok=True, code=200, message="all good", recorded_at=_FROZEN_NOW)
+    row = _make_row(ok=True, code=200, message="all good", recorded_at=_FROZEN_NOW, latency_ms=42)
     with _freeze_time():
         result = _row_to_test_result(row)
     assert result.ok is True
@@ -1065,11 +1071,16 @@ def test_row_to_test_result_maps_fields_and_handles_none_message():
     assert result.message == "all good"
     assert result.at is not None
     assert "today" in result.at  # recent timestamp → "HH:MM today"
+    # bu-6v1hx: latency_ms is a real column value now (was entirely absent before).
+    assert result.latency_ms == 42
 
     none_msg = _row_to_test_result(
-        _make_row(ok=True, code=200, message=None, recorded_at=datetime.now(tz=UTC))
+        _make_row(
+            ok=True, code=200, message=None, recorded_at=datetime.now(tz=UTC), latency_ms=None
+        )
     )
     assert none_msg.message is None
+    assert none_msg.latency_ms is None
 
 
 # ---------------------------------------------------------------------------
@@ -1080,8 +1091,17 @@ def test_row_to_test_result_maps_fields_and_handles_none_message():
 async def test_fetch_probe_logs_bulk_returns_dict_for_all_keys():
     """Bulk query returns a dict with one TestResult entry per key that has a probe."""
     _now = datetime.now(tz=UTC)
-    row_a = _make_row(credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now)
-    row_b = _make_row(credential_key="KEY_B", ok=False, code=500, message="fail", recorded_at=_now)
+    row_a = _make_row(
+        credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now, latency_ms=None
+    )
+    row_b = _make_row(
+        credential_key="KEY_B",
+        ok=False,
+        code=500,
+        message="fail",
+        recorded_at=_now,
+        latency_ms=None,
+    )
 
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=[row_a, row_b])
@@ -1099,7 +1119,9 @@ async def test_fetch_probe_logs_bulk_returns_dict_for_all_keys():
 async def test_fetch_probe_logs_bulk_omits_keys_with_no_probe():
     """Keys with no probe row are absent from the result dict (caller treats as None)."""
     _now = datetime.now(tz=UTC)
-    row_a = _make_row(credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now)
+    row_a = _make_row(
+        credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now, latency_ms=None
+    )
 
     pool = AsyncMock()
     # DB returns only KEY_A (KEY_B has no probe row)
@@ -1152,10 +1174,15 @@ def test_inventory_probe_results_match_per_row_expectations():
 
     # Bulk probe rows keyed by credential_key
     probe_row_ok = _make_row(
-        credential_key="API_KEY", ok=True, code=200, message=None, recorded_at=_now
+        credential_key="API_KEY", ok=True, code=200, message=None, recorded_at=_now, latency_ms=None
     )
     probe_row_fail = _make_row(
-        credential_key="FAIL_KEY", ok=False, code=401, message="auth error", recorded_at=_now
+        credential_key="FAIL_KEY",
+        ok=False,
+        code=401,
+        message="auth error",
+        recorded_at=_now,
+        latency_ms=None,
     )
 
     mock_db = _make_db_manager(
@@ -1243,6 +1270,11 @@ def _make_google_inventory_pool(
     - SQL containing 'public.entities' (identity enrichment) → entity_rows or []
     - SQL containing "category = 'cli'" → []
     - SQL containing 'secret_probe_log' → []
+    - SQL containing 'audit_log' or 'provider_feature_catalogue' → [] (no history /
+      no catalogue seeded in these unit tests — real-data helpers degrade to empty)
+    - SQL containing 'granted_scopes' (the real-scopes lookup added for bu-6v1hx)
+      → [] — checked BEFORE the 'google_accounts' branch below since that query
+      also references public.google_accounts but selects different columns.
     """
     identity_rows = identity_rows or {}
     entity_rows = entity_rows or []
@@ -1250,9 +1282,13 @@ def _make_google_inventory_pool(
     shared_pool = AsyncMock()
 
     async def _fetch(sql, *args):
-        if "secret_probe_log" in sql:
+        if "secret_probe_log" in sql or "audit_log" in sql or "provider_feature_catalogue" in sql:
             return []
         if "category = 'cli'" in sql:
+            return []
+        if "granted_scopes" in sql:
+            # bu-6v1hx: real per-account scopes-granted lookup. Not exercised by
+            # these google-account-flow tests — return no rows (honest empty).
             return []
         if "entity_id = $1" in sql and args:
             # Identity-specific path: return rows for the requested entity.
@@ -1938,3 +1974,338 @@ def test_promoted_account_surfaces_in_owner_default_after_primary_disconnect():
     assert "promoted-token-do-not-leak" not in resp.text, (
         "SECURITY: promoted account's raw token must not appear in the response body"
     )
+
+
+# ---------------------------------------------------------------------------
+# bu-6v1hx: real scopes_required / scopes_granted / issued / expires / audit /
+# latency_ms in GET /api/secrets/inventory (previously always []/null/0).
+# ---------------------------------------------------------------------------
+
+
+def test_infer_provider_from_type_exact_and_prefix_and_alias():
+    """_infer_provider_from_type mirrors the frontend extractProvider heuristic."""
+    assert _infer_provider_from_type("google_oauth_refresh") == "google"
+    assert _infer_provider_from_type("github_pat") == "github"
+    # Alias table: home_assistant_token has no direct PROVIDER_CATALOG entry.
+    assert _infer_provider_from_type("home_assistant_token") == "homeassistant"
+    assert _infer_provider_from_type("telegram_user_session") == "telegram_bot"
+    # Unknown type: falls back to the text before the first underscore.
+    assert _infer_provider_from_type("mystery_thing") == "mystery"
+
+
+def test_infer_provider_from_type_bridges_catalogue_alias_spellings():
+    """_infer_provider_from_type resolves catalogue-raw provider spellings too.
+
+    _fetch_user_secrets keys the scopes-required union by running the
+    catalogue's raw `provider` column back through this same function (not a
+    blind underscore-strip), so both the catalogue side and the credential
+    side must resolve to the identical PROVIDER_CATALOG slug. 'home_assistant'
+    collapses onto 'homeassistant' by simple underscore removal, but
+    'telegram' only reaches 'telegram_bot' via the alias table — a plain
+    underscore/case normalisation would leave them mismatched.
+    """
+    assert _infer_provider_from_type("home_assistant") == "homeassistant"
+    assert _infer_provider_from_type("telegram") == "telegram_bot"
+    assert _infer_provider_from_type("google") == "google"
+
+
+async def test_fetch_scopes_required_by_provider_unions_across_features():
+    """Scopes required is the union of every catalogue row's required_scopes for a provider."""
+    row_a = _make_row(
+        provider="google",
+        required_scopes=["https://www.googleapis.com/auth/calendar"],
+    )
+    row_b = _make_row(
+        provider="google",
+        required_scopes=["https://www.googleapis.com/auth/gmail.modify"],
+    )
+    row_c = _make_row(provider="spotify", required_scopes=[])
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[row_a, row_b, row_c])
+
+    result = await _fetch_scopes_required_by_provider(pool)
+
+    assert result["google"] == sorted(
+        [
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/gmail.modify",
+        ]
+    )
+    assert result["spotify"] == []
+
+
+async def test_fetch_scopes_required_by_provider_empty_on_missing_table():
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        side_effect=UndefinedTableError("relation public.provider_feature_catalogue does not exist")
+    )
+    result = await _fetch_scopes_required_by_provider(pool)
+    assert result == {}
+
+
+async def test_fetch_google_granted_scopes_returns_real_per_account_scopes():
+    """scopes_granted for Google comes from public.google_accounts.granted_scopes."""
+    eid = str(uuid4())
+    row = _make_row(
+        entity_id=uuid4(), granted_scopes=["https://www.googleapis.com/auth/gmail.modify"]
+    )
+    # entity_id in the row must round-trip via str() to match the lookup key.
+    row.__getitem__ = MagicMock(
+        side_effect=lambda k: {
+            "entity_id": eid,
+            "granted_scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        }[k]
+    )
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[row])
+
+    result = await _fetch_google_granted_scopes(pool, [eid])
+    assert result[eid] == ["https://www.googleapis.com/auth/gmail.modify"]
+
+
+async def test_fetch_google_granted_scopes_empty_when_no_entity_ids():
+    pool = AsyncMock()
+    pool.fetch = AsyncMock()
+    result = await _fetch_google_granted_scopes(pool, [])
+    assert result == {}
+    pool.fetch.assert_not_called()
+
+
+async def test_fetch_audit_bulk_returns_recent_rows_per_target_newest_first():
+    """Bulk audit fetch returns real audit_log rows, newest first, per target."""
+    older = _make_row(
+        target="u:google", ts=_NOW - timedelta(hours=2), actor="owner", action="verified", note=None
+    )
+    newer = _make_row(
+        target="u:google", ts=_NOW, actor="owner", action="rotated", note="manual rotate"
+    )
+    other = _make_row(
+        target="s:BUTLER_TELEGRAM_TOKEN", ts=_NOW, actor="owner", action="set", note=None
+    )
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[newer, older, other])
+
+    result = await _fetch_audit_bulk(pool, ["u:google", "s:BUTLER_TELEGRAM_TOKEN"])
+
+    assert [row["action"] for row in result["u:google"]] == ["rotated", "verified"]
+    assert result["s:BUTLER_TELEGRAM_TOKEN"][0]["action"] == "set"
+
+
+async def test_fetch_audit_bulk_empty_when_no_history_or_table_missing():
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+    assert await _fetch_audit_bulk(pool, ["u:google"]) == {}
+
+    pool2 = AsyncMock()
+    pool2.fetch = AsyncMock(
+        side_effect=UndefinedTableError("relation public.audit_log does not exist")
+    )
+    assert await _fetch_audit_bulk(pool2, ["u:google"]) == {}
+
+    assert await _fetch_audit_bulk(AsyncMock(), []) == {}
+
+
+async def test_fetch_cli_secrets_includes_real_issued_and_expires():
+    """CliRuntime.issued/expires are populated from butler_secrets, not dropped."""
+    issued_at = _NOW - timedelta(days=30)
+    expires_at = _NOW + timedelta(days=60)
+    row = _make_row(
+        secret_key="claude-cli-token",
+        secret_value="tok",
+        category="cli",
+        description="Claude CLI",
+        created_at=issued_at,
+        updated_at=_NOW,
+        expires_at=expires_at,
+        last_verified=None,
+        last_test_ok=None,
+        last_test_code=None,
+        last_test_message=None,
+    )
+    pool = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            return []
+        return [row]
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+
+    results = await _fetch_cli_secrets(pool)
+
+    assert len(results) == 1
+    assert results[0].issued == issued_at
+    assert results[0].expires == expires_at
+
+
+async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
+    """UserSecret.issued/scopes_required/scopes_granted/audit are real, not fabricated.
+
+    Wires a Google credential row through _fetch_user_secrets with a mocked
+    pool that answers each of the new bulk queries (audit_log,
+    provider_feature_catalogue, google_accounts) distinctly, mirroring how a
+    real shared pool would.
+    """
+    eid = str(uuid4())
+    issued_at = _NOW - timedelta(days=10)
+    google_row = _make_row(
+        id=uuid4(),
+        entity_id=eid,
+        type="google_oauth_refresh",
+        value="tok",
+        label=None,
+        created_at=issued_at,
+        last_verified=None,
+        last_test_ok=True,
+        last_test_code=None,
+        last_test_message=None,
+    )
+
+    audit_row = _make_row(target="u:google", ts=_NOW, actor="owner", action="verified", note=None)
+    catalogue_row = _make_row(
+        provider="google", required_scopes=["https://www.googleapis.com/auth/calendar"]
+    )
+    granted_row = _make_row(
+        entity_id=eid, granted_scopes=["https://www.googleapis.com/auth/calendar"]
+    )
+
+    pool = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            return []
+        if "audit_log" in sql:
+            return [audit_row]
+        if "provider_feature_catalogue" in sql:
+            return [catalogue_row]
+        if "granted_scopes" in sql:
+            return [granted_row]
+        if "entity_info" in sql:
+            return [google_row]
+        return []
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+
+    results = await _fetch_user_secrets(pool, identity=UUID(eid))
+
+    assert len(results) == 1
+    secret = results[0]
+    assert secret.issued == issued_at
+    assert secret.scopes_required == ["https://www.googleapis.com/auth/calendar"]
+    assert secret.scopes_granted == ["https://www.googleapis.com/auth/calendar"]
+    assert len(secret.audit) == 1
+    assert secret.audit[0]["action"] == "verified"
+
+
+async def test_fetch_user_secrets_scopes_required_matches_across_catalogue_alias_spelling():
+    """scopes_required matching bridges catalogue vs display-slug spelling differences.
+
+    provider_feature_catalogue seeds this row under provider='telegram', but
+    entity_info.type='telegram_user_session' resolves (via
+    _infer_provider_from_type) to the display slug 'telegram_bot'. Both sides
+    must resolve through the same alias table so the union isn't silently
+    dropped for providers whose catalogue spelling differs by more than an
+    underscore (regression: a naive underscore-strip normalisation matches
+    'home_assistant'/'homeassistant' but NOT 'telegram'/'telegram_bot').
+    """
+    eid = str(uuid4())
+    telegram_row = _make_row(
+        id=uuid4(),
+        entity_id=eid,
+        type="telegram_user_session",
+        value="tok",
+        label=None,
+        created_at=_NOW,
+        last_verified=None,
+        last_test_ok=True,
+        last_test_code=None,
+        last_test_message=None,
+    )
+    catalogue_row = _make_row(provider="telegram", required_scopes=["telegram:bot-token"])
+
+    pool = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            return []
+        if "audit_log" in sql:
+            return []
+        if "provider_feature_catalogue" in sql:
+            return [catalogue_row]
+        if "granted_scopes" in sql:
+            return []
+        if "entity_info" in sql:
+            return [telegram_row]
+        return []
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+
+    results = await _fetch_user_secrets(pool, identity=UUID(eid))
+
+    assert len(results) == 1
+    assert results[0].scopes_required == ["telegram:bot-token"]
+
+
+async def test_fetch_user_secrets_non_google_provider_has_honestly_empty_scopes_granted():
+    """A non-Google credential has no real granted-scopes source and stays []."""
+    eid = str(uuid4())
+    row = _make_row(
+        id=uuid4(),
+        entity_id=eid,
+        type="github_pat",
+        value="tok",
+        label=None,
+        created_at=_NOW,
+        last_verified=None,
+        last_test_ok=True,
+        last_test_code=None,
+        last_test_message=None,
+    )
+
+    pool = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "entity_info" in sql:
+            return [row]
+        return []
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+
+    results = await _fetch_user_secrets(pool, identity=UUID(eid))
+    assert len(results) == 1
+    assert results[0].scopes_granted == []
+
+
+def test_inventory_endpoint_surfaces_new_fields_honestly_via_http():
+    """End-to-end: GET /api/secrets/inventory exposes issued/scopes/audit keys.
+
+    With no google_accounts / provider_feature_catalogue / audit_log rows
+    configured in the mock, the new fields must be present in the envelope
+    (not silently dropped) and honestly empty — never a fabricated value.
+    issued IS populated because entity_info.created_at is a real, already-
+    fetched column.
+    """
+    eid = str(uuid4())
+    user_row = _make_entity_info_row(entity_id=eid, info_type="github_pat", value="tok")
+    mock_db = _make_db_manager(
+        butler_names=[],
+        user_rows=[user_row],
+    )
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    user = resp.json()["data"]["user"]
+    assert len(user) == 1
+    entry = user[0]
+
+    # Real value: entity_info.created_at was always fetched but previously dropped.
+    assert entry["issued"] is not None
+    # Honestly empty: no provider_feature_catalogue / google_accounts / audit_log
+    # rows are configured for this provider/table in this test.
+    assert entry["scopes_required"] == []
+    assert entry["scopes_granted"] == []
+    assert entry["audit"] == []

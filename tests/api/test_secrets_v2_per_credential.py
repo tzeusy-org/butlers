@@ -152,12 +152,14 @@ def _make_probe_row(
     code: int | None = 200,
     message: str | None = None,
     recorded_at: datetime | None = None,
+    latency_ms: int | None = None,
 ) -> MagicMock:
     return _make_row(
         ok=ok,
         code=code,
         message=message,
         recorded_at=recorded_at or _NOW,
+        latency_ms=latency_ms,
     )
 
 

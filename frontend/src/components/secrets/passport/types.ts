@@ -59,7 +59,8 @@ export interface TestResult {
   code?: number | null;
   /**
    * Probe round-trip latency in milliseconds, when the server reports one.
-   * The inventory endpoint does not currently measure/return latency —
+   * Populated (bu-6v1hx) only for probes that made a real live network call
+   * (currently the user-credential probe's live OAuth/PAT verify) —
    * render nothing (never a fabricated "0ms") when null.
    */
   latencyMs?: number | null;

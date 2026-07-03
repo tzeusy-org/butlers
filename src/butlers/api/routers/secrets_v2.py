@@ -227,6 +227,14 @@ class TestResult(BaseModel):
     code: int | None = None
     message: str | None = None
     at: str | None = None  # human-friendly relative timestamp
+    # Round-trip latency of the live provider call that produced this probe
+    # row, in milliseconds. Only measured for probes that make a real network
+    # call (currently: the user-credential probe's live OAuth/PAT verify —
+    # see _verify_oauth_credential callsite in probe_user_credential). Probes
+    # that are derived from local state only (system probe outside OwnTracks,
+    # any probe that falls back to skipped_local_check) never had a real
+    # round trip to time, so this stays None rather than a fabricated 0.
+    latency_ms: int | None = None
 
 
 class SystemSecret(BaseModel):
@@ -243,6 +251,10 @@ class SystemSecret(BaseModel):
     last_test_message: str | None = None
     butler: str  # which butler schema owns this row
     test: TestResult | None = None
+    # Last few public.audit_log rows for this credential (target='s:<key>'),
+    # newest first. Real data via _fetch_audit_bulk; empty when nothing has
+    # ever been logged for this key (genuinely no history, not fabricated).
+    audit: list[dict] = Field(default_factory=list)
     # True for rows that must not be edited through the generic mutate path.
     # Shared-pool rows (butler="shared-public") are now editable via
     # target="shared-public"; the passport renders the generic editor for them.
@@ -259,11 +271,26 @@ class UserSecret(BaseModel):
     label: str | None = None
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
     fingerprint: str | None = None  # sha256[:8] hex, computed on-read
+    issued: datetime | None = None  # entity_info.created_at (real; was absent from this model)
     last_verified: datetime | None = None
     last_test_ok: bool | None = None
     last_test_code: int | None = None
     last_test_message: str | None = None
     test: TestResult | None = None
+    # Scopes the connected feature set requires, unioned across every
+    # public.provider_feature_catalogue row for the matching provider. Empty
+    # when the catalogue has no entry for this credential's provider (no
+    # fabricated placeholder).
+    scopes_required: list[str] = Field(default_factory=list)
+    # Scopes actually granted. Real source only exists for Google today
+    # (public.google_accounts.granted_scopes, tracked per-account since the
+    # OAuth dance / scope-widening flow). Every other provider has no
+    # per-credential granted-scope tracking yet and stays empty.
+    scopes_granted: list[str] = Field(default_factory=list)
+    # Last few public.audit_log rows for this credential (target='u:<provider>'),
+    # newest first. Real data via _fetch_audit_bulk; empty when nothing has
+    # ever been logged for this credential (genuinely no history).
+    audit: list[dict] = Field(default_factory=list)
 
 
 class CliRuntime(BaseModel):
@@ -274,6 +301,8 @@ class CliRuntime(BaseModel):
     description: str | None = None
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
     fingerprint: str | None = None  # sha256[:8] hex, computed on-read
+    issued: datetime | None = None  # butler_secrets.created_at (real; was fetched but dropped)
+    expires: datetime | None = None  # butler_secrets.expires_at (real; was fetched but dropped)
     last_verified: datetime | None = None
     last_test_ok: bool | None = None
     last_test_code: int | None = None
@@ -512,13 +541,14 @@ def _format_probe_time(recorded_at: datetime | None) -> str | None:
 def _row_to_test_result(row: Any) -> TestResult:
     """Convert an asyncpg probe-log row to a TestResult.
 
-    Expects row to have columns: ok, code, message, recorded_at.
+    Expects row to have columns: ok, code, message, recorded_at, latency_ms.
     """
     return TestResult(
         ok=row["ok"],
         code=row["code"],
         message=row["message"],
         at=_format_probe_time(row["recorded_at"]),
+        latency_ms=row["latency_ms"],
     )
 
 
@@ -538,7 +568,7 @@ async def _fetch_probe_log(
     try:
         row = await pool.fetchrow(
             """
-            SELECT ok, code, message, recorded_at
+            SELECT ok, code, message, recorded_at, latency_ms
             FROM public.secret_probe_log
             WHERE credential_scope = $1 AND credential_key = $2
             ORDER BY recorded_at DESC
@@ -589,7 +619,7 @@ async def _fetch_probe_logs_bulk(
         rows = await pool.fetch(
             """
             SELECT DISTINCT ON (credential_key)
-                   credential_key, ok, code, message, recorded_at
+                   credential_key, ok, code, message, recorded_at, latency_ms
             FROM public.secret_probe_log
             WHERE credential_scope = $1 AND credential_key = ANY($2)
             ORDER BY credential_key, recorded_at DESC
@@ -608,6 +638,193 @@ async def _fetch_probe_logs_bulk(
         )
         return {}
     return {row["credential_key"]: _row_to_test_result(row) for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# Audit-log bulk helper (inventory-level)
+# ---------------------------------------------------------------------------
+
+_INVENTORY_AUDIT_LIMIT = 3
+
+
+async def _fetch_audit_bulk(
+    pool: Any,
+    targets: list[str],
+    *,
+    limit: int = _INVENTORY_AUDIT_LIMIT,
+) -> dict[str, list[dict]]:
+    """Fetch the most recent audit rows for each canonical target in one query.
+
+    ``targets`` are canonical credential keys as written by
+    ``normalize_credential_key`` (e.g. ``"u:google"``, ``"s:BUTLER_TELEGRAM_TOKEN"``).
+
+    Uses a window function (ROW_NUMBER partitioned by target) instead of one
+    query per credential — the same N+1-avoidance shape as
+    ``_fetch_probe_logs_bulk``.
+
+    Returns a dict mapping target → list of ``{ts, actor, action, note}``
+    dicts (newest first, pre-formatted timestamps, matching the shape
+    ``AuditEvent`` serialises to). Targets with no audit history are absent
+    from the dict — callers should treat a missing key as "no audit rows"
+    rather than fabricate an empty placeholder with different semantics.
+
+    Silently returns an empty dict when ``public.audit_log`` does not exist
+    (migration not yet run) or when ``targets`` is empty.
+    """
+    if not targets:
+        return {}
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT target, ts, actor, action, note
+            FROM (
+                SELECT
+                    target, ts, actor, action, note,
+                    ROW_NUMBER() OVER (PARTITION BY target ORDER BY ts DESC) AS rn
+                FROM public.audit_log
+                WHERE target = ANY($1)
+            ) ranked
+            WHERE rn <= $2
+            ORDER BY target, ts DESC
+            """,
+            targets,
+            limit,
+        )
+    except UndefinedTableError:
+        return {}
+    except PostgresError as exc:
+        logger.debug("audit_log bulk lookup failed for targets=%s: %s", targets, exc)
+        return {}
+
+    result: dict[str, list[dict]] = {}
+    for row in rows:
+        result.setdefault(row["target"], []).append(
+            {
+                "ts": _format_probe_time(row["ts"]) or str(row["ts"]),
+                "actor": row["actor"],
+                "action": row["action"],
+                "note": row["note"],
+            }
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Provider inference (entity_info.type -> provider slug)
+# ---------------------------------------------------------------------------
+# Mirrors USER_TYPE_PROVIDER_ALIASES / USER_TYPE_PREFIX_ALIASES / extractProvider
+# in frontend/src/hooks/use-secrets-inventory.ts so the provider slug computed
+# here matches the one the frontend sends as the `provider` path param to
+# rotate/disconnect/probe (and therefore matches the audit_log `target` those
+# endpoints write). Keep both copies in sync if either changes.
+# ---------------------------------------------------------------------------
+
+_USER_TYPE_PROVIDER_ALIASES: dict[str, str] = {
+    "home_assistant_token": "homeassistant",
+    "home_assistant_url": "homeassistant",
+    "telegram_api_hash": "telegram_bot",
+    "telegram_api_id": "telegram_bot",
+    "telegram_user_session": "telegram_bot",
+}
+
+_USER_TYPE_PREFIX_ALIASES: dict[str, str] = {
+    "home_assistant": "homeassistant",
+    "telegram": "telegram_bot",
+}
+
+
+def _infer_provider_from_type(entity_type: str) -> str:
+    """Best-effort mapping from entity_info.type to a display provider slug.
+
+    Used only to compute the audit_log target and the scopes-granted lookup
+    for user credentials; never returned to the caller directly.
+    """
+    if entity_type in PROVIDER_CATALOG:
+        return entity_type
+
+    exact_alias = _USER_TYPE_PROVIDER_ALIASES.get(entity_type)
+    if exact_alias and exact_alias in PROVIDER_CATALOG:
+        return exact_alias
+
+    for provider_id in PROVIDER_CATALOG:
+        if entity_type == provider_id or entity_type.startswith(f"{provider_id}_"):
+            return provider_id
+
+    for prefix, provider_id in _USER_TYPE_PREFIX_ALIASES.items():
+        if (
+            entity_type == prefix or entity_type.startswith(f"{prefix}_")
+        ) and provider_id in PROVIDER_CATALOG:
+            return provider_id
+
+    idx = entity_type.find("_")
+    return entity_type[:idx] if idx > 0 else entity_type
+
+
+async def _fetch_scopes_required_by_provider(pool: Any) -> dict[str, list[str]]:
+    """Union public.provider_feature_catalogue.required_scopes per provider.
+
+    Returns a dict keyed by the catalogue's own `provider` column value (raw,
+    not normalised) mapping to the sorted union of every required_scopes
+    array seeded for that provider across all butlers/features. Callers
+    should resolve both sides through `_infer_provider_from_type` before
+    matching — the catalogue and the display provider catalog use different
+    spellings/aliases for the same provider (e.g. catalogue 'telegram' vs
+    display 'telegram_bot'), and `_infer_provider_from_type` is the single
+    source of truth for that alias resolution (see its docstring).
+
+    Returns an empty dict when the catalogue table does not exist yet.
+    """
+    try:
+        rows = await pool.fetch(
+            "SELECT provider, required_scopes FROM public.provider_feature_catalogue"
+        )
+    except UndefinedTableError:
+        return {}
+    except PostgresError as exc:
+        logger.debug("provider_feature_catalogue lookup failed: %s", exc)
+        return {}
+
+    by_provider: dict[str, set[str]] = {}
+    for row in rows:
+        scopes = row["required_scopes"]
+        if isinstance(scopes, str):
+            scopes = json.loads(scopes)
+        by_provider.setdefault(row["provider"], set()).update(scopes or [])
+
+    return {provider: sorted(scopes) for provider, scopes in by_provider.items()}
+
+
+async def _fetch_google_granted_scopes(
+    pool: Any,
+    entity_ids: list[str],
+) -> dict[str, list[str]]:
+    """Fetch public.google_accounts.granted_scopes for the given entity ids.
+
+    This is the only provider with real, per-account granted-scope tracking
+    today (populated by the OAuth callback + scope-widening flow in
+    api/routers/oauth.py). Returns a dict keyed by entity_id (string) so
+    callers can attach it only to rows whose type is a google credential.
+
+    Returns an empty dict when public.google_accounts does not exist yet or
+    entity_ids is empty.
+    """
+    if not entity_ids:
+        return {}
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT entity_id, granted_scopes
+            FROM public.google_accounts
+            WHERE entity_id = ANY($1::uuid[])
+            """,
+            entity_ids,
+        )
+    except UndefinedTableError:
+        return {}
+    except PostgresError as exc:
+        logger.debug("google_accounts granted_scopes lookup failed: %s", exc)
+        return {}
+    return {str(row["entity_id"]): list(row["granted_scopes"] or []) for row in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +879,8 @@ async def _fetch_system_secrets(
     # Bulk-fetch probe logs for all keys in a single query (eliminates N+1).
     credential_keys = [row["secret_key"] for row in rows]
     probe_map = await _fetch_probe_logs_bulk(pool, "system", credential_keys)
+    audit_targets = [normalize_credential_key("system", key) for key in credential_keys]
+    audit_map = await _fetch_audit_bulk(pool, audit_targets)
 
     results: list[SystemSecret] = []
     for row in rows:
@@ -689,6 +908,7 @@ async def _fetch_system_secrets(
                 last_test_message=row["last_test_message"],
                 butler=butler_name,
                 test=probe_map.get(row["secret_key"]),
+                audit=audit_map.get(normalize_credential_key("system", row["secret_key"]), []),
                 read_only=read_only,
             )
         )
@@ -853,8 +1073,35 @@ async def _fetch_user_secrets(
     credential_keys = [row["type"] for row in rows]
     probe_map = await _fetch_probe_logs_bulk(pool, "user", credential_keys)
 
+    # Provider inference is needed for both the audit target and the
+    # scopes-required/granted lookups below (see _infer_provider_from_type).
+    providers_by_row = [_infer_provider_from_type(row["type"]) for row in rows]
+
+    audit_targets = [normalize_credential_key("user", provider) for provider in providers_by_row]
+    audit_map = await _fetch_audit_bulk(pool, audit_targets)
+
+    scopes_required_map = await _fetch_scopes_required_by_provider(pool)
+    # Key by the same PROVIDER_CATALOG-resolved slug that `providers_by_row`
+    # uses (via _infer_provider_from_type), not a blind underscore-strip.
+    # The catalogue's raw provider spelling doesn't always collapse onto the
+    # display slug by stripping underscores alone — e.g. catalogue 'telegram'
+    # vs display 'telegram_bot' need the alias table, exactly like
+    # 'home_assistant' vs 'homeassistant' needs the underscore collapse.
+    # _infer_provider_from_type already encodes both cases correctly.
+    scopes_required_by_provider = {
+        _infer_provider_from_type(provider): scopes
+        for provider, scopes in scopes_required_map.items()
+    }
+
+    google_entity_ids = [
+        str(row["entity_id"])
+        for row, provider in zip(rows, providers_by_row)
+        if provider == "google"
+    ]
+    google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
+
     results: list[UserSecret] = []
-    for row in rows:
+    for row, provider in zip(rows, providers_by_row):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
 
@@ -863,20 +1110,25 @@ async def _fetch_user_secrets(
             last_test_ok=last_test_ok,
         )
         fp = _fingerprint(value)
+        entity_id = str(row["entity_id"])
 
         results.append(
             UserSecret(
                 id=str(row["id"]),
-                entity_id=str(row["entity_id"]),
+                entity_id=entity_id,
                 type=row["type"],
                 label=row["label"],
                 state=state,
                 fingerprint=fp,
+                issued=row["created_at"],
                 last_verified=row["last_verified"],
                 last_test_ok=last_test_ok,
                 last_test_code=row["last_test_code"],
                 last_test_message=row["last_test_message"],
                 test=probe_map.get(row["type"]),
+                scopes_required=scopes_required_by_provider.get(provider, []),
+                scopes_granted=google_scopes_map.get(entity_id, []) if provider == "google" else [],
+                audit=audit_map.get(normalize_credential_key("user", provider), []),
             )
         )
 
@@ -944,6 +1196,8 @@ async def _fetch_cli_secrets(
                 description=row["description"],
                 state=state,
                 fingerprint=fp,
+                issued=row["created_at"],
+                expires=expires_at,
                 last_verified=row["last_verified"],
                 last_test_ok=last_test_ok,
                 last_test_code=row["last_test_code"],
@@ -2856,7 +3110,10 @@ async def probe_user_credential(
     expired, is the last_test_ok field true?).
 
     In the same SQL transaction it:
-    1. Inserts one row into ``public.secret_probe_log``.
+    1. Inserts one row into ``public.secret_probe_log``, including
+       ``latency_ms`` (round-trip wall time of the live verify call) when a
+       live call was actually made — never a fabricated number for the
+       skipped-local-check fallback path.
     2. Updates ``last_verified``, ``last_test_ok``, ``last_test_code``,
        ``last_test_message`` on the matching ``public.entity_info`` row.
 
@@ -2910,7 +3167,13 @@ async def probe_user_credential(
             exc,
         )
 
+    # Round-trip latency of the live provider call, when one is actually made.
+    # None when the probe falls back to a local-state check — there is no
+    # network call to time in that path, so a real measurement never exists.
+    probe_latency_ms: int | None = None
+
     if raw_refresh_token:
+        _probe_started_at = time.monotonic()
         try:
             probe_status, probe_code, probe_message = await _verify_oauth_credential(
                 provider,
@@ -2918,6 +3181,13 @@ async def probe_user_credential(
                 raw_refresh_token,
                 shared_pool,
             )
+            # Only attribute latency to an actual live round trip. When
+            # _verify_oauth_credential returns "skipped_local_check" it made
+            # no network call at all (no verify handler, unsupported
+            # credential type, missing app credentials) — timing that would
+            # report a meaningless near-zero number, not a real latency.
+            if probe_status == "live_ok" or probe_status.startswith("live_failed"):
+                probe_latency_ms = round((time.monotonic() - _probe_started_at) * 1000)
         except Exception as exc:  # noqa: BLE001
             # Should not happen — _verify_oauth_credential catches internally — but be safe.
             logger.warning(
@@ -2926,6 +3196,7 @@ async def probe_user_credential(
                 exc,
             )
             probe_status = "skipped_local_check"
+            probe_latency_ms = None
 
     # Resolve final probe_ok from live result or fall back to local state.
     if probe_status == "live_ok":
@@ -2949,14 +3220,15 @@ async def probe_user_credential(
                 await conn.execute(
                     """
                     INSERT INTO public.secret_probe_log
-                        (credential_scope, credential_key, ok, code, message)
-                    VALUES ($1, $2, $3, $4, $5)
+                        (credential_scope, credential_key, ok, code, message, latency_ms)
+                    VALUES ($1, $2, $3, $4, $5, $6)
                     """,
                     "user",
                     credential_key,
                     probe_ok,
                     probe_code,
                     probe_message,
+                    probe_latency_ms,
                 )
 
                 # 2. Update test-state cache columns on entity_info.
@@ -3005,6 +3277,7 @@ async def probe_user_credential(
         code=probe_code,
         message=probe_message,
         at=_format_probe_time(datetime.now(tz=UTC)),
+        latency_ms=probe_latency_ms,
     )
     return ApiResponse[TestResult](data=result, meta=ApiMeta())
 

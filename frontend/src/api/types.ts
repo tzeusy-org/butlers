@@ -7301,15 +7301,19 @@ export interface BreaksCatalogueParams {
 
 /**
  * Most recent probe result for a credential, as returned by the inventory
- * endpoint. Note: latencyMs is NOT included in the inventory response (only
- * in per-credential detail). The FE TestResult type includes latencyMs as
- * optional to allow both shapes to coexist.
+ * endpoint.
+ *
+ * `latency_ms` is real (bu-6v1hx): populated from public.secret_probe_log
+ * when the probe made an actual live network round trip (currently only the
+ * user-credential probe's live OAuth/PAT verify). Null when the probe was
+ * derived from local state only — never a fabricated 0.
  */
 export interface SecretsProbeResult {
   ok: boolean;
   code: number | null;
   message: string | null;
   at: string | null;
+  latency_ms?: number | null;
 }
 
 /**
@@ -7323,6 +7327,10 @@ export interface SecretsCliRaw {
   description: string | null;
   state: string;
   fingerprint: string | null;
+  /** butler_secrets.created_at (real; bu-6v1hx). */
+  issued?: string | null;
+  /** butler_secrets.expires_at (real; bu-6v1hx). */
+  expires?: string | null;
   last_verified: string | null;
   test: SecretsProbeResult | null;
 }
@@ -7341,6 +7349,12 @@ export interface SecretsSystemRaw {
   last_verified: string | null;
   butler: string;
   test: SecretsProbeResult | null;
+  /**
+   * Last few public.audit_log rows for this credential (target='s:<key>'),
+   * newest first. Real data (bu-6v1hx); empty when nothing has ever been
+   * logged for this key. May be absent on older backends (treat as []).
+   */
+  audit?: SecretsAuditEvent[];
   /**
    * When true, the passport renders the row read-only (generic editor suppressed).
    * Shared-public rows (butler="shared-public") are NOT flagged read_only —
@@ -7364,8 +7378,28 @@ export interface SecretsUserRaw {
   label: string | null;
   state: string;
   fingerprint: string | null;
+  /** entity_info.created_at (real; bu-6v1hx). */
+  issued?: string | null;
   last_verified: string | null;
   test: SecretsProbeResult | null;
+  /**
+   * Union of public.provider_feature_catalogue.required_scopes for this
+   * credential's provider (real; bu-6v1hx). Empty when the catalogue has no
+   * entry for the provider.
+   */
+  scopes_required?: string[];
+  /**
+   * Scopes actually granted. Real source only exists for Google today
+   * (public.google_accounts.granted_scopes). Every other provider stays
+   * empty — there is no per-credential granted-scope tracking for them yet.
+   */
+  scopes_granted?: string[];
+  /**
+   * Last few public.audit_log rows for this credential (target='u:<provider>'),
+   * newest first. Real data (bu-6v1hx); empty when nothing has ever been
+   * logged for this credential.
+   */
+  audit?: SecretsAuditEvent[];
 }
 
 /**

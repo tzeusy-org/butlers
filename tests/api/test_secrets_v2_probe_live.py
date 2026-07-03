@@ -315,9 +315,15 @@ def test_google_probe_userinfo_200_returns_probe_ok_true(monkeypatch):
     resp = client.post("/api/secrets/user/google/probe")
 
     assert resp.status_code == 200
-    assert resp.json()["data"]["ok"] is True
+    data = resp.json()["data"]
+    assert data["ok"] is True
     assert audit_calls, "Expected at least one audit call"
     assert "probe_status=live_ok" in audit_calls[0].get("note", "")
+    # bu-6v1hx: a real live round trip happened (token exchange + userinfo call)
+    # so latency_ms must be a real measured, non-negative number — never null
+    # and never a fabricated placeholder like 0.
+    assert isinstance(data["latency_ms"], int)
+    assert data["latency_ms"] >= 0
 
 
 def test_google_probe_userinfo_401_returns_probe_ok_false_with_code(monkeypatch):
@@ -431,6 +437,9 @@ def test_non_google_provider_falls_back_to_local_check(monkeypatch):
     # Local state is ok (last_test_ok=True, value set) → probe_ok=True
     assert data["ok"] is True
     assert not http_calls, f"Expected no HTTP calls for unsupported provider; got: {http_calls}"
+    # bu-6v1hx: no live network call was made, so latency_ms must stay null —
+    # never a fabricated 0 or a timing of the no-op local-state check.
+    assert data["latency_ms"] is None
 
 
 def test_network_error_on_token_exchange_falls_back_to_local_check(monkeypatch):
