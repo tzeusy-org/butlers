@@ -96,7 +96,7 @@ const SEARCH_RESULT_LIMIT = 50;
 const ENTITY_TYPES = [
   "person",
   "organization",
-  "location",
+  "place",
   "product",
   "group",
   "other",
@@ -108,7 +108,7 @@ const EMPTY_TYPE_SENTINEL = "__none__";
 const TYPE_LABELS: Record<EntityType, string> = {
   person: "Person",
   organization: "Org",
-  location: "Location",
+  place: "Place",
   product: "Product",
   group: "Group",
   other: "Other",

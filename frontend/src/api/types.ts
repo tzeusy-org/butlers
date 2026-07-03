@@ -6802,6 +6802,8 @@ export interface ReembedRunResult {
 export interface NeighbourEntry {
   entity_id: string;
   canonical_name: string;
+  /** Neighbour entity type ("person" / "organization" / ...); null on a registry miss. */
+  entity_type: string | null;
   direction: "forward" | "reverse";
   src: string;
   conf: number;
@@ -6838,6 +6840,37 @@ export interface NeighboursParams {
    * (top-N by weight). Defaults to 6 on the backend.
    */
   per_predicate?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Plex halo (GET /api/butlers/relationship/plex/halo)
+// Dimension halo on the owner Plex: non-person entities grouped by type.
+// ---------------------------------------------------------------------------
+
+/** A relational triple connecting a halo satellite to a person entity. */
+export interface HaloEdge {
+  person_id: string;
+  predicate: string;
+}
+
+/** One non-person entity shown in a halo arc, with its person edges. */
+export interface HaloSatellite {
+  entity_id: string;
+  canonical_name: string;
+  last_seen: string | null;
+  edges: HaloEdge[];
+}
+
+/** Response envelope from GET /api/butlers/relationship/plex/halo. */
+export interface HaloResponse {
+  /**
+   * Maps each non-person entity type ("organization" / "place" / "other") to
+   * its top-N satellites ranked by last_seen DESC NULLS LAST. Types with zero
+   * entities are omitted.
+   */
+  arcs: Record<string, HaloSatellite[]>;
+  /** Full per-type entity count, for the arc's "+N" overflow label. */
+  totals: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------

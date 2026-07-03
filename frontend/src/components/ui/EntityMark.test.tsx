@@ -4,7 +4,7 @@
 //
 // Coverage:
 //   - Person entities show up to 2 initials (first letter of each word)
-//   - Non-person entities show the type glyph (O, L, X, @, E, G, ?)
+//   - Non-person entities show the type glyph (O, L, X, @, E, G, T); ? for unknown
 //   - tone="fill" applies hue background + white text
 //   - tone="neutral" (default) applies transparent bg + hue border
 //   - isOwner applies --role-owner border in neutral tone
@@ -111,7 +111,7 @@ describe("EntityMark: non-person type glyphs", () => {
     { type: "account", glyph: "@" },
     { type: "event", glyph: "E" },
     { type: "group", glyph: "G" },
-    { type: "other", glyph: "?" },
+    { type: "other", glyph: "T" },
   ] as const
 
   for (const { type, glyph } of GLYPH_CASES) {

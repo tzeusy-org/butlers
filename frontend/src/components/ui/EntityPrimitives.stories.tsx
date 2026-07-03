@@ -18,7 +18,7 @@ import { TierBadge, type DunbarTier } from "./TierBadge"
 const ENTITY_TYPES = [
   "person",
   "organization",
-  "location",
+  "place",
   "product",
   "account",
   "event",
@@ -111,7 +111,7 @@ export const Rows = () => (
       {[
         { name: "Alice Johnson", type: "person", owner: true },
         { name: "Acme Corp", type: "organization", owner: false },
-        { name: "London", type: "location", owner: false },
+        { name: "London", type: "place", owner: false },
       ].map((e) => (
         <Row
           key={e.name}

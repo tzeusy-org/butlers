@@ -1573,6 +1573,7 @@ class TestEntityNeighbours:
         object_val: str | None = None,
         direction: str = "forward",
         canonical_name: str = "Test Entity",
+        entity_type: str | None = None,
         weight: int | None = None,
     ) -> MagicMock:
         data = {
@@ -1589,6 +1590,7 @@ class TestEntityNeighbours:
             "primary": None,
             "direction": direction,
             "canonical_name": canonical_name,
+            "entity_type": entity_type,
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])

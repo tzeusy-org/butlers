@@ -93,6 +93,9 @@ if _models_path.exists():
         EntityListResponse = _models_module.EntityListResponse
         NeighbourEntry = _models_module.NeighbourEntry
         NeighboursResponse = _models_module.NeighboursResponse
+        HaloEdge = _models_module.HaloEdge
+        HaloSatellite = _models_module.HaloSatellite
+        HaloResponse = _models_module.HaloResponse
         SearchResultEntry = _models_module.SearchResultEntry
         SearchResponse = _models_module.SearchResponse
         QueueEntry = _models_module.QueueEntry
@@ -3688,6 +3691,151 @@ async def patch_entity_dunbar_tier(
 
 
 # ---------------------------------------------------------------------------
+# GET /plex/halo — dimension halo for the owner Plex
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/plex/halo",
+    response_model=HaloResponse,
+)
+async def get_plex_halo(
+    per_type: int = Query(
+        20,
+        ge=1,
+        le=60,
+        description="Max satellites returned per entity type arc (top-N by last_seen).",
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> HaloResponse:
+    """Return the owner Plex's dimension halo: non-person entities by type.
+
+    Each non-person entity type (``organization`` / ``place`` / ``other``)
+    becomes an arc holding its top-``per_type`` entities ranked by
+    ``last_seen DESC NULLS LAST`` — "most recently alive" — while ``totals``
+    carries the full per-type count for the arc's "+N" overflow label.
+
+    Every satellite ships its active relational edges to person entities
+    (either triple direction) so the client can run the connection spotlight
+    in both directions — person → satellites and satellite → people — without
+    per-hover requests.
+
+    Owner-only authz gate (Clause 12b): HTTP 403 ``{"code": "owner_required"}``
+    if no owner entity is registered.
+    """
+    pool = _pool(db)
+
+    # Owner-only gate (Clause 12b) — roles-aware via _assert_owner_role.
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+
+    totals_rows = await pool.fetch(
+        f"""
+        SELECT entity_type, COUNT(*)::int AS n
+        FROM public.entities e
+        WHERE entity_type <> 'person'
+          AND {_active_entity_condition("e")}
+        GROUP BY entity_type
+        """
+    )
+    totals = {r["entity_type"]: r["n"] for r in totals_rows}
+
+    # "Most recently alive" per satellite: max last_seen across active
+    # relationship facts in EITHER direction — satellites are usually the
+    # object of their triples (person works-at org), so a subject-only max
+    # would miss most of their activity.
+    sat_rows = await pool.fetch(
+        f"""
+        SELECT id, canonical_name, entity_type, last_seen
+        FROM (
+            SELECT id, canonical_name, entity_type, last_seen,
+                   row_number() OVER (
+                       PARTITION BY entity_type
+                       ORDER BY last_seen DESC NULLS LAST, created_at DESC
+                   ) AS rn
+            FROM (
+                SELECT e.id, e.canonical_name, e.entity_type, e.created_at,
+                       (
+                           SELECT max(rf.last_seen)
+                           FROM relationship.entity_facts rf
+                           WHERE rf.validity = 'active'
+                             AND (
+                                 rf.subject = e.id
+                                 OR (rf.object_kind = 'entity' AND rf.object = e.id::text)
+                             )
+                       ) AS last_seen
+                FROM public.entities e
+                WHERE e.entity_type <> 'person'
+                  AND {_active_entity_condition("e")}
+            ) scored
+        ) ranked
+        WHERE rn <= $1
+        """,
+        per_type,
+    )
+
+    satellites: dict[UUID, HaloSatellite] = {}
+    arcs: dict[str, list[HaloSatellite]] = {}
+    for r in sat_rows:
+        sat = HaloSatellite(
+            entity_id=r["id"],
+            canonical_name=r["canonical_name"],
+            last_seen=r["last_seen"],
+        )
+        satellites[r["id"]] = sat
+        arcs.setdefault(r["entity_type"], []).append(sat)
+
+    if satellites:
+        sat_ids = list(satellites)
+        edge_rows = await pool.fetch(
+            """
+            SELECT f.subject, f.object, f.predicate
+            FROM relationship.entity_facts f
+            JOIN relationship.entity_predicate_registry pr ON pr.predicate = f.predicate
+            WHERE pr.kind = 'relational'
+              AND f.validity = 'active'
+              AND f.object_kind = 'entity'
+              AND (f.subject = ANY($1::uuid[]) OR f.object = ANY($2::text[]))
+            """,
+            sat_ids,
+            [str(i) for i in sat_ids],
+        )
+
+        # Resolve the non-satellite side of each triple and keep only edges
+        # whose other end is a person entity.
+        candidate_pairs: list[tuple[UUID, UUID, str]] = []  # (satellite, other, predicate)
+        for r in edge_rows:
+            subject: UUID = r["subject"]
+            try:
+                obj = UUID(r["object"])
+            except (ValueError, TypeError):
+                continue
+            if subject in satellites:
+                candidate_pairs.append((subject, obj, r["predicate"]))
+            elif obj in satellites:
+                candidate_pairs.append((obj, subject, r["predicate"]))
+
+        other_ids = list({other for _, other, _ in candidate_pairs})
+        person_ids: set[UUID] = set()
+        if other_ids:
+            person_rows = await pool.fetch(
+                "SELECT id FROM public.entities WHERE id = ANY($1::uuid[]) "
+                "AND entity_type = 'person'",
+                other_ids,
+            )
+            person_ids = {r["id"] for r in person_rows}
+
+        seen_edges: set[tuple[UUID, UUID, str]] = set()
+        for sat_id, other, predicate in candidate_pairs:
+            if other not in person_ids or (sat_id, other, predicate) in seen_edges:
+                continue
+            seen_edges.add((sat_id, other, predicate))
+            satellites[sat_id].edges.append(HaloEdge(person_id=other, predicate=predicate))
+
+    return HaloResponse(arcs=arcs, totals=totals)
+
+
+# ---------------------------------------------------------------------------
 # GET /entities/{entity_id}/neighbours — relational neighbours (bu-4wn79)
 # ---------------------------------------------------------------------------
 
@@ -3789,7 +3937,8 @@ async def list_entity_neighbours(
                 WHEN f.subject = $1 THEN 'forward'
                 ELSE 'reverse'
             END AS direction,
-            e.canonical_name
+            e.canonical_name,
+            e.entity_type
         FROM relationship.entity_facts f
         JOIN relationship.entity_predicate_registry pr ON pr.predicate = f.predicate
         LEFT JOIN public.entities e ON e.id = CASE
@@ -3833,6 +3982,7 @@ async def list_entity_neighbours(
         entry = NeighbourEntry(
             entity_id=neighbour_uuid,
             canonical_name=r["canonical_name"] or "",
+            entity_type=r["entity_type"],
             direction=direction,
             src=r["src"],
             conf=float(r["conf"]) if r["conf"] is not None else 1.0,
@@ -5125,11 +5275,13 @@ async def get_dunbar_ranking(
     contact_ids = [r["contact_id"] for r in ranked if r["entity_id"] is not None]
     entity_name_rows, owner_row, interaction_30d_rows = await asyncio.gather(
         pool.fetch(
-            """
+            f"""
             SELECT e.id, e.canonical_name, e.aliases,
                    e.metadata->'profile'->>'avatar_url' AS avatar_url
             FROM public.entities e
             WHERE e.id = ANY($1::uuid[])
+              AND e.entity_type = 'person'
+              AND {_active_entity_condition("e")}
             """,
             entity_ids,
         ),
@@ -5172,6 +5324,13 @@ async def get_dunbar_ranking(
     entries: list[DunbarEntry] = []
     for r in ranked:
         if r["entity_id"] is None:
+            continue
+        # The scoring engine ranks over memory-module dunbar facts, which
+        # outlive merges and reclassifications. Only living person entities
+        # belong on the Dunbar rings — anything absent from the (person +
+        # active) name fetch is a ghost and is dropped, not rendered as
+        # "Unknown".
+        if r["entity_id"] not in entity_names:
             continue
         cid = r["contact_id"]
         tier = r["dunbar_tier"]

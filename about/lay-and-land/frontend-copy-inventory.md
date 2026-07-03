@@ -96,6 +96,7 @@ Do **not** edit manually: re-run the script to refresh.
 - Models
 - Manage
 - Collections
+- Entities
 - Measurements
 - Routing Log
 - Registry
@@ -403,21 +404,8 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/pages/IngestionFiltersPage.tsx`
 
+- metrics unavailable
 - Five gates between arriving and acting. Rules at each gate decide whether the system stores, drops, tiers, routes, or replays.
-
-## `frontend/src/pages/IngestionHistoryPage.tsx`
-
-- History
-- Backfill and replay history. Track and manage historical ingestion runs.
-
-## `frontend/src/pages/IngestionPage.tsx`
-
-- Ingestion
-- Unified ingestion control surface: source visibility, routing policy, and historical replay.
-- Timeline
-- Connectors
-- Filters
-- History
 
 ## `frontend/src/pages/IngestionTimelinePage.tsx`
 
@@ -1966,111 +1954,38 @@ Do **not** edit manually: re-run the script to refresh.
 - Flush interval
 - Cancel
 
-## `frontend/src/components/ingestion/ConnectorCard.tsx`
-
-- backfill active
-- Today ingested
-- Uptime
-- Last seen
-- Delete connector?
-- Cancel
-- Delete connector
-
-## `frontend/src/components/ingestion/ConnectorErrorLog.tsx`
-
-- Error Log
-- No connector errors detected.
-- Last seen
-- Connector
-- State
-- Message
-
-## `frontend/src/components/ingestion/ConnectorHealthRow.tsx`
-
-- No connectors registered.
-
-## `frontend/src/components/ingestion/ConnectorSummaryBar.tsx`
-
-- Total
-- Online
-- Stale
-- Offline
-- Ingested
-- Failed
-- Error rate
-
-## `frontend/src/components/ingestion/ConnectorsListPage.tsx`
-
-- metrics unavailable: aggregate statistics are temporarily unavailable
-- No connectors registered.
-- Available: not yet configured
-- Supports backfill
-- connect →
-- Ingestion Volume
-
-## `frontend/src/components/ingestion/ConnectorsTab.tsx`
-
-- metrics unavailable: aggregate statistics are temporarily unavailable
-- No connectors registered.
-- Available: not yet configured
-- Supports backfill
-- connect →
-- Ingestion Volume
-
-## `frontend/src/components/ingestion/FanoutMatrix.tsx`
-
-- Connector x Butler Fanout
-- No fanout data available
-- Connector
-
-## `frontend/src/components/ingestion/FiltersTabContent.tsx`
-
-- Filters
-- Deterministic ingestion policy: triage rules, thread affinity, and label filters.
-- Filter controls will be implemented in a follow-up task.
-
-## `frontend/src/components/ingestion/IngestionStatRow.tsx`
-
-- Ingested (period)
-- Failed / Skipped
-- Total Processed
-- Error Rate
-- Active Connectors
-
 ## `frontend/src/components/ingestion/IngestionSubNav.tsx`
 
 - Ingestion views
 
-## `frontend/src/components/ingestion/TierBreakdownDonut.tsx`
-
-- Tier Breakdown
-- No tier data available
-
 ## `frontend/src/components/ingestion/TimelineTab.tsx`
 
-- (soon)
+- update view
+- save view
 - status:
 - channels:
 - Clear
 - Connector issues:
+- = minuteMs && ts
+- &scopedBucketMinutes=
 - Save current view
 - Name this filter combination to restore it later.
 - Cancel
+- Scoped to
 - Failed to load ingestion events.
+- Retry
 - No events match the current filters.
 - search events…
 - Search events
 - Clear search
+- Filters differ from this saved view
 - Save current filter combination as a named view
+- Add channel filter
 - Copy selected event IDs to clipboard
+- Remove the email/replay-unsafe events from the selection
 - Connectors requiring attention
 - Filter window aggregate counts
 - View name…
-
-## `frontend/src/components/ingestion/VolumeTrendChart.tsx`
-
-- No data available
-- Volume Trend
 
 ## `frontend/src/components/ingestion/connectors/AttentionStrip.tsx`
 
@@ -2120,14 +2035,19 @@ Do **not** edit manually: re-run the script to refresh.
 
 ## `frontend/src/components/ingestion/filters/ChannelDefaultsBlock.tsx`
 
+- loading current policy…
+- no policy configured yet — showing defaults
+- max age (days)
 - channel · defaults
 - fallback policy per connector
 - Channel defaults unavailable. Check connectivity and reload.
 - No channel defaults configured.
+- e.g. 30
 
 ## `frontend/src/components/ingestion/filters/FiltersPipeline.tsx`
 
 - add rule
+- route_to:&lt;butler&gt;
 - + add rule
 - open DSL
 
@@ -2185,6 +2105,11 @@ Do **not** edit manually: re-run the script to refresh.
 - Why this rule exists
 - List-Unsubscribe: <mailto:unsub@example.com>\nX-Mailer: Outlook
 
+## `frontend/src/components/ingestion/filters/RuleRow.tsx`
+
+- delete?
+- Cancel delete
+
 ## `frontend/src/components/ingestion/timeline/EventDrawer.tsx`
 
 - Session lineage unavailable.
@@ -2193,8 +2118,9 @@ Do **not** edit manually: re-run the script to refresh.
 - open →
 - session total
 - Raw payload not loaded.
-- Payload access requires elevated permission.
-- Each access is recorded in the audit log. Request access from your administrator.
+- Load payload (audited)
+- Payload access is disabled for this session.
+- Reads are recorded in the audit log.
 - Raw payload unavailable.
 - No payload recorded for this event.
 - truncated · full payload larger than displayed
@@ -2208,6 +2134,10 @@ Do **not** edit manually: re-run the script to refresh.
 - Close drawer
 - copy id
 
+## `frontend/src/components/ingestion/timeline/HourFlameStrip.tsx`
+
+- = 0 && offset
+
 ## `frontend/src/components/issues/IssuesPanel.tsx`
 
 - Issues
@@ -2216,18 +2146,6 @@ Do **not** edit manually: re-run the script to refresh.
 - Dismiss
 - Could not load issues.
 - The issues feed is unavailable right now. Retrying automatically; check the backend if this persists.
-
-## `frontend/src/components/layout/CommandPalette.tsx`
-
-- Search
-- ESC
-- Recent searches
-- Search failed. Please try again.
-- No results found
-- &uarr;
-- &darr;
-- Enter
-- Search pages, butlers, entities, contacts...
 
 ## `frontend/src/components/layout/EntityFinder.tsx`
 
@@ -2238,14 +2156,14 @@ Do **not** edit manually: re-run the script to refresh.
 - Search failed. Try again in a moment.
 - Searching…
 - inner circle
-- Entity Finder
-- Search entities, pages…
+- Command Menu
+- Search entities, pages, butlers, actions…
 
 ## `frontend/src/components/layout/PageHeader.tsx`
 
 - &larr;
 - Butlers
-- Open command palette
+- Open command menu
 - Cmd/Ctrl+K
 - Toggle dark mode
 
@@ -2615,7 +2533,6 @@ Do **not** edit manually: re-run the script to refresh.
 - Failed to load the graph.
 - No relational facts yet. The record view may hold more.
 - reset view
-- esc back · enter open · 0 reset · drag a person to pin a tier
 - Hop trail
 - Entities
 - The life graph, centered on you. Click a mark to hop; the trail keeps the way back.
@@ -2839,6 +2756,8 @@ Do **not** edit manually: re-run the script to refresh.
 - last ingest
 - sleep · 7d
 - summaries · 7d
+- token expiry
+- rate limit headroom
 - google accounts
 - loading…
 - no Google account connected
@@ -3326,4 +3245,4 @@ Do **not** edit manually: re-run the script to refresh.
 - Preset windows
 
 ---
-*Total strings: 2500*
+*Total strings: 2455*

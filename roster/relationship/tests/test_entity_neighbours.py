@@ -52,6 +52,7 @@ def _make_fact_row(
     verified: bool = False,
     primary: bool | None = None,
     canonical_name: str = "",
+    entity_type: str | None = None,
 ) -> MagicMock:
     """Build a MagicMock that behaves like an asyncpg Record for a facts row.
 
@@ -78,6 +79,7 @@ def _make_fact_row(
         "primary": primary,
         "direction": direction,
         "canonical_name": canonical_name,
+        "entity_type": entity_type,
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
@@ -427,3 +429,36 @@ class TestNeighboursProvenanceFields:
         assert entry["weight"] == 3
         assert entry["verified"] is True
         assert entry["primary"] is False
+
+
+# ---------------------------------------------------------------------------
+# Scenario: entity_type resolution (Plex type marks)
+# ---------------------------------------------------------------------------
+
+
+class TestNeighboursEntityType:
+    """Each neighbour carries its entity_type from the public.entities join."""
+
+    async def test_entity_type_flows_through(self):
+        rows = [
+            _make_fact_row(
+                predicate="works-at",
+                object_val=str(_NEIGHBOUR_A),
+                direction="forward",
+                canonical_name="BCG",
+                entity_type="organization",
+            )
+        ]
+        app, _ = _app_with_pool(fact_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/neighbours")
+
+        entry = resp.json()["neighbours"]["works-at"][0]
+        assert entry["entity_type"] == "organization"
+
+    async def test_entity_type_null_on_registry_miss(self):
+        rows = [_make_fact_row(predicate="knows", object_val=str(_NEIGHBOUR_A))]
+        app, _ = _app_with_pool(fact_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/neighbours")
+
+        entry = resp.json()["neighbours"]["knows"][0]
+        assert entry["entity_type"] is None

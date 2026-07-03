@@ -577,6 +577,7 @@ handles / addresses) or aliased identity links whose exposure through the shared
 - `GET /api/relationship/entities/{id}/contacts`
 - `GET /api/relationship/entities/{id}/neighbours`
 - `GET /api/relationship/entities/{id}/activity`
+- `GET /api/relationship/plex/halo`
 
 The list-only `GET /api/relationship/entities` and per-entity timeline / notes /
 interactions / gifts / loans endpoints (which do NOT surface raw contact-fact `object`
@@ -669,7 +670,10 @@ SubpageTabs strip marking Plex active.
 
 1. Non-owner contacts from `GET /api/relationship/dunbar/ranking` render on concentric
    Dunbar tier rings (5/15/50/150/500); tier 1500 MUST NOT render as nodes — it renders
-   as a dashed periphery ring carrying only its count.
+   as a dashed periphery ring carrying only its count. The ranking endpoint MUST rank
+   only living person entities: a ranked row whose entity is not a currently-active
+   `person` in `public.entities` (a merged, reclassified, or archived ghost carried by
+   the memory-module dunbar facts) MUST be dropped, never rendered as "Unknown".
 2. Each ring carries an honest capacity label (`<count>/<tier>`); over-capacity renders
    amber. A right-flank overlay repeats the per-tier capacity meters; a left-flank
    "Worth attention" overlay lists at most 5 contacts past their per-tier reach-out
@@ -677,34 +681,55 @@ SubpageTabs strip marking Plex active.
    reason (`tier N · Xd since contact`).
 3. Staleness renders as node desaturation (the read-time freshness axis); a manually
    pinned tier renders as a dashed border on the mark.
+4. **Dimension halo.** Non-person entities render as a segmented band just past the
+   periphery ring, one arc per entity type in a fixed clockwise order
+   (organization / place / other), fed by `GET /api/relationship/plex/halo`. Each arc
+   holds that type's top-N satellites ranked by most-recent fact `last_seen` across
+   BOTH triple directions; a truncated arc's label MUST own up to its cap
+   (`<shown>/<total>`), and the 12 o'clock notch stays clear. Satellite marks use the
+   canonical EntityMark type language (type glyph + category hue); Dunbar-axis encodings
+   (tier hue ramp, drag-to-retier) MUST NOT apply to them. Hovering a person spotlights
+   threads to their satellites; hovering a satellite spotlights its linked people (edges
+   ship with the halo payload — no per-hover fetch); clicking a satellite re-centres the
+   Plex on it; clicking an arc label opens `/entities/index?type=<entity_type>`.
 
 **Neighbour mode (`?center=<entity_id>`):**
 
-4. The centred entity's neighbours (from `GET /api/relationship/entities/{id}/neighbours`
+5. The centred entity's neighbours (from `GET /api/relationship/entities/{id}/neighbours`
    with `rank=weight`) fan into angular sectors, one per relational predicate; heavier
    neighbours sit closer, and per-predicate ranked-truncation remainders render as a
    `+N` affordance. Edge opacity carries assertion confidence; node desaturation carries
    staleness — the two manifesto axes MUST use separate visual channels. A peer appearing
-   in both directions of one predicate MUST render once (the heaviest row wins).
-5. A right-flank dossier renders the centred entity: identity header (type, tier, pin
+   in both directions of one predicate MUST render once (the heaviest row wins). Each
+   neighbour entry carries its `entity_type` (from the `public.entities` join; null on a
+   registry miss) and non-person neighbours MUST render with their EntityMark type glyph,
+   not person initials.
+6. A right-flank dossier renders the centred entity: identity header (type, tier, pin
    state, last seen), 90-day activity sparkline, upcoming core dates, literal facts, and
    latest interactions per channel.
 
 **Navigation and interaction (both modes):**
 
-6. Clicking a mark re-centres the Plex; the previous centre pushes onto a `?trail=`
+7. Clicking a mark re-centres the Plex; the previous centre pushes onto a `?trail=`
    parameter (oldest first) rendered as a clickable hop-trail breadcrumb. Re-centring on
    the owner resets centre and trail. Esc pops one hop; Enter opens the centred record;
    keyboard bindings MUST be scoped to the canvas container, never window-global.
-7. Wheel zooms toward the cursor (clamped); dragging empty canvas pans; `0` and a
+8. Wheel zooms toward the cursor (clamped); dragging empty canvas pans; `0` and a
    visible affordance reset the camera; wheel over a flank overlay scrolls the overlay,
    not the camera. Outer-tier name labels fade in past the zoom threshold.
-8. Dragging a person to another ring pins their Dunbar tier (the manifesto's manual
+9. Dragging a person to another ring pins their Dunbar tier (the manifesto's manual
    override) via the dunbar-tier update endpoint; the drop-target ring highlights during
    the drag; the hover card and dossier expose an unpin affordance.
-9. Hovering a mark opens a micro-dossier card (type, tier, days since contact, 90-day
+10. Hovering a mark opens a micro-dossier card (type, tier, days since contact, 90-day
    sparkline, open/unpin actions); in owner mode hover also spotlights the hovered
    person's edges to other visible contacts while unconnected marks recede.
+11. **Find-as-you-type.** Typing printable characters on the focused canvas builds a
+   client-side query over every mark on the current canvas (owner rings + halo, or
+   neighbour fan); matching marks stay lit with labels while non-matches recede, and a
+   status line reports the match count. Backspace edits the query, Esc clears it (and
+   only once cleared does Esc fall through to popping a hop), and Enter re-centres on the
+   best match (earliest substring, then shortest name). The query MUST reset on any hop.
+   The find dimming overrides the hover spotlight so the two never fight.
 
 **Retired-route redirects:** `/entities/hop?center=<id>&trail=<csv>` MUST redirect to
 `/entities` preserving both params; `/entities/columns?path=a,...,z` MUST redirect to
@@ -732,6 +757,19 @@ SubpageTabs strip marking Plex active.
 - **THEN** edge opacity MUST vary with `conf`
 - **AND** node desaturation MUST vary with the staleness band
 - **AND** neither axis MUST reuse the other's visual channel
+
+#### Scenario: Find-as-you-type lights matches and jumps on Enter
+- **WHEN** the canvas is focused and the user types a substring of a visible mark's name
+- **THEN** marks whose name contains the query MUST stay lit with labels while the rest recede
+- **AND** a status line MUST report the match count
+- **AND** Enter MUST re-centre on the best match (earliest substring, then shortest name)
+- **AND** Esc MUST clear the query before it pops a hop, and a hop MUST reset the query
+
+#### Scenario: Dunbar ranking drops non-person ghosts
+- **WHEN** the dunbar ranking carries a ranked row for an entity that has been merged,
+  reclassified to a non-`person` type, or archived out of `public.entities`
+- **THEN** that row MUST NOT render as a plex node
+- **AND** it MUST NOT appear as an "Unknown" mark on any ring
 
 ### Requirement: Entity Concentration view (`/entities/concentration`)
 

@@ -54,9 +54,9 @@ async def test_no_fk_references_public_contacts_at_head(postgres_container) -> N
         rows = await conn.fetch(_FK_TO_CONTACTS_SQL)
         leftovers = [f"{r['tbl']}.{r['cname']}" for r in rows]
         assert leftovers == [], f"FK constraints still reference public.contacts(id): {leftovers}"
-        # public.contacts is now DROPPED at head (core_134, bu-y6o7q); the
-        # permanent recovery snapshot remains.
+        # public.contacts is DROPPED at head (core_134, bu-y6o7q), and the
+        # cutover recovery snapshot was retired too (core_151, bu-zquce.16).
         assert await conn.fetchval("SELECT to_regclass('public.contacts')") is None
-        assert await conn.fetchval("SELECT to_regclass('public.contacts_dropbak')") is not None
+        assert await conn.fetchval("SELECT to_regclass('public.contacts_dropbak')") is None
     finally:
         await conn.close()

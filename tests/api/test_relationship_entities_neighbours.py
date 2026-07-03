@@ -53,6 +53,7 @@ def _make_neighbour_row(
     primary: bool | None = None,
     direction: str = "forward",
     canonical_name: str = "Bob Example",
+    entity_type: str | None = None,
 ) -> MagicMock:
     """Build a MagicMock that behaves like an asyncpg Record for neighbour rows."""
     subject = subject or _ANCHOR_ID
@@ -72,6 +73,7 @@ def _make_neighbour_row(
         "primary": primary,
         "direction": direction,
         "canonical_name": canonical_name,
+        "entity_type": entity_type,
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])

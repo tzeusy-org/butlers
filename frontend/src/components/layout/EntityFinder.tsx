@@ -115,10 +115,7 @@ function matchKindLabel(kind: EntityFinderSearchResult["match_kind"]): string {
 
 /** Human-readable type label for the preview header. */
 function typeLabel(entityType: string): string {
-  const t = entityType?.toLowerCase() ?? "";
-  if (t === "location") return "place";
-  if (t === "email") return "account";
-  return t || "entity";
+  return entityType?.toLowerCase() || "entity";
 }
 
 // ---------------------------------------------------------------------------

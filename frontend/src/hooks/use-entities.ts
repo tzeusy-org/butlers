@@ -32,6 +32,7 @@ import {
   getEntityLoans,
   getEntityMessageThreads,
   getEntityNeighbours,
+  getPlexHalo,
   getEntityTimeline,
   getRelationshipEntityQueue,
   listRelationshipEntities,
@@ -190,6 +191,20 @@ export function useEntityNeighbours(
     queryKey: ["entity-neighbours", entityId, params?.rank ?? null, params?.per_predicate ?? null],
     queryFn: () => getEntityNeighbours(entityId!, params),
     enabled: !!entityId,
+  });
+}
+
+/**
+ * Fetch the owner Plex's dimension halo (non-person entities by type, with
+ * person edges for the connection spotlight).
+ *
+ * Hits GET /api/butlers/relationship/plex/halo. Disabled outside owner mode.
+ */
+export function usePlexHalo(enabled: boolean) {
+  return useQuery({
+    queryKey: ["plex-halo"],
+    queryFn: () => getPlexHalo(),
+    enabled,
   });
 }
 

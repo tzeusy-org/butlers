@@ -325,6 +325,7 @@ import type {
   EntityFinderSearchResponse,
   NeighboursResponse,
   NeighboursParams,
+  HaloResponse,
   ConcentrationResponse,
   LinkedContactSummary,
   MessageThreadSummary,
@@ -3188,6 +3189,20 @@ export function getEntityNeighbours(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/neighbours?${qs.toString()}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/neighbours`;
   return apiFetch<NeighboursResponse>(path);
+}
+
+/**
+ * Fetch the owner Plex's dimension halo: non-person entities grouped by type,
+ * each type's top-N by last_seen, with person edges for the connection
+ * spotlight.
+ *
+ * Hits GET /api/butlers/relationship/plex/halo. Owner-only gate 403 when no
+ * owner entity is registered.
+ */
+export function getPlexHalo(perType?: number): Promise<HaloResponse> {
+  const path =
+    perType != null ? `/relationship/plex/halo?per_type=${perType}` : "/relationship/plex/halo";
+  return apiFetch<HaloResponse>(path);
 }
 
 /**

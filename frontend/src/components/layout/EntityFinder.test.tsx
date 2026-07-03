@@ -757,6 +757,7 @@ describe("aggregateOwnerPinned", () => {
     return {
       entity_id,
       canonical_name,
+      entity_type: null,
       direction: "forward",
       src: "x",
       conf: 1,

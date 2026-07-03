@@ -17,9 +17,18 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DunbarEntry, NeighbourEntry, NeighboursResponse } from "@/api/types";
+import type {
+  DunbarEntry,
+  HaloResponse,
+  HaloSatellite,
+  NeighbourEntry,
+  NeighboursResponse,
+} from "@/api/types";
 import {
   daysSince,
+  HALO_ARC_GAP,
+  HALO_ARC_ORDER,
+  layoutHalo,
   layoutNeighbourPlex,
   layoutOwnerPlex,
   PLEX_MARK_SIZES,
@@ -54,6 +63,7 @@ function neighbourEntry(
 ): NeighbourEntry {
   return {
     canonical_name: overrides.entity_id,
+    entity_type: null,
     direction: "forward",
     src: "relationship",
     conf: 1,
@@ -444,6 +454,23 @@ describe("layoutNeighbourPlex", () => {
     }
   });
 
+  it("threads entity_type onto each node, defaulting a null type to person", () => {
+    const layout = layoutNeighbourPlex(
+      neighboursResponse({
+        "works-at": [
+          neighbourEntry({ entity_id: "org", entity_type: "organization" }),
+          // Registry miss: entity_type is null and must fall back to person so
+          // EntityMark draws initials instead of an empty type glyph.
+          neighbourEntry({ entity_id: "unknown", entity_type: null }),
+        ],
+      }),
+    );
+    const org = layout.nodes.find((n) => n.entityId === "org")!;
+    const unknown = layout.nodes.find((n) => n.entityId === "unknown")!;
+    expect(org.entityType).toBe("organization");
+    expect(unknown.entityType).toBe("person");
+  });
+
   it("ranks nodes by weight descending within a sector, null weight last", () => {
     const layout = layoutNeighbourPlex(
       neighboursResponse({
@@ -468,5 +495,158 @@ describe("layoutNeighbourPlex", () => {
       expect(a).toBeGreaterThan(sector.startAngle);
       expect(a).toBeLessThan(sector.endAngle);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// layoutHalo
+// ---------------------------------------------------------------------------
+
+function satellite(
+  overrides: Partial<HaloSatellite> & { entity_id: string },
+): HaloSatellite {
+  return {
+    canonical_name: overrides.entity_id,
+    last_seen: null,
+    edges: [],
+    ...overrides,
+  };
+}
+
+function haloResponse(counts: Record<string, number>): HaloResponse {
+  const arcs: Record<string, HaloSatellite[]> = {};
+  const totals: Record<string, number> = {};
+  for (const [type, n] of Object.entries(counts)) {
+    arcs[type] = Array.from({ length: n }, (_, i) =>
+      satellite({ entity_id: `${type}-${i}` }),
+    );
+    totals[type] = n;
+  }
+  return { arcs, totals };
+}
+
+describe("layoutHalo", () => {
+  it("returns no arcs for an empty response", () => {
+    expect(layoutHalo({ arcs: {}, totals: {} }).arcs).toEqual([]);
+  });
+
+  it("omits zero-count types and keeps the fixed arc order", () => {
+    const layout = layoutHalo(
+      haloResponse({ other: 3, organization: 5, place: 0 }),
+    );
+    expect(layout.arcs.map((a) => a.entityType)).toEqual([
+      "organization",
+      "other",
+    ]);
+  });
+
+  it("appends unknown types alphabetically after the known order", () => {
+    const layout = layoutHalo(
+      haloResponse({ zeta: 1, organization: 2, alpha: 1 }),
+    );
+    expect(layout.arcs.map((a) => a.entityType)).toEqual([
+      "organization",
+      "alpha",
+      "zeta",
+    ]);
+  });
+
+  it("keeps every arc and mark inside the notched span", () => {
+    const layout = layoutHalo(
+      haloResponse({ organization: 20, place: 6, other: 12 }),
+    );
+    for (const arc of layout.arcs) {
+      expect(arc.startAngle).toBeGreaterThanOrEqual(PLEX_TOP_NOTCH);
+      expect(arc.endAngle).toBeLessThanOrEqual(2 * Math.PI - PLEX_TOP_NOTCH);
+      for (const mark of arc.marks) {
+        expect(mark.angle).toBeGreaterThan(arc.startAngle);
+        expect(mark.angle).toBeLessThan(arc.endAngle);
+      }
+    }
+  });
+
+  it("separates adjacent arcs by the configured gap", () => {
+    const layout = layoutHalo(
+      haloResponse({ organization: 8, place: 4, other: 8 }),
+    );
+    for (let i = 1; i < layout.arcs.length; i++) {
+      const gap = layout.arcs[i].startAngle - layout.arcs[i - 1].endAngle;
+      expect(gap).toBeCloseTo(HALO_ARC_GAP, 10);
+    }
+  });
+
+  it("keeps marks out of the label window at the arc midpoint", () => {
+    const layout = layoutHalo(haloResponse({ organization: 20 }));
+    const arc = layout.arcs[0];
+    const span = arc.endAngle - arc.startAngle;
+    const window = Math.min(0.5, span * 0.4);
+    for (const mark of arc.marks) {
+      expect(Math.abs(mark.angle - arc.midAngle)).toBeGreaterThanOrEqual(
+        window / 2,
+      );
+    }
+    // The reserved window did not drop any satellite.
+    expect(arc.marks.length).toBe(20);
+  });
+
+  it("threads totals through, falling back to the shown count", () => {
+    const response = haloResponse({ organization: 2 });
+    response.totals = { organization: 171 };
+    const layout = layoutHalo(response);
+    expect(layout.arcs[0].total).toBe(171);
+
+    const noTotals = haloResponse({ place: 3 });
+    noTotals.totals = {};
+    expect(layoutHalo(noTotals).arcs[0].total).toBe(3);
+  });
+
+  it("dedupes person ids and derives staleness from last_seen", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-03T12:00:00Z"));
+    try {
+      const response: HaloResponse = {
+        arcs: {
+          organization: [
+            satellite({
+              entity_id: "org-1",
+              last_seen: "2026-07-01T12:00:00Z",
+              edges: [
+                { person_id: "p1", predicate: "works-at" },
+                { person_id: "p1", predicate: "member-of" },
+                { person_id: "p2", predicate: "works-at" },
+              ],
+            }),
+          ],
+        },
+        totals: { organization: 1 },
+      };
+      const mark = layoutHalo(response).arcs[0].marks[0];
+      expect(mark.personIds).toEqual(["p1", "p2"]);
+      expect(mark.staleDays).toBe(2);
+      expect(mark.staleness).toBe("fresh");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("places a lone satellite as a single mark inside its arc span", () => {
+    // Boundary: leftCount = ceil(1/2) = 1, so the right segment holds zero
+    // marks and its (segEnd - segStart) / 0 division must never run. Regression
+    // guard against the single-satellite arc dropping or NaN-positioning a mark.
+    const layout = layoutHalo(haloResponse({ organization: 1 }));
+    expect(layout.arcs).toHaveLength(1);
+    const arc = layout.arcs[0];
+    expect(arc.marks).toHaveLength(1);
+    const mark = arc.marks[0];
+    expect(Number.isNaN(mark.angle)).toBe(false);
+    expect(mark.angle).toBeGreaterThan(arc.startAngle);
+    expect(mark.angle).toBeLessThan(arc.endAngle);
+  });
+
+  it("covers HALO_ARC_ORDER exactly once each in a full response", () => {
+    const layout = layoutHalo(
+      haloResponse({ organization: 1, place: 1, other: 1 }),
+    );
+    expect(layout.arcs.map((a) => a.entityType)).toEqual([...HALO_ARC_ORDER]);
   });
 });

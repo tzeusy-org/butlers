@@ -363,3 +363,47 @@ class TestDunbarRankingAvatarUrl:
         entries = {e["entity_id"]: e for e in resp.json()["entries"]}
         assert entries[str(entity_a)]["avatar_url"] == "https://example.com/alice.jpg"
         assert entries[str(entity_b)]["avatar_url"] is None
+
+
+class TestDunbarRankingGhostEntries:
+    """Ranked entries whose entity fails the person+active fetch are dropped.
+
+    The scoring engine ranks over memory-module dunbar facts, which outlive
+    merges and reclassifications (e.g. a person merged into an organization).
+    The entity fetch filters to living person entities; anything the fetch
+    does not return must be dropped from the response — never rendered as an
+    "Unknown" ghost on the Plex rings.
+    """
+
+    async def test_entry_without_living_person_entity_is_dropped(self):
+        living_entity = uuid4()
+        ghost_entity = uuid4()
+        ranked = [
+            {
+                "contact_id": uuid4(),
+                "entity_id": living_entity,
+                "dunbar_tier": 50,
+                "dunbar_score": 0.8,
+                "dunbar_tier_override": False,
+                "last_interaction_at": None,
+            },
+            {
+                # Merged-away person (tombstoned) — the entity fetch omits it.
+                "contact_id": uuid4(),
+                "entity_id": ghost_entity,
+                "dunbar_tier": 50,
+                "dunbar_score": 0.4,
+                "dunbar_tier_override": False,
+                "last_interaction_at": None,
+            },
+        ]
+        entity_rows = [
+            _row(id=living_entity, canonical_name="Alive Person", aliases=[], avatar_url=None)
+        ]
+        app = _build_app(ranked, entity_rows, owner_row=None)
+
+        resp = await _get_ranking(app)
+        assert resp.status_code == 200
+        entries = resp.json()["entries"]
+        assert [e["canonical_name"] for e in entries] == ["Alive Person"]
+        assert all(e["entity_id"] != str(ghost_entity) for e in entries)

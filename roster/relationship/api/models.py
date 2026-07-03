@@ -627,6 +627,7 @@ class NeighbourEntry(BaseModel):
 
     entity_id: UUID
     canonical_name: str
+    entity_type: str | None = None
     direction: Literal["forward", "reverse"]
     src: str
     conf: float
@@ -662,6 +663,46 @@ class NeighboursResponse(BaseModel):
     #: of ranked truncation.  Empty (and omitted predicates mean zero remainder)
     #: when no truncation was applied.
     remainders: dict[str, int] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Plex halo models (dimension halo on the owner Plex)
+# ---------------------------------------------------------------------------
+
+
+class HaloEdge(BaseModel):
+    """A relational triple connecting a halo satellite to a person entity."""
+
+    person_id: UUID
+    predicate: str
+
+
+class HaloSatellite(BaseModel):
+    """One non-person entity shown in a halo arc, with its person edges.
+
+    ``edges`` lists every active relational triple between this satellite and
+    a person entity, regardless of triple direction — the halo spotlight only
+    cares that the pair is linked, not who is subject.
+    """
+
+    entity_id: UUID
+    canonical_name: str
+    last_seen: datetime | None = None
+    edges: list[HaloEdge] = Field(default_factory=list)
+
+
+class HaloResponse(BaseModel):
+    """Response for GET /plex/halo.
+
+    ``arcs`` maps each non-person entity type (``organization`` / ``place`` /
+    ``other``) to its top-N satellites ranked by ``last_seen DESC NULLS LAST``.
+    ``totals`` carries the full per-type entity count so the UI can render an
+    honest "+N" overflow next to each capped arc. Types with zero entities are
+    omitted from both maps.
+    """
+
+    arcs: dict[str, list[HaloSatellite]]
+    totals: dict[str, int]
 
 
 # ---------------------------------------------------------------------------

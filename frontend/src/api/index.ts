@@ -103,6 +103,7 @@ export {
   markEntityView,
   getEntityCoreDates,
   getEntityNeighbours,
+  getPlexHalo,
   getEntityFacts,
   getEntityConcentration,
   updateEntityDunbarTier,

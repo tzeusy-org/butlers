@@ -113,6 +113,7 @@ import { DUP_QUEUE, EMPTY_QUEUE, ENTITY } from "@/test-utils/entity-detail-page"
 const NEIGHBOUR: NeighbourEntry = {
   entity_id: "peer-200",
   canonical_name: "Lin Friend",
+  entity_type: null,
   direction: "forward",
   src: "general",
   conf: 0.9,

@@ -12,7 +12,7 @@
  * (react-refresh/only-export-components).
  */
 
-import type { DunbarEntry, NeighboursResponse } from "@/api/types";
+import type { DunbarEntry, HaloResponse, NeighboursResponse } from "@/api/types";
 import {
   TIER_RING_COLORS,
   TIERS,
@@ -44,6 +44,13 @@ export const PLEX_TOP_NOTCH = 0.35;
 
 /** The dashed periphery ring where tier 1500 is summarized, not drawn. */
 export const PLEX_PERIPHERY_FRACTION = 0.97;
+
+/**
+ * The dimension halo band, just past the periphery: non-person entities
+ * (organizations / places / things) as arc-grouped satellites. Off the
+ * intimacy axis, so past every tier ring.
+ */
+export const PLEX_HALO_FRACTION = 1.12;
 
 /** EntityMark size (px) per tier: intimacy reads as presence. */
 export const PLEX_MARK_SIZES: Record<PlexNodeTier, number> = {
@@ -190,12 +197,137 @@ export function layoutOwnerPlex(
 }
 
 // ---------------------------------------------------------------------------
+// Dimension halo (owner mode)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fixed arc order around the halo, clockwise from the notch. Deterministic so
+ * each dimension keeps its bearing across sessions (spatial memory); any
+ * unexpected type sorts alphabetically after the known ones.
+ */
+export const HALO_ARC_ORDER = ["organization", "place", "other"] as const;
+
+/** Radians of breathing room between adjacent halo arcs. */
+export const HALO_ARC_GAP = 0.14;
+
+/**
+ * Angular window (radians) reserved at each arc's midpoint for its label, so
+ * the label pill never covers an interactive satellite mark.
+ */
+export const HALO_LABEL_WINDOW = 0.5;
+
+export interface HaloMarkLayout {
+  entityId: string;
+  name: string;
+  entityType: string;
+  /** Angle in radians (0 = up, clockwise), on the halo band. */
+  angle: number;
+  lastSeen: string | null;
+  staleDays: number | null;
+  staleness: Staleness;
+  /** Person entity ids this satellite is relationally linked to. */
+  personIds: string[];
+}
+
+export interface HaloArcLayout {
+  entityType: string;
+  startAngle: number;
+  endAngle: number;
+  midAngle: number;
+  /** Full entity count of this type (arc shows at most the fetched top-N). */
+  total: number;
+  marks: HaloMarkLayout[];
+}
+
+export interface HaloLayout {
+  arcs: HaloArcLayout[];
+}
+
+/**
+ * Lay out the dimension halo: each non-person entity type becomes an arc in
+ * the notched span, sized by a floor share plus a mark-count-proportional
+ * share (same scheme as neighbour sectors). Marks spread evenly across the
+ * arc but skip a reserved window at the midpoint where the arc label sits.
+ */
+export function layoutHalo(response: HaloResponse): HaloLayout {
+  const known = HALO_ARC_ORDER.filter((t) => (response.arcs[t]?.length ?? 0) > 0);
+  const extra = Object.keys(response.arcs)
+    .filter(
+      (t) =>
+        !(HALO_ARC_ORDER as readonly string[]).includes(t) &&
+        response.arcs[t].length > 0,
+    )
+    .sort();
+  const types = [...known, ...extra];
+  if (types.length === 0) return { arcs: [] };
+
+  const totalMarks = types.reduce((sum, t) => sum + response.arcs[t].length, 0);
+  const span = 2 * Math.PI - 2 * PLEX_TOP_NOTCH - HALO_ARC_GAP * types.length;
+  const floor = (span * 0.3) / types.length;
+  const proportional = span * 0.7;
+
+  const arcs: HaloArcLayout[] = [];
+  let cursor = PLEX_TOP_NOTCH + HALO_ARC_GAP / 2;
+  for (const entityType of types) {
+    const satellites = response.arcs[entityType];
+    const arcSpan = floor + (proportional * satellites.length) / totalMarks;
+    const start = cursor;
+    const end = cursor + arcSpan;
+    const mid = (start + end) / 2;
+
+    // Split the arc into two segments around the label window; the window
+    // shrinks on small arcs so short arcs still hold their marks.
+    const window = Math.min(HALO_LABEL_WINDOW, arcSpan * 0.4);
+    const segments: [number, number][] = [
+      [start, mid - window / 2],
+      [mid + window / 2, end],
+    ];
+    const leftCount = Math.ceil(satellites.length / 2);
+    const counts = [leftCount, satellites.length - leftCount];
+
+    const marks: HaloMarkLayout[] = [];
+    let index = 0;
+    segments.forEach(([segStart, segEnd], s) => {
+      const n = counts[s];
+      for (let i = 0; i < n; i++) {
+        const sat = satellites[index++];
+        const staleDays = daysSince(sat.last_seen);
+        marks.push({
+          entityId: sat.entity_id,
+          name: sat.canonical_name,
+          entityType,
+          angle: segStart + ((i + 0.5) * (segEnd - segStart)) / n,
+          lastSeen: sat.last_seen,
+          staleDays,
+          staleness: stalenessOf(staleDays),
+          personIds: [...new Set(sat.edges.map((e) => e.person_id))],
+        });
+      }
+    });
+
+    arcs.push({
+      entityType,
+      startAngle: start,
+      endAngle: end,
+      midAngle: mid,
+      total: response.totals[entityType] ?? satellites.length,
+      marks,
+    });
+    cursor = end + HALO_ARC_GAP;
+  }
+
+  return { arcs };
+}
+
+// ---------------------------------------------------------------------------
 // Neighbour mode
 // ---------------------------------------------------------------------------
 
 export interface NeighbourPlexNode {
   entityId: string;
   name: string;
+  /** Entity type ("person" / "organization" / ...); registry misses fall back to "person". */
+  entityType: string;
   predicate: string;
   angle: number;
   radiusFrac: number;
@@ -275,6 +407,7 @@ export function layoutNeighbourPlex(
       nodes.push({
         entityId: entry.entity_id,
         name: entry.canonical_name,
+        entityType: entry.entity_type ?? "person",
         predicate,
         angle: start + ((i + 1) * (end - start)) / (n + 1),
         // Heaviest neighbours sit closest; alternate shells to avoid collisions.

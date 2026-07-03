@@ -399,18 +399,18 @@ describe("EntitiesIndexPage — filter chips", () => {
       expect.objectContaining({ entity_type: ["person", "organization"] }),
     );
 
-    const locationChip = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent?.trim() === "Location",
+    const placeChip = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Place",
     );
-    expect(locationChip).toBeTruthy();
+    expect(placeChip).toBeTruthy();
 
     await act(async () => {
-      locationChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      placeChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const calls = vi.mocked(useRelationshipEntities).mock.calls;
     const lastCall = calls[calls.length - 1][0];
-    expect(lastCall?.entity_type).toEqual(["person", "organization", "location"]);
+    expect(lastCall?.entity_type).toEqual(["person", "organization", "place"]);
   });
 
   it("calls useRelationshipEntities with has=contact when chip is clicked", async () => {

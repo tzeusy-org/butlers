@@ -2,7 +2,7 @@
 // EntityMark — canonical entity type-mark primitive (bu-ec2wb)
 //
 // Renders a compact squircle mark for an entity. Person entities show up to
-// two initials; all other types show a type glyph (O, L, X, @, E, G).
+// two initials; all other types show a type glyph (O, L, X, @, E, G, T).
 // Two tones: fill (active/selected) and neutral (default, hairline border).
 //
 // Brief §2: "Build new EntityMark with tone (fill/neutral), size, person
@@ -40,13 +40,14 @@ const TYPE_GLYPHS: Record<string, string> = {
   person: "", // initials rendered separately
   organization: "O",
   place: "L",
-  location: "L", // alias of "place" — the entity list API emits "location"
   product: "X",
   account: "@",
   email: "@", // alias of "account" — legacy entity type
   event: "E",
   group: "G",
-  other: "?",
+  // "T" for thing — the catch-all bucket is real data, not an unknown; the
+  // "?" glyph stays reserved for genuinely unrecognized types.
+  other: "T",
 } as const
 
 /**
@@ -71,7 +72,6 @@ const TYPE_COLOR_SLOTS: Record<string, string> = {
   person: "var(--category-1)", // blue
   organization: "var(--category-4)", // teal
   place: "var(--category-7)", // cyan
-  location: "var(--category-7)", // cyan — alias of "place"
   product: "var(--category-3)", // amber
   account: "var(--category-6)", // mauve
   email: "var(--category-6)", // mauve — alias of "account"
