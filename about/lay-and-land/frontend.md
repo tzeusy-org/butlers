@@ -501,7 +501,7 @@ not literals.
 
 | Concern | Where it shows up | Note |
 |---|---|---|
-| H1 size varies | `text-2xl` (e.g. pre-migration pages) vs `text-3xl` (ButlersPage:124) | `<Page>` enforces `text-3xl` for overview/list/detail/workspace/editor archetypes; the editorial archetype (`ChroniclesPage`, `DashboardPage`) uses a 44px Display headline instead; remaining `text-2xl` pages pre-date migration |
+| H1 size varies | `text-2xl` (pre-migration pages; also `<BoardHeader>` by design, `BoardHeader.tsx:97`) vs `text-3xl` (`<Page>` HeadingBlock, `page.tsx:106`) | `<Page>` enforces `text-3xl` for overview/list/detail/workspace/editor archetypes; the editorial archetype (`ChroniclesPage`, `DashboardPage`) uses a 44px Display headline instead (`page.tsx:151`); the status-board archetype renders no `<Page>` `<h1>` -- `<BoardHeader>` owns a `text-2xl` h1 by design; remaining `text-2xl` pages pre-date migration |
 | `StatsCard` reimplemented | CostsPage:20, QaOverviewPage:149 | `DashboardPage` moved off `StatsCard` to its own `RuntimeSummaryKpi` KPI strip (`DashboardPage.tsx:153`, no-Card strip); `StatItem` is no longer used anywhere in `frontend/src`. Remaining pages are candidates for a shared KPI-strip pattern |
 | Date formatters disagree | `toLocaleString` (EpisodeDetailPage:140), `toISOString().slice(0,10)` (EntitiesPage:196), `format(...)` from date-fns (GroupsPage:155) | `<Time>` primitive shipped; `DashboardPage` already uses `<Time mode="relative">` |
 | Hex literals | EntitiesPage:102-113, EntityDetailPage:313/316, SymptomsPage, GroupsPage:121 | Need named tokens |
@@ -592,9 +592,11 @@ interface PageProps {
                                 // (e.g. () => query.refetch() from TanStack Query)
 
   // --- layout ---
-  archetype: 'overview' | 'list' | 'detail' | 'workspace' | 'editor';
+  archetype: 'overview' | 'list' | 'detail' | 'workspace' | 'editor' | 'editorial' | 'status-board';
   skeletonSectionCount?: number; // editor archetype only: number of CardSkeleton
                                  // placeholders to render (default 2)
+  header?: React.ReactNode;      // status-board archetype only: slot rendered above the body grid
+  footer?: React.ReactNode;      // status-board archetype only: slot rendered below the body grid
 
   children: React.ReactNode;
 }
@@ -625,7 +627,7 @@ interface PageProps {
   enforced. Priority: `loading` first, then `error`, then `empty`. Children
   render only when all three are falsy.
 - `archetype` controls max-width, content padding, and skeleton shape. It is a
-  required discriminant. Pages that do not fit the five archetypes are
+  required discriminant. Pages that do not fit the six archetypes are
   workspaces by default -- see open questions.
 
 ---
@@ -738,7 +740,7 @@ Reference pages: `ButlersPage` (header + body grid + footer),
   `<BoardHeader>` and `<BoardFooter>` both use `px-7` (`BoardHeader.tsx:89`,
   `BoardFooter.tsx:100`), and the body supplies its own border/padding (e.g.
   `ButlersPage`'s grid uses `border-t border-l border-border/60`,
-  `ButlersPage.tsx:104`).
+  `ButlersPage.tsx:110`).
 - Heading block: none. `<Page>` renders no `<h1>`/`HeadingBlock` for this
   archetype -- `title`/`description` are still consumed for `document.title`,
   but the `header` slot (`<BoardHeader>`, `<ButlerDetailHeader>`) owns the
@@ -834,7 +836,7 @@ else           -> children
 
 For converting an existing page to the `<Page>` primitive:
 
-1. **Identify the archetype.** Match the page to A-E above. If it does not fit,
+1. **Identify the archetype.** Match the page to A-F above. If it does not fit,
    note it as a workspace (D) and document why in a comment.
 2. **Extract the heading block.** Remove the inline `<div className="flex items-start justify-between gap-4">` + `<h1>` + `<p>` group (present in every page). Pass `title`, `description`, `breadcrumbs`, and `actions` as props.
 3. **Thread loading state.** Replace bespoke per-page skeleton with
