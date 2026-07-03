@@ -381,7 +381,7 @@ function SpendPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
     <PanelShell
       title="Spend"
       description="Monthly cost tracking and forecast."
-      href="/settings/spend"
+      href="/spend"
       onNavigate={onNavigate}
     >
       {isLoading ? (

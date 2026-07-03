@@ -70,8 +70,8 @@ import type {
 // ---------------------------------------------------------------------------
 // Pages group — client-side instant matches, sourced from the single route
 // registry (src/lib/route-registry.ts) so every route (including ones not
-// promoted to the sidebar, e.g. /costs, /entities/circles, health sub-pages)
-// is reachable here.
+// promoted to the sidebar, e.g. /entities/circles, health sub-pages) is
+// reachable here.
 // ---------------------------------------------------------------------------
 
 interface PageEntry {

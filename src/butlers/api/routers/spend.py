@@ -707,9 +707,15 @@ async def get_daily_costs(
     else:
         all_results = raw_results
 
-    # Merge daily stats from all butlers keyed by date string.
+    # Merge daily stats from all butlers keyed by date string. Each butler's
+    # day-list is already per-butler (see _get_butler_daily_stats[_from_db]);
+    # zip against `configs` (order-preserving through the DB/fallback split
+    # above) so the merge can retain *which* butler contributed each day's
+    # cost instead of discarding that identity — the frontend stacked chart
+    # needs real per-butler-per-day figures, not a smeared total (see
+    # frontend/src/components/costs/CostStripeChart.tsx).
     merged: dict[str, dict] = {}
-    for butler_days in all_results:
+    for info, butler_days in zip(configs, all_results, strict=True):
         for day in butler_days:
             d = day["date"]
             if d not in merged:
@@ -719,11 +725,16 @@ async def get_daily_costs(
                     "sessions": 0,
                     "input_tokens": 0,
                     "output_tokens": 0,
+                    "by_butler": {},
                 }
             merged[d]["cost_usd"] += day["cost_usd"]
             merged[d]["sessions"] += day["sessions"]
             merged[d]["input_tokens"] += day["input_tokens"]
             merged[d]["output_tokens"] += day["output_tokens"]
+            if day["cost_usd"]:
+                merged[d]["by_butler"][info.name] = (
+                    merged[d]["by_butler"].get(info.name, 0.0) + day["cost_usd"]
+                )
 
     # Sort by date ascending and round costs.
     daily = [
@@ -733,6 +744,7 @@ async def get_daily_costs(
             sessions=v["sessions"],
             input_tokens=v["input_tokens"],
             output_tokens=v["output_tokens"],
+            by_butler={k: round(c, 6) for k, c in v["by_butler"].items()},
         )
         for v in sorted(merged.values(), key=lambda x: x["date"])
     ]

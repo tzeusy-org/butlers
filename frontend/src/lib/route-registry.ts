@@ -45,24 +45,25 @@ const SIDEBAR_ROUTES: RouteEntry[] = navSections.flatMap((s) =>
  * sidebar — sub-pages reached by drilling in from a parent, or pages whose
  * primary entry point elsewhere is a redirect. Still indexed here so the
  * command menu, g-chords, and the '?' help sheet can reach them directly;
- * this is what "so /costs, /entities/circles, and the six health sub-pages
- * can never be orphaned again" means in practice. (/approvals/rules was one
- * of these until bu-86c4c.12 merged it into /approvals as the always-visible
+ * this is what "so /entities/circles and the six health sub-pages can never
+ * be orphaned again" means in practice. (/approvals/rules was one of these
+ * until bu-86c4c.12 merged it into /approvals as the always-visible
  * Autonomy panel and deleted the standalone route — nothing to index
  * anymore. /groups was another until bu-86c4c.19 retired it into the
  * "Circles" lens at /entities/circles, and /qa/investigations was folded
  * into /qa's own URL-persisted filters — neither has a standalone route to
- * index anymore either.)
+ * index anymore either. /costs and /settings/spend joined that list at
+ * bu-86c4c.11: both retired into redirects to the single nav-visible /spend
+ * page, which is promoted straight to the sidebar — see SIDEBAR_ROUTES —
+ * so it needs no EXTRA_ROUTES entry of its own.)
  */
 const EXTRA_ROUTES: RouteEntry[] = [
-  { path: "/costs", label: "Costs", section: "Main" },
   { path: "/health/measurements", label: "Measurements", section: "Health", butler: "health" },
   { path: "/health/medications", label: "Medications", section: "Health", butler: "health" },
   { path: "/health/conditions", label: "Conditions", section: "Health", butler: "health" },
   { path: "/health/symptoms", label: "Symptoms", section: "Health", butler: "health" },
   { path: "/health/meals", label: "Meals", section: "Health", butler: "health" },
   { path: "/health/research", label: "Research", section: "Health", butler: "health" },
-  { path: "/settings/spend", label: "Spend Settings", section: "Settings" },
   { path: "/settings/permissions", label: "Permissions", section: "Settings" },
   { path: "/settings/models", label: "Models", section: "Settings" },
   { path: "/entities/index", label: "Entities Index", section: "Entities" },

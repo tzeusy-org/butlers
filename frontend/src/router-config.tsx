@@ -20,13 +20,12 @@ import SessionDetailPage from './pages/SessionDetailPage.tsx'
 import TimelinePage from './pages/TimelinePage.tsx'
 import NotificationsPage from './pages/NotificationsPage.tsx'
 import IssuesPage from './pages/IssuesPage.tsx'
-import CostsPage from './pages/CostsPage.tsx'
+import SpendPage from './pages/SpendPage.tsx'
 import MemoryPage from './pages/MemoryPage.tsx'
 import FactDetailPage from './pages/FactDetailPage.tsx'
 import RuleDetailPage from './pages/RuleDetailPage.tsx'
 import EpisodeDetailPage from './pages/EpisodeDetailPage.tsx'
 import SettingsConsolePage from './pages/SettingsConsolePage.tsx'
-import SettingsSpendPage from './pages/SettingsSpendPage.tsx'
 import SettingsPermissionsPage from './pages/SettingsPermissionsPage.tsx'
 import SettingsModelsPage from './pages/SettingsModelsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
@@ -99,7 +98,11 @@ export const router = createBrowserRouter(
         { path: '/health/symptoms', element: <SymptomsPage /> },
         { path: '/health/meals', element: <MealsPage /> },
         { path: '/health/research', element: <ResearchPage /> },
-        { path: '/costs', element: <CostsPage /> },
+        // One Spend surface (JARVIS audit move 8, bu-86c4c.11): /costs and
+        // /settings/spend merged into a single nav-visible /spend page.
+        // Legacy bookmarks forward to it.
+        { path: '/spend', element: <SpendPage /> },
+        { path: '/costs', element: <Navigate to="/spend" replace /> },
         { path: '/memory', element: <MemoryPage /> },
         { path: '/memory/facts/:factId', element: <FactDetailPage /> },
         { path: '/memory/rules/:ruleId', element: <RuleDetailPage /> },
@@ -118,7 +121,7 @@ export const router = createBrowserRouter(
         { path: '/groups', element: <Navigate to="/entities/circles" replace /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsConsolePage /> },
-        { path: '/settings/spend', element: <SettingsSpendPage /> },
+        { path: '/settings/spend', element: <Navigate to="/spend" replace /> },
         { path: '/settings/permissions', element: <SettingsPermissionsPage /> },
         { path: '/settings/models', element: <SettingsModelsPage /> },
         { path: '/secrets', element: <SecretsPage /> },

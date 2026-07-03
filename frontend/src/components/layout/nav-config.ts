@@ -98,6 +98,10 @@ export const navSections: NavSection[] = [
       { path: '/notifications', label: 'Notifications', icon: 'notifications', chord: 'n' },
       { path: '/issues', label: 'Issues', icon: 'issues', chord: 'i' },
       { path: '/sessions', label: 'Sessions', icon: 'sessions', chord: 's' },
+      // JARVIS audit move 8 (bu-86c4c.11): the merged /costs +
+      // /settings/spend surface, now nav-visible in both sidebar and
+      // command palette (was reachable from neither).
+      { path: '/spend', label: 'Spend', icon: 'spend' },
       { path: '/audit-log', label: 'Audit Log', icon: 'audit', chord: 'a' },
       { path: '/system', label: 'System', icon: 'system', tooltip: 'Instance ownership and runtime facts' },
     ],

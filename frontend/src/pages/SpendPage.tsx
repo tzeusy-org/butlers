@@ -1,34 +1,66 @@
 // ---------------------------------------------------------------------------
-// SettingsSpendPage — /settings/spend  [bu-dvb7i §5.5]
+// SpendPage — /spend  [bu-86c4c.11, JARVIS audit move 8]
 //
-// Layout:
-//   - 4-cell KPI strip (MTD, projected EOM, ceiling, days remaining)
-//   - Hand-rolled SVG forecast chart:
-//       solid line = MTD actuals, dashed = projected to EOM, hairline = ceiling
-//   - CSS breakdown bars (by butler / model / feature)
-//   - Drag-to-reorder routing rules table with saved_7d column
-//   - Anomaly detection: TODO placeholder (deferred §D13)
+// The single nav-visible Spend surface. Merges what used to be two
+// disconnected pages with different vocabularies and zero cross-links:
+//   - /costs           ("Costs & Usage" — legacy Card idiom, orphaned from
+//                        both sidebar and command palette)
+//   - /settings/spend  ("Spend" — Dispatch language, MTD/forecast/ceiling/
+//                        routing rules, live per-call WS stream)
+// Both routes now redirect here (see router-config.tsx).
 //
-// Accepts no props — fetches all data internally.
-// No chart library. SVG rendered by hand.
+// Answers three questions in order, Dispatch language throughout (no card
+// chrome, hairline borders, state color only when state demands):
+//   1. Am I on budget?  — posture strip: MTD vs ceiling meter, projected
+//      EOM, live today-burn from the spend WS stream (ported from
+//      /settings/spend's KpiStrip/ForecastChart/CeilingEdit, unchanged).
+//   2. What changed?    — a ranked "movers" strip (butler spend deltas vs
+//      the prior window of equal length) and an HONEST per-butler-per-day
+//      stacked chart. Honest because GET /api/spend/daily now preserves
+//      real per-butler identity per day (bu-86c4c.11 backend fix — see
+//      spend.py:get_daily_costs) instead of the period-aggregate smear
+//      CostStripeChart used to fabricate (bu-86c4c.1 truth amnesty).
+//   3. Why?              — on-page evidence layer: Top Sessions and
+//      by-schedule projected-monthly costs, every butler row and session
+//      drilling through to /butlers/:name?tab=spend or /sessions/:id.
 //
-// Design language: Dispatch. No card chrome, no word-badges — state is a
-// {dot, numeral, colour} only when state demands. Display weight 500 (never
-// 700). Numerals are tabular. Mirrors SettingsConsolePage / SettingsModelsPage
-// and the shared atoms in components/butler-detail/atoms.tsx.
+// Controls (ceiling, routing rules) stay on the same surface as the signals
+// they govern — noticing a spike and capping the schedule that caused it is
+// one continuous motion.
+//
+// Not yet windowed to the picker (backend limitation, tracked as a
+// follow-up): GET /api/spend/top-sessions and GET /api/spend/by-schedule
+// take no date range today, so those two evidence sections are always
+// all-time/current rather than scoped to the TimeWindowPicker above the
+// daily chart. They are labelled honestly rather than implying a scope they
+// don't have.
 // ---------------------------------------------------------------------------
 
 import { useState, useMemo, useRef, useEffect, useCallback } from "react"
+import { Link } from "react-router"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { differenceInCalendarDays, subDays } from "date-fns"
+
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Eyebrow } from "@/components/ui/Eyebrow"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
 import { useSpendStream } from "@/hooks/use-spend-stream"
 import { useModelCatalog } from "@/hooks/use-model-catalog"
-import type { ComplexityTier } from "@/api/types"
+import {
+  useSpendSummary,
+  useDailySpend,
+  useTopSessions,
+  useCostsBySchedule,
+} from "@/hooks/use-spend"
+import { useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
+import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
+import { CostStripeChart } from "@/components/costs/CostStripeChart"
+import { formatCostUsd } from "@/lib/format-cost"
 import { cn } from "@/lib/utils"
+import type { ComplexityTier } from "@/api/types"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,23 +95,6 @@ interface SpendRule {
 interface BreakdownData {
   by: string
   breakdown: Record<string, number>
-}
-
-// ---------------------------------------------------------------------------
-// Shared mono eyebrow — 10px uppercase, 0.14em tracking, muted
-// ---------------------------------------------------------------------------
-
-function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <p
-      className={cn(
-        "font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground leading-none",
-        className,
-      )}
-    >
-      {children}
-    </p>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -151,18 +166,14 @@ const COMPLEXITY_TIERS: ComplexityTier[] = [
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-function fmtUsd(n: number): string {
-  if (n < 0.01) return "$0.00"
-  return `$${n.toFixed(2)}`
-}
-
 function fmtUsdPrecise(n: number): string {
   return `$${n.toFixed(4)}`
 }
 
 // ---------------------------------------------------------------------------
-// KPI Strip — hairline-divided, no card chrome. Mega numerals are weight 500,
-// tabular. State colour appears only when state demands (over-ceiling).
+// Posture — KPI Strip. Hairline-divided, no card chrome. Mega numerals are
+// weight 500, tabular. State colour appears only when state demands
+// (over-ceiling).
 // ---------------------------------------------------------------------------
 
 interface KpiCellProps {
@@ -214,20 +225,20 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
       <KpiCell
         testId="kpi-mtd"
         label="MTD Spend"
-        value={fmtUsd(forecast.mtd_usd)}
+        value={formatCostUsd(forecast.mtd_usd)}
         sub={`${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`}
       />
       <KpiCell
         testId="kpi-projected-eom"
         label="Projected EOM"
-        value={fmtUsd(forecast.projected_eom_usd)}
+        value={formatCostUsd(forecast.projected_eom_usd)}
         tone={overCeiling ? "red" : "fg"}
         sub={`${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining`}
       />
       <KpiCell
         testId="kpi-ceiling"
         label="Monthly Ceiling"
-        value={forecast.ceiling_usd != null ? fmtUsd(forecast.ceiling_usd) : "—"}
+        value={forecast.ceiling_usd != null ? formatCostUsd(forecast.ceiling_usd) : "—"}
         sub={pct != null ? `${pct}% used` : undefined}
       />
       <KpiCell
@@ -241,7 +252,7 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
 }
 
 // ---------------------------------------------------------------------------
-// Hand-rolled SVG forecast chart  [§5.5 — no chart library]
+// Posture — hand-rolled SVG forecast chart [§5.5 — no chart library].
 //
 // Solid polyline = MTD actuals (projected=false)
 // Dashed polyline = projected from today to EOM (projected=true)
@@ -282,15 +293,14 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
 
   // Y-axis ticks
   const tickCount = 4
-  const yTicks = Array.from({ length: tickCount + 1 }, (_, i) =>
-    (maxCost * i) / tickCount
-  )
+  const yTicks = Array.from({ length: tickCount + 1 }, (_, i) => (maxCost * i) / tickCount)
 
   // X-axis labels: first day of month + today + last day
   const xLabels: Array<{ i: number; label: string }> = []
   if (days.length > 0) xLabels.push({ i: 0, label: days[0].date.slice(8) })
   if (firstProjIdx > 0) xLabels.push({ i: firstProjIdx - 1, label: "today" })
-  if (days.length > 1) xLabels.push({ i: days.length - 1, label: days[days.length - 1].date.slice(8) })
+  if (days.length > 1)
+    xLabels.push({ i: days.length - 1, label: days[days.length - 1].date.slice(8) })
 
   return (
     <svg
@@ -322,7 +332,7 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
               fill="currentColor"
               fillOpacity={0.5}
             >
-              {fmtUsd(v)}
+              {formatCostUsd(v)}
             </text>
           </g>
         )
@@ -392,20 +402,188 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Breakdown bars (CSS only, no chart lib)
+// Posture — ceiling edit (inline)
+// ---------------------------------------------------------------------------
+
+function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(String(currentCeiling ?? ""))
+
+  const mutation = useMutation({
+    mutationFn: (usd: number) => updateCeiling(usd),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["spend-forecast"] })
+      setEditing(false)
+      toast.success("Monthly ceiling updated")
+    },
+    onError: () => toast.error("Failed to update ceiling"),
+  })
+
+  if (!editing) {
+    return (
+      <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => setEditing(true)}>
+        {currentCeiling != null ? `Edit ceiling (${formatCostUsd(currentCeiling)})` : "Set ceiling"}
+      </Button>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-muted-foreground">$</span>
+      <input
+        type="number"
+        className="w-24 text-xs border rounded px-2 py-1 bg-background tabular-nums"
+        value={value}
+        min="0.01"
+        step="0.01"
+        onChange={(e) => setValue(e.target.value)}
+        autoFocus
+      />
+      <Button
+        size="sm"
+        className="text-xs h-7"
+        disabled={mutation.isPending}
+        onClick={() => {
+          const parsed = parseFloat(value)
+          if (isNaN(parsed) || parsed <= 0) {
+            toast.error("Enter a positive amount")
+            return
+          }
+          mutation.mutate(parsed)
+        }}
+      >
+        Save
+      </Button>
+      <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => setEditing(false)}>
+        Cancel
+      </Button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// What changed — Movers strip: ranked butler spend deltas vs the prior
+// window of equal length. A butler with prior=0 is "new"; a butler with
+// current=0 is "stopped" — both are honest deltas, not fabricated ones.
+// ---------------------------------------------------------------------------
+
+interface Mover {
+  name: string
+  current: number
+  prior: number
+  delta: number
+}
+
+function computeMovers(
+  current: Record<string, number>,
+  prior: Record<string, number>,
+  limit = 6,
+): Mover[] {
+  const names = new Set([...Object.keys(current), ...Object.keys(prior)])
+  const movers: Mover[] = Array.from(names).map((name) => {
+    const c = current[name] ?? 0
+    const p = prior[name] ?? 0
+    return { name, current: c, prior: p, delta: c - p }
+  })
+  movers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+  return movers.filter((m) => Math.abs(m.delta) >= 0.000001).slice(0, limit)
+}
+
+function MoverChip({ mover }: { mover: Mover }) {
+  const up = mover.delta > 0
+  return (
+    <Link
+      to={`/butlers/${mover.name}?tab=spend`}
+      className="flex items-center gap-2 border border-border/60 px-3 py-2 hover:bg-muted/40"
+      data-testid="mover-chip"
+    >
+      <span
+        className={cn(
+          "shrink-0 h-2 w-2 rounded-full",
+          up ? "bg-[var(--red)]" : "bg-[var(--green,var(--primary))]",
+        )}
+        aria-hidden
+      />
+      <span className="flex flex-col gap-0.5">
+        <span className="font-mono text-xs">{mover.name}</span>
+        <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+          {up ? "+" : "−"}
+          {formatCostUsd(Math.abs(mover.delta))}
+          {mover.prior === 0 ? " · new" : mover.current === 0 ? " · stopped" : ""}
+        </span>
+      </span>
+    </Link>
+  )
+}
+
+function MoversStrip({
+  current,
+  prior,
+  windowDays,
+  isLoading,
+}: {
+  current: Record<string, number>
+  prior: Record<string, number>
+  windowDays: number
+  isLoading: boolean
+}) {
+  const movers = useMemo(() => computeMovers(current, prior), [current, prior])
+
+  return (
+    <section className="border border-border" data-testid="movers-strip">
+      <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
+        <Eyebrow>Movers</Eyebrow>
+        <p className="text-xs text-muted-foreground">
+          Ranked butler spend deltas vs the prior {windowDays}-day window.
+        </p>
+      </div>
+      <div className="p-4">
+        {isLoading ? (
+          <div className="flex gap-2">
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-12 w-32" />
+            ))}
+          </div>
+        ) : movers.length === 0 ? (
+          <p className="font-serif italic text-muted-foreground text-sm">
+            No spend change vs the prior window.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {movers.map((m) => (
+              <MoverChip key={m.name} mover={m} />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// What changed — breakdown bars (CSS only, no chart lib)
 // ---------------------------------------------------------------------------
 
 interface BreakdownBarProps {
   label: string
   value: number
   maxValue: number
+  href?: string
 }
 
-function BreakdownBar({ label, value, maxValue }: BreakdownBarProps) {
+function BreakdownBar({ label, value, maxValue, href }: BreakdownBarProps) {
   const pct = maxValue > 0 ? (value / maxValue) * 100 : 0
+  const labelEl = href ? (
+    <Link to={href} className="w-40 truncate text-muted-foreground font-mono text-xs hover:underline">
+      {label}
+    </Link>
+  ) : (
+    <span className="w-40 truncate text-muted-foreground font-mono text-xs">{label}</span>
+  )
   return (
     <div className="flex items-center gap-3 text-sm">
-      <span className="w-40 truncate text-muted-foreground font-mono text-xs">{label}</span>
+      {labelEl}
       <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
         <div
           className="h-full bg-primary rounded-full transition-all"
@@ -436,7 +614,7 @@ function BreakdownSection() {
   return (
     <section className="border border-border">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
-        <Eyebrow>Spend Breakdown</Eyebrow>
+        <Eyebrow>Spend Breakdown · 30d</Eyebrow>
         <div className="flex gap-1">
           {(["butler", "model", "feature"] as BreakdownBy[]).map((dim) => (
             <Button
@@ -454,7 +632,9 @@ function BreakdownSection() {
       <div className="p-4">
         {isLoading ? (
           <div className="space-y-2">
-            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-4 w-full" />)}
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-4 w-full" />
+            ))}
           </div>
         ) : entries.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
@@ -463,7 +643,13 @@ function BreakdownSection() {
         ) : (
           <div className="space-y-2">
             {entries.map(([label, value]) => (
-              <BreakdownBar key={label} label={label} value={value} maxValue={maxValue} />
+              <BreakdownBar
+                key={label}
+                label={label}
+                value={value}
+                maxValue={maxValue}
+                href={by === "butler" ? `/butlers/${label}?tab=spend` : undefined}
+              />
             ))}
           </div>
         )}
@@ -473,7 +659,155 @@ function BreakdownSection() {
 }
 
 // ---------------------------------------------------------------------------
-// Routing rules table (drag-to-reorder)
+// Why — evidence layer: Top Sessions + by-schedule projected costs. Neither
+// endpoint accepts a date range today (see file header), so these are
+// labelled honestly rather than claiming to be scoped to the picker above.
+// ---------------------------------------------------------------------------
+
+function TopSessionsSection() {
+  const { data, isLoading, isError } = useTopSessions(10)
+  const sessions = data?.data ?? []
+
+  return (
+    <section className="border border-border" data-testid="top-sessions-section">
+      <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
+        <Eyebrow>Most Expensive Sessions</Eyebrow>
+        <p className="text-xs text-muted-foreground">
+          All-time top sessions by cost — click through to session detail.
+        </p>
+      </div>
+      <div className="p-4">
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-6 w-full" />
+            ))}
+          </div>
+        ) : isError ? (
+          <p className="text-sm text-muted-foreground">Failed to load top sessions.</p>
+        ) : sessions.length === 0 ? (
+          <p className="font-serif italic text-muted-foreground text-sm">
+            No session data available.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  <th className="text-left py-2 px-2 font-normal">Butler</th>
+                  <th className="text-left py-2 px-2 font-normal">Model</th>
+                  <th className="text-right py-2 px-2 font-normal">Tokens</th>
+                  <th className="text-right py-2 px-2 font-normal">Cost</th>
+                  <th className="text-right py-2 px-2 font-normal">When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessions.map((s) => (
+                  <tr key={s.session_id} className="border-b border-border/60 hover:bg-muted/30">
+                    <td className="py-2 px-2">
+                      <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
+                        {s.butler}
+                      </Link>
+                    </td>
+                    <td className="py-2 px-2 text-muted-foreground text-xs">{s.model}</td>
+                    <td className="py-2 px-2 text-right tabular-nums text-xs">
+                      {s.input_tokens.toLocaleString()} / {s.output_tokens.toLocaleString()}
+                    </td>
+                    <td className="py-2 px-2 text-right tabular-nums font-medium">
+                      {formatCostUsd(s.cost_usd)}
+                    </td>
+                    <td className="py-2 px-2 text-right text-xs text-muted-foreground">
+                      <Link to={`/sessions/${s.session_id}`} className="hover:underline">
+                        {new Date(s.started_at).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function ByScheduleSection() {
+  const { data, isLoading, isError } = useCostsBySchedule()
+  const schedules = data?.data ?? []
+
+  return (
+    <section className="border border-border" data-testid="by-schedule-section">
+      <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
+        <Eyebrow>By Schedule</Eyebrow>
+        <p className="text-xs text-muted-foreground">
+          Projected monthly cost per cron job — which schedule is burning money.
+        </p>
+      </div>
+      <div className="p-4">
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2].map((i) => (
+              <Skeleton key={i} className="h-6 w-full" />
+            ))}
+          </div>
+        ) : isError ? (
+          <p className="text-sm text-muted-foreground">Failed to load schedule costs.</p>
+        ) : schedules.length === 0 ? (
+          <p className="font-serif italic text-muted-foreground text-sm">
+            No scheduled-task cost data available.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  <th className="text-left py-2 px-2 font-normal">Schedule</th>
+                  <th className="text-left py-2 px-2 font-normal">Butler</th>
+                  <th className="text-left py-2 px-2 font-normal">Cron</th>
+                  <th className="text-right py-2 px-2 font-normal">Runs</th>
+                  <th className="text-right py-2 px-2 font-normal">Avg/run</th>
+                  <th className="text-right py-2 px-2 font-normal">Projected/mo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedules.map((s) => (
+                  <tr
+                    key={`${s.butler}-${s.schedule_name}`}
+                    className="border-b border-border/60 hover:bg-muted/30"
+                  >
+                    <td className="py-2 px-2 font-mono text-xs">{s.schedule_name}</td>
+                    <td className="py-2 px-2">
+                      <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
+                        {s.butler}
+                      </Link>
+                    </td>
+                    <td className="py-2 px-2 text-muted-foreground text-xs">{s.cron}</td>
+                    <td className="py-2 px-2 text-right tabular-nums text-xs">{s.total_runs}</td>
+                    <td className="py-2 px-2 text-right tabular-nums text-xs">
+                      {formatCostUsd(s.avg_cost_per_run)}
+                    </td>
+                    <td className="py-2 px-2 text-right tabular-nums font-medium">
+                      {formatCostUsd(s.projected_monthly_usd)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Controls — routing rules table (drag-to-reorder)
 // ---------------------------------------------------------------------------
 
 // Render a condition/action JSONB object as labelled chips instead of raw JSON, so
@@ -631,14 +965,6 @@ const TRIGGER_SOURCES: string[] = [
   "extraction",
   "external",
 ]
-
-// ---------------------------------------------------------------------------
-// Create-rule form — collects a condition (butler + complexity + trigger, all
-// optional, ANDed) and an action (route-to model and/or per-call cost cap; at
-// least one effect required). Produces a rule whose shape the dispatch-time
-// evaluator and the enforced API schema both accept. An empty condition is a
-// valid catch-all.
-// ---------------------------------------------------------------------------
 
 interface CreateRuleFormProps {
   onCancel: () => void
@@ -812,13 +1138,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
         <Button type="submit" size="sm" className="text-xs h-7" disabled={createMutation.isPending}>
           Create rule
         </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="text-xs h-7"
-          onClick={onCancel}
-        >
+        <Button type="button" variant="ghost" size="sm" className="text-xs h-7" onClick={onCancel}>
           Cancel
         </Button>
       </div>
@@ -880,14 +1200,13 @@ function SpendRulesSection() {
       </div>
       <div className="p-4">
         {creating && (
-          <CreateRuleForm
-            onCancel={() => setCreating(false)}
-            onCreated={() => setCreating(false)}
-          />
+          <CreateRuleForm onCancel={() => setCreating(false)} onCreated={() => setCreating(false)} />
         )}
         {isLoading ? (
           <div className="space-y-2">
-            {[1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
+            {[1, 2].map((i) => (
+              <Skeleton key={i} className="h-8 w-full" />
+            ))}
           </div>
         ) : (
           <RulesTable
@@ -902,78 +1221,19 @@ function SpendRulesSection() {
 }
 
 // ---------------------------------------------------------------------------
-// Ceiling edit (inline)
-// ---------------------------------------------------------------------------
-
-function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
-  const queryClient = useQueryClient()
-  const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState(String(currentCeiling ?? ""))
-
-  const mutation = useMutation({
-    mutationFn: (usd: number) => updateCeiling(usd),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["spend-forecast"] })
-      setEditing(false)
-      toast.success("Monthly ceiling updated")
-    },
-    onError: () => toast.error("Failed to update ceiling"),
-  })
-
-  if (!editing) {
-    return (
-      <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => setEditing(true)}>
-        {currentCeiling != null ? `Edit ceiling (${fmtUsd(currentCeiling)})` : "Set ceiling"}
-      </Button>
-    )
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-muted-foreground">$</span>
-      <input
-        type="number"
-        className="w-24 text-xs border rounded px-2 py-1 bg-background tabular-nums"
-        value={value}
-        min="0.01"
-        step="0.01"
-        onChange={(e) => setValue(e.target.value)}
-        autoFocus
-      />
-      <Button
-        size="sm"
-        className="text-xs h-7"
-        disabled={mutation.isPending}
-        onClick={() => {
-          const parsed = parseFloat(value)
-          if (isNaN(parsed) || parsed <= 0) {
-            toast.error("Enter a positive amount")
-            return
-          }
-          mutation.mutate(parsed)
-        }}
-      >
-        Save
-      </Button>
-      <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => setEditing(false)}>
-        Cancel
-      </Button>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
-export default function SettingsSpendPage() {
+export default function SpendPage() {
   const queryClient = useQueryClient()
+
+  // Posture — always the current month, independent of the explore-section
+  // time window below (matches the original /settings/spend behavior).
   const { data: forecastData, isLoading: forecastLoading } = useQuery({
     queryKey: ["spend-forecast"],
     queryFn: fetchForecast,
     refetchInterval: 120_000,
   })
-
   const forecast = forecastData?.data
 
   // §5.3 — Connect to the spend stream and update KPIs incrementally.
@@ -1019,8 +1279,37 @@ export default function SettingsSpendPage() {
 
   // Over-ceiling attention condition — the only state-color-on-background use.
   const overCeiling =
-    liveForecast?.ceiling_usd != null &&
-    liveForecast.projected_eom_usd > liveForecast.ceiling_usd
+    liveForecast?.ceiling_usd != null && liveForecast.projected_eom_usd > liveForecast.ceiling_usd
+
+  // What changed — explore window (daily stacked chart + movers). Defaults
+  // to the last 7 days via useTimeWindow's "today" preset fallback logic —
+  // callers can widen with the picker below.
+  const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT)
+  const {
+    data: dailyResponse,
+    isLoading: dailyLoading,
+    isError: dailyError,
+  } = useDailySpend(timeWindow.from, timeWindow.to, {
+    refetchInterval: timeWindow.pollingDisabled ? false : 60_000,
+  })
+  const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse])
+
+  // Movers — current window vs the immediately preceding window of equal
+  // length (e.g. "last 7 days" vs "the 7 days before that").
+  const windowDays = differenceInCalendarDays(timeWindow.to, timeWindow.from) + 1
+  const prevTo = useMemo(() => subDays(timeWindow.from, 1), [timeWindow.from])
+  const prevFrom = useMemo(() => subDays(prevTo, windowDays - 1), [prevTo, windowDays])
+
+  const { data: currentSummary, isLoading: currentSummaryLoading } = useSpendSummary(
+    undefined,
+    timeWindow.from,
+    timeWindow.to,
+  )
+  const { data: priorSummary, isLoading: priorSummaryLoading } = useSpendSummary(
+    undefined,
+    prevFrom,
+    prevTo,
+  )
 
   return (
     <Page archetype="overview" title="Spend">
@@ -1037,25 +1326,19 @@ export default function SettingsSpendPage() {
             <p className="text-sm">
               Projected end-of-month spend{" "}
               <span className="tabular-nums font-medium">
-                {fmtUsd(liveForecast.projected_eom_usd)}
+                {formatCostUsd(liveForecast.projected_eom_usd)}
               </span>{" "}
               exceeds the monthly ceiling of{" "}
-              <span className="tabular-nums font-medium">
-                {fmtUsd(liveForecast.ceiling_usd!)}
-              </span>
-              .
+              <span className="tabular-nums font-medium">{formatCostUsd(liveForecast.ceiling_usd!)}</span>.
             </p>
           </div>
         )}
 
-        {/* KPI strip */}
+        {/* Posture: KPI strip */}
         {forecastLoading && !liveForecast ? (
           <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60">
             {[1, 2, 3, 4].map((i) => (
-              <div
-                key={i}
-                className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60"
-              >
+              <div key={i} className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60">
                 <Skeleton className="h-3 w-20" />
                 <Skeleton className="h-8 w-16" />
               </div>
@@ -1065,21 +1348,17 @@ export default function SettingsSpendPage() {
           <KpiStrip forecast={liveForecast} />
         ) : null}
 
-        {/* Forecast SVG chart */}
+        {/* Posture: forecast chart */}
         <section className="border border-border">
           <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-border">
             <div className="flex flex-col gap-1">
               <Eyebrow>Forecast</Eyebrow>
               <p className="text-xs text-muted-foreground">
                 Solid = actual MTD spend. Dashed = linear projection to end of month.
-                {liveForecast?.ceiling_usd != null
-                  ? " Red hairline = monthly ceiling."
-                  : ""}
+                {liveForecast?.ceiling_usd != null ? " Red hairline = monthly ceiling." : ""}
               </p>
             </div>
-            {liveForecast && (
-              <CeilingEdit currentCeiling={liveForecast.ceiling_usd} />
-            )}
+            {liveForecast && <CeilingEdit currentCeiling={liveForecast.ceiling_usd} />}
           </div>
           <div className="p-4">
             {forecastLoading && !liveForecast ? (
@@ -1092,13 +1371,35 @@ export default function SettingsSpendPage() {
               </p>
             )}
           </div>
-          {/* TODO: Add anomaly detection (deferred §D13 — threshold TBD) */}
         </section>
 
-        {/* Breakdown */}
+        {/* What changed: movers strip */}
+        <MoversStrip
+          current={currentSummary?.data?.by_butler ?? {}}
+          prior={priorSummary?.data?.by_butler ?? {}}
+          windowDays={windowDays}
+          isLoading={currentSummaryLoading || priorSummaryLoading}
+        />
+
+        {/* What changed: time window + honest per-butler-per-day stacked chart */}
+        <section className="border border-border">
+          <div className="flex flex-col gap-3 px-4 py-3 border-b border-border">
+            <Eyebrow>Daily Spend</Eyebrow>
+            <TimeWindowPicker window={timeWindow} />
+          </div>
+          <div className="p-4">
+            <CostStripeChart data={dailyData} isLoading={dailyLoading} isError={dailyError} />
+          </div>
+        </section>
+
+        {/* Why: evidence layer */}
+        <TopSessionsSection />
+        <ByScheduleSection />
+
+        {/* Why: period breakdown */}
         <BreakdownSection />
 
-        {/* Routing rules */}
+        {/* Controls: routing rules, in context with the signals they govern */}
         <SpendRulesSection />
       </div>
     </Page>

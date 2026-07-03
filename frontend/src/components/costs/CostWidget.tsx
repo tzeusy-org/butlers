@@ -47,7 +47,7 @@ export default function CostWidget({
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <CardTitle className="text-sm font-medium">Cost Today</CardTitle>
         <Button variant="ghost" size="sm" asChild>
-          <Link to="/costs">View all</Link>
+          <Link to="/spend">View all</Link>
         </Button>
       </CardHeader>
       <CardContent>

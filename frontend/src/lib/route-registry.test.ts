@@ -3,8 +3,8 @@
  * The single command/route registry (bu-86c4c.7).
  *
  * Covers the audit's two concrete failure modes:
- * - orphaned routes: /costs, /entities/circles, and the six health sub-pages
- *   must be indexed even though they're not in the sidebar.
+ * - orphaned routes: /entities/circles and the six health sub-pages must be
+ *   indexed even though they're not in the sidebar.
  * - chord drift: g-h used to point at /health/measurements (pre-redesign);
  *   chords must be unique and resolvable from the same registry that builds
  *   the sidebar.
@@ -17,7 +17,6 @@ describe("route-registry", () => {
   it("indexes every previously-orphaned route", () => {
     const paths = ALL_ROUTES.map((r) => r.path);
     for (const orphaned of [
-      "/costs",
       "/entities/circles",
       "/health/measurements",
       "/health/medications",
@@ -28,6 +27,13 @@ describe("route-registry", () => {
     ]) {
       expect(paths).toContain(orphaned);
     }
+  });
+
+  it("promotes /spend straight to the sidebar instead of indexing it as an orphan (bu-86c4c.11 merged /costs + /settings/spend into one nav-visible Spend page)", () => {
+    const paths = ALL_ROUTES.map((r) => r.path);
+    expect(paths).toContain("/spend");
+    expect(paths).not.toContain("/costs");
+    expect(paths).not.toContain("/settings/spend");
   });
 
   it("does not index /approvals/rules (bu-86c4c.12 merged it into /approvals as the Autonomy panel and deleted the standalone route)", () => {

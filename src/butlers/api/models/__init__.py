@@ -367,6 +367,7 @@ class DailySpend(BaseModel):
     sessions: int
     input_tokens: int
     output_tokens: int
+    by_butler: dict[str, float] = Field(default_factory=dict)
 
 
 class TopSession(BaseModel):

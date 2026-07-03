@@ -105,6 +105,7 @@ import type {
   TimelineParams,
   TimelineResponse,
   TopSession,
+  ScheduleCost,
   TriggerResponse,
   ButlerMcpTool,
   ButlerMcpToolCallRequest,
@@ -921,6 +922,11 @@ export function getDailyCosts(
 export function getTopSessions(limit?: number): Promise<ApiResponse<TopSession[]>> {
   const params = limit ? `?limit=${limit}` : "";
   return apiFetch<ApiResponse<TopSession[]>>(`/spend/top-sessions${params}`);
+}
+
+/** Fetch per-schedule cost analysis (projected monthly USD per cron job). */
+export function getCostsBySchedule(): Promise<ApiResponse<ScheduleCost[]>> {
+  return apiFetch<ApiResponse<ScheduleCost[]>>("/spend/by-schedule");
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getCostSummary, getDailyCosts, getTopSessions } from "@/api/index.ts";
+import { getCostSummary, getDailyCosts, getTopSessions, getCostsBySchedule } from "@/api/index.ts";
 import { formatInTimeZone } from "date-fns-tz";
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 
@@ -85,6 +85,15 @@ export function useTopSessions(limit?: number) {
     queryKey: ["top-sessions", limit],
     queryFn: () => getTopSessions(limit),
     // See useSpendSummary above: fleet-event-bus-driven, poll is now a safety net.
+    refetchInterval: 5 * 60_000,
+  });
+}
+
+/** Fetch per-schedule cost analysis (projected monthly USD per cron job). */
+export function useCostsBySchedule() {
+  return useQuery({
+    queryKey: ["costs-by-schedule"],
+    queryFn: () => getCostsBySchedule(),
     refetchInterval: 5 * 60_000,
   });
 }

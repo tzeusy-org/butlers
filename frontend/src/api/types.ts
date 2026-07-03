@@ -491,6 +491,14 @@ export interface DailySpend {
   sessions: number;
   input_tokens: number;
   output_tokens: number;
+  /**
+   * Real per-butler cost contributions for this day (bu-86c4c.11 — extends
+   * GET /api/spend/daily to preserve the butler identity it previously
+   * discarded at the merge step). Only butlers that spent >0 that day are
+   * present; absent/empty means no per-butler data (e.g. all butlers were
+   * unreachable). Sums to `cost_usd`.
+   */
+  by_butler?: Record<string, number>;
 }
 
 /** A session ranked by cost. */
@@ -502,6 +510,18 @@ export interface TopSession {
   output_tokens: number;
   model: string;
   started_at: string;
+}
+
+/** Cost analysis for a single scheduled task (GET /api/spend/by-schedule). */
+export interface ScheduleCost {
+  schedule_name: string;
+  butler: string;
+  cron: string;
+  total_runs: number;
+  total_cost_usd: number;
+  avg_cost_per_run: number;
+  runs_per_day: number;
+  projected_monthly_usd: number;
 }
 
 // ---------------------------------------------------------------------------

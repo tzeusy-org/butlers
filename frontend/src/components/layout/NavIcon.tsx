@@ -20,6 +20,7 @@ export type NavIconName =
   | 'sessions'
   | 'audit'
   | 'system'
+  | 'spend'
 
 const PATHS: Record<NavIconName, React.ReactNode> = {
   overview: (
@@ -115,6 +116,12 @@ const PATHS: Record<NavIconName, React.ReactNode> = {
     <>
       <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
       <circle cx="8" cy="8" r="2" />
+    </>
+  ),
+  spend: (
+    <>
+      <path d="M3 13.5V9M7.5 13.5V5M12 13.5V7.5" />
+      <path d="M2 13.5h12" />
     </>
   ),
 }

@@ -1,3 +1,5 @@
+import { Link } from 'react-router'
+
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import {
@@ -8,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '../ui/table'
+import { formatCostUsd } from '@/lib/format-cost'
 
 import type { TopSession } from '../../api/types'
 
@@ -20,11 +23,6 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return String(n)
-}
-
-function formatCost(amount: number): string {
-  if (amount < 0.01) return '$0.00'
-  return `$${amount.toFixed(2)}`
 }
 
 function formatTime(iso: string): string {
@@ -91,17 +89,21 @@ export default function TopSessionsTable({ sessions, isLoading }: TopSessionsTab
               <TableRow key={session.session_id}>
                 <TableCell className="text-muted-foreground">{idx + 1}</TableCell>
                 <TableCell>
-                  <Badge variant="secondary">{session.butler}</Badge>
+                  <Link to={`/butlers/${session.butler}?tab=spend`} className="hover:underline">
+                    <Badge variant="secondary">{session.butler}</Badge>
+                  </Link>
                 </TableCell>
                 <TableCell className="text-muted-foreground text-xs">{session.model}</TableCell>
                 <TableCell className="text-right tabular-nums text-xs">
                   {formatTokens(session.input_tokens)} / {formatTokens(session.output_tokens)}
                 </TableCell>
                 <TableCell className="text-right tabular-nums font-medium">
-                  {formatCost(session.cost_usd)}
+                  {formatCostUsd(session.cost_usd)}
                 </TableCell>
                 <TableCell className="text-right text-xs text-muted-foreground">
-                  {formatTime(session.started_at)}
+                  <Link to={`/sessions/${session.session_id}`} className="hover:underline">
+                    {formatTime(session.started_at)}
+                  </Link>
                 </TableCell>
               </TableRow>
             ))}

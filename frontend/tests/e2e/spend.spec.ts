@@ -1,8 +1,9 @@
 /**
- * Settings Spend Page - /settings/spend  [bu-8dk6b section 5.6]
+ * Spend Page - /spend  [bu-86c4c.11, JARVIS audit move 8]
  *
- * Three test scenarios (all API calls mocked via Playwright route handlers;
- * no real server or DB required):
+ * The merged spend surface (was /costs + /settings/spend). Test scenarios
+ * (all API calls mocked via Playwright route handlers; no real server or DB
+ * required):
  *
  *   1. Happy path      - open the page, verify it renders without crashing,
  *                        verify spend summary KPIs load (MTD, projected EOM,
@@ -12,6 +13,7 @@
  *   3. Ceiling-update  - click "Set ceiling", enter a value, submit, assert
  *                        PUT was called with the right payload, mock the
  *                        re-fetch, assert KPI strip re-renders with new ceiling.
+ *   4. Legacy routes   - /costs and /settings/spend both redirect to /spend.
  *
  * The preview server is managed by playwright.config.ts `webServer`; tests
  * rely on it being available and will fail hard (not skip) if it is not.
@@ -22,7 +24,9 @@
  *
  * Mocking strategy:
  *   - HTTP routes: page.route() intercepts GET /api/spend/forecast,
- *     GET /api/spend/breakdown, GET /api/spend/rules, PUT /api/spend/ceiling.
+ *     GET /api/spend/breakdown, GET /api/spend/rules, PUT /api/spend/ceiling,
+ *     GET /api/spend/daily, GET /api/spend (summary, used for the movers
+ *     strip), GET /api/spend/top-sessions, GET /api/spend/by-schedule.
  *   - WebSocket: page.routeWebSocket() for /api/spend/stream, returns an
  *     immediate empty snapshot so the hook settles in a deterministic state
  *     without blocking page load.
@@ -94,6 +98,24 @@ const MOCK_RULES = {
   meta: {},
 };
 
+// Daily series (drives the honest per-butler-per-day stacked chart) and the
+// summary/top-sessions/by-schedule endpoints the merged page also queries.
+const MOCK_DAILY = {
+  data: [
+    { date: "2026-05-16", cost_usd: 0.6, sessions: 20, input_tokens: 50000, output_tokens: 25000, by_butler: { inbox: 0.6 } },
+    { date: "2026-05-17", cost_usd: 0.7, sessions: 22, input_tokens: 52000, output_tokens: 26000, by_butler: { inbox: 0.4, calendar: 0.3 } },
+  ],
+  meta: {},
+};
+
+const MOCK_SUMMARY = {
+  data: { total_cost_usd: 2.2, total_sessions: 42, total_input_tokens: 100000, total_output_tokens: 50000, by_butler: { inbox: 1.5, calendar: 0.7 }, by_model: {} },
+  meta: {},
+};
+
+const MOCK_TOP_SESSIONS = { data: [], meta: {} };
+const MOCK_BY_SCHEDULE = { data: [], meta: {} };
+
 // ---------------------------------------------------------------------------
 // Helper: install all baseline API mocks
 // ---------------------------------------------------------------------------
@@ -138,6 +160,44 @@ async function installBaseMocks(page: Page) {
     }
   });
 
+  // Daily series — feeds the "what changed" stacked chart.
+  await page.route("**/api/spend/daily**", (route) => {
+    if (route.request().method() === "GET") {
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_DAILY) });
+    } else {
+      route.continue();
+    }
+  });
+
+  // Summary — used twice for the movers strip (current + prior window).
+  // A plain glob like "**/api/spend?**" would also swallow /api/spend/daily,
+  // /api/spend/rules, etc. (Playwright's `?` glob wildcard matches the "/"
+  // right after "spend" too) — use a RegExp anchored to exactly "/api/spend"
+  // with an optional query string and nothing else after it.
+  await page.route(/\/api\/spend(\?.*)?$/, (route) => {
+    if (route.request().method() === "GET") {
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_SUMMARY) });
+    } else {
+      route.continue();
+    }
+  });
+
+  // Evidence layer
+  await page.route("**/api/spend/top-sessions**", (route) => {
+    if (route.request().method() === "GET") {
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_TOP_SESSIONS) });
+    } else {
+      route.continue();
+    }
+  });
+  await page.route("**/api/spend/by-schedule**", (route) => {
+    if (route.request().method() === "GET") {
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_BY_SCHEDULE) });
+    } else {
+      route.continue();
+    }
+  });
+
   // WebSocket spend stream - return an empty snapshot immediately so the
   // useSpendStream hook settles without blocking page interaction.
   // Note: Playwright's WebSocketRoute handler fires on connection; there is no
@@ -154,7 +214,7 @@ async function installBaseMocks(page: Page) {
 test("spend: page renders and KPI strip shows spend totals", async ({ page }) => {
   await installBaseMocks(page);
 
-  await page.goto("/settings/spend", { timeout: 10_000 });
+  await page.goto("/spend", { timeout: 10_000 });
 
   // KPI strip cells — scope assertions to the individual testid cells so that
   // strict-mode locator violations are avoided when the same text appears
@@ -195,7 +255,7 @@ test("spend: page renders and KPI strip shows spend totals", async ({ page }) =>
 test("spend: forecast chart is visible and contains actual + projected segments", async ({ page }) => {
   await installBaseMocks(page);
 
-  await page.goto("/settings/spend", { timeout: 10_000 });
+  await page.goto("/spend", { timeout: 10_000 });
 
   // The hand-rolled SVG has aria-label="Spend forecast chart"
   const chart = page.getByRole("img", { name: /spend forecast chart/i });
@@ -266,7 +326,7 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
     }
   });
 
-  await page.goto("/settings/spend", { timeout: 10_000 });
+  await page.goto("/spend", { timeout: 10_000 });
 
   // Initially the ceiling is null - button reads "Set ceiling"
   const setCeilingBtn = page.getByRole("button", { name: /set ceiling/i });
@@ -305,4 +365,18 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
 
   // The "Set ceiling" button is replaced by "Edit ceiling ($10.00)"
   await expect(page.getByRole("button", { name: /edit ceiling/i })).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Test 4: Legacy routes redirect to the merged /spend page
+// ---------------------------------------------------------------------------
+
+test("spend: legacy /costs and /settings/spend routes redirect to /spend", async ({ page }) => {
+  await installBaseMocks(page);
+
+  await page.goto("/costs", { timeout: 10_000 });
+  await expect(page).toHaveURL(/\/spend$/);
+
+  await page.goto("/settings/spend", { timeout: 10_000 });
+  await expect(page).toHaveURL(/\/spend$/);
 });
