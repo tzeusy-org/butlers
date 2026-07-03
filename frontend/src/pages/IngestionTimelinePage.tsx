@@ -11,14 +11,19 @@
  * Header aside: live status badge. Status is derived from the most-recent
  * event's received_at: "Live" when an event arrived within the last 60 s,
  * "Idle" otherwise.  TimelineTab reports freshness via onFreshnessChange
- * so the badge reflects real pipeline activity, not a wall-clock timer.
+ * so the badge reflects real pipeline activity — but "now" itself ticks on
+ * a wall clock (bu-86c4c.8, move 5) so the badge decays to "Idle" on its
+ * own once the freshness window elapses, even if no new event ever arrives
+ * to trigger a re-render. Before this fix "now" was only recomputed when
+ * latestReceivedAt changed, so a pipeline that went quiet kept showing a
+ * stale "Live" forever.
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline route replaces legacy tab landing"
  *       §"Timeline Ledger" — header band with live freshness/status pill
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
 import { TimelineTab, type IngestionRange } from '@/components/ingestion/TimelineTab'
@@ -42,6 +47,24 @@ const RANGE_HEADLINE: Record<IngestionRange, string> = {
 /** Freshness window: an event received within this many ms is "live". */
 const LIVE_FRESHNESS_MS = 60_000
 
+/** How often the badge re-evaluates its own age against the wall clock. */
+const CLOCK_TICK_MS = 5_000
+
+/**
+ * A `now` timestamp that ticks on a wall clock rather than only advancing
+ * when its caller re-renders for some other reason. Used so freshness
+ * badges decay to "stale" on their own instead of staying frozen at
+ * whatever `now` happened to be at the last data-driven render.
+ */
+function useTickingNow(intervalMs: number = CLOCK_TICK_MS): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(id)
+  }, [intervalMs])
+  return now
+}
+
 type LiveStatus = 'checking' | 'live' | 'idle'
 
 interface LiveStatusBadgeProps {
@@ -64,10 +87,11 @@ function deriveStatus(latestReceivedAt: string | null | undefined, now: number):
 }
 
 function LiveStatusBadge({ latestReceivedAt }: LiveStatusBadgeProps) {
-  // Capture the current time once per render via useMemo to satisfy the
-  // react-hooks/purity rule (no bare Date.now() calls in the render path).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const now = useMemo(() => Date.now(), [latestReceivedAt])
+  // `now` ticks on a wall clock (not just when latestReceivedAt changes) so
+  // the badge decays from "Live" to "Idle" on its own once the freshness
+  // window elapses, even if the pipeline goes quiet and never reports a
+  // new timestamp.
+  const now = useTickingNow()
   const status = deriveStatus(latestReceivedAt, now)
 
   if (status === 'checking') {

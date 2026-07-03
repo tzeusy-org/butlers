@@ -266,6 +266,66 @@ describe("PageHeader", () => {
     expect(nav?.parentElement?.textContent).not.toContain("Home");
   });
 
+  it("omits the Live indicator when liveStatus is not supplied", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader />
+        </MemoryRouter>,
+      );
+    });
+    expect(container.querySelector('[data-testid="shell-live-indicator"]')).toBeNull();
+  });
+
+  it("renders the Live indicator reflecting an open event stream", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="open" />
+        </MemoryRouter>,
+      );
+    });
+    const indicator = container.querySelector('[data-testid="shell-live-indicator"]');
+    expect(indicator).not.toBeNull();
+    expect(indicator?.getAttribute("data-live-state")).toBe("connected");
+  });
+
+  it("renders the Live indicator as reconnecting when the stream is retrying", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="reconnecting" />
+        </MemoryRouter>,
+      );
+    });
+    const indicator = container.querySelector('[data-testid="shell-live-indicator"]');
+    expect(indicator?.getAttribute("data-live-state")).toBe("reconnecting");
+  });
+
+  it("renders the Live indicator as down for both 'connecting' and 'closed' statuses", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="connecting" />
+        </MemoryRouter>,
+      );
+    });
+    expect(
+      container.querySelector('[data-testid="shell-live-indicator"]')?.getAttribute("data-live-state"),
+    ).toBe("down");
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="closed" />
+        </MemoryRouter>,
+      );
+    });
+    expect(
+      container.querySelector('[data-testid="shell-live-indicator"]')?.getAttribute("data-live-state"),
+    ).toBe("down");
+  });
+
   it("renders a router-based back-to-board link on butler detail routes, reachable on mobile", () => {
     act(() => {
       root.render(

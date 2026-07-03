@@ -899,6 +899,24 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 "notify_request": notify_request,
             }
 
+            def _emit_notification_event() -> None:
+                """Fan a "notification" event onto the multiplexed fleet event
+                bus (bu-86c4c.8, move 5) for a successfully-delivered notify()
+                call. Best-effort: never lets a bus hiccup fail delivery."""
+                try:
+                    from butlers.api.routers.events import emit_event
+
+                    emit_event(
+                        "notification",
+                        {
+                            "butler": butler_name,
+                            "channel": channel,
+                            "intent": intent,
+                        },
+                    )
+                except Exception:
+                    logger.debug("emit_event('notification') failed (non-fatal)", exc_info=True)
+
             # Switchboard self-delivery: call deliver() directly instead of
             # proxying through switchboard_client (which is None on switchboard).
             if client is None and butler_name == "switchboard":
@@ -924,6 +942,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "status": "error",
                             "error": result.get("error", "Delivery failed"),
                         }
+                    _emit_notification_event()
                     return {"status": "ok", "result": result}
                 except Exception as exc:
                     logger.warning(
@@ -955,6 +974,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "retryable": data.get("retryable", False),
                         "notification_id": data.get("notification_id"),
                     }
+                _emit_notification_event()
                 return {"status": "ok", "result": data}
             except TimeoutError:
                 logger.warning(

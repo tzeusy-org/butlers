@@ -127,6 +127,16 @@ def emit_spend_event(event: dict) -> None:
         except ValueError:
             pass
 
+    # Fan out onto the multiplexed fleet event bus (bu-86c4c.8, move 5) in
+    # addition to this dedicated stream — /api/spend/stream keeps working
+    # unchanged for any existing consumer.
+    try:
+        from butlers.api.routers.events import emit_event
+
+        emit_event("spend", event)
+    except Exception:
+        logger.debug("emit_event('spend') failed (non-fatal)", exc_info=True)
+
 
 def _auth_ws_api_key(token: str | None) -> bool:
     """Return True if the provided token matches the configured DASHBOARD_API_KEY.

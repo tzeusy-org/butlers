@@ -127,6 +127,16 @@ def emit_approvals_event(
         except ValueError:
             pass
 
+    # Fan out onto the multiplexed fleet event bus (bu-86c4c.8, move 5) in
+    # addition to this dedicated stream — /api/approvals/stream keeps working
+    # unchanged for any existing consumer.
+    try:
+        from butlers.api.routers.events import emit_event
+
+        emit_event("approval", event)
+    except Exception:
+        logger.debug("emit_event('approval') failed (non-fatal)", exc_info=True)
+
 
 # Cache mapping (butler_name, table_name) -> has_table to avoid repeated system catalog queries
 _TABLE_CACHE: dict[tuple[str, str], bool] = {}

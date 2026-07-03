@@ -21,7 +21,12 @@ export function useSessions(params?: SessionParams, options?: SessionQueryOption
   return useQuery({
     queryKey: ["sessions", params],
     queryFn: () => getSessions(params),
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    // Live path: the fleet event bus (bu-86c4c.8) invalidates ["sessions"] on
+    // every session started/ended event. The default poll is now a 5-minute
+    // reconciliation sweep — a safety net, not the primary update path.
+    // Callers that pass their own refetchInterval (e.g. an explicit
+    // auto-refresh control) are unaffected.
+    refetchInterval: options?.refetchInterval ?? 5 * 60_000,
     // Keep the previous page/filter's rows visible while the new cursor/filter
     // combination fetches, instead of blanking to a loading skeleton
     // (JARVIS audit move 10 — never-blank lists).
@@ -44,7 +49,8 @@ export function useSessionAggregate(params?: SessionParams, options?: SessionQue
   return useQuery({
     queryKey: ["session-aggregate", filterParams],
     queryFn: () => getSessionAggregate(filterParams),
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    // See useSessions above: fleet-event-bus-driven, poll is now a safety net.
+    refetchInterval: options?.refetchInterval ?? 5 * 60_000,
   });
 }
 
@@ -54,7 +60,8 @@ export function useButlerSessions(name: string, params?: SessionParams) {
     queryKey: ["butler-sessions", name, params],
     queryFn: () => getButlerSessions(name, params),
     enabled: !!name,
-    refetchInterval: 30_000,
+    // See useSessions above: fleet-event-bus-driven, poll is now a safety net.
+    refetchInterval: 5 * 60_000,
     placeholderData: (prev) => prev,
   });
 }

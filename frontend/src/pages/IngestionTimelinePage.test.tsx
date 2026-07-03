@@ -149,6 +149,30 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
     expect(container.querySelector('[data-testid="live-status-badge-live"]')).toBeNull()
   })
 
+  it('decays from "Live" to "Idle" purely on the wall clock, with no new freshness update', async () => {
+    vi.useFakeTimers()
+    try {
+      await renderPage()
+      act(() => {
+        capturedOnFreshnessChange?.(recentIso())
+      })
+      expect(container.querySelector('[data-testid="live-status-badge-live"]')).not.toBeNull()
+
+      // No further onFreshnessChange call — advance the wall clock past the
+      // 60s freshness window. The badge must decay on its own (bu-86c4c.8):
+      // before the fix, `now` only advanced when latestReceivedAt changed,
+      // so a quiet pipeline stayed "Live" forever.
+      act(() => {
+        vi.advanceTimersByTime(70_000)
+      })
+
+      expect(container.querySelector('[data-testid="live-status-badge-idle"]')).not.toBeNull()
+      expect(container.querySelector('[data-testid="live-status-badge-live"]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('renders the range-driven page headline, defaulting to the 24h range', async () => {
     // TimelineTab is mocked and never calls onRangeReport, so the page falls
     // back to its own default ("24h") — matching TimelineTab's own default range.

@@ -262,6 +262,23 @@ async def append(
             "public.audit_log is not available — migration core_092 may not have run"
         ) from exc
     audit_log_appended_total.labels(action=action).inc()
+
+    # Fan an "issue" event onto the multiplexed fleet event bus whenever an
+    # error-result row lands — the /api/issues feed is a live grouping of
+    # exactly these rows (see api/routers/issues.py::_list_audit_error_issues),
+    # so a new error here is the signal that the issues feed may have changed.
+    # Best-effort: never let this block or fail the primary audit write.
+    if result == "error":
+        try:
+            from butlers.api.routers.events import emit_event
+
+            emit_event(
+                "issue",
+                {"actor": actor, "action": action, "target": target, "error": error},
+            )
+        except Exception:
+            logger.debug("emit_event('issue') failed (non-fatal)", exc_info=True)
+
     return row_id
 
 

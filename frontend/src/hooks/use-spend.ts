@@ -45,7 +45,10 @@ export function useSpendSummary(period?: string, from?: Date, to?: Date, butler?
   return useQuery({
     queryKey: ["cost-summary", period, fromStr, toStr, butler],
     queryFn: () => getCostSummary(period, fromStr, toStr, butler),
-    refetchInterval: 60_000,
+    // Live path: /api/spend/stream + the fleet event bus (bu-86c4c.8) both
+    // invalidate ["cost-summary"] on every spend call event. Polling is now
+    // a 5-minute reconciliation sweep — a safety net, not the primary path.
+    refetchInterval: 5 * 60_000,
   });
 }
 
@@ -57,7 +60,8 @@ export function useSpendSummary(period?: string, from?: Date, to?: Date, butler?
  * @param [from] - Start of the date range (inclusive). Omit to fall back to the API default (last 7 days).
  * @param [to]   - End of the date range (inclusive). Omit to fall back to the API default (last 7 days).
  * @param [options.butler]          - Butler name to scope the query (cache is partitioned per butler).
- * @param [options.refetchInterval] - Override the default 60s polling interval. Pass `false` to disable.
+ * @param [options.refetchInterval] - Override the default 5-minute reconciliation-sweep polling interval
+ *   (bu-86c4c.8: the fleet event bus is now the primary update path). Pass `false` to disable.
  */
 export function useDailySpend(
   from?: Date,
@@ -71,7 +75,7 @@ export function useDailySpend(
   return useQuery({
     queryKey: ["daily-costs", fromStr, toStr, butler],
     queryFn: () => getDailyCosts(fromStr, toStr, butler),
-    refetchInterval: refetchInterval ?? 60_000,
+    refetchInterval: refetchInterval ?? 5 * 60_000,
   });
 }
 
@@ -80,6 +84,7 @@ export function useTopSessions(limit?: number) {
   return useQuery({
     queryKey: ["top-sessions", limit],
     queryFn: () => getTopSessions(limit),
-    refetchInterval: 60_000,
+    // See useSpendSummary above: fleet-event-bus-driven, poll is now a safety net.
+    refetchInterval: 5 * 60_000,
   });
 }

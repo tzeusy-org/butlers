@@ -120,6 +120,7 @@ async def session_create(
     ingestion_event_id: str | None = None,
     complexity: str | None = None,
     resolution_source: str | None = None,
+    butler_name: str | None = None,
 ) -> uuid.UUID:
     """Insert a new session row and return its UUID.
 
@@ -146,6 +147,9 @@ async def session_create(
         resolution_source: Optional source of model resolution (e.g.
             ``"catalog"``, ``"toml_fallback"``). Defaults to
             ``"toml_fallback"`` at the database level when not provided.
+        butler_name: Optional owning butler name, used only to enrich the
+            ``session`` event emitted onto the fleet event bus (bu-86c4c.8);
+            not persisted.
 
     Returns:
         The UUID of the newly created session.
@@ -202,6 +206,27 @@ async def session_create(
         )
         session_id = await _insert(None)
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
+
+    # Fan a "session started" event onto the multiplexed fleet event bus
+    # (bu-86c4c.8, move 5). Lazy import avoids a circular dependency: core →
+    # api (mirrors spawner.py's lazy import of emit_spend_event). Best-effort:
+    # never let this block or fail session creation.
+    try:
+        from butlers.api.routers.events import emit_event
+
+        emit_event(
+            "session",
+            {
+                "phase": "started",
+                "session_id": str(session_id),
+                "butler": butler_name,
+                "trigger_source": trigger_source,
+                "model": model,
+            },
+        )
+    except Exception:
+        logger.debug("emit_event('session') failed (non-fatal)", exc_info=True)
+
     return session_id
 
 
@@ -216,6 +241,7 @@ async def session_complete(
     cost: dict[str, Any] | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    butler_name: str | None = None,
 ) -> None:
     """Mark a session as completed with its outcome data.
 
@@ -232,6 +258,9 @@ async def session_complete(
         cost: Optional cost/token usage dict (serialised as JSONB).
         input_tokens: Optional count of input tokens consumed by the session.
         output_tokens: Optional count of output tokens produced by the session.
+        butler_name: Optional owning butler name, used only to enrich the
+            ``session`` event emitted onto the fleet event bus (bu-86c4c.8);
+            not persisted.
 
     Raises:
         ValueError: If ``session_id`` does not match an existing session.
@@ -279,6 +308,26 @@ async def session_complete(
         input_tokens,
         output_tokens,
     )
+
+    # Fan a "session ended" event onto the multiplexed fleet event bus
+    # (bu-86c4c.8, move 5). Lazy import avoids a circular dependency: core →
+    # api (mirrors spawner.py's lazy import of emit_spend_event). Best-effort:
+    # never let this block or fail session completion.
+    try:
+        from butlers.api.routers.events import emit_event
+
+        emit_event(
+            "session",
+            {
+                "phase": "ended",
+                "session_id": str(session_id),
+                "butler": butler_name,
+                "duration_ms": duration_ms,
+                "success": success,
+            },
+        )
+    except Exception:
+        logger.debug("emit_event('session') failed (non-fatal)", exc_info=True)
 
 
 async def recover_orphaned_sessions(pool: asyncpg.Pool) -> int:

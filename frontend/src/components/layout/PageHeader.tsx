@@ -5,6 +5,8 @@ import { Button } from '../ui/button'
 import { useBreadcrumbsControl } from '../ui/breadcrumbs-control'
 import { useDarkMode } from '../../hooks/useDarkMode'
 import { dispatchOpenEntityFinder } from '../../lib/entity-finder'
+import { LiveIndicator } from './LiveIndicator'
+import type { EventStreamStatus } from '@/hooks/use-event-stream'
 
 interface Breadcrumb {
   label: string
@@ -14,6 +16,11 @@ interface Breadcrumb {
 interface PageHeaderProps {
   breadcrumbs?: Breadcrumb[]
   hideBreadcrumbs?: boolean
+  /** Fleet event-stream connection status (bu-86c4c.8), threaded down from
+   *  the single RootLayout-level useEventStream() call so the whole app
+   *  shares one socket instead of one per header render. Omitted in tests
+   *  that render PageHeader standalone. */
+  liveStatus?: EventStreamStatus
 }
 
 // Known acronyms that should render fully uppercased rather than title-cased.
@@ -65,7 +72,7 @@ function titleizeSegment(value: string): string {
     .join(' ')
 }
 
-export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false }: PageHeaderProps) {
+export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false, liveStatus }: PageHeaderProps) {
   const location = useLocation()
   const { theme, setTheme, resolvedTheme } = useDarkMode()
   const { isSupplyingBreadcrumbs } = useBreadcrumbsControl()
@@ -125,7 +132,9 @@ export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false }: Pag
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-3">
+        {liveStatus && <LiveIndicator status={liveStatus} />}
+        <div className="flex shrink-0 items-center gap-1">
         <Button
           variant="ghost"
           size="sm"
@@ -151,6 +160,7 @@ export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false }: Pag
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           )}
         </Button>
+        </div>
       </div>
     </div>
   )

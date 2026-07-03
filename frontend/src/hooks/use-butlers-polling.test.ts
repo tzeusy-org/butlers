@@ -1,9 +1,14 @@
 /**
  * Polling config tests for useButlers and useApprovalMetrics (bu-bm58r.2).
  *
- * Verifies that both hooks consumed by RuntimeSummaryKpi are configured with:
- *   - refetchInterval: 30_000  (30s background polling)
+ * Verifies both hooks consumed by RuntimeSummaryKpi are configured with:
  *   - staleTime: 30_000        (stale-while-revalidate: data stays fresh for 30s)
+ *   - useButlers: refetchInterval 30_000 (30s background polling; not yet
+ *     covered by a fleet-event-bus invalidation).
+ *   - useApprovalMetrics: refetchInterval demoted to 5*60_000 (bu-86c4c.8,
+ *     §JARVIS audit move 5) — the fleet event bus now invalidates this key
+ *     live on every approval state transition, so polling is a reconciliation
+ *     safety net rather than the primary path.
  *
  * Shared query key for useButlers (["butlers"]) means the butler-list page and
  * the KPI card share one cache entry — a single network call serves both.
@@ -114,15 +119,18 @@ describe("useButlers -- 30s polling fake-timer alignment (bu-insd4.3)", () => {
 // useApprovalMetrics polling config
 // ---------------------------------------------------------------------------
 
-describe("useApprovalMetrics -- polling config (bu-bm58r.2)", () => {
+describe("useApprovalMetrics -- polling config (bu-bm58r.2, demoted bu-86c4c.8)", () => {
   beforeEach(() => {
     vi.mocked(useQuery).mockClear();
   });
 
-  it("passes refetchInterval=30_000 to useQuery", () => {
+  // bu-86c4c.8 (§JARVIS audit move 5): the fleet event bus now invalidates
+  // this key on every approval state-transition event, so the poll is a
+  // 5-minute reconciliation sweep rather than the 30s primary path.
+  it("passes refetchInterval=5*60_000 (5-minute reconciliation sweep) to useQuery", () => {
     useApprovalMetrics();
     expect(vi.mocked(useQuery)).toHaveBeenCalledWith(
-      expect.objectContaining({ refetchInterval: 30_000 }),
+      expect.objectContaining({ refetchInterval: 5 * 60_000 }),
     );
   });
 

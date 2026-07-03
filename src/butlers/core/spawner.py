@@ -1315,6 +1315,7 @@ class Spawner:
                     ingestion_event_id=ingestion_event_id,
                     complexity=str(complexity),
                     resolution_source=resolution_source,
+                    butler_name=self._config.name,
                 )
                 logger.debug(
                     "Session created with model=%s runtime_type=%s complexity=%s source=%s "
@@ -1821,6 +1822,7 @@ class Spawner:
                     error=_undelivered_reason,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    butler_name=self._config.name,
                 )
 
                 # When failover occurred, the session row was created with the initial
@@ -1999,6 +2001,7 @@ class Spawner:
                     duration_ms=duration_ms,
                     success=False,
                     error=error_msg,
+                    butler_name=self._config.name,
                 )
 
             # Record dispatch failure in public.dispatch_failures (best-effort).

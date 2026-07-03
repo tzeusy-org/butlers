@@ -9,14 +9,23 @@ import { BreadcrumbsControlProvider } from '../components/ui/breadcrumbs-control
 import { CommandRegistryProvider } from '../lib/command-registry'
 import { useKeyboardShortcuts } from '../hooks/use-keyboard-shortcuts'
 import { ShortcutHints } from '../components/ui/shortcut-hints'
+import { useEventStream } from '../hooks/use-event-stream'
 
 export default function RootLayout() {
   useKeyboardShortcuts()
 
+  // Single app-wide fleet event-stream connection (bu-86c4c.8, §JARVIS audit
+  // move 5). Mounted once here — not per-page — so every route shares one
+  // socket, one reconnect back-off, and one declarative cache-patch registry
+  // pass, rather than each page opening its own. `status` is threaded down
+  // into PageHeader so the shell's Live indicator reflects actual socket
+  // health.
+  const { status: eventStreamStatus } = useEventStream()
+
   return (
     <BreadcrumbsControlProvider>
       <CommandRegistryProvider>
-        <Shell header={<PageHeader />}>
+        <Shell header={<PageHeader liveStatus={eventStreamStatus} />}>
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>

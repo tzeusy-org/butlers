@@ -1072,15 +1072,18 @@ export default function ApprovalsPage() {
   const navigate = useNavigate();
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
 
-  // Live updates via WebSocket stream (§8.3).
-  // Cache invalidation is handled inside useApprovalsStream; the refetchInterval
-  // below acts as a safety net when the WS is disconnected.
+  // Live updates via WebSocket stream (§8.3), also fanned onto the
+  // multiplexed fleet event bus (bu-86c4c.8) which the shell keeps connected
+  // app-wide via RootLayout's useEventStream(). Cache invalidation is handled
+  // by both; the refetchInterval below is now a 5-minute reconciliation
+  // sweep — a safety net for the rare case both live paths are down, not the
+  // primary update path.
   useApprovalsStream();
 
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: Q.pending(pendingLimit),
     queryFn: () => getApprovalsFlat("waiting", pendingLimit),
-    refetchInterval: 15_000,
+    refetchInterval: 5 * 60_000,
     // Keep previous data visible while the expanded list is fetching to
     // prevent layout shifts when the limit is bumped (v5: keepPreviousData).
     placeholderData: (prev) => prev,

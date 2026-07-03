@@ -55,6 +55,7 @@ from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
 from butlers.api.routers.data_ops import _is_production
 from butlers.api.routers.data_ops import router as data_ops_router
+from butlers.api.routers.events import router as events_router
 from butlers.api.routers.general_settings import router as general_settings_router
 from butlers.api.routers.google_health import router as google_health_router
 from butlers.api.routers.healing import router as healing_router
@@ -283,6 +284,7 @@ def create_app(
 
     # --- Core Static Routers ---
     app.include_router(approvals_router)
+    app.include_router(events_router)
     app.include_router(butler_logs_router)
     app.include_router(butlers_router)
     app.include_router(butler_management_router)

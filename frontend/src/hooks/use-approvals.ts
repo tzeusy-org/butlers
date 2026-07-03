@@ -85,7 +85,10 @@ export function useApprovalMetrics() {
   return useQuery({
     queryKey: approvalKeys.metrics(),
     queryFn: () => getApprovalMetrics(),
-    refetchInterval: 30_000,
+    // Live path: the fleet event bus (bu-86c4c.8) invalidates this key on
+    // every approval state-transition event. Polling is now a 5-minute
+    // reconciliation sweep — a safety net, not the primary update path.
+    refetchInterval: 5 * 60_000,
     staleTime: 30_000,
   });
 }
