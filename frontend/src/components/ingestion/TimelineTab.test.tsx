@@ -59,6 +59,7 @@ vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEventPayload: vi.fn(),
   useIngestionEventDetail: vi.fn(),
   useIngestionWindowRollup: vi.fn(),
+  useIngestionEventsHistogram: vi.fn(),
 }));
 
 // Mock the connector summaries hook (§2.9 — ConnectorAttentionStrip)
@@ -78,6 +79,7 @@ import {
   useIngestionEventPayload,
   useIngestionEventDetail,
   useIngestionWindowRollup,
+  useIngestionEventsHistogram,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 
@@ -195,6 +197,13 @@ function setupDefaultMocks() {
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+  // Default: empty histogram (bu-4utdw.7 hour strip data source)
+  vi.mocked(useIngestionEventsHistogram).mockReturnValue({
+    data: { buckets: [], bucket: "1m" },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useIngestionEventsHistogram>);
 }
 
 // We test ActionCell indirectly through TimelineTab since it's not exported.

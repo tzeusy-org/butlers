@@ -4,8 +4,9 @@
  *
  * Covers:
  * - Hour-grouping: events split into correct hour buckets
- * - HourFlameStrip: renders per-minute density bars
- * - deriveMinuteCounts: correct minute bucket counts
+ * - Hour strip: honest histogram-sourced counts, minute click routes to
+ *   scroll-in-ledger or scope-to-minute (bu-4utdw.7; HourFlameStrip's own
+ *   rendering/stacking/a11y is unit-tested in HourFlameStrip.test.tsx)
  * - Range filter: toolbar range buttons write to URL state
  * - Status filter: chips narrow event list
  * - Drawer: opens when ?event=<id> is in URL
@@ -50,6 +51,7 @@ vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEventPayload: vi.fn(),
   useIngestionEventDetail: vi.fn(),
   useIngestionWindowRollup: vi.fn(),
+  useIngestionEventsHistogram: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({
@@ -66,11 +68,10 @@ import {
   useIngestionEventDetail,
   useIngestionEventSessions,
   useIngestionWindowRollup,
+  useIngestionEventsHistogram,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { TimelineTab } from "../TimelineTab";
-import { deriveMinuteCounts } from "./deriveMinuteCounts";
-import { HourFlameStrip } from "./HourFlameStrip";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,6 +146,31 @@ function makeSessions(n = 1): IngestionEventSession[] {
   }));
 }
 
+function makeHistogramCounts(overrides: Record<string, number> = {}) {
+  return {
+    ingested: 0,
+    skipped: 0,
+    filtered: 0,
+    error: 0,
+    replay_pending: 0,
+    replay_complete: 0,
+    replay_failed: 0,
+    ...overrides,
+  };
+}
+
+function makeHistogramBucket(ts: string, overrides: Record<string, number> = {}) {
+  return { ts, counts: makeHistogramCounts(overrides) };
+}
+
+function makeHistogramResult(buckets: ReturnType<typeof makeHistogramBucket>[] = []) {
+  return {
+    data: { buckets, bucket: "1m" },
+    isLoading: false,
+    isError: false,
+  };
+}
+
 function setupDefaultMocks() {
   vi.mocked(useIngestionEventRollup).mockReturnValue({
     data: undefined,
@@ -200,128 +226,19 @@ function setupDefaultMocks() {
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+  vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+    makeHistogramResult([]) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+  );
 }
 
 // ---------------------------------------------------------------------------
-// deriveMinuteCounts — unit tests (pure function)
-// ---------------------------------------------------------------------------
-
-describe("deriveMinuteCounts", () => {
-  it("returns 60 zeros for empty input", () => {
-    const result = deriveMinuteCounts([], "2026-05-17T14:00:00Z");
-    expect(result).toHaveLength(60);
-    expect(result.every((v) => v === 0)).toBe(true);
-  });
-
-  it("counts a single timestamp in the correct minute bucket", () => {
-    // Event at 14:05:30 → minute 5
-    const result = deriveMinuteCounts(
-      ["2026-05-17T14:05:30Z"],
-      "2026-05-17T14:00:00Z",
-    );
-    expect(result[5]).toBe(1);
-    expect(result.filter((v) => v > 0)).toHaveLength(1);
-  });
-
-  it("groups multiple timestamps into correct minute buckets", () => {
-    const result = deriveMinuteCounts(
-      [
-        "2026-05-17T14:00:15Z", // minute 0
-        "2026-05-17T14:00:45Z", // minute 0
-        "2026-05-17T14:01:00Z", // minute 1
-        "2026-05-17T14:59:59Z", // minute 59
-      ],
-      "2026-05-17T14:00:00Z",
-    );
-    expect(result[0]).toBe(2);
-    expect(result[1]).toBe(1);
-    expect(result[59]).toBe(1);
-  });
-
-  it("ignores timestamps outside the hour window", () => {
-    const result = deriveMinuteCounts(
-      [
-        "2026-05-17T13:59:59Z", // before hour start
-        "2026-05-17T15:00:00Z", // after hour end
-      ],
-      "2026-05-17T14:00:00Z",
-    );
-    expect(result.every((v) => v === 0)).toBe(true);
-  });
-
-  it("handles null and undefined timestamps gracefully", () => {
-    const result = deriveMinuteCounts(
-      [null, undefined, "2026-05-17T14:02:00Z"],
-      "2026-05-17T14:00:00Z",
-    );
-    expect(result[2]).toBe(1);
-  });
-
-  it("returns zeros for invalid hourStart", () => {
-    const result = deriveMinuteCounts(["2026-05-17T14:02:00Z"], "not-a-date");
-    expect(result.every((v) => v === 0)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// HourFlameStrip — rendering tests
-// ---------------------------------------------------------------------------
-
-describe("HourFlameStrip", () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(() => {
-    act(() => root.unmount());
-    container.remove();
-  });
-
-  it("renders an SVG with 60 rect elements for 60 minute counts", () => {
-    const counts = Array(60).fill(0).map((_, i) => i % 5);
-    act(() => {
-      root.render(<HourFlameStrip minuteCounts={counts} />);
-    });
-    const svg = container.querySelector("svg");
-    expect(svg).not.toBeNull();
-    const rects = svg!.querySelectorAll("rect");
-    expect(rects).toHaveLength(60);
-  });
-
-  it("pads short arrays to 60 bars", () => {
-    act(() => {
-      root.render(<HourFlameStrip minuteCounts={[5, 10]} />);
-    });
-    const rects = container.querySelectorAll("svg rect");
-    expect(rects).toHaveLength(60);
-  });
-
-  it("renders zero bars with fill-border class", () => {
-    act(() => {
-      root.render(<HourFlameStrip minuteCounts={Array(60).fill(0)} />);
-    });
-    const rects = Array.from(container.querySelectorAll("svg rect"));
-    // All bars should have fill-border (empty bars)
-    expect(rects.every((r) => r.classList.contains("fill-border"))).toBe(true);
-  });
-
-  it("renders non-zero bars with fill-foreground/40 class", () => {
-    const counts = Array(60).fill(1);
-    act(() => {
-      root.render(<HourFlameStrip minuteCounts={counts} />);
-    });
-    const rects = Array.from(container.querySelectorAll("svg rect"));
-    expect(rects.every((r) => r.classList.contains("fill-foreground/40"))).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// TimelineTab — hour grouping
+// TimelineTab — hour grouping and hour strip (bu-4utdw.7)
+//
+// HourFlameStrip's own rendering/stacking/a11y is unit-tested in
+// HourFlameStrip.test.tsx. These tests cover the TimelineTab-level wiring:
+// hour bucketing, honest histogram-sourced header counts, and the
+// scroll-vs-scope minute click decision.
 // ---------------------------------------------------------------------------
 
 describe("TimelineTab — hour grouping", () => {
@@ -352,6 +269,12 @@ describe("TimelineTab — hour grouping", () => {
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
     );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult([
+        makeHistogramBucket("2026-05-17T14:05:00Z", { ingested: 1 }),
+        makeHistogramBucket("2026-05-17T14:45:00Z", { ingested: 1 }),
+      ]) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
 
     act(() => {
       root.render(
@@ -365,7 +288,7 @@ describe("TimelineTab — hour grouping", () => {
 
     const groups = container.querySelectorAll("[data-testid='hour-group']");
     expect(groups).toHaveLength(1);
-    // Both events under one group = "2 events" in header
+    // Both events under one group = "2 events" in header, sourced from the histogram.
     expect(groups[0].textContent).toContain("2 events");
   });
 
@@ -392,7 +315,7 @@ describe("TimelineTab — hour grouping", () => {
     expect(groups).toHaveLength(2);
   });
 
-  it("renders an HourFlameStrip SVG inside each hour group", () => {
+  it("renders hour-strip minute buttons inside each hour group", () => {
     const events = [makeEvent({ id: "id-1", received_at: "2026-05-17T14:05:00Z" })];
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -408,11 +331,124 @@ describe("TimelineTab — hour grouping", () => {
       );
     });
 
-    // Each hour group header should have an SVG flame strip
     const group = container.querySelector("[data-testid='hour-group']");
     expect(group).not.toBeNull();
-    const svg = group!.querySelector("svg");
-    expect(svg).not.toBeNull();
+    const minuteButtons = group!.querySelectorAll("[data-testid='hour-strip-minute']");
+    expect(minuteButtons).toHaveLength(60);
+  });
+
+  it("header counts reflect histogram truth even when fewer pages have loaded", () => {
+    // Only 1 event loaded for the hour, but the histogram (independent of
+    // ledger pagination) reports the true totals for that hour.
+    const events = [makeEvent({ id: "id-1", received_at: "2026-05-17T14:05:00Z" })];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult([
+        makeHistogramBucket("2026-05-17T14:05:00Z", { ingested: 206, error: 6 }),
+        makeHistogramBucket("2026-05-17T14:10:00Z", { replay_pending: 2 }),
+      ]) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const summary = container.querySelector("[data-testid='hour-group-summary']");
+    expect(summary).not.toBeNull();
+    expect(summary!.textContent).toContain("214 events");
+    expect(summary!.textContent).toContain("6 errors");
+    expect(summary!.textContent).toContain("2 replays");
+  });
+
+  it("clicking a strip minute with a loaded ledger row scrolls it into view", () => {
+    const scrollIntoViewMock = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+
+    const events = [makeEvent({ id: "id-1", received_at: "2026-05-17T14:10:00Z" })];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult([
+        makeHistogramBucket("2026-05-17T14:10:00Z", { ingested: 1 }),
+      ]) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const minuteButton = container.querySelector(
+      "[data-testid='hour-strip-minute'][data-minute-iso='2026-05-17T14:10:00.000Z']",
+    ) as HTMLElement;
+    expect(minuteButton).not.toBeNull();
+
+    act(() => {
+      minuteButton.click();
+    });
+
+    expect(scrollIntoViewMock).toHaveBeenCalled();
+    expect(container.querySelector("[data-testid='minute-scope-banner']")).toBeNull();
+  });
+
+  it("clicking a strip minute with no loaded ledger row scopes the ledger to that minute", () => {
+    // The only loaded event is at 14:05; the histogram reports an error-only
+    // minute at 14:10 that has not (yet) loaded into the ledger.
+    const events = [makeEvent({ id: "id-1", received_at: "2026-05-17T14:05:00Z", status: "ingested" })];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult([
+        makeHistogramBucket("2026-05-17T14:05:00Z", { ingested: 1 }),
+        makeHistogramBucket("2026-05-17T14:10:00Z", { error: 1 }),
+      ]) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const minuteButton = container.querySelector(
+      "[data-testid='hour-strip-minute'][data-minute-iso='2026-05-17T14:10:00.000Z']",
+    ) as HTMLElement;
+    expect(minuteButton).not.toBeNull();
+    expect(minuteButton.getAttribute("data-has-error")).toBe("true");
+
+    act(() => {
+      minuteButton.click();
+    });
+
+    // Scoping is URL-backed: the banner appears, and the events query is
+    // re-issued with a from/to window collapsed to that exact minute.
+    const banner = container.querySelector("[data-testid='minute-scope-banner']");
+    expect(banner).not.toBeNull();
+
+    const lastCall = vi.mocked(useIngestionEvents).mock.calls.at(-1);
+    expect(lastCall?.[0]).toMatchObject({
+      from: "2026-05-17T14:10:00.000Z",
+      to: "2026-05-17T14:11:00.000Z",
+    });
   });
 });
 

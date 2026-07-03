@@ -111,7 +111,10 @@ It SHALL include:
   action (capped at the bulk replay batch limit) and, on a replay-unsafe
   (409) rejection, a one-click action to deselect exactly the ineligible
   events;
-- hour-group headers with event count and cost rollup;
+- hour-group headers with an honest event/error/replay count sourced from the
+  histogram endpoint (correct even when only some pages of that hour have
+  loaded) and a status-stacked, clickable, keyboard-operable per-minute
+  activity strip;
 - ledger rows with time (leftmost column, mono `HH:mm:ss` via the shared Time
   primitive), a click-to-filter channel glyph, sender summary with an inline
   filter/error reason, quiet dot-and-word status, cost, and an expand
@@ -158,6 +161,32 @@ It SHALL include:
 - **THEN** the backend records an audit entry for that payload access
 - **AND** the UI shows loading, unavailable, and permission/error states
   without exposing stale or partial PII as successful content
+
+#### Scenario: Hour strip renders status-stacked activity and reads honestly
+
+- **WHEN** the owner views an hour-group header
+- **THEN** the header's event/error/replay counts come from
+  `GET /api/ingestion/events/histogram` for that hour and its active
+  filters, and are correct even when only some pages of that hour have
+  loaded into the ledger
+- **AND** the per-minute strip renders each minute as a status-stacked bar:
+  ingested at a low foreground alpha, filtered/skipped at a lower foreground
+  alpha, error in the destructive color, and replay states in blue
+- **AND** a minute where every event errored renders as solid destructive
+  color
+- **AND** the strip exposes an `aria-label` summarizing the hour's activity
+  instead of being hidden from assistive technology
+
+#### Scenario: Hour strip minutes are keyboard-operable and route to the ledger or a scoped view
+
+- **WHEN** the owner activates a minute in the strip (click or keyboard)
+- **THEN** if a loaded ledger row falls within that minute, the ledger
+  scrolls that row into view
+- **AND** otherwise the ledger's window narrows to that exact minute,
+  reflected in the URL like every other filter
+- **AND** every minute is reachable via keyboard focus with a visible focus
+  state
+- **AND** hovering or focusing a minute shows its time and per-status counts
 
 #### Scenario: Timeline URL opens an event drawer
 

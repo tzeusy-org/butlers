@@ -68,6 +68,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   useIngestionEvents,
+  useIngestionEventsHistogram,
   useIngestionWindowRollup,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
@@ -81,6 +82,8 @@ import type {
   ConnectorSummary,
   IngestionEventSummary,
   IngestionEventStatus,
+  IngestionHistogramBucket,
+  IngestionHistogramBucketSize,
   TimelineSavedViewEntry,
   TimelineSavedViewFilterSpec,
 } from "@/api/index.ts";
@@ -89,7 +92,6 @@ import { Time } from "@/components/ui/time";
 import { RowStatus, ROW_STATUS_WORDS } from "./StatusBadge";
 import { isBulkEligible, bulkIneligibleReason } from "./bulkEligibility";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
-import { deriveMinuteCounts } from "./timeline/deriveMinuteCounts";
 import { EventDrawer } from "./timeline/EventDrawer";
 import { useEventDrawerState } from "./timeline/useEventDrawerState";
 
@@ -125,6 +127,17 @@ function hourGroupKey(receivedAt: string | null): string {
   } catch {
     return "unknown";
   }
+}
+
+// bu-4utdw.7: the hour strip's histogram request must stay under the
+// backend's bucket-count guardrail (1m capped at 48h; 5m up to 10 days).
+// Only the 7d range exceeds the 1m cap, so it alone drops to 5m granularity.
+function histogramBucketForRange(range: IngestionRange): IngestionHistogramBucketSize {
+  return range === "7d" ? "5m" : "1m";
+}
+
+function histogramBucketMinutes(bucket: IngestionHistogramBucketSize): number {
+  return bucket === "5m" ? 5 : 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,6 +1056,14 @@ interface HourGroupProps {
   drawerEvent: IngestionEventSummary | null;
   onCloseDrawer: () => void;
   onChannelClick: (channel: string) => void;
+  /** Histogram buckets whose ts falls within this hour — the strip and header counts' data source. */
+  histogramBuckets: IngestionHistogramBucket[];
+  /** Bucket granularity in minutes (1 for "1m", 5 for "5m"), matches the active histogram request. */
+  bucketMinutes: number;
+  /** True until the histogram query's first response for the active window has arrived. */
+  histogramLoading: boolean;
+  /** Minute has no loaded ledger row in view — scope the range/filters to it (URL-backed). */
+  onScopeToMinute: (minuteIso: string, bucketMinutes: number) => void;
 }
 
 function HourGroup({
@@ -1057,11 +1078,50 @@ function HourGroup({
   drawerEvent,
   onCloseDrawer,
   onChannelClick,
+  histogramBuckets,
+  bucketMinutes,
+  histogramLoading,
+  onScopeToMinute,
 }: HourGroupProps) {
   const hourStart = hourKey !== "unknown" ? hourKey + ":00:00Z" : "";
-  const minuteCounts = useMemo(
-    () => deriveMinuteCounts(events.map((e) => e.received_at), hourStart),
-    [events, hourStart],
+
+  // Honest hour totals: sourced from the histogram (same filters as the
+  // ledger), not `events.length` — the loaded-page count understates hours
+  // cut by a page boundary.
+  const hourTotals = useMemo(() => {
+    let total = 0;
+    let errors = 0;
+    let replays = 0;
+    for (const b of histogramBuckets) {
+      const c = b.counts;
+      total += c.ingested + c.skipped + c.filtered + c.error + c.replay_pending + c.replay_complete + c.replay_failed;
+      errors += c.error;
+      replays += c.replay_pending + c.replay_complete + c.replay_failed;
+    }
+    return { total, errors, replays };
+  }, [histogramBuckets]);
+
+  // Click a minute: scroll to it if a loaded ledger row falls within it,
+  // otherwise scope the range/filters to that exact minute (URL-backed).
+  const handleMinuteClick = useCallback(
+    (minuteIso: string) => {
+      const minuteMs = new Date(minuteIso).getTime();
+      if (isNaN(minuteMs)) return;
+      const bucketMs = bucketMinutes * 60_000;
+      const match = events.find((e) => {
+        if (!e.received_at) return false;
+        const ts = new Date(e.received_at).getTime();
+        return ts >= minuteMs && ts < minuteMs + bucketMs;
+      });
+      if (match) {
+        document
+          .querySelector(`[data-event-id="${match.id}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else {
+        onScopeToMinute(minuteIso, bucketMinutes);
+      }
+    },
+    [events, bucketMinutes, onScopeToMinute],
   );
 
   return (
@@ -1071,11 +1131,42 @@ function HourGroup({
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
           {hourStart ? <Time value={hourStart} mode="absolute" precision="hour" compact /> : "Unknown time"}
         </span>
-        <span className="font-mono text-[10px] text-muted-foreground">
-          {events.length} {events.length === 1 ? "event" : "events"}
+        <span className="font-mono text-[10px] text-muted-foreground" data-testid="hour-group-summary">
+          {histogramLoading && histogramBuckets.length === 0 ? (
+            "…"
+          ) : (
+            <>
+              {hourTotals.total} {hourTotals.total === 1 ? "event" : "events"}
+              {hourTotals.errors > 0 && (
+                <>
+                  {" "}
+                  ·{" "}
+                  <span className="text-destructive">
+                    {hourTotals.errors} {hourTotals.errors === 1 ? "error" : "errors"}
+                  </span>
+                </>
+              )}
+              {hourTotals.replays > 0 && (
+                <>
+                  {" "}
+                  ·{" "}
+                  <span className="text-blue-600">
+                    {hourTotals.replays} {hourTotals.replays === 1 ? "replay" : "replays"}
+                  </span>
+                </>
+              )}
+            </>
+          )}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <HourFlameStrip minuteCounts={minuteCounts} height={16} data-testid="hour-flame-strip" />
+          <HourFlameStrip
+            hourStart={hourStart}
+            buckets={histogramBuckets}
+            bucketMinutes={bucketMinutes}
+            height={16}
+            onMinuteClick={handleMinuteClick}
+            data-testid="hour-flame-strip"
+          />
         </div>
       </div>
 
@@ -1436,6 +1527,35 @@ export function TimelineTab({
     [setSearchParams],
   );
 
+  // Hour-strip minute scoping (bu-4utdw.7): clicking a strip minute with no
+  // loaded ledger row narrows the ledger's window to that exact minute,
+  // URL-backed like every other filter (?scopedMinute=<iso>&scopedBucketMinutes=<n>).
+  // The hour strip itself keeps showing the full picker range regardless —
+  // only the ledger query and footer rollup narrow.
+  const scopedMinute = searchParams.get("scopedMinute");
+  const scopedBucketMinutes = Math.max(1, Number(searchParams.get("scopedBucketMinutes") ?? "1") || 1);
+
+  const handleScopeToMinute = useCallback(
+    (minuteIso: string, bucketMinutesArg: number) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("scopedMinute", minuteIso);
+        next.set("scopedBucketMinutes", String(bucketMinutesArg));
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
+
+  const clearMinuteScope = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("scopedMinute");
+      next.delete("scopedBucketMinutes");
+      return next;
+    });
+  }, [setSearchParams]);
+
   // ---------------------------------------------------------------------------
   // Custom saved views — apply filter_spec, select, update, save, delete
   // All handlers are defined here so that search/channel state setters are
@@ -1668,6 +1788,19 @@ export function TimelineTab({
     return { from, to };
   }, [range]);
 
+  // When a strip minute is scoped, the ledger/rollup window collapses to that
+  // exact minute (a fixed historical snapshot) instead of the live-tracking
+  // range window. The hour strip itself keeps using `rangeWindow` below.
+  const effectiveWindow = useMemo((): { from: string; to: string } | null => {
+    if (!scopedMinute) return null;
+    const startMs = new Date(scopedMinute).getTime();
+    if (isNaN(startMs)) return null;
+    return {
+      from: scopedMinute,
+      to: new Date(startMs + scopedBucketMinutes * 60_000).toISOString(),
+    };
+  }, [scopedMinute, scopedBucketMinutes]);
+
   // Events query — pass q, channels (CSV), and statuses (CSV) from toolbar state.
   // Statuses are pushed server-side so pages aren't dominated by hidden rows
   // (e.g. skipped home_assistant sensor spam); omitted when every status is
@@ -1689,10 +1822,12 @@ export function TimelineTab({
     // Only apply a lower bound on received_at so the 30 s refetch can pick up
     // events that arrived after the initial load.  Including an upper bound
     // (rangeWindow.to) would freeze the query at the moment the range changed,
-    // causing the refetch to silently miss new events.
-    from: rangeWindow.from,
+    // causing the refetch to silently miss new events. A minute-scoped window
+    // is an intentional fixed snapshot, so it uses both bounds.
+    from: effectiveWindow?.from ?? rangeWindow.from,
+    ...(effectiveWindow ? { to: effectiveWindow.to } : {}),
     ...(activeSort ? { sort: activeSort } : {}),
-  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from, activeSort]);
+  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from, effectiveWindow, activeSort]);
 
   const {
     data: infiniteData,
@@ -1704,7 +1839,39 @@ export function TimelineTab({
     refetch,
   } = useIngestionEvents(eventsFilters, { enabled: isActive });
 
-  // Window rollup — fires with the same filter shape plus the active range window.
+  // Hour strip data source (bu-4utdw.7): one histogram request for the whole
+  // picker range/filters, sliced per hour below. Always uses `rangeWindow`
+  // (not `effectiveWindow`) so the strip keeps showing full-range context
+  // even while the ledger itself is minute-scoped.
+  const histogramBucket = histogramBucketForRange(range);
+  const histogramBucketMinutesValue = histogramBucketMinutes(histogramBucket);
+  const histogramParams = useMemo(() => ({
+    from: rangeWindow.from,
+    to: rangeWindow.to,
+    bucket: histogramBucket,
+    ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
+    ...(statusesCsv ? { statuses: statusesCsv } : {}),
+    ...(debouncedQ ? { q: debouncedQ } : {}),
+  }), [rangeWindow.from, rangeWindow.to, histogramBucket, activeChannels, statusesCsv, debouncedQ]);
+
+  const { data: histogramResp, isLoading: histogramLoading } = useIngestionEventsHistogram(
+    histogramParams,
+    { enabled: isActive },
+  );
+
+  const histogramByHour = useMemo(() => {
+    const map = new Map<string, IngestionHistogramBucket[]>();
+    for (const bucket of histogramResp?.buckets ?? []) {
+      const key = hourGroupKey(bucket.ts);
+      const existing = map.get(key);
+      if (existing) existing.push(bucket);
+      else map.set(key, [bucket]);
+    }
+    return map;
+  }, [histogramResp?.buckets]);
+
+  // Window rollup — fires with the same filter shape plus the active window
+  // (minute-scoped window when the owner has scoped to a strip minute).
   const rollupStatuses = useMemo(() => [...enabledStatuses].join(","), [enabledStatuses]);
   const rollupChannels = useMemo(() => activeChannels.join(","), [activeChannels]);
 
@@ -1713,8 +1880,8 @@ export function TimelineTab({
     isLoading: rollupLoading,
   } = useIngestionWindowRollup(
     {
-      from: rangeWindow.from,
-      to: rangeWindow.to,
+      from: effectiveWindow?.from ?? rangeWindow.from,
+      to: effectiveWindow?.to ?? rangeWindow.to,
       ...(debouncedQ ? { q: debouncedQ } : {}),
       ...(rollupChannels ? { channels: rollupChannels } : {}),
       ...(rollupStatuses ? { statuses: rollupStatuses } : {}),
@@ -1883,6 +2050,30 @@ export function TimelineTab({
       {/* Connector attention strip */}
       <ConnectorAttentionStrip isActive={isActive} />
 
+      {/* Minute scope indicator (bu-4utdw.7) — honest state: the ledger below
+          is narrowed to a single hour-strip minute, not the range picker's
+          window. Cleared by the owner, never silently. */}
+      {effectiveWindow && (
+        <div
+          className="flex items-center gap-2 px-3 py-1.5 border border-border rounded bg-muted/10 font-mono text-[11px] text-muted-foreground"
+          data-testid="minute-scope-banner"
+        >
+          <span>
+            Scoped to <Time value={effectiveWindow.from} mode="absolute" precision="time" />
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={clearMinuteScope}
+            className="h-5 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
+            data-testid="minute-scope-clear"
+          >
+            <X className="size-3 mr-1" />
+            Clear
+          </Button>
+        </div>
+      )}
+
       {/* Ledger */}
       <div className="border border-border rounded" data-testid="timeline-ledger">
         <LedgerColumnHeaders />
@@ -1927,6 +2118,10 @@ export function TimelineTab({
                 drawerEvent={drawerEvent}
                 onCloseDrawer={closeDrawer}
                 onChannelClick={handleChannelAdd}
+                histogramBuckets={histogramByHour.get(group.key) ?? []}
+                bucketMinutes={histogramBucketMinutesValue}
+                histogramLoading={histogramLoading}
+                onScopeToMinute={handleScopeToMinute}
               />
             ))}
           </>

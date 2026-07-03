@@ -50,6 +50,7 @@ vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
   useIngestionWindowRollup: vi.fn(),
+  useIngestionEventsHistogram: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({
@@ -71,6 +72,7 @@ import {
   useIngestionEventReplays,
   useIngestionEventPayload,
   useIngestionWindowRollup,
+  useIngestionEventsHistogram,
 } from "@/hooks/use-ingestion-events";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import {
@@ -178,6 +180,10 @@ function setupDefaultMocks() {
     data: { events: 0, sessions: 0, cost: null, window: { from: null, to: null } },
     isLoading: false, isError: false,
   } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+  vi.mocked(useIngestionEventsHistogram).mockReturnValue({
+    data: { buckets: [], bucket: "1m" },
+    isLoading: false, isError: false,
+  } as unknown as ReturnType<typeof useIngestionEventsHistogram>);
 
   // Default: no custom views, not loading
   vi.mocked(useTimelineSavedViews).mockReturnValue({
