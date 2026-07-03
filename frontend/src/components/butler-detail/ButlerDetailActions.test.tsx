@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 /**
- * ButlerDetailActions — Force-Run session linking (bu-dr03f.4).
+ * ButlerDetailActions — unified command bar (bu-86c4c.18) + Force-Run
+ * session linking (bu-dr03f.4).
  *
- * The Force-Run button previously discarded the session_id returned by
- * triggerButler. It now navigates the operator to /sessions/:id for the
- * spawned session.
+ * Force Run / the Trigger tab / the ChatPanel "Prompt" button used to be
+ * three separate names for "make this butler run". They are now one
+ * prompt-first command bar: an empty submit fires the default scheduler
+ * prompt (same as the old Force Run button); a custom prompt + complexity
+ * tier replaces the old Trigger tab. The command bar still navigates the
+ * operator to /sessions/:id for the spawned session.
  *
- * bead: bu-dr03f.4
+ * bead: bu-86c4c.18 (builds on bu-dr03f.4)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -112,6 +116,78 @@ describe("ButlerDetailActions — Force-Run session linking", () => {
 
     await waitFor(() => expect(triggerButler).toHaveBeenCalled());
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ButlerDetailActions — unified command bar (bu-86c4c.18)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => cleanup());
+
+  it("submits the default scheduler prompt when the input is left empty", async () => {
+    vi.mocked(triggerButler).mockResolvedValue({
+      success: true,
+      session_id: "",
+      output: "",
+    });
+
+    renderActions("general");
+    fireEvent.click(screen.getByTestId("butler-force-run"));
+
+    await waitFor(() =>
+      expect(triggerButler).toHaveBeenCalledWith(
+        "general",
+        "Run your scheduled tick now.",
+        "workhorse",
+      ),
+    );
+  });
+
+  it("submits a custom prompt typed into the command bar (replaces the Trigger tab)", async () => {
+    vi.mocked(triggerButler).mockResolvedValue({
+      success: true,
+      session_id: "",
+      output: "",
+    });
+
+    renderActions("general");
+    fireEvent.change(screen.getByTestId("butler-command-input"), {
+      target: { value: "Summarize today's activity" },
+    });
+    fireEvent.click(screen.getByTestId("butler-force-run"));
+
+    await waitFor(() =>
+      expect(triggerButler).toHaveBeenCalledWith(
+        "general",
+        "Summarize today's activity",
+        "workhorse",
+      ),
+    );
+  });
+
+  it("submits on Enter in the command input", async () => {
+    vi.mocked(triggerButler).mockResolvedValue({
+      success: true,
+      session_id: "",
+      output: "",
+    });
+
+    renderActions("general");
+    const input = screen.getByTestId("butler-command-input");
+    fireEvent.change(input, { target: { value: "Run finance reconciliation" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(triggerButler).toHaveBeenCalledWith(
+        "general",
+        "Run finance reconciliation",
+        "workhorse",
+      ),
+    );
+  });
+
+  it("does not render a separate ChatPanel trigger labeled Prompt (unified into the command bar)", () => {
+    renderActions("general");
+    expect(screen.queryByText("Prompt")).toBeNull();
   });
 });
 

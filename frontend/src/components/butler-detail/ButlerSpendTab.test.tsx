@@ -564,19 +564,14 @@ describe("ButlerSpendTab — butler-scoped useDailySpend [bu-u1c02]", () => {
 
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
-describe("ButlerDetailPage — spend tab present in all butlers (resident mode)", () => {
-  it("resident base tabs include 'spend'", () => {
-    expect(getAllTabs("general", "resident")).toContain("spend");
+describe("ButlerDetailPage — spend tab present in all butlers", () => {
+  it("base tabs include 'spend'", () => {
+    expect(getAllTabs("general")).toContain("spend");
   });
 
-  it("'spend' is valid for any butler in resident mode", () => {
-    expect(isValidTab("spend", "general", "resident")).toBe(true);
-    expect(isValidTab("spend", "finance", "resident")).toBe(true);
-    expect(isValidTab("spend", "health", "resident")).toBe(true);
-  });
-
-  it("'spend' is NOT in operator base tabs", () => {
-    // 'spend' is a resident-mode tab; operator mode uses 'sessions' instead
-    expect(getAllTabs("general", "operator")).not.toContain("spend");
+  it("'spend' is valid for any butler", () => {
+    expect(isValidTab("spend", "general")).toBe(true);
+    expect(isValidTab("spend", "finance")).toBe(true);
+    expect(isValidTab("spend", "health")).toBe(true);
   });
 });

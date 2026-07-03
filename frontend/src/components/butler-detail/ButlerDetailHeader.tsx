@@ -26,8 +26,11 @@ import type { ReactNode } from "react"
 
 import { ButlerMark } from "@/components/ui/ButlerMark"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Time } from "@/components/ui/time"
 import { useButler } from "@/hooks/use-butlers"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
+import { useSchedules } from "@/hooks/use-schedules"
+import { useSpendSummary } from "@/hooks/use-spend"
 import { titleize } from "@/lib/utils"
 
 // ---------------------------------------------------------------------------
@@ -41,16 +44,24 @@ export interface ButlerDetailHeaderProps {
   actions?: ReactNode
 }
 
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  const remainingMinutes = minutes % 60
-  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
-  const days = Math.floor(hours / 24)
-  const remainingHours = hours % 24
-  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`
+function formatCurrency(amount: number | null | undefined): string {
+  if (amount == null) return "--"
+  if (amount < 0.01) return "$0.00"
+  return `$${amount.toFixed(2)}`
+}
+
+/**
+ * Earliest upcoming `next_run_at` across a butler's enabled schedules, or
+ * null when there is no schedule (or none has a known next fire time).
+ */
+function earliestNextRun(schedules: { enabled: boolean; next_run_at: string | null }[]): string | null {
+  const candidates = schedules
+    .filter((s) => s.enabled && s.next_run_at)
+    .map((s) => s.next_run_at as string)
+  if (candidates.length === 0) return null
+  return candidates.reduce((earliest, current) =>
+    new Date(current).getTime() < new Date(earliest).getTime() ? current : earliest,
+  )
 }
 
 function activityToneClass(activity: string): string {
@@ -86,19 +97,24 @@ function activityToneClass(activity: string): string {
 export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps) {
   const { rows, aggregates } = useButlerStatusBoard()
   const { data: butlerResponse } = useButler(butler)
+  const { data: schedulesResponse } = useSchedules(butler)
+  const { data: spendResponse } = useSpendSummary("today")
 
   // Find the active butler's description from the status board rows.
   // Falls back to null when loading, errored, or not found.
   const activeRow = rows.find((r) => r.name === butler) ?? null
   const butlerDetail = butlerResponse?.data ?? null
-  const processFacts = butlerDetail?.process_facts ?? null
   const description = activeRow?.description ?? butlerDetail?.description ?? null
-  const port = processFacts?.port ?? butlerDetail?.port ?? null
-  const uptime =
-    processFacts?.registered_duration_seconds != null
-      ? formatDuration(processFacts.registered_duration_seconds)
-      : null
   const activity = activeRow?.activity ?? "unknown"
+
+  // Header trivia (bu-86c4c.18): port/uptime told the operator nothing about
+  // what the butler actually did or will do. Replace it with the three facts
+  // a calm-confidence glance needs -- last run, next scheduled fire, and
+  // today's spend -- sourced from the same data already fetched elsewhere on
+  // this page (status board heartbeat, schedules, spend summary).
+  const lastRunISO = activeRow?.lastRunISO ?? null
+  const nextRunISO = earliestNextRun(schedulesResponse?.data ?? [])
+  const costToday = spendResponse?.data?.by_butler?.[butler] ?? null
 
   // ---------------------------------------------------------------------------
   // Skeleton state
@@ -159,8 +175,13 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
             <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
             {activity}
           </span>
-          <span className="text-muted-foreground">
-            port {port ?? "--"} · uptime {uptime ?? "--"}
+          <span className="text-muted-foreground" data-testid="butler-header-facts">
+            last run{" "}
+            {lastRunISO ? <Time value={lastRunISO} mode="relative-compact" /> : "--"}
+            {" · next "}
+            {nextRunISO ? <Time value={nextRunISO} mode="relative-compact" /> : "--"}
+            {" · "}
+            {formatCurrency(costToday)} today
           </span>
         </div>
         <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">

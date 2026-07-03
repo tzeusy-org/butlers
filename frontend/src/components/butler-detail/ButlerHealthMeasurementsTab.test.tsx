@@ -712,22 +712,17 @@ describe("ButlerHealthMeasurementsTab — loading state", () => {
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
 describe("ButlerDetailPage — health tab in getAllTabs", () => {
-  it("health butler has 'health' tab in operator mode", () => {
-    expect(getAllTabs("health", "operator")).toContain("health");
-  });
-
-  it("health butler has 'health' tab in resident mode", () => {
-    expect(getAllTabs("health", "resident")).toContain("health");
+  it("health butler has 'health' tab", () => {
+    expect(getAllTabs("health")).toContain("health");
   });
 
   it("'health' is a valid tab for health butler", () => {
-    expect(isValidTab("health", "health", "operator")).toBe(true);
-    expect(isValidTab("health", "health", "resident")).toBe(true);
+    expect(isValidTab("health", "health")).toBe(true);
   });
 
   it("'health' is NOT a valid tab for non-health butlers", () => {
-    expect(isValidTab("health", "finance", "operator")).toBe(false);
-    expect(isValidTab("health", "general", "resident")).toBe(false);
+    expect(isValidTab("health", "finance")).toBe(false);
+    expect(isValidTab("health", "general")).toBe(false);
   });
 });
 

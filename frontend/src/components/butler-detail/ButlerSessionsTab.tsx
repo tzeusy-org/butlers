@@ -41,15 +41,33 @@ const PAGE_SIZE = 20;
 
 interface ButlerSessionsTabProps {
   butlerName: string;
+  /**
+   * Optional time-range filter (ISO timestamps) -- set when this tab is
+   * reached via an Overview activity-stripe "door" (bu-86c4c.18) so the
+   * table opens pre-filtered to the hour the operator clicked.
+   */
+  since?: string;
+  until?: string;
+  /** Clears the since/until filter (wired to the Overview deep link). */
+  onClearFilter?: () => void;
 }
 
-export default function ButlerSessionsTab({ butlerName }: ButlerSessionsTabProps) {
+export default function ButlerSessionsTab({
+  butlerName,
+  since,
+  until,
+  onClearFilter,
+}: ButlerSessionsTabProps) {
   const [page, setPage] = useState(0);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+
+  const isFiltered = Boolean(since || until);
 
   const params: SessionParams = {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
+    ...(since ? { since } : {}),
+    ...(until ? { until } : {}),
   };
 
   const { data: sessionsResponse, isLoading } = useButlerSessions(butlerName, params);
@@ -67,6 +85,25 @@ export default function ButlerSessionsTab({ butlerName }: ButlerSessionsTabProps
 
   return (
     <div data-testid="butler-sessions-tab">
+      {isFiltered && (
+        <div
+          className="flex items-center justify-between gap-3 border-x border-t border-border/60 px-4 py-2 font-mono text-xs text-muted-foreground"
+          data-testid="sessions-time-filter"
+        >
+          <span>Filtered to a single activity-stripe hour.</span>
+          {onClearFilter && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={onClearFilter}
+              data-testid="sessions-clear-filter"
+            >
+              Clear filter
+            </Button>
+          )}
+        </div>
+      )}
       <ButlerPanelGrid>
         <Panel title="sessions" span={4} testId="panel-sessions">
           <SessionTable

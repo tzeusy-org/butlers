@@ -925,27 +925,22 @@ describe("ButlerFinanceFinancesTab — loading state", () => {
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
 describe("ButlerDetailPage — finance finances tab in getAllTabs", () => {
-  it("finance butler has 'finances' tab in operator mode", () => {
-    expect(getAllTabs("finance", "operator")).toContain("finances");
+  it("finance butler has 'finances' tab", () => {
+    expect(getAllTabs("finance")).toContain("finances");
   });
 
-  it("finance butler has 'finances' tab in resident mode", () => {
-    expect(getAllTabs("finance", "resident")).toContain("finances");
-  });
-
-  it("'finances' is a valid tab for finance butler in both modes", () => {
-    expect(isValidTab("finances", "finance", "operator")).toBe(true);
-    expect(isValidTab("finances", "finance", "resident")).toBe(true);
+  it("'finances' is a valid tab for finance butler", () => {
+    expect(isValidTab("finances", "finance")).toBe(true);
   });
 
   it("'finances' is NOT a valid tab for non-finance butlers", () => {
-    expect(isValidTab("finances", "general", "operator")).toBe(false);
-    expect(isValidTab("finances", "education", "resident")).toBe(false);
+    expect(isValidTab("finances", "general")).toBe(false);
+    expect(isValidTab("finances", "education")).toBe(false);
   });
 
   it("non-finance butlers do not include 'finances' tab", () => {
-    expect(getAllTabs("general", "operator")).not.toContain("finances");
-    expect(getAllTabs("education", "resident")).not.toContain("finances");
+    expect(getAllTabs("general")).not.toContain("finances");
+    expect(getAllTabs("education")).not.toContain("finances");
   });
 });
 

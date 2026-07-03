@@ -46,6 +46,7 @@ vi.mock("@/hooks/use-notifications", () => ({
 
 vi.mock("@/hooks/use-sessions", () => ({
   useButlerSessions: vi.fn(() => ({ data: null, isLoading: false })),
+  useSessionDetail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-general", () => ({

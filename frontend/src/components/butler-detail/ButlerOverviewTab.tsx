@@ -11,6 +11,7 @@
 // the prototype rhythm while using container-boundary-safe process facts.
 // ---------------------------------------------------------------------------
 
+import { useState } from "react"
 import { Link } from "react-router"
 
 import {
@@ -21,6 +22,7 @@ import {
   MonoLabel,
   Panel,
 } from "@/components/butler-detail/atoms"
+import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useApprovalActions } from "@/hooks/use-approvals"
@@ -28,7 +30,7 @@ import { useButler } from "@/hooks/use-butlers"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import { useSpendSummary } from "@/hooks/use-spend"
-import type { ActivityEventType, ApprovalAction } from "@/api/types"
+import type { ActivityEventType, ApprovalAction, ButlerActivityEvent } from "@/api/types"
 
 interface ButlerOverviewTabProps {
   butlerName: string
@@ -65,16 +67,44 @@ function activityLabel(eventType: ActivityEventType): string {
   }
 }
 
+/**
+ * Computes the [since, until) ISO window for stripe slot `index` (0 = oldest
+ * of the last 24h, 23 = the current hour), matching the bucketing convention
+ * in useButlerStatusBoard (hourlyStripe slot 23 - bucket.hour_index).
+ */
+function stripeSlotWindow(index: number): { since: string; until: string } {
+  const hoursAgoUntil = 23 - index
+  const hoursAgoSince = hoursAgoUntil + 1
+  const now = Date.now()
+  return {
+    since: new Date(now - hoursAgoSince * 3_600_000).toISOString(),
+    until: new Date(now - hoursAgoUntil * 3_600_000).toISOString(),
+  }
+}
+
+/**
+ * 24-hour activity stripe. Every bar is a door (bu-86c4c.18): clicking a bar
+ * deep-links to the Activity tab's Sessions section, pre-filtered to that
+ * hour's window, instead of a purely decorative chart.
+ */
 function ActivityStripe({ values }: { values: number[] }) {
   const max = Math.max(...values, 1)
   return (
     <div className="flex h-[68px] items-end gap-px" aria-label="24-hour activity">
       {values.map((value, index) => {
         const height = value === 0 ? 2 : 2 + Math.round((value / max) * 66)
+        const { since, until } = stripeSlotWindow(index)
+        const hoursAgo = 23 - index
         return (
-          <span
+          <Link
             key={index}
-            className={value === 0 ? "flex-1 rounded-[1px] bg-muted" : "flex-1 rounded-[1px] bg-foreground/70"}
+            to={`?tab=activity&section=sessions&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`}
+            aria-label={`${value} session${value === 1 ? "" : "s"}, ${hoursAgo === 0 ? "this hour" : `${hoursAgo}h ago`}`}
+            data-testid="activity-stripe-bar"
+            className={[
+              "flex-1 rounded-[1px] transition-colors hover:bg-primary/70",
+              value === 0 ? "bg-muted" : "bg-foreground/70",
+            ].join(" ")}
             style={{ height }}
           />
         )
@@ -101,7 +131,70 @@ function EventKind({ eventType }: { eventType: ActivityEventType }) {
   )
 }
 
-function ActionRow({ action }: { action: ApprovalAction }) {
+/**
+ * Recent-activity event row. Every row is a door (bu-86c4c.18):
+ *   - session_completed -- opens the session transcript in place (drawer)
+ *   - approval_raised    -- jumps to the Approvals tab
+ *   - memory_write       -- jumps to the Memory tab
+ * Falls back to plain (non-interactive) text when the event carries no
+ * entity_id to act on.
+ */
+function EventRow({
+  event,
+  onOpenSession,
+}: {
+  event: ButlerActivityEvent
+  onOpenSession: (sessionId: string) => void
+}) {
+  const rowBody = (
+    <>
+      <span className="font-mono text-[11px] text-muted-foreground">
+        <Time value={event.ts} mode="relative" compact />
+      </span>
+      <span className="min-w-0 truncate text-xs">{event.summary}</span>
+      <EventKind eventType={event.event_type} />
+    </>
+  )
+  const rowClassName =
+    "grid grid-cols-[50px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border/40 py-1.5 last:border-b-0"
+
+  if (event.event_type === "session_completed" && event.entity_id) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenSession(event.entity_id as string)}
+        className={`${rowClassName} w-full text-left hover:bg-muted/30`}
+        data-testid="activity-feed-row"
+      >
+        {rowBody}
+      </button>
+    )
+  }
+
+  if (event.event_type === "approval_raised") {
+    return (
+      <Link to="?tab=approvals" className={`${rowClassName} hover:bg-muted/30`} data-testid="activity-feed-row">
+        {rowBody}
+      </Link>
+    )
+  }
+
+  if (event.event_type === "memory_write") {
+    return (
+      <Link to="?tab=memory" className={`${rowClassName} hover:bg-muted/30`} data-testid="activity-feed-row">
+        {rowBody}
+      </Link>
+    )
+  }
+
+  return (
+    <div className={rowClassName} data-testid="activity-feed-row">
+      {rowBody}
+    </div>
+  )
+}
+
+function ActionRow({ action, butlerName }: { action: ApprovalAction; butlerName: string }) {
   return (
     <div className="grid grid-cols-[8px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border/40 py-2 last:border-b-0">
       <span className="mt-1.5 h-1.5 w-1.5 rounded-[1px] bg-amber-500" aria-hidden="true" />
@@ -110,8 +203,11 @@ function ActionRow({ action }: { action: ApprovalAction }) {
         <span className="text-muted-foreground"> · </span>
         <Time value={action.requested_at} mode="relative" />
       </span>
+      {/* Deep link (bu-86c4c.18): scopes the global approvals page to this
+          butler and this action, instead of dropping the operator on an
+          unfiltered global list they have to re-find the item in. */}
       <Link
-        to="/approvals"
+        to={`/approvals?butler=${encodeURIComponent(butlerName)}&id=${encodeURIComponent(action.id)}`}
         className="text-xs text-foreground underline decoration-border underline-offset-4"
       >
         review
@@ -155,6 +251,11 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     isError: activityFeedError,
   } = useButlerActivityFeed(butlerName, 5)
 
+  // Session drawer state for the "recent events" door (bu-86c4c.18): clicking
+  // a session_completed row opens its transcript in place instead of leaving
+  // the operator on a dead-end line of text.
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+
   if (butlerLoading) {
     return <OverviewSkeleton />
   }
@@ -171,9 +272,13 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const recentEvents = activityFeedData?.events ?? []
   const stripe = row?.hourlyStripe ?? Array(24).fill(0)
   const status = butler?.status ?? row?.status
-  const awaitingCount = pendingActions.length
+  // meta.total (not the page-size-capped result length) is the true count of
+  // pending approvals -- the KPI previously read "5" when 20 were pending
+  // because it counted the preview page instead of the real total.
+  const awaitingCount = approvalsQuery.data?.meta?.total ?? pendingActions.length
 
   return (
+    <>
     <ButlerPanelGrid
       className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-panel-grid"
@@ -244,17 +349,11 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         ) : (
           <div data-testid="activity-feed-list">
             {recentEvents.map((event, index) => (
-              <div
+              <EventRow
                 key={`${event.ts}-${index}`}
-                className="grid grid-cols-[50px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border/40 py-1.5 last:border-b-0"
-                data-testid="activity-feed-row"
-              >
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  <Time value={event.ts} mode="relative" compact />
-                </span>
-                <span className="min-w-0 truncate text-xs">{event.summary}</span>
-                <EventKind eventType={event.event_type} />
-              </div>
+                event={event}
+                onOpenSession={setSelectedSessionId}
+              />
             ))}
           </div>
         )}
@@ -273,7 +372,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         ) : (
           <div>
             {pendingActions.map((action) => (
-              <ActionRow key={action.id} action={action} />
+              <ActionRow key={action.id} action={action} butlerName={butlerName} />
             ))}
           </div>
         )}
@@ -299,5 +398,12 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         </div>
       </Panel>
     </ButlerPanelGrid>
+
+    <SessionDetailDrawer
+      butler={butlerName}
+      sessionId={selectedSessionId}
+      onClose={() => setSelectedSessionId(null)}
+    />
+    </>
   )
 }

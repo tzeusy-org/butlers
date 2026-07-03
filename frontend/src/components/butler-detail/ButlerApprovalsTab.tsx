@@ -10,8 +10,9 @@
  *   medium -- expires within 24 hours
  *   low    -- no expiry or expires later
  *
- * Filtering: passes butlerName to useApprovalActions for forward compatibility.
- * The backend does not yet filter by butler; server-side scoping is a follow-up.
+ * Filtering: the backend's GET /approvals/actions accepts a `butler` query
+ * param and scopes the result to that butler's pending actions server-side
+ * (see approvals.py:list_actions).
  *
  * Empty state (per project voice rules -- no em-dashes, sentence case):
  *   "No items pending review."
@@ -107,9 +108,11 @@ function ApprovalRow({ action }: ApprovalRowProps) {
         </div>
       </div>
 
-      {/* Action link -- navigate to the global approvals page */}
+      {/* Action link -- deep-links to the global approvals page, scoped to
+          this butler and this action (bu-86c4c.18) instead of dropping the
+          operator on an unfiltered list they have to re-find the item in. */}
       <Link
-        to="/approvals"
+        to={`/approvals?butler=${encodeURIComponent(action.butler)}&id=${encodeURIComponent(action.id)}`}
         className="shrink-0 text-xs text-primary hover:underline"
         data-testid="approval-action-link"
         aria-label={`Review approval for ${action.tool_name}`}

@@ -694,26 +694,21 @@ describe("ButlerTravelTripsTab — expiring docs banner", () => {
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
 describe("ButlerDetailPage — travel trips tab in getAllTabs", () => {
-  it("travel butler has 'trips' tab in operator mode", () => {
-    expect(getAllTabs("travel", "operator")).toContain("trips");
+  it("travel butler has 'trips' tab", () => {
+    expect(getAllTabs("travel")).toContain("trips");
   });
 
-  it("travel butler has 'trips' tab in resident mode", () => {
-    expect(getAllTabs("travel", "resident")).toContain("trips");
-  });
-
-  it("'trips' is a valid tab for travel butler in both modes", () => {
-    expect(isValidTab("trips", "travel", "operator")).toBe(true);
-    expect(isValidTab("trips", "travel", "resident")).toBe(true);
+  it("'trips' is a valid tab for travel butler", () => {
+    expect(isValidTab("trips", "travel")).toBe(true);
   });
 
   it("'trips' is NOT a valid tab for non-travel butlers", () => {
-    expect(isValidTab("trips", "general", "operator")).toBe(false);
-    expect(isValidTab("trips", "health", "resident")).toBe(false);
+    expect(isValidTab("trips", "general")).toBe(false);
+    expect(isValidTab("trips", "health")).toBe(false);
   });
 
   it("non-travel butlers do not include 'trips' tab", () => {
-    expect(getAllTabs("general", "operator")).not.toContain("trips");
-    expect(getAllTabs("health", "resident")).not.toContain("trips");
+    expect(getAllTabs("general")).not.toContain("trips");
+    expect(getAllTabs("health")).not.toContain("trips");
   });
 });

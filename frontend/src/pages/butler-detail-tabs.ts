@@ -2,53 +2,39 @@
 // Tab configuration for ButlerDetailPage
 // ---------------------------------------------------------------------------
 //
-// Gate B (bu-41p8z) resolved to B2: operator/resident mode toggle.
-// Operator mode: full 10 spec-mandated base tabs (dashboard-butler-management spec.md:55, 178-179).
-// Resident mode: narrow 7-tab Dispatch vocabulary; this is the default for first-time visitors.
-// The toggle UI and localStorage persistence are wired up in ButlerDetailPage; mode survives reloads.
+// One butler console, one tab set (bu-86c4c.18 -- JARVIS audit move 13).
 //
-// Extracted from ButlerDetailPage.tsx so that the page module only exports its
-// component (react-refresh/only-export-components).
+// The old resident/operator mode split (Gate B bu-8bayc) hid half the console
+// behind an undiscoverable toggle: Sessions was unreachable in resident mode,
+// Activity/Approvals/Spend were unreachable in operator mode. That toggle,
+// its localStorage persistence, and the deep-link auto-promotion machinery
+// have all been deleted. There is now exactly one tab vocabulary for every
+// butler.
+//
+// Low-frequency operational tabs (Config, Skills, Schedules, MCP, State,
+// Models, Manage) are folded into a single "System" section rendered by
+// <ButlerSystemSection>. Sessions and Logs are folded into "Activity",
+// rendered by <ButlerActivitySection> alongside the existing analytics body.
+//
+// Extracted from ButlerDetailPage.tsx so that the page module only exports
+// its component (react-refresh/only-export-components).
 
-/** Full 10 spec-mandated base tabs — shown in operator mode. */
-export const BASE_TABS_OPERATOR = [
-  "overview",
-  "sessions",
-  "config",
-  "skills",
-  "schedules",
-  "trigger",
-  "mcp",
-  "state",
-  "crm",
-  "memory",
-] as const;
-
-/** Narrow 7-tab Dispatch vocabulary — shown in resident mode (future default). */
-export const BASE_TABS_RESIDENT = [
+/** The single base tab vocabulary shown for every butler. */
+export const BASE_TABS = [
   "overview",
   "activity",
-  "logs",
   "approvals",
   "spend",
-  "config",
   "memory",
+  "system",
 ] as const;
 
-/**
- * Non-spec extension tabs: Models and Manage (Phase 7 fold-in).
- * Operator-only; not part of the 10 mandated base tabs.
- * Do not appear in resident mode.
- */
-export const OPERATOR_EXTENSION_TABS = ["models", "manage"] as const;
-
-// Butler-specific conditional tabs (health, switchboard routing, education reviews).
-// Appended after the base tabs; visible regardless of mode.
+// Butler-specific conditional (domain) tabs. Appended after the base tabs;
+// each butler shows at most its own bespoke tab(s), always reachable
+// (never gated behind a mode).
 const HEALTH_TABS = ["health"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
 const EDUCATION_TABS = ["reviews"] as const;
-
-// Bespoke tabs for domain butlers (stub UI — full implementation tracked separately).
 const CHRONICLER_TABS = ["timelines"] as const;
 const FINANCE_TABS = ["finances"] as const;
 const GENERAL_TABS = ["collections", "entities"] as const;
@@ -59,12 +45,8 @@ const QA_TABS = ["investigations"] as const;
 const RELATIONSHIP_TABS = ["contacts"] as const;
 const TRAVEL_TABS = ["trips"] as const;
 
-export type DetailMode = "operator" | "resident";
-
 export type TabValue =
-  | (typeof BASE_TABS_OPERATOR)[number]
-  | (typeof BASE_TABS_RESIDENT)[number]
-  | (typeof OPERATOR_EXTENSION_TABS)[number]
+  | (typeof BASE_TABS)[number]
   | (typeof HEALTH_TABS)[number]
   | (typeof SWITCHBOARD_TABS)[number]
   | (typeof EDUCATION_TABS)[number]
@@ -79,63 +61,29 @@ export type TabValue =
   | (typeof TRAVEL_TABS)[number];
 
 /**
- * Returns the full set of valid tab values for the given butler and mode.
- * Operator mode: 10 spec-mandated base tabs + extension tabs (models).
- * Resident mode: 7-tab Dispatch vocabulary.
- * Butler-specific conditional tabs (health, switchboard) are appended
- * regardless of mode.
+ * Returns the full set of valid tab values for the given butler: the shared
+ * base vocabulary plus that butler's bespoke domain tab(s), if any.
  */
-export function getAllTabs(butlerName: string, mode: DetailMode): readonly string[] {
-  const baseTabs: string[] =
-    mode === "operator"
-      ? [...BASE_TABS_OPERATOR, ...OPERATOR_EXTENSION_TABS]
-      : [...BASE_TABS_RESIDENT];
-  if (butlerName === "health") {
-    baseTabs.push(...HEALTH_TABS);
-  }
-  if (butlerName === "switchboard") {
-    baseTabs.push(...SWITCHBOARD_TABS);
-  }
-  if (butlerName === "education") {
-    baseTabs.push(...EDUCATION_TABS);
-  }
-  if (butlerName === "chronicler") {
-    baseTabs.push(...CHRONICLER_TABS);
-  }
-  if (butlerName === "finance") {
-    baseTabs.push(...FINANCE_TABS);
-  }
-  if (butlerName === "general") {
-    baseTabs.push(...GENERAL_TABS);
-  }
-  if (butlerName === "home") {
-    baseTabs.push(...HOME_TABS);
-  }
-  if (butlerName === "lifestyle") {
-    baseTabs.push(...LIFESTYLE_TABS);
-  }
-  if (butlerName === "messenger") {
-    baseTabs.push(...MESSENGER_TABS);
-  }
-  if (butlerName === "qa") {
-    baseTabs.push(...QA_TABS);
-  }
-  if (butlerName === "relationship") {
-    baseTabs.push(...RELATIONSHIP_TABS);
-  }
-  if (butlerName === "travel") {
-    baseTabs.push(...TRAVEL_TABS);
-  }
-  return baseTabs;
+export function getAllTabs(butlerName: string): readonly string[] {
+  const tabs: string[] = [...BASE_TABS];
+  if (butlerName === "health") tabs.push(...HEALTH_TABS);
+  if (butlerName === "switchboard") tabs.push(...SWITCHBOARD_TABS);
+  if (butlerName === "education") tabs.push(...EDUCATION_TABS);
+  if (butlerName === "chronicler") tabs.push(...CHRONICLER_TABS);
+  if (butlerName === "finance") tabs.push(...FINANCE_TABS);
+  if (butlerName === "general") tabs.push(...GENERAL_TABS);
+  if (butlerName === "home") tabs.push(...HOME_TABS);
+  if (butlerName === "lifestyle") tabs.push(...LIFESTYLE_TABS);
+  if (butlerName === "messenger") tabs.push(...MESSENGER_TABS);
+  if (butlerName === "qa") tabs.push(...QA_TABS);
+  if (butlerName === "relationship") tabs.push(...RELATIONSHIP_TABS);
+  if (butlerName === "travel") tabs.push(...TRAVEL_TABS);
+  return tabs;
 }
 
 /**
- * Returns true if `value` is a valid tab for the given butler and mode.
+ * Returns true if `value` is a valid top-level tab for the given butler.
  */
-export function isValidTab(
-  value: string | null,
-  butlerName: string,
-  mode: DetailMode,
-): value is TabValue {
-  return getAllTabs(butlerName, mode).includes(value as string);
+export function isValidTab(value: string | null, butlerName: string): value is TabValue {
+  return getAllTabs(butlerName).includes(value as string);
 }

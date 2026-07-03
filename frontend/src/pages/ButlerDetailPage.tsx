@@ -1,44 +1,22 @@
-import { lazy, Suspense, useCallback, useState, type ComponentProps } from "react";
+import { lazy, Suspense, useCallback, type ComponentProps } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router";
 
-import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
 import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
 import { ButlerDetailHeader } from "@/components/butler-detail/ButlerDetailHeader";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
-import ButlerSessionsTab from "@/components/butler-detail/ButlerSessionsTab";
-import ButlerCrmTab from "@/components/butler-detail/ButlerCrmTab";
+import ButlerActivitySection from "@/components/butler-detail/ButlerActivitySection";
+import ButlerSystemSection from "@/components/butler-detail/ButlerSystemSection";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useButler } from "@/hooks/use-butlers";
 import { titleize } from "@/lib/utils";
-import {
-  type DetailMode,
-  type TabValue,
-  getAllTabs,
-  isValidTab,
-} from "@/pages/butler-detail-tabs";
+import { type TabValue, isValidTab } from "@/pages/butler-detail-tabs";
 
 // ---------------------------------------------------------------------------
 // Lazy-loaded tabs
 // ---------------------------------------------------------------------------
-
-const ButlerSchedulesTab = lazy(
-  () => import("@/components/butler-detail/ButlerSchedulesTab.tsx"),
-);
-const ButlerSkillsTab = lazy(
-  () => import("@/components/butler-detail/ButlerSkillsTab.tsx"),
-);
-const ButlerTriggerTab = lazy(
-  () => import("@/components/butler-detail/ButlerTriggerTab.tsx"),
-);
-const ButlerMcpTab = lazy(
-  () => import("@/components/butler-detail/ButlerMcpTab.tsx"),
-);
-const ButlerStateTab = lazy(
-  () => import("@/components/butler-detail/ButlerStateTab.tsx"),
-);
 
 // Switchboard butler tabs (lazy)
 const ButlerMemoryTab = lazy(
@@ -66,9 +44,6 @@ const ButlerRoutingLogTab = lazy(
 const ButlerRegistryTab = lazy(
   () => import("@/components/butler-detail/ButlerRegistryTab.tsx"),
 );
-const ButlerModelOverridesTab = lazy(
-  () => import("@/components/butler-detail/ButlerModelOverridesTab.tsx"),
-);
 
 // Chronicler butler tabs (lazy)
 const ButlerChroniclerTimelinesTab = lazy(
@@ -90,7 +65,7 @@ const ButlerLifestyleTasteTab = lazy(
   () => import("@/components/butler-detail/ButlerLifestyleTasteTab.tsx"),
 );
 
-// Resident-mode tabs (lazy)
+// Approvals tab (lazy)
 const ButlerApprovalsTab = lazy(
   () => import("@/components/butler-detail/ButlerApprovalsTab.tsx"),
 );
@@ -118,24 +93,9 @@ const ButlerGeneralEntitiesTab = lazy(
   () => import("@/components/butler-detail/ButlerGeneralEntitiesTab.tsx"),
 );
 
-// Resident-mode core tabs (lazy)
-const ButlerLogsTab = lazy(
-  () => import("@/components/butler-detail/ButlerLogsTab.tsx"),
-);
-
-// Activity tab — replaces stub (bu-iuol4.16)
-const ButlerActivityTab = lazy(
-  () => import("@/components/butler-detail/ButlerActivityTab.tsx"),
-);
-
 // Spend tab (lazy) — bu-iuol4.19
 const ButlerSpendTab = lazy(
   () => import("@/components/butler-detail/ButlerSpendTab.tsx"),
-);
-
-// Management tab (lazy) — bu-g4d49 Phase 7 fold-in
-const ButlerManagementTab = lazy(
-  () => import("@/components/butler-detail/ButlerManagementTab.tsx"),
 );
 
 const detailTabTriggerClassName =
@@ -155,60 +115,6 @@ function DetailTabTrigger({
   );
 }
 
-function DetailModeSwitch({
-  mode,
-  onModeChange,
-}: {
-  mode: DetailMode;
-  onModeChange: (mode: DetailMode) => void;
-}) {
-  const nextMode = mode === "operator" ? "resident" : "operator";
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={mode === "operator"}
-      aria-label={`Switch to ${nextMode} mode`}
-      data-testid="butler-mode-toggle"
-      onClick={() => onModeChange(nextMode)}
-      className="mb-[-1px] h-auto shrink-0 border-b-2 border-transparent px-3 py-2 font-mono text-[10px] font-medium uppercase tracking-[0.10em] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-    >
-      {mode}
-    </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page-local constants
-// ---------------------------------------------------------------------------
-
-/** localStorage key for persisting the detail page mode. */
-const MODE_STORAGE_KEY = "butlers.detail.mode";
-
-/**
- * Reads the persisted mode from localStorage, defaulting to "resident".
- */
-function readPersistedMode(): DetailMode {
-  try {
-    const stored = localStorage.getItem(MODE_STORAGE_KEY);
-    if (stored === "operator" || stored === "resident") return stored;
-  } catch {
-    // localStorage not available (e.g. SSR or private browsing restrictions)
-  }
-  return "resident";
-}
-
-/**
- * Writes the mode to localStorage.
- */
-function persistMode(mode: DetailMode): void {
-  try {
-    localStorage.setItem(MODE_STORAGE_KEY, mode);
-  } catch {
-    // Ignore write failures
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Suspense fallback
 // ---------------------------------------------------------------------------
@@ -221,10 +127,19 @@ function TabFallback({ label }: { label: string }) {
   );
 }
 
-// (ButlerHealthTab removed — replaced by lazy ButlerHealthMeasurementsTab)
-
 // ---------------------------------------------------------------------------
 // ButlerDetailPage
+//
+// One butler console, one tab set (bu-86c4c.18 -- JARVIS audit move 13). The
+// former resident/operator mode toggle, its localStorage persistence, and
+// the deep-link auto-promotion machinery have all been deleted: every butler
+// now shows exactly the same tab vocabulary --
+//   Overview, Activity, Approvals, Spend, Memory, <domain tab>, System
+// -- with Sessions/Logs folded into Activity and Config/Skills/Schedules/
+// MCP/State/Models/Manage folded into System (see ButlerActivitySection and
+// ButlerSystemSection). The CRM base tab (a dead panel on every butler
+// except relationship, which already has a bespoke Contacts tab) and the
+// Trigger tab (unified into the ButlerDetailActions command bar) are gone.
 // ---------------------------------------------------------------------------
 
 export default function ButlerDetailPage() {
@@ -237,55 +152,7 @@ export default function ButlerDetailPage() {
   }, [queryClient, name]);
 
   const tabParam = searchParams.get("tab");
-
-  // ---------------------------------------------------------------------------
-  // Mode — operator vs resident
-  // Initialised from localStorage; defaults to "resident".
-  //
-  // Deep-link auto-promotion (Spec Decision 6): if the URL tab param names an
-  // operator-only tab, the initial mode is immediately promoted to "operator"
-  // and persisted. This happens synchronously during state initialisation so
-  // that the correct tab list is rendered on the first pass (works in both
-  // CSR and SSR rendering contexts where effects don't run).
-  // ---------------------------------------------------------------------------
-  const [mode, setModeState] = useState<DetailMode>(() => {
-    const stored = readPersistedMode();
-    // Auto-promote bidirectionally: if the URL tab is exclusive to a different mode, switch now.
-    // This runs synchronously in state initialisation so the correct tab list renders on the
-    // first pass (works in CSR and SSR contexts where effects don't run).
-    if (tabParam) {
-      const validForOperator = getAllTabs(name, "operator").includes(tabParam);
-      const validForResident = getAllTabs(name, "resident").includes(tabParam);
-      if (validForOperator && !validForResident && stored !== "operator") {
-        // Forward promotion: resident → operator
-        persistMode("operator");
-        return "operator";
-      }
-      if (validForResident && !validForOperator && stored !== "resident") {
-        // Reverse promotion: operator → resident
-        persistMode("resident");
-        return "resident";
-      }
-    }
-    return stored;
-  });
-
-  const setMode = useCallback(
-    (next: DetailMode) => {
-      setModeState(next);
-      persistMode(next);
-      // If the current tab is not valid in the target mode, reset to overview
-      // so the URL doesn't carry a stale tab param that would auto-promote
-      // mode back on the next page load.
-      const currentTab = searchParams.get("tab");
-      if (currentTab && !isValidTab(currentTab, name, next)) {
-        setSearchParams({}, { replace: true });
-      }
-    },
-    [name, searchParams, setSearchParams],
-  );
-
-  const activeTab: TabValue = isValidTab(tabParam, name, mode) ? tabParam : "overview";
+  const activeTab: TabValue = isValidTab(tabParam, name) ? tabParam : "overview";
 
   const isSwitchboard = name === "switchboard";
 
@@ -325,97 +192,55 @@ export default function ButlerDetailPage() {
       header={
         <ButlerDetailHeader
           butler={name}
-          actions={<ButlerDetailActions butlerName={name} onModeChange={setMode} />}
+          actions={<ButlerDetailActions butlerName={name} />}
         />
       }
     >
         <Tabs value={activeTab} onValueChange={handleTabChange}>
-          <div className="flex items-center gap-3 border-b border-border">
-            <TabsList
-              variant="line"
-              className="h-auto w-full flex-1 justify-start rounded-none bg-transparent p-0"
-            >
-              <DetailTabTrigger value="overview">Overview</DetailTabTrigger>
-              {mode === "operator" && (
-                <>
-                  <DetailTabTrigger value="sessions">Sessions</DetailTabTrigger>
-                </>
-              )}
-              {mode === "resident" && (
-                <>
-                  <DetailTabTrigger value="activity">Activity</DetailTabTrigger>
-                  <DetailTabTrigger value="logs">Logs</DetailTabTrigger>
-                  <DetailTabTrigger value="approvals">Approvals</DetailTabTrigger>
-                  <DetailTabTrigger value="spend">Spend</DetailTabTrigger>
-                </>
-              )}
-              <DetailTabTrigger value="config">Config</DetailTabTrigger>
-              {mode === "operator" && (
-                <>
-                  <DetailTabTrigger value="skills">Skills</DetailTabTrigger>
-                  <DetailTabTrigger value="schedules">Schedules</DetailTabTrigger>
-                  <DetailTabTrigger value="trigger">Trigger</DetailTabTrigger>
-                  <DetailTabTrigger value="mcp">MCP</DetailTabTrigger>
-                  <DetailTabTrigger value="state">State</DetailTabTrigger>
-                  <DetailTabTrigger value="crm">CRM</DetailTabTrigger>
-                </>
-              )}
-              <DetailTabTrigger value="memory">Memory</DetailTabTrigger>
-              {mode === "operator" && (
-                <>
-                  <DetailTabTrigger value="models">Models</DetailTabTrigger>
-                  <DetailTabTrigger value="manage">Manage</DetailTabTrigger>
-                </>
-              )}
-              {showCollectionsTab && (
-                <DetailTabTrigger value="collections">Collections</DetailTabTrigger>
-              )}
-              {showEntitiesTab && (
-                <DetailTabTrigger value="entities">Entities</DetailTabTrigger>
-              )}
-              {showHealthTab && <DetailTabTrigger value="health">Measurements</DetailTabTrigger>}
-              {isSwitchboard && (
-                <>
-                  <DetailTabTrigger value="routing-log">Routing Log</DetailTabTrigger>
-                  <DetailTabTrigger value="registry">Registry</DetailTabTrigger>
-                </>
-              )}
-              {showReviewsTab && <DetailTabTrigger value="reviews">Reviews</DetailTabTrigger>}
-              {showTimelinesTab && <DetailTabTrigger value="timelines">Timelines</DetailTabTrigger>}
-              {showFinancesTab && <DetailTabTrigger value="finances">Finances</DetailTabTrigger>}
-              {showDevicesTab && <DetailTabTrigger value="devices">Devices</DetailTabTrigger>}
-              {showTasteTab && <DetailTabTrigger value="taste">Taste</DetailTabTrigger>}
-              {showConversationsTab && (
-                <DetailTabTrigger value="conversations">Conversations</DetailTabTrigger>
-              )}
-              {showInvestigationsTab && (
-                <DetailTabTrigger value="investigations">Investigations</DetailTabTrigger>
-              )}
-              {showContactsTab && <DetailTabTrigger value="contacts">Contacts</DetailTabTrigger>}
-              {showTripsTab && <DetailTabTrigger value="trips">Trips</DetailTabTrigger>}
-            </TabsList>
-            <DetailModeSwitch mode={mode} onModeChange={setMode} />
-          </div>
+          <TabsList
+            variant="line"
+            className="h-auto w-full justify-start rounded-none border-b border-border bg-transparent p-0"
+          >
+            <DetailTabTrigger value="overview">Overview</DetailTabTrigger>
+            <DetailTabTrigger value="activity">Activity</DetailTabTrigger>
+            <DetailTabTrigger value="approvals">Approvals</DetailTabTrigger>
+            <DetailTabTrigger value="spend">Spend</DetailTabTrigger>
+            <DetailTabTrigger value="memory">Memory</DetailTabTrigger>
+            {showCollectionsTab && (
+              <DetailTabTrigger value="collections">Collections</DetailTabTrigger>
+            )}
+            {showEntitiesTab && (
+              <DetailTabTrigger value="entities">Entities</DetailTabTrigger>
+            )}
+            {showHealthTab && <DetailTabTrigger value="health">Measurements</DetailTabTrigger>}
+            {isSwitchboard && (
+              <>
+                <DetailTabTrigger value="routing-log">Routing Log</DetailTabTrigger>
+                <DetailTabTrigger value="registry">Registry</DetailTabTrigger>
+              </>
+            )}
+            {showReviewsTab && <DetailTabTrigger value="reviews">Reviews</DetailTabTrigger>}
+            {showTimelinesTab && <DetailTabTrigger value="timelines">Timelines</DetailTabTrigger>}
+            {showFinancesTab && <DetailTabTrigger value="finances">Finances</DetailTabTrigger>}
+            {showDevicesTab && <DetailTabTrigger value="devices">Devices</DetailTabTrigger>}
+            {showTasteTab && <DetailTabTrigger value="taste">Taste</DetailTabTrigger>}
+            {showConversationsTab && (
+              <DetailTabTrigger value="conversations">Conversations</DetailTabTrigger>
+            )}
+            {showInvestigationsTab && (
+              <DetailTabTrigger value="investigations">Investigations</DetailTabTrigger>
+            )}
+            {showContactsTab && <DetailTabTrigger value="contacts">Contacts</DetailTabTrigger>}
+            {showTripsTab && <DetailTabTrigger value="trips">Trips</DetailTabTrigger>}
+            <DetailTabTrigger value="system">System</DetailTabTrigger>
+          </TabsList>
 
           <TabsContent value="overview">
             <ButlerOverviewTab butlerName={name} />
           </TabsContent>
 
-          <TabsContent value="sessions">
-            <ButlerSessionsTab butlerName={name} />
-          </TabsContent>
-
-          {/* Resident-mode tabs */}
           <TabsContent value="activity">
-            <Suspense fallback={<TabFallback label="activity" />}>
-              <ButlerActivityTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="logs">
-            <Suspense fallback={<TabFallback label="logs" />}>
-              <ButlerLogsTab butlerName={name} />
-            </Suspense>
+            <ButlerActivitySection butlerName={name} />
           </TabsContent>
 
           <TabsContent value="approvals">
@@ -430,59 +255,9 @@ export default function ButlerDetailPage() {
             </Suspense>
           </TabsContent>
 
-          <TabsContent value="config">
-            <ButlerConfigTab butlerName={name} />
-          </TabsContent>
-
-          <TabsContent value="skills">
-            <Suspense fallback={<TabFallback label="skills" />}>
-              <ButlerSkillsTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="schedules">
-            <Suspense fallback={<TabFallback label="schedules" />}>
-              <ButlerSchedulesTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="trigger">
-            <Suspense fallback={<TabFallback label="trigger" />}>
-              <ButlerTriggerTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="state">
-            <Suspense fallback={<TabFallback label="state" />}>
-              <ButlerStateTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="mcp">
-            <Suspense fallback={<TabFallback label="mcp" />}>
-              <ButlerMcpTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="crm">
-            <ButlerCrmTab butlerName={name} />
-          </TabsContent>
-
           <TabsContent value="memory">
             <Suspense fallback={<TabFallback label="memory" />}>
               <ButlerMemoryTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="models">
-            <Suspense fallback={<TabFallback label="models" />}>
-              <ButlerModelOverridesTab butlerName={name} />
-            </Suspense>
-          </TabsContent>
-
-          <TabsContent value="manage">
-            <Suspense fallback={<TabFallback label="manage" />}>
-              <ButlerManagementTab butlerName={name} />
             </Suspense>
           </TabsContent>
 
@@ -596,6 +371,10 @@ export default function ButlerDetailPage() {
               </Suspense>
             </TabsContent>
           )}
+
+          <TabsContent value="system">
+            <ButlerSystemSection butlerName={name} />
+          </TabsContent>
         </Tabs>
     </Page>
   );

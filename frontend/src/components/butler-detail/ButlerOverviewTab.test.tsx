@@ -29,6 +29,10 @@ vi.mock("@/components/ui/time", () => ({
   Time: ({ value }: { value: string }) => <span data-testid="time-value">{value}</span>,
 }))
 
+vi.mock("@/hooks/use-sessions", () => ({
+  useSessionDetail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+}))
+
 import { useButler } from "@/hooks/use-butlers"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import { useSpendSummary } from "@/hooks/use-spend"
@@ -147,13 +151,15 @@ beforeEach(() => {
           ts: "2026-05-13T12:02:00Z",
           event_type: "session_completed",
           summary: "Completed scheduled tick",
-          source_id: "session-1",
+          entity_id: "session-1",
+          metadata: {},
         },
         {
           ts: "2026-05-13T12:03:00Z",
           event_type: "memory_write",
           summary: "Stored one memory fact",
-          source_id: "memory-1",
+          entity_id: "memory-1",
+          metadata: {},
         },
       ],
     },
@@ -212,5 +218,84 @@ describe("ButlerOverviewTab target overview grid", () => {
 
     const html = renderOverview()
     expect(html).toContain('data-testid="overview-skeleton"')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// bu-86c4c.18 -- approvals KPI uses meta.total, not the page-size cap
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab -- awaiting KPI uses meta.total", () => {
+  it("shows meta.total when it exceeds the fetched page size", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "approval-1",
+            butler: "general",
+            tool_name: "send_email",
+            tool_args: {},
+            status: "pending",
+            requested_at: "2026-05-13T12:01:00Z",
+            agent_summary: "Send draft follow-up",
+          },
+        ],
+        meta: { total: 20, offset: 0, limit: 5, has_more: true },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+
+    const html = renderOverview()
+    expect(html).toContain(">20<")
+    expect(html).not.toContain(">1<")
+  })
+
+  it("falls back to the fetched result length when meta.total is absent", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "approval-1",
+            butler: "general",
+            tool_name: "send_email",
+            tool_args: {},
+            status: "pending",
+            requested_at: "2026-05-13T12:01:00Z",
+          },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+
+    const html = renderOverview()
+    expect(html).toContain(">1<")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// bu-86c4c.18 -- Overview signals are doors, not dead ends
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab -- doors", () => {
+  it("activity-stripe bars link to the Activity tab's Sessions section", () => {
+    const html = renderOverview()
+    expect(html).toContain('data-testid="activity-stripe-bar"')
+    expect(html).toContain("tab=activity&amp;section=sessions")
+  })
+
+  it("session_completed recent-event rows render as a button (opens the session drawer)", () => {
+    const html = renderOverview()
+    // The session_completed event (entity_id="session-1") renders as a button;
+    // the memory_write event (entity_id="memory-1") renders as a link to ?tab=memory.
+    expect(html).toContain("<button");
+    expect(html).toContain('tab=memory')
+  })
+
+  it("awaiting-your-action rows deep-link to /approvals scoped to butler and id", () => {
+    const html = renderOverview()
+    expect(html).toContain("/approvals?butler=general&amp;id=approval-1")
   })
 })

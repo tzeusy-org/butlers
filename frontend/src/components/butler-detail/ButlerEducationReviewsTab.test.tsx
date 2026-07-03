@@ -804,26 +804,21 @@ describe("ButlerEducationReviewsTab — no fixed 5-map cap", () => {
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
 
 describe("ButlerDetailPage — education reviews tab in getAllTabs", () => {
-  it("education butler has 'reviews' tab in operator mode", () => {
-    expect(getAllTabs("education", "operator")).toContain("reviews");
+  it("education butler has 'reviews' tab", () => {
+    expect(getAllTabs("education")).toContain("reviews");
   });
 
-  it("education butler has 'reviews' tab in resident mode", () => {
-    expect(getAllTabs("education", "resident")).toContain("reviews");
-  });
-
-  it("'reviews' is a valid tab for education butler in both modes", () => {
-    expect(isValidTab("reviews", "education", "operator")).toBe(true);
-    expect(isValidTab("reviews", "education", "resident")).toBe(true);
+  it("'reviews' is a valid tab for education butler", () => {
+    expect(isValidTab("reviews", "education")).toBe(true);
   });
 
   it("'reviews' is NOT a valid tab for non-education butlers", () => {
-    expect(isValidTab("reviews", "general", "operator")).toBe(false);
-    expect(isValidTab("reviews", "health", "resident")).toBe(false);
+    expect(isValidTab("reviews", "general")).toBe(false);
+    expect(isValidTab("reviews", "health")).toBe(false);
   });
 
   it("non-education butlers do not include 'reviews' tab", () => {
-    expect(getAllTabs("general", "operator")).not.toContain("reviews");
-    expect(getAllTabs("health", "resident")).not.toContain("reviews");
+    expect(getAllTabs("general")).not.toContain("reviews");
+    expect(getAllTabs("health")).not.toContain("reviews");
   });
 });

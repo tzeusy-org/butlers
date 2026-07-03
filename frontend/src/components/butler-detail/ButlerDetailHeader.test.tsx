@@ -44,6 +44,14 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButler: vi.fn(),
 }))
 
+vi.mock("@/hooks/use-schedules", () => ({
+  useSchedules: vi.fn(() => ({ data: { data: [] } })),
+}))
+
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(() => ({ data: { data: { by_butler: {} } } })),
+}))
+
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board"
 import { useButler } from "@/hooks/use-butlers"
@@ -308,6 +316,44 @@ describe("Scenario D: Token policy — butler hue confined to ButlerMark", () =>
 // ---------------------------------------------------------------------------
 // Scenario E: SiblingButlerNav ownership
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Scenario F: header facts -- last run / next scheduled / cost today
+// (bu-86c4c.18 -- replaces port/uptime trivia)
+// ---------------------------------------------------------------------------
+
+describe("Scenario F: header facts replace port/uptime trivia", () => {
+  it("F1: does not render port or uptime text", () => {
+    renderHeader("relationship")
+    const facts = screen.getByTestId("butler-header-facts")
+    expect(facts.textContent).not.toMatch(/port/i)
+    expect(facts.textContent).not.toMatch(/uptime/i)
+  })
+
+  it("F2: renders last run, next scheduled, and cost today", () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [
+        makeRow("relationship", {
+          description: "Relationship intelligence butler",
+          lastRunISO: "2026-05-13T11:58:00Z",
+        }),
+      ],
+      aggregates: makeAggregates({ total: 1 }),
+    })
+
+    renderHeader("relationship")
+    const facts = screen.getByTestId("butler-header-facts")
+    expect(facts.textContent).toContain("last run")
+    expect(facts.textContent).toContain("next")
+    expect(facts.textContent).toContain("today")
+  })
+
+  it("F3: shows the placeholder glyph when last run and next scheduled are unknown", () => {
+    renderHeader("relationship")
+    const facts = screen.getByTestId("butler-header-facts")
+    expect(facts.textContent).toContain("--")
+  })
+})
 
 describe("Scenario E: SiblingButlerNav ownership", () => {
   it("E1: no navigation landmark is rendered by the detail header", () => {

@@ -1,32 +1,62 @@
 // ---------------------------------------------------------------------------
 // ButlerDetailActions
 //
-// Composes the Page shell `actions` slot for the Butler detail page per the
-// Gate-A A2 resolution (bu-rx6c2):
+// Composes the Page shell `actions` slot for the Butler detail page.
 //
-//   status pill | force-run button | pause/resume button | ChatPanel button
+//   status pill | command bar (prompt + complexity + Run) | Logs | Config |
+//   Chat | pause/resume button
+//
+// Command bar (bu-86c4c.18, JARVIS audit move 13): Force Run, the Trigger
+// tab, and the ChatPanel "Prompt" button used to be three separate names for
+// "make this butler run". They are unified into one prompt-first control:
+//   - Empty input + Run (or Enter) fires the default scheduler prompt, same
+//     as the old Force Run button.
+//   - A custom prompt + Run replaces the old Trigger tab (which also let the
+//     operator pick a complexity tier).
+//   - Chat remains a distinct, clearly-labeled affordance for a persisted
+//     multi-turn conversation (a materially different backend concept --
+//     conversations are cross-butler dashboard threads, not one-shot
+//     session triggers -- so it is not folded into the same control).
 //
 // Status pill:    derived from butler.status (ok/degraded/down/error/unknown)
-// Force-run:      calls triggerButler with a default scheduler prompt
 // Pause/Resume:   sets eligibility to "quarantined" (pause) or "active" (resume)
 //                 via the Switchboard registry eligibility API
 //
 // NO Tier-2 hero block is added — identity stays in the Overview tab card.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { type KeyboardEvent, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 
 import { triggerButler } from "@/api/index.ts";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Time } from "@/components/ui/time";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 
 // ---------------------------------------------------------------------------
-// Props
+// Constants
 // ---------------------------------------------------------------------------
+
+/** Fired when the command bar is submitted with an empty prompt (quick-run). */
+const DEFAULT_PROMPT = "Run your scheduled tick now.";
+
+/**
+ * Default complexity tier. Must be one of the backend's valid tiers
+ * (reasoning/workhorse/cheap/specialty/local/legacy -- see
+ * model_settings.py:_COMPLEXITY_TIERS); "workhorse" mirrors the backend
+ * TriggerRequest default.
+ */
+const DEFAULT_COMPLEXITY = "workhorse";
 
 const operationalButtonClassName =
   "h-7 rounded-[3px] border-border bg-transparent px-2.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] shadow-none " +
@@ -45,25 +75,26 @@ function actionLinkClassName(): string {
   ].join(" ");
 }
 
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
+
 interface ButlerDetailActionsProps {
   butlerName: string;
-  /** Allows target actions to switch into the tab vocabulary they address. */
-  onModeChange?: (mode: "resident" | "operator") => void;
 }
 
 // ---------------------------------------------------------------------------
 // ButlerDetailActions
 // ---------------------------------------------------------------------------
 
-export function ButlerDetailActions({
-  butlerName,
-  onModeChange,
-}: ButlerDetailActionsProps) {
+export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
   const { data: registryResponse, isLoading: registryLoading } = useRegistry();
   const setEligibility = useSetEligibility();
   const navigate = useNavigate();
 
-  const [isForceRunning, setIsForceRunning] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [complexity, setComplexity] = useState(DEFAULT_COMPLEXITY);
+  const [isRunning, setIsRunning] = useState(false);
 
   // Find the registry entry to determine current eligibility / paused state.
   // registryEntry is undefined while loading or when the butler is not in the
@@ -81,21 +112,30 @@ export function ButlerDetailActions({
   const quarantineReason = registryEntry?.quarantine_reason ?? null;
   const quarantinedAt = registryEntry?.quarantined_at ?? null;
 
-  async function handleForceRun() {
-    if (isForceRunning) return;
-    setIsForceRunning(true);
+  async function handleRun() {
+    if (isRunning) return;
+    const trimmed = prompt.trim();
+    setIsRunning(true);
     try {
-      const response = await triggerButler(butlerName, "Run your scheduled tick now.", "medium");
-      toast.success("Force run triggered");
+      const response = await triggerButler(butlerName, trimmed || DEFAULT_PROMPT, complexity);
+      toast.success(trimmed ? "Prompt sent" : "Force run triggered");
       // Link the operator straight to the spawned session rather than dropping
       // the returned session_id on the floor.
       if (response.session_id) {
         navigate(`/sessions/${response.session_id}`);
       }
+      setPrompt("");
     } catch {
-      toast.error("Failed to trigger force run");
+      toast.error("Failed to run butler");
     } finally {
-      setIsForceRunning(false);
+      setIsRunning(false);
+    }
+  }
+
+  function handleInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleRun();
     }
   }
 
@@ -109,34 +149,68 @@ export function ButlerDetailActions({
 
   return (
     <div className="flex items-center gap-2" data-testid="butler-detail-actions">
-      <Button
-        variant="outline"
-        size="sm"
-        data-testid="butler-force-run"
-        disabled={isForceRunning}
-        onClick={handleForceRun}
-        className={operationalButtonClassName}
-      >
-        {isForceRunning ? "Running…" : "Force Run"}
-      </Button>
+      {/* Unified prompt-first command bar (replaces Force Run + Trigger tab) */}
+      <div className="flex items-center gap-1.5" data-testid="butler-command-bar">
+        <input
+          type="text"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={handleInputKeyDown}
+          placeholder={DEFAULT_PROMPT}
+          disabled={isRunning}
+          aria-label={`Prompt ${butlerName}`}
+          data-testid="butler-command-input"
+          className="h-7 w-40 rounded-[3px] border border-border bg-transparent px-2 font-mono text-[11px] text-foreground placeholder:truncate placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-56"
+        />
+        <Select value={complexity} onValueChange={setComplexity} disabled={isRunning}>
+          <SelectTrigger
+            size="sm"
+            data-testid="butler-command-complexity"
+            aria-label="Complexity"
+            className="h-7 w-auto gap-1 rounded-[3px] border-border bg-transparent px-2 font-mono text-[10px] font-medium uppercase tracking-[0.06em] shadow-none"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {COMPLEXITY_TIERS.map((tier) => (
+              <SelectItem key={tier} value={tier} className="font-mono text-xs">
+                {complexityLabel(tier)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          variant="outline"
+          size="sm"
+          data-testid="butler-force-run"
+          disabled={isRunning}
+          onClick={handleRun}
+          className={primaryOperationalButtonClassName}
+        >
+          {isRunning ? "Running…" : "Run"}
+        </Button>
+      </div>
 
       <Link
-        to="?tab=logs"
-        onClick={() => onModeChange?.("resident")}
+        to="?tab=activity&section=logs"
         className={actionLinkClassName()}
         data-testid="butler-logs-link"
       >
         Logs
       </Link>
 
-      <Link to="?tab=config" className={actionLinkClassName()} data-testid="butler-config-link">
+      <Link
+        to="?tab=system&section=config"
+        className={actionLinkClassName()}
+        data-testid="butler-config-link"
+      >
         Config
       </Link>
 
       <ChatPanel
         butlerName={butlerName}
         triggerClassName={operationalButtonClassName}
-        triggerLabel="Prompt"
+        triggerLabel="Chat"
         showTriggerIcon={false}
       />
 
@@ -176,7 +250,6 @@ export function ButlerDetailActions({
             ? "Resume"
             : "Pause"}
       </Button>
-
     </div>
   );
 }

@@ -18,7 +18,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -935,6 +935,13 @@ export default function ApprovalsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
 
+  // Deep-link support (bu-86c4c.18): butler-detail Overview/Approvals rows
+  // link here with ?butler=<name>&id=<approvalId> instead of a bare global
+  // link the operator has to re-scan to find the item they just clicked.
+  const [searchParams] = useSearchParams();
+  const butlerFilter = searchParams.get("butler");
+  const deepLinkId = searchParams.get("id");
+
   // Live updates via WebSocket stream (§8.3).
   // Cache invalidation is handled inside useApprovalsStream; the refetchInterval
   // below acts as a safety net when the WS is disconnected.
@@ -955,9 +962,10 @@ export default function ApprovalsPage() {
   // rows renders the distinct "Approvals queue unavailable" state rather than
   // the calm "No pending approvals." -- the exact truth-amnesty defect named
   // in the JARVIS audit (ApprovalsPage.tsx:913-926).
-  const pending = data?.data ?? [];
+  const pendingAll = data?.data ?? [];
+  const pending = butlerFilter ? pendingAll.filter((a) => a.butler === butlerFilter) : pendingAll;
   const firstId = pending[0]?.id;
-  const effectiveSelected = selectedId ?? firstId ?? null;
+  const effectiveSelected = selectedId ?? deepLinkId ?? firstId ?? null;
   // Show "Load more" only when the last response was full (may be more results).
   const hasMore = pending.length === pendingLimit;
 
