@@ -2286,6 +2286,19 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     expect(lastParams).toMatchObject({ trace_id: "trace-abc-123" });
   });
 
+  it("omits the range window bound from the rollup query when trace-scoped — bu-1f81d", () => {
+    // Regression: the rollup query stayed window-bounded even when
+    // trace-scoped, so a traced event outside the range picker's default
+    // window rolled up to zero while the (unwindowed) trace-scoped ledger
+    // showed rows — internally inconsistent. The rollup must drop the
+    // window bound entirely for trace_id queries, same as the ledger.
+    renderWithTrace("trace-abc-123");
+    const calls = vi.mocked(useIngestionWindowRollup).mock.calls;
+    const lastParams = calls[calls.length - 1][0];
+    expect(lastParams).not.toHaveProperty("from");
+    expect(lastParams).not.toHaveProperty("to");
+  });
+
   it("omits trace_id from the rollup query when no ?trace= param is present", () => {
     act(() => {
       root.render(
@@ -2309,6 +2322,20 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     const calls = vi.mocked(useIngestionEventsHistogram).mock.calls;
     const lastParams = calls[calls.length - 1][0];
     expect(lastParams).toMatchObject({ trace_id: "trace-abc-123" });
+  });
+
+  it("omits the range window bound from the histogram query when trace-scoped — bu-1f81d", () => {
+    // Regression: the histogram query stayed window-bounded even when
+    // trace-scoped (from/to always sent from rangeWindow), so a traced
+    // event outside the range picker's default window showed a zeroed hour
+    // strip while the (unwindowed) trace-scoped ledger showed rows. The
+    // server auto-widens to the trace's own bounds when from/to are
+    // omitted — the client must actually omit them for that to kick in.
+    renderWithTrace("trace-abc-123");
+    const calls = vi.mocked(useIngestionEventsHistogram).mock.calls;
+    const lastParams = calls[calls.length - 1][0];
+    expect(lastParams).not.toHaveProperty("from");
+    expect(lastParams).not.toHaveProperty("to");
   });
 
   it("omits trace_id from the histogram query when no ?trace= param is present", () => {

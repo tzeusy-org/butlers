@@ -103,6 +103,21 @@ describe("useIngestionEventsHistogram", () => {
     expect(mockGetIngestionEventsHistogram).not.toHaveBeenCalled();
   });
 
+  it("fetches when both 'from' and 'to' are missing but 'trace_id' is present (bu-1f81d)", async () => {
+    // A trace-scoped query auto-widens to the trace's own event bounds
+    // server-side — the client must not gate the fetch on from/to in that
+    // case, or a trace older than the range picker's window would never
+    // populate the hour strip.
+    const Wrapper = makeWrapper();
+    const params = { trace_id: "trace-abc-123" };
+    renderHook(() => useIngestionEventsHistogram(params), { wrapper: Wrapper });
+
+    await waitFor(() =>
+      expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(1),
+    );
+    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledWith(params);
+  });
+
   it("does not fetch when options.enabled is false, even with from/to present", async () => {
     const Wrapper = makeWrapper();
     renderHook(

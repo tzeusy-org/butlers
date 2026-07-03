@@ -4776,21 +4776,24 @@ export async function getIngestionWindowRollup(
  * Per-bucket ingestion event counts by status for a time window.
  * GET /api/ingestion/events/histogram
  *
- * Powers a status-aware timeline hour strip. `from` and `to` are required —
- * the server has no default window for this endpoint (unlike the events
- * list, it runs an unpaginated aggregate scan). Accepts the same
+ * Powers a status-aware timeline hour strip. `from` and `to` are required
+ * UNLESS `trace_id` is set — a trace-scoped query auto-widens to the
+ * trace's own event bounds server-side instead (bu-1f81d), so `from`/`to`
+ * are omitted from the query string when absent rather than forcing an
+ * unbounded scan the server has no default window for. Accepts the same
  * `channels`/`statuses`/`q` filters as GET /api/ingestion/events.
  *
  * The server enforces a bucket-count guardrail (422 when the range/bucket
  * combination is too wide — e.g. '1m' over a range >48h); retry with a
- * coarser `bucket` on 422.
+ * coarser `bucket` on 422. (Trace-scoped queries auto-escalate the bucket
+ * server-side instead.)
  */
 export async function getIngestionEventsHistogram(
   params: IngestionHistogramParams,
 ): Promise<IngestionHistogramResponse> {
   const sp = new URLSearchParams();
-  sp.set("from", params.from);
-  sp.set("to", params.to);
+  if (params.from) sp.set("from", params.from);
+  if (params.to) sp.set("to", params.to);
   if (params.bucket) sp.set("bucket", params.bucket);
   if (params.channels) sp.set("channels", params.channels);
   if (params.statuses) sp.set("statuses", params.statuses);

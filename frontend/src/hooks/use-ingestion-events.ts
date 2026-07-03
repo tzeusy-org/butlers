@@ -277,14 +277,18 @@ export function useIngestionWindowRollup(
  *
  * Fetches from GET /api/ingestion/events/histogram — the data source for a
  * status-aware timeline hour strip (bu-4utdw.7 wires this into HourFlameStrip;
- * this hook is plumbing only). `params.from` and `params.to` are required;
- * the query is disabled whenever either is missing so callers never fire an
+ * this hook is plumbing only). `params.from` and `params.to` are required
+ * UNLESS `params.trace_id` is set — a trace-scoped query auto-widens to the
+ * trace's own event bounds server-side (bu-1f81d), so the query is enabled
+ * whenever either the window (`from` and `to`) or `trace_id` is present; it
+ * is disabled only when neither is available, so callers never fire an
  * unbounded aggregate scan.
  *
  * The backend enforces a bucket-count guardrail and returns 422 when the
  * range/bucket combination is too wide (e.g. '1m' over >48h) — callers
  * should retry with a coarser `bucket` on error rather than treating it as a
- * generic failure.
+ * generic failure. (Trace-scoped queries auto-escalate the bucket
+ * server-side instead of 422ing — see the endpoint docstring.)
  */
 export function useIngestionEventsHistogram(
   params: IngestionHistogramParams,
@@ -294,6 +298,7 @@ export function useIngestionEventsHistogram(
     queryKey: ingestionEventKeys.histogram(params),
     queryFn: () => getIngestionEventsHistogram(params),
     staleTime: 30_000,
-    enabled: !!params.from && !!params.to && options?.enabled !== false,
+    enabled:
+      (!!params.trace_id || (!!params.from && !!params.to)) && options?.enabled !== false,
   });
 }

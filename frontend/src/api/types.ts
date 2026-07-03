@@ -3590,6 +3590,8 @@ export interface IngestionWindowRollupParams {
    * trace_id — same drill-down spine as IngestionEventsParams.trace_id. The
    * server resolves trace_id -> matching event ids before aggregating, so a
    * trace-scoped rollup band stays consistent with the trace-scoped ledger.
+   * The server ignores any `from`/`to` passed alongside `trace_id` and
+   * drops the window bound entirely (bu-1f81d) — omit them here too.
    */
   trace_id?: string;
 }
@@ -3614,10 +3616,17 @@ export type IngestionHistogramBucketSize = "1m" | "5m" | "1h";
 
 /** Query parameters for GET /api/ingestion/events/histogram. */
 export interface IngestionHistogramParams {
-  /** ISO-8601 inclusive lower bound on received_at. Required. */
-  from: string;
-  /** ISO-8601 exclusive upper bound on received_at. Required. */
-  to: string;
+  /**
+   * ISO-8601 inclusive lower bound on received_at. Required unless
+   * `trace_id` is set, in which case the server auto-widens to the trace's
+   * own event bounds instead and ignores any explicit from/to (bu-1f81d).
+   */
+  from?: string;
+  /**
+   * ISO-8601 exclusive upper bound on received_at. Required unless
+   * `trace_id` is set (see `from`).
+   */
+  to?: string;
   /**
    * Bucket granularity. Defaults to "1m" server-side. "1m" is capped at 48h
    * ranges by the server-side guardrail (max 2880 buckets); wider ranges must
@@ -3635,6 +3644,8 @@ export interface IngestionHistogramParams {
    * trace_id — same drill-down spine as IngestionEventsParams.trace_id. The
    * server resolves trace_id -> matching event ids before bucketing, so a
    * trace-scoped hour strip stays consistent with the trace-scoped ledger.
+   * Makes `from`/`to` optional (see above) — the server auto-widens the
+   * window to the trace's own event bounds (bu-1f81d).
    */
   trace_id?: string;
 }

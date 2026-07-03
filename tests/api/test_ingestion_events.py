@@ -10,7 +10,7 @@ bu-1f91v.3: list response now uses cursor pagination (next_cursor, has_more) —
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -1459,3 +1459,254 @@ async def test_histogram_503_on_missing_pool(app):
         )
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Trace-scoped rollup/histogram window handling (bu-1f81d)
+#
+# bu-q750c threaded trace_id into rollup + histogram but left them
+# WINDOW-BOUNDED (histogram's from/to were server-required), unlike the
+# ledger which drops the window bound entirely for trace_id queries. So a
+# traced event outside the range picker's default window showed 0 in
+# rollup/histogram while the ledger showed 1+ rows. Fix: rollup drops the
+# window bound (like the ledger); histogram auto-widens to the trace's own
+# received_at bounds since it needs concrete bounds to bucket by.
+# ---------------------------------------------------------------------------
+
+
+async def test_rollup_trace_id_drops_window_bound(app):
+    """?trace_id=... ignores any from/to and passes from_dt=to_dt=None.
+
+    Regression: a trace-scoped rollup used to stay bound to whatever
+    from/to the caller passed (the active range-picker window), so a traced
+    event outside that window rolled up to zero. Dropping the window bound
+    entirely for trace_id queries matches the ledger's own behavior.
+    """
+    _app_with_mock_rollup_db(app)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+            return_value=["req-1"],
+        ) as mock_resolve,
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_window_rollup",
+            new_callable=AsyncMock,
+            return_value={
+                "events": 1,
+                "sessions": 1,
+                "cost": None,
+                "window": {"from": None, "to": None},
+            },
+        ) as mock_rollup,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/rollup"
+                "?trace_id=abc123"
+                "&from=2020-01-01T00:00:00Z"
+                "&to=2020-01-02T00:00:00Z"
+            )
+
+    assert resp.status_code == 200
+    mock_resolve.assert_awaited_once()
+    call_kwargs = mock_rollup.await_args.kwargs
+    assert call_kwargs.get("from_dt") is None
+    assert call_kwargs.get("to_dt") is None
+    assert call_kwargs.get("event_ids") == ["req-1"]
+
+
+async def test_histogram_trace_id_without_from_to_is_not_422(app):
+    """A trace_id query with no from/to is accepted, not a 422 — it auto-widens."""
+    _app_with_mock_db(app)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+            return_value=["req-1"],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_received_at_bounds",
+            new_callable=AsyncMock,
+            return_value=(
+                datetime(2020, 1, 1, tzinfo=UTC),
+                datetime(2020, 1, 1, 0, 5, tzinfo=UTC),
+            ),
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+            new_callable=AsyncMock,
+            return_value={"buckets": [], "bucket": "1m"},
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram", params={"trace_id": "abc123"}
+            )
+
+    assert resp.status_code == 200
+
+
+async def test_histogram_trace_id_auto_widens_ignoring_explicit_from_to(app):
+    """A trace-scoped histogram uses the trace's own received_at bounds.
+
+    Regression: histogram used to require from/to and pass them straight
+    through even when trace_id was set, so a traced event outside that
+    window showed a zeroed hour strip while the (unwindowed) trace-scoped
+    ledger showed rows. Any from/to passed alongside trace_id is ignored in
+    favor of (min, max + 1s) over the trace's own matching events.
+    """
+    _app_with_mock_db(app)
+
+    min_ts = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC)
+    max_ts = datetime(2020, 1, 1, 0, 3, 0, tzinfo=UTC)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+            return_value=["req-1", "req-2"],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_received_at_bounds",
+            new_callable=AsyncMock,
+            return_value=(min_ts, max_ts),
+        ) as mock_bounds,
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+            new_callable=AsyncMock,
+            return_value={"buckets": [], "bucket": "1m"},
+        ) as mock_histogram,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={
+                    "trace_id": "abc123",
+                    # Deliberately far outside the trace's own bounds — must
+                    # be ignored, not passed through.
+                    "from": "1999-01-01T00:00:00Z",
+                    "to": "1999-01-02T00:00:00Z",
+                },
+            )
+
+    assert resp.status_code == 200
+    mock_bounds.assert_awaited_once()
+    call_kwargs = mock_histogram.await_args.kwargs
+    assert call_kwargs["from_dt"] == min_ts
+    assert call_kwargs["to_dt"] == max_ts + timedelta(seconds=1)
+    assert call_kwargs["event_ids"] == ["req-1", "req-2"]
+
+
+async def test_histogram_trace_id_no_match_returns_empty_without_querying_bounds(app):
+    """A trace_id matching no session returns an empty histogram, not an error.
+
+    Mirrors the ledger's/rollup's "empty, not unfiltered" contract — and must
+    not issue the bounds query for an empty event_ids set.
+    """
+    _app_with_mock_db(app)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_received_at_bounds",
+            new_callable=AsyncMock,
+        ) as mock_bounds,
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+            new_callable=AsyncMock,
+        ) as mock_histogram,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={"trace_id": "no-such-trace"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"buckets": [], "bucket": "1m"}
+    mock_bounds.assert_not_awaited()
+    mock_histogram.assert_not_awaited()
+
+
+async def test_histogram_trace_id_escalates_bucket_on_guardrail_miss(app):
+    """A trace whose auto-widened span is too wide for the requested bucket
+    escalates to a coarser bucket instead of 422ing.
+
+    The caller's `bucket` was chosen for the range-picker's visible window,
+    not the trace's own span, which the caller can't know in advance.
+    """
+    _app_with_mock_db(app)
+
+    min_ts = datetime(2020, 1, 1, tzinfo=UTC)
+    max_ts = datetime(2020, 4, 1, tzinfo=UTC)  # ~90 days: too wide for 1m or 5m
+
+    async def _histogram_side_effect(_pool, *, bucket, **_kwargs):
+        if bucket in ("1m", "5m"):
+            raise ValueError(f"Range too wide for bucket '{bucket}'")
+        return {"buckets": [], "bucket": bucket}
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+            return_value=["req-1"],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_received_at_bounds",
+            new_callable=AsyncMock,
+            return_value=(min_ts, max_ts),
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+            new_callable=AsyncMock,
+            side_effect=_histogram_side_effect,
+        ) as mock_histogram,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={"trace_id": "abc123", "bucket": "1m"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"buckets": [], "bucket": "1h"}
+    assert mock_histogram.await_count == 3
+
+
+async def test_histogram_non_trace_bucket_guardrail_still_422s_without_escalation(app):
+    """Outside trace-scoped auto-widen mode, a guardrail miss still 422s
+    immediately — no silent bucket escalation for the plain windowed path."""
+    _app_with_mock_db(app)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_histogram",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Range too wide for bucket '1m'"),
+    ) as mock_histogram:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/ingestion/events/histogram",
+                params={"from": "2026-01-01T00:00:00Z", "to": "2026-01-10T00:00:00Z"},
+            )
+
+    assert resp.status_code == 422
+    mock_histogram.assert_awaited_once()

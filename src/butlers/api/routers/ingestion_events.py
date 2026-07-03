@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC
+from datetime import UTC, timedelta
 from datetime import datetime as _datetime
 from typing import Annotated, Literal
 
@@ -61,6 +61,7 @@ from butlers.core.ingestion_events import (
     ingestion_events_histogram,
     ingestion_events_list,
     ingestion_events_list_enrichment,
+    ingestion_events_received_at_bounds,
     ingestion_events_request_ids_for_trace,
     ingestion_events_sessions_for_ids,
     ingestion_window_rollup,
@@ -373,14 +374,22 @@ async def _enrich_list_summaries(
 
 @router.get("/histogram", response_model=IngestionHistogramResponse)
 async def get_ingestion_events_histogram(
-    from_: str = Query(
-        ...,
+    from_: str | None = Query(
+        None,
         alias="from",
-        description="ISO-8601 inclusive lower bound on received_at (required).",
+        description=(
+            "ISO-8601 inclusive lower bound on received_at. Required unless "
+            "trace_id is set, in which case the window auto-widens to the "
+            "trace's own event bounds instead (see trace_id) and any "
+            "explicit from/to passed alongside it is ignored."
+        ),
     ),
-    to: str = Query(
-        ...,
-        description="ISO-8601 exclusive upper bound on received_at (required).",
+    to: str | None = Query(
+        None,
+        description=(
+            "ISO-8601 exclusive upper bound on received_at. Required unless "
+            "trace_id is set (see trace_id)."
+        ),
     ),
     bucket: Literal["1m", "5m", "1h"] = Query(
         "1m",
@@ -411,9 +420,13 @@ async def get_ingestion_events_histogram(
             "GET /api/ingestion/events. Resolved via a cross-butler session "
             "fan-out (ingestion_events_request_ids_for_trace), then pushed into "
             "the histogram query as an `id = ANY(...)` filter so a trace-scoped "
-            "hour strip stays consistent with the trace-scoped ledger. A "
-            "trace_id that matches no session returns an empty histogram, not "
-            "an error."
+            "hour strip stays consistent with the trace-scoped ledger. Makes "
+            "`from`/`to` optional: the window auto-widens to the trace's own "
+            "``received_at`` bounds (bu-1f81d) instead of requiring the caller "
+            "to already know a window wide enough to contain it — the same "
+            "problem the ledger solves by dropping the window bound entirely "
+            "for trace-scoped queries. A trace_id that matches no session "
+            "returns an empty histogram, not an error."
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -439,27 +452,26 @@ async def get_ingestion_events_histogram(
     Guardrail: bucket count is capped at 2880 regardless of granularity (48h
     at 1m, 10 days at 5m, 120 days at 1h) to bound the scan. Requesting a
     range/bucket combination that would exceed the cap returns 422 — retry
-    with a coarser bucket.
+    with a coarser bucket. In trace-scoped auto-widen mode this is handled
+    automatically: the requested bucket escalates to the next coarser
+    granularity (1m → 5m → 1h) until the trace's actual span fits, since the
+    caller picked `bucket` for the range-picker's visible window, not the
+    trace's own span.
 
     Returns:
         200 — ``{"buckets": [{"ts": "...", "counts": {...}}], "bucket": "1m"}``
-        422 — invalid ``from``/``to``/``bucket``, or the range exceeds the
-              bucket's guardrail cap
+              (``bucket`` echoes whichever granularity was actually used,
+              which may be coarser than requested in trace-scoped auto-widen
+              mode)
+        422 — invalid ``from``/``to``/``bucket``, missing ``from``/``to``
+              without ``trace_id``, or the range exceeds the guardrail cap
+              even at the coarsest bucket
         503 — shared database pool unavailable
     """
     try:
         pool = db.credential_shared_pool()
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
-
-    try:
-        from_dt = _datetime.fromisoformat(from_).astimezone(UTC)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid 'from' value: {exc}") from exc
-    try:
-        to_dt = _datetime.fromisoformat(to).astimezone(UTC)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid 'to' value: {exc}") from exc
 
     channel_list = [c.strip() for c in channels.split(",") if c.strip()] if channels else None
     status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
@@ -471,19 +483,68 @@ async def get_ingestion_events_histogram(
     if trace_id is not None and trace_id.strip():
         event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
 
-    try:
-        result = await ingestion_events_histogram(
-            pool,
-            from_dt=from_dt,
-            to_dt=to_dt,
-            bucket=bucket,
-            channels=channel_list,
-            statuses=status_list,
-            q=q,
-            event_ids=event_ids,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if event_ids is not None:
+        # Trace-scoped: drop the caller's from/to in favor of the trace's own
+        # received_at bounds (bu-1f81d) — parity with the ledger, which drops
+        # the window bound entirely for trace_id queries. Honoring a
+        # window the caller supplied for the *unfiltered* view here would
+        # silently zero out an otherwise-populated trace-scoped histogram
+        # whenever the trace's events fall outside it (the bug this closes).
+        if not event_ids:
+            # No session anywhere carries this trace — same "empty, not an
+            # error" contract as the ledger and the window rollup.
+            return IngestionHistogramResponse(buckets=[], bucket=bucket)
+        min_ts, max_ts = await ingestion_events_received_at_bounds(pool, event_ids)
+        if min_ts is None or max_ts is None:
+            # Defensive: the session fan-out matched but the events
+            # themselves are gone by the time we queried for bounds.
+            return IngestionHistogramResponse(buckets=[], bucket=bucket)
+        from_dt = min_ts
+        to_dt = max_ts + timedelta(seconds=1)  # `to` is exclusive; include the last event
+    else:
+        if from_ is None or to is None:
+            raise HTTPException(
+                status_code=422,
+                detail="'from' and 'to' are required unless 'trace_id' is set",
+            )
+        try:
+            from_dt = _datetime.fromisoformat(from_).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'from' value: {exc}") from exc
+        try:
+            to_dt = _datetime.fromisoformat(to).astimezone(UTC)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'to' value: {exc}") from exc
+
+    # Bucket candidates to try, finest-requested-first. Only trace-scoped
+    # auto-widen mode escalates to coarser buckets on a guardrail miss — the
+    # non-trace path keeps its existing "422, retry coarser yourself" contract.
+    _BUCKET_ORDER = ("1m", "5m", "1h")
+    bucket_candidates = (
+        _BUCKET_ORDER[_BUCKET_ORDER.index(bucket) :] if event_ids is not None else (bucket,)
+    )
+
+    result: dict | None = None
+    last_error: ValueError | None = None
+    for candidate in bucket_candidates:
+        try:
+            result = await ingestion_events_histogram(
+                pool,
+                from_dt=from_dt,
+                to_dt=to_dt,
+                bucket=candidate,
+                channels=channel_list,
+                statuses=status_list,
+                q=q,
+                event_ids=event_ids,
+            )
+            break
+        except ValueError as exc:
+            last_error = exc
+
+    if result is None:
+        assert last_error is not None  # bucket_candidates is always non-empty
+        raise HTTPException(status_code=422, detail=str(last_error)) from last_error
 
     return IngestionHistogramResponse(**result)
 
@@ -1162,9 +1223,13 @@ async def get_ingestion_window_rollup(
             "GET /api/ingestion/events. Resolved via a cross-butler session "
             "fan-out (ingestion_events_request_ids_for_trace), then pushed into "
             "the rollup query as an `id = ANY(...)` filter so a trace-scoped "
-            "footer rollup stays consistent with the trace-scoped ledger. A "
-            "trace_id that matches no session returns a zeroed rollup, not an "
-            "error."
+            "footer rollup stays consistent with the trace-scoped ledger. Any "
+            "`from`/`to` passed alongside `trace_id` is ignored — the window "
+            "bound is dropped entirely (bu-1f81d), matching the ledger's own "
+            "trace-scoped behavior, since a traced event's received_at may "
+            "fall outside whatever window the range picker happens to have "
+            "active. A trace_id that matches no session returns a zeroed "
+            "rollup, not an error."
         ),
     ),
     db: DatabaseManager = Depends(_get_rollup_db_manager),
@@ -1176,6 +1241,11 @@ async def get_ingestion_window_rollup(
     ``trace_id``).  When pricing data is available, ``cost`` is populated with
     the estimated USD total for all sessions linked to matching events.
 
+    When ``trace_id`` is set, ``from``/``to`` are ignored and the window is
+    unbounded (bu-1f81d) — parity with the ledger, which drops the window
+    bound entirely for trace-scoped queries so a trace older than the active
+    range picker window still rolls up correctly.
+
     Returns:
         200 — ``{events, sessions, cost, window: {from, to}}``
         503 — shared database unavailable
@@ -1185,14 +1255,16 @@ async def get_ingestion_window_rollup(
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
+    is_trace_scoped = trace_id is not None and trace_id.strip()
+
     from_dt = None
     to_dt = None
-    if from_ is not None:
+    if from_ is not None and not is_trace_scoped:
         try:
             from_dt = _datetime.fromisoformat(from_).astimezone(UTC)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid 'from' timestamp: {exc}") from exc
-    if to is not None:
+    if to is not None and not is_trace_scoped:
         try:
             to_dt = _datetime.fromisoformat(to).astimezone(UTC)
         except ValueError as exc:
@@ -1203,9 +1275,12 @@ async def get_ingestion_window_rollup(
 
     # Resolve trace_id -> matching event ids BEFORE the main query, same
     # resolve-then-filter pattern as GET /api/ingestion/events (see
-    # ingestion_events_request_ids_for_trace).
+    # ingestion_events_request_ids_for_trace). from_dt/to_dt are already
+    # forced to None above when trace-scoped, so the window is dropped
+    # entirely rather than requiring the caller to already know a window
+    # wide enough to contain the trace.
     event_ids: list[str] | None = None
-    if trace_id is not None and trace_id.strip():
+    if is_trace_scoped:
         event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
 
     result = await ingestion_window_rollup(

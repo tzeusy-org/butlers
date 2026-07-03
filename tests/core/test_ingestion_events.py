@@ -441,6 +441,38 @@ async def test_ingestion_events_request_ids_for_trace() -> None:
     assert await ingestion_events_request_ids_for_trace(db3, "trace-z") == []
 
 
+async def test_ingestion_events_received_at_bounds() -> None:
+    """(min, max) received_at for a set of event ids (bu-1f81d: trace-scoped
+    histogram window auto-widen).
+
+    Covers: empty event_ids short-circuits without a query, a populated
+    result forwards (min_ts, max_ts) from the row, and the SQL pushes an
+    `id = ANY(...)` filter over the same unified UNION ALL read.
+    """
+    from butlers.core.ingestion_events import ingestion_events_received_at_bounds
+
+    # Empty event_ids -> (None, None), no query issued.
+    pool_empty = _FakePool()
+    assert await ingestion_events_received_at_bounds(pool_empty, []) == (None, None)
+    assert pool_empty.calls == []
+
+    # Populated event_ids -> forwards (min_ts, max_ts) from the row.
+    min_ts = datetime(2026, 1, 1, tzinfo=UTC)
+    max_ts = datetime(2026, 1, 1, 0, 5, tzinfo=UTC)
+    ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    pool = _FakePool(fetchrow_result={"min_ts": min_ts, "max_ts": max_ts})
+    result = await ingestion_events_received_at_bounds(pool, ids)
+    assert result == (min_ts, max_ts)
+    sql, args = pool.calls[0][1], pool.calls[0][2]
+    assert "MIN(received_at)" in sql and "MAX(received_at)" in sql
+    assert "id = ANY(" in sql and "::uuid[]" in sql
+    assert [uuid.UUID(i) for i in ids] in args
+
+    # No matching row -> (None, None), not an error.
+    pool_none = _FakePool(fetchrow_result=None)
+    assert await ingestion_events_received_at_bounds(pool_none, ids) == (None, None)
+
+
 async def test_cost_cursor_and_cost_sort() -> None:
     """Cost cursor round-trips correctly; sort=cost uses offset pagination (core_126)."""
     import uuid as _uuid

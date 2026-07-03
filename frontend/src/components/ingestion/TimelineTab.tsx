@@ -1931,8 +1931,11 @@ export function TimelineTab({
   const histogramBucket = histogramBucketForRange(range);
   const histogramBucketMinutesValue = histogramBucketMinutes(histogramBucket);
   const histogramParams = useMemo(() => ({
-    from: rangeWindow.from,
-    to: rangeWindow.to,
+    // A trace-scoped hour strip must not be silently clipped by the range
+    // picker's window either — same reasoning as eventsFilters above. The
+    // server auto-widens to the trace's own event bounds when `from`/`to`
+    // are omitted and `trace_id` is present (bu-1f81d).
+    ...(urlTrace ? {} : { from: rangeWindow.from, to: rangeWindow.to }),
     bucket: histogramBucket,
     ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
     ...(statusesCsv ? { statuses: statusesCsv } : {}),
@@ -1974,8 +1977,17 @@ export function TimelineTab({
     isLoading: rollupLoading,
   } = useIngestionWindowRollup(
     {
-      from: effectiveWindow?.from ?? rangeWindow.from,
-      to: effectiveWindow?.to ?? rangeWindow.to,
+      // A trace-scoped footer rollup must not be silently clipped by the
+      // range picker's window either — same reasoning as eventsFilters
+      // above. The server drops the window bound entirely when `trace_id`
+      // is present, ignoring any `from`/`to` (bu-1f81d), so omit them here
+      // too rather than sending a window the server will ignore anyway.
+      ...(urlTrace
+        ? {}
+        : {
+            from: effectiveWindow?.from ?? rangeWindow.from,
+            to: effectiveWindow?.to ?? rangeWindow.to,
+          }),
       ...(debouncedQ ? { q: debouncedQ } : {}),
       ...(rollupChannels ? { channels: rollupChannels } : {}),
       ...(rollupStatuses ? { statuses: rollupStatuses } : {}),

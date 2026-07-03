@@ -21,6 +21,8 @@ ingestion_event_set_cost_usd    — write computed cost_usd back to public.inges
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
 ingestion_events_request_ids_for_trace — resolve a trace_id to its matching event ids
                                   (drill-down spine)
+ingestion_events_received_at_bounds — (min, max) received_at for a set of event ids
+                                  (trace-scoped histogram window auto-widen, bu-1f81d)
 ingestion_events_sessions_for_ids — ONE grouped fan-out for a whole page of ids (list enrichment)
 ingestion_events_list_enrichment — aggregate per-event tokens/cost/sessions from bulk fan-out
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
@@ -1081,6 +1083,45 @@ async def ingestion_events_request_ids_for_trace(
             if request_id:
                 request_ids.add(str(request_id))
     return sorted(request_ids)
+
+
+async def ingestion_events_received_at_bounds(
+    pool: asyncpg.Pool,
+    event_ids: list[str],
+) -> tuple[datetime | None, datetime | None]:
+    """Return the ``(min, max)`` ``received_at`` across a set of event ids.
+
+    Used to auto-widen a trace-scoped histogram window to the trace's own
+    event span (bu-1f81d) instead of whatever window the range-picker's
+    default happens to be — a traced event's ``received_at`` may fall well
+    outside that default, which otherwise makes the histogram show zero
+    counts for a trace the ledger (unwindowed for trace_id) shows rows for.
+    Reads the same unified UNION ALL (``public.ingestion_events`` +
+    ``connectors.filtered_events``) as every other timeline query.
+
+    Args:
+        pool: asyncpg pool for the shared credentials database.
+        event_ids: ``request_id`` strings to bound (as returned by
+            :func:`ingestion_events_request_ids_for_trace`).
+
+    Returns:
+        ``(min_received_at, max_received_at)``. Both ``None`` when
+        ``event_ids`` is empty or no matching rows are found.
+    """
+    if not event_ids:
+        return None, None
+
+    sql = (
+        f"SELECT MIN(received_at) AS min_ts, MAX(received_at) AS max_ts FROM ("
+        f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
+        f"UNION ALL "
+        f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
+        f") AS combined WHERE id = ANY($1::uuid[])"
+    )
+    row = await pool.fetchrow(sql, [UUID(e) for e in event_ids])
+    if row is None:
+        return None, None
+    return row["min_ts"], row["max_ts"]
 
 
 async def ingestion_events_sessions_for_ids(
