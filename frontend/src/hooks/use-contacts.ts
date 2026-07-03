@@ -17,6 +17,7 @@ import {
   getContacts,
   getContactInteractions,
   getEntitySuggestions,
+  getGroupMembers,
   getGroups,
   getLabels,
   createLabel,
@@ -78,6 +79,15 @@ export function useGroups(params?: GroupParams) {
     queryKey: ["groups", params],
     queryFn: () => getGroups(params),
     placeholderData: (prev) => prev,
+  });
+}
+
+/** Fetch a group's member roster (bu-5umz4 — Circles lens deep-links). */
+export function useGroupMembers(groupId: string | undefined) {
+  return useQuery({
+    queryKey: ["group-members", groupId],
+    queryFn: () => getGroupMembers(groupId!),
+    enabled: !!groupId,
   });
 }
 

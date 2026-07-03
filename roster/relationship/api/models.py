@@ -174,6 +174,41 @@ class GroupListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Group member roster (bu-5umz4 — Circles lens member deep-links)
+# ---------------------------------------------------------------------------
+
+
+class GroupMember(BaseModel):
+    """One member entity of a group, for the Circles lens roster.
+
+    ``id`` is the ``contact_id`` (the ``group_members`` row identity).
+    ``entity_id`` is the linked entity's UUID (via ``contact_entity_map``),
+    used by the frontend to deep-link to ``/entities/{entity_id}``.
+    ``name`` is the entity's ``canonical_name``.  ``entity_type`` is the
+    entity's type (``person`` | ``organization`` | ``place`` | …).
+
+    Members whose contact has no ``contact_entity_map`` row (not yet linked to
+    an entity) are omitted — the roster only surfaces deep-linkable members,
+    matching the existing ``group_members()`` tool behaviour.
+    """
+
+    id: UUID
+    entity_id: UUID
+    name: str
+    entity_type: str
+
+
+class GroupMembersResponse(BaseModel):
+    """Response for ``GET /groups/{group_id}/members``.
+
+    ``members`` is ordered by ``name ASC`` for stable rendering.
+    """
+
+    group_id: UUID
+    members: list[GroupMember]
+
+
+# ---------------------------------------------------------------------------
 # Entity info models
 # ---------------------------------------------------------------------------
 

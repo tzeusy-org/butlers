@@ -431,6 +431,7 @@ import type {
   AssignGroupLabelResponse,
   RemoveGroupLabelResponse,
   GroupLabelsResponse,
+  GroupMembersResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1828,6 +1829,13 @@ export function getGroups(params?: GroupParams): Promise<GroupListResponse> {
 export function getGroup(groupId: string): Promise<Group> {
   return apiFetch<Group>(
     `/relationship/groups/${encodeURIComponent(groupId)}`,
+  );
+}
+
+/** Fetch a group's member roster (bu-5umz4 — Circles lens deep-links). */
+export function getGroupMembers(groupId: string): Promise<GroupMembersResponse> {
+  return apiFetch<GroupMembersResponse>(
+    `/relationship/groups/${encodeURIComponent(groupId)}/members`,
   );
 }
 

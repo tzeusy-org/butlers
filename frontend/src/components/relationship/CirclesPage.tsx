@@ -5,14 +5,9 @@
  * first-class lens on the relationship surface where contacts already live.
  * A personal-scale, client-filtered list (no pagination) sorted alphabetically;
  * each row expands into a fresh single-group detail wired to the
- * previously-unused `getGroup` endpoint (client.ts:getGroup).
- *
- * Honest scope note: `GET /groups/{id}` currently returns the same fields as
- * the list row (name/description/member_count/labels/created/updated) — it
- * does NOT return a member roster, so this lens cannot deep-link individual
- * members to /entities/:entityId yet. That needs a backend change (a real
- * members array or a /groups/{id}/members endpoint) — tracked as a follow-up
- * rather than fabricated here.
+ * `getGroup` endpoint plus the member-roster endpoint (client.ts:getGroup,
+ * client.ts:getGroupMembers, bu-5umz4) so each member deep-links to its
+ * entity page.
  *
  * Groups themselves are read-only by spec (created via the relationship
  * butler's group_create/group_add_member tools); the only write affordances
@@ -24,6 +19,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router";
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
 
 import type { Group, Label } from "@/api/types";
@@ -50,6 +46,7 @@ import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import {
   useAssignGroupLabel,
   useCreateLabel,
+  useGroupMembers,
   useGroups,
   useLabels,
   useRemoveGroupLabel,
@@ -252,6 +249,61 @@ function GroupLabelCell({ groupId, labels }: { groupId: string; labels: Label[] 
 // endpoint (a fresh single-record fetch rather than trusting the list cache).
 // ---------------------------------------------------------------------------
 
+function MemberRoster({ groupId, memberCount }: { groupId: string; memberCount: number }) {
+  const { data, isLoading, isError, refetch } = useGroupMembers(groupId);
+
+  if (isLoading) {
+    return <Skeleton className="h-8 w-full" />;
+  }
+
+  if (isError || !data) {
+    return (
+      <div className="flex items-center gap-3">
+        <p className="text-sm text-destructive">Couldn't load the member roster.</p>
+        <Button variant="outline" size="sm" onClick={() => void refetch()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  const members = data.members;
+
+  if (members.length === 0) {
+    return (
+      <p className="text-xs italic text-muted-foreground">
+        {memberCount > 0
+          ? "None of this circle's members are linked to an entity yet."
+          : "No members yet."}
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-1">
+      <ul className="flex flex-wrap gap-1.5">
+        {members.map((member) => (
+          <li key={member.id}>
+            <Link
+              to={`/entities/${member.entity_id}`}
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs hover:bg-accent transition-colors"
+            >
+              {member.name}
+              <span className="text-muted-foreground">· {member.entity_type}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {members.length < memberCount && (
+        <p className="text-xs italic text-muted-foreground">
+          {memberCount - members.length} member{memberCount - members.length === 1 ? "" : "s"} not
+          yet linked to an entity — omitted from deep-links.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CircleDetail({ groupId }: { groupId: string }) {
   const { data, isLoading, isError, refetch } = useQuery<Group>({
     queryKey: ["group", groupId],
@@ -283,14 +335,7 @@ function CircleDetail({ groupId }: { groupId: string }) {
         <Time value={data.created_at} mode="absolute" precision="day" /> · updated{" "}
         <Time value={data.updated_at} mode="absolute" precision="day" />
       </p>
-      {/*
-        Honest gap: the relationship API does not yet return a member roster
-        from this endpoint (or any other), so we cannot deep-link individual
-        members to /entities/:entityId here — only the count is real.
-      */}
-      <p className="text-xs italic text-muted-foreground">
-        Member roster isn't available from the API yet — showing the count only.
-      </p>
+      <MemberRoster groupId={groupId} memberCount={data.member_count} />
     </div>
   );
 }

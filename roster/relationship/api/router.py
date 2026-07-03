@@ -145,6 +145,8 @@ if _models_path.exists():
         AssignGroupLabelResponse = _models_module.AssignGroupLabelResponse
         RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
         GroupLabelsResponse = _models_module.GroupLabelsResponse
+        GroupMember = _models_module.GroupMember
+        GroupMembersResponse = _models_module.GroupMembersResponse
 
 logger = logging.getLogger(__name__)
 
@@ -676,6 +678,60 @@ async def get_group(
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /groups/{group_id}/members — group member roster (bu-5umz4)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/groups/{group_id}/members", response_model=GroupMembersResponse)
+async def get_group_members(
+    group_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> GroupMembersResponse:
+    """Return the member entities of a group, for the Circles lens roster.
+
+    Joins ``group_members`` → ``contact_entity_map`` → ``public.entities`` so
+    each member carries an ``entity_id`` the frontend can deep-link to
+    ``/entities/{entity_id}``. Members whose contact has no
+    ``contact_entity_map`` row (not yet linked to an entity) are omitted —
+    mirrors the existing ``group_members()`` tool behaviour
+    (``roster/relationship/tools/groups.py``).
+    """
+    pool = _pool(db)
+
+    exists = await pool.fetchval("SELECT 1 FROM groups WHERE id = $1", group_id)
+    if not exists:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            gm.contact_id AS id,
+            cem.entity_id AS entity_id,
+            e.canonical_name AS name,
+            e.entity_type AS entity_type
+        FROM group_members gm
+        JOIN contact_entity_map cem ON cem.contact_id = gm.contact_id
+        JOIN public.entities e ON e.id = cem.entity_id
+        WHERE gm.group_id = $1
+        ORDER BY e.canonical_name
+        """,
+        group_id,
+    )
+
+    members = [
+        GroupMember(
+            id=r["id"],
+            entity_id=r["entity_id"],
+            name=r["name"],
+            entity_type=r["entity_type"],
+        )
+        for r in rows
+    ]
+
+    return GroupMembersResponse(group_id=group_id, members=members)
 
 
 # ---------------------------------------------------------------------------

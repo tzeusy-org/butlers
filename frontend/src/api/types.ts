@@ -1717,6 +1717,20 @@ export interface GroupLabelsResponse {
   labels: Label[];
 }
 
+/** One member entity of a group, for the Circles lens roster (bu-5umz4). */
+export interface GroupMember {
+  id: string;
+  entity_id: string;
+  name: string;
+  entity_type: string;
+}
+
+/** Response for GET /groups/{group_id}/members. */
+export interface GroupMembersResponse {
+  group_id: string;
+  members: GroupMember[];
+}
+
 /** An upcoming date (birthday, anniversary, etc.). */
 export interface UpcomingDate {
   contact_id: string;

@@ -21,7 +21,7 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { Group } from "@/api/types";
+import type { Group, GroupMember } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -29,6 +29,7 @@ import type { Group } from "@/api/types";
 
 vi.mock("@/hooks/use-contacts", () => ({
   useGroups: vi.fn(),
+  useGroupMembers: vi.fn(),
   useLabels: vi.fn(),
   useCreateLabel: vi.fn(),
   useAssignGroupLabel: vi.fn(),
@@ -47,6 +48,7 @@ import CirclesPage from "./CirclesPage";
 import {
   useAssignGroupLabel,
   useCreateLabel,
+  useGroupMembers,
   useGroups,
   useLabels,
   useRemoveGroupLabel,
@@ -65,6 +67,11 @@ const FAMILY: Group = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-06-01T00:00:00Z",
 };
+
+const FAMILY_MEMBERS: GroupMember[] = [
+  { id: "contact-alice", entity_id: "entity-alice", name: "Alice Family", entity_type: "person" },
+  { id: "contact-bob", entity_id: "entity-bob", name: "Bob Family", entity_type: "person" },
+];
 
 const WORK: Group = {
   id: "group-work",
@@ -106,6 +113,12 @@ beforeEach(() => {
   (useAssignGroupLabel as AnyMock).mockReturnValue({ mutate: vi.fn() });
   (useRemoveGroupLabel as AnyMock).mockReturnValue({ mutate: vi.fn() });
   (getGroup as AnyMock).mockResolvedValue(FAMILY);
+  (useGroupMembers as AnyMock).mockReturnValue({
+    data: { group_id: "group-family", members: FAMILY_MEMBERS },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  });
 });
 
 afterEach(() => {
@@ -231,7 +244,74 @@ describe("CirclesPage — expandable detail wired to getGroup", () => {
       expect(getGroup).toHaveBeenCalledWith("group-family");
       expect(view.container.textContent).toContain("Immediate family");
     });
-    expect(view.container.textContent).toContain("Member roster isn't available from the API yet");
+
+    view.unmount();
+  });
+
+  it("renders the member roster with deep-links to each member's entity page", async () => {
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [FAMILY], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    const view = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/entities/circles"]}>
+          <CirclesPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const row = view.getAllByRole("button").find((btn) => btn.textContent?.includes("Family"))!;
+    fireEvent.click(row);
+
+    await waitFor(() => {
+      expect(view.container.textContent).toContain("Alice Family");
+      expect(view.container.textContent).toContain("Bob Family");
+    });
+
+    const aliceLink = view.container.querySelector('a[href="/entities/entity-alice"]');
+    expect(aliceLink).toBeTruthy();
+    const bobLink = view.container.querySelector('a[href="/entities/entity-bob"]');
+    expect(bobLink).toBeTruthy();
+
+    view.unmount();
+  });
+
+  it("shows an honest note when a group has members that are not linked to an entity", async () => {
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [FAMILY], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    (useGroupMembers as AnyMock).mockReturnValue({
+      data: { group_id: "group-family", members: [FAMILY_MEMBERS[0]] },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    const view = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/entities/circles"]}>
+          <CirclesPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const row = view.getAllByRole("button").find((btn) => btn.textContent?.includes("Family"))!;
+    fireEvent.click(row);
+
+    await waitFor(() => {
+      expect(view.container.textContent).toContain("Alice Family");
+    });
+    // FAMILY.member_count is 4, only 1 linked member is returned.
+    expect(view.container.textContent).toContain("3 members not yet linked to an entity");
 
     view.unmount();
   });
