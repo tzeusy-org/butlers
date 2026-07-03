@@ -13,6 +13,7 @@
 
 import type { CSSProperties } from "react";
 import { Link } from "react-router";
+import { RowLink } from "@/components/ui/RowLink";
 
 export interface AttentionListItem {
   id: string;
@@ -107,21 +108,26 @@ export function AttentionList({ items }: AttentionListProps) {
     <div role="list" aria-label="Attention items">
       {items.map((item, i) => {
         const { char, color } = severityGlyph(item.severity);
-        return (
-          <div
-            key={item.id}
-            role="listitem"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "24px 1fr auto",
-              alignItems: "start",
-              gap: "8px",
-              paddingTop: "18px",
-              paddingBottom: "18px",
-              borderTop: i === 0 ? "1px solid var(--border)" : undefined,
-              borderBottom: "1px solid var(--border)",
-            }}
-          >
+        // A row with its own inline Approve/Deny/Defer buttons cannot also be
+        // a real <a> wrapper -- interactive content nested inside interactive
+        // content is invalid HTML/ARIA (bu-86c4c.16's RowLink docs cover the
+        // same constraint). Those rows keep the small trailing arrow link;
+        // every other href row becomes a full-row RowLink (bu-86c4c.4 --
+        // drill-down sweep: the entire row is the target, not a 16px glyph).
+        const hasInlineActions = Boolean(item.onApprove || item.onDeny || item.onDefer);
+        const rowGridStyle: CSSProperties = {
+          display: "grid",
+          gridTemplateColumns: "24px 1fr auto",
+          alignItems: "start",
+          gap: "8px",
+          paddingTop: "18px",
+          paddingBottom: "18px",
+          borderTop: i === 0 ? "1px solid var(--border)" : undefined,
+          borderBottom: "1px solid var(--border)",
+        };
+
+        const rowContent = (
+          <>
             {/* Mark column: severity glyph */}
             <span
               aria-label={`Severity: ${item.severity}`}
@@ -167,9 +173,10 @@ export function AttentionList({ items }: AttentionListProps) {
               ) : null}
             </div>
 
-            {/* Action column: inline decision verbs, arrow link, retry
-                button, or spacer */}
-            {item.onApprove || item.onDeny || item.onDefer ? (
+            {/* Action column: inline decision verbs, arrow (visual cue only
+                when the whole row is the link target), retry button, or
+                spacer */}
+            {hasInlineActions ? (
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                 {item.onApprove && (
                   <button
@@ -217,19 +224,17 @@ export function AttentionList({ items }: AttentionListProps) {
                 )}
               </div>
             ) : item.href ? (
-              <Link
-                to={item.href}
-                aria-label={`View: ${item.title}`}
+              <span
+                aria-hidden="true"
                 style={{
                   color: "var(--muted-foreground)",
                   fontSize: "16px",
                   lineHeight: 1,
-                  textDecoration: "none",
                   paddingTop: "2px",
                 }}
               >
                 →
-              </Link>
+              </span>
             ) : item.onRetry ? (
               <button
                 type="button"
@@ -251,6 +256,26 @@ export function AttentionList({ items }: AttentionListProps) {
             ) : (
               <span aria-hidden="true" />
             )}
+          </>
+        );
+
+        if (item.href && !hasInlineActions) {
+          return (
+            <RowLink
+              key={item.id}
+              to={item.href}
+              role="listitem"
+              aria-label={`View: ${item.title}`}
+              style={{ ...rowGridStyle, color: "inherit", textDecoration: "none" }}
+            >
+              {rowContent}
+            </RowLink>
+          );
+        }
+
+        return (
+          <div key={item.id} role="listitem" style={rowGridStyle}>
+            {rowContent}
           </div>
         );
       })}

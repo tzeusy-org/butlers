@@ -1,5 +1,7 @@
 import { EmptyState } from "@/components/ui/empty-state";
 import { useState } from "react";
+import type { MouseEvent } from "react";
+import { Link } from "react-router";
 import { Time } from "@/components/ui/time";
 import type { AuditLogEntry } from "@/api/types";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,6 +13,47 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+
+// ---------------------------------------------------------------------------
+// Identifier pivots (bu-86c4c.4 -- JARVIS audit move 2b: drill-down sweep)
+//
+// actor: every audit row shares the same `actor` column the page's own
+// filter bar already understands via ?actor= (AuditLogPage.tsx), so an
+// actor cell pivots to that pre-filtered view of itself.
+//
+// target: `target` is a scheme-prefixed string (e.g. "butler:qa",
+// "u:google", "rule:42" -- see audit.append()'s docstring in
+// src/butlers/api/routers/audit.py). Only schemes with a real owning page
+// are made into links -- an honest "no link" beats a link to a page that
+// doesn't understand the predicate:
+//   - "butler:<name>"  -> /butlers/<name> (butler detail)
+//   - "u:<provider>"   -> /secrets?focus=u:<provider> (credential passport
+//                         deep-link focus routing, already used by the
+//                         secrets page for the same scheme)
+// "rule:<id>" (spend rules) has no per-rule deep link on /spend yet --
+// left as plain text; see PR follow-ups.
+// ---------------------------------------------------------------------------
+
+function actorHref(actor: string): string {
+  return `/audit-log?actor=${encodeURIComponent(actor)}`;
+}
+
+function targetHref(target: string): string | null {
+  if (target.startsWith("butler:")) {
+    const name = target.slice("butler:".length);
+    if (!name) return null;
+    return `/butlers/${encodeURIComponent(name)}`;
+  }
+  if (target.startsWith("u:")) {
+    return `/secrets?focus=${encodeURIComponent(target)}`;
+  }
+  return null;
+}
+
+/** Stop the click from bubbling to the row's own toggle-expand handler. */
+function stopRowToggle(e: MouseEvent) {
+  e.stopPropagation();
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -97,7 +140,13 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                   <Time value={entry.ts} mode="relative" />
                 </TableCell>
                 <TableCell className="text-sm font-medium">
-                  {entry.actor}
+                  <Link
+                    to={actorHref(entry.actor)}
+                    onClick={stopRowToggle}
+                    className="hover:underline"
+                  >
+                    {entry.actor}
+                  </Link>
                 </TableCell>
                 <TableCell>
                   <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
@@ -105,7 +154,21 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                   </code>
                 </TableCell>
                 <TableCell className="max-w-xs truncate text-xs text-muted-foreground">
-                  {entry.target ?? <span className="italic">—</span>}
+                  {entry.target ? (
+                    targetHref(entry.target) ? (
+                      <Link
+                        to={targetHref(entry.target)!}
+                        onClick={stopRowToggle}
+                        className="hover:underline"
+                      >
+                        {entry.target}
+                      </Link>
+                    ) : (
+                      entry.target
+                    )
+                  ) : (
+                    <span className="italic">—</span>
+                  )}
                 </TableCell>
               </TableRow>
             );
@@ -126,7 +189,11 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                         <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
                           Actor
                         </span>
-                        <p className="mt-0.5">{entry.actor}</p>
+                        <p className="mt-0.5">
+                          <Link to={actorHref(entry.actor)} className="hover:underline">
+                            {entry.actor}
+                          </Link>
+                        </p>
                       </div>
                       <div>
                         <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
@@ -143,7 +210,15 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                           <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
                             Target
                           </span>
-                          <p className="mt-0.5 font-mono text-xs">{entry.target}</p>
+                          <p className="mt-0.5 font-mono text-xs">
+                            {targetHref(entry.target) ? (
+                              <Link to={targetHref(entry.target)!} className="hover:underline">
+                                {entry.target}
+                              </Link>
+                            ) : (
+                              entry.target
+                            )}
+                          </p>
                         </div>
                       )}
                       {entry.ip && (

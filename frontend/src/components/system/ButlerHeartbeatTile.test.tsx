@@ -330,6 +330,31 @@ describe("ButlerHeartbeatTile -- schemaUnreachable per butler", () => {
   });
 });
 
+describe("ButlerHeartbeatTile -- drill-down link (bu-86c4c.4)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setData([
+      makeRow({ name: "general", activity: "idle" }),
+      makeRow({ name: "qa patrol", activity: "overdue", cellTone: "amber" }),
+    ]);
+  });
+
+  it("wraps each row in a real <a> to /butlers/:name, not a div-onClick", () => {
+    const html = render();
+    expect(html).toContain('href="/butlers/general"');
+    const anchorMatch = html.match(
+      /<a[^>]*href="\/butlers\/general"[^>]*>([\s\S]*?)<\/a>/,
+    );
+    expect(anchorMatch).not.toBeNull();
+    expect(anchorMatch![1]).toContain("general");
+  });
+
+  it("URI-encodes butler names with special characters", () => {
+    const html = render();
+    expect(html).toContain('href="/butlers/qa%20patrol"');
+  });
+});
+
 describe("ButlerHeartbeatTile -- sort order", () => {
   beforeEach(() => {
     vi.resetAllMocks();

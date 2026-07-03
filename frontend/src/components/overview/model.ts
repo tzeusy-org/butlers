@@ -424,7 +424,11 @@ function runtimeAttentionRow(row: OverviewButlerIndexRow): OverviewAttentionRow 
     severity: row.runtimeState === "offline" || row.runtimeState === "degraded" ? "high" : "medium",
     title,
     detail,
-    href: "/system",
+    // Deep-link to the affected butler, not the generic /system page
+    // (bu-86c4c.4 -- drill-down sweep): the row already names exactly one
+    // butler, so the owner should land on its detail page, not a fleet-wide
+    // dashboard they then have to search.
+    href: `/butlers/${encodeURIComponent(row.name)}`,
     butlers: [row.name],
   };
 }

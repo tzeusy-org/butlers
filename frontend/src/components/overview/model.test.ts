@@ -498,6 +498,10 @@ describe("deriveOverviewTriageModel", () => {
     expect(model.attentionRows.find((row) => row.kind === "runtime")).toMatchObject({
       title: "health heartbeat is stale",
       detail: "Last heartbeat 20m ago",
+      // bu-86c4c.4 -- drill-down sweep: a heartbeat row names exactly one
+      // butler, so it must deep-link to that butler's detail page, not the
+      // generic /system fleet page.
+      href: "/butlers/health",
     });
   });
 

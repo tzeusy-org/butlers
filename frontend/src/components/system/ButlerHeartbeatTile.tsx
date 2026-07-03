@@ -20,6 +20,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { RowLink } from "@/components/ui/RowLink";
 import { Time } from "@/components/ui/time";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import type { StatusBoardRow, ActivityVerb } from "@/hooks/use-butler-status-board";
@@ -64,37 +65,49 @@ interface ButlerRowProps {
 
 function ButlerRow({ row }: ButlerRowProps) {
   return (
-    <li className="flex items-center justify-between gap-2 py-1.5">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <div className="flex items-center gap-1.5">
-          <span
-            className={`inline-block size-2 shrink-0 rounded-full ${dotClassFor(row.activity)}`}
-            aria-label={`Liveness: ${row.activity}`}
-            title={row.activity}
-          />
-          <span className="truncate text-sm font-medium">{row.name}</span>
-          {row.schemaUnreachable && (
-            <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">
-              unreachable
-            </Badge>
-          )}
+    <li className="py-1.5">
+      {/* bu-86c4c.4 -- drill-down sweep: the whole row deep-links to the
+          affected butler, not the generic /system page it already lives on
+          (JARVIS audit finding: "stale heartbeat rows are not links to
+          /butlers/:name -- while the same butlers ARE clickable in the graph
+          below"). RowLink (bu-86c4c.16) gives a real <a> since this row has
+          no nested interactive controls. */}
+      <RowLink
+        to={`/butlers/${encodeURIComponent(row.name)}`}
+        aria-label={`View ${row.name}`}
+        className="flex items-center justify-between gap-2 no-underline text-inherit -mx-1 rounded px-1 hover:bg-accent/40"
+      >
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`inline-block size-2 shrink-0 rounded-full ${dotClassFor(row.activity)}`}
+              aria-label={`Liveness: ${row.activity}`}
+              title={row.activity}
+            />
+            <span className="truncate text-sm font-medium">{row.name}</span>
+            {row.schemaUnreachable && (
+              <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">
+                unreachable
+              </Badge>
+            )}
+          </div>
+          <div className="pl-3.5 text-xs text-muted-foreground">
+            {row.lastHeartbeatISO ? (
+              <>
+                Last seen{" "}
+                <Time value={row.lastHeartbeatISO} mode="relative" />
+              </>
+            ) : (
+              <span>No heartbeat recorded</span>
+            )}
+          </div>
         </div>
-        <div className="pl-3.5 text-xs text-muted-foreground">
-          {row.lastHeartbeatISO ? (
-            <>
-              Last seen{" "}
-              <Time value={row.lastHeartbeatISO} mode="relative" />
-            </>
-          ) : (
-            <span>No heartbeat recorded</span>
-          )}
-        </div>
-      </div>
-      {row.activeSessionCount > 0 && (
-        <Badge variant="secondary" className="shrink-0">
-          {row.activeSessionCount} active
-        </Badge>
-      )}
+        {row.activeSessionCount > 0 && (
+          <Badge variant="secondary" className="shrink-0">
+            {row.activeSessionCount} active
+          </Badge>
+        )}
+      </RowLink>
     </li>
   );
 }

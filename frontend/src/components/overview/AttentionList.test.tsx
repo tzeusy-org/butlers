@@ -282,3 +282,53 @@ describe("AttentionList -- inline approve/deny/defer verbs (bu-86c4c.14)", () =>
     expect(html).toContain('href="/approvals"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Full-row drill-down (bu-86c4c.4 -- JARVIS audit move 2b): a row without its
+// own inline actions is a real <a> covering the whole row, not just the 16px
+// trailing arrow glyph -- cmd/middle-click and screen-reader "link"
+// announcement work from anywhere in the row.
+// ---------------------------------------------------------------------------
+
+describe("AttentionList -- full-row drill-down (bu-86c4c.4)", () => {
+  it("wraps the entire row (title + detail) in a single real <a>, not just the arrow", () => {
+    const html = render([
+      {
+        id: "runtime:finance:stale",
+        severity: "high",
+        title: "finance heartbeat is stale",
+        detail: "Last heartbeat 20m ago",
+        href: "/butlers/finance",
+      },
+    ]);
+    const anchorMatch = html.match(
+      /<a[^>]*href="\/butlers\/finance"[^>]*>([\s\S]*?)<\/a>/,
+    );
+    expect(anchorMatch).not.toBeNull();
+    expect(anchorMatch![1]).toContain("finance heartbeat is stale");
+    expect(anchorMatch![1]).toContain("Last heartbeat 20m ago");
+  });
+
+  it("keeps role=listitem on the anchor itself (ARIA list contract)", () => {
+    const html = render([
+      { id: "1", severity: "high", title: "Stale butler", href: "/butlers/finance" },
+    ]);
+    expect(html).toMatch(/<a[^>]*role="listitem"[^>]*href="\/butlers\/finance"/);
+  });
+
+  it("does not wrap the row in an <a> when inline actions are present (invalid nested-interactive HTML)", () => {
+    const html = render([
+      {
+        id: "approvals:a1",
+        severity: "medium",
+        title: "send email",
+        href: "/approvals/a1",
+        onApprove: () => {},
+      },
+    ]);
+    // The row itself must not be an anchor -- only the small trailing link
+    // (kept for the arrow) may be one, alongside the Approve <button>.
+    expect(html).not.toMatch(/<a[^>]*role="listitem"/);
+    expect(html).toContain(">Approve<");
+  });
+});

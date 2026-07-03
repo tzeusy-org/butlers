@@ -1,4 +1,5 @@
 import { ButlerMark } from "@/components/ui/ButlerMark";
+import { RowLink } from "@/components/ui/RowLink";
 import { formatCostUsd } from "@/lib/format-cost";
 import { Section } from "./Section";
 import type { OverviewButlerIndexRow } from "./model";
@@ -19,9 +20,11 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
     <Section eyebrow="Operations">
       <div role="list" aria-label="Operations">
         {butlers.map((butler, i) => (
-          <div
+          <RowLink
             key={butler.name}
+            to={`/butlers/${encodeURIComponent(butler.name)}`}
             role="listitem"
+            aria-label={`View ${butler.name}`}
             style={{
               display: "grid",
               gridTemplateColumns: "16px minmax(0, 1fr) auto minmax(86px, auto)",
@@ -31,6 +34,8 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
               paddingBottom: "10px",
               borderTop: i === 0 ? "1px solid var(--border)" : undefined,
               borderBottom: "1px solid var(--border)",
+              color: "inherit",
+              textDecoration: "none",
             }}
           >
             <ButlerMark name={butler.name} tone="neutral" />
@@ -91,7 +96,7 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
             >
               {lastActivityLabel(butler)}
             </span>
-          </div>
+          </RowLink>
         ))}
         {butlers.length === 0 && butlersError && (
           <p
