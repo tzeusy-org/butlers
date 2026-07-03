@@ -99,6 +99,11 @@ _CONNECTOR_TYPE = "google_health"
 # independently of per-resource poll cadence.
 _LIVENESS_THRESHOLD_SECONDS = 300
 
+# Google Health test-mode refresh tokens are documented to expire 7 days
+# after issue/refresh (see GOOGLE_SCOPE_SETS['health'] in oauth.py). Used to
+# derive `token_expiry_estimate_at` for test-mode accounts.
+_TEST_MODE_TOKEN_LIFETIME = timedelta(days=7)
+
 
 # ---------------------------------------------------------------------------
 # Prometheus counter — bumped on every GET /status so Grafana can track
@@ -424,6 +429,34 @@ def _derive_state(
         return GoogleHealthConnectorState.degraded, False
 
     return GoogleHealthConnectorState.healthy, True
+
+
+def _estimate_token_expiry(
+    *,
+    test_mode: bool,
+    last_token_refresh_at: datetime | None,
+) -> datetime | None:
+    """Estimate when the primary account's refresh token needs re-consent.
+
+    Google Health is a RESTRICTED scope set. In test mode (no production
+    verification), Google enforces a 7-day expiry on the OAuth client's
+    unified refresh token, counted from the last refresh — see the
+    ``GOOGLE_SCOPE_SETS['health']`` docs in ``oauth.py``. Outside test mode
+    (production-verified), Google does not enforce a fixed refresh-token
+    lifetime, so no estimate can be derived and this returns ``None``. Also
+    returns ``None`` when ``last_token_refresh_at`` itself is unknown.
+
+    ``last_token_refresh_at`` is normalized to UTC when naive — the primary
+    DB path always yields timezone-aware datetimes, but defensive parsing
+    elsewhere in this module (``datetime.fromisoformat`` on a raw string)
+    can hand back a naive value, and a naive result here would serialize
+    without a UTC offset and be misread as local time downstream.
+    """
+    if not test_mode or last_token_refresh_at is None:
+        return None
+    if last_token_refresh_at.tzinfo is None:
+        last_token_refresh_at = last_token_refresh_at.replace(tzinfo=UTC)
+    return last_token_refresh_at + _TEST_MODE_TOKEN_LIFETIME
 
 
 def _extract_rate_limit_remaining(heartbeat: dict[str, Any] | None) -> int | None:
@@ -834,12 +867,18 @@ async def get_google_health_status(
         len(account_entries),
     )
 
+    token_expiry_estimate_at = _estimate_token_expiry(
+        test_mode=test_mode,
+        last_token_refresh_at=last_token_refresh_at,
+    )
+
     return GoogleHealthStatusResponse(
         connected=connected,
         scopes_granted=granted_health,
         last_ingest_at=last_ingest_at,
         last_token_refresh_at=last_token_refresh_at,
         rate_limit_remaining=rate_limit_remaining,
+        token_expiry_estimate_at=token_expiry_estimate_at,
         test_mode=test_mode,
         state=worst_state,
         error_message=error_message,

@@ -21,6 +21,7 @@ from butlers.api.models.google_health import GoogleHealthConnectorState
 from butlers.api.routers.google_health import (
     GOOGLE_HEALTH_SCOPE_URLS,
     _derive_state,
+    _estimate_token_expiry,
     _extract_error_message,
     _extract_rate_limit_remaining,
     _fetch_ingest_counts,
@@ -177,6 +178,34 @@ def test_extract_rate_limit_remaining(row, expected):
     assert _extract_rate_limit_remaining(row) == expected
 
 
+# ---------------------------------------------------------------------------
+# _estimate_token_expiry: test-mode-only 7-day estimate [bu-zv881]
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_token_expiry_test_mode_adds_seven_days():
+    refreshed = datetime(2026, 1, 1, tzinfo=UTC)
+    result = _estimate_token_expiry(test_mode=True, last_token_refresh_at=refreshed)
+    assert result == refreshed + timedelta(days=7)
+
+
+def test_estimate_token_expiry_none_outside_test_mode():
+    refreshed = datetime(2026, 1, 1, tzinfo=UTC)
+    assert _estimate_token_expiry(test_mode=False, last_token_refresh_at=refreshed) is None
+
+
+def test_estimate_token_expiry_none_when_refresh_at_unknown():
+    assert _estimate_token_expiry(test_mode=True, last_token_refresh_at=None) is None
+
+
+def test_estimate_token_expiry_normalizes_naive_datetime_to_utc():
+    aware = datetime(2026, 1, 1, tzinfo=UTC)
+    naive = datetime(2026, 1, 1)  # noqa: DTZ001 - intentionally naive input
+    assert _estimate_token_expiry(
+        test_mode=True, last_token_refresh_at=naive
+    ) == _estimate_token_expiry(test_mode=True, last_token_refresh_at=aware)
+
+
 @pytest.mark.parametrize(
     "account,granted,heartbeat,exp_state,exp_connected",
     [
@@ -292,10 +321,12 @@ async def test_status_not_configured():
 
 async def test_status_healthy_full_scopes_and_counts():
     now = datetime.now(UTC)
+    refreshed = now - timedelta(days=1)
     db = _make_db(
         primary_row=_primary_row(
             granted_scopes=[_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES],
             metadata={"google_health_test_mode": True},
+            last_token_refresh_at=refreshed,
         ),
         heartbeat_row={
             "state": "healthy",
@@ -317,6 +348,30 @@ async def test_status_healthy_full_scopes_and_counts():
     assert body["rate_limit_remaining"] == 123
     assert body["sleep_sessions_7d"] == 7
     assert body["daily_summaries_7d"] == 21
+    # test_mode=True → token_expiry_estimate_at is last_token_refresh_at + 7 days [bu-zv881]
+    assert datetime.fromisoformat(body["token_expiry_estimate_at"]) == refreshed + timedelta(days=7)
+
+
+async def test_status_production_mode_has_no_token_expiry_estimate():
+    """Outside test mode Google does not enforce a fixed refresh-token
+    lifetime, so token_expiry_estimate_at stays null even with a known
+    last_token_refresh_at. [bu-zv881]"""
+    now = datetime.now(UTC)
+    db = _make_db(
+        primary_row=_primary_row(
+            granted_scopes=[_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES],
+            metadata={"google_health_test_mode": False},
+            last_token_refresh_at=now - timedelta(days=30),
+        ),
+        heartbeat_row={"state": "healthy", "last_heartbeat_at": now},
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app(db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/connectors/google-health/status")
+    body = resp.json()
+    assert body["test_mode"] is False
+    assert body["token_expiry_estimate_at"] is None
 
 
 async def test_status_degraded_partial_scopes():

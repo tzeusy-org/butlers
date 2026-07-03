@@ -5222,6 +5222,13 @@ export interface GoogleHealthStatusResponse {
   last_token_refresh_at: string | null;
   /** Most recently observed X-RateLimit-Remaining, or null (distinct from 0). */
   rate_limit_remaining: number | null;
+  /**
+   * Estimated timestamp the primary account's refresh token needs
+   * re-consent, or null when no estimate can be derived (production-verified
+   * accounts have no fixed refresh-token lifetime; test-mode accounts expire
+   * ~7 days after `last_token_refresh_at`).
+   */
+  token_expiry_estimate_at?: string | null;
   /** metadata.google_health_test_mode on the primary Google account row. */
   test_mode: boolean;
   state: GoogleHealthConnectorState;

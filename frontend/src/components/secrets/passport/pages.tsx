@@ -810,13 +810,18 @@ function TestModeExpiryBanner({
  *
  * Acceptance rules:
  * - HIDDEN when the primary account has no health scopes granted.
- * - Shows: state + last ingest + 7d sleep/daily counts.
+ * - Shows: state + last ingest + 7d sleep/daily counts + token expiry estimate
+ *   + rate-limit headroom (§Status card contents, dashboard-google-accounts).
+ * - Rate-limit headroom row is hidden when `rate_limit_remaining` is null
+ *   (no rate-limit header observed yet).
+ * - Token expiry row renders "—" when no estimate can be derived (e.g. the
+ *   account is production-verified, or `last_token_refresh_at` is unknown).
  * - Shows TestModeExpiryBanner persistently when test_mode=true (red past 5d6h).
  *
  * Only the PRIMARY-account view is shown (per dashboard-google-accounts spec).
  * Polls every 30 s via useGoogleHealthStatus (same cadence as butler-detail tab).
  *
- * [bu-hh875]
+ * [bu-hh875][bu-zv881]
  */
 function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatusResponse }) {
   const stateColor =
@@ -878,6 +883,23 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
             <Mono size={9} color="var(--dim)">summaries · 7d</Mono>
             <Mono size={9}>{status.daily_summaries_7d}</Mono>
           </div>
+          <div className="flex justify-between gap-3">
+            <Mono size={9} color="var(--dim)">token expiry</Mono>
+            <Mono size={9} data-testid="health-token-expiry">
+              {status.token_expiry_estimate_at &&
+              !Number.isNaN(new Date(status.token_expiry_estimate_at).getTime())
+                ? new Date(status.token_expiry_estimate_at).toLocaleDateString()
+                : "—"}
+            </Mono>
+          </div>
+          {status.rate_limit_remaining !== null && status.rate_limit_remaining !== undefined && (
+            <div className="flex justify-between gap-3">
+              <Mono size={9} color="var(--dim)">rate limit headroom</Mono>
+              <Mono size={9} data-testid="health-rate-limit-headroom">
+                {status.rate_limit_remaining}
+              </Mono>
+            </div>
+          )}
         </div>
       </div>
     </div>

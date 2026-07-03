@@ -88,8 +88,9 @@ class GoogleHealthStatusResponse(BaseModel):
     connection state, the full Google Health scope URLs that have been
     granted, the most recent ingest timestamp (derived from public.ingestion_events),
     the last token refresh timestamp (used by the UI's 7-day test-mode expiry
-    heuristic), the most recently observed rate-limit headroom, and the
-    ``google_health_test_mode`` metadata flag.
+    heuristic), an estimated token-expiry timestamp, the most recently
+    observed rate-limit headroom, and the ``google_health_test_mode``
+    metadata flag.
 
     Top-level summary fields are computed as worst-of across all per-account
     entries (error > degraded > healthy) so single-account installs render
@@ -123,6 +124,17 @@ class GoogleHealthStatusResponse(BaseModel):
     """Most recently observed ``X-RateLimit-Remaining`` value across all
     resource polls, or null when no rate-limit header has ever been observed.
     Null is explicit — distinct from 0 (rate-limited) or absent."""
+
+    token_expiry_estimate_at: datetime | None = None
+    """Estimated timestamp at which the primary account's refresh token is
+    likely to require re-consent, or null when no estimate can be derived.
+
+    Google Health is a RESTRICTED scope set. In test mode (no production
+    verification), Google enforces a 7-day expiry on the OAuth client's
+    unified refresh token — this is ``last_token_refresh_at`` + 7 days.
+    Outside test mode (production-verified), Google does not enforce a
+    fixed refresh-token lifetime, so this is null; it is also null when
+    ``last_token_refresh_at`` itself is unknown."""
 
     test_mode: bool = False
     """True when ``metadata.google_health_test_mode = true`` on the primary

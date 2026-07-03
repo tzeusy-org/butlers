@@ -412,6 +412,53 @@ describe("TestModeExpiryBanner: red variant past 5d6h refresh age [bu-bxu50]", (
   });
 });
 
+// ── g. Token expiry + rate-limit headroom rows [bu-zv881] ────────────────────
+
+describe("GoogleHealthPassportStatusCard: token expiry + rate-limit headroom [bu-zv881]", () => {
+  it("renders the token expiry estimate when the backend supplies one", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(
+      makeHealthStatus({ token_expiry_estimate_at: "2026-06-13T10:00:00Z" }),
+    );
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+
+    expect(html).toContain('data-testid="health-token-expiry"');
+    expect(html).toContain("token expiry");
+    expect(html).toContain(new Date("2026-06-13T10:00:00Z").toLocaleDateString());
+  });
+
+  it("renders a placeholder for token expiry when no estimate is available", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(makeHealthStatus({ token_expiry_estimate_at: null }));
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+
+    expect(html).toContain('data-testid="health-token-expiry"');
+    expect(html).toContain("—");
+  });
+
+  it("shows the rate-limit headroom row when rate_limit_remaining is present", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(makeHealthStatus({ rate_limit_remaining: 42 }));
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+
+    expect(html).toContain('data-testid="health-rate-limit-headroom"');
+    expect(html).toContain("rate limit headroom");
+    expect(html).toContain("42");
+  });
+
+  it("hides the rate-limit headroom row when no rate-limit header is available", () => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(makeHealthStatus({ rate_limit_remaining: null }));
+
+    const html = renderInRouter(<PageGoogleAccounts />);
+
+    expect(html).not.toContain('data-testid="health-rate-limit-headroom"');
+  });
+});
+
 // ── e. Banner absent only when test_mode=false ───────────────────────────────
 
 describe("TestModeExpiryBanner: absent when test_mode=false [bu-bxu50]", () => {
