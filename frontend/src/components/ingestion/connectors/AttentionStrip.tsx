@@ -8,7 +8,10 @@
  *
  * Design: hairline top/bottom borders, no card chrome. Links use underline with
  * border color, not heavy color fills. Auth tone shown as mono uppercase label
- * in the appropriate foreground color.
+ * in the appropriate foreground color. The count badge is red foreground text,
+ * no background fill (state colors never as fills — the 4-7% attention tint
+ * is the only sanctioned background exception, and does not apply to a bare
+ * count).
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector with auth issue"
@@ -51,7 +54,7 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
         </span>
         <span
           data-testid="attention-count"
-          className="font-mono text-[10px] tabular-nums bg-[color:var(--red,oklch(0.62_0.20_25))] text-white rounded-full px-1.5 py-0.5 leading-none"
+          className="font-mono text-[10px] tabular-nums text-[color:var(--red,oklch(0.62_0.20_25))] leading-none"
         >
           {issues.length}
         </span>

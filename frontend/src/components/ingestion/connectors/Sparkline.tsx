@@ -8,13 +8,24 @@
  * Design: no card chrome, foreground bars only (no colored fills except for
  * zero/empty state). Consistent with Dispatch visual language.
  *
+ * Accessibility: the SVG itself stays `aria-hidden` (it is a redundant visual
+ * encoding of `data`), but the wrapping element carries an `aria-label` with
+ * the numeric fallback — 24h total and peak hour — so the information is not
+ * lost to assistive tech. When `maxValue` is omitted, bars normalize to this
+ * row's own peak (not comparable across rows); pass the roster-wide peak as
+ * `maxValue` to make bar heights comparable across connectors.
+ *
  * Spec: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §Sparkline
  */
 
 interface SparklineProps {
-  /** Array of 24 hourly counts (oldest first). */
+  /** Array of 24 hourly counts (oldest first, most recent last). */
   data: number[]
-  /** Override the max value. Defaults to Math.max(...data, 1). */
+  /**
+   * Override the normalization peak. Defaults to this row's own
+   * `Math.max(...data, 1)` — pass a shared value (e.g. the roster-wide peak)
+   * to make bar heights comparable across rows.
+   */
   maxValue?: number
   /** Height in pixels. Default 28. */
   height?: number
@@ -22,12 +33,22 @@ interface SparklineProps {
   className?: string
 }
 
+/** Build the aria-label numeric fallback: 24h total + peak hour. */
+function describeSpark(bars: number[]): string {
+  const total = bars.reduce((sum, v) => sum + v, 0)
+  if (total === 0) return '24h activity: no events'
+  const peakIndex = bars.reduce((best, v, i) => (v > bars[best] ? i : best), 0)
+  const hoursAgo = bars.length - 1 - peakIndex
+  const peakWhen = hoursAgo === 0 ? 'in the last hour' : `${hoursAgo}h ago`
+  return `24h activity: ${total} events total, peak ${peakWhen}`
+}
+
 /**
  * 24-bar sparkline for hourly throughput.
  *
- * Each bar height is proportional to the peak bar. Zero bars are rendered
- * at 1px height in the muted color. Labels (00 / 12 / 24) are rendered
- * by the parent via CSS when needed.
+ * Each bar height is proportional to `maxValue` (defaults to this row's own
+ * peak). Zero bars are rendered at 1px height in the muted color. Labels
+ * (00 / 12 / 24) are rendered by the parent via CSS when needed.
  */
 export function Sparkline({ data, maxValue, height = 28, className }: SparklineProps) {
   const bars = data.length > 0 ? data : Array(24).fill(0)
@@ -41,7 +62,8 @@ export function Sparkline({ data, maxValue, height = 28, className }: SparklineP
     <svg
       viewBox={`0 0 ${totalWidth} ${height}`}
       preserveAspectRatio="none"
-      aria-hidden="true"
+      role="img"
+      aria-label={describeSpark(bars)}
       className={className}
       style={{ width: '100%', height }}
     >

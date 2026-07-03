@@ -179,6 +179,13 @@ It SHALL include:
 - dormant or available connector section with connect actions;
 - footer KPI band and add-connector action.
 
+The whole row SHALL be the navigation target to connector detail (click or
+keyboard Enter/Space while the row has focus), with the disclosure chevron
+kept as a visual cue rather than a separate click target. When a row's auth
+pill reads `reauth`, the pill itself SHALL be the reauth action (see
+"Ingestion-Originated OAuth page_of_origin Contract"), and it remains
+independently clickable above the row's navigation target.
+
 #### Scenario: Connector with auth issue appears in attention strip
 
 - **WHEN** at least one connector has `auth.status` requiring action or
@@ -186,13 +193,21 @@ It SHALL include:
 - **THEN** the roster renders a compact attention strip above the table
 - **AND** each attention item links to the affected connector detail route
 - **AND** the connector row displays the same auth state consistently
+- **AND** if the row's auth status is `needs_reauth`, its auth pill is itself
+  a reauth action rather than a static label
 
 #### Scenario: Dormant connectors are discoverable
 
 - **WHEN** the connector discovery endpoint reports available but unconnected
   connectors
 - **THEN** the roster renders an `available` or `dormant` section
-- **AND** each dormant row includes a purpose gloss and connect action
+- **AND** each dormant row includes the connector's display name, its channel,
+  and a connect action
+- **AND** the connect action links to `/secrets?focus=u:<provider>` (the
+  catalog's own `provider` field), deep-linking straight to that provider's
+  credential entry instead of the bare `/secrets` page
+- **AND** no per-row description line restates the section eyebrow (the
+  discovery catalog carries no per-connector one-liner to show instead)
 
 ### Requirement: Connector Detail
 

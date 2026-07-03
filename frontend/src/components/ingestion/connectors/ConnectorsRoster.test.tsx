@@ -5,8 +5,8 @@
  * AC1: Connectors route is a roster, not a card grid
  * AC2: Auth issues appear consistently in attention strip, row, and detail
  *      (focus here: strip count matches auth-needed connectors; row shows same label)
- * AC3: Roster rows render DISTINCT liveness and state indicators (two separate dots,
- *      not collapsed into a single merged health dot)
+ * AC3: Roster rows render a single health verdict (one dot + word), folding
+ *      liveness and health into one signal instead of two unlabeled dots
  * Dormant section toggles open/closed (spec requirement)
  *
  * Uses mocked hooks to avoid QueryClient and network dependencies.
@@ -329,13 +329,32 @@ describe('Dormant section toggle', () => {
     const dormantSection = container.querySelector('[data-testid="dormant-section"]')
     expect(dormantSection).toBeNull()
   })
+
+  it('the connect link carries ?focus=u:<provider> from the catalog, not a bare /secrets link', () => {
+    mockHooks([HEALTHY_CONNECTOR], [DORMANT_PROFILE])
+    renderRoster(container, root)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="dormant-toggle"]') as HTMLButtonElement).click()
+    })
+
+    const connectLink = container.querySelector(
+      '[data-testid="dormant-connect-home_assistant"]',
+    )
+    expect(connectLink?.getAttribute('href')).toBe('/secrets?focus=u:homeassistant')
+  })
 })
 
 // ---------------------------------------------------------------------------
-// §AC3: Distinct liveness + state badges (two separate dots per row)
+// §AC3: Single health verdict (one dot + word) per row
+//
+// Supersedes the old two-dot (liveness + state) assertions: the binding spec
+// ("rows with health dot" — singular) already called for one indicator; the
+// old stacked-dot markup had drifted from it. bu-4utdw.10 brings the code
+// back in line with the spec.
 // ---------------------------------------------------------------------------
 
-describe('AC3: distinct liveness and state indicators per row', () => {
+describe('AC3: single health verdict per row (dot + word)', () => {
   let container: HTMLDivElement
   let root: Root
 
@@ -344,62 +363,165 @@ describe('AC3: distinct liveness and state indicators per row', () => {
   })
   afterEach(() => cleanup(root, container))
 
-  it('renders a liveness-dot and a state-dot as separate elements for a healthy online connector', () => {
+  it('renders exactly one health-verdict element for a healthy online connector', () => {
     mockHooks([HEALTHY_CONNECTOR])
     renderRoster(container, root)
 
-    const livenessDot = container.querySelector('[data-testid="liveness-dot-gmail"]')
-    const stateDot = container.querySelector('[data-testid="state-dot-gmail"]')
+    const verdict = container.querySelector('[data-testid="health-verdict-gmail"]')
+    expect(verdict).not.toBeNull()
+    expect(verdict?.textContent?.trim()).toBe('online')
 
-    expect(livenessDot).not.toBeNull()
-    expect(stateDot).not.toBeNull()
-    // They must be distinct elements — not the same node
-    expect(livenessDot).not.toBe(stateDot)
+    // No leftover two-dot markup
+    expect(container.querySelector('[data-testid="liveness-dot-gmail"]')).toBeNull()
+    expect(container.querySelector('[data-testid="state-dot-gmail"]')).toBeNull()
   })
 
-  it('liveness-dot aria-label reflects real liveness value (online)', () => {
-    mockHooks([HEALTHY_CONNECTOR])
-    renderRoster(container, root)
-
-    const livenessDot = container.querySelector('[data-testid="liveness-dot-gmail"]')
-    expect(livenessDot?.getAttribute('aria-label')).toBe('liveness: online')
-  })
-
-  it('state-dot aria-label reflects real DB state value (healthy)', () => {
-    mockHooks([HEALTHY_CONNECTOR])
-    renderRoster(container, root)
-
-    const stateDot = container.querySelector('[data-testid="state-dot-gmail"]')
-    expect(stateDot?.getAttribute('aria-label')).toBe('state: healthy')
-  })
-
-  it('stale connector: liveness-dot is amber while state-dot remains green (healthy state)', () => {
+  it('stale connector reports the "stale" verdict word', () => {
     // STALE_CONNECTOR: liveness=stale, state=healthy
-    // Liveness dot → amber; state dot → green (they diverge)
     mockHooks([STALE_CONNECTOR])
     renderRoster(container, root)
 
-    const livenessDot = container.querySelector('[data-testid="liveness-dot-telegram"]')
-    const stateDot = container.querySelector('[data-testid="state-dot-telegram"]')
-
-    expect(livenessDot?.getAttribute('aria-label')).toBe('liveness: stale')
-    expect(stateDot?.getAttribute('aria-label')).toBe('state: healthy')
-
-    // The two dots must have DIFFERENT classes (diverged axes)
-    const livenessClass = livenessDot?.className ?? ''
-    const stateClass = stateDot?.className ?? ''
-    expect(livenessClass).not.toBe(stateClass)
+    const verdict = container.querySelector('[data-testid="health-verdict-telegram"]')
+    expect(verdict?.textContent?.trim()).toBe('stale')
   })
 
-  it('error connector: both liveness-dot and state-dot reflect offline/error axes', () => {
+  it('offline+error connector reports the "offline" verdict word', () => {
     // REAUTH_CONNECTOR: liveness=offline, state=error
     mockHooks([REAUTH_CONNECTOR])
     renderRoster(container, root)
 
-    const livenessDot = container.querySelector('[data-testid="liveness-dot-spotify"]')
-    const stateDot = container.querySelector('[data-testid="state-dot-spotify"]')
+    const verdict = container.querySelector('[data-testid="health-verdict-spotify"]')
+    expect(verdict?.textContent?.trim()).toBe('offline')
+  })
+})
 
-    expect(livenessDot?.getAttribute('aria-label')).toBe('liveness: offline')
-    expect(stateDot?.getAttribute('aria-label')).toBe('state: error')
+// ---------------------------------------------------------------------------
+// Whole-row navigation (row click + keyboard focus)
+// ---------------------------------------------------------------------------
+
+describe('whole-row navigation', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('the row link spans the row and targets connector detail', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    const rowLink = container.querySelector('[data-testid="row-link-gmail"]')
+    expect(rowLink).not.toBeNull()
+    expect(rowLink?.tagName).toBe('A')
+    expect(rowLink?.getAttribute('href')).toBe(
+      '/ingestion/connectors/gmail/user%40example.com',
+    )
+  })
+
+  it('the row link is keyboard-focusable (no explicit negative tabindex)', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    const rowLink = container.querySelector('[data-testid="row-link-gmail"]')
+    expect(rowLink?.getAttribute('tabindex')).not.toBe('-1')
+  })
+
+  it('the disclosure chevron is decorative, not its own link', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    const row = container.querySelector('[data-testid="connector-row-gmail"]')
+    const links = row?.querySelectorAll('a') ?? []
+    // Exactly one anchor per healthy row: the stretched row link.
+    expect(links.length).toBe(1)
+    expect(links[0].getAttribute('data-testid')).toBe('row-link-gmail')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reauth pill is the reauth action
+// ---------------------------------------------------------------------------
+
+describe('reauth pill is the reauth action', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders the auth pill as a link into the OAuth start URL when needs_reauth', () => {
+    mockHooks([REAUTH_CONNECTOR])
+    renderRoster(container, root)
+
+    const pill = container.querySelector('[data-testid="auth-status-spotify"]')
+    expect(pill?.tagName).toBe('A')
+    const href = pill?.getAttribute('href') ?? ''
+    expect(href).toContain('/oauth/spotify/start')
+    expect(href).toContain('page_of_origin=ingestion')
+    expect(href).toContain('connector_detail_path=spotify%2Fme')
+  })
+
+  it('renders the auth pill as plain text (not a link) for a healthy connector', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    const pill = container.querySelector('[data-testid="auth-status-gmail"]')
+    expect(pill?.tagName).not.toBe('A')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Honest metadata: kind only when known from the catalog; function column
+// shows endpoint identity instead of duplicating the channel column.
+// ---------------------------------------------------------------------------
+
+describe('honest metadata', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  const GMAIL_PROFILE: ConnectorProfile = {
+    connector_type: 'gmail',
+    channel: 'email',
+    provider: 'google',
+    display_name: 'Gmail',
+    supports_backfill: true,
+  }
+
+  it('shows the real catalog channel when the connector_type is in the catalog', () => {
+    mockHooks([HEALTHY_CONNECTOR], [GMAIL_PROFILE])
+    renderRoster(container, root)
+
+    const row = container.querySelector('[data-testid="connector-row-gmail"]')
+    expect(row?.textContent).toContain('email')
+  })
+
+  it('does not fabricate a kind when the connector_type is absent from the catalog', () => {
+    // STALE_CONNECTOR's type ("telegram") has no catalog entry in this fixture set.
+    mockHooks([STALE_CONNECTOR], [])
+    renderRoster(container, root)
+
+    const row = container.querySelector('[data-testid="connector-row-telegram"]')
+    // No fabricated "poll"/"webhook"/"imap" guess anywhere in the row.
+    expect(row?.textContent).not.toMatch(/\b(poll|webhook|imap|long-poll)\b/)
+  })
+
+  it('the function column shows endpoint identity, not a repeat of the channel name', () => {
+    mockHooks([HEALTHY_CONNECTOR], [])
+    renderRoster(container, root)
+
+    const row = container.querySelector('[data-testid="connector-row-gmail"]')
+    expect(row?.textContent).toContain(HEALTHY_CONNECTOR.endpoint_identity)
+    // "gmail" appears once (channel column) — endpoint identity shouldn't
+    // re-prefix it with the connector type like the old "gmail · user@..." gloss.
+    expect(row?.textContent).not.toContain(`gmail · ${HEALTHY_CONNECTOR.endpoint_identity}`)
   })
 })

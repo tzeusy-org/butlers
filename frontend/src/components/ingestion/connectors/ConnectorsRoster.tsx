@@ -42,7 +42,7 @@ import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 // ---------------------------------------------------------------------------
 
 const COLUMN_LABELS = [
-  '',          // liveness dot (top) + state dot (bottom)
+  'status',    // health verdict — dot + word
   'channel',
   'function',
   '24h activity',
@@ -107,9 +107,19 @@ export function ConnectorsRoster() {
   const sorted = sortConnectors(allConnectors)
 
   // Available dormant profiles (catalog entries not yet registered)
+  const catalogProfiles = availableResp?.data ?? []
   const registeredTypes = new Set(allConnectors.map((c) => c.connector_type))
-  const dormantProfiles = (availableResp?.data ?? []).filter(
-    (p) => !registeredTypes.has(p.connector_type),
+  const dormantProfiles = catalogProfiles.filter((p) => !registeredTypes.has(p.connector_type))
+
+  // connector_type -> real channel, from the discovery catalog. Used so the
+  // roster only ever shows a known kind — never a guess from name substrings.
+  const catalogChannelByType = new Map(catalogProfiles.map((p) => [p.connector_type, p.channel]))
+
+  // Roster-wide sparkline peak so bar heights are comparable across rows
+  // instead of each row normalizing to its own (possibly tiny) peak.
+  const rosterSparkMax = Math.max(
+    1,
+    ...allConnectors.flatMap((c) => c.hourly_events ?? []),
   )
 
   // KPI aggregates
@@ -168,6 +178,8 @@ export function ConnectorsRoster() {
               key={`${c.connector_type}:${c.endpoint_identity}`}
               connector={c}
               spark24h={c.hourly_events}
+              catalogChannel={catalogChannelByType.get(c.connector_type)}
+              rosterSparkMax={rosterSparkMax}
             />
           ))}
         </div>

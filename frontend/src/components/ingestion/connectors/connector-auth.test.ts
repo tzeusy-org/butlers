@@ -14,7 +14,12 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { deriveConnectorDispatchInfo } from './connector-auth'
+import {
+  deriveConnectorDispatchInfo,
+  healthVerdictWord,
+  oauthProviderForConnectorType,
+  oauthScopeSetForConnectorType,
+} from './connector-auth'
 import type { ConnectorSummary } from '@/api/types'
 
 const BASE: ConnectorSummary = {
@@ -187,5 +192,68 @@ describe('deriveConnectorDispatchInfo — auth.status unconfigured is not mapped
     expect(result.authStatus).toBe('ok')
     expect(result.health).toBe('ok')
     expect(result.needsAttention).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// healthVerdictWord — single-word roster health verdict
+// ---------------------------------------------------------------------------
+
+describe('healthVerdictWord', () => {
+  it('reports "online" for a healthy, online connector', () => {
+    const info = deriveConnectorDispatchInfo(BASE)
+    expect(healthVerdictWord(BASE, info)).toBe('online')
+  })
+
+  it('reports "stale" for stale liveness (heartbeat lag, not a hard error)', () => {
+    const c: ConnectorSummary = { ...BASE, liveness: 'stale' }
+    const info = deriveConnectorDispatchInfo(c)
+    expect(healthVerdictWord(c, info)).toBe('stale')
+  })
+
+  it('reports "offline" for offline liveness (connectivity, not auth)', () => {
+    const c: ConnectorSummary = { ...BASE, liveness: 'offline' }
+    const info = deriveConnectorDispatchInfo(c)
+    expect(healthVerdictWord(c, info)).toBe('offline')
+  })
+
+  it('reports "error" for state=error while still online (distinct from offline)', () => {
+    const c: ConnectorSummary = { ...BASE, state: 'error', liveness: 'online' }
+    const info = deriveConnectorDispatchInfo(c)
+    expect(healthVerdictWord(c, info)).toBe('error')
+  })
+
+  it('reports "degraded" for an online, degraded (non-auth) connector', () => {
+    const c: ConnectorSummary = { ...BASE, state: 'degraded', error_message: 'transient blip' }
+    const info = deriveConnectorDispatchInfo(c)
+    expect(healthVerdictWord(c, info)).toBe('degraded')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// oauthProviderForConnectorType / oauthScopeSetForConnectorType
+// ---------------------------------------------------------------------------
+
+describe('oauthProviderForConnectorType', () => {
+  it('collapses any google_* connector_type onto the "google" provider key', () => {
+    expect(oauthProviderForConnectorType('google_health')).toBe('google')
+    expect(oauthProviderForConnectorType('google_drive')).toBe('google')
+    expect(oauthProviderForConnectorType('google_calendar')).toBe('google')
+  })
+
+  it('passes non-google connector_types through unchanged', () => {
+    expect(oauthProviderForConnectorType('spotify')).toBe('spotify')
+    expect(oauthProviderForConnectorType('gmail')).toBe('gmail')
+  })
+})
+
+describe('oauthScopeSetForConnectorType', () => {
+  it('returns "health" for google_health', () => {
+    expect(oauthScopeSetForConnectorType('google_health')).toBe('health')
+  })
+
+  it('returns undefined for connectors with no special scope set', () => {
+    expect(oauthScopeSetForConnectorType('google_drive')).toBeUndefined()
+    expect(oauthScopeSetForConnectorType('spotify')).toBeUndefined()
   })
 })

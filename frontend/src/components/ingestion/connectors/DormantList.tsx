@@ -3,11 +3,14 @@
  *
  * Renders below the active roster with an "available · not connected" eyebrow.
  * Collapsed by default, expandable via a toggle. Each row shows the connector
- * type name, a serif italic description gloss, and a "connect →" link to /secrets
- * where the actual credential setup lives.
+ * type name and channel, and a "connect →" link to
+ * /secrets?focus=u:<provider> where the actual credential setup lives.
  *
- * Design: hairline-divided rows, serif italic description, no card chrome.
- * The dormant dot is muted (off-color) to distinguish from active connectors.
+ * Design: hairline-divided rows, no card chrome. The dormant dot is muted
+ * (off-color) to distinguish from active connectors. No per-row description
+ * line — the catalog has no per-connector one-liner, and restating the
+ * "available · not connected" eyebrow per row added noise without new
+ * information.
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Dormant connectors"
@@ -25,9 +28,10 @@ interface DormantListProps {
 /**
  * Collapsible list of available-but-unconnected connector profiles.
  *
- * Each "connect →" link goes to /secrets?focus=u:<provider> where the
- * DirectionPassport credential page for that provider lives.
- * Collapsed by default; toggled by clicking the eyebrow row.
+ * Each "connect →" link goes to /secrets?focus=u:<provider> (using the
+ * catalog's own `provider` field) where the DirectionPassport credential
+ * page for that provider lives. Collapsed by default; toggled by clicking
+ * the eyebrow row.
  */
 export function DormantList({ profiles }: DormantListProps) {
   const [expanded, setExpanded] = useState(false)
@@ -62,7 +66,7 @@ export function DormantList({ profiles }: DormantListProps) {
               key={profile.connector_type}
               data-testid={`dormant-row-${profile.connector_type}`}
               className="grid gap-x-4 py-3 border-b border-border/40 items-center"
-              style={{ gridTemplateColumns: '14px 180px 1fr auto' }}
+              style={{ gridTemplateColumns: '14px 1fr auto' }}
             >
               {/* Off dot */}
               <span
@@ -80,14 +84,9 @@ export function DormantList({ profiles }: DormantListProps) {
                 </div>
               </div>
 
-              {/* Description gloss — serif italic */}
-              <div className="font-serif italic text-[13px] text-muted-foreground/60 leading-snug min-w-0 truncate">
-                {profile.display_name} connector: not yet configured.
-              </div>
-
               {/* Connect action */}
               <Link
-                to="/secrets"
+                to={`/secrets?focus=u:${encodeURIComponent(profile.provider)}`}
                 data-testid={`dormant-connect-${profile.connector_type}`}
                 className="font-mono text-[11px] text-foreground border border-border px-2.5 py-1 hover:bg-foreground/5 transition-colors whitespace-nowrap"
               >

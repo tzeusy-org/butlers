@@ -177,34 +177,55 @@ export function healthDotColor(health: DerivedHealth): string {
   }
 }
 
-/**
- * Maps raw connector liveness to a dot background color class.
- *
- * - online  → green
- * - stale   → amber
- * - offline → red
- * - other   → muted
- */
-export function livenessDotColor(liveness: string): string {
-  if (liveness === 'online') return 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
-  if (liveness === 'stale') return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
-  if (liveness === 'offline') return 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
-  return 'bg-muted-foreground/40'
+/** Maps health to a Tailwind foreground text color — same palette as {@link healthDotColor}. */
+export function healthTextColor(health: DerivedHealth): string {
+  switch (health) {
+    case 'ok':
+      return 'text-[color:var(--green,oklch(0.72_0.17_150))]'
+    case 'degraded':
+      return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
+    case 'error':
+      return 'text-[color:var(--red,oklch(0.62_0.20_25))]'
+    case 'off':
+      return 'text-muted-foreground/40'
+  }
 }
 
 /**
- * Maps raw connector DB state to a dot background color class.
+ * Derive the single roster verdict word, folding the derived health axis
+ * (degraded/error) onto the raw liveness read (online/stale/offline).
  *
- * - healthy  → green
- * - degraded → amber
- * - error    → red
- * - other    → muted
+ * Replaces the old two-dot display (a bare liveness dot stacked on a bare
+ * state dot) that required memorizing which axis was which. `health` is
+ * `ok` only when liveness is `online` (see {@link deriveConnectorDispatchInfo}),
+ * so `info.health === 'ok'` is reported as "online" without needing the raw
+ * liveness value.
  */
-export function stateDotColor(state: string): string {
-  if (state === 'healthy') return 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
-  if (state === 'degraded') return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
-  if (state === 'error') return 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
-  return 'bg-muted-foreground/40'
+export function healthVerdictWord(c: ConnectorSummary, info: ConnectorDispatchInfo): string {
+  if (info.health === 'error') return c.liveness === 'offline' ? 'offline' : 'error'
+  if (info.health === 'degraded') return c.liveness === 'stale' ? 'stale' : 'degraded'
+  if (info.health === 'off') return 'offline'
+  return 'online'
+}
+
+/**
+ * Map a connector_type to its OAuth provider key.
+ *
+ * The backend OAuth registry only accepts "google" and "spotify" as
+ * provider keys; connector_type values like "google_health" or
+ * "google_drive" must collapse onto "google".
+ */
+export function oauthProviderForConnectorType(connectorType: string): string {
+  return connectorType.startsWith('google') ? 'google' : connectorType
+}
+
+/**
+ * Map a connector_type to the OAuth scope_set it needs on reauth, for the
+ * connectors where the default scope composition is wrong.
+ */
+export function oauthScopeSetForConnectorType(connectorType: string): string | undefined {
+  if (connectorType === 'google_health') return 'health'
+  return undefined
 }
 
 function truncate(s: string, n: number): string {

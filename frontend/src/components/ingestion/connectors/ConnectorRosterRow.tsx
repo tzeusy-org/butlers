@@ -2,18 +2,26 @@
  * ConnectorRosterRow — one row in the connectors roster table.
  *
  * Columns (left → right):
- *   liveness dot + state dot (stacked) · channel name+kind · function description+meta · sparkline ·
- *   auth pill · events (last 24h) · disclosure
+ *   health verdict (dot + word) · channel name+kind · function description+meta ·
+ *   sparkline · auth pill · events (last 24h) · disclosure
  *
  * The auth pill uses the same status label and color as the AttentionStrip
  * and the connector detail ReauthCallout (per spec AC2: consistent treatment).
+ * When the status is `needs_reauth`, the pill itself is the reauth action —
+ * it links straight into the OAuth start URL with `page_of_origin=ingestion`
+ * (the same contract the connector detail ReauthCallout uses).
  *
  * A left-rail severity indicator appears for non-ok connectors: red for
  * needs_reauth, amber for degraded/expiring.
  *
- * Design: hairline-divided rows, no card chrome. Liveness and state are each
- * rendered as a 6px dot (stacked vertically), giving distinct visibility for
- * both axes. Mono numeric cells. Serif function gloss. No animations beyond hover tint.
+ * Design: hairline-divided rows, no card chrome. The whole row is the
+ * navigation target (a stretched link filling the row) with the chevron kept
+ * as a visual disclosure cue only — it is no longer an independent click
+ * target. State color is foreground/dot only, never a background fill.
+ * The health verdict is a single dot + word (see connector-auth.ts
+ * `healthVerdictWord`), replacing the former stacked liveness+state dots
+ * that required memorizing which axis was which. Mono numeric cells. Serif
+ * function gloss. No animations beyond hover tint.
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connectors Roster"
@@ -23,14 +31,17 @@
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
 import type { ConnectorSummary } from '@/api/types'
+import { getProviderOAuthStartUrl } from '@/api/client'
 import { Sparkline } from './Sparkline'
 import {
   deriveConnectorDispatchInfo,
   authStatusLabel,
   authStatusColor,
-  livenessDotColor,
-  stateDotColor,
   healthDotColor,
+  healthTextColor,
+  healthVerdictWord,
+  oauthProviderForConnectorType,
+  oauthScopeSetForConnectorType,
 } from './connector-auth'
 import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
@@ -40,6 +51,18 @@ interface ConnectorRosterRowProps {
   spark24h?: number[]
   /** Pre-computed 24h event count. Falls back to sum of hourly_events. */
   events24h?: number
+  /**
+   * Real channel/kind for this connector_type from the available-connectors
+   * catalog. Absent → kind is genuinely unknown and is not displayed
+   * (never fabricated from name substrings).
+   */
+  catalogChannel?: string
+  /**
+   * Peak hourly value across every connector in the roster. When present,
+   * the sparkline normalizes against this shared peak so bar heights are
+   * comparable across rows instead of each row normalizing to its own max.
+   */
+  rosterSparkMax?: number
 }
 
 function formatNum(n: number): string {
@@ -51,12 +74,15 @@ function formatNum(n: number): string {
 /**
  * Dense hairline-divided roster row for one connector.
  *
- * Click the disclosure link or the row to navigate to connector detail.
+ * The whole row navigates to connector detail (click or Enter/Space while
+ * focused); the disclosure chevron is a visual cue only.
  */
 export function ConnectorRosterRow({
   connector,
   spark24h,
   events24h,
+  catalogChannel,
+  rosterSparkMax,
 }: ConnectorRosterRowProps) {
   const c = connector
   const info = deriveConnectorDispatchInfo(c)
@@ -68,9 +94,9 @@ export function ConnectorRosterRow({
 
   const authLabel = authStatusLabel(info.authStatus)
   const authColorClass = authStatusColor(info.authStatus)
-  const livenessDotClass = livenessDotColor(c.liveness)
-  const stateDotClass = stateDotColor(c.state)
-  const healthDotClass = healthDotColor(info.health)
+  const verdictWord = healthVerdictWord(c, info)
+  const verdictDotClass = healthDotColor(info.health)
+  const verdictTextClass = healthTextColor(info.health)
 
   // Left rail severity color for non-ok connectors
   const railColorClass =
@@ -81,7 +107,18 @@ export function ConnectorRosterRow({
         : null
 
   const displayName = c.connector_type.replace(/_/g, ' ')
-  const connectorKind = deriveKind(c)
+
+  // The reauth pill doubles as the reauth action — it is the only place on
+  // the row that deep-links into the OAuth dance, so it must sit above the
+  // stretched row link (z-10) to remain independently clickable.
+  const reauthUrl =
+    info.authStatus === 'needs_reauth'
+      ? getProviderOAuthStartUrl(oauthProviderForConnectorType(c.connector_type), {
+          pageOfOrigin: 'ingestion',
+          connectorDetailPath: `${c.connector_type}/${c.endpoint_identity}`,
+          scopeSet: oauthScopeSetForConnectorType(c.connector_type),
+        })
+      : null
 
   return (
     <div
@@ -97,18 +134,31 @@ export function ConnectorRosterRow({
         />
       )}
 
-      {/* Liveness + state indicators — two stacked dots, one per axis */}
-      <div className="flex flex-col items-center gap-[3px]">
+      {/* Stretched row link — the whole row is the navigation target (click
+          or keyboard Enter/Space). All other row content below stays
+          position:static, so it paints (and hit-tests) BELOW this absolutely
+          positioned link with no extra pointer-events wrangling needed. The
+          reauth pill is the one exception: it is explicitly lifted above
+          this link (relative z-10) so it stays independently clickable. */}
+      <Link
+        to={detailPath}
+        aria-label={`Open ${displayName} connector detail`}
+        className="absolute inset-0 z-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+        data-testid={`row-link-${c.connector_type}`}
+      />
+
+      {/* Health verdict — single dot + word, folding liveness + health */}
+      <div className="flex items-center gap-1.5">
         <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${livenessDotClass}`}
-          aria-label={`liveness: ${c.liveness}`}
-          data-testid={`liveness-dot-${c.connector_type}`}
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${verdictDotClass}`}
+          aria-hidden="true"
         />
         <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotClass}`}
-          aria-label={`state: ${c.state}`}
-          data-testid={`state-dot-${c.connector_type}`}
-        />
+          className={`font-mono text-[10px] tracking-[0.02em] ${verdictTextClass}`}
+          data-testid={`health-verdict-${c.connector_type}`}
+        >
+          {verdictWord}
+        </span>
       </div>
 
       {/* Channel name + kind */}
@@ -116,15 +166,19 @@ export function ConnectorRosterRow({
         <div className="text-sm font-medium tracking-[-0.01em] truncate capitalize">
           {displayName}
         </div>
-        <div className="font-mono text-[10px] text-muted-foreground/70 tracking-[0.04em] truncate">
-          {connectorKind}
-        </div>
+        {catalogChannel && (
+          <div className="font-mono text-[10px] text-muted-foreground/70 tracking-[0.04em] truncate">
+            {catalogChannel}
+          </div>
+        )}
       </div>
 
       {/* Function gloss + meta */}
       <div className="min-w-0">
         <div className="font-serif text-[13px] text-foreground leading-[1.4] line-clamp-1">
-          {describeConnector(c)}
+          {c.endpoint_identity && c.endpoint_identity !== 'default'
+            ? c.endpoint_identity
+            : displayName}
         </div>
         <div className="flex items-baseline gap-2 mt-0.5">
           {c.last_heartbeat_at ? (
@@ -139,8 +193,8 @@ export function ConnectorRosterRow({
       </div>
 
       {/* 24h sparkline */}
-      <div className="flex flex-col gap-1" aria-hidden="true">
-        <Sparkline data={bars} height={24} />
+      <div className="flex flex-col gap-1">
+        <Sparkline data={bars} maxValue={rosterSparkMax} height={24} />
         <div className="flex justify-between font-mono text-[9px] text-muted-foreground/40 tracking-[0.04em]">
           <span>00</span>
           <span>12</span>
@@ -148,55 +202,37 @@ export function ConnectorRosterRow({
         </div>
       </div>
 
-      {/* Auth pill */}
+      {/* Auth pill — the reauth action when needs_reauth, otherwise a plain label */}
       <div>
-        <div className="inline-flex items-center gap-1.5">
-          <span
-            className={`w-1 h-1 rounded-full ${healthDotClass}`}
-            aria-hidden="true"
-          />
+        {reauthUrl ? (
+          <a
+            href={reauthUrl}
+            className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
+            data-testid={`auth-status-${c.connector_type}`}
+            aria-label={`Re-authorize ${displayName}`}
+          >
+            {authLabel}
+          </a>
+        ) : (
           <span
             className={`font-mono text-[10px] tracking-[0.06em] uppercase ${authColorClass}`}
             data-testid={`auth-status-${c.connector_type}`}
           >
             {authLabel}
           </span>
-        </div>
+        )}
         <div className="font-mono text-[10px] text-muted-foreground/50 mt-0.5 block truncate max-w-[110px]">
           {info.authNote}
         </div>
       </div>
 
       {/* Events (last 24h) */}
-      <div className="font-mono text-[12px] tabular-nums text-right">
-        {formatNum(eventsCount)}
-      </div>
+      <div className="font-mono text-[12px] tabular-nums text-right">{formatNum(eventsCount)}</div>
 
-      {/* Disclosure */}
-      <Link
-        to={detailPath}
-        aria-label={`Open ${displayName} connector detail`}
-        className="font-mono text-[13px] text-muted-foreground hover:text-foreground transition-colors justify-self-end"
-      >
+      {/* Disclosure — decorative visual cue; the stretched row link owns navigation */}
+      <span aria-hidden="true" className="font-mono text-[13px] text-muted-foreground justify-self-end">
         ›
-      </Link>
+      </span>
     </div>
   )
-}
-
-/** Derive a short kind label from connector metadata. */
-function deriveKind(c: ConnectorSummary): string {
-  // Infer from connector_type naming conventions
-  const t = c.connector_type.toLowerCase()
-  if (t.includes('webhook') || t.includes('whatsapp') || t.includes('telegram')) return 'webhook'
-  if (t.includes('imap') || t.includes('gmail') || t.includes('email')) return 'imap'
-  if (t.includes('spotify') || t.includes('calendar') || t.includes('notion')) return 'poll'
-  if (t.includes('home_assistant')) return 'long-poll'
-  return 'poll'
-}
-
-/** Produce a short serif description gloss from connector metadata. */
-function describeConnector(c: ConnectorSummary): string {
-  const t = c.connector_type.replace(/_/g, ' ')
-  return `${t} · ${c.endpoint_identity}`
 }
