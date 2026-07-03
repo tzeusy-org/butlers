@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from butlers.api.models.oauth import OAuthCredentialState
+from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
@@ -26,6 +27,8 @@ from butlers.api.routers.oauth import (
     _validate_and_consume_state,
     _widen_scopes,
 )
+from butlers.google_account_registry import GoogleAccount
+from butlers.google_credentials import GoogleAppCredentials
 
 pytestmark = pytest.mark.unit
 
@@ -551,6 +554,181 @@ async def test_oauth_status_returns_google_structure(app):
     assert "state" in body["google"]
     assert "connected" in body["google"]
     assert body["google"]["state"] == OAuthCredentialState.not_configured
+
+
+async def test_oauth_status_aggregates_worst_case_across_accounts(app):
+    """Top-level `google.state` reflects the worst-case across all accounts.
+
+    Spec (dashboard-google-accounts, "Account-Aware Credential Status Endpoint"):
+    if any account has expired credentials, the top-level state must surface that,
+    not the primary account's (potentially healthy) state alone.
+    """
+    _make_app(app)
+
+    healthy_id = uuid.uuid4()
+    expired_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    accounts = [
+        GoogleAccount(
+            id=healthy_id,
+            entity_id=uuid.uuid4(),
+            email="healthy@example.com",
+            display_name="Healthy",
+            is_primary=True,
+            granted_scopes=[],
+            status="active",
+            connected_at=now,
+            last_token_refresh_at=now,
+        ),
+        GoogleAccount(
+            id=expired_id,
+            entity_id=uuid.uuid4(),
+            email="expired@example.com",
+            display_name="Expired",
+            is_primary=False,
+            granted_scopes=[],
+            status="active",
+            connected_at=now,
+            last_token_refresh_at=now,
+        ),
+    ]
+
+    async def _fake_load_app_credentials(store, *, pool=None, account=None):
+        refresh_token = "healthy-token" if account == healthy_id else "expired-token"
+        return GoogleAppCredentials(
+            client_id="cid", client_secret="secret", refresh_token=refresh_token
+        )
+
+    async def _fake_probe(*, client_id, client_secret, refresh_token):
+        if refresh_token == "expired-token":
+            return OAuthCredentialStatus(
+                state=OAuthCredentialState.expired, remediation="Reconnect the expired account."
+            )
+        return OAuthCredentialStatus(state=OAuthCredentialState.connected)
+
+    with (
+        patch.object(oauth_module, "list_google_accounts", AsyncMock(return_value=accounts)),
+        patch.object(oauth_module, "load_app_credentials", _fake_load_app_credentials),
+        patch.object(oauth_module, "_probe_google_token", _fake_probe),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Worst-case wins even though the primary (first-listed) account is healthy.
+    assert body["google"]["state"] == OAuthCredentialState.expired
+    assert body["accounts"] is not None
+    assert len(body["accounts"]) == 2
+
+
+async def test_oauth_status_single_account_matches_that_accounts_state(app):
+    """Single-account setups: top-level state equals that one account's state
+    (backward compatibility with the pre-multi-account shared-token model)."""
+    _make_app(app)
+
+    account_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    accounts = [
+        GoogleAccount(
+            id=account_id,
+            entity_id=uuid.uuid4(),
+            email="solo@example.com",
+            display_name="Solo",
+            is_primary=True,
+            granted_scopes=[],
+            status="active",
+            connected_at=now,
+            last_token_refresh_at=now,
+        ),
+    ]
+
+    async def _fake_load_app_credentials(store, *, pool=None, account=None):
+        assert account == account_id
+        return GoogleAppCredentials(
+            client_id="cid", client_secret="secret", refresh_token="solo-token"
+        )
+
+    async def _fake_probe(*, client_id, client_secret, refresh_token):
+        return OAuthCredentialStatus(state=OAuthCredentialState.missing_scope)
+
+    with (
+        patch.object(oauth_module, "list_google_accounts", AsyncMock(return_value=accounts)),
+        patch.object(oauth_module, "load_app_credentials", _fake_load_app_credentials),
+        patch.object(oauth_module, "_probe_google_token", _fake_probe),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["google"]["state"] == OAuthCredentialState.missing_scope
+
+
+async def test_oauth_status_one_account_probe_failure_does_not_500_the_response(app):
+    """A single account's credential lookup raising must not crash the whole
+    gather-based fan-out (oauth_status gathers one coroutine per account)."""
+    _make_app(app)
+
+    healthy_id = uuid.uuid4()
+    broken_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    accounts = [
+        GoogleAccount(
+            id=healthy_id,
+            entity_id=uuid.uuid4(),
+            email="healthy@example.com",
+            display_name="Healthy",
+            is_primary=True,
+            granted_scopes=[],
+            status="active",
+            connected_at=now,
+            last_token_refresh_at=now,
+        ),
+        GoogleAccount(
+            id=broken_id,
+            entity_id=uuid.uuid4(),
+            email="broken@example.com",
+            display_name="Broken",
+            is_primary=False,
+            granted_scopes=[],
+            status="active",
+            connected_at=now,
+            last_token_refresh_at=now,
+        ),
+    ]
+
+    async def _fake_load_app_credentials(store, *, pool=None, account=None):
+        if account == broken_id:
+            raise RuntimeError("transient DB error")
+        return GoogleAppCredentials(
+            client_id="cid", client_secret="secret", refresh_token="healthy-token"
+        )
+
+    async def _fake_probe(*, client_id, client_secret, refresh_token):
+        return OAuthCredentialStatus(state=OAuthCredentialState.connected)
+
+    with (
+        patch.object(oauth_module, "list_google_accounts", AsyncMock(return_value=accounts)),
+        patch.object(oauth_module, "load_app_credentials", _fake_load_app_credentials),
+        patch.object(oauth_module, "_probe_google_token", _fake_probe),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/status")
+
+    # The failing account's status is downgraded to unknown_error, not a 500.
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["google"]["state"] == OAuthCredentialState.unknown_error
+    assert len(body["accounts"]) == 2
 
 
 # ---------------------------------------------------------------------------

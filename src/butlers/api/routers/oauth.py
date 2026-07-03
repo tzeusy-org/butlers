@@ -74,6 +74,7 @@ Security notes:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -2043,10 +2044,9 @@ async def oauth_status(
     OAuthStatusResponse
         Aggregated status for all OAuth providers (Google only in v1).
     """
-    google_status = await _check_google_credential_status(db_manager=db_manager)
-
     # Attach accounts list when shared pool is available.
     accounts_response: list[GoogleAccountResponse] | None = None
+    accounts: list[Any] = []
     shared_pool = _get_shared_pool(db_manager)
     if shared_pool is not None:
         try:
@@ -2056,16 +2056,87 @@ async def oauth_status(
         except Exception:  # noqa: BLE001
             pass  # Non-fatal — status still works without account list
 
+    if accounts:
+        # Worst-case status across all connected accounts (spec: dashboard-google-accounts,
+        # "Account-Aware Credential Status Endpoint"). A single-account setup reduces to
+        # that one account's status, so this is backward compatible with the legacy
+        # shared-token behavior.
+        per_account_statuses = await asyncio.gather(
+            *(
+                _check_credential_status_for_account(db_manager, account_id=account.id)
+                for account in accounts
+            )
+        )
+        google_status = _worst_credential_status(per_account_statuses)
+    else:
+        # No accounts registered yet (e.g. app credentials configured but OAuth never
+        # bootstrapped, or the account registry is unavailable) — fall back to the
+        # legacy primary/shared-token check.
+        google_status = await _check_google_credential_status(db_manager=db_manager)
+
     return OAuthStatusResponse(google=google_status, accounts=accounts_response)
+
+
+# Severity ordering for worst-case aggregation across accounts (higher = worse).
+# `connected` is the only healthy state. Non-connected states are ranked from
+# "least actionable / partially working" to "opaque failure", so the top-level
+# `state` surfaces the most urgent remediation across all connected accounts.
+_STATE_SEVERITY: dict[OAuthCredentialState, int] = {
+    OAuthCredentialState.connected: 0,
+    OAuthCredentialState.missing_scope: 1,
+    OAuthCredentialState.unapproved_tester: 2,
+    OAuthCredentialState.not_configured: 3,
+    OAuthCredentialState.expired: 4,
+    OAuthCredentialState.redirect_uri_mismatch: 5,
+    OAuthCredentialState.unknown_error: 6,
+}
+
+
+def _worst_credential_status(
+    statuses: list[OAuthCredentialStatus],
+) -> OAuthCredentialStatus:
+    """Return the worst-case status from a list of per-account statuses.
+
+    "Worst" is defined by ``_STATE_SEVERITY``. Ties keep the first status
+    encountered with that severity, so results are deterministic for a given
+    account ordering.
+    """
+    return max(statuses, key=lambda s: _STATE_SEVERITY.get(s.state, len(_STATE_SEVERITY)))
 
 
 async def _check_google_credential_status(db_manager: Any = None) -> OAuthCredentialStatus:
     """Derive the operational status of the stored Google credentials.
 
+    Legacy/back-compat entrypoint: resolves the primary account's refresh
+    token (or the sole account's, in the common single-account case). See
+    ``_check_credential_status_for_account`` for the account-scoped version
+    used to compute worst-case status across multiple accounts.
+
+    Parameters
+    ----------
+    db_manager:
+        Optional DatabaseManager instance.  When provided, DB credentials
+        are resolved from the shared credential store.
+
+    Returns
+    -------
+    OAuthCredentialStatus
+        Structured status including state, connected flag, and remediation text.
+    """
+    return await _check_credential_status_for_account(db_manager, account_id=None)
+
+
+async def _check_credential_status_for_account(
+    db_manager: Any,
+    *,
+    account_id: uuid.UUID | None,
+) -> OAuthCredentialStatus:
+    """Derive the operational status of one Google account's credentials.
+
     Performs the following checks in order:
 
-    1. Whether client_id/client_secret are available in DB.
-    2. Whether a refresh token is stored in DB.
+    1. Whether client_id/client_secret are available in DB (shared across accounts).
+    2. Whether a refresh token is stored for this account's companion entity.
     3. Probe Google's token-info endpoint to validate scope coverage.
 
     Parameters
@@ -2073,6 +2144,9 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
     db_manager:
         Optional DatabaseManager instance.  When provided, DB credentials
         are resolved from the shared credential store.
+    account_id:
+        The ``google_accounts.id`` to resolve the refresh token for, or
+        ``None`` to resolve the primary account (legacy/back-compat).
 
     Returns
     -------
@@ -2090,7 +2164,24 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
             detail="Shared credential store unavailable.",
         )
 
-    app_creds = await load_app_credentials(cred_store, pool=_get_shared_pool(db_manager))
+    try:
+        app_creds = await load_app_credentials(
+            cred_store, pool=_get_shared_pool(db_manager), account=account_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        # A single account's credential lookup failing (e.g. a transient DB error)
+        # must not crash the whole /status fan-out (see oauth_status, which gathers
+        # this coroutine across every account). Report it as this account's status.
+        logger.warning(
+            "OAuth status probe: failed to load credentials for account=%r: %s",
+            account_id,
+            exc,
+        )
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.unknown_error,
+            remediation="Unable to read stored credentials. Check server logs and retry.",
+            detail=f"Credential lookup failed: {exc}",
+        )
     client_id = app_creds.client_id if app_creds is not None else ""
     client_secret = app_creds.client_secret if app_creds is not None else ""
     refresh_token = app_creds.refresh_token if app_creds is not None else None
