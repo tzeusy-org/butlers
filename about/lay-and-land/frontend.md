@@ -279,23 +279,26 @@ context.
 Stateful, time-aware, multi-region surface that combines a primary
 visualization with scrubber/control affordances and secondary aggregations.
 The user explores time and state interactively: scrubbing a timeline,
-panning a map, adjusting a time window. Examples: `ChroniclesPage`
-(scrubber + Gantt + map + aggregates with `MapPanContext`),
-`CalendarWorkspacePage` (custom hour-grid via inline `style={height}`).
+adjusting a time window. Examples: `CostsPage` (`<Page archetype="workspace">`
+with `<TimeWindowPicker>` + `<Scrubber>` over the cost-over-time chart),
+`CalendarWorkspacePage` (custom hour-grid via inline `style={height}`;
+predates the `<Page>` primitive and does not use it).
 
-**Reference implementation:** `ChroniclesPage`.
+**Reference implementation:** `CostsPage` -- the only page currently using
+`<Page archetype="workspace">`.
 
 **Required primitives:** `<Page archetype="workspace">`, `<Scrubber>`,
-`<TimeWindowPicker>`, `MapPanContext.Provider` (when geographic exploration applies),
-aggregation chart slot.
+`<TimeWindowPicker>`, `MapPanContext.Provider` (when geographic exploration
+applies -- no current workspace page needs this), aggregation chart slot.
 
 **When to use:** Pages where the user explores time and state interactively.
-Current examples: ChroniclesPage, CalendarWorkspacePage; future candidates include
-CostsPage (if upgraded with timeline scrubbing), SessionsPage (if upgraded to show
-butler activity timelines).
+Current examples: CostsPage, CalendarWorkspacePage; future candidates include
+SessionsPage (if upgraded to show butler activity timelines).
 
-These are *de facto* their own design language. The Chronicles page
-in particular reads like a separate product.
+Note: Chronicles previously exercised this archetype but has since moved to
+`archetype="editorial"` (see "Editorial archetype layout" below) -- its
+scrubber/Gantt/map surfaces now live below the fold inside
+`<ChroniclesDrilldownPanel>`, not as the page's top-level archetype.
 
 ### E. Editor / form
 Settings, secrets, rule definitions. Examples: `SettingsPage`,
@@ -495,7 +498,7 @@ not literals.
 
 | Concern | Where it shows up | Note |
 |---|---|---|
-| H1 size varies | `text-2xl` (CostsPage) vs `text-3xl` (ButlersPage:124, ChroniclesPage:208) | `<Page>` enforces `text-3xl`; remaining `text-2xl` pages pre-date migration |
+| H1 size varies | `text-2xl` (e.g. pre-migration pages) vs `text-3xl` (ButlersPage:124) | `<Page>` enforces `text-3xl` for overview/list/detail/workspace/editor archetypes; the editorial archetype (`ChroniclesPage`, `DashboardPage`) uses a 44px Display headline instead; remaining `text-2xl` pages pre-date migration |
 | `StatsCard` reimplemented | CostsPage:20, QaOverviewPage:149 | `DashboardPage` migrated to `StatItem` (no-Card strip). Remaining pages are candidates for the same pattern |
 | Date formatters disagree | `toLocaleString` (EpisodeDetailPage:140), `toISOString().slice(0,10)` (EntitiesPage:196), `format(...)` from date-fns (GroupsPage:155) | `<Time>` primitive shipped; `DashboardPage` already uses `<Time mode="relative">` |
 | Hex literals | EntitiesPage:102-113, EntityDetailPage:313/316, SymptomsPage, GroupsPage:121 | Need named tokens |
@@ -508,8 +511,8 @@ not literals.
 Stability of the design language overall: **Maturing**. Every part
 works, several parts disagree, none of the disagreements are
 load-bearing yet. The right time to consolidate is *before* the next
-major surface (e.g. another butler with workspace-grade UI like
-Chronicles) arrives.
+major surface (e.g. another workspace-grade UI like CostsPage, or a
+second editorial-grade page like Chronicles) arrives.
 
 ---
 
@@ -536,12 +539,14 @@ This document covers the dashboard's surface. It is the map an
 
 Every page today re-invents its heading region, loading skeleton, empty state,
 and error region by hand. The result is documented in the "Inconsistencies
-Worth Tracking" table above: H1 sizes vary (`text-2xl` in `CostsPage` vs
-`text-3xl` in `EntitiesPage:657`, `SymptomsPage:108`, `ChroniclesPage:195`),
+Worth Tracking" table above: H1 sizes vary (on pre-migration pages vs
+`text-3xl` in `EntitiesPage:657`, `SymptomsPage:108`),
 action placement varies, and the shared `EmptyState` component is used
 inconsistently. A single `<Page>` wrapper makes these decisions once.
-`DashboardPage` has been migrated to `<Page archetype="overview">` and uses
-`text-3xl font-bold tracking-tight` via the `<Page>` heading block.
+`DashboardPage` and `ChroniclesPage` have been migrated to
+`<Page archetype="editorial">` and use the Display-tier 44px heading via the
+`<Page>` heading block; pages on the other archetypes use
+`text-3xl font-bold tracking-tight` instead.
 
 The `<Page>` primitive does not replace the shell (`Shell.tsx`, `PageHeader.tsx`).
 It wraps the `<main>` outlet content only.
@@ -694,21 +699,22 @@ Reference pages: `EntityDetailPage`, `ButlerDetailPage` (tabs pattern).
 
 #### D. Workspace (`archetype="workspace"`)
 
-Reference page: `ChroniclesPage` (line 191--286), `CalendarWorkspacePage`.
+Reference page: `CostsPage` (the only current `archetype="workspace"` page;
+`CalendarWorkspacePage` is conceptually workspace-like but predates the
+`<Page>` primitive and does not use it).
 
 - Max content width: unrestricted. Workspace pages are canvas-grade and own
   their own internal layout.
-- Content padding: inherited from shell (`p-6`), but workspace pages may
-  override with additional `pb-*` clearance for floating elements (e.g.,
-  `ChroniclesPage` uses `pb-72` for the floating minimap -- this belongs inside
-  `children`, not in `<Page>`).
-- Heading block: same structure as overview, but `description` is typically a
-  single short sentence (see `ChroniclesPage:198--199`: "Retrospective view of
-  lived past time reconstructed from butler evidence.").
-- Section rhythm: workspace pages own their own `<section aria-label="...">` regions.
-  The `<Page>` wrapper provides only the heading block and the `space-y-6` root gap.
-  Workspace `<section>` regions use `rounded-lg border bg-card p-6` as seen in
-  `ChroniclesPage:220,234,255`.
+- Content padding: inherited from shell (`p-6`). `CostsPage` adds no extra
+  clearance; a workspace page with floating/overlay elements may still
+  override with additional `pb-*` inside `children`, not in `<Page>`.
+- Heading block: same structure as overview. `CostsPage` passes only `title`
+  ("Costs & Usage") today; a `description` sentence is optional, not required.
+- Section rhythm: `CostsPage` composes `<TimeWindowPicker>`, a stats grid, a
+  `<Card>` holding the primary chart plus `<Scrubber>`, and
+  `<CostBreakdownTable>` as direct children of `<Page>`, relying on its
+  `space-y-6` root gap rather than its own `<section aria-label="...">`
+  wrappers.
 - `loading` prop renders a single full-width skeleton block; there is no
   per-widget skeleton at the `<Page>` level for workspaces.
 
@@ -823,9 +829,10 @@ For converting an existing page to the `<Page>` primitive:
 Migration order (rough priority by blast radius and visitor frequency):
 1. `SymptomsPage` -- small, clean, easy reference implementation
 2. `EntitiesPage` -- list archetype canonical case
-3. `DashboardPage` -- overview canonical case, **already migrated**
+3. `DashboardPage` -- editorial canonical case, **already migrated**
 4. Detail pages in dependency order (start with `FactDetailPage`, least tangled)
-5. `ChroniclesPage` last -- workspace archetype needs the least from `<Page>`
+5. `ChroniclesPage` -- editorial archetype (`<Page archetype="editorial">`),
+   **already migrated**; no longer a workspace-archetype page
 
 ---
 
@@ -898,13 +905,15 @@ Migration order (rough priority by blast radius and visitor frequency):
    and `loading` prop be disallowed (or ignored) for `archetype="workspace"`?
 
    **Reviewer answer:** Allow `loading` for workspace but keep the coarse
-   placeholder. `ChroniclesPage` already has its own per-widget skeleton logic
-   inside its timeline, scrubber, and map sections; the `<Page>`-level `loading`
-   prop is a fallback for the case where the entire workspace data fetch fails
-   before any widget can render at all. The `h-96` placeholder is acceptable
-   for that edge case. Workspace pages that want finer loading fidelity simply
-   do not pass `loading` to `<Page>` and manage skeletons inside `children`
-   instead -- this is the normal case for Chronicles today.
+   placeholder. `CostsPage` -- the current `archetype="workspace"` consumer --
+   passes `loading={summaryLoading || dailyLoading}` straight to `<Page>` and
+   relies on the coarse `h-96` placeholder rather than per-widget skeletons.
+   (Chronicles previously exercised this archetype and had its own per-widget
+   skeleton logic across its timeline, scrubber, and map sections; it has
+   since moved to `archetype="editorial"` and is no longer a workspace
+   example.) Workspace pages that want finer loading fidelity may still
+   choose not to pass `loading` to `<Page>` and manage skeletons inside
+   `children` instead.
 
 6. **`<title>` management.** The spec proposes a `useEffect` on `<Page>` to
    set `document.title`. Does the project want this behavior, or is the page
@@ -1023,8 +1032,10 @@ holds the page on font load.
 ## Editorial archetype layout
 
 > Status: **Draft** (the OpenSpec change `dashboard-overview-briefing`
-> is the first consumer; `frontend/src/components/overview/` is the
-> destination for the components that embody this layout). Companion
+> was the first consumer; `ChroniclesPage` also renders via this archetype
+> today, having moved off the workspace archetype -- see "Page Archetypes"
+> above. `frontend/src/components/overview/` is the shared component
+> destination). Companion
 > to [`about/heart-and-soul/design-language.md`](../heart-and-soul/design-language.md)
 > §Editorial archetype, which owns the principles. This section owns
 > the layout values, the row anatomies, the motion durations, and the
@@ -1032,9 +1043,14 @@ holds the page on font load.
 
 ### Page frame
 
-The editorial archetype renders inside `<Page archetype="editorial">`
-(once the archetype is added to the `<Page>` discriminant union; today
-the Overview is the only page that needs it). The frame:
+The editorial archetype renders inside `<Page archetype="editorial">`.
+Two pages use it today: `DashboardPage` (Overview) and `ChroniclesPage`
+(Chronicles). Both share the same grid/max-width frame below; column
+*contents* differ per page -- the row anatomies, KPI strip, and status
+pill details further down this section describe `DashboardPage`'s
+Overview briefing specifically (Chronicles composes its own right
+column from `AttentionList`, `KpiStrip`, and `RecentDaysIndex`; see
+`ChroniclesPage.tsx` for its current composition). The frame:
 
 - `display: grid`, `grid-template-columns: 1.4fr 1fr`, `gap: 56px`.
 - `max-width: 1280px`, page padding `48px 56px` on the
@@ -1137,11 +1153,12 @@ All consumers use this module:
 
 ### Source files
 
-The editorial archetype components are expected to land under
+The editorial archetype components live under
 `frontend/src/components/overview/` per the
-`openspec/changes/dashboard-overview-briefing/` change. As of this
-section's authoring the directory is empty; the Overview page still
-renders via the older `DashboardPage` overview archetype.
+`openspec/changes/dashboard-overview-briefing/` change (`Headline`,
+`Elaboration`, `KpiStrip`, `AttentionList`, `Section`, and others).
+Both `DashboardPage` and `ChroniclesPage` import from this directory
+today.
 
 ### See also
 
