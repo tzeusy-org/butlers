@@ -223,6 +223,9 @@ class TestIssueFromAuditGroupRow:
         assert issue.butler == "multiple"
 
     def test_link_includes_butler_filter_for_single_butler(self):
+        # Param names must match what GET /api/audit-log and AuditLogPage's
+        # filter bar actually read: `actor`/`action`, not `butler`/`operation`
+        # (which nothing on the consuming end recognizes).
         row = _make_row(
             {
                 "error_summary": "Error",
@@ -235,7 +238,7 @@ class TestIssueFromAuditGroupRow:
             }
         )
         issue = issue_from_audit_group_row(row)
-        assert "butler=calendar" in (issue.link or "")
+        assert "actor=calendar" in (issue.link or "")
 
         scheduled = _make_row(
             {
@@ -248,8 +251,8 @@ class TestIssueFromAuditGroupRow:
                 "last_seen_at": None,
             }
         )
-        # Scheduled groups additionally pin the operation=session filter.
-        assert "operation=session" in (issue_from_audit_group_row(scheduled).link or "")
+        # Scheduled groups additionally pin the action=session filter.
+        assert "action=session" in (issue_from_audit_group_row(scheduled).link or "")
 
     def test_empty_butlers_list_falls_back_to_unknown(self):
         row = _make_row(

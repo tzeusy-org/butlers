@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { triggerButler } from "@/api/index.ts";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { Button } from "@/components/ui/button";
+import { Time } from "@/components/ui/time";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,15 @@ export function ButlerDetailActions({
   const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
   const isPaused = registryEntry?.eligibility_state === "quarantined";
   const pauseDisabled = registryLoading || registryEntry === undefined || setEligibility.isPending;
+
+  // Surface WHY and WHEN a butler was quarantined right at the restore
+  // decision point (bu-86c4c.3 — this used to be hidden at the exact moment
+  // it matters: an operator deciding whether "Resume" is safe had no idea
+  // whether the quarantine was an automated healing action, how long ago it
+  // fired, or why — the registry already carries both fields, they just
+  // weren't rendered here).
+  const quarantineReason = registryEntry?.quarantine_reason ?? null;
+  const quarantinedAt = registryEntry?.quarantined_at ?? null;
 
   async function handleForceRun() {
     if (isForceRunning) return;
@@ -129,6 +139,26 @@ export function ButlerDetailActions({
         triggerLabel="Prompt"
         showTriggerIcon={false}
       />
+
+      {/* Quarantine reason/timestamp — shown right next to the Resume button
+          so the operator sees WHY and WHEN before deciding to un-quarantine,
+          not just a bare "Resume" affordance. */}
+      {isPaused && (quarantineReason || quarantinedAt) && (
+        <span
+          className="max-w-[280px] truncate font-mono text-[10px] text-muted-foreground"
+          title={quarantineReason ?? undefined}
+          data-testid="butler-quarantine-info"
+        >
+          Quarantined
+          {quarantinedAt && (
+            <>
+              {" "}
+              <Time value={quarantinedAt} mode="relative" />
+            </>
+          )}
+          {quarantineReason && `: ${quarantineReason}`}
+        </span>
+      )}
 
       <Button
         variant={isPaused ? "default" : "outline"}

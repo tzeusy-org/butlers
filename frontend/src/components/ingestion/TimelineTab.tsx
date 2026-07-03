@@ -1320,6 +1320,22 @@ export function TimelineTab({
   // ?event=<id> — drawer URL state
   const { eventId: drawerEventId, openDrawer, closeDrawer } = useEventDrawerState();
 
+  // ?trace=<id> — drill-down spine (bu-86c4c.3). Landed on from
+  // SessionDetailDrawer's "Trace ID" link and notification-feed's "Trace"
+  // link, both of which used to discard the trace on navigation. Read once
+  // (search params are stable across re-renders unless the owner clears it
+  // via the banner below); a full navigation to a new trace remounts this
+  // component with a fresh urlTrace value.
+  const urlTrace = searchParams.get("trace");
+
+  const handleClearTrace = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("trace");
+      return next;
+    });
+  }, [setSearchParams]);
+
   // Range state (writes to URL)
   const urlRange = searchParams.get("range") as IngestionRange | null;
   const [range, setRange] = useState<IngestionRange>(
@@ -1387,8 +1403,12 @@ export function TimelineTab({
     return new Set(DEFAULT_STATUSES);
   }, [activeViewId, defaultStatuses]);
 
+  // A trace-scoped landing must show its event regardless of status — the
+  // default "all" view hides "skipped"/"filtered" rows, which would silently
+  // swallow the very hop the trace link promised to land on. Only applies to
+  // the initial mount value; the owner can still narrow via the status chips.
   const [enabledStatuses, setEnabledStatuses] = useState<Set<IngestionEventStatus>>(
-    () => viewStatuses,
+    () => (urlTrace ? new Set(ALL_STATUSES) : viewStatuses),
   );
 
   // Re-apply the built-in baseline only the first time a given built-in view
@@ -1401,10 +1421,17 @@ export function TimelineTab({
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!isBuiltInViewId(activeViewId)) return;
+    // Skip while trace-scoped — see the ALL_STATUSES initializer above; this
+    // effect would otherwise immediately stomp it back to the "all" preset's
+    // narrower status set. Checked BEFORE updating appliedBuiltInViewRef: if
+    // the ref were marked "applied" during the trace-scoped mount, clearing
+    // the trace later would short-circuit on the ref check below and never
+    // revert enabledStatuses back to the view's defaults.
+    if (urlTrace) return;
     if (appliedBuiltInViewRef.current === activeViewId) return;
     appliedBuiltInViewRef.current = activeViewId;
     setEnabledStatuses(viewStatuses);
-  }, [activeViewId, viewStatuses]);
+  }, [activeViewId, viewStatuses, urlTrace]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleStatusToggle = useCallback((status: IngestionEventStatus) => {
@@ -1827,15 +1854,26 @@ export function TimelineTab({
     ...(debouncedQ ? { q: debouncedQ } : {}),
     ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
     ...(statusesCsv ? { statuses: statusesCsv } : {}),
-    // Only apply a lower bound on received_at so the 30 s refetch can pick up
-    // events that arrived after the initial load.  Including an upper bound
-    // (rangeWindow.to) would freeze the query at the moment the range changed,
-    // causing the refetch to silently miss new events. A minute-scoped window
-    // is an intentional fixed snapshot, so it uses both bounds.
-    from: effectiveWindow?.from ?? rangeWindow.from,
-    ...(effectiveWindow ? { to: effectiveWindow.to } : {}),
+    ...(urlTrace ? { trace_id: urlTrace } : {}),
+    // A trace-scoped landing must not be silently clipped by the range
+    // picker's window — the traced event may be older than "24h" (the
+    // default) and the whole point of the drill-down link is to find it
+    // regardless of when it happened. Only apply the range bound when no
+    // trace filter is active.
+    ...(urlTrace
+      ? {}
+      : {
+          // Only apply a lower bound on received_at so the 30 s refetch can pick
+          // up events that arrived after the initial load. Including an upper
+          // bound (rangeWindow.to) would freeze the query at the moment the
+          // range changed, causing the refetch to silently miss new events. A
+          // minute-scoped window is an intentional fixed snapshot, so it uses
+          // both bounds.
+          from: effectiveWindow?.from ?? rangeWindow.from,
+          ...(effectiveWindow ? { to: effectiveWindow.to } : {}),
+        }),
     ...(activeSort ? { sort: activeSort } : {}),
-  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from, effectiveWindow, activeSort]);
+  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from, effectiveWindow, activeSort, urlTrace]);
 
   const {
     data: infiniteData,
@@ -2057,6 +2095,31 @@ export function TimelineTab({
 
       {/* Connector attention strip */}
       <ConnectorAttentionStrip isActive={isActive} />
+
+      {/* Trace scope indicator (bu-86c4c.3 — drill-down spine) — honest state:
+          the ledger below is narrowed to a single trace_id, ignoring the
+          range picker's window entirely. Cleared by the owner, never
+          silently. */}
+      {urlTrace && (
+        <div
+          className="flex items-center gap-2 px-3 py-1.5 border border-border rounded bg-muted/10 font-mono text-[11px] text-muted-foreground"
+          data-testid="trace-scope-banner"
+        >
+          <span className="truncate">
+            Scoped to trace <span className="text-foreground">{urlTrace}</span>
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleClearTrace}
+            className="h-5 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground shrink-0"
+            data-testid="trace-scope-clear"
+          >
+            <X className="size-3 mr-1" />
+            Clear
+          </Button>
+        </div>
+      )}
 
       {/* Minute scope indicator (bu-4utdw.7) — honest state: the ledger below
           is narrowed to a single hour-strip minute, not the range picker's

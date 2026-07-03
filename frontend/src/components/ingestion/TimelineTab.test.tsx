@@ -2165,3 +2165,142 @@ describe("TimelineTab — BulkActionBar select-all-visible", () => {
     expect(selectAllBtn).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// TimelineTab — ?trace= filter (drill-down spine, bu-86c4c.3)
+//
+// Landing on the timeline with ?trace=<id> (from SessionDetailDrawer's
+// "Trace ID" link or notification-feed's "Trace" link — both used to discard
+// the trace) must:
+//   - forward trace_id to useIngestionEvents (SQL pushdown, not a client filter)
+//   - NOT clip the query to the range picker's window (the traced event may
+//     be older than the default range)
+//   - render a "Scoped to trace" banner the owner can clear
+//   - clearing the banner drops trace_id from the next query
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — ?trace= drill-down spine filter", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderWithTrace(traceId: string) {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/?trace=${encodeURIComponent(traceId)}`]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("forwards trace_id to useIngestionEvents and omits the range window bound", () => {
+    renderWithTrace("trace-abc-123");
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).toMatchObject({ trace_id: "trace-abc-123" });
+    expect(lastFilters).not.toHaveProperty("from");
+    expect(lastFilters).not.toHaveProperty("to");
+  });
+
+  it("omits trace_id when no ?trace= param is present", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).not.toHaveProperty("trace_id");
+    // Without a trace, the range window bound is present as usual.
+    expect(lastFilters).toHaveProperty("from");
+  });
+
+  it("renders a 'Scoped to trace' banner naming the trace", () => {
+    renderWithTrace("trace-abc-123");
+    expect(container.querySelector("[data-testid='trace-scope-banner']")?.textContent).toContain(
+      "trace-abc-123",
+    );
+  });
+
+  it("clearing the trace banner drops trace_id from the next query", () => {
+    renderWithTrace("trace-abc-123");
+
+    act(() => {
+      (
+        container.querySelector("[data-testid='trace-scope-clear']") as HTMLButtonElement
+      ).click();
+    });
+
+    expect(container.querySelector("[data-testid='trace-scope-banner']")).toBeNull();
+    const calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0];
+    expect(lastFilters).not.toHaveProperty("trace_id");
+  });
+
+  it("shows a trace-scoped event even with a status hidden by the default 'all' view", () => {
+    // "filtered" is hidden by DEFAULT_STATUSES / the "all" built-in view —
+    // a trace-scoped landing must still surface it, not silently swallow the
+    // very hop the trace link promised to land on.
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([
+        makeEvent({ id: "aabbccdd-0000-0000-0000-0000000000f1", status: "filtered" }),
+      ]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    renderWithTrace("trace-abc-123");
+    expect(container.querySelector("[data-event-id='aabbccdd-0000-0000-0000-0000000000f1']")).not.toBeNull();
+  });
+
+  it("reverts to the default view's narrower statuses after the trace is cleared", () => {
+    // Regression: the built-in-view-baseline effect used to mark
+    // appliedBuiltInViewRef as "applied" during the trace-scoped mount even
+    // though it skipped the actual setEnabledStatuses call (guarded by
+    // `if (urlTrace) return`) — so when the trace was later cleared, the
+    // effect's ref-equality check short-circuited and enabledStatuses stayed
+    // stuck on ALL_STATUSES forever, silently un-hiding "filtered"/"skipped"
+    // rows even after the owner left the trace-scoped view.
+    renderWithTrace("trace-abc-123");
+
+    // While trace-scoped: no `statuses` param (ALL_STATUSES == no filter).
+    let calls = vi.mocked(useIngestionEvents).mock.calls;
+    expect(calls[calls.length - 1][0]).not.toHaveProperty("statuses");
+
+    act(() => {
+      (
+        container.querySelector("[data-testid='trace-scope-clear']") as HTMLButtonElement
+      ).click();
+    });
+
+    // After clearing: reverts to the default view's statuses, which excludes
+    // "filtered" and "skipped".
+    calls = vi.mocked(useIngestionEvents).mock.calls;
+    const lastFilters = calls[calls.length - 1][0] as { statuses?: string };
+    expect(lastFilters.statuses).toBeDefined();
+    expect(lastFilters.statuses).not.toContain("filtered");
+    expect(lastFilters.statuses).not.toContain("skipped");
+  });
+});

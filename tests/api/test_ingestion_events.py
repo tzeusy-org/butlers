@@ -196,6 +196,92 @@ async def test_statuses_and_status_both_forwarded(app):
 
 
 # ---------------------------------------------------------------------------
+# trace_id filter — drill-down spine (bu-86c4c.3)
+# ---------------------------------------------------------------------------
+
+
+async def test_trace_id_filter_resolves_and_forwards_event_ids(app):
+    """?trace_id=... resolves via the cross-butler session fan-out, then
+    forwards the matching request_ids to ingestion_events_list as event_ids
+    (SQL pushdown, not a client-side/post-fetch filter)."""
+    mock_db = _app_with_mock_db(app)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+            return_value=["req-1", "req-2"],
+        ) as mock_resolve,
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_list",
+            new_callable=AsyncMock,
+            return_value={"items": [], "next_cursor": None, "has_more": False},
+        ) as mock_list,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?trace_id=abc123")
+
+    assert resp.status_code == 200
+    mock_resolve.assert_awaited_once_with(mock_db, "abc123")
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("event_ids") == ["req-1", "req-2"]
+
+
+async def test_trace_id_absent_forwards_none_event_ids(app):
+    """No ?trace_id= → event_ids stays None (no filter, not an empty-restricting one)."""
+    _app_with_mock_db(app)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+        ) as mock_resolve,
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_list",
+            new_callable=AsyncMock,
+            return_value={"items": [], "next_cursor": None, "has_more": False},
+        ) as mock_list,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    mock_resolve.assert_not_awaited()
+    assert mock_list.await_args.kwargs.get("event_ids") is None
+
+
+async def test_trace_id_no_match_yields_empty_page_not_unfiltered(app):
+    """A trace_id matching no session forwards event_ids=[] — an explicit
+    zero-row restriction, never silently falling through to "no filter"."""
+    _app_with_mock_db(app)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_request_ids_for_trace",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_events_list",
+            new_callable=AsyncMock,
+            return_value={"items": [], "next_cursor": None, "has_more": False},
+        ) as mock_list,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events?trace_id=no-such-trace")
+
+    assert resp.status_code == 200
+    call_kwargs = mock_list.await_args.kwargs
+    assert call_kwargs.get("event_ids") == []
+
+
+# ---------------------------------------------------------------------------
 # Event detail — 200 found, 404 not found
 # ---------------------------------------------------------------------------
 

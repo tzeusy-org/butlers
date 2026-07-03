@@ -61,6 +61,7 @@ from butlers.core.ingestion_events import (
     ingestion_events_histogram,
     ingestion_events_list,
     ingestion_events_list_enrichment,
+    ingestion_events_request_ids_for_trace,
     ingestion_events_sessions_for_ids,
     ingestion_window_rollup,
 )
@@ -173,6 +174,20 @@ async def list_ingestion_events(
             "keyset position — do not mix cursor types across sort modes."
         ),
     ),
+    trace_id: str | None = Query(
+        None,
+        description=(
+            "Filter to ingestion events with at least one linked butler session "
+            "carrying this OpenTelemetry trace_id — the drill-down spine that "
+            "lets a trace survive the hop from a session/notification detail "
+            "view into the timeline. trace_id lives on `sessions`, not on the "
+            "ingestion event itself, so this is resolved via a cross-butler "
+            "session fan-out first, then pushed into the unified timeline "
+            "query as an `id = ANY(...)` filter (same SQL-pushdown pattern as "
+            "`event_type`/`statuses`). A trace_id that matches no session "
+            "returns an empty page, not an error."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CursorPaginatedResponse[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
@@ -188,8 +203,9 @@ async def list_ingestion_events(
     Merges ``public.ingestion_events`` (status=ingested/skipped, filter_reason=null)
     with ``connectors.filtered_events`` (status/filter_reason from their own columns).
     Supports optional filtering by ``channels`` (CSV), ``source_channel`` (deprecated),
-    ``statuses`` (CSV), ``status`` (single), freetext ``q``, and ``from``/``to``
-    (ISO-8601 time bounds on received_at).
+    ``statuses`` (CSV), ``status`` (single), freetext ``q``, ``from``/``to``
+    (ISO-8601 time bounds on received_at), and ``trace_id`` (drill-down spine —
+    resolved via a cross-butler session fan-out, then pushed into SQL).
 
     Channel filter precedence: ``channels`` wins over ``source_channel``.
     Status filter precedence: ``statuses`` wins over ``status``.
@@ -244,6 +260,14 @@ async def list_ingestion_events(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid 'to' value: {exc}") from exc
 
+    # Resolve trace_id -> matching event ids BEFORE the main query (the trace
+    # lives on `sessions`, not on the ingestion event itself — see
+    # ingestion_events_request_ids_for_trace). `is not None` (not truthy) so an
+    # explicit empty match set still restricts to zero rows.
+    event_ids: list[str] | None = None
+    if trace_id is not None and trace_id.strip():
+        event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
+
     result = await ingestion_events_list(
         pool,
         limit=limit,
@@ -255,6 +279,7 @@ async def list_ingestion_events(
         from_dt=from_dt,
         to_dt=to_dt,
         sort=sort,
+        event_ids=event_ids,
     )
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]

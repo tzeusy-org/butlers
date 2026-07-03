@@ -380,6 +380,25 @@ describe("SessionDetailDrawer", () => {
     expect(document.body.textContent).not.toContain("Runtime Type");
   });
 
+  it("links the Trace ID to the ingestion timeline pre-filtered by that trace (bu-86c4c.3)", () => {
+    setQueryState({
+      data: {
+        data: SESSION_DETAIL,
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    const traceLink = Array.from(document.body.querySelectorAll("a")).find(
+      (a) => a.textContent === SESSION_DETAIL.trace_id,
+    );
+    expect(traceLink).toBeDefined();
+    expect(traceLink?.getAttribute("href")).toBe(
+      `/ingestion?trace=${encodeURIComponent(SESSION_DETAIL.trace_id)}`,
+    );
+  });
+
   it("shows an error message (not a hung skeleton) when the detail fetch fails", () => {
     setQueryState({ data: undefined, isError: true });
 

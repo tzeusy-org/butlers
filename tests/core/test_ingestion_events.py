@@ -366,6 +366,81 @@ async def test_ingestion_events_list_and_sessions() -> None:
     assert rollup_result["by_butler"]["herald"]["cost"] == 0.0
 
 
+async def test_ingestion_events_list_event_ids_filter() -> None:
+    """event_ids pushes an `id = ANY(...)` filter into SQL (drill-down spine, bu-86c4c.3).
+
+    An explicit empty list must still restrict to zero rows (`is not None`
+    check, not truthy) — a trace_id that matched no session should yield an
+    empty page, not fall through to "no filter" the way an empty
+    channels/statuses list does.
+    """
+    from butlers.core.ingestion_events import ingestion_events_list
+
+    ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+    pool = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool, event_ids=ids, limit=5)
+    _, sql, args = pool.calls[0]
+    assert "id = ANY(" in sql and "::uuid[]" in sql
+    assert [uuid.UUID(i) for i in ids] in args
+
+    # Explicit empty list still adds the filter (not skipped like channels=[])
+    pool2 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool2, event_ids=[], limit=5)
+    _, sql2, args2 = pool2.calls[0]
+    assert "id = ANY(" in sql2
+    assert [] in args2
+
+    # event_ids=None (default) omits the filter entirely
+    pool3 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool3, limit=5)
+    _, sql3, _args3 = pool3.calls[0]
+    assert "id = ANY(" not in sql3
+
+    # Filter also applies under sort=cost (shared where_parts before the branch)
+    pool4 = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool4, event_ids=ids, sort="cost", limit=5)
+    _, sql4, args4 = pool4.calls[0]
+    assert "id = ANY(" in sql4
+    assert [uuid.UUID(i) for i in ids] in args4
+
+
+async def test_ingestion_events_request_ids_for_trace() -> None:
+    """Resolves a trace_id to distinct request_ids across all registered butlers.
+
+    Covers: no match -> [], single butler, cross-butler dedup, sorted output,
+    and that the fan-out query targets `sessions.trace_id`.
+    """
+    from butlers.core.ingestion_events import ingestion_events_request_ids_for_trace
+
+    # No session anywhere carries this trace -> empty list, not an error.
+    assert await ingestion_events_request_ids_for_trace(_FakeDatabaseManager(), "trace-x") == []
+
+    # Single butler, single session.
+    db = _FakeDatabaseManager(results={"atlas": [_FakeRecord({"request_id": "req-1"})]})
+    assert await ingestion_events_request_ids_for_trace(db, "trace-x") == ["req-1"]
+    query, args, butler_names = db.fan_out_calls[0]
+    assert "trace_id" in query and args == ("trace-x",) and butler_names is None
+
+    # Cross-butler: same request_id fanned out to two butlers (shared trace)
+    # dedupes to one entry; a distinct request_id from another butler is kept
+    # and the result is sorted.
+    db2 = _FakeDatabaseManager(
+        results={
+            "atlas": [_FakeRecord({"request_id": "req-2"})],
+            "herald": [
+                _FakeRecord({"request_id": "req-2"}),
+                _FakeRecord({"request_id": "req-1"}),
+            ],
+        }
+    )
+    assert await ingestion_events_request_ids_for_trace(db2, "trace-y") == ["req-1", "req-2"]
+
+    # Falsy request_id values are skipped, not coerced into a phantom entry.
+    db3 = _FakeDatabaseManager(results={"atlas": [_FakeRecord({"request_id": None})]})
+    assert await ingestion_events_request_ids_for_trace(db3, "trace-z") == []
+
+
 async def test_cost_cursor_and_cost_sort() -> None:
     """Cost cursor round-trips correctly; sort=cost uses offset pagination (core_126)."""
     import uuid as _uuid

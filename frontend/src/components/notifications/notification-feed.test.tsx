@@ -105,4 +105,14 @@ describe("NotificationFeed triage controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(onDismiss).toHaveBeenCalledWith("wire-dismiss");
   });
+
+  it("links the Trace cell to the ingestion timeline pre-filtered by that trace (bu-86c4c.3)", () => {
+    renderFeed({
+      notifications: [makeNotification({ trace_id: "trace-abc" })],
+    });
+    const traceLink = screen.getByRole("link", { name: /Trace/ });
+    expect(traceLink.getAttribute("href")).toBe(
+      `/ingestion?trace=${encodeURIComponent("trace-abc")}`,
+    );
+  });
 });

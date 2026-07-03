@@ -3435,6 +3435,13 @@ export interface IngestionEventsParams {
    * Do not mix cursor values across sort modes — start a fresh first page when switching.
    */
   sort?: "recent" | "cost";
+  /**
+   * Filter to events with at least one linked butler session carrying this
+   * trace_id — the drill-down spine (server resolves trace_id -> matching
+   * session request_ids via a cross-butler fan-out, then filters server-side).
+   * A trace_id matching no session returns an empty page, not an error.
+   */
+  trace_id?: string;
 }
 
 /** Time window boundaries for GET /api/ingestion/rollup. */

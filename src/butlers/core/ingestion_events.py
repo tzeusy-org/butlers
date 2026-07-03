@@ -19,6 +19,8 @@ encode_cost_cursor              — encode page offset for cost-sort cursor
 decode_cost_cursor              — decode cost-sort cursor back to page offset
 ingestion_event_set_cost_usd    — write computed cost_usd back to public.ingestion_events
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
+ingestion_events_request_ids_for_trace — resolve a trace_id to its matching event ids
+                                  (drill-down spine)
 ingestion_events_sessions_for_ids — ONE grouped fan-out for a whole page of ids (list enrichment)
 ingestion_events_list_enrichment — aggregate per-event tokens/cost/sessions from bulk fan-out
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
@@ -366,6 +368,7 @@ async def ingestion_events_list(
     from_dt: datetime | None = None,
     to_dt: datetime | None = None,
     sort: str | None = None,
+    event_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return a paginated list of ingestion events (unified stream).
 
@@ -409,6 +412,14 @@ async def ingestion_events_list(
         sort: Sort mode.  ``None`` or ``"recent"`` → keyset pagination on
             ``(received_at DESC, id DESC)``.  ``"cost"`` → offset pagination on
             ``(cost_usd DESC NULLS LAST, received_at DESC, id DESC)``.
+        event_ids: Optional explicit set of event ids to restrict the result
+            to (``id = ANY(...)``), pushed into SQL exactly like the other
+            filters. Used by the ``trace_id`` filter (see
+            :func:`ingestion_events_request_ids_for_trace`): the caller
+            resolves a trace to its matching ``request_id``s first, then
+            passes them here.  ``None`` = no restriction.  An explicit empty
+            list restricts to zero rows (a trace that matched no session
+            correctly yields an empty page, not an unfiltered one).
 
     Returns:
         A dict with:
@@ -449,6 +460,12 @@ async def ingestion_events_list(
     if to_dt is not None:
         args.append(to_dt)
         where_parts.append(f"received_at < ${len(args)}")
+    if event_ids is not None:
+        # Explicit `is not None` (not a truthiness check): an empty list must
+        # still restrict to zero rows, not fall through to "no filter" the
+        # way an empty `channels`/`statuses` list would.
+        args.append([UUID(e) for e in event_ids])
+        where_parts.append(f"id = ANY(${len(args)}::uuid[])")
 
     if sort == "cost":
         # ── cost sort: offset-based pagination ───────────────────────────────
@@ -1008,6 +1025,43 @@ async def ingestion_event_sessions(
     # Sort by started_at ascending so the timeline is chronological
     sessions.sort(key=lambda s: s.get("started_at") or "")
     return sessions
+
+
+async def ingestion_events_request_ids_for_trace(
+    db: DatabaseManager,
+    trace_id: str,
+) -> list[str]:
+    """Resolve an OpenTelemetry ``trace_id`` to its matching ingestion event ids.
+
+    ``trace_id`` is recorded on individual butler ``sessions`` rows, not on
+    ``public.ingestion_events`` itself — one ingestion event can fan out to
+    many butler sessions, each carrying the same trace. To filter the unified
+    ingestion timeline down to "everything on this trace" (the drill-down
+    spine: Detect → Diagnose), the caller must first resolve the trace to the
+    ``request_id``s of every session that carries it, across every registered
+    butler schema, then pass those ids into :func:`ingestion_events_list` as
+    ``event_ids`` (an ``id = ANY(...)`` SQL filter, pushed down exactly like
+    every other timeline filter — not a post-fetch client-side filter).
+
+    Args:
+        db: DatabaseManager with all butler pools registered.
+        trace_id: The trace_id to resolve (as stored on ``sessions.trace_id``).
+
+    Returns:
+        Sorted list of distinct ``request_id`` strings (== ``ingestion_events.id``
+        as text). Empty when no session anywhere carries this trace_id — the
+        caller should treat that as "zero matching events", not "no filter".
+    """
+    sql = "SELECT DISTINCT request_id FROM sessions WHERE trace_id = $1"
+    fan_results: dict[str, list[asyncpg.Record]] = await db.fan_out(sql, (trace_id,))
+
+    request_ids: set[str] = set()
+    for rows in fan_results.values():
+        for row in rows:
+            request_id = row["request_id"]
+            if request_id:
+                request_ids.add(str(request_id))
+    return sorted(request_ids)
 
 
 async def ingestion_events_sessions_for_ids(

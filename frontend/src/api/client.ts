@@ -4643,6 +4643,7 @@ export async function listIngestionEvents(
   if (params?.from) sp.set("from", params.from);
   if (params?.to) sp.set("to", params.to);
   if (params?.sort) sp.set("sort", params.sort);
+  if (params?.trace_id) sp.set("trace_id", params.trace_id);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,

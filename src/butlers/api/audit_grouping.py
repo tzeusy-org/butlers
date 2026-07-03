@@ -191,11 +191,16 @@ def issue_from_audit_group_row(row: object) -> Issue:
 
     butler = butlers[0] if len(butlers) == 1 else "multiple"
 
+    # Param names must match what GET /api/audit-log and AuditLogPage's filter
+    # bar actually read (`actor`, `action`) — not `butler`/`operation`, which
+    # nothing on the consuming end recognizes (the link would silently land
+    # on an unfiltered audit log). AuditLogPage hydrates its initial filter
+    # state directly from these two query-string keys.
     link_params: dict[str, str] = {}
     if len(butlers) == 1:
-        link_params["butler"] = butlers[0]
+        link_params["actor"] = butlers[0]
     if has_schedule:
-        link_params["operation"] = "session"
+        link_params["action"] = "session"
     link = f"/audit-log?{urlencode(link_params)}" if link_params else "/audit-log"
 
     return Issue(
