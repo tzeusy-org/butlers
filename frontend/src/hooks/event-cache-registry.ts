@@ -81,6 +81,10 @@ const sessionPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["session-aggregate"] });
   qc.invalidateQueries({ queryKey: ["butler-sessions"] });
   qc.invalidateQueries({ queryKey: ["butlers", "board"] });
+  // The fleet chronicle (/timeline, bu-86c4c.10) folds sessions into its
+  // event stream — a session starting/ending is exactly the kind of event
+  // its live tail must reflect without waiting for the next 30s poll.
+  qc.invalidateQueries({ queryKey: ["timeline"] });
   const butler = asString(event.data.butler);
   const sessionId = asString(event.data.session_id);
   if (butler && sessionId) {
@@ -88,10 +92,15 @@ const sessionPatch: CachePatch = (qc, event) => {
   }
 };
 
-/** notification — a notify() delivery attempt; refreshes the messenger health surfaces. */
+/**
+ * notification — a notify() delivery attempt; refreshes the messenger health
+ * surfaces and the fleet chronicle's timeline (notification is one of its
+ * event sources — see sessionPatch's comment above).
+ */
 const notificationPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["messenger-delivery-stats"] });
   qc.invalidateQueries({ queryKey: ["messenger-queue-depth"] });
+  qc.invalidateQueries({ queryKey: ["timeline"] });
 };
 
 /**

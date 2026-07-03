@@ -423,13 +423,37 @@ export interface TimelineEvent {
   butler: string;
   timestamp: string; // ISO 8601
   summary: string;
+  /**
+   * True when this event's trigger_source is a heartbeat/tick source ("tick"
+   * or "heartbeat"), classified server-side (bu-86c4c.9). Use this instead of
+   * sniffing `summary`/`data.trigger_source` client-side — the old substring
+   * sniff folded real owner events (e.g. "Buy concert tickets") into the
+   * collapsed heartbeat group.
+   */
+  is_heartbeat: boolean;
   data: Record<string, unknown>;
+}
+
+/** Aggregate counts over the heartbeat events in the current page (bu-86c4c.9). */
+export interface TimelineHeartbeatRollup {
+  ticks: number;
+  butlers: number;
+  failed: number;
 }
 
 /** Cursor-based pagination metadata for the timeline endpoint. */
 export interface TimelineMeta {
   cursor: string | null;
   has_more: boolean;
+  /** Correct rollup copy source — "{ticks} ticks · {butlers} butlers · {failed} failed". */
+  heartbeat_rollup: TimelineHeartbeatRollup;
+  /**
+   * Names of event sources ("sessions", "notifications") whose query failed
+   * for this request. Non-empty means the returned page is a partial view of
+   * that source, not a truthful empty result (mirrors the aggregates_available
+   * degraded-mode convention — see CLAUDE.md — applied per-source).
+   */
+  degraded_sources: string[];
 }
 
 /** Response shape from GET /api/timeline. */

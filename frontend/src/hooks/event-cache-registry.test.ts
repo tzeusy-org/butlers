@@ -74,6 +74,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["butler-sessions"],
         ["butlers", "board"],
         ["session-detail", "home", "sess-1"],
+        ["timeline"],
       ]),
     );
   });
@@ -85,11 +86,15 @@ describe("EVENT_CACHE_REGISTRY", () => {
     expect(called.some((k) => Array.isArray(k) && k[0] === "session-detail")).toBe(false);
   });
 
-  it("notification: invalidates messenger delivery stats and queue depth", () => {
+  it("notification: invalidates messenger delivery stats, queue depth, and the timeline", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "notification", ts: 1, data: {} });
     expect(keys(invalidateQueries)).toEqual(
-      expect.arrayContaining([["messenger-delivery-stats"], ["messenger-queue-depth"]]),
+      expect.arrayContaining([
+        ["messenger-delivery-stats"],
+        ["messenger-queue-depth"],
+        ["timeline"],
+      ]),
     );
   });
 

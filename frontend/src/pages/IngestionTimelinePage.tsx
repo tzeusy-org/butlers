@@ -23,10 +23,11 @@
  *       §"Timeline Ledger" — header band with live freshness/status pill
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
 import { TimelineTab, type IngestionRange } from '@/components/ingestion/TimelineTab'
+import { LiveStatusBadge } from '@/components/ui/live-status-badge'
 
 // ---------------------------------------------------------------------------
 // Range-driven headline (bu-4utdw.4 honesty fix — replaces the hardcoded
@@ -38,96 +39,6 @@ const RANGE_HEADLINE: Record<IngestionRange, string> = {
   '1h': 'Last 1 hour, newest first.',
   '24h': 'Last 24 hours, newest first.',
   '7d': 'Last 7 days, newest first.',
-}
-
-// ---------------------------------------------------------------------------
-// LiveStatusBadge — driven by real event freshness
-// ---------------------------------------------------------------------------
-
-/** Freshness window: an event received within this many ms is "live". */
-const LIVE_FRESHNESS_MS = 60_000
-
-/** How often the badge re-evaluates its own age against the wall clock. */
-const CLOCK_TICK_MS = 5_000
-
-/**
- * A `now` timestamp that ticks on a wall clock rather than only advancing
- * when its caller re-renders for some other reason. Used so freshness
- * badges decay to "stale" on their own instead of staying frozen at
- * whatever `now` happened to be at the last data-driven render.
- */
-function useTickingNow(intervalMs: number = CLOCK_TICK_MS): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(id)
-  }, [intervalMs])
-  return now
-}
-
-type LiveStatus = 'checking' | 'live' | 'idle'
-
-interface LiveStatusBadgeProps {
-  /**
-   * ISO-8601 received_at of the most-recent ingestion event.
-   * - undefined → initial loading state (before TimelineTab has completed its first fetch)
-   * - null → pipeline is empty (query returned, no events) → "idle"
-   * - string → has events; freshness determines "live" vs "idle"
-   */
-  latestReceivedAt: string | null | undefined
-}
-
-function deriveStatus(latestReceivedAt: string | null | undefined, now: number): LiveStatus {
-  if (latestReceivedAt === undefined) return 'checking'
-  if (latestReceivedAt === null) return 'idle'
-  const date = new Date(latestReceivedAt)
-  if (Number.isNaN(date.getTime())) return 'idle'
-  const age = now - date.getTime()
-  return age <= LIVE_FRESHNESS_MS ? 'live' : 'idle'
-}
-
-function LiveStatusBadge({ latestReceivedAt }: LiveStatusBadgeProps) {
-  // `now` ticks on a wall clock (not just when latestReceivedAt changes) so
-  // the badge decays from "Live" to "Idle" on its own once the freshness
-  // window elapses, even if the pipeline goes quiet and never reports a
-  // new timestamp.
-  const now = useTickingNow()
-  const status = deriveStatus(latestReceivedAt, now)
-
-  if (status === 'checking') {
-    return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[11px] tracking-[0.01em] text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-muted-foreground animate-pulse" />
-        checking…
-      </span>
-    )
-  }
-
-  if (status === 'live') {
-    return (
-      <span
-        className="inline-flex items-center gap-1.5 font-mono text-[11px] tracking-[0.01em]"
-        style={{ color: 'var(--green, theme(colors.emerald.600))' }}
-        data-testid="live-status-badge-live"
-      >
-        <span
-          className="size-1.5 rounded-full animate-pulse"
-          style={{ backgroundColor: 'var(--green, theme(colors.emerald.600))' }}
-        />
-        Live
-      </span>
-    )
-  }
-
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 font-mono text-[11px] tracking-[0.01em] text-muted-foreground"
-      data-testid="live-status-badge-idle"
-    >
-      <span className="size-1.5 rounded-full bg-muted-foreground/50" />
-      Idle
-    </span>
-  )
 }
 
 // ---------------------------------------------------------------------------
