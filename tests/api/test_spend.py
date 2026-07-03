@@ -1370,6 +1370,64 @@ async def test_spend_stream_connect_and_receive_event(app):
             assert msg["cost_usd"] == pytest.approx(0.00003)
 
 
+async def test_spend_stream_subscribes_before_snapshot_send():
+    """Regression (bu-zciov, mirrors bu-fq8y1's events.py fix): subscribing
+    must happen BEFORE the snapshot is sent, so an event emitted during/right
+    after the snapshot send — the old miss-window between snapshot-send and
+    subscribe — is still delivered live instead of being silently dropped.
+
+    Drives ``spend_stream`` directly against a fake websocket so the emit can
+    be pinned to the exact moment the snapshot is flushed, rather than
+    relying on real-world scheduling to hit a race window.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    import butlers.api.routers.spend as spend_mod
+
+    spend_mod._spend_recent.clear()
+    spend_mod._spend_subscribers.clear()
+
+    sent: list[dict] = []
+    emitted = {"done": False}
+
+    class _FakeWebSocket:
+        async def accept(self) -> None:
+            return None
+
+        async def send_text(self, text: str) -> None:
+            msg = json.loads(text)
+            sent.append(msg)
+            if not emitted["done"] and msg["kind"] == "snapshot":
+                # Fires exactly when the snapshot hits the wire. With the fix
+                # this connection is already subscribed, so this event must
+                # still reach it via the live queue.
+                emitted["done"] = True
+                spend_mod.emit_spend_event(
+                    {
+                        "kind": "call",
+                        "ts": 1_700_000_001.0,
+                        "butler": "gap-butler",
+                        "model": "model-x",
+                        "tokens_in": 1,
+                        "tokens_out": 1,
+                        "cost_usd": 0.000001,
+                        "session_id": "gap-sess",
+                        "extra": {},
+                    }
+                )
+            if len(sent) >= 2:
+                raise WebSocketDisconnect(code=1000)
+
+    ws = _FakeWebSocket()
+    await spend_mod.spend_stream(ws, api_key=None)
+
+    assert sent[0]["kind"] == "snapshot"
+    assert sent[1]["kind"] == "call"
+    assert sent[1]["butler"] == "gap-butler"
+    # The finally block ran and cleaned up the subscriber on disconnect.
+    assert spend_mod._spend_subscribers == []
+
+
 async def test_spend_stream_snapshot_includes_recent_events(app):
     """WS snapshot contains events added before the connection was opened."""
     from fastapi.testclient import TestClient
