@@ -217,40 +217,15 @@ error/empty regions, and `space-y-6` rhythm. Pages not yet migrated
 still compose the archetype by hand; see the Migration Checklist below.
 
 ### A. Overview / dashboard
-Top-level multi-region surface. Hero chart → above-the-fold feed →
-secondary cards → demoted stat strip. Example (post-vertical-D):
-`DashboardPage`. `QaOverviewPage` and `CostsPage` still use the older
-stats-grid + chart layout and are candidates for the same migration.
+Top-level multi-region surface. `DashboardPage` (post-vertical-D) was
+the original reference implementation of this archetype (hero chart →
+above-the-fold feed → secondary cards → demoted stat strip, shipped
+PRs #1345, #1346, #1351, #1361) but has since migrated to the
+**editorial** archetype (`<Page archetype="editorial">`) as the
+operational triage cockpit — see "Editorial archetype layout" below
+for its current code and layout detail. `QaOverviewPage` and
+`CostsPage` still use the older stats-grid + chart layout.
 
-Post-vertical-D pattern in code (`DashboardPage`, shipped PRs
-#1345, #1346, #1351, #1361):
-```tsx
-<Page archetype="overview" title="Overview">
-  {/* Hero: SessionStripeChart — recharts stacked BarChart, butler-colored
-      via --category-N deterministic tokens */}
-  <Card><CardContent><SessionStripeChart butlers={butlers} /></CardContent></Card>
-
-  {/* Above-the-fold list: RecentMoments feed */}
-  {/* <Time mode="relative"> + butler glyph + prompt summary + session link */}
-  <Card><CardContent><RecentMoments limit={7} /></CardContent></Card>
-
-  {/* Secondary cards (grid lg:grid-cols-2) */}
-  <div className="grid gap-6 lg:grid-cols-2">…</div>
-
-  {/* QA widget — standalone Card (approval metrics + investigations) */}
-  <QaWidget />
-
-  {/* Demoted four-stat strip — no Card wrapper, border-t visual demotion */}
-  <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-border pt-3">
-    <StatItem label="…" value={…} />  {/* text-sm font-medium, no Card */}
-  </div>
-</Page>
-```
-
-`StatItem` (defined inline in `DashboardPage`) replaces the old
-`StatsCard` boilerplate. It uses `text-sm font-medium tabular-nums`
-for the value and `text-xs text-muted-foreground` for the label,
-no `Card` wrapper, intentionally demoted visual weight.
 The topology graph lives at `/system`, not on `/`.
 
 ### B. List / index
@@ -630,8 +605,10 @@ interface PageProps {
 
 #### A. Overview (`archetype="overview"`)
 
-Reference page: `DashboardPage` (post-vertical-D, uses `<Page archetype="overview">`),
-`QaOverviewPage`.
+Reference pages: `SystemPage`, `SettingsSpendPage`. (`DashboardPage`
+migrated to the editorial archetype — see "Editorial archetype layout"
+below; `QaOverviewPage` predates the `<Page>` primitive and does not
+use this archetype.)
 
 - Max content width: unrestricted (fills `<main>` which has `p-6` from the
   shell). No additional horizontal constraint.
@@ -644,19 +621,6 @@ Reference page: `DashboardPage` (post-vertical-D, uses `<Page archetype="overvie
   stack vertically inside a `<div>`, not side-by-side with actions.
 - Section rhythm: `space-y-6` between sections within `children`. Authors are
   responsible for their own section spacing inside `children`.
-- Post-vertical-D region order for `DashboardPage` (canonical overview):
-  1. **Hero**: `SessionStripeChart` inside a `<Card>` (recharts stacked BarChart,
-     butler-colored via `--category-N` deterministic CSS tokens)
-  2. **Above-the-fold feed**: `RecentMoments` inside a `<Card>` (`<Time mode="relative">`
-     + butler glyph + prompt summary + session detail link)
-  3. **Secondary cards**: `grid gap-6 lg:grid-cols-2` of `<Card>` widgets
-     (Failed Notifications + IssuesPanel)
-  4. **QA widget**: standalone `<QaWidget>` `<Card>` (approval metrics + active
-     investigations summary)
-  5. **Demoted stat strip**: `flex flex-wrap border-t border-border pt-3` row of
-     `<StatItem>` entries (`text-sm font-medium tabular-nums`); no `<Card>` wrapper
-- Rationale: `DashboardPage` uses `<Page>`. The topology graph lives at
-  `/system`, not on `/`.
 
 #### B. List (`archetype="list"`)
 
