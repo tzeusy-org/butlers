@@ -49,16 +49,25 @@ function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
     activity: "idle",
     cellTone: "neutral",
     eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
     sessions24h: 7,
     costToday: 1.23,
     loadPct: 50,
+    activeSessionCount: 0,
     lastRunISO: "2026-05-10T06:00:00.000Z",
+    lastHeartbeatISO: null,
+    heartbeatAgeSeconds: null,
     hourlyStripe: Array(24).fill(0),
     hourlyTotal: 7,
     hourlyStripeLoading: false,
     hourlyStripeError: false,
     schemaUnreachable: false,
     heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown",
     ...overrides,
   }
 }
@@ -149,6 +158,80 @@ describe("StatusBoardCell: activity=quarantined", () => {
       />,
     )
     expect(html).not.toContain("<button")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// activity='overdue' — cron-expectation join (bu-86c4c.17)
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: activity=overdue", () => {
+  it("renders OVERDUE chip with amber tone", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ activity: "overdue", cellTone: "amber" })} />,
+    )
+    expect(html).toContain("OVERDUE")
+    expect(html).toContain("text-amber-600")
+  })
+
+  it("chip title surfaces the cron-expectation message (silent Xd, expected Y)", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({
+          activity: "overdue",
+          cellTone: "amber",
+          cadenceLabel: "daily",
+          silenceSeconds: 5 * 86400,
+        })}
+      />,
+    )
+    expect(html).toContain("Silent 5d, expected daily")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// activity='unknown' — heartbeat-independent unknown state
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: activity=unknown", () => {
+  it("renders UNKNOWN chip label when not masked by heartbeatUnavailable dash", () => {
+    // activityLabel("unknown") is exercised directly through the exhaustive
+    // switch; heartbeatUnavailable=false so the raw label renders.
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ activity: "unknown", cellTone: "neutral", heartbeatUnavailable: false })} />,
+    )
+    expect(html).toContain("UNKNOWN")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Quarantine reason surfaced inline (bu-86c4c.17)
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: quarantine reason", () => {
+  it("renders the quarantine reason as an inline line when present", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({
+          activity: "quarantined",
+          cellTone: "red",
+          eligibility: "quarantined",
+          quarantineReason: "3 consecutive heartbeat misses",
+        })}
+        onRestore={() => void 0}
+      />,
+    )
+    expect(html).toContain("3 consecutive heartbeat misses")
+  })
+
+  it("renders no reason line when quarantineReason is null", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined", quarantineReason: null })}
+        onRestore={() => void 0}
+      />,
+    )
+    expect(html).not.toContain("text-destructive leading-snug")
   })
 })
 

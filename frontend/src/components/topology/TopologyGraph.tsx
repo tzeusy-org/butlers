@@ -10,12 +10,22 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { SourceDegradedNote } from "../ui/query-boundary";
+import type { CellTone } from "@/hooks/use-butler-status-board";
 
 interface ButlerNode {
   name: string;
   status: string;
-  port: number;
+  /** Unused by the graph itself; kept optional for callers that already have it. */
+  port?: number;
   type?: "butler" | "staffer";
+  /**
+   * Canonical liveness tone from useButlerStatusBoard (bu-86c4c.17) -- the
+   * SAME verdict rendered by the roster board and the heartbeat tile. When
+   * present this wins over the legacy status-string color mapping below, so
+   * a node here can never disagree with its row elsewhere on the dashboard.
+   */
+  tone?: CellTone;
 }
 
 interface ConnectorNode {
@@ -28,8 +38,21 @@ interface TopologyGraphProps {
   butlers: ButlerNode[];
   connectors?: ConnectorNode[];
   isLoading?: boolean;
+  /**
+   * True when the connectors query errored (bu-86c4c.17 / #2873 review).
+   * A failed connectors fetch must never render as an emptier map with no
+   * explanation -- that is the exact "failure impersonates health" defect
+   * the three-way loading/error/empty contract (query-boundary.tsx,
+   * bu-86c4c.2) exists to prevent. `connectors` may still be `[]` or stale
+   * cached data in this case; the degraded note names the source instead of
+   * silently suppressing it.
+   */
+  connectorsError?: boolean;
 }
 
+// Legacy status-string color mapping -- still used for connector nodes
+// (which have no canonical tone) and as a fallback for butler nodes that
+// have not yet loaded board data.
 const STATUS_COLORS: Record<string, string> = {
   ok: "#22c55e", // green-500
   online: "#22c55e",
@@ -48,7 +71,28 @@ const STAFFER_STATUS_COLORS: Record<string, string> = {
   stale: "#eab308", // yellow-500
 };
 
-function getStatusColor(status: string, agentType?: string): string {
+// Canonical tone -> color. Butlers use the same green/amber/red/neutral
+// vocabulary as the roster board; staffers get a blue "healthy" hue to keep
+// the vision's butler/staffer distinction visible, per the pre-existing
+// STAFFER_STATUS_COLORS convention.
+const TONE_COLORS: Record<CellTone, string> = {
+  green: "#22c55e",
+  amber: "#eab308",
+  red: "#ef4444",
+  neutral: "#6b7280",
+};
+
+const STAFFER_TONE_COLORS: Record<CellTone, string> = {
+  green: "#3b82f6",
+  amber: "#eab308",
+  red: "#ef4444",
+  neutral: "#6b7280",
+};
+
+function getStatusColor(status: string, agentType?: string, tone?: CellTone): string {
+  if (tone) {
+    return agentType === "staffer" ? STAFFER_TONE_COLORS[tone] : TONE_COLORS[tone];
+  }
   if (agentType === "staffer") {
     return STAFFER_STATUS_COLORS[status] ?? "#6b7280";
   }
@@ -85,7 +129,7 @@ function buildNodes(
       position: { x: centerX - 70, y: centerY - 20 },
       data: { label: switchboard.name },
       style: {
-        background: getStatusColor(switchboard.status, switchboard.type),
+        background: getStatusColor(switchboard.status, switchboard.type, switchboard.tone),
         color: "white",
         border: "2px solid #1e293b",
         borderRadius: "12px",
@@ -105,7 +149,7 @@ function buildNodes(
       position: { x: 550, y: 50 },
       data: { label: heartbeat.name },
       style: {
-        background: getStatusColor(heartbeat.status),
+        background: getStatusColor(heartbeat.status, heartbeat.type, heartbeat.tone),
         color: "white",
         border: "2px dashed #64748b",
         borderRadius: "50%",
@@ -140,7 +184,7 @@ function buildNodes(
       style: {
         background: "#1e293b",
         color: "white",
-        border: `2px solid ${getStatusColor(butler.status, butler.type)}`,
+        border: `2px solid ${getStatusColor(butler.status, butler.type, butler.tone)}`,
         borderRadius: "8px",
         padding: "10px 16px",
         fontWeight: 500,
@@ -205,7 +249,12 @@ function buildEdges(
         source: "switchboard",
         target: butler.name,
         style: { stroke: "#64748b" },
-        animated: butler.status === "ok" || butler.status === "online",
+        // Prefer the canonical tone when available: "green" means the
+        // butler has an active session in progress (a stronger, more
+        // meaningful animated-edge signal than mere MCP reachability).
+        animated: butler.tone
+          ? butler.tone === "green"
+          : butler.status === "ok" || butler.status === "online",
       });
     }
   }
@@ -252,6 +301,7 @@ export default function TopologyGraph({
   butlers,
   connectors = [],
   isLoading,
+  connectorsError = false,
 }: TopologyGraphProps) {
   const navigate = useNavigate();
 
@@ -307,6 +357,41 @@ export default function TopologyGraph({
         <CardTitle>Ecosystem Topology</CardTitle>
       </CardHeader>
       <CardContent>
+        {/* Legend -- the graph's colors are otherwise unexplained; this
+            names the one canonical liveness vocabulary shared with the
+            roster board and heartbeat tile. */}
+        <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.green }} aria-hidden="true" />
+            Running
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.neutral }} aria-hidden="true" />
+            Idle
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.amber }} aria-hidden="true" />
+            Overdue
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.red }} aria-hidden="true" />
+            Offline / Quarantined
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block size-2 rounded-full" style={{ background: STAFFER_TONE_COLORS.green }} aria-hidden="true" />
+            Staffer
+          </span>
+        </div>
+        {/* Connectors-source degraded note -- a failed connectors fetch must
+            never render as an emptier map with no explanation (#2873 review;
+            three-way loading/error/empty contract, bu-86c4c.2). */}
+        {connectorsError && (
+          <SourceDegradedNote
+            label="Connectors"
+            detail="unavailable -- ingestion connector nodes may be missing"
+            className="mb-2"
+          />
+        )}
         <div className="h-96">
           <ReactFlow
             nodes={nodes}

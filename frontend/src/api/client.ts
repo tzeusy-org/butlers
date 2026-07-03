@@ -28,6 +28,7 @@ import type {
   ApiResponse,
   AuditLogEntry,
   AuditLogParams,
+  BoardResponse,
   ButlerConfigResponse,
   ButlerDetail,
   ButlerSkill,
@@ -540,6 +541,19 @@ export function getHealth(): Promise<HealthResponse> {
 /** Fetch all butlers. */
 export function getButlers(): Promise<ApiResponse<ButlerSummary[]>> {
   return apiFetch<ApiResponse<ButlerSummary[]>>("/butlers");
+}
+
+/**
+ * Fetch the consolidated fleet status board in one round trip (bu-86c4c.17).
+ *
+ * Replaces the former per-butler runtime-config + hourly-activity fan-out:
+ * this single endpoint returns rows (with the canonical liveness verdict and
+ * cron-expectation join already computed server-side) plus fleet-wide
+ * aggregates. See useButlerStatusBoard for the camelCase mapping consumed by
+ * the /butlers status board.
+ */
+export function getButlersBoard(): Promise<ApiResponse<BoardResponse>> {
+  return apiFetch<ApiResponse<BoardResponse>>("/butlers/board");
 }
 
 /** Fetch a single butler by name. */

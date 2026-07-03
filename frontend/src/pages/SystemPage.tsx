@@ -12,6 +12,7 @@ import { DbSizeTile } from "@/components/system/DbSizeTile";
 import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
 import { InsightDeliveryTile } from "@/components/system/InsightDeliveryTile";
 import { SecurityPostureTile } from "@/components/system/SecurityPostureTile";
+import { SystemVerdictBanner } from "@/components/system/SystemVerdictBanner";
 import { UptimeTile } from "@/components/system/UptimeTile";
 import { VersionTile } from "@/components/system/VersionTile";
 import TopologyGraph from "@/components/topology/TopologyGraph";
@@ -22,7 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Page } from "@/components/ui/page";
-import { useButlers } from "@/hooks/use-butlers";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 
 // ---------------------------------------------------------------------------
@@ -52,10 +53,16 @@ function SystemTile({ title, action, children }: SystemTileProps) {
 // ---------------------------------------------------------------------------
 
 function TopologyTile() {
-  const { data: butlersResponse, isLoading: butlersLoading, error: butlersError } = useButlers();
-  const { data: connectorsResponse, isLoading: connectorsLoading } = useConnectorSummaries();
+  // Canonical liveness source (bu-86c4c.17): the topology graph now colors
+  // its nodes from the SAME activity/tone verdict as the roster board and
+  // the heartbeat tile (useButlerStatusBoard / GET /api/butlers/board),
+  // rather than a separate useButlers() status probe. This closes the bug
+  // where a butler could render green here while amber-stale in a list.
+  const { rows, aggregates } = useButlerStatusBoard();
+  const { data: connectorsResponse, isLoading: connectorsLoading, isError: connectorsError } =
+    useConnectorSummaries();
 
-  if (butlersError) {
+  if (aggregates.isError) {
     return (
       <SystemTile title="Ecosystem Topology">
         <p className="text-sm text-destructive">Failed to load topology data.</p>
@@ -63,14 +70,20 @@ function TopologyTile() {
     );
   }
 
-  const butlers = butlersResponse?.data ?? [];
+  const butlers = rows.map((row) => ({
+    name: row.name,
+    status: row.status,
+    type: row.type,
+    tone: row.cellTone,
+  }));
   const connectors = connectorsResponse?.data ?? [];
 
   return (
     <TopologyGraph
       butlers={butlers}
       connectors={connectors}
-      isLoading={butlersLoading || connectorsLoading}
+      isLoading={aggregates.isLoading || connectorsLoading}
+      connectorsError={connectorsError}
     />
   );
 }
@@ -90,6 +103,11 @@ export function SystemPage() {
         { label: "System" },
       ]}
     >
+      {/* Judgment layer: opens with a computed verdict -- "all clear" or a
+          ranked problem list -- instead of leading with version/uptime
+          trivia. The tiles below are elaboration, not the message. */}
+      <SystemVerdictBanner />
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         <VersionTile />
         <UptimeTile />

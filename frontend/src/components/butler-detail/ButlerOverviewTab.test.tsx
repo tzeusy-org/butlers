@@ -76,6 +76,7 @@ beforeEach(() => {
   } as unknown as ReturnType<typeof useButler>)
 
   vi.mocked(useButlerStatusBoard).mockReturnValue({
+    needsYou: [],
     rows: [
       {
         name: "general",
@@ -85,16 +86,25 @@ beforeEach(() => {
         activity: "idle",
         cellTone: "neutral",
         eligibility: "active",
+        quarantineReason: null,
+        quarantinedAt: null,
         sessions24h: 7,
         costToday: 1.23,
         loadPct: null,
+        activeSessionCount: 0,
         lastRunISO: "2026-05-13T12:00:00Z",
+        lastHeartbeatISO: null,
+        heartbeatAgeSeconds: null,
         hourlyStripe: [0, 0, 1, 0, 2, 0, 3, 0, 0, 1, 0, 4, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 1, 0],
         hourlyTotal: 7,
         hourlyStripeLoading: false,
         hourlyStripeError: false,
         schemaUnreachable: false,
         heartbeatUnavailable: false,
+        cadenceSeconds: null,
+        cadenceLabel: null,
+        silenceSeconds: null,
+        cadenceStatus: "unknown",
       },
     ],
     aggregates: {
@@ -104,6 +114,7 @@ beforeEach(() => {
       active: 0,
       offline: 0,
       quarantined: 0,
+      overdue: 0,
       totalSessions24h: 7,
       totalSpendToday: 1.23,
       avgLoadPct: null,

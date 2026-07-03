@@ -68,6 +68,8 @@ function activityToneClass(activity: string): string {
   switch (activity) {
     case "running":
       return "text-emerald-500"
+    case "overdue":
+      return "text-amber-600 dark:text-amber-400"
     case "offline":
     case "quarantined":
       return "text-destructive"

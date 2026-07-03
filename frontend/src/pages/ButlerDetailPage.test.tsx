@@ -539,6 +539,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     active: 0,
     offline: 0,
     quarantined: 0,
+    overdue: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
     avgLoadPct: null,
@@ -565,16 +566,25 @@ function makeRow(name: string, overrides: Partial<StatusBoardRow> = {}): StatusB
     activity: "idle",
     cellTone: "neutral",
     eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
     sessions24h: 0,
     costToday: 0,
     loadPct: null,
+    activeSessionCount: 0,
     lastRunISO: null,
+    lastHeartbeatISO: null,
+    heartbeatAgeSeconds: null,
     hourlyStripe: Array(24).fill(0) as number[],
     hourlyTotal: 0,
     hourlyStripeLoading: false,
     hourlyStripeError: false,
     schemaUnreachable: false,
     heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown",
     ...overrides,
   };
 }
@@ -597,6 +607,7 @@ const ROSTER_NAMES = [
 describe("Spec scenario -- no Tier 2 hero block, header precedes tab rail", () => {
   beforeEach(() => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates(),
     });
@@ -627,6 +638,7 @@ describe("Spec scenario -- sibling nav is owned by the shell PageHeader", () => 
     vi.mocked(useParams).mockReturnValue({ name: "health" });
     setButlerState({ ...BASE_BUTLER, name: "health" });
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: ROSTER_NAMES.map((n) => makeRow(n)),
       aggregates: makeAggregates({ total: ROSTER_NAMES.length }),
     });
@@ -646,6 +658,7 @@ describe("Spec scenario -- sibling nav is owned by the shell PageHeader", () => 
 describe("Spec scenario -- detail body remains token-only", () => {
   beforeEach(() => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: ROSTER_NAMES.map((n) => makeRow(n)),
       aggregates: makeAggregates({ total: ROSTER_NAMES.length }),
     });
@@ -668,6 +681,7 @@ describe("Spec scenario -- redesigned overview owns page KPIs; legacy footer is 
     vi.mocked(useParams).mockReturnValue({ name: "general" });
     setButlerState({ ...BASE_BUTLER, name: "general", sessions_24h: 7 });
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates(),
     });
@@ -698,6 +712,7 @@ describe("Spec scenario -- overview config placeholder when process facts are nu
   beforeEach(() => {
     setButlerState(BASE_BUTLER);
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates(),
     });
@@ -740,6 +755,7 @@ describe("Spec scenario -- ButlerHeartbeatTile absent from detail page, present 
     vi.mocked(useParams).mockReturnValue({ name: "relationship" });
     setButlerState({ ...BASE_BUTLER, name: "relationship" });
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates(),
     });
@@ -777,6 +793,7 @@ describe("Spec scenario -- ButlerHeartbeatTile absent from detail page, present 
 describe("Spec scenario -- responsive tab rail", () => {
   beforeEach(() => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: ROSTER_NAMES.map((n) => makeRow(n)),
       aggregates: makeAggregates({ total: ROSTER_NAMES.length }),
     });

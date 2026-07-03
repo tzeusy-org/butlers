@@ -174,6 +174,7 @@ function setupDefaultMocks({
   } as unknown as ReturnType<typeof useButler>);
 
   vi.mocked(useButlerStatusBoard).mockReturnValue({
+    needsYou: [],
     rows: [
       {
         name: "general",
@@ -183,16 +184,25 @@ function setupDefaultMocks({
         activity: "idle",
         cellTone: "neutral",
         eligibility: "active",
+        quarantineReason: null,
+        quarantinedAt: null,
         sessions24h,
         costToday: costSummary24h?.by_butler.general ?? 0,
         loadPct: null,
+        activeSessionCount: 0,
         lastRunISO: "2026-05-10T08:00:00Z",
+        lastHeartbeatISO: null,
+        heartbeatAgeSeconds: null,
         hourlyStripe: Array(24).fill(0),
         hourlyTotal: 0,
         hourlyStripeLoading: false,
         hourlyStripeError: false,
         schemaUnreachable: false,
         heartbeatUnavailable: false,
+        cadenceSeconds: null,
+        cadenceLabel: null,
+        silenceSeconds: null,
+        cadenceStatus: "unknown",
       },
     ],
     aggregates: {
@@ -202,6 +212,7 @@ function setupDefaultMocks({
       active: 0,
       offline: 0,
       quarantined: 0,
+      overdue: 0,
       totalSessions24h: sessions24h,
       totalSpendToday: costSummary24h?.total_cost_usd ?? 0,
       avgLoadPct: null,

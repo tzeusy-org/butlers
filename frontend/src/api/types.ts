@@ -87,6 +87,69 @@ export interface ButlerSummary {
 }
 
 /**
+ * One butler's row on the consolidated fleet status board (bu-86c4c.17).
+ *
+ * `activity`/`cell_tone` are the canonical liveness verdict computed
+ * server-side and shared verbatim by every consumer (roster board, /system
+ * topology graph, /system heartbeat list) -- do not re-derive them
+ * client-side.
+ */
+export interface BoardRow {
+  name: string;
+  type: "butler" | "staffer";
+  description: string | null;
+  status: string;
+  activity: "running" | "idle" | "overdue" | "offline" | "quarantined" | "unknown";
+  cell_tone: "green" | "amber" | "red" | "neutral";
+  eligibility: "active" | "quarantined" | "stale" | "unavailable";
+  quarantine_reason: string | null;
+  quarantined_at: string | null;
+  sessions_24h: number;
+  cost_today: number | null;
+  load_pct: number | null;
+  max_concurrent: number | null;
+  /** 0 whenever heartbeat_unavailable is true -- never a stale confident count during an outage. */
+  active_session_count: number;
+  last_session_at: string | null;
+  last_heartbeat_at: string | null;
+  heartbeat_age_seconds: number | null;
+  heartbeat_unavailable: boolean;
+  schema_unreachable: boolean;
+  hourly_stripe: number[];
+  hourly_total: number;
+  cadence_seconds: number | null;
+  cadence_label: "hourly" | "daily" | "weekly" | "custom" | null;
+  silence_seconds: number | null;
+  cadence_status: "on_schedule" | "overdue" | "unknown";
+}
+
+/** Fleet-wide aggregates for GET /api/butlers/board. */
+export interface BoardAggregates {
+  total: number;
+  butler_count: number;
+  staffer_count: number;
+  active: number;
+  offline: number;
+  quarantined: number;
+  overdue: number;
+  total_sessions_24h: number;
+  total_spend_today: number;
+  avg_load_pct: number | null;
+  heartbeat_source_error: boolean;
+  registry_source_error: boolean;
+  cost_source_error: boolean;
+  has_per_entry_errors: boolean;
+  sources_partially_degraded: boolean;
+}
+
+/** Response envelope for GET /api/butlers/board. */
+export interface BoardResponse {
+  rows: BoardRow[];
+  aggregates: BoardAggregates;
+  generated_at: string;
+}
+
+/**
  * Container-boundary-safe process facts for the butler Overview tab.
  * `pid` is intentionally absent.
  */

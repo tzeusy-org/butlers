@@ -13,14 +13,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SystemPage from "@/pages/SystemPage";
 import {
   useBackupFacts,
-  useButlerHeartbeats,
   useDatabaseFacts,
   useEgressFacts,
   useHealthPosture,
   useInsightDeliveryState,
   useInstanceFacts,
 } from "@/hooks/use-system";
-import { useButlers } from "@/hooks/use-butlers";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { ApiError } from "@/api/index";
 
@@ -31,14 +30,27 @@ import { ApiError } from "@/api/index";
 // TopologyGraph uses @xyflow/react which is canvas-based and won't render in
 // jsdom/static markup -- mock the whole component to keep tests hermetic.
 vi.mock("@/components/topology/TopologyGraph", () => ({
-  default: ({ butlers }: { butlers: { name: string }[] }) => (
+  default: ({
+    butlers,
+    connectorsError,
+  }: {
+    butlers: { name: string }[];
+    connectorsError?: boolean;
+  }) => (
     <div data-testid="topology-graph">
       {butlers.map((b) => <span key={b.name}>{b.name}</span>)}
+      {connectorsError && <span data-testid="topology-connectors-error" />}
     </div>
   ),
 }));
 
-vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
+// Canonical liveness source (bu-86c4c.17): TopologyTile and
+// ButlerHeartbeatTile both consume useButlerStatusBoard now, replacing the
+// former separate useButlers()/useButlerHeartbeats() fetches.
+vi.mock("@/hooks/use-butler-status-board", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-butler-status-board")>();
+  return { ...actual, useButlerStatusBoard: vi.fn() };
+});
 vi.mock("@/hooks/use-ingestion", () => ({ useConnectorSummaries: vi.fn() }));
 
 vi.mock("@/hooks/use-system", () => ({
@@ -46,7 +58,6 @@ vi.mock("@/hooks/use-system", () => ({
   useDatabaseFacts: vi.fn(),
   useBackupFacts: vi.fn(),
   useEgressFacts: vi.fn(),
-  useButlerHeartbeats: vi.fn(),
   useHealthPosture: vi.fn(),
   useInsightDeliveryState: vi.fn(),
 }));
@@ -58,14 +69,86 @@ vi.mock("@/hooks/use-system", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
 
-function setAllLoading() {
-  vi.mocked(useButlers).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-    error: null,
-    refetch: vi.fn(),
+const BOARD_AGGREGATES_DEFAULTS = {
+  total: 0,
+  butlerCount: 0,
+  stafferCount: 0,
+  active: 0,
+  offline: 0,
+  quarantined: 0,
+  overdue: 0,
+  totalSessions24h: 0,
+  totalSpendToday: 0,
+  avgLoadPct: null,
+  heartbeatSourceError: false,
+  registrySourceError: false,
+  eligibilityUnavailable: 0,
+  hasPerEntryErrors: false,
+  costSourceError: false,
+  sourcesPartiallyDegraded: false,
+};
+
+function setBoardLoading() {
+  vi.mocked(useButlerStatusBoard).mockReturnValue({
+    rows: [],
+    needsYou: [],
+    aggregates: {
+      ...BOARD_AGGREGATES_DEFAULTS,
+      isLoading: true,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    },
   } as AnyMock);
+}
+
+function setBoardSuccess(overrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS> = {}) {
+  const row = {
+    name: "general",
+    type: "butler" as const,
+    description: null,
+    status: "ok",
+    activity: "idle" as const,
+    cellTone: "neutral" as const,
+    eligibility: "active" as const,
+    quarantineReason: null,
+    quarantinedAt: null,
+    sessions24h: 0,
+    costToday: 0,
+    loadPct: null,
+    activeSessionCount: 0,
+    lastRunISO: null,
+    lastHeartbeatISO: "2026-01-01T00:00:00Z",
+    heartbeatAgeSeconds: 120,
+    hourlyStripe: Array(24).fill(0),
+    hourlyTotal: 0,
+    hourlyStripeLoading: false,
+    hourlyStripeError: false,
+    schemaUnreachable: false,
+    heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown" as const,
+  };
+  vi.mocked(useButlerStatusBoard).mockReturnValue({
+    rows: [row],
+    needsYou: [],
+    aggregates: {
+      ...BOARD_AGGREGATES_DEFAULTS,
+      total: 1,
+      butlerCount: 1,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+      ...overrides,
+    },
+  } as AnyMock);
+}
+
+function setAllLoading() {
+  setBoardLoading();
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
     data: undefined,
@@ -99,12 +182,6 @@ function setAllLoading() {
     isForbidden: false,
   } as AnyMock);
 
-  vi.mocked(useButlerHeartbeats).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    error: null,
-  } as AnyMock);
-
   vi.mocked(useHealthPosture).mockReturnValue({
     data: undefined,
     isPending: true,
@@ -120,14 +197,8 @@ function setAllLoading() {
   } as AnyMock);
 }
 
-function setAllSuccess() {
-  vi.mocked(useButlers).mockReturnValue({
-    data: { data: [{ name: "general", status: "ok", port: 40101, type: "butler" }], meta: {} },
-    isLoading: false,
-    isError: false,
-    error: null,
-    refetch: vi.fn(),
-  } as AnyMock);
+function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS> = {}) {
+  setBoardSuccess(boardOverrides);
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
     data: { data: [], meta: {} },
@@ -149,7 +220,7 @@ function setAllSuccess() {
   } as AnyMock);
 
   vi.mocked(useBackupFacts).mockReturnValue({
-    data: { data: { last_backup_at: null, last_backup_size_bytes: null, backup_source_reachable: true, backup_history: [] }, meta: {} },
+    data: { data: { last_backup_at: "2026-01-01T00:00:00Z", last_backup_size_bytes: 2048, backup_source_reachable: true, backup_history: [] }, meta: {} },
     isLoading: false,
     error: null,
   } as AnyMock);
@@ -159,12 +230,6 @@ function setAllSuccess() {
     isLoading: false,
     error: null,
     isForbidden: false,
-  } as AnyMock);
-
-  vi.mocked(useButlerHeartbeats).mockReturnValue({
-    data: { data: { butlers: [{ name: "general", last_heartbeat_at: "2026-01-01T00:00:00Z", last_session_at: null, active_session_count: 0, heartbeat_age_seconds: 120 }] }, meta: {} },
-    isLoading: false,
-    error: null,
   } as AnyMock);
 
   vi.mocked(useHealthPosture).mockReturnValue({
@@ -384,13 +449,11 @@ describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
     expect(html).toContain("general");
   });
 
-  it("shows error state when butlers request fails", () => {
-    vi.mocked(useButlers).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-      error: new Error("network error"),
-      refetch: vi.fn(),
+  it("shows error state when the board query fails with no cached data", () => {
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      needsYou: [],
+      aggregates: { ...BOARD_AGGREGATES_DEFAULTS, isLoading: false, isError: true, error: new Error("network error"), refetch: vi.fn() },
     } as AnyMock);
 
     const html = renderPage();
@@ -398,15 +461,9 @@ describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
     expect(html).not.toContain('data-testid="topology-graph"');
   });
 
-  it("keeps loading while either butlers or connectors are still fetching (|| not &&)", () => {
-    // Connectors resolved, butlers still loading -- topology should still pass isLoading=true
-    vi.mocked(useButlers).mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-      error: null,
-      refetch: vi.fn(),
-    } as AnyMock);
+  it("keeps loading while either the board or connectors are still fetching (|| not &&)", () => {
+    // Connectors resolved, board still loading -- topology should still pass isLoading=true
+    setBoardLoading();
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: { data: [], meta: {} },
       isLoading: false,
@@ -419,5 +476,85 @@ describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
     const html = renderPage();
     expect(html).toContain('data-testid="topology-graph"');
     expect(html).not.toContain("Failed to load topology data.");
+  });
+
+  it("passes connectorsError through to TopologyGraph when connectors fail to load (#2873)", () => {
+    // TopologyGraph itself renders the degraded note (see TopologyGraph.test.tsx)
+    // -- this wiring test only verifies SystemPage forwards the error flag
+    // rather than silently defaulting connectors to an empty array.
+    setAllSuccess();
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("connectors down"),
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="topology-graph"');
+    expect(html).toContain('data-testid="topology-connectors-error"');
+  });
+});
+
+describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders a loading skeleton while any source is still loading", () => {
+    setAllLoading();
+    const html = renderPage();
+    expect(html).toContain('data-testid="verdict-banner-skeleton"');
+  });
+
+  it("renders an all-clear verdict line when nothing needs the owner", () => {
+    setAllSuccess();
+    const html = renderPage();
+    expect(html).toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).toContain("Instance healthy");
+    expect(html).toContain("v1.0.0");
+    expect(html).toContain("all 1 beating");
+  });
+
+  it("renders a ranked problem list when butlers are offline/quarantined/overdue", () => {
+    setAllSuccess({ offline: 2, quarantined: 1, overdue: 3 });
+    const html = renderPage();
+    expect(html).toContain('data-testid="verdict-banner-problems"');
+    expect(html).toContain("2 butlers offline");
+    expect(html).toContain("1 quarantined");
+    expect(html).toContain("3 overdue against their own schedule");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces a failed-insights problem instead of staying silent", () => {
+    setAllSuccess();
+    vi.mocked(useInsightDeliveryState).mockReturnValue({
+      data: { data: { queued: 0, delivered: 5, failed: 3, last_delivery_at: null }, meta: {} },
+      isPending: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("3 insights failed to deliver");
+  });
+
+  it("surfaces backup source unreachable as a problem", () => {
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: { data: { last_backup_at: null, last_backup_size_bytes: null, backup_source_reachable: false, backup_history: [] }, meta: {} },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("backup source unreachable");
+  });
+
+  it("surfaces degraded fleet sources rather than a falsely confident all-clear", () => {
+    setAllSuccess({ sourcesPartiallyDegraded: true });
+    const html = renderPage();
+    expect(html).toContain("some fleet data is degraded or unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
   });
 });

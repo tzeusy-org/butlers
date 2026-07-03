@@ -71,6 +71,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     active: 0,
     offline: 0,
     quarantined: 0,
+    overdue: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
     avgLoadPct: null,
@@ -100,16 +101,25 @@ function makeRow(
     activity: "idle",
     cellTone: "neutral",
     eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
     sessions24h: 0,
     costToday: 0,
     loadPct: null,
+    activeSessionCount: 0,
     lastRunISO: null,
+    lastHeartbeatISO: null,
+    heartbeatAgeSeconds: null,
     hourlyStripe: Array(24).fill(0),
     hourlyTotal: 0,
     hourlyStripeLoading: false,
     hourlyStripeError: false,
     schemaUnreachable: false,
     heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown",
     ...overrides,
   }
 }
@@ -152,6 +162,7 @@ beforeEach(() => {
     error: null,
   } as unknown as ReturnType<typeof useButler>)
   vi.mocked(useButlerStatusBoard).mockReturnValue({
+    needsYou: [],
     rows: [
       makeRow("relationship", { description: "Relationship intelligence butler", activity: "idle" }),
       makeRow("health"),
@@ -202,6 +213,7 @@ describe("Scenario B: Butler identity", () => {
 
   it("B2b: description is absent when status board row has no description", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health", { description: null })],
       aggregates: makeAggregates({ total: 1 }),
     })
@@ -227,6 +239,7 @@ describe("Scenario B: Butler identity", () => {
 describe("Scenario C: Skeleton and error states", () => {
   it("C1: renders skeleton placeholders (no H1) while data is loading", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates({ isLoading: true }),
     })
@@ -241,6 +254,7 @@ describe("Scenario C: Skeleton and error states", () => {
 
   it("C2: aria-busy is true on the header wrapper while loading", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates({ isLoading: true }),
     })
@@ -253,6 +267,7 @@ describe("Scenario C: Skeleton and error states", () => {
 
   it("C3: error state with no rows renders H1 with butler name but nav shows skeletons", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates({ isError: true, error: new Error("fetch failed") }),
     })
@@ -268,6 +283,7 @@ describe("Scenario C: Skeleton and error states", () => {
 
   it("C4: stale-data scenario (error=true but rows populated) renders loaded state", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("finance", { description: "Finance butler" })],
       aggregates: makeAggregates({
         isError: false,
@@ -339,6 +355,7 @@ describe("Scenario F: header facts replace port/uptime trivia", () => {
         }),
       ],
       aggregates: makeAggregates({ total: 1 }),
+      needsYou: [],
     })
 
     renderHeader("relationship")
@@ -368,6 +385,7 @@ describe("Scenario E: SiblingButlerNav ownership", () => {
 
   it("E3: SiblingButlerNav is absent during loading", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates({ isLoading: true }),
     })

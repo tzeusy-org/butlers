@@ -51,6 +51,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     active: 0,
     offline: 0,
     quarantined: 0,
+    overdue: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
     avgLoadPct: null,
@@ -77,22 +78,34 @@ function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
     activity: "idle",
     cellTone: "neutral",
     eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
     sessions24h: 0,
     costToday: 0,
     loadPct: null,
+    activeSessionCount: 0,
     lastRunISO: null,
+    lastHeartbeatISO: null,
+    heartbeatAgeSeconds: null,
     hourlyStripe: Array(24).fill(0),
     hourlyTotal: 0,
     hourlyStripeLoading: false,
     hourlyStripeError: false,
     schemaUnreachable: false,
     heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown",
     ...overrides,
   };
 }
 
+const NEEDS_YOU_ACTIVITIES = new Set(["offline", "quarantined", "overdue"]);
+
 function setHookState(rows: StatusBoardRow[], aggregates: StatusBoardAggregates) {
-  vi.mocked(useButlerStatusBoard).mockReturnValue({ rows, aggregates });
+  const needsYou = rows.filter((r) => NEEDS_YOU_ACTIVITIES.has(r.activity));
+  vi.mocked(useButlerStatusBoard).mockReturnValue({ rows, aggregates, needsYou });
 }
 
 const mockMutate = vi.fn();
@@ -370,5 +383,56 @@ describe("ButlersPage — no inline style on page container", () => {
     const gridTagMatch = html.match(/<div[^>]*aria-label="Butler status board"[^>]*>/);
     expect(gridTagMatch).not.toBeNull();
     expect(gridTagMatch?.[0]).not.toContain("style=");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Needs-you triage strip (bu-86c4c.17)
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — needs-you strip", () => {
+  it("collapses to a single calm line when the fleet is fully healthy", () => {
+    const rows = [makeRow({ name: "a", activity: "idle" }), makeRow({ name: "b", activity: "running" })];
+    setHookState(rows, makeAggregates({ total: 2, butlerCount: 2 }));
+    const html = renderPage();
+    expect(html).toContain("All 2 butlers healthy");
+  });
+
+  it("lists offline/quarantined/overdue rows with root-evidence reasons", () => {
+    const rows = [
+      makeRow({ name: "down-butler", activity: "offline", cellTone: "red", status: "down" }),
+      makeRow({
+        name: "banned-butler",
+        activity: "quarantined",
+        eligibility: "quarantined",
+        cellTone: "red",
+        quarantineReason: "3 consecutive heartbeat misses",
+      }),
+      makeRow({
+        name: "late-butler",
+        activity: "overdue",
+        cellTone: "amber",
+        cadenceLabel: "daily",
+        silenceSeconds: 5 * 86400,
+      }),
+      makeRow({ name: "healthy-butler", activity: "idle" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 4, butlerCount: 4, offline: 1, quarantined: 1, overdue: 1 }));
+    const html = renderPage();
+
+    expect(html).toContain("3 things need you");
+    expect(html).toContain("down-butler");
+    expect(html).toContain("banned-butler");
+    expect(html).toContain("3 consecutive heartbeat misses");
+    expect(html).toContain("late-butler");
+    expect(html).toContain("silent 5d, expected daily");
+    expect(html).not.toContain("All 4 butlers healthy");
+  });
+
+  it("does not render the strip when the board is empty", () => {
+    setHookState([], makeAggregates({ total: 0 }));
+    const html = renderPage();
+    expect(html).not.toContain("All 0 butlers healthy");
+    expect(html).not.toContain("things need you");
   });
 });

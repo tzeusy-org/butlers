@@ -1,49 +1,56 @@
 // ---------------------------------------------------------------------------
 // ButlerHeartbeatTile
 //
-// Shows per-butler heartbeat state: name, last_seen_at (relative), active
-// session badge, and a stale-heartbeat warning indicator.
+// Shows per-butler heartbeat state: name, last heartbeat (relative), active
+// session badge, and a liveness dot.
 //
-// Stale threshold: 5 minutes (STALE_THRESHOLD_SECONDS). Butlers with no
-// heartbeat recorded are also flagged as stale.
+// Canonical liveness (bu-86c4c.17): this tile now consumes the SAME
+// activity/tone verdict as the roster board and the /system topology graph
+// (useButlerStatusBoard / GET /api/butlers/board), rather than deriving its
+// own 5-minute heartbeat-age threshold. Previously the topology graph could
+// render a butler green while this tile independently rendered it
+// amber-stale from a different threshold with no reconciliation -- both
+// surfaces now agree by construction because there is only one computation.
 //
-// Graceful per-butler error handling: entries with error="schema_unreachable"
-// are rendered with a degraded indicator rather than crashing the tile.
+// Graceful per-butler error handling: rows with schemaUnreachable=true are
+// rendered with a degraded indicator rather than crashing the tile.
 //
-// Data source: useButlerHeartbeats (refetches every 30 s).
+// Data source: useButlerStatusBoard (refetches every 30 s).
 // ---------------------------------------------------------------------------
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
-import { useButlerHeartbeats } from "@/hooks/use-system";
-import type { ButlerHeartbeat } from "@/api/types";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Heartbeats older than this are flagged as stale. */
-const STALE_THRESHOLD_SECONDS = 5 * 60;
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
+import type { StatusBoardRow, ActivityVerb } from "@/hooks/use-butler-status-board";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function isStale(butler: ButlerHeartbeat): boolean {
-  if (butler.heartbeat_age_seconds === null || butler.heartbeat_age_seconds === undefined) {
-    return true;
+/** Liveness dot color, keyed off the canonical activity verb (one meaning everywhere). */
+function dotClassFor(activity: ActivityVerb): string {
+  switch (activity) {
+    case "running":
+    case "idle":
+      return "bg-severity-low";
+    case "overdue":
+      return "bg-severity-medium";
+    case "offline":
+    case "quarantined":
+      return "bg-severity-high";
+    case "unknown":
+      return "bg-muted-foreground/40";
   }
-  return butler.heartbeat_age_seconds > STALE_THRESHOLD_SECONDS;
 }
 
-function sortByHeartbeat(butlers: ButlerHeartbeat[]): ButlerHeartbeat[] {
-  return [...butlers].sort((a, b) => {
-    // Null last_heartbeat_at sorts last (oldest / no heartbeat)
-    if (!a.last_heartbeat_at && !b.last_heartbeat_at) return 0;
-    if (!a.last_heartbeat_at) return 1;
-    if (!b.last_heartbeat_at) return -1;
-    return b.last_heartbeat_at.localeCompare(a.last_heartbeat_at);
+function sortByHeartbeat(rows: StatusBoardRow[]): StatusBoardRow[] {
+  return [...rows].sort((a, b) => {
+    // Null lastHeartbeatISO sorts last (oldest / no heartbeat)
+    if (!a.lastHeartbeatISO && !b.lastHeartbeatISO) return 0;
+    if (!a.lastHeartbeatISO) return 1;
+    if (!b.lastHeartbeatISO) return -1;
+    return b.lastHeartbeatISO.localeCompare(a.lastHeartbeatISO);
   });
 }
 
@@ -52,55 +59,40 @@ function sortByHeartbeat(butlers: ButlerHeartbeat[]): ButlerHeartbeat[] {
 // ---------------------------------------------------------------------------
 
 interface ButlerRowProps {
-  butler: ButlerHeartbeat;
+  row: StatusBoardRow;
 }
 
-function ButlerRow({ butler }: ButlerRowProps) {
-  const stale = isStale(butler);
-  const unreachable = butler.error === "schema_unreachable";
-
+function ButlerRow({ row }: ButlerRowProps) {
   return (
     <li className="flex items-center justify-between gap-2 py-1.5">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
-          {stale && (
-            <span
-              className="inline-block size-2 shrink-0 rounded-full bg-severity-medium"
-              aria-label="Stale heartbeat"
-              title={
-                butler.last_heartbeat_at
-                  ? "No heartbeat in the last 5 minutes"
-                  : "No heartbeat recorded"
-              }
-            />
-          )}
-          {!stale && (
-            <span
-              className="inline-block size-2 shrink-0 rounded-full bg-severity-low"
-              aria-label="Healthy heartbeat"
-            />
-          )}
-          <span className="truncate text-sm font-medium">{butler.name}</span>
-          {unreachable && (
+          <span
+            className={`inline-block size-2 shrink-0 rounded-full ${dotClassFor(row.activity)}`}
+            aria-label={`Liveness: ${row.activity}`}
+            title={row.activity}
+          />
+          <span className="truncate text-sm font-medium">{row.name}</span>
+          {row.schemaUnreachable && (
             <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">
               unreachable
             </Badge>
           )}
         </div>
         <div className="pl-3.5 text-xs text-muted-foreground">
-          {butler.last_heartbeat_at ? (
+          {row.lastHeartbeatISO ? (
             <>
               Last seen{" "}
-              <Time value={butler.last_heartbeat_at} mode="relative" />
+              <Time value={row.lastHeartbeatISO} mode="relative" />
             </>
           ) : (
             <span>No heartbeat recorded</span>
           )}
         </div>
       </div>
-      {butler.active_session_count > 0 && (
+      {row.activeSessionCount > 0 && (
         <Badge variant="secondary" className="shrink-0">
-          {butler.active_session_count} active
+          {row.activeSessionCount} active
         </Badge>
       )}
     </li>
@@ -112,7 +104,8 @@ function ButlerRow({ butler }: ButlerRowProps) {
 // ---------------------------------------------------------------------------
 
 export function ButlerHeartbeatTile() {
-  const { data, isLoading, error } = useButlerHeartbeats();
+  const { rows, aggregates } = useButlerStatusBoard();
+  const { isLoading, isError } = aggregates;
 
   if (isLoading) {
     return (
@@ -127,7 +120,7 @@ export function ButlerHeartbeatTile() {
     );
   }
 
-  if (error) {
+  if (isError) {
     return (
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -140,23 +133,23 @@ export function ButlerHeartbeatTile() {
     );
   }
 
-  const butlers = sortByHeartbeat(data?.data.butlers ?? []);
+  const sortedRows = sortByHeartbeat(rows);
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium">Butler Heartbeats</CardTitle>
         <span className="text-xs text-muted-foreground">
-          {butlers.length} butler{butlers.length !== 1 ? "s" : ""}
+          {sortedRows.length} butler{sortedRows.length !== 1 ? "s" : ""}
         </span>
       </CardHeader>
       <CardContent>
-        {butlers.length === 0 ? (
+        {sortedRows.length === 0 ? (
           <p className="text-sm text-muted-foreground">No butlers registered.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {butlers.map((butler) => (
-              <ButlerRow key={butler.name} butler={butler} />
+            {sortedRows.map((row) => (
+              <ButlerRow key={row.name} row={row} />
             ))}
           </ul>
         )}

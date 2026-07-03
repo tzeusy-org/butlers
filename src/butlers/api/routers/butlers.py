@@ -17,8 +17,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
+from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
@@ -27,6 +29,7 @@ from butlers.api.deps import (
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
+    get_pricing,
 )
 from butlers.api.models import (
     ApiResponse,
@@ -45,9 +48,11 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
+from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.read_models.butlers_v1 import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
+from butlers.core.sessions import sessions_summary
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +273,549 @@ def _build_process_facts(
         port=connection_info.port,
         registered_duration_seconds=registered_duration_seconds,
         config_path=config_path,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Board endpoint: GET /api/butlers/board  (bu-86c4c.17)
+# ---------------------------------------------------------------------------
+#
+# Canonical liveness model
+# ------------------------
+# This endpoint is the SINGLE source of the "activity" / "cell_tone" verdict
+# for every butler-status surface (the roster board, the /system topology
+# graph, and the /system heartbeat list). Rules applied in order (first
+# match wins):
+#
+#   1. status == "down"                        -> "offline"     / red
+#   2. eligibility == "quarantined"             -> "quarantined" / red
+#   3. heartbeat data unavailable for this row  -> "unknown"     / neutral
+#   4. active_session_count > 0                 -> "running"     / green
+#   5. cadence_status == "overdue" (silent longer than the butler's own
+#      cron expectation, or > 5 min when no cadence is known)
+#                                                -> "overdue"     / amber
+#   6. else                                     -> "idle"        / neutral
+#
+# Cadence expectations come from each butler's own enabled cron schedules
+# (its ``scheduled_tasks`` table), so "IDLE" no longer means the same thing
+# for an hourly butler and a weekly one: a butler silent 3x its own cadence
+# is "overdue", a flat idle/running binary can't express that fact.
+#
+# Consolidation
+# -------------
+# Replaces the frontend's former ~2N-query fan-out (one runtime-config
+# request and one hourly-activity request per butler, from useButlerStatusBoard)
+# with a single request: this endpoint fans out to the same sources
+# server-side and returns rows + aggregates in one round trip. Row order is
+# the roster's stable discovery order (``get_butler_configs()``), never
+# re-sorted by a live counter, so board rows never shuffle position between
+# polls.
+
+_BOARD_HOURLY_ACTIVITY_SQL = """
+WITH hours AS (
+  SELECT generate_series(
+    DATE_TRUNC('hour', NOW()) - (($1 - 1) * INTERVAL '1 hour'),
+    DATE_TRUNC('hour', NOW()),
+    '1 hour'
+  ) AS hour_start
+)
+SELECT
+  h.hour_start,
+  COUNT(s.id) AS sessions_count
+FROM hours h
+LEFT JOIN sessions s ON s.started_at >= h.hour_start
+                    AND s.started_at < h.hour_start + INTERVAL '1 hour'
+GROUP BY 1
+ORDER BY 1 DESC
+"""
+
+# A butler is "overdue" only once its silence exceeds its own cadence by this
+# factor -- avoids flagging a butler that simply hasn't hit its next
+# scheduled run yet.
+_CADENCE_OVERDUE_FACTOR = 2.0
+# Fallback staleness threshold when a butler has no enabled cron schedule at
+# all (matches the pre-existing ButlerHeartbeatTile threshold).
+_DEFAULT_STALE_SECONDS = 5 * 60
+
+
+class BoardRow(BaseModel):
+    """One butler's row on the consolidated fleet status board."""
+
+    name: str
+    type: str  # "butler" | "staffer"
+    description: str | None
+    status: str  # "ok" | "down" (raw MCP probe result)
+
+    # --- canonical liveness (see module docstring above) ---
+    activity: str  # "running" | "idle" | "overdue" | "offline" | "quarantined" | "unknown"
+    cell_tone: str  # "green" | "amber" | "red" | "neutral"
+
+    eligibility: str  # "active" | "quarantined" | "stale" | "unavailable"
+    quarantine_reason: str | None
+    quarantined_at: str | None
+
+    sessions_24h: int
+    cost_today: float | None
+    load_pct: int | None
+    max_concurrent: int | None
+    # 0 whenever heartbeat_unavailable is true (unreliable), matching load_pct's
+    # own degradation rule -- never a confident "0 active" during an outage.
+    active_session_count: int
+
+    last_session_at: str | None
+    last_heartbeat_at: str | None
+    heartbeat_age_seconds: float | None
+    heartbeat_unavailable: bool
+    schema_unreachable: bool
+
+    hourly_stripe: list[int]
+    hourly_total: int
+
+    # --- cron-expectation join ---
+    cadence_seconds: float | None
+    cadence_label: str | None  # "hourly" | "daily" | "weekly" | "custom" | None (no schedule)
+    silence_seconds: float | None
+    cadence_status: str  # "on_schedule" | "overdue" | "unknown"
+
+
+class BoardAggregates(BaseModel):
+    """Fleet-wide aggregates for the board header/footer."""
+
+    total: int
+    butler_count: int
+    staffer_count: int
+    active: int
+    offline: int
+    quarantined: int
+    overdue: int
+    total_sessions_24h: int
+    # Partial sum over rows with known cost when cost_source_error is True --
+    # NEVER render bare as a confident total in that case (repo degraded-mode
+    # doctrine); show "unavailable"/"partial" per cost_source_error instead.
+    total_spend_today: float
+    avg_load_pct: int | None
+
+    heartbeat_source_error: bool
+    registry_source_error: bool
+    cost_source_error: bool
+    has_per_entry_errors: bool
+    sources_partially_degraded: bool
+
+
+class BoardResponse(BaseModel):
+    """Response envelope for GET /api/butlers/board."""
+
+    rows: list[BoardRow]
+    aggregates: BoardAggregates
+    generated_at: str
+
+
+def _board_as_utc(value: datetime | None) -> datetime | None:
+    """Normalize a possibly-naive asyncpg timestamp to a UTC-aware datetime."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def _board_parse_iso(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 string back to a datetime, tolerating None/invalid input."""
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _cron_cadence_seconds(crons: list[str], *, now: datetime) -> float | None:
+    """Return the shortest interval (seconds) between occurrences across *crons*.
+
+    Returns None when no cron expression is valid/parseable.
+    """
+    best: float | None = None
+    for cron in crons:
+        try:
+            it = croniter(cron, now)
+            first = it.get_next(datetime)
+            second = it.get_next(datetime)
+        except Exception:
+            continue
+        interval = (second - first).total_seconds()
+        if interval > 0 and (best is None or interval < best):
+            best = interval
+    return best
+
+
+def _cadence_label(cadence_seconds: float | None) -> str | None:
+    """Bucket a cadence interval into a human-facing label."""
+    if cadence_seconds is None:
+        return None
+    if cadence_seconds <= 3600 * 2:
+        return "hourly"
+    if cadence_seconds <= 3600 * 24 * 1.5:
+        return "daily"
+    if cadence_seconds <= 3600 * 24 * 9:
+        return "weekly"
+    return "custom"
+
+
+async def _fetch_enabled_crons(pool: object) -> list[str]:
+    """Return enabled cron expressions from the butler's own scheduled_tasks table.
+
+    Tolerates schemas without the temporal-intelligence ``task_type`` column
+    (pre-migration) and missing/unreachable ``scheduled_tasks`` tables --
+    both degrade to an empty list (cadence_status becomes "unknown"), never
+    an error.
+    """
+    try:
+        rows = await asyncio.wait_for(
+            pool.fetch(
+                "SELECT cron FROM scheduled_tasks"
+                " WHERE enabled = true AND (task_type IS NULL OR task_type = 'cron')"
+            ),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+    except Exception:
+        try:
+            rows = await asyncio.wait_for(
+                pool.fetch("SELECT cron FROM scheduled_tasks WHERE enabled = true"),
+                timeout=_STATUS_TIMEOUT_S,
+            )
+        except Exception:
+            return []
+    return [r["cron"] for r in rows if r["cron"]]
+
+
+async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int]:
+    """Return a 24-slot oldest-first session-count stripe and its total.
+
+    Mirrors GET /api/butlers/{name}/analytics/hourly-activity so the board's
+    stripe and SESS·24H figure always match that endpoint's numbers.
+    """
+    try:
+        rows = await asyncio.wait_for(
+            pool.fetch(_BOARD_HOURLY_ACTIVITY_SQL, 24),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+    except Exception:
+        return [0] * 24, 0
+
+    # SQL orders newest-first (index 0 = current hour); convert to
+    # oldest-first (slot 0 = oldest) for the stripe.
+    stripe = [0] * 24
+    for idx, row in enumerate(rows):
+        slot = 23 - idx
+        if 0 <= slot < 24:
+            stripe[slot] = int(row["sessions_count"])
+    return stripe, sum(stripe)
+
+
+async def _fetch_board_max_concurrent(pool: object) -> int | None:
+    """Return max_concurrent from the butler's runtime_config row, if any."""
+    try:
+        row = await asyncio.wait_for(
+            pool.fetchrow("SELECT max_concurrent FROM runtime_config LIMIT 1"),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+    except Exception:
+        return None
+    if row is None:
+        return None
+    value = row["max_concurrent"]
+    return int(value) if value else None
+
+
+async def _fetch_board_cost_today(pool: object, pricing: PricingConfig) -> float | None:
+    """Return today's estimated cost for one butler, or None on any failure.
+
+    The whole body (not just the query) is inside the try/except: a
+    malformed/unexpected ``sessions_summary`` shape must degrade this one
+    butler's cost to None (surfaced via cost_source_error), never crash the
+    entire board endpoint for every other butler.
+    """
+    try:
+        data = await asyncio.wait_for(sessions_summary(pool, "today"), timeout=_STATUS_TIMEOUT_S)
+        total_cost = 0.0
+        for model_id, stats in data.get("by_model", {}).items():
+            total_cost += estimate_session_cost(
+                pricing,
+                model_id,
+                stats.get("input_tokens", 0),
+                stats.get("output_tokens", 0),
+                cached_input_tokens=stats.get("cached_input_tokens", 0),
+                context_tokens=stats.get("context_tokens"),
+            )
+        return total_cost
+    except Exception:
+        return None
+
+
+def _derive_board_activity(
+    *,
+    status: str,
+    eligibility: str,
+    heartbeat_unavailable: bool,
+    active_session_count: int,
+    cadence_status: str,
+) -> tuple[str, str]:
+    """Canonical liveness derivation -- see module docstring above."""
+    if status == "down":
+        return "offline", "red"
+    if eligibility == "quarantined":
+        return "quarantined", "red"
+    if heartbeat_unavailable:
+        return "unknown", "neutral"
+    if active_session_count > 0:
+        return "running", "green"
+    if cadence_status == "overdue":
+        return "overdue", "amber"
+    return "idle", "neutral"
+
+
+async def _fetch_board_row(
+    info: ButlerConnectionInfo,
+    *,
+    mgr: MCPClientManager,
+    db: DatabaseManager,
+    pricing: PricingConfig,
+    registry_map: dict[str, dict],
+    registry_source_error: bool,
+    sessions_24h: int,
+    now: datetime,
+) -> BoardRow:
+    """Assemble one board row: MCP status, registry, session facts, cadence."""
+    summary = await _probe_butler(mgr, info, sessions_24h=sessions_24h)
+
+    reg = registry_map.get(info.name)
+    if registry_source_error or reg is None:
+        eligibility = "unavailable"
+    else:
+        raw_eligibility = reg["eligibility_state"]
+        eligibility = (
+            raw_eligibility
+            if raw_eligibility in ("active", "quarantined", "stale")
+            else "unavailable"
+        )
+
+    quarantine_reason = reg["quarantine_reason"] if reg else None
+    quarantined_dt = (
+        _board_as_utc(reg["quarantined_at"]) if reg and reg.get("quarantined_at") else None
+    )
+    quarantined_at = quarantined_dt.isoformat() if quarantined_dt else None
+
+    last_heartbeat_dt = _board_as_utc(reg["last_seen_at"]) if reg else None
+    last_heartbeat_at = last_heartbeat_dt.isoformat() if last_heartbeat_dt else None
+    heartbeat_age = (now - last_heartbeat_dt).total_seconds() if last_heartbeat_dt else None
+
+    schema_unreachable = False
+    last_session_at: str | None = None
+    active_session_count = 0
+    pool = None
+    try:
+        pool = db.pool(info.name)
+    except KeyError:
+        schema_unreachable = True
+
+    if pool is not None:
+        try:
+            last_row = await asyncio.wait_for(
+                pool.fetchrow(
+                    "SELECT completed_at FROM sessions"
+                    " WHERE completed_at IS NOT NULL"
+                    " ORDER BY completed_at DESC LIMIT 1"
+                ),
+                timeout=_STATUS_TIMEOUT_S,
+            )
+            if last_row and last_row["completed_at"] is not None:
+                last_session_dt = _board_as_utc(last_row["completed_at"])
+                last_session_at = last_session_dt.isoformat() if last_session_dt else None
+            active_count_row = await asyncio.wait_for(
+                pool.fetchval("SELECT count(*) FROM sessions WHERE completed_at IS NULL"),
+                timeout=_STATUS_TIMEOUT_S,
+            )
+            active_session_count = int(active_count_row or 0)
+        except Exception as exc:
+            logger.warning("Board: session query failed for butler %s: %s", info.name, exc)
+            schema_unreachable = True
+
+    heartbeat_unavailable = registry_source_error or schema_unreachable
+
+    hourly_stripe, hourly_total = (
+        await _fetch_board_hourly_stripe(pool) if pool is not None else ([0] * 24, 0)
+    )
+    max_concurrent = await _fetch_board_max_concurrent(pool) if pool is not None else None
+    cost_today = await _fetch_board_cost_today(pool, pricing) if pool is not None else None
+    crons = await _fetch_enabled_crons(pool) if pool is not None else []
+
+    cadence_seconds = _cron_cadence_seconds(crons, now=now)
+    cadence_label = _cadence_label(cadence_seconds)
+
+    last_activity_candidates = [
+        dt
+        for dt in (_board_parse_iso(last_session_at), _board_parse_iso(last_heartbeat_at))
+        if dt is not None
+    ]
+    last_activity = max(last_activity_candidates) if last_activity_candidates else None
+    silence_seconds = (now - last_activity).total_seconds() if last_activity else None
+
+    if silence_seconds is None:
+        cadence_status = "unknown"
+    elif cadence_seconds is not None:
+        cadence_status = (
+            "overdue"
+            if silence_seconds > cadence_seconds * _CADENCE_OVERDUE_FACTOR
+            else "on_schedule"
+        )
+    else:
+        cadence_status = "overdue" if silence_seconds > _DEFAULT_STALE_SECONDS else "on_schedule"
+
+    # active_session_count is only trustworthy when heartbeat/session data is
+    # reachable -- otherwise LOAD must show unknown, not a confident 0%.
+    active_effective = 0 if heartbeat_unavailable else active_session_count
+    load_pct = (
+        None
+        if heartbeat_unavailable or not max_concurrent
+        else round((active_effective / max_concurrent) * 100)
+    )
+
+    activity, cell_tone = _derive_board_activity(
+        status=summary.status,
+        eligibility=eligibility,
+        heartbeat_unavailable=heartbeat_unavailable,
+        active_session_count=active_effective,
+        cadence_status=cadence_status,
+    )
+
+    return BoardRow(
+        name=info.name,
+        type=info.type,
+        description=info.description,
+        status=summary.status,
+        activity=activity,
+        cell_tone=cell_tone,
+        eligibility=eligibility,
+        quarantine_reason=quarantine_reason,
+        quarantined_at=quarantined_at,
+        sessions_24h=summary.sessions_24h,
+        cost_today=cost_today,
+        load_pct=load_pct,
+        max_concurrent=max_concurrent,
+        active_session_count=active_effective,
+        last_session_at=last_session_at,
+        last_heartbeat_at=last_heartbeat_at,
+        heartbeat_age_seconds=heartbeat_age,
+        heartbeat_unavailable=heartbeat_unavailable,
+        schema_unreachable=schema_unreachable,
+        hourly_stripe=hourly_stripe,
+        hourly_total=hourly_total,
+        cadence_seconds=cadence_seconds,
+        cadence_label=cadence_label,
+        silence_seconds=silence_seconds,
+        cadence_status=cadence_status,
+    )
+
+
+def _compute_board_aggregates(
+    rows: list[BoardRow], *, registry_source_error: bool
+) -> BoardAggregates:
+    """Fold board rows into fleet-wide aggregates, honoring the degraded-mode doctrine."""
+    total = len(rows)
+    butler_count = sum(1 for r in rows if r.type == "butler")
+    staffer_count = sum(1 for r in rows if r.type == "staffer")
+    active = sum(1 for r in rows if r.activity == "running")
+    offline = sum(1 for r in rows if r.activity == "offline")
+    quarantined = sum(1 for r in rows if r.activity == "quarantined")
+    overdue = sum(1 for r in rows if r.activity == "overdue")
+    total_sessions_24h = sum(r.hourly_total for r in rows)
+
+    known_costs = [r.cost_today for r in rows if r.cost_today is not None]
+    cost_source_error = any(r.cost_today is None for r in rows)
+    total_spend_today = sum(known_costs)
+
+    known_loads = [r.load_pct for r in rows if r.load_pct is not None]
+    avg_load_pct = round(sum(known_loads) / len(known_loads)) if known_loads else None
+
+    has_per_entry_errors = any(r.schema_unreachable for r in rows)
+    sources_partially_degraded = registry_source_error or cost_source_error or has_per_entry_errors
+
+    return BoardAggregates(
+        total=total,
+        butler_count=butler_count,
+        staffer_count=staffer_count,
+        active=active,
+        offline=offline,
+        quarantined=quarantined,
+        overdue=overdue,
+        total_sessions_24h=total_sessions_24h,
+        total_spend_today=total_spend_today,
+        avg_load_pct=avg_load_pct,
+        heartbeat_source_error=registry_source_error,
+        registry_source_error=registry_source_error,
+        cost_source_error=cost_source_error,
+        has_per_entry_errors=has_per_entry_errors,
+        sources_partially_degraded=sources_partially_degraded,
+    )
+
+
+@router.get("/board", response_model=ApiResponse[BoardResponse])
+async def get_butlers_board(
+    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+    pricing: PricingConfig = Depends(get_pricing),
+) -> ApiResponse[BoardResponse]:
+    """Return the consolidated fleet status board in one round trip.
+
+    See the module comment above this section for the canonical liveness
+    model and consolidation rationale. Row order is the roster's stable
+    discovery order -- rows never reshuffle between polls.
+    """
+    now = datetime.now(UTC)
+
+    registry_map: dict[str, dict] = {}
+    registry_source_error = False
+    try:
+        sw_pool = db.pool("switchboard")
+        registry_rows = await asyncio.wait_for(
+            sw_pool.fetch(
+                "SELECT name, last_seen_at, eligibility_state, quarantined_at, quarantine_reason"
+                " FROM butler_registry"
+            ),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+        for row in registry_rows:
+            registry_map[row["name"]] = dict(row)
+    except Exception as exc:
+        logger.warning("Board: registry query failed: %s", exc)
+        registry_source_error = True
+
+    config_names = [info.name for info in configs]
+    sessions_by_butler = await _fetch_sessions_24h(db, butler_names=config_names)
+
+    rows = list(
+        await asyncio.gather(
+            *[
+                _fetch_board_row(
+                    info,
+                    mgr=mgr,
+                    db=db,
+                    pricing=pricing,
+                    registry_map=registry_map,
+                    registry_source_error=registry_source_error,
+                    sessions_24h=sessions_by_butler.get(info.name, 0),
+                    now=now,
+                )
+                for info in configs
+            ]
+        )
+    )
+
+    aggregates = _compute_board_aggregates(rows, registry_source_error=registry_source_error)
+
+    return ApiResponse[BoardResponse](
+        data=BoardResponse(rows=rows, aggregates=aggregates, generated_at=now.isoformat())
     )
 
 

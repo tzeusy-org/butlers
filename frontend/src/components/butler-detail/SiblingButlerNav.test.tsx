@@ -82,6 +82,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     active: 0,
     offline: 0,
     quarantined: 0,
+    overdue: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
     avgLoadPct: null,
@@ -111,16 +112,25 @@ function makeRow(
     activity: "idle",
     cellTone: "neutral",
     eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
     sessions24h: 0,
     costToday: 0,
     loadPct: null,
+    activeSessionCount: 0,
     lastRunISO: null,
+    lastHeartbeatISO: null,
+    heartbeatAgeSeconds: null,
     hourlyStripe: Array(24).fill(0),
     hourlyTotal: 0,
     hourlyStripeLoading: false,
     hourlyStripeError: false,
     schemaUnreachable: false,
     heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown",
     ...overrides,
   }
 }
@@ -159,6 +169,7 @@ function renderNav(
 
 beforeEach(() => {
   vi.mocked(useButlerStatusBoard).mockReturnValue({
+    needsYou: [],
     rows: makeRosterRows("health"),
     aggregates: makeAggregates({ total: REAL_ROSTER_NAMES.length }),
   })
@@ -253,6 +264,7 @@ describe("Scenario 3 — navigation ARIA contract", () => {
   it("does not double-prefix links when the app is mounted under /butlers-dev", () => {
     vi.stubEnv("BASE_URL", "/butlers-dev/")
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("switchboard"), makeRow("lifestyle")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -273,6 +285,7 @@ describe("Scenario 3 — navigation ARIA contract", () => {
 describe("Scenario 4 — skeleton while loading or errored", () => {
   it("renders skeleton placeholders while data is loading", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates({ isLoading: true }),
     })
@@ -289,6 +302,7 @@ describe("Scenario 4 — skeleton while loading or errored", () => {
 
   it("renders skeleton placeholders on error with no cached rows", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [],
       aggregates: makeAggregates({ isError: true, error: new Error("fetch failed") }),
     })
@@ -302,6 +316,7 @@ describe("Scenario 4 — skeleton while loading or errored", () => {
 
   it("still renders links when rows exist even if error is set (stale data)", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: makeRosterRows("health"),
       // Stale scenario: error is set but rows are populated.
       aggregates: makeAggregates({
@@ -325,6 +340,7 @@ describe("Scenario 4 — skeleton while loading or errored", () => {
 describe("Scenario 5 — offline or quarantined butler stays navigable", () => {
   it("quarantined butler is still a Link and has no aria-disabled", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [
         makeRow("health", { activity: "quarantined", eligibility: "quarantined" }),
         makeRow("general"),
@@ -341,6 +357,7 @@ describe("Scenario 5 — offline or quarantined butler stays navigable", () => {
 
   it("offline butler is still a Link and has no aria-disabled", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [
         makeRow("finance", { activity: "offline", status: "down" }),
         makeRow("health"),
@@ -390,6 +407,7 @@ describe("Scenario 6 — no butler hue on strip chrome", () => {
 describe("Scenario 7 — query params carried across navigation", () => {
   it("carries ?tab= to sibling butler links", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("general")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -402,6 +420,7 @@ describe("Scenario 7 — query params carried across navigation", () => {
 
   it("carries ?mode= to sibling butler links", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("travel")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -414,6 +433,7 @@ describe("Scenario 7 — query params carried across navigation", () => {
 
   it("carries both ?tab= and ?mode= together", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("relationship")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -428,6 +448,7 @@ describe("Scenario 7 — query params carried across navigation", () => {
 
   it("does not carry unrelated query params (e.g. scroll position)", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("education")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -444,6 +465,7 @@ describe("Scenario 7 — query params carried across navigation", () => {
 
   it("omits query string entirely when no relevant params are present", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("home")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -468,6 +490,7 @@ describe("Scenario 7 — query params carried across navigation", () => {
 describe("Scenario 8 — keyboard contract and ARIA", () => {
   it("ARIA: nav wrapper has role=navigation with aria-label='Navigate to butler'", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("general")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -479,6 +502,7 @@ describe("Scenario 8 — keyboard contract and ARIA", () => {
 
   it("ARIA: active entry has aria-current=page; inactive entries do not", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("general"), makeRow("finance")],
       aggregates: makeAggregates({ total: 3 }),
     })
@@ -497,6 +521,7 @@ describe("Scenario 8 — keyboard contract and ARIA", () => {
 
   it("each entry is a focusable interactive element (anchor tag)", () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("general"), makeRow("finance")],
       aggregates: makeAggregates({ total: 3 }),
     })
@@ -510,6 +535,7 @@ describe("Scenario 8 — keyboard contract and ARIA", () => {
 
   it("Tab key moves focus through all sibling-nav entries in order", async () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("general"), makeRow("finance")],
       aggregates: makeAggregates({ total: 3 }),
     })
@@ -527,6 +553,7 @@ describe("Scenario 8 — keyboard contract and ARIA", () => {
 
   it("focused sibling-nav entry carries the focus-visible ring class token", async () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("general")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -543,6 +570,7 @@ describe("Scenario 8 — keyboard contract and ARIA", () => {
 
   it("Enter key on a focused sibling-nav entry navigates to /butlers/:name", async () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: [makeRow("health"), makeRow("general")],
       aggregates: makeAggregates({ total: 2 }),
     })
@@ -567,6 +595,7 @@ describe("Scenario 8 — keyboard contract and ARIA", () => {
 
   it("full Tab traversal reaches every sibling-nav entry exactly once", async () => {
     vi.mocked(useButlerStatusBoard).mockReturnValue({
+      needsYou: [],
       rows: makeRosterRows("health"),
       aggregates: makeAggregates({ total: REAL_ROSTER_NAMES.length }),
     })

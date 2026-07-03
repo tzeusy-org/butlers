@@ -22,6 +22,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Page } from "@/components/ui/page";
 import { BoardFooter } from "@/components/butlers/BoardFooter";
 import { BoardHeader } from "@/components/butlers/BoardHeader";
+import { NeedsYouStrip } from "@/components/butlers/NeedsYouStrip";
 import { StatusBoardCell } from "@/components/butlers/StatusBoardCell";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useSetEligibility } from "@/hooks/use-general";
@@ -38,7 +39,7 @@ const REFRESH_INTERVAL_MS = 30_000;
 // ---------------------------------------------------------------------------
 
 export default function ButlersPage() {
-  const { rows, aggregates } = useButlerStatusBoard();
+  const { rows, aggregates, needsYou } = useButlerStatusBoard();
   const setEligibility = useSetEligibility();
 
   const { isLoading, isError, error, refetch } = aggregates;
@@ -83,6 +84,11 @@ export default function ButlersPage() {
       header={<BoardHeader aggregates={aggregates} refreshIntervalMs={REFRESH_INTERVAL_MS} />}
       footer={<BoardFooter aggregates={aggregates} />}
     >
+      {/* Needs-you triage strip — leads with every butler that needs the owner
+          (offline, quarantined, or overdue against its own cron cadence),
+          collapsing to a single calm line when the fleet is fully healthy. */}
+      {hasRows && <NeedsYouStrip rows={needsYou} total={aggregates.total} />}
+
       {/* Stale-data banner — shown above the grid when cached rows exist but the
           last refresh failed. Mirrors the pattern from the old ButlersPage. */}
       {showStaleBanner && (

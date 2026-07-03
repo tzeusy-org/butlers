@@ -103,6 +103,7 @@ function setButlerState(butler: ButlerDetail | null, opts: Partial<UseButlerResu
   } as UseButlerResult);
 
   vi.mocked(useButlerStatusBoard).mockReturnValue({
+    needsYou: [],
     rows: [
       {
         name: "general",
@@ -112,16 +113,25 @@ function setButlerState(butler: ButlerDetail | null, opts: Partial<UseButlerResu
         activity: "idle",
         cellTone: "neutral",
         eligibility: "active",
+        quarantineReason: null,
+        quarantinedAt: null,
         sessions24h: butler?.sessions_24h ?? 0,
         costToday: 0,
         loadPct: null,
+        activeSessionCount: 0,
         lastRunISO: null,
+        lastHeartbeatISO: null,
+        heartbeatAgeSeconds: null,
         hourlyStripe: Array(24).fill(0),
         hourlyTotal: 0,
         hourlyStripeLoading: false,
         hourlyStripeError: false,
         schemaUnreachable: false,
         heartbeatUnavailable: false,
+        cadenceSeconds: null,
+        cadenceLabel: null,
+        silenceSeconds: null,
+        cadenceStatus: "unknown",
       },
     ],
     aggregates: {
@@ -131,6 +141,7 @@ function setButlerState(butler: ButlerDetail | null, opts: Partial<UseButlerResu
       active: 0,
       offline: 0,
       quarantined: 0,
+      overdue: 0,
       totalSessions24h: butler?.sessions_24h ?? 0,
       totalSpendToday: 0,
       avgLoadPct: null,

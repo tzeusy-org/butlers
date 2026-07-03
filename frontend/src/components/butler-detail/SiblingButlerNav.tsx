@@ -2,16 +2,17 @@
 // SiblingButlerNav — sibling-butler navigation strip for the butler detail page
 // (bu-ja5bt.2)
 //
-// Renders a horizontal navigation strip listing every butler from useButlers()
-// in sessions_24h descending order (name ascending for ties). This component
-// is a Tier 1 chrome element only — it lives in the Page header slot, NOT
-// between the Page header and the tab rail.
+// Renders a horizontal navigation strip listing every butler from
+// useButlerStatusBoard() in the board's stable roster order (bu-86c4c.17;
+// previously sessions_24h descending, before the board's poll-shuffling sort
+// was frozen). This component is a Tier 1 chrome element only — it lives in
+// the Page header slot, NOT between the Page header and the tab rail.
 //
 // Contract:
 //   - role="navigation" aria-label="Navigate to butler"
 //   - Each entry is a React Router <Link> with aria-current="page" on the active butler
 //   - Keyboard: Tab moves focus in/out; Enter/Space activates the link natively
-//   - Skeleton state while useButlers() is loading or errored
+//   - Skeleton state while useButlerStatusBoard() is loading or errored
 //   - Paused/quarantined butlers stay navigable (no aria-disabled)
 //   - Query params (?tab=, ?mode=) carried forward from the current URL
 //   - Butler hue appears ONLY on <ButlerMark> — never on chrome states
@@ -48,17 +49,21 @@ export interface SiblingButlerNavProps {
  * restricted to <ButlerMark>.
  */
 function toneDotClass(
-  activity: "running" | "idle" | "offline" | "quarantined",
+  activity: "running" | "idle" | "overdue" | "offline" | "quarantined" | "unknown",
 ): string {
   switch (activity) {
     case "running":
       return "bg-emerald-500"
     case "idle":
       return "bg-muted-foreground/40"
+    case "overdue":
+      return "bg-amber-500"
     case "offline":
       return "bg-destructive"
     case "quarantined":
       return "bg-destructive"
+    case "unknown":
+      return "bg-muted-foreground/40"
   }
 }
 
@@ -69,7 +74,7 @@ function toneDotClass(
 /**
  * Horizontal sibling-butler navigation strip for the butler detail page.
  *
- * Lists every butler from useButlers() in sessions_24h desc (name asc) order.
+ * Lists every butler in the board's stable roster order (bu-86c4c.17).
  * The active butler is marked aria-current="page". Query params (?tab=, ?mode=)
  * are carried across navigation.
  *

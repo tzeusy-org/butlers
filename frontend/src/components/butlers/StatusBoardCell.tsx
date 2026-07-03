@@ -39,8 +39,10 @@ function activityLabel(activity: ActivityVerb): string {
   switch (activity) {
     case "running":     return "RUNNING"
     case "idle":        return "IDLE"
+    case "overdue":     return "OVERDUE"
     case "offline":     return "OFFLINE"
     case "quarantined": return "QUARANTINED"
+    case "unknown":     return "UNKNOWN"
   }
 }
 
@@ -51,11 +53,48 @@ function activityChipClasses(activity: ActivityVerb): string {
       return "text-emerald-600 dark:text-emerald-400"
     case "idle":
       return "text-muted-foreground"
+    case "overdue":
+      return "text-amber-600 dark:text-amber-400"
     case "offline":
       return "text-destructive"
     case "quarantined":
       return "text-destructive"
+    case "unknown":
+      return "text-muted-foreground"
   }
+}
+
+/**
+ * Compact duration label for the cron-expectation tooltip ("silent 3d",
+ * "silent 5h"). Deliberately local/minimal rather than a new shared
+ * formatter -- the codebase already has several duplicated duration
+ * formatters (JARVIS audit finding); this one is a single title-attribute
+ * string, not a KPI value, so it stays inline.
+ */
+function formatSilenceCompact(seconds: number): string {
+  const days = Math.floor(seconds / 86400)
+  if (days >= 1) return `${days}d`
+  const hours = Math.floor(seconds / 3600)
+  if (hours >= 1) return `${hours}h`
+  const minutes = Math.max(1, Math.floor(seconds / 60))
+  return `${minutes}m`
+}
+
+/**
+ * Cron-expectation tooltip for the activity chip: "silent 3d, expected
+ * daily" instead of a flat OVERDUE/IDLE that means the same thing for an
+ * hourly and a weekly butler.
+ */
+function cadenceTooltip(row: Pick<StatusBoardRow, "activity" | "silenceSeconds" | "cadenceLabel">): string | undefined {
+  if (row.silenceSeconds == null) return undefined
+  const silence = formatSilenceCompact(row.silenceSeconds)
+  if (row.activity === "overdue") {
+    return `Silent ${silence}, expected ${row.cadenceLabel ?? "regularly"}`
+  }
+  if (row.activity === "idle" && row.cadenceLabel) {
+    return `Silent ${silence}, expected ${row.cadenceLabel}`
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +162,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
     description,
     activity,
     eligibility,
+    quarantineReason,
     sessions24h,
     costToday,
     loadPct,
@@ -146,6 +186,11 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
   // renders so screen-reader users get the same truthful relative label.
   const lastRunLabel = lastRunISO ? formatRelativeCompact(new Date(lastRunISO)) : "unknown"
   const ariaLabel = `${name}, ${heartbeatUnavailable ? "heartbeat unavailable" : activity}, last run ${lastRunLabel}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
+
+  // Cron-expectation tooltip on the chip -- "silent 3d, expected daily"
+  // instead of a flat OVERDUE/IDLE that means the same thing regardless of
+  // this butler's own schedule.
+  const chipTitle = !heartbeatUnavailable ? cadenceTooltip(row) : undefined
 
   const containerClass = [
     "group relative flex flex-col",
@@ -182,6 +227,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
           <button
             type="button"
             disabled={isRestorePending}
+            title={isRestorePending ? undefined : (eligibility === "quarantined" ? quarantineReason ?? undefined : chipTitle)}
             onClick={(e) => {
               e.stopPropagation()
               onRestore(name)
@@ -198,6 +244,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
           </button>
         ) : (
           <span
+            title={eligibility === "quarantined" ? quarantineReason ?? undefined : chipTitle}
             className={[
               "font-mono text-[9px] uppercase tracking-wider",
               heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-amber-600 dark:text-amber-400" : activityChipClasses(activity),
@@ -212,6 +259,14 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
       {description ? (
         <p className="mt-1 text-xs text-muted-foreground leading-snug pl-[calc(28px+12px)]">
           {description}
+        </p>
+      ) : null}
+
+      {/* Quarantine reason -- surfaced at the exact moment of the restore
+          decision, not hidden behind the chip's hover-only title. */}
+      {eligibility === "quarantined" && quarantineReason ? (
+        <p className="mt-1 text-xs text-destructive leading-snug pl-[calc(28px+12px)]">
+          {quarantineReason}
         </p>
       ) : null}
 

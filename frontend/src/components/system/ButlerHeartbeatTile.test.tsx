@@ -1,15 +1,22 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// ButlerHeartbeatTile tests
+// ButlerHeartbeatTile tests (bu-86c4c.17)
+//
+// Canonical liveness source: the tile now consumes useButlerStatusBoard
+// (the same hook powering the roster board and the /system topology graph),
+// not a separate useButlerHeartbeats() fetch with its own 5-minute
+// heartbeat-age threshold. Fixtures below build StatusBoardRow objects
+// directly rather than raw ButlerHeartbeat wire records.
 //
 // Coverage:
 //   - Loading state: skeleton rendered, no butler rows
 //   - Error state: error message rendered
 //   - Empty butler list: "No butlers registered" message
-//   - Healthy butlers: name, relative time, active session badge
-//   - Stale butlers: stale indicator (>5 min age)
-//   - schema_unreachable per-butler: "unreachable" badge, tile does not crash
-//   - Sorting: most-recently-seen butler appears first
+//   - Running/idle rows: name, relative time, active session badge, healthy dot
+//   - Overdue rows: amber dot, no active badge
+//   - Offline/quarantined rows: red dot
+//   - schemaUnreachable per-butler: "unreachable" badge, tile does not crash
+//   - Sorting: most-recently-seen butler appears first (nulls last)
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -17,16 +24,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import { ButlerHeartbeatTile } from "./ButlerHeartbeatTile";
-import { useButlerHeartbeats } from "@/hooks/use-system";
-import type { ButlerHeartbeat } from "@/api/types";
+import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
+import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board";
 
 // ---------------------------------------------------------------------------
-// Mock useButlerHeartbeats
+// Mock useButlerStatusBoard
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/use-system", () => ({
-  useButlerHeartbeats: vi.fn(),
-}));
+vi.mock("@/hooks/use-butler-status-board", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-butler-status-board")>();
+  return { ...actual, useButlerStatusBoard: vi.fn() };
+});
 
 // ---------------------------------------------------------------------------
 // Mock <Time> to avoid ChroniclesTimezoneProvider / date-fns-tz in tests.
@@ -46,40 +54,78 @@ vi.mock("@/components/ui/time", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
 
-function makeButler(overrides: Partial<ButlerHeartbeat> = {}): ButlerHeartbeat {
+function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
   return {
     name: "general",
-    last_heartbeat_at: "2026-05-03T10:00:00Z",
-    last_session_at: null,
-    active_session_count: 0,
-    heartbeat_age_seconds: 30,
-    error: null,
+    type: "butler",
+    description: null,
+    status: "ok",
+    activity: "idle",
+    cellTone: "neutral",
+    eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
+    sessions24h: 0,
+    costToday: null,
+    loadPct: null,
+    activeSessionCount: 0,
+    lastRunISO: null,
+    lastHeartbeatISO: "2026-05-03T10:00:00Z",
+    heartbeatAgeSeconds: 30,
+    hourlyStripe: Array(24).fill(0),
+    hourlyTotal: 0,
+    hourlyStripeLoading: false,
+    hourlyStripeError: false,
+    schemaUnreachable: false,
+    heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown",
     ...overrides,
   };
 }
 
-function setLoading() {
-  vi.mocked(useButlerHeartbeats).mockReturnValue({
-    data: undefined,
-    isLoading: true,
+function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusBoardAggregates {
+  return {
+    total: 0,
+    butlerCount: 0,
+    stafferCount: 0,
+    active: 0,
+    offline: 0,
+    quarantined: 0,
+    overdue: 0,
+    totalSessions24h: 0,
+    totalSpendToday: 0,
+    avgLoadPct: null,
+    isLoading: false,
+    isError: false,
     error: null,
-  } as AnyMock);
+    refetch: vi.fn(),
+    heartbeatSourceError: false,
+    registrySourceError: false,
+    eligibilityUnavailable: 0,
+    hasPerEntryErrors: false,
+    costSourceError: false,
+    sourcesPartiallyDegraded: false,
+    ...overrides,
+  };
+}
+
+function setState(rows: StatusBoardRow[], aggregates: StatusBoardAggregates) {
+  vi.mocked(useButlerStatusBoard).mockReturnValue({ rows, aggregates, needsYou: [] } as AnyMock);
+}
+
+function setLoading() {
+  setState([], makeAggregates({ isLoading: true }));
 }
 
 function setError(err: Error = new Error("Network error")) {
-  vi.mocked(useButlerHeartbeats).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    error: err,
-  } as AnyMock);
+  setState([], makeAggregates({ isError: true, error: err }));
 }
 
-function setData(butlers: ButlerHeartbeat[]) {
-  vi.mocked(useButlerHeartbeats).mockReturnValue({
-    data: { data: { butlers }, meta: {} },
-    isLoading: false,
-    error: null,
-  } as AnyMock);
+function setData(rows: StatusBoardRow[]) {
+  setState(rows, makeAggregates({ total: rows.length, butlerCount: rows.length }));
 }
 
 function render(): string {
@@ -162,12 +208,18 @@ describe("ButlerHeartbeatTile -- empty butler list", () => {
   });
 });
 
-describe("ButlerHeartbeatTile -- healthy butlers", () => {
+describe("ButlerHeartbeatTile -- running/idle butlers", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setData([
-      makeButler({ name: "general", heartbeat_age_seconds: 60, active_session_count: 0 }),
-      makeButler({ name: "memory", heartbeat_age_seconds: 120, active_session_count: 2, last_heartbeat_at: "2026-05-03T09:00:00Z" }),
+      makeRow({ name: "general", activity: "idle", cellTone: "neutral", activeSessionCount: 0 }),
+      makeRow({
+        name: "memory",
+        activity: "running",
+        cellTone: "green",
+        activeSessionCount: 2,
+        lastHeartbeatISO: "2026-05-03T09:00:00Z",
+      }),
     ]);
   });
 
@@ -177,7 +229,7 @@ describe("ButlerHeartbeatTile -- healthy butlers", () => {
     expect(html).toContain("memory");
   });
 
-  it("renders the last_heartbeat_at timestamp for each butler", () => {
+  it("renders the lastHeartbeatISO timestamp for each butler", () => {
     const html = render();
     expect(html).toContain("2026-05-03T10:00:00Z");
     expect(html).toContain("2026-05-03T09:00:00Z");
@@ -195,9 +247,10 @@ describe("ButlerHeartbeatTile -- healthy butlers", () => {
     expect(count).toBe(1);
   });
 
-  it("renders a healthy indicator for fresh heartbeats", () => {
+  it("renders the canonical healthy tone dot for running/idle butlers", () => {
     const html = render();
-    expect(html).toContain("Healthy heartbeat");
+    const healthyDots = (html.match(/bg-severity-low/g) ?? []).length;
+    expect(healthyDots).toBe(2);
   });
 
   it("shows the butler count in the header", () => {
@@ -206,42 +259,53 @@ describe("ButlerHeartbeatTile -- healthy butlers", () => {
   });
 });
 
-describe("ButlerHeartbeatTile -- stale butlers", () => {
+describe("ButlerHeartbeatTile -- overdue and offline/quarantined butlers", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setData([
-      makeButler({ name: "stale-butler", heartbeat_age_seconds: 400 }),
-      makeButler({ name: "very-stale", heartbeat_age_seconds: null, last_heartbeat_at: null }),
+      makeRow({
+        name: "overdue-butler",
+        activity: "overdue",
+        cellTone: "amber",
+        cadenceLabel: "daily",
+        silenceSeconds: 5 * 86400,
+      }),
+      makeRow({ name: "never-seen", lastHeartbeatISO: null, heartbeatAgeSeconds: null }),
+      makeRow({ name: "down-butler", activity: "offline", cellTone: "red", status: "down" }),
     ]);
   });
 
-  it("renders a stale indicator for overdue heartbeats (>5 min)", () => {
+  it("renders an amber dot for the overdue butler (matches the roster board's tone)", () => {
     const html = render();
-    const staleCount = (html.match(/Stale heartbeat/g) ?? []).length;
-    expect(staleCount).toBe(2);
+    expect(html).toContain("bg-severity-medium");
   });
 
-  it("renders 'No heartbeat recorded' for butlers with no last_heartbeat_at", () => {
+  it("renders 'No heartbeat recorded' for butlers with no lastHeartbeatISO", () => {
     const html = render();
     expect(html).toContain("No heartbeat recorded");
   });
 
-  it("does not show a healthy indicator for stale butlers", () => {
+  it("renders a red dot for the offline butler", () => {
     const html = render();
-    expect(html).not.toContain("Healthy heartbeat");
+    expect(html).toContain("bg-severity-high");
+  });
+
+  it("does not render an active badge for any of these non-running butlers", () => {
+    const html = render();
+    expect(html).not.toMatch(/\d+ active/);
   });
 });
 
-describe("ButlerHeartbeatTile -- schema_unreachable per butler", () => {
+describe("ButlerHeartbeatTile -- schemaUnreachable per butler", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setData([
-      makeButler({ name: "broken", error: "schema_unreachable", heartbeat_age_seconds: 600 }),
-      makeButler({ name: "healthy", heartbeat_age_seconds: 10, error: null }),
+      makeRow({ name: "broken", schemaUnreachable: true, heartbeatUnavailable: true, activity: "unknown", cellTone: "neutral" }),
+      makeRow({ name: "healthy", schemaUnreachable: false, activity: "idle" }),
     ]);
   });
 
-  it("does not crash when one butler has schema_unreachable", () => {
+  it("does not crash when one butler has schemaUnreachable", () => {
     expect(() => render()).not.toThrow();
   });
 
@@ -257,6 +321,10 @@ describe("ButlerHeartbeatTile -- schema_unreachable per butler", () => {
   });
 
   it("shows both butlers -- tile does not drop the unreachable entry", () => {
+    setData([
+      makeRow({ name: "broken", schemaUnreachable: true, heartbeatUnavailable: true, activity: "unknown", cellTone: "neutral" }),
+      makeRow({ name: "healthy", schemaUnreachable: false, activity: "idle" }),
+    ]);
     const html = render();
     expect(html).toContain("2 butlers");
   });
@@ -266,18 +334,21 @@ describe("ButlerHeartbeatTile -- sort order", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setData([
-      makeButler({ name: "oldest", last_heartbeat_at: "2026-05-01T00:00:00Z", heartbeat_age_seconds: 172800 }),
-      makeButler({ name: "newest", last_heartbeat_at: "2026-05-03T12:00:00Z", heartbeat_age_seconds: 5 }),
-      makeButler({ name: "middle", last_heartbeat_at: "2026-05-02T00:00:00Z", heartbeat_age_seconds: 86400 }),
+      makeRow({ name: "oldest", lastHeartbeatISO: "2026-05-01T00:00:00Z" }),
+      makeRow({ name: "newest", lastHeartbeatISO: "2026-05-03T12:00:00Z" }),
+      makeRow({ name: "middle", lastHeartbeatISO: "2026-05-02T00:00:00Z" }),
+      makeRow({ name: "never", lastHeartbeatISO: null }),
     ]);
   });
 
-  it("renders the most-recently-seen butler first", () => {
+  it("renders the most-recently-seen butler first, nulls last", () => {
     const html = render();
     const newestPos = html.indexOf("newest");
     const middlePos = html.indexOf("middle");
     const oldestPos = html.indexOf("oldest");
+    const neverPos = html.indexOf("never");
     expect(newestPos).toBeLessThan(middlePos);
     expect(middlePos).toBeLessThan(oldestPos);
+    expect(oldestPos).toBeLessThan(neverPos);
   });
 });

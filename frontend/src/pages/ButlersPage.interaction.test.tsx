@@ -54,6 +54,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     active: 0,
     offline: 0,
     quarantined: 0,
+    overdue: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
     avgLoadPct: null,
@@ -80,22 +81,34 @@ function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
     activity: "idle",
     cellTone: "neutral",
     eligibility: "active",
+    quarantineReason: null,
+    quarantinedAt: null,
     sessions24h: 0,
     costToday: 0,
     loadPct: null,
+    activeSessionCount: 0,
     lastRunISO: null,
+    lastHeartbeatISO: null,
+    heartbeatAgeSeconds: null,
     hourlyStripe: Array(24).fill(0),
     hourlyTotal: 0,
     hourlyStripeLoading: false,
     hourlyStripeError: false,
     schemaUnreachable: false,
     heartbeatUnavailable: false,
+    cadenceSeconds: null,
+    cadenceLabel: null,
+    silenceSeconds: null,
+    cadenceStatus: "unknown",
     ...overrides,
   };
 }
 
+const NEEDS_YOU_ACTIVITIES = new Set(["offline", "quarantined", "overdue"]);
+
 function setHookState(rows: StatusBoardRow[], aggregates: StatusBoardAggregates) {
-  vi.mocked(useButlerStatusBoard).mockReturnValue({ rows, aggregates });
+  const needsYou = rows.filter((r) => NEEDS_YOU_ACTIVITIES.has(r.activity));
+  vi.mocked(useButlerStatusBoard).mockReturnValue({ rows, aggregates, needsYou });
 }
 
 // ---------------------------------------------------------------------------
