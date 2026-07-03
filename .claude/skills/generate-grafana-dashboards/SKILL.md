@@ -18,7 +18,7 @@ Butlers exports all three OTel signals via OTLP → Grafana Alloy → LGTM stack
 | Tempo | `http://lgtm-tempo.lgtm.svc.cluster.local:3200` (cluster-internal) | `tempo` |
 | Loki | `http://lgtm-loki.lgtm.svc.cluster.local:3100` (cluster-internal) | `loki` |
 | OTLP ingest | `http://otel.parrot-hen.ts.net:4318` | — |
-| Existing dashboards | `grafana/` in repo root | — |
+| Existing dashboards | `observability/grafana/` in repo root | — |
 | Metrics instrumentation | `src/butlers/core/metrics.py` | — |
 | Tracing instrumentation | `src/butlers/core/telemetry.py` | — |
 
@@ -43,12 +43,12 @@ Each perspective lives in its own file. When the user asks to "generate dashboar
 
 | File | UID | Title | Perspective |
 |---|---|---|---|
-| `grafana/butlers-dashboard.json` | `butlers-fleet-v1` | Butlers Fleet | High-level health: active sessions, throughput, queue fill, E2E latency |
-| `grafana/butlers-pressure.json` | `butlers-pressure-v1` | Butlers — System Pressure | Latency percentiles, backpressure, circuit breakers, inflight ratios |
-| `grafana/butlers-usage.json` | `butlers-usage-v1` | Butlers — Usage & Cost | Per-butler session rates, token consumption by model, scheduled task dispatch |
-| `grafana/butlers-switchboard.json` | `butlers-switchboard-v1` | Butlers — Switchboard | Ingest outcomes, triage decisions, fanout, thread affinity, lifecycle |
-| `grafana/butlers-butler.json` | `butlers-butler-v1` | Butlers — Butler Detail | Single-butler drilldown: all subsystem metrics filtered to one butler |
-| `grafana/butlers-traces.json` | `butlers-traces-v1` | Butlers — Traces | Trace search, session durations, span breakdowns, error rates (Tempo) |
+| `observability/grafana/butlers-dashboard.json` | `butlers-fleet-v1` | Butlers Fleet | High-level health: active sessions, throughput, queue fill, E2E latency |
+| `observability/grafana/butlers-pressure.json` | `butlers-pressure-v1` | Butlers — System Pressure | Latency percentiles, backpressure, circuit breakers, inflight ratios |
+| `observability/grafana/butlers-usage.json` | `butlers-usage-v1` | Butlers — Usage & Cost | Per-butler session rates, token consumption by model, scheduled task dispatch |
+| `observability/grafana/butlers-switchboard.json` | `butlers-switchboard-v1` | Butlers — Switchboard | Ingest outcomes, triage decisions, fanout, thread affinity, lifecycle |
+| `observability/grafana/butlers-butler.json` | `butlers-butler-v1` | Butlers — Butler Detail | Single-butler drilldown: all subsystem metrics filtered to one butler |
+| `observability/grafana/butlers-traces.json` | `butlers-traces-v1` | Butlers — Traces | Trace search, session durations, span breakdowns, error rates (Tempo) |
 
 ### What goes in each dashboard
 
@@ -140,7 +140,7 @@ For butler-specific metrics (per-butler metrics module, in-progress), check `ope
 - **"Update the pressure dashboard"** → update only `butlers-pressure.json`
 - **"Add a panel for X"** → determine which dashboard owns that metric (see catalog above) and update that file
 
-Check `grafana/` for existing files first — update rather than replace where they exist. See `references/metrics-catalogue.md` for all verified metric names.
+Check `observability/grafana/` for existing files first — update rather than replace where they exist. See `references/metrics-catalogue.md` for all verified metric names.
 
 ### Step 4 — Generate JSON
 
@@ -209,7 +209,7 @@ histogram_quantile(0.95, sum by(le, butler) (rate(<metric>_bucket{job="butlers",
 
 ### Step 5 — Save
 
-Write each dashboard to its file in `grafana/`. When generating all dashboards, write all 5 files. Preserve existing panel IDs and UIDs when updating.
+Write each dashboard to its file in `observability/grafana/`. When generating all dashboards, write all 5 files. Preserve existing panel IDs and UIDs when updating.
 
 ---
 

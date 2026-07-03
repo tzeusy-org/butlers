@@ -309,8 +309,8 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 |-----------|--------|----------|
 | OpenTelemetry instrumentation | **implemented** | `src/butlers/core/telemetry.py` — `init_telemetry()`, OTLP exporter |
 | Telemetry collection & routing | **partial** | `docker-compose.observability.yml` uses `otel/opentelemetry-collector-contrib:0.105.0`; v1.md names "Grafana Alloy" but the deployed stack uses OTel Collector. Functionally equivalent for trace/metric routing; name discrepancy only. |
-| Tempo | **implemented** | `docker-compose.observability.yml` — `grafana/tempo:2.5.0`, config at `tempo/config.yaml` |
-| Prometheus | **implemented** | `prometheus/prometheus.yml`; `src/butlers/modules/metrics/prometheus.py` |
+| Tempo | **implemented** | `docker-compose.observability.yml` — `grafana/tempo:2.5.0`, config at `observability/tempo/config.yaml` |
+| Prometheus | **implemented** | `observability/prometheus/prometheus.yml`; `src/butlers/modules/metrics/prometheus.py` |
 | Grafana | **implemented** | `docker-compose.observability.yml` — `grafana/grafana:11.1.0`, pre-provisioned dashboards |
 
 ---

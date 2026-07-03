@@ -78,7 +78,7 @@ Grafana
 
 - **Grafana** — Grafana dashboards UI (port 3000)
   - Pre-provisioned with Prometheus and Tempo datasources
-  - Pre-configured dashboards from `grafana/*.json`
+  - Pre-configured dashboards from `observability/grafana/*.json`
   - Credentials: `admin` / `admin` (overridable via `GF_SECURITY_ADMIN_PASSWORD`)
   - Anonymous viewer: **enabled in dev posture** (default), **disabled in hardened posture**
     (see [Deployment Posture](deployment-posture.md))
@@ -101,10 +101,10 @@ Grafana
 The local stack is configured by:
 
 - **`docker-compose.observability.yml`** — Service definitions (images, ports, volumes, networks)
-- **`otel-collector/config.yaml`** — OTLP receiver config and routing rules
-- **`prometheus/prometheus.yml`** — Scrape targets for connector health endpoints
-- **`tempo/config.yaml`** — Trace ingestion and storage
-- **`grafana/provisioning/`** — Datasource and dashboard auto-provisioning
+- **`observability/otel-collector/config.yaml`** — OTLP receiver config and routing rules
+- **`observability/prometheus/prometheus.yml`** — Scrape targets for connector health endpoints
+- **`observability/tempo/config.yaml`** — Trace ingestion and storage
+- **`observability/grafana/provisioning/`** — Datasource and dashboard auto-provisioning
 
 ### Stopping the Stack
 
