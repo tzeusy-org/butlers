@@ -117,10 +117,10 @@ It SHALL include:
   activity strip;
 - ledger rows with time (leftmost column, mono `HH:mm:ss` via the shared Time
   primitive), a click-to-filter channel glyph, sender summary with an inline
-  filter/error reason, quiet dot-and-word status, cost, and an expand
-  control; a demoted selection checkbox (hidden by default, revealed on
-  hover/focus or once selection mode is active); token totals live in the
-  expanded drawer, not the row;
+  filter/error reason, quiet dot-and-word status, a per-butler dispatch-ticks
+  cell, cost, and an expand control; a demoted selection checkbox (hidden by
+  default, revealed on hover/focus or once selection mode is active); token
+  totals live in the expanded drawer, not the row;
 - in-place expanded drawer with step ledger, raw payload, replay history,
   request metadata, session index, and copy/open actions;
 - footer rollup band for the active filter window.
@@ -154,6 +154,28 @@ It SHALL include:
 - **AND** `filtered`/`error` rows show their `filter_reason`/`error_detail`
   inline next to the sender, truncated with a title tooltip, instead of only
   on hover of the status control
+
+#### Scenario: Ledger row shows a dispatch-ticks summary without opening the drawer
+
+- **WHEN** the owner views a ledger row for an event with one or more butler
+  sessions
+- **THEN** the row's dispatch column renders one tick per session (from the
+  list-provided, API-capped session summary), each tick's width proportional
+  to that session's duration, with a minimum width and a total width bounded
+  to the column
+- **AND** a failed session's tick renders in the destructive color; other
+  ticks render as a neutral foreground color (butler hue is not used on the
+  tick fill, consistent with "butler hues only on letter marks"; the butler
+  name appears in the tick's hover/focus tooltip instead)
+- **AND** a trailing mono session count appears once more than one session
+  fired
+- **AND** the dispatch column as a whole is keyboard-focusable and activating
+  it (click or Enter) opens the row's drawer at the sessions tab, without
+  toggling any other row control
+- **AND** an event with no sessions renders a muted em-dash instead of an
+  interactive cell
+- **AND** rendering the cell issues no additional network request beyond the
+  events list response
 
 #### Scenario: Raw payload access is audited
 

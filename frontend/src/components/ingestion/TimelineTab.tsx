@@ -92,6 +92,7 @@ import { Time } from "@/components/ui/time";
 import { RowStatus, ROW_STATUS_WORDS } from "./StatusBadge";
 import { isBulkEligible, bulkIneligibleReason } from "./bulkEligibility";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
+import { DispatchTicksCell } from "./timeline/DispatchTicksCell";
 import { EventDrawer } from "./timeline/EventDrawer";
 import { useEventDrawerState } from "./timeline/useEventDrawerState";
 
@@ -821,13 +822,12 @@ function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
 // available via the row's title attr and the drawer's copy affordance);
 // token in/out columns move to the drawer only. The selection checkbox
 // column is always in the grid (for alignment) but its content is visually
-// demoted — see `showCheckboxColumn` on LedgerRow / LedgerColumnHeaders. A
-// dispatch-ticks column is intentionally omitted until that bead lands
-// (bu-4utdw's sequencing note: leave it as empty space or omit, whichever
-// keeps the diff cleaner — omitting keeps this diff smaller).
+// demoted — see `showCheckboxColumn` on LedgerRow / LedgerColumnHeaders.
+// bu-4utdw.8: a dispatch-ticks column sits between status and cost — see
+// DispatchTicksCell.
 // ---------------------------------------------------------------------------
 
-const LEDGER_GRID_COLUMNS = "20px 72px 150px 1fr 112px 64px 28px"
+const LEDGER_GRID_COLUMNS = "20px 72px 150px 1fr 112px 120px 64px 28px"
 
 // ---------------------------------------------------------------------------
 // LedgerRow — one row in the event ledger
@@ -1005,6 +1005,13 @@ function LedgerRow({
 
       {/* Status — quiet dot + word, never a filled pill in rows */}
       <RowStatus status={event.status} />
+
+      {/* Dispatch ticks — per-butler session micro-flame (bu-4utdw.8) */}
+      <DispatchTicksCell
+        sessions={event.sessions}
+        sessionCount={event.session_count}
+        onOpenDrawer={onToggleExpand}
+      />
 
       {/* Cost */}
       <span className="text-right tabular-nums font-mono text-[11px]">
@@ -1229,6 +1236,7 @@ function LedgerColumnHeaders() {
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">channel</span>
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">sender</span>
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">status</span>
+      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">dispatch</span>
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground text-right">cost</span>
       <div />
     </div>
