@@ -28,6 +28,10 @@ import * as path from "path";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
 import { test, expect, type Page } from "@playwright/test";
+import {
+  makeIngestionEventSummary,
+  makeIngestionSession,
+} from "./fixtures/ingestion.ts";
 
 const TIMEOUT_MS = 10_000;
 
@@ -88,46 +92,38 @@ async function navigateOrSkip(
 // Mock API data fixtures
 // ---------------------------------------------------------------------------
 
-/** Two fixture events spanning two different hours. */
+/**
+ * Two fixture events spanning two different hours. The first carries a
+ * multi-session rollup so screenshots exercise DispatchTicksCell's
+ * populated path (bu-4utdw.8); the second (errored) has no sessions and
+ * renders the cell's muted em-dash empty state (bu-lvu81).
+ */
 const FIXTURE_EVENTS = [
-  {
+  makeIngestionEventSummary({
     id: "aabbccdd-0000-0000-0000-000000000001",
     received_at: "2026-05-17T14:05:00Z",
     source_channel: "email",
-    source_provider: null,
-    source_endpoint_identity: null,
     source_sender_identity: "alice@example.com",
-    source_thread_identity: null,
-    external_event_id: null,
-    dedupe_key: null,
-    dedupe_strategy: null,
-    ingestion_tier: null,
-    policy_tier: "standard",
-    triage_decision: null,
-    triage_target: null,
     status: "ingested",
-    filter_reason: null,
-    error_detail: null,
-  },
-  {
+    session_count: 2,
+    sessions: [
+      makeIngestionSession({ butler_name: "general", duration_ms: 4_200 }),
+      makeIngestionSession({ butler_name: "relationship", duration_ms: 1_800 }),
+    ],
+  }),
+  makeIngestionEventSummary({
     id: "aabbccdd-0000-0000-0000-000000000002",
     received_at: "2026-05-17T15:05:00Z",
     source_channel: "telegram",
-    source_provider: null,
-    source_endpoint_identity: null,
     source_sender_identity: "bob@example.com",
-    source_thread_identity: null,
-    external_event_id: null,
-    dedupe_key: null,
-    dedupe_strategy: null,
-    ingestion_tier: null,
-    policy_tier: "standard",
-    triage_decision: null,
-    triage_target: null,
     status: "error",
-    filter_reason: null,
     error_detail: "timeout",
-  },
+    cost_usd: null,
+    tokens_in: null,
+    tokens_out: null,
+    session_count: 0,
+    sessions: [],
+  }),
 ];
 
 /** A minimal backend ConnectorEntry for the gmail connector (fixture). */

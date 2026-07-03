@@ -22,6 +22,10 @@
  */
 
 import { test, expect } from "@playwright/test";
+import {
+  makeIngestionEventSummary,
+  makeIngestionSession,
+} from "./fixtures/ingestion.ts";
 
 const TIMEOUT_MS = 10_000;
 
@@ -116,44 +120,36 @@ async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...ar
       contentType: "application/json",
       body: JSON.stringify({
         data: [
-          {
+          // Multi-session event: exercises DispatchTicksCell's populated
+          // path (two ticks + trailing count), not just the em-dash
+          // empty-state (bu-lvu81).
+          makeIngestionEventSummary({
             id: "aabbccdd-0000-0000-0000-000000000001",
             received_at: "2026-05-17T14:05:00Z",
             source_channel: "email",
-            source_provider: null,
-            source_endpoint_identity: null,
             source_sender_identity: "alice@example.com",
-            source_thread_identity: null,
-            external_event_id: null,
-            dedupe_key: null,
-            dedupe_strategy: null,
-            ingestion_tier: null,
-            policy_tier: "standard",
-            triage_decision: null,
-            triage_target: null,
             status: "ingested",
-            filter_reason: null,
-            error_detail: null,
-          },
-          {
+            session_count: 2,
+            sessions: [
+              makeIngestionSession({ butler_name: "general", duration_ms: 4_200 }),
+              makeIngestionSession({ butler_name: "relationship", duration_ms: 1_800 }),
+            ],
+          }),
+          // Errored event: no sessions ever fired, so the dispatch-ticks
+          // cell should render its muted em-dash empty state.
+          makeIngestionEventSummary({
             id: "aabbccdd-0000-0000-0000-000000000002",
             received_at: "2026-05-17T15:05:00Z",
             source_channel: "telegram",
-            source_provider: null,
-            source_endpoint_identity: null,
             source_sender_identity: "bob@example.com",
-            source_thread_identity: null,
-            external_event_id: null,
-            dedupe_key: null,
-            dedupe_strategy: null,
-            ingestion_tier: null,
-            policy_tier: "standard",
-            triage_decision: null,
-            triage_target: null,
             status: "error",
-            filter_reason: null,
             error_detail: "timeout",
-          },
+            cost_usd: null,
+            tokens_in: null,
+            tokens_out: null,
+            session_count: 0,
+            sessions: [],
+          }),
         ],
         meta: { next_cursor: null, has_more: false },
       }),
@@ -181,6 +177,21 @@ test.describe("ingestion Timeline ledger and drawer", () => {
 
     // At least one ledger row should be visible
     await expect(page.locator("[data-testid='ledger-row']").first()).toBeVisible({
+      timeout: TIMEOUT_MS,
+    });
+
+    // The multi-session fixture event exercises DispatchTicksCell's
+    // populated path (bu-4utdw.8) — a tick strip plus trailing count, not
+    // just the muted em-dash empty state (bu-lvu81).
+    await expect(page.locator("[data-testid='dispatch-ticks-cell']").first()).toBeVisible({
+      timeout: TIMEOUT_MS,
+    });
+    await expect(page.locator("[data-testid='dispatch-tick']").first()).toBeVisible({
+      timeout: TIMEOUT_MS,
+    });
+
+    // The zero-session (errored) fixture event still renders the empty state.
+    await expect(page.locator("[data-testid='dispatch-ticks-empty']").first()).toBeVisible({
       timeout: TIMEOUT_MS,
     });
   });
