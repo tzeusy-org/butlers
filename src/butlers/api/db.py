@@ -243,7 +243,32 @@ class DatabaseManager:
             specific butler, that butler's entry will be an empty list and the
             error is logged.
         """
+        results, _failed = await self.fan_out_with_status(query, args, butler_names)
+        return results
+
+    async def fan_out_with_status(
+        self,
+        query: str,
+        args: tuple[Any, ...] = (),
+        butler_names: list[str] | None = None,
+    ) -> tuple[dict[str, list[asyncpg.Record]], list[str]]:
+        """Execute a query concurrently across multiple butler databases.
+
+        Same semantics as :meth:`fan_out`, but also reports which butlers'
+        queries failed — callers that need to distinguish "genuinely empty"
+        from "this source errored" (e.g. to surface a degraded-source flag in
+        a response envelope) should use this instead of :meth:`fan_out`.
+
+        Returns
+        -------
+        tuple[dict[str, list[asyncpg.Record]], list[str]]
+            ``(results, failed_butler_names)``. ``results`` maps every
+            targeted butler to its rows (empty list on failure). Every entry
+            in ``failed_butler_names`` also has an empty-list entry in
+            ``results``; the error is logged either way.
+        """
         targets = butler_names if butler_names is not None else self.butler_names
+        failed: list[str] = []
 
         async def _query_one(name: str) -> tuple[str, list[asyncpg.Record]]:
             try:
@@ -252,10 +277,11 @@ class DatabaseManager:
                 return (name, rows)
             except Exception:
                 logger.warning("fan_out query failed for butler %s", name, exc_info=True)
+                failed.append(name)
                 return (name, [])
 
         results = await asyncio.gather(*[_query_one(n) for n in targets])
-        return dict(results)
+        return dict(results), failed
 
     async def close(self) -> None:
         """Close all connection pools."""

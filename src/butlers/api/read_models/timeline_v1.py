@@ -14,18 +14,26 @@ Column constants:
     NOTIFICATION_COLUMNS
 
 Query functions (all async):
-    query_timeline_sessions_fan_out(db, before, limit, butler_names)
-        -> list[TimelineSessionRow]
-    query_timeline_notifications_single(pool, before, limit, butler_names)
+    query_timeline_sessions_fan_out(db, before, before_id, limit, butler_names, only_errors)
+        -> tuple[list[TimelineSessionRow], list[str]]  (rows, degraded butler names)
+    query_timeline_notifications_single(pool, before, before_id, limit, butler_names)
         -> list[TimelineNotificationRow]
 
 Row DTOs:
     TimelineSessionRow
     TimelineNotificationRow
+
+Cursor helpers:
+    encode_cursor(timestamp, event_id) -> opaque composite ``(timestamp, id)`` cursor
+    decode_cursor(cursor) -> (timestamp, event_id | None)
+        Also accepts a bare ISO-8601 timestamp (pre-fix cursor format) for
+        backward compatibility, in which case there is no id tiebreak.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,6 +52,58 @@ logger = logging.getLogger(__name__)
 
 #: Stability contract — bump to ``timeline_v2`` for breaking changes.
 READ_MODEL_VERSION = "timeline_v1"
+
+# ---------------------------------------------------------------------------
+# Cursor helpers — composite (timestamp, id) keyset cursor
+#
+# The pre-fix cursor was a bare ISO-8601 timestamp echoed back as ``before``.
+# Comparing only on timestamp means events sharing the exact boundary
+# timestamp (e.g. heartbeat ticks that fire on the same cron second across
+# many butlers) are silently skipped once they straddle a page boundary —
+# whichever of them weren't included in page N are gone forever, because page
+# N+1's ``started_at < before`` / ``created_at < before`` predicate excludes
+# every row at that timestamp, not just the ones already returned. Encoding
+# the id of the last row alongside its timestamp lets the next page use a
+# strict ``(ts, id) < (before_ts, before_id)`` tuple comparison instead,
+# matching the keyset order documented for GET /api/ingestion/events.
+# ---------------------------------------------------------------------------
+
+
+def encode_cursor(timestamp: datetime, event_id: UUID | str) -> str:
+    """Encode a composite ``(timestamp, id)`` keyset position into an opaque cursor.
+
+    Mirrors :func:`butlers.core.ingestion_events.encode_cursor`.
+    """
+    payload = {"ts": timestamp.isoformat(), "id": str(event_id)}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def decode_cursor(cursor: str) -> tuple[datetime, UUID | None]:
+    """Decode an opaque timeline cursor back to ``(timestamp, event_id)``.
+
+    Accepts the composite cursor produced by :func:`encode_cursor`. Also
+    accepts a bare ISO-8601 timestamp for backward compatibility with the
+    pre-fix cursor format (in which case ``event_id`` is ``None`` and callers
+    fall back to the old timestamp-only predicate — same-timestamp events at
+    that specific page boundary may still be skipped, exactly as before this
+    fix, until the caller re-requests with a fresh composite cursor).
+
+    Raises:
+        ValueError: If the cursor is neither a valid composite cursor nor a
+            valid bare ISO-8601 timestamp.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        return datetime.fromisoformat(payload["ts"]), UUID(payload["id"])
+    except Exception:  # noqa: BLE001 - fall through to legacy bare-timestamp parsing
+        pass
+
+    try:
+        return datetime.fromisoformat(cursor), None
+    except ValueError as exc:
+        raise ValueError(f"Invalid cursor: {exc}") from exc
+
 
 # ---------------------------------------------------------------------------
 # Column projections (v1 schema contract)
@@ -129,9 +189,11 @@ async def query_timeline_sessions_fan_out(
     db: DatabaseManager,
     *,
     before: datetime | None = None,
+    before_id: UUID | None = None,
     limit: int,
     butler_names: list[str] | None = None,
-) -> list[TimelineSessionRow]:
+    only_errors: bool | None = None,
+) -> tuple[list[TimelineSessionRow], list[str]]:
     """Fan out a timeline session query across all (or a subset of) butlers.
 
     Parameters
@@ -139,45 +201,80 @@ async def query_timeline_sessions_fan_out(
     db:
         The DatabaseManager that manages per-butler pools.
     before:
-        Cursor timestamp — only sessions with ``started_at < before`` are
+        Cursor timestamp — only sessions strictly before this position are
         returned.  Pass ``None`` for no cursor filter (first page).
+    before_id:
+        Id half of the composite ``(started_at, id)`` keyset position from
+        the previous page's last row.  When given alongside ``before``, the
+        predicate is ``(started_at, id) < (before, before_id)`` instead of
+        the timestamp-only ``started_at < before`` — this is what stops
+        same-timestamp rows (e.g. simultaneous heartbeat ticks) from being
+        skipped across a page boundary.  Ignored when ``before`` is ``None``.
     limit:
         Maximum rows to fetch per butler (typically ``requested_limit + 1``
         to allow has_more detection before trimming).
     butler_names:
         Subset of butler names to query.  Defaults to all registered butlers.
+    only_errors:
+        Pushes the ``event_type`` filter into SQL instead of filtering the
+        derived type after the fact (which under-reports and breaks
+        pagination — a page of errors used to be computed from the newest
+        ``limit`` sessions post-filtered, so older errors past that window
+        were unreachable and ``has_more`` was wrong).
+        ``True`` → only failed sessions (``success = false``, the "error"
+        event type). ``False`` → only non-failed sessions (``success`` true
+        or null, the "session" event type). ``None`` → no filter (both types).
 
     Returns
     -------
-    list[TimelineSessionRow]
-        Combined rows from all queried butlers, unordered.  Callers must sort
-        and trim as needed.
+    tuple[list[TimelineSessionRow], list[str]]
+        ``(rows, degraded_butlers)``. ``rows`` are combined from all queried
+        butlers, unordered — callers must sort and trim as needed.
+        ``degraded_butlers`` lists the names of any butler whose query failed
+        (so the caller can surface a per-source degraded flag rather than
+        silently returning a partial, indistinguishable-from-empty result).
     """
     conditions: list[str] = []
     args: list[Any] = []
     idx = 1
 
     if before is not None:
-        conditions.append(f"started_at < ${idx}")
-        args.append(before)
-        idx += 1
+        if before_id is not None:
+            conditions.append(f"(started_at, id) < (${idx}, ${idx + 1})")
+            args.extend([before, before_id])
+            idx += 2
+        else:
+            conditions.append(f"started_at < ${idx}")
+            args.append(before)
+            idx += 1
+
+    if only_errors is True:
+        conditions.append("success = false")
+    elif only_errors is False:
+        conditions.append("success IS DISTINCT FROM false")
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-    sql = f"SELECT {SESSION_COLUMNS} FROM sessions{where} ORDER BY started_at DESC LIMIT {limit}"
+    sql = (
+        f"SELECT {SESSION_COLUMNS} FROM sessions{where} "
+        f"ORDER BY started_at DESC, id DESC LIMIT {limit}"
+    )
 
-    results = await db.fan_out(sql, tuple(args), butler_names=butler_names)
+    results, degraded_butlers = await db.fan_out_with_status(
+        sql, tuple(args), butler_names=butler_names
+    )
 
     rows: list[TimelineSessionRow] = []
     for butler_name, db_rows in results.items():
         for db_row in db_rows:
             rows.append(_row_to_session(db_row, butler=butler_name))
-    return rows
+    return rows, degraded_butlers
 
 
 async def query_timeline_notifications_single(
     pool: asyncpg.Pool,
     *,
     before: datetime | None = None,
+    before_id: UUID | None = None,
     limit: int,
     source_butlers: list[str] | None = None,
 ) -> list[TimelineNotificationRow]:
@@ -191,8 +288,12 @@ async def query_timeline_notifications_single(
     pool:
         The asyncpg pool to query (typically the switchboard pool).
     before:
-        Cursor timestamp — only notifications with ``created_at < before`` are
-        returned.  Pass ``None`` for no cursor filter.
+        Cursor timestamp — only notifications strictly before this position
+        are returned.  Pass ``None`` for no cursor filter.
+    before_id:
+        Id half of the composite ``(created_at, id)`` keyset position from the
+        previous page's last row — see :func:`query_timeline_sessions_fan_out`
+        for why this tiebreak matters.  Ignored when ``before`` is ``None``.
     limit:
         Maximum rows to fetch.
     source_butlers:
@@ -208,9 +309,14 @@ async def query_timeline_notifications_single(
     idx = 1
 
     if before is not None:
-        conditions.append(f"created_at < ${idx}")
-        args.append(before)
-        idx += 1
+        if before_id is not None:
+            conditions.append(f"(created_at, id) < (${idx}, ${idx + 1})")
+            args.extend([before, before_id])
+            idx += 2
+        else:
+            conditions.append(f"created_at < ${idx}")
+            args.append(before)
+            idx += 1
 
     if source_butlers is not None:
         conditions.append(f"source_butler = ANY(${idx})")
@@ -221,7 +327,7 @@ async def query_timeline_notifications_single(
     sql = (
         f"SELECT {NOTIFICATION_COLUMNS} "
         f"FROM notifications{where} "
-        f"ORDER BY created_at DESC "
+        f"ORDER BY created_at DESC, id DESC "
         f"LIMIT {limit}"
     )
 
