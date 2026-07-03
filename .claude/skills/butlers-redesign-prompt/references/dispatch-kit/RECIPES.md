@@ -4,7 +4,7 @@ One recipe per page. Each recipe answers: *what's the narrative spine,
 what's the right column, what's the empty state, where (if anywhere)
 does the system speak in serif?*
 
-Read `DESIGN_LANGUAGE.md` and `PATTERNS.md` first. Use this as a
+Read the Dispatch spec (`openspec/specs/dashboard-design-language/spec.md`) and `PATTERNS.md` first. Use this as a
 starting menu, not a constraint.
 
 ---

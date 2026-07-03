@@ -10,7 +10,7 @@ rendered with bespoke hairline layouts rather than card/table/tab chrome.
 
 The redesign prototype has graduated into shipped `frontend/` code; this
 capability is now the long-lived contract (the binding design language and
-handoff are preserved at `docs/redesigns/ingestion-design-language.md` and
+handoff are preserved at `openspec/specs/dashboard-design-language/spec.md` (the Dispatch spec) and
 `docs/redesigns/ingestion-handoff.md`). The contract requires real data behind every surface (no stubbed,
 synthetic, or forever-loading sections), audited raw-payload access, explicit
 data states (loading, empty, partial-error, unavailable), and committed visual
@@ -74,7 +74,7 @@ a fourth redesigned tab.
 ### Requirement: Dispatch Visual Language
 
 The ingestion surface SHALL follow the Dispatch visual language from
-`docs/redesigns/ingestion-design-language.md` and
+`openspec/specs/dashboard-design-language/spec.md` and
 `docs/redesigns/ingestion-handoff.md`.
 
 The primary ingestion surfaces SHALL use hairline-divided, rhythm-based
@@ -448,7 +448,7 @@ Verification SHALL include:
 - RFC 0003 (Switchboard routing and ingestion)
 - `about/heart-and-soul/design-language.md`
 - `docs/redesigns/ingestion-handoff.md`
-- `docs/redesigns/ingestion-design-language.md`
+- `openspec/specs/dashboard-design-language/spec.md`
 - `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/`
 - `openspec/changes/add-connector-oauth-scope-surface/`
 - `openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md` (generalised OAuth callback endpoint and `page_of_origin` routing table)

@@ -19,7 +19,7 @@ A two-column editorial overview, dark-by-default with light mode parity.
 - **Sidebar:** 56px icon rail (replaces the current `Sidebar.tsx`), with
   hover-out tooltips and indented sub-items under butler groups.
 
-Visual spec lives in `DESIGN_LANGUAGE.md`. This document is about wiring.
+Visual spec lives in `openspec/specs/dashboard-design-language/spec.md`. This document is about wiring.
 
 ## 2. Routes / files to change
 

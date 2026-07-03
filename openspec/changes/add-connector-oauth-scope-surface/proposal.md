@@ -234,7 +234,7 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 - Spotify fixture (auth.status, scopes shape) —
   `docs/redesigns/ingestion-connectors-data.jsx:97-121`
 - Design language: serif italic note / mono scope label / state colors —
-  `docs/redesigns/ingestion-design-language.md:30,108-140,217-232`
+  `openspec/specs/dashboard-design-language/spec.md` (Voice Surface; Kind Tags; State Color Discipline)
 - Existing Google OAuth scope plumbing being extended —
   `openspec/specs/google-multi-account-oauth/spec.md:84-145`
 - Existing `granted_scopes` precedent on `public.google_accounts` —

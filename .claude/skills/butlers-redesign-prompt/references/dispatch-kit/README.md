@@ -1,15 +1,18 @@
 # Dispatch Kit
 
-Portable design system artifacts for the Butlers redesign. Drop into
-`frontend/docs/` (or import individually). Hand to a fresh Claude
-session by pasting `KICKOFF_PROMPT.md` and pointing at this folder.
+Portable execution artifacts for the Dispatch design language. The normative
+language itself is the spec: `openspec/specs/dashboard-design-language/spec.md`.
+This kit is the how — JSX patterns, page recipes, paste-ready tokens, and the
+pre-merge checklist. Lives inside the `butlers-redesign-prompt` skill
+(`references/dispatch-kit/`); hand to a fresh Claude session by pasting
+`KICKOFF_PROMPT.md` and pointing at this folder.
 
 ## Files
 
 | File                  | Purpose |
 |-----------------------|---------|
 | `KICKOFF_PROMPT.md`   | Paste at top of a fresh redesign chat |
-| `DESIGN_LANGUAGE.md`  | The philosophy — read this first |
+| `openspec/specs/dashboard-design-language/spec.md` (repo) | The philosophy — read this first (canonical Dispatch spec) |
 | `PATTERNS.md`         | Concrete JSX snippets for every primitive |
 | `RECIPES.md`          | One recipe per high-priority page |
 | `tokens.css`          | Paste-ready CSS variables, both themes |

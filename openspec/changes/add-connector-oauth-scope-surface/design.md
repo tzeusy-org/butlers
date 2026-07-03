@@ -624,7 +624,7 @@ populated `auth.status` on first introspection after the deploy.
 - Spotify fixture (auth.status, scopes) —
   `docs/redesigns/ingestion-connectors-data.jsx:97-121`
 - Design language for serif italic notes —
-  `docs/redesigns/ingestion-design-language.md:30,108-140`
+  `openspec/specs/dashboard-design-language/spec.md` (Voice Surface; Type System)
 - Google scope-set registry precedent —
   `openspec/specs/google-multi-account-oauth/spec.md:84-145`
 - `granted_scopes` precedent on `public.google_accounts` —

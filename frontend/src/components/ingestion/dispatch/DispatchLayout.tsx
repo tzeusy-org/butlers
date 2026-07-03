@@ -9,7 +9,7 @@
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Dispatch Visual Language"
- * Reference: docs/redesigns/ingestion-design-language.md §3a "Page shell"
+ * Reference: openspec/specs/dashboard-design-language/spec.md — Requirement: Page Shell and Layout
  */
 
 import type { ReactNode } from 'react'

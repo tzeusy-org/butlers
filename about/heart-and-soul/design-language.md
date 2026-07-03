@@ -16,7 +16,9 @@ language must respect that.
 
 This document does **not** specify components, tokens, or pages. Those belong
 in [`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md) (where
-things are) and in capability specs (what they do). This document is
+things are) and in capability specs (what they do); the concrete visual
+language itself (tokens, type scale, components, motion) is the Dispatch
+spec at `openspec/specs/dashboard-design-language/spec.md`. This document is
 **WHY**: the principles a Butlers dashboard must satisfy regardless of
 which framework or visual style we land on.
 

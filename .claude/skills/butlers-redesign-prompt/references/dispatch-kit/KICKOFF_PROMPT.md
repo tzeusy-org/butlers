@@ -16,7 +16,7 @@ to this page consistently.
 in order:
 
 1. **Read the language.** Open and read in full:
-   - `frontend/docs/DESIGN_LANGUAGE.md` — the philosophy and rules.
+   - `openspec/specs/dashboard-design-language/spec.md` — the philosophy and rules (the Dispatch spec).
    - `frontend/docs/PATTERNS.md` — concrete JSX snippets for every
      canonical primitive.
    - `frontend/docs/RECIPES.md` — per-page recipes. Find the
@@ -53,7 +53,7 @@ explicit permission):
 5. One affordance per signal. Status is one of: dot, sliver, numeral,
    color. Never a word like "active." Never two of the four together.
 
-**Hard "do not"s** (compact list — full version in `DESIGN_LANGUAGE.md`
+**Hard "do not"s** (compact list — full version in `openspec/specs/dashboard-design-language/spec.md`
 section 9):
 
 - No purple/pink gradients. No glassmorphism. No drop shadows.

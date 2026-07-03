@@ -52,6 +52,7 @@ Use the naming pattern first; then confirm by reading the file:
 | modules | `openspec/specs/module-*/spec.md` |
 | connectors | `openspec/specs/connector-*/spec.md` |
 | dashboard or API surfaces | `openspec/specs/dashboard-*/spec.md` |
+| visual/interaction/copy language, tokens, typography, motion (Dispatch) | `openspec/specs/dashboard-design-language/spec.md` |
 | memory, finance, healing, identity, cross-cutting capabilities | `openspec/specs/<domain>/spec.md` by keyword search |
 
 Useful repo-native lookups:

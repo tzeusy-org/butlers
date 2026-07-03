@@ -1,7 +1,7 @@
 # Dispatch — Patterns
 
 Lift these directly. They use Tailwind 4 + shadcn conventions matching
-the Butlers codebase. Read `DESIGN_LANGUAGE.md` for the *why*; this doc
+the Butlers codebase. Read the Dispatch spec (`openspec/specs/dashboard-design-language/spec.md`) for the *why*; this doc
 is the *how*.
 
 > Rule of thumb: if a new pattern doesn't appear here, derive it from an

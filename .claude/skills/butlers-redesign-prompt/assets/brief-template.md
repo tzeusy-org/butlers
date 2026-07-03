@@ -116,6 +116,14 @@ Verbatim Phase D drift write-ups. If none, write "None.".
 
 Verbatim list. If none, write "None.".
 
+### Design-bar audit
+
+Verbatim Phase D `## Design-bar audit` findings table. Authorities: the Dispatch spec (`openspec/specs/dashboard-design-language/spec.md`) and th-design's design-bar biases; every row cites one.
+
+#### High-severity write-ups
+
+Verbatim Phase D high-severity design write-ups. If none, write "None.".
+
 ### Intent compliance
 
 Cross-reference each red verdict + each drift verdict against Section 0 design intent. For every red/drift, state whether the intent was the original reason (in which case the verdict is reinforced) or whether the verdict contradicts intent (escalate to user).

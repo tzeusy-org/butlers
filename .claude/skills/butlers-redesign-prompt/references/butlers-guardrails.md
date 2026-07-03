@@ -2,13 +2,13 @@
 
 Dispatch a subagent with `subagent_type: general-purpose` (this phase needs to load manifestos and reason about cost, not pure read-only search). Pass it Phases A–C's full reports plus the resolved bundle path. Use the template below verbatim.
 
-This phase has **two passes in one subagent**: (1) LLM-cost feasibility, (2) manifesto/identity preservation. Both are explicit project mandates. The subagent should produce one report with both sections; do not split into two subagent calls.
+This phase has **three passes in one subagent**: (1) LLM-cost feasibility, (2) manifesto/identity preservation, (3) design-bar audit. All are explicit project mandates. The subagent should produce one report with all three sections; do not split into multiple subagent calls.
 
 ---
 
 ## Subagent prompt
 
-You are a senior Butlers reviewer running two guardrail passes on a redesign plan before it is allowed to reach the spec phase. Your job is to flag features that would either bankrupt the LLM budget or drift each butler away from its declared identity.
+You are a senior Butlers reviewer running three guardrail passes on a redesign plan before it is allowed to reach the spec phase. Your job is to flag features that would bankrupt the LLM budget, drift a butler away from its declared identity, or ship UX defects the mock itself carries.
 
 ### Inputs
 
@@ -20,6 +20,8 @@ You are a senior Butlers reviewer running two guardrail passes on a redesign pla
 - **Manifestos** — read only the manifestos named in Phase B's `## Butlers touched` table at `roster/{butler}/MANIFESTO.md`. Do not skim every manifesto in the roster.
 - **Pricing reference** — `references/llm-pricing.md` (read by Pass 1).
 - **Doctrine** — `about/heart-and-soul/` documents the project's non-negotiables. Load only the docs relevant to the redesign's domain.
+- **Dispatch spec** — `openspec/specs/dashboard-design-language/spec.md`, the binding design language (read by Pass 3).
+- **Design bar** — `~/.claude/skills/th-design/subskills/design-bar/SKILL.md`, the generic UX quality bar (read by Pass 3).
 
 ### Pass 1 — LLM-cost feasibility audit
 
@@ -74,6 +76,23 @@ Verdicts:
 
 For every `identity drift flagged`, provide a concrete reconciliation proposal: either a tweak to the redesign that preserves the manifesto, or — if the manifesto itself is wrong — a flag that the manifesto must be updated first.
 
+### Pass 3 — Design-bar audit
+
+Goal: hold the proposed redesign to the design quality bar *before* it hardens into specs and beads. Specs and mockups are reviewable exactly like built UI.
+
+Read both design inputs in full: the **Dispatch spec** (`openspec/specs/dashboard-design-language/spec.md`) and the **design-bar subskill** (`~/.claude/skills/th-design/subskills/design-bar/SKILL.md`). Precedence: where the Dispatch spec speaks, it overrides design-bar's generic biases; where it is silent, design-bar's biases apply.
+
+Two checks:
+
+1. **Spec conformance.** Walk the proposal against the Dispatch spec's `Page Conformance` requirement (ten checks) and its `Anti-Pattern Prohibitions`. Every mock, component choice, and copy string in Phases A–C's reports is in scope.
+2. **UX walkthrough.** Run design-bar's walkthrough (entry, first glance, pace, repetition, defaults, recovery, habit) for each primary user flow the redesign proposes. Answer each question from the proposed flow, not from intention; a "no" or "don't know" is an open finding.
+
+For each finding, produce one row:
+
+| Flow / surface | Finding | Violated authority (spec requirement or design-bar bias, cited) | Severity (friction × frequency) | Proposed fix |
+
+Do not re-litigate choices the Dispatch spec makes deliberately (e.g. motion restraint, density via rules-not-cards) against generic taste — the spec wins. Conversely, faithfulness to a mock is not a defense: if the mock itself carries a dead wait, an undiscoverable feature, or an unwalkable flow, flag it.
+
 ### Output structure
 
 One markdown report, in this order:
@@ -89,6 +108,10 @@ One markdown report, in this order:
 ### Drift write-ups
 ### Recommended manifesto updates (if any)
 
+## Design-bar audit
+### Findings table
+### High-severity write-ups
+
 ## Phase D verdict
 One paragraph: is this redesign ready to enter `/project-direction`?
 - `clear` — no red flags, ready to proceed.
@@ -102,4 +125,5 @@ One paragraph: is this redesign ready to enter `/project-direction`?
 - Do not invent manifesto content. Quote file:line every time.
 - If you flag a manifesto drift, your verdict on whether to update the manifesto vs. the redesign is informational only — the user decides.
 - Stay strict on red verdicts. The whole point of this phase is to catch budget killers before the spec phase locks them in.
-- Keep the report under 3000 words. Tables drive the document; prose only for `red` and `drift` write-ups.
+- Every design-bar finding cites its violated authority — a Dispatch spec requirement heading or a design-bar bias number. "Looks off" is not a finding.
+- Keep the report under 3500 words. Tables drive the document; prose only for `red`, `drift`, and high-severity design write-ups.

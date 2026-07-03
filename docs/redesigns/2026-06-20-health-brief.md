@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-20
 **Version:** v1
-**Bundle path:** `none` — no Claude Design bundle exists for health; originated from the top-level Dispatch design language (`pr/overview/DESIGN_LANGUAGE.md` + `pr/overview/dispatch-kit/` + shipped sibling `docs/redesigns/ingestion-design-language.md`).
+**Bundle path:** `none` — no Claude Design bundle exists for health; originated from the top-level Dispatch design language (now the spec `openspec/specs/dashboard-design-language/spec.md`; kit at `.claude/skills/butlers-redesign-prompt/references/dispatch-kit/`).
 **Mode:** fresh
 **Phase D verdict:** `proceed-with-amendments` (overall GREEN, ~$1/month/owner recommended design)
 **Prior brief (if any):** none
@@ -83,7 +83,7 @@ self-reflection, not compliance reporting.
 
 Seven surfaces: a **new `/health` Overview** (landing, absent today) + six **reframed sub-pages**
 (measurements, medications, conditions, symptoms, meals, research). Design language = the canonical
-**Dispatch** language (`pr/overview/DESIGN_LANGUAGE.md`); all required primitives and tokens already
+**Dispatch** language (now `openspec/specs/dashboard-design-language/spec.md`); all required primitives and tokens already
 exist in `frontend/`. Integration target = the live Butlers dashboard SPA (`frontend/src/`), served at
 `…/butlers-dev/health`. The change is **additive** (new index route + re-skin); nothing outside
 `/health/*` is touched.
@@ -353,7 +353,7 @@ This brief is the input to a `/project-direction` run with **feature evaluation 
 ```
 /project-direction --focus=feature \
   --brief=docs/redesigns/2026-06-20-health-brief.md \
-  --binding-design-language=pr/overview/DESIGN_LANGUAGE.md \
+  --binding-design-language=openspec/specs/dashboard-design-language/spec.md \
   --binding-design-intent=docs/redesigns/2026-06-20-health-brief.md#0-design-intent \
   --red-flag-policy=descope-or-escalate
 ```
@@ -362,7 +362,7 @@ This brief is the input to a `/project-direction` run with **feature evaluation 
 
 Carry-forward instructions:
 
-- `pr/overview/DESIGN_LANGUAGE.md` is **binding**. Every spec section must preserve it (surfaces-not-cards,
+- `openspec/specs/dashboard-design-language/spec.md` is **binding**. Every spec section must preserve it (surfaces-not-cards,
   Display-500 not bold, hue on letter-mark only, state color only when state demands, one commit button,
   serif-italic empty states).
 - Section 0 of this brief is **binding**. Spec drift away from intent fails reconciliation.
