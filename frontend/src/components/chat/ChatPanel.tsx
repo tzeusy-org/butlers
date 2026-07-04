@@ -43,11 +43,11 @@ import {
 // ChatPanel inner content (mounted once Sheet is open)
 // ---------------------------------------------------------------------------
 
-interface ChatContentProps {
+export interface ChatContentProps {
   butlerName: string;
 }
 
-function ChatContent({ butlerName }: ChatContentProps) {
+export function ChatContent({ butlerName }: ChatContentProps) {
   const queryClient = useQueryClient();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -195,16 +195,18 @@ function ChatContent({ butlerName }: ChatContentProps) {
       await consumeSseStream(response, (event) => {
         switch (event.event) {
           case "conversation_created": {
-            const data = event.data as { id: string; title?: string | null };
-            currentConversationId = data.id;
-            setActiveConversationId(data.id);
+            // Backend emits `conversation_id` (see routers/conversations.py
+            // _stream_conversation_response) — NOT `id`.
+            const data = event.data as { conversation_id: string; title?: string | null };
+            currentConversationId = data.conversation_id;
+            setActiveConversationId(data.conversation_id);
             setStreaming((prev) =>
-              prev ? { ...prev, conversationId: data.id } : null,
+              prev ? { ...prev, conversationId: data.conversation_id } : null,
             );
             // Update optimistic user message with real conversation_id
             setLocalMessages((prev) =>
               prev.map((m) =>
-                m.id === userMessage.id ? { ...m, conversation_id: data.id } : m,
+                m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
               ),
             );
             break;
