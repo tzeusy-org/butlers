@@ -127,12 +127,44 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [conversations, activeConversationId]);
 
-  // Auto-select first conversation on initial load
+  // Resume the most recent conversation ONCE per mount (== once per Sheet
+  // open, since ChatContent unmounts entirely when the Sheet closes via the
+  // `{open && <ChatContent />}` gate in ChatPanel below) — gated by
+  // hasResumedRef so a later "New conversation" click (which also sets
+  // activeConversationId to null) does not get immediately overridden back
+  // to the existing thread by this same effect. Mirrors FloatingChatWidget's
+  // identical guard.
+  const hasResumedRef = useRef(false);
   useEffect(() => {
-    if (activeConversationId == null && conversations.length > 0) {
+    if (hasResumedRef.current) return;
+    if (conversations.length === 0) return;
+    hasResumedRef.current = true;
+    if (activeConversationId == null) {
       setActiveConversationId(conversations[0].id);
     }
   }, [conversations, activeConversationId]);
+
+  // Reset per-butler session state when `butlerName` changes while
+  // ChatContent stays mounted. The `{open && <ChatContent />}` gate in
+  // ChatPanel below only unmounts ChatContent when the Sheet closes — it
+  // does NOT unmount/remount on a butler switch that leaves the Sheet open
+  // (e.g. jumping to a different butler's detail page via the EntityFinder
+  // Cmd+K palette; the header slot hosting ChatPanel survives Page's
+  // loading/loaded transitions for the status-board archetype, see
+  // ui/page.tsx). Without this reset, hasResumedRef above would stay
+  // latched from the previous butler and silently never auto-resume the
+  // newly-viewed butler's most recent conversation.
+  const previousButlerNameRef = useRef(butlerName);
+  useEffect(() => {
+    if (previousButlerNameRef.current === butlerName) return;
+    previousButlerNameRef.current = butlerName;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    hasResumedRef.current = false;
+    setActiveConversationId(null);
+    setLocalMessages([]);
+    setStreaming(null);
+  }, [butlerName]);
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
   const isStreaming = streaming !== null;

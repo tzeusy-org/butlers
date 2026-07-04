@@ -104,6 +104,140 @@ afterEach(() => cleanup());
 // conversation_created SSE handling
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Auto-resume / "New conversation" regression (bu-5gp95)
+// ---------------------------------------------------------------------------
+
+const EXISTING_CONVERSATIONS = [
+  {
+    id: "conv-1",
+    butler_name: "switchboard",
+    title: "Existing thread",
+    status: "active",
+    created_at: "2026-07-03T12:00:00.000Z",
+    updated_at: "2026-07-04T12:00:00.000Z",
+    message_count: 1,
+    total_input_tokens: 5,
+    total_output_tokens: 5,
+    total_duration_ms: 200,
+    routed_butler: null,
+  },
+];
+
+function mockHooksWithConversations() {
+  vi.mocked(useConversations).mockReturnValue({
+    data: { data: EXISTING_CONVERSATIONS, meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversations>);
+
+  vi.mocked(useConversationMessages).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>);
+
+  vi.mocked(useConversationSearch).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationSearch>);
+}
+
+describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () => {
+  it("auto-resumes the most recent conversation on initial mount", () => {
+    mockHooksWithConversations();
+    renderChatContent();
+
+    // Appears twice: once in the ConversationList sidebar entry, once as the
+    // ConversationHeader title — the header only shows the real title when
+    // activeConversationId has actually been auto-resumed to conv-1.
+    expect(screen.getAllByText("Existing thread")).toHaveLength(2);
+    expect(screen.queryByText("New conversation")).toBeNull();
+  });
+
+  it("clicking New conversation stays on the fresh-thread state instead of snapping back", () => {
+    mockHooksWithConversations();
+    renderChatContent();
+
+    // Auto-resumed to the existing thread first (sidebar entry + header title).
+    expect(screen.getAllByText("Existing thread")).toHaveLength(2);
+
+    fireEvent.click(screen.getByText("New"));
+
+    // Without the one-shot guard, the auto-select effect re-fires (conversations
+    // is still non-empty and activeConversationId is now null) and immediately
+    // reselects conv-1 — regression under test. With the guard, the sidebar
+    // still lists "Existing thread" (it's still a real conversation) but the
+    // header must now read "New conversation", not snap back.
+    expect(screen.getAllByText("Existing thread")).toHaveLength(1);
+    expect(screen.getByText("New conversation")).toBeDefined();
+  });
+
+  it("re-resumes the new butler's conversation after a butlerName switch with no unmount in between", () => {
+    // ChatPanel gates ChatContent on `{open && <ChatContent />}`, so it only
+    // unmounts on Sheet close — NOT on a butler switch that leaves the Sheet
+    // open (e.g. jumping butlers via the EntityFinder Cmd+K palette while
+    // chatting; the header slot hosting ChatPanel survives Page's
+    // loading/loaded transitions, see ui/page.tsx status-board archetype).
+    // Simulate that here via `rerender` with a new `butlerName` prop on the
+    // SAME ChatContent instance (no intervening unmount) and assert the
+    // one-shot resume guard re-arms for the newly-viewed butler instead of
+    // staying latched from the first butler.
+    vi.mocked(useConversations).mockImplementation(
+      (butlerName: string) =>
+        ({
+          data: {
+            data: [
+              {
+                id: `conv-${butlerName}`,
+                butler_name: butlerName,
+                title: `${butlerName} thread`,
+                status: "active",
+                created_at: "2026-07-03T12:00:00.000Z",
+                updated_at: "2026-07-04T12:00:00.000Z",
+                message_count: 1,
+                total_input_tokens: 5,
+                total_output_tokens: 5,
+                total_duration_ms: 200,
+                routed_butler: null,
+              },
+            ],
+            meta: {},
+          },
+          isLoading: false,
+        }) as unknown as ReturnType<typeof useConversations>,
+    );
+    vi.mocked(useConversationMessages).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversationMessages>);
+    vi.mocked(useConversationSearch).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversationSearch>);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <ChatContent butlerName="finance" />
+      </QueryClientProvider>,
+    );
+
+    // Auto-resumed to finance's thread (sidebar entry + header title).
+    expect(screen.getAllByText("finance thread")).toHaveLength(2);
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <ChatContent butlerName="calendar" />
+      </QueryClientProvider>,
+    );
+
+    // Must re-resume to calendar's own thread (sidebar + header), not get
+    // stuck on "New conversation" because the guard from the finance mount
+    // never reset.
+    expect(screen.getAllByText("calendar thread")).toHaveLength(2);
+    expect(screen.queryByText("New conversation")).toBeNull();
+  });
+});
+
 describe("ChatContent — conversation_created SSE handling", () => {
   it("captures the new conversation id from `conversation_id` (not `id`) on the create flow", async () => {
     createConversationMock.mockResolvedValue({ ok: true } as Response);
